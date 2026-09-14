@@ -266,7 +266,7 @@ fn draw_field_editor(frame: &mut Frame, state: &mut ConfigWizardState, theme: &T
     let lines = editor_lines(
         &editor_state.editor,
         theme,
-        "Type the field value. Enter saves, Alt+Enter inserts a newline.",
+        "Type the field value. Enter saves, Shift+Enter inserts a newline.",
     );
 
     let wrap_width = area.width.saturating_sub(2).max(1) as usize;
@@ -284,7 +284,7 @@ fn draw_field_editor(frame: &mut Frame, state: &mut ConfigWizardState, theme: &T
     let hints = Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" save  "),
-        Span::styled("Alt+Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled("Shift+Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" newline  "),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" cancel "),

@@ -21,7 +21,7 @@
 //! comment. Reachable from PR Triage (`A`), the dashboard, an agent session
 //! (leader key), and the PR picker.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
@@ -47,27 +47,258 @@ const AI_FINDING_HEADING_PREFIX: &str = "### ";
 /// lines this finding is about."
 const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
 
-/// Attribution for an AI review finding posted as an inline GitHub comment.
-fn append_ai_review_attribution(body: &str) -> String {
-    format!(
-        "{}\n\n{}",
-        body.trim_end(),
-        super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
-    )
+/// Provenance for one AI Review pass: which harness and model produced it, and
+/// the run's token usage and estimated cost. Captured from the headless run
+/// ([`run_ai_pr_review`]), persisted with the findings ([`AiReviewCacheEntry`]),
+/// and surfaced everywhere the review appears — the in-app pane and the posted
+/// GitHub comment — so a review carries one consistent attribution instead of
+/// the bare "— AI review via AMF" marker.
+///
+/// Every field past the harness is best-effort: a harness that reports no
+/// usage degrades to model-only attribution rather than showing a fabricated
+/// `$0.00`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewAttribution {
+    /// Display name of the harness that ran the review. Always set for a run
+    /// AMF dispatched; `None` only for a legacy cache row written before
+    /// attribution existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    /// Model the run used; `None` means the harness's default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// Tokens served from a provider cache. This stays distinct from ordinary
+    /// input: some harnesses report it while others do not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    /// Provider-reported total for the run. It is deliberately not derived
+    /// from component counts, because providers disagree about which token
+    /// categories a total includes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    /// Preformatted USD cost (`token_tracking::format_token_cost`, so the same
+    /// configured rates and rounding as AMF's usage meters), or `None` when
+    /// the harness reported no usage to price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<String>,
+    /// Wall-clock duration of the completed review, retained in milliseconds
+    /// so the persisted representation is harness-neutral and serde-friendly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
 }
 
-/// Guarantee the footer survives into the posted body even though the
+impl AiReviewAttribution {
+    /// Build from a completed run. `usage` is the harness's last reported
+    /// `(input, output)` token counts, absent when it reported none.
+    pub fn from_run(
+        harness: &AgentKind,
+        model: Option<&str>,
+        usage: Option<&crate::headless::HeadlessUsage>,
+        pricing: &crate::token_tracking::TokenPricingConfig,
+        elapsed: std::time::Duration,
+    ) -> Self {
+        // The configured rates price input/output/cache categories, but a
+        // partial provider report would turn unknown categories into a fake
+        // zero. Price only a report with both ordinary input and output.
+        let estimated_cost = usage.and_then(|usage| {
+            let (Some(input_tokens), Some(output_tokens)) =
+                (usage.input_tokens, usage.output_tokens)
+            else {
+                return None;
+            };
+            Some(crate::token_tracking::format_token_cost(
+                &session_usage_from_counts(
+                    input_tokens,
+                    output_tokens,
+                    usage.cached_tokens.unwrap_or(0),
+                    // Anthropic's `cache_read_input_tokens` is a separate,
+                    // additive billing category on top of `input_tokens`
+                    // (priced that way in `token_tracking.rs`). The generic
+                    // fallback keys `emit_usage_from` also populates
+                    // `cached_tokens` from (`cached_input_tokens`,
+                    // `cache_read`, `cached`) commonly report a figure
+                    // that's already a *subset* of `input_tokens` for other
+                    // providers, so folding it in again would double-count
+                    // both the total and the cost.
+                    matches!(harness, AgentKind::Claude),
+                ),
+                pricing,
+            ))
+        });
+        Self {
+            harness: Some(harness.display_name().to_string()),
+            model: model.map(str::to_string),
+            input_tokens: usage.and_then(|usage| usage.input_tokens),
+            output_tokens: usage.and_then(|usage| usage.output_tokens),
+            cached_tokens: usage.and_then(|usage| usage.cached_tokens),
+            total_tokens: usage.and_then(|usage| usage.total_tokens),
+            estimated_cost,
+            elapsed_ms: Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+        }
+    }
+
+    /// Whether any token usage was reported for this run.
+    pub fn has_usage(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.cached_tokens.is_some()
+            || self.total_tokens.is_some()
+    }
+
+    fn model_label(&self) -> &str {
+        self.model.as_deref().unwrap_or("harness default")
+    }
+
+    /// `harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.08`,
+    /// dropping the token clause when usage is unknown and the cost clause when
+    /// it could not be priced. Plain text — used by the in-app pane and, inside
+    /// [`Self::disclosure_line`], the posted comment.
+    pub fn plain_label(&self) -> String {
+        let mut parts = vec![
+            format!(
+                "harness {}",
+                self.harness.as_deref().unwrap_or("unreported")
+            ),
+            format!("model {}", self.model_label()),
+        ];
+        if let (Some(input), Some(output)) = (self.input_tokens, self.output_tokens) {
+            parts.push(format!(
+                "~{} in / ~{} out",
+                crate::token_tracking::format_token_count(input),
+                crate::token_tracking::format_token_count(output)
+            ));
+        }
+        if let Some(cost) = &self.estimated_cost {
+            parts.push(format!("est. {cost}"));
+        }
+        parts.join(" · ")
+    }
+
+    /// Deterministic Markdown appended only to the overall GitHub review
+    /// body. Each metric is independently reported or called unavailable, so
+    /// a partial harness event can never masquerade as a zero-token run.
+    pub fn usage_summary(&self) -> String {
+        let token = |value: Option<u64>| {
+            value
+                .map(crate::token_tracking::format_token_count)
+                .unwrap_or_else(|| "unavailable".to_string())
+        };
+        let elapsed = self
+            .elapsed_ms
+            .map(format_elapsed)
+            .unwrap_or_else(|| "unavailable".to_string());
+        format!(
+            "### AI review usage\n\
+             - Harness: {}\n\
+             - Model: {}\n\
+             - Elapsed: {elapsed}\n\
+             - Input tokens: {}\n\
+             - Output tokens: {}\n\
+             - Cached tokens: {}\n\
+             - Total tokens: {}\n\
+             - Estimated cost: {}",
+            self.harness.as_deref().unwrap_or("unavailable"),
+            self.model_label(),
+            token(self.input_tokens),
+            token(self.output_tokens),
+            token(self.cached_tokens),
+            token(self.total_tokens),
+            self.estimated_cost.as_deref().unwrap_or("unavailable"),
+        )
+    }
+}
+
+fn format_elapsed(elapsed_ms: u64) -> String {
+    let seconds = elapsed_ms / 1_000;
+    format!("{}m {:02}s", seconds / 60, seconds % 60)
+}
+
+/// `cached_is_additive` distinguishes Anthropic's `cache_read_input_tokens`
+/// (a separate count on top of `input_tokens`) from other providers' cache
+/// figures, which are commonly already a subset of `input_tokens`; only in
+/// the former case does folding `cached_tokens` into `cache_read_tokens` and
+/// `total_tokens` avoid double-counting them.
+fn session_usage_from_counts(
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    cached_is_additive: bool,
+) -> crate::token_tracking::SessionTokenUsage {
+    let additive_cached = if cached_is_additive { cached_tokens } else { 0 };
+    crate::token_tracking::SessionTokenUsage {
+        // Only the token counts feed `format_token_cost`; the source label is
+        // never read for pricing.
+        source: crate::token_tracking::TokenUsageSource {
+            provider: crate::token_tracking::TokenUsageProvider::Claude,
+            id: "ai-review".to_string(),
+        },
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: additive_cached,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: input_tokens
+            .saturating_add(output_tokens)
+            .saturating_add(additive_cached),
+    }
+}
+
+/// Attribution for an AI review finding or summary posted to GitHub: the
+/// stable `— AI review via AMF` marker, preceded by a
+/// [`AiReviewAttribution::usage_summary`] (model, elapsed time, tokens, and
+/// estimated cost) when a run's provenance is available. Legacy callers with
+/// no attribution still get the bare marker.
+fn append_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    match attribution {
+        Some(attribution) => format!(
+            "{}\n\n{}\n\n{}",
+            body.trim_end(),
+            attribution.usage_summary(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+        None => format!(
+            "{}\n\n{}",
+            body.trim_end(),
+            super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER
+        ),
+    }
+}
+
+/// Guarantee the attribution survives into the posted body even though the
 /// confirm dialog's summary editor is free-form text the user can edit —
-/// including deleting the footer [`build_ai_review`] seeded it with. Called
-/// right before [`GhCli::create_review`] rather than trusted from dialog
-/// build time, so an edited-out footer is restored instead of silently
-/// publishing an unattributed review.
-fn ensure_ai_review_attribution(body: &str) -> String {
+/// including deleting the disclosure line and footer [`build_ai_review`]
+/// seeded it with. Called right before [`GhCli::create_review`] rather than
+/// trusted from dialog build time, so an edited-out attribution is restored
+/// instead of silently publishing an unattributed review. Any existing
+/// trailing marker (and a recognized disclosure line above it) is stripped
+/// first so the attribution is never doubled.
+fn ensure_ai_review_attribution(body: &str, attribution: Option<&AiReviewAttribution>) -> String {
+    append_ai_review_attribution(strip_ai_review_attribution(body), attribution)
+}
+
+/// Remove a trailing [`AI_REVIEW_ATTRIBUTION_FOOTER`] and, if present directly
+/// above it, a disclosure line matching `attribution` — leaving the editable
+/// core body.
+fn strip_ai_review_attribution(body: &str) -> &str {
+    let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
-    if trimmed.ends_with(super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER) {
-        trimmed.to_string()
-    } else {
-        append_ai_review_attribution(trimmed)
+    let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
+    // The usage block is always its own trailing paragraph, separated by a
+    // blank line (see `append_ai_review_attribution`), so only a heading that
+    // actually *starts* that last paragraph counts as the real block — not
+    // one a finding's own text merely mentions or quotes somewhere earlier.
+    // Mirrors the previous line-anchored disclosure check, one level up
+    // (paragraph instead of line).
+    match core.rsplit_once("\n\n") {
+        Some((head, last)) if last.trim_start().starts_with("### AI review usage") => {
+            head.trim_end()
+        }
+        _ if core.trim_start().starts_with("### AI review usage") => "",
+        _ => core,
     }
 }
 
@@ -112,6 +343,34 @@ pub struct AiReviewFinding {
     pub published: bool,
 }
 
+/// Cache key for [`App::ai_review_finding_fix_costs`]. The per-frame result
+/// only changes when the open pane's PR identity or the anchors of its
+/// findings change, so the (triage DB load + full cached-review JSON parse +
+/// a sibling query per correlated finding) is memoized against this rather
+/// than recomputed on every render tick. Cleared outright whenever the pane
+/// is (re)opened or a new `A` run lands, so a fix cost attributed in PR
+/// Triage between visits is still picked up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AiReviewFixCostKey {
+    pub pr_number: u32,
+    pub head_sha: String,
+    pub anchors: Vec<(Option<String>, Option<u32>, Option<crate::diff::DiffSide>)>,
+}
+
+impl AiReviewFixCostKey {
+    fn for_state(state: &crate::app::AiReviewState) -> Self {
+        Self {
+            pr_number: state.pr.number,
+            head_sha: state.pr.head_sha.clone(),
+            anchors: state
+                .findings
+                .iter()
+                .map(|f| (f.path.clone(), f.line, f.side))
+                .collect(),
+        }
+    }
+}
+
 /// Progress of the background AI PR review (`A`): the one headless agent pass
 /// over the PR diff. `Reviewing` fires once with a token estimate right
 /// before the paid call; structured harness activity and usage may follow;
@@ -142,6 +401,10 @@ pub struct AiReviewOutcome {
     /// for legacy cache entries created before summary validation.
     pub summary: Option<String>,
     pub raw_output: String,
+    /// Which harness/model produced this pass, and what it cost. Filled in by
+    /// [`run_ai_pr_review`] after the run; [`process_ai_review_output`] leaves
+    /// it at its default since it only sees the response text.
+    pub attribution: AiReviewAttribution,
 }
 
 /// Record of the most recent `A` run, persisted alongside the findings in
@@ -206,6 +469,11 @@ pub struct AiReviewCacheEntry {
     /// keeps cache rows written before this field was introduced readable.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Harness/model/token/cost provenance of the run that produced
+    /// `findings`. `None` for cache rows written before attribution existed,
+    /// or for a run whose latest outcome was an error.
+    #[serde(default)]
+    pub attribution: Option<AiReviewAttribution>,
 }
 
 impl AiReviewCacheEntry {
@@ -238,44 +506,49 @@ impl AiReviewCacheEntry {
 /// AMF still owns parsing the findings back out via the fixed-format
 /// instruction that follows. `None` (the default) skips straight to AMF's own
 /// review instructions.
+/// The full built-in AI PR-review prompt. Production goes through the
+/// resolver ([`run_ai_pr_review`] renders the resolved template); this keeps
+/// the whole-prompt assembly available to tests.
+#[allow(dead_code)]
 pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String {
-    let mut out = String::new();
-    if let Some(skill) = skill {
-        out.push_str(&format!(
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PrReviewAiReview
+            .spec()
+            .default_template,
+        &ai_review_prompt_context(diff, memory, skill),
+    )
+}
+
+/// The `{{token}}` context for [`crate::prompts::PromptId::PrReviewAiReview`].
+/// `skill_directive` and `recurring_findings` are empty unless a review skill
+/// or a non-empty review-memory doc is configured.
+pub fn ai_review_prompt_context(
+    diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+) -> crate::prompts::PromptContext {
+    let skill_directive = match skill {
+        Some(skill) => format!(
             "First, use the /{skill} skill/command to review the pull request diff below as \
              your primary review methodology.\n\n"
-        ));
-    }
-    out.push_str(
-        "You are reviewing a pull request's diff for correctness bugs and quality issues. \
-         Check especially for issues matching the team's known recurring findings listed below, \
-         if any. Skip praise and style nitpicks the diff already handles well.\n\n",
-    );
-    if !memory.trim().is_empty() {
+        ),
+        None => String::new(),
+    };
+    let recurring_findings = if memory.trim().is_empty() {
+        String::new()
+    } else {
         // Deliberately not "for this project": `memory` may merge the repo's
         // own doc with the user's cross-project one, each labeled inside.
-        out.push_str("Known recurring findings to check for:\n");
-        out.push_str(memory.trim());
-        out.push_str("\n\n");
-    }
-    out.push_str("Diff:\n\n");
-    out.push_str(&annotated_diff_for_ai_review(diff));
-    out.push_str(&format!(
-        "\n\n---\n\nOutput ONLY the summary and findings in this exact format (no prose outside \
-         it). Always include the summary, even when there are no findings. The summary must be \
-         one to three useful sentences covering the main themes or risk:\n\n\
-         ## Summary\n\
-         <overall review summary>\n\n\
-         {AI_FINDING_HEADING_PREFIX}<path>|<side>|<line>\n\
-         <finding text, 1-3 sentences>\n\n\
-         {AI_FINDING_HEADING_PREFIX}General\n\
-         <a finding with no single file:line anchor>\n\n\
-         `<side>` must be `RIGHT` for a current-file line or `LEFT` for a removed \
-         base-file line. Copy the path, side, and one-based line number exactly \
-         from that row's bracketed coordinate label; never count patch rows or \
-         infer a line number from a hunk offset.\n"
-    ));
-    out
+        format!(
+            "Known recurring findings to check for:\n{}\n\n",
+            memory.trim()
+        )
+    };
+    crate::prompts::PromptContext::new()
+        .with("skill_directive", skill_directive)
+        .with("recurring_findings", recurring_findings)
+        .with("annotated_diff", annotated_diff_for_ai_review(diff))
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
 }
 
 /// Render a parsed unified diff with an explicit source coordinate on every
@@ -513,9 +786,13 @@ fn diff_hunk_for_location(
 /// silently dropped. Inline comments carry their own attribution footer since
 /// they can surface on their own (e.g. the Files-changed view) without the
 /// review summary in sight; the summary already self-identifies.
+///
+/// `attribution`, when present, adds the model/token/cost disclosure line
+/// above the stable marker on both the summary and every inline comment.
 fn build_ai_review(
     findings: &[&AiReviewFinding],
     generated_summary: Option<&str>,
+    attribution: Option<&AiReviewAttribution>,
 ) -> (String, Vec<GhPrReviewComment>) {
     let mut inline = Vec::new();
     let mut general = Vec::new();
@@ -536,7 +813,9 @@ fn build_ai_review(
                     },
                     start_line: None,
                     start_side: None,
-                    body: append_ai_review_attribution(&f.body),
+                    // Usage belongs to the one overall review body, never an
+                    // inline finding. Keep the generic AMF marker only.
+                    body: append_ai_review_attribution(&f.body, None),
                 })
             }
             (Some(path), _, _) => general.push(format!("- **{path}**: {}", f.body)),
@@ -553,30 +832,139 @@ fn build_ai_review(
         body.push_str(&general.join("\n"));
     }
     if generated_summary.is_some() {
-        body = append_ai_review_attribution(&body);
+        body = append_ai_review_attribution(&body, attribution);
     }
     (body, inline)
 }
 
-/// Rows offered by the AI-review model picker for a given harness: `Default`
-/// and `Custom` always appear; presets are a best-effort, *verified* set of
-/// model aliases — currently only Claude's, confirmed against `claude
-/// --help` ("Provide an alias for the latest model (e.g. 'fable', 'opus', or
-/// 'sonnet')"; `haiku` is the fourth well-known tier). Other harnesses don't
-/// have a reliably enumerable alias list, so guessing would risk offering a
-/// preset that doesn't exist — `Custom` covers them instead.
-fn model_pick_rows(harness: &AgentKind) -> Vec<ModelPickRow> {
-    let mut rows = vec![ModelPickRow::Default];
-    if *harness == AgentKind::Claude {
-        rows.extend([
-            ModelPickRow::Preset("sonnet"),
-            ModelPickRow::Preset("opus"),
-            ModelPickRow::Preset("haiku"),
-            ModelPickRow::Preset("fable"),
-        ]);
+/// Rows offered by a model picker for a given harness. `Custom` always
+/// appears, while callers decide whether the harness `Default` is valid for
+/// their workflow; presets are a best-effort, *verified* set of model names.
+/// Claude's are a fixed, well-known set of tier aliases,
+/// confirmed against `claude --help` ("Provide an alias for the latest
+/// model (e.g. 'fable', 'opus', or 'sonnet')"; `haiku` is the fourth
+/// well-known tier). Codex's presets come from `codex_config::known_models`,
+/// which reads the catalog used by Codex's own model picker and falls back to
+/// its recorded availability table on older installs — both fast, synchronous
+/// reads. A fresh install with neither has empty presets here; callers that
+/// open a picker on the result should follow up with
+/// [`App::maybe_refresh_codex_known_models`] to backfill it from the `codex`
+/// CLI in the background rather than shelling out inline. Every other harness
+/// offers just `Default` and `Custom`, since guessing a preset that doesn't
+/// exist would be worse than not offering one.
+pub(super) fn model_pick_rows(harness: &AgentKind, include_default: bool) -> Vec<ModelPickRow> {
+    let mut rows = if include_default {
+        vec![ModelPickRow::Default]
+    } else {
+        Vec::new()
+    };
+    match harness {
+        AgentKind::Claude => rows.extend([
+            ModelPickRow::Preset("sonnet".to_string()),
+            ModelPickRow::Preset("opus".to_string()),
+            ModelPickRow::Preset("haiku".to_string()),
+            ModelPickRow::Preset("fable".to_string()),
+        ]),
+        AgentKind::Codex => rows.extend(
+            crate::codex_config::known_models()
+                .into_iter()
+                .map(ModelPickRow::Preset),
+        ),
+        _ => {}
     }
     rows.push(ModelPickRow::Custom);
     rows
+}
+
+impl App {
+    /// Backfill an open Codex model picker whose presets came back empty from
+    /// [`model_pick_rows`] (a fresh install with neither a written catalog
+    /// cache nor a recorded availability table). Spawns
+    /// `codex_config::spawn_cli_catalog_probe` on a background thread — never
+    /// calls the `codex` CLI inline, since that can block for as long as the
+    /// process takes to exit. A no-op for any other harness, or if a probe is
+    /// already in flight.
+    pub(super) fn maybe_refresh_codex_known_models(
+        &mut self,
+        harness: &AgentKind,
+        rows: &[ModelPickRow],
+    ) {
+        if !matches!(harness, AgentKind::Codex) || self.codex_models_cli_bg.is_some() {
+            return;
+        }
+        if rows
+            .iter()
+            .any(|row| matches!(row, ModelPickRow::Preset(_)))
+        {
+            return;
+        }
+        self.codex_models_cli_bg = Some(crate::codex_config::spawn_cli_catalog_probe());
+    }
+
+    /// Drain the background Codex catalog probe started by
+    /// [`Self::maybe_refresh_codex_known_models`]. Returns `true` when the app
+    /// state changed and a redraw is warranted.
+    pub fn poll_codex_models_cli_bg(&mut self) -> bool {
+        let Some(rx) = self.codex_models_cli_bg.as_ref() else {
+            return false;
+        };
+        let models = match rx.try_recv() {
+            Ok(models) => models,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.codex_models_cli_bg = None;
+                return true;
+            }
+        };
+        self.codex_models_cli_bg = None;
+        let Some(models) = models.filter(|models| !models.is_empty()) else {
+            return true;
+        };
+        match &mut self.mode {
+            AppMode::PlanInterview(state) => {
+                if let Some(pick) = &mut state.expert_model_pick {
+                    merge_codex_preset_rows(pick, models);
+                }
+            }
+            AppMode::AiReview(state) => {
+                if let Some(pick) = &mut state.model_pick {
+                    merge_codex_preset_rows(pick, models);
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+}
+
+/// Splice freshly probed Codex preset rows into an open picker, ahead of its
+/// `Custom` row, keeping whichever row was highlighted selected. Guarded by
+/// the same emptiness check as [`App::maybe_refresh_codex_known_models`], so
+/// a picker re-opened (with cache-sourced presets) before the probe lands
+/// isn't clobbered by the stale-by-then CLI result.
+fn merge_codex_preset_rows(pick: &mut AiModelPickState, models: Vec<String>) {
+    if pick
+        .rows
+        .iter()
+        .any(|row| matches!(row, ModelPickRow::Preset(_)))
+    {
+        return;
+    }
+    let selected_row = pick.rows.get(pick.selected).cloned();
+    let insert_at = pick
+        .rows
+        .iter()
+        .position(|row| matches!(row, ModelPickRow::Custom))
+        .unwrap_or(pick.rows.len());
+    for (offset, model) in models.into_iter().enumerate() {
+        pick.rows
+            .insert(insert_at + offset, ModelPickRow::Preset(model));
+    }
+    if let Some(row) = selected_row
+        && let Some(index) = pick.rows.iter().position(|candidate| *candidate == row)
+    {
+        pick.selected = index;
+    }
 }
 
 fn model_for_ai_review_run(
@@ -631,16 +1019,225 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
         findings,
         summary,
         raw_output: output,
+        attribution: AiReviewAttribution::default(),
     })
+}
+
+/// The batched-review templates resolved alongside `pr_review.ai_review` on
+/// the UI thread, used only when the single-prompt form would overflow.
+pub(crate) struct BatchReviewTemplates {
+    pub batch: String,
+    pub hunk_split: String,
+    pub synthesis: String,
+    pub summary: String,
+    pub budget_tokens: usize,
+}
+
+/// `{{token}}` context for a single `review.batch` slice: the same skill /
+/// memory / annotated-diff context `pr_review.ai_review` uses, plus the slice's
+/// file list.
+fn batch_slice_context(
+    slice_diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+) -> crate::prompts::PromptContext {
+    let file_list = crate::diff::parse_unified_diff(slice_diff)
+        .map(|files| {
+            files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    ai_review_prompt_context(slice_diff, memory, skill).with("file_list", file_list)
+}
+
+/// `{{token}}` context for a single `review.hunk_split` slice: the hunk group's
+/// annotated diff plus the file path and hunk label that name it.
+fn hunk_slice_context(
+    slice_diff: &str,
+    file_path: &str,
+    hunk_label: &str,
+) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("file_path", file_path.to_string())
+        .with("hunk_label", hunk_label.to_string())
+        .with("annotated_diff", annotated_diff_for_ai_review(slice_diff))
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
+}
+
+/// `{{token}}` context for `review.synthesis`.
+fn synthesis_context(batch_findings: &str, uncovered_note: &str) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("batch_findings", batch_findings)
+        .with("uncovered_note", uncovered_note)
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
+}
+
+/// `{{token}}` context for `review.findings_summary`.
+fn findings_summary_context(batch_label: &str, findings: &str) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("batch_label", batch_label)
+        .with("findings", findings)
+        .with(
+            "max_chars",
+            crate::review_batch::FALLBACK_SUMMARY_CHARS.to_string(),
+        )
+}
+
+/// A one-line progress label for the AI-review running screen.
+fn batch_progress_label(progress: &crate::review_batch::BatchProgress) -> String {
+    use crate::review_batch::BatchProgress::*;
+    match progress {
+        Batch {
+            index,
+            total,
+            paths,
+        } => format!("Reviewing batch {index}/{total}: {}", paths.join(", ")),
+        Halving { paths } => format!("Batch too large — splitting: {}", paths.join(", ")),
+        SplittingFile { path } => format!("Splitting {path} hunk by hunk"),
+        Slice { path, label } => format!("Reviewing {path} ({label})"),
+        Synthesizing => "Combining findings".to_string(),
+        Uncovered { path, label } => format!("Could not review {path} ({label})"),
+    }
+}
+
+/// Batched fallback for [`run_ai_pr_review`] when the whole-diff prompt would
+/// overflow: split the diff into budgeted slices, review each (splitting
+/// further on overflow), and synthesize one payload. Returns `None` if the
+/// diff did not parse into file sections, so the caller can still try a single
+/// pass.
+#[allow(clippy::too_many_arguments)]
+fn run_batched_ai_pr_review(
+    harness: &AgentKind,
+    workdir: &Path,
+    diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+    model: Option<&str>,
+    templates: &BatchReviewTemplates,
+    tx: &std::sync::mpsc::Sender<AiReviewProgress>,
+) -> Option<Result<AiReviewOutcome>> {
+    let batch_tpl = templates.batch.clone();
+    let hunk_tpl = templates.hunk_split.clone();
+    let memory_for_batch = memory.to_string();
+    let skill_for_batch = skill.map(str::to_string);
+    let batch_runner = crate::review_batch::HeadlessBatchRunner::new(
+        harness.clone(),
+        workdir.to_path_buf(),
+        model.map(str::to_string),
+        Box::new(move |slice: &str| {
+            crate::prompts::render_template(
+                &batch_tpl,
+                &batch_slice_context(slice, &memory_for_batch, skill_for_batch.as_deref()),
+            )
+        }),
+        Box::new(move |slice: &str, file_path: &str, hunk_label: &str| {
+            crate::prompts::render_template(
+                &hunk_tpl,
+                &hunk_slice_context(slice, file_path, hunk_label),
+            )
+        }),
+    );
+
+    let synth_tpl = templates.synthesis.clone();
+    let summary_tpl = templates.summary.clone();
+    let synth_runner = crate::review_batch::HeadlessSynthesisRunner::new(
+        harness.clone(),
+        workdir.to_path_buf(),
+        model.map(str::to_string),
+        Box::new(move |findings: &str, note: &str| {
+            crate::prompts::render_template(&synth_tpl, &synthesis_context(findings, note))
+        }),
+        Box::new(move |label: &str, findings: &str| {
+            crate::prompts::render_template(
+                &summary_tpl,
+                &findings_summary_context(label, findings),
+            )
+        }),
+    );
+
+    let progress_tx = tx.clone();
+    let mut on_progress = move |progress: crate::review_batch::BatchProgress| {
+        let _ = progress_tx.send(AiReviewProgress::Activity(batch_progress_label(&progress)));
+    };
+
+    let review = crate::review_batch::batched_review(
+        diff,
+        &batch_runner,
+        &synth_runner,
+        templates.budget_tokens,
+        &mut on_progress,
+    );
+
+    if review.text.trim().is_empty() {
+        return None;
+    }
+    if !review.uncovered.is_empty() {
+        let _ = tx.send(AiReviewProgress::Activity(format!(
+            "{} slice(s) too large to review even after splitting",
+            review.uncovered.len()
+        )));
+    }
+
+    let coverage_note = batched_coverage_note(&review);
+    Some(
+        process_ai_review_output(review.text, diff).map(|mut outcome| {
+            if let Some(note) = coverage_note {
+                outcome.summary = Some(match outcome.summary.take() {
+                    Some(summary) => format!("{note}\n\n{summary}"),
+                    None => note,
+                });
+            }
+            outcome
+        }),
+    )
+}
+
+/// A clearly-marked banner describing what a batched review could *not* cover,
+/// prepended to the run's summary so partial coverage rides along into the
+/// pane, the post dialog, and any GitHub review posted from it. `None` when
+/// the batched review reached every slice and synthesis ran normally.
+fn batched_coverage_note(review: &crate::review_batch::SynthesizedReview) -> Option<String> {
+    if review.uncovered.is_empty() && review.synthesis_ran {
+        return None;
+    }
+    let mut note = String::from(
+        "> ⚠ Partial coverage — this diff was too large to review in one pass, so it was split \
+         into slices.",
+    );
+    if !review.synthesis_ran {
+        note.push_str(
+            "\n> The per-slice findings could not be combined by a synthesis pass; they are \
+             listed as produced.",
+        );
+    }
+    if !review.uncovered.is_empty() {
+        note.push_str(&format!(
+            "\n> {} slice(s) could not be reviewed even after splitting:",
+            review.uncovered.len()
+        ));
+        for slice in &review.uncovered {
+            note.push_str(&format!(
+                "\n>   • `{}` {} — {}",
+                slice.path, slice.label, slice.reason
+            ));
+        }
+    }
+    Some(note)
 }
 
 /// Background body of the AI PR review (`A`): assemble the prompt from
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
-/// **one** headless agent pass and parse its response into findings. Runs off
-/// the UI thread; progress and the final result are reported over `tx`.
-/// `model`, when set (`AppConfig::review_model_for(ReviewAction::PrReview)`),
-/// picks the review's model independent of whichever model the feature's
-/// interactive session runs.
+/// a headless agent pass and parse its response into findings — one pass when
+/// the diff fits, otherwise the batched [`run_batched_ai_pr_review`] fallback.
+/// Runs off the UI thread; progress and the final result are reported over
+/// `tx`. `model`, when set
+/// (`AppConfig::review_model_for(ReviewAction::PrReview)`), picks the review's
+/// model independent of whichever model the feature's interactive session
+/// runs.
+#[allow(clippy::too_many_arguments)]
 fn run_ai_pr_review(
     harness: AgentKind,
     workdir: PathBuf,
@@ -648,13 +1245,64 @@ fn run_ai_pr_review(
     memory: String,
     skill: Option<String>,
     model: Option<String>,
+    pricing: crate::token_tracking::TokenPricingConfig,
+    // The `pr_review.ai_review` template, resolved on the UI thread (built-in
+    // default or a feature/project/global override). The diff is only fetched
+    // here on the worker thread, so the prompt is rendered here.
+    template: String,
+    // The `review.batch` / `.synthesis` / `.findings_summary` templates plus
+    // the per-harness size budget, used only if `prompt` would overflow.
+    batch_templates: BatchReviewTemplates,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
-    let prompt = ai_review_prompt(&diff, &memory, skill.as_deref());
+    let prompt = crate::prompts::render_template(
+        &template,
+        &ai_review_prompt_context(&diff, &memory, skill.as_deref()),
+    );
     let _ = tx.send(AiReviewProgress::Reviewing {
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
 
+    // The harness reports usage as one or more `Usage` events during the run;
+    // the last one is the run total. Recorded here as well as forwarded so the
+    // completed `AiReviewOutcome` carries the model/token/cost attribution,
+    // not just the transient running screen.
+    let started_at = std::time::Instant::now();
+
+    // Too large for one prompt: fall back to slice-by-slice review + synthesis.
+    // A diff that does not parse into file sections returns `None` here and
+    // drops through to the ordinary single pass. Skipped when the pre-send
+    // size gate is disabled (`review_prompt_budget_tokens: 0`); in that case
+    // an actual "prompt too long" from the single pass below triggers the
+    // same fallback instead.
+    if crate::headless::will_overflow_with_budget(&prompt, batch_templates.budget_tokens)
+        && let Some(result) = run_batched_ai_pr_review(
+            &harness,
+            &workdir,
+            &diff,
+            &memory,
+            skill.as_deref(),
+            model.as_deref(),
+            &batch_templates,
+            &tx,
+        )
+    {
+        let result = result.map(|mut outcome| {
+            outcome.attribution = AiReviewAttribution::from_run(
+                &harness,
+                model.as_deref(),
+                None,
+                &pricing,
+                started_at.elapsed(),
+            );
+            outcome
+        });
+        let _ = tx.send(AiReviewProgress::Done(result));
+        return;
+    }
+    let last_usage: std::sync::Arc<std::sync::Mutex<Option<crate::headless::HeadlessUsage>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let usage_sink = std::sync::Arc::clone(&last_usage);
     let progress_tx = tx.clone();
     let result = HeadlessRunner::run_with_progress(
         &harness,
@@ -666,18 +1314,67 @@ fn run_ai_pr_review(
                 crate::headless::HeadlessProgress::Activity(message) => {
                     AiReviewProgress::Activity(message)
                 }
-                crate::headless::HeadlessProgress::Usage {
-                    input_tokens,
-                    output_tokens,
-                } => AiReviewProgress::Usage {
-                    input_tokens,
-                    output_tokens,
-                },
+                crate::headless::HeadlessProgress::Usage(usage) => {
+                    if let Ok(mut slot) = usage_sink.lock() {
+                        *slot = Some(usage.clone());
+                    }
+                    AiReviewProgress::Usage {
+                        input_tokens: usage.input_tokens.unwrap_or(0),
+                        output_tokens: usage.output_tokens.unwrap_or(0),
+                    }
+                }
             };
             let _ = progress_tx.send(progress);
         },
     )
-    .and_then(|output| process_ai_review_output(output, &diff));
+    .and_then(|output| process_ai_review_output(output, &diff))
+    .map(|mut outcome| {
+        let usage = last_usage.lock().ok().and_then(|slot| slot.clone());
+        outcome.attribution = AiReviewAttribution::from_run(
+            &harness,
+            model.as_deref(),
+            usage.as_ref(),
+            &pricing,
+            started_at.elapsed(),
+        );
+        outcome
+    });
+
+    // The single pass came back "prompt is too long" — reachable when the
+    // pre-send gate is off (`review_prompt_budget_tokens: 0`) or when the byte
+    // estimate was optimistic. Fall back to the same slice-by-slice review +
+    // synthesis the size gate would have run, with its own adaptive halving.
+    let result = match result {
+        Err(err) if crate::headless::as_prompt_too_long(&err).is_some() => {
+            let _ = tx.send(AiReviewProgress::Activity(
+                "Prompt too long — retrying as a batched review".to_string(),
+            ));
+            match run_batched_ai_pr_review(
+                &harness,
+                &workdir,
+                &diff,
+                &memory,
+                skill.as_deref(),
+                model.as_deref(),
+                &batch_templates,
+                &tx,
+            ) {
+                Some(batched) => batched.map(|mut outcome| {
+                    outcome.attribution = AiReviewAttribution::from_run(
+                        &harness,
+                        model.as_deref(),
+                        None,
+                        &pricing,
+                        started_at.elapsed(),
+                    );
+                    outcome
+                }),
+                // Diff did not parse into file sections — nothing to batch.
+                None => Err(err),
+            }
+        }
+        other => other,
+    };
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -739,20 +1436,30 @@ impl App {
     /// return to.
     pub fn open_ai_review_for_pr(&mut self, workdir: PathBuf, pr: PrRef) {
         self.ai_review_return_to = None;
+        // A fix cost may have been attributed in PR Triage since this pane was
+        // last open; a stale memo keyed on the same (unchanged) findings would
+        // hide it. Recompute on the first render of the reopened pane.
+        self.ai_review_fix_cost_cache = None;
         let cached = self.db.as_ref().and_then(|db| {
             db.load_ai_review_cache(pr.number, &pr.head_sha)
                 .ok()
                 .flatten()
         });
-        let (findings, summary, last_run) = match cached {
-            Some(entry) => (entry.findings, entry.summary, entry.last_run),
-            None => (Vec::new(), None, None),
+        let (findings, summary, last_run, attribution) = match cached {
+            Some(entry) => (
+                entry.findings,
+                entry.summary,
+                entry.last_run,
+                entry.attribution,
+            ),
+            None => (Vec::new(), None, None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
             workdir,
             pr,
             findings,
             summary,
+            attribution,
             selected: 0,
             detail_scroll: 0,
             detail_content_lines: 0,
@@ -852,7 +1559,7 @@ impl App {
     /// Close the AI Review pane (`esc`/`q`): back to the PR Triage pane it was
     /// opened from, if any, else the dashboard. The background thread, if
     /// running, isn't aborted — [`Self::poll_ai_pr_review_bg`] still surfaces
-    /// the result via [`Self::ai_review_pending`].
+    /// the result via the pending run origin.
     pub fn close_ai_review(&mut self) {
         match self.ai_review_return_to.take() {
             Some(return_to) => self.mode = *return_to,
@@ -869,6 +1576,7 @@ impl App {
             findings: state.findings.clone(),
             last_run: state.last_run.clone(),
             summary: state.summary.clone(),
+            attribution: state.attribution.clone(),
         };
         let saved = match self.db.as_ref() {
             Some(db) => {
@@ -920,8 +1628,8 @@ impl App {
     /// the exact cached terminal result retained by the pane.
     pub(crate) fn ai_review_triage_status(&self, state: &PrReviewState) -> AiReviewTriageStatus {
         let pr = &state.review.pr;
-        let running = self.ai_review_bg.is_some()
-            && self.ai_review_pending.as_ref().is_some_and(|pending| {
+        let running = self.ai_review_run.is_pending()
+            && self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == state.workdir
                     && pending.pr.number == pr.number
                     && pending.pr.head_sha == pr.head_sha
@@ -1010,6 +1718,99 @@ impl App {
         }
     }
 
+    /// For each finding in the open AI Review pane, the `Fix cost (est.): …`
+    /// line to show — `Some` only when the finding correlates (by
+    /// `path`/`line`/`side`) to a PR comment that was resolved as part of a
+    /// combined batch. Indexed 1:1 with `state.findings`; all-`None` without a
+    /// DB or a cached review to match findings against.
+    ///
+    /// The AI Review pane has no fix action of its own — a finding's fix cost
+    /// only exists once it has been posted, picked up in PR Triage as an
+    /// ordinary comment, and fixed there. This is the read-back of that.
+    ///
+    /// Called once per render tick from `ui::dashboard::draw`, so the actual
+    /// work (a triage DB load, a full `serde_json` parse of the cached PR
+    /// review, and a sibling query per correlated finding) is memoized against
+    /// [`AiReviewFixCostKey`] and only recomputed when the pane's PR identity
+    /// or its findings' anchors change. The cache is cleared outright on pane
+    /// (re)open and whenever an `A` run lands, so a fix cost attributed back in
+    /// PR Triage between visits is still picked up.
+    pub(crate) fn ai_review_finding_fix_costs(&mut self) -> Vec<Option<String>> {
+        let AppMode::AiReview(state) = &self.mode else {
+            return Vec::new();
+        };
+        let key = AiReviewFixCostKey::for_state(state);
+        if let Some((cached_key, cached)) = &self.ai_review_fix_cost_cache
+            && *cached_key == key
+        {
+            return cached.clone();
+        }
+        let computed = self.compute_ai_review_finding_fix_costs();
+        self.ai_review_fix_cost_cache = Some((key, computed.clone()));
+        computed
+    }
+
+    /// The uncached body of [`Self::ai_review_finding_fix_costs`] — see that
+    /// method for what the result means and why this one isn't called directly
+    /// from the render path.
+    fn compute_ai_review_finding_fix_costs(&self) -> Vec<Option<String>> {
+        let AppMode::AiReview(state) = &self.mode else {
+            return Vec::new();
+        };
+        let none_for_each = || vec![None; state.findings.len()];
+        let Some(db) = self.db.as_ref() else {
+            return none_for_each();
+        };
+        let triage = db
+            .load_pr_comment_triage(state.pr.number)
+            .unwrap_or_default();
+        let review = db
+            .load_pr_review_cache(state.pr.number, &state.pr.head_sha)
+            .ok()
+            .flatten();
+        let comments: &[crate::app::pr_review::PrComment] =
+            review.as_ref().map_or(&[], |r| r.comments.as_slice());
+
+        state
+            .findings
+            .iter()
+            .map(|finding| {
+                let fpath = finding.path.as_deref()?;
+                let fline = finding.line?;
+                let fside = finding.side.map(|side| match side {
+                    crate::diff::DiffSide::Old => "LEFT",
+                    crate::diff::DiffSide::New => "RIGHT",
+                });
+                let comment = comments.iter().find(|c| {
+                    c.path.as_deref() == Some(fpath)
+                        && c.line == Some(fline)
+                        && match (fside, c.side.as_deref()) {
+                            (Some(a), Some(b)) => a == b,
+                            _ => true,
+                        }
+                })?;
+                let row = triage.get(&comment.id)?;
+                let batch_id = row.batch_id.as_deref()?;
+                // Partial-batch rule: the badge/cost is shown only for a
+                // resolved sibling.
+                let resolved = comment.is_resolved
+                    || matches!(row.state, crate::app::pr_review::TriageState::Done);
+                if !resolved {
+                    return None;
+                }
+                let sibling_count = db
+                    .pr_comment_triage_batch_siblings(state.pr.number, batch_id)
+                    .map(|ids| ids.len())
+                    .unwrap_or(1)
+                    .max(1);
+                Some(crate::app::fix_cost::fix_cost_line(
+                    row.batch_fix_cost.as_deref(),
+                    Some(crate::app::fix_cost::CombinedBatch { sibling_count }),
+                ))
+            })
+            .collect()
+    }
+
     pub fn ai_review_scroll_detail_up(&mut self, amount: usize) {
         if let AppMode::AiReview(state) = &mut self.mode {
             state.detail_scroll = state.detail_scroll.saturating_sub(amount);
@@ -1067,18 +1868,22 @@ impl App {
     /// full-screen running view. If this pane's review is already running,
     /// reopen its preserved progress view instead of starting another pass.
     pub fn start_ai_pr_review(&mut self) {
-        if self.ai_review_bg.is_some() {
+        if self.ai_review_run.is_pending() {
             let origin = match &self.mode {
                 AppMode::AiReview(state) => state.clone(),
                 _ => return,
             };
-            let same_run = self.ai_review_pending.as_ref().is_some_and(|pending| {
+            let same_run = self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == origin.workdir && pending.pr.number == origin.pr.number
-            }) && self.ai_review_progress.is_some();
+            }) && self.ai_review_run.progress().is_some();
             if same_run {
                 self.mode = AppMode::AiReviewRunning(AiReviewRunState {
                     origin,
-                    progress: self.ai_review_progress.clone().expect("checked above"),
+                    progress: self
+                        .ai_review_run
+                        .progress()
+                        .clone()
+                        .expect("checked above"),
                 });
             } else {
                 self.push_toast_warning("Another AI review is already running");
@@ -1116,7 +1921,8 @@ impl App {
             return;
         };
         if !model_picked {
-            let rows = model_pick_rows(&harness);
+            let rows = model_pick_rows(&harness, true);
+            self.maybe_refresh_codex_known_models(&harness, &rows);
             let configured = self.config.review_model_for(ReviewAction::PrReview);
             let preset_match = configured.as_ref().and_then(|configured| {
                 rows.iter().position(
@@ -1145,7 +1951,7 @@ impl App {
     /// validated. Kept separate from [`Self::start_ai_pr_review`] so the
     /// picker can pause before the paid pass without duplicating lifecycle
     /// setup.
-    fn begin_ai_pr_review(&mut self) {
+    pub(crate) fn begin_ai_pr_review(&mut self) {
         let mut origin = match &self.mode {
             AppMode::AiReview(state) => state.clone(),
             _ => return,
@@ -1193,13 +1999,78 @@ impl App {
             &std::fs::read_to_string(&memory_paths.global).unwrap_or_default(),
         );
         let skill = self.config.ai_review_skill.clone();
+        let pricing = self.config.token_pricing.clone();
+        let (template, _) = self.resolve_headless_template(
+            crate::prompts::PromptId::PrReviewAiReview,
+            &harness,
+            &repo,
+            &workdir,
+        );
+        // Resolved now (on the UI thread, where `self` lives) so an overriding
+        // batch/synthesis template applies; used only if the diff overflows.
+        let batch_templates = BatchReviewTemplates {
+            batch: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewBatch,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            hunk_split: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewHunkSplit,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            synthesis: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewSynthesis,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            summary: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewFindingsSummary,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            budget_tokens: self.review_prompt_budget(&repo, &harness),
+        };
+
+        let preview = format!(
+            "{template}\n\n[the PR #{number} diff is fetched and spliced into {{{{annotated_diff}}}} when the call runs]"
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::PrReviewAiReview,
+            &harness,
+            &preview,
+        ) {
+            return;
+        }
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.ai_review_bg = Some(rx);
-        self.ai_review_pending = Some(origin.clone());
+        self.ai_review_run.begin(rx, origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
-            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, model, tx),
+            Ok(diff) => run_ai_pr_review(
+                harness,
+                thread_workdir,
+                diff,
+                memory,
+                skill,
+                model,
+                pricing,
+                template,
+                batch_templates,
+                tx,
+            ),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
             }
@@ -1211,7 +2082,7 @@ impl App {
             activity: None,
             usage: None,
         };
-        self.ai_review_progress = Some(progress.clone());
+        self.ai_review_run.show_progress(progress.clone());
         self.mode = AppMode::AiReviewRunning(AiReviewRunState { origin, progress });
     }
 
@@ -1281,7 +2152,7 @@ impl App {
         if harness_changed {
             if let AppMode::AiReview(state) = &mut self.mode {
                 state.model_pick = Some(AiModelPickState {
-                    rows: model_pick_rows(&chosen),
+                    rows: model_pick_rows(&chosen, true),
                     selected: 0,
                     custom_input: String::new(),
                     editing_custom: false,
@@ -1476,15 +2347,15 @@ impl App {
     /// — then re-caches and surfaces a toast. Returns `true` when a redraw is
     /// warranted.
     pub fn poll_ai_pr_review_bg(&mut self) -> bool {
-        let Some(rx) = self.ai_review_bg.as_ref() else {
+        if !self.ai_review_run.is_pending() {
             return false;
-        };
+        }
         let mut changed = false;
         let mut large_diff_warning: Option<usize> = None;
         loop {
-            match rx.try_recv() {
+            match self.ai_review_run.poll() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1496,7 +2367,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.activity = Some(activity.clone());
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1508,7 +2379,7 @@ impl App {
                     input_tokens,
                     output_tokens,
                 }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.usage = Some((input_tokens, output_tokens));
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -1517,9 +2388,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Done(result)) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let Some(pending) = self.ai_review_pending.take() else {
+                    let Some(pending) = self.ai_review_run.finish() else {
                         if let Err(e) = result {
                             self.log_error("pr_review", format!("AI review failed: {e}"));
                             self.push_toast_error(format!("AI review failed: {e}"));
@@ -1579,6 +2448,7 @@ impl App {
                             // PR Triage, not here.
                             base.findings = outcome.findings;
                             base.summary = outcome.summary;
+                            base.attribution = Some(outcome.attribution);
                             base.selected = 0;
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
@@ -1643,14 +2513,15 @@ impl App {
                     if let Some(state) = landed {
                         self.mode = AppMode::AiReview(state);
                     }
+                    // A landed run replaces the finding set (or its anchors),
+                    // so the fix-cost memo no longer applies.
+                    self.ai_review_fix_cost_cache = None;
                     changed = true;
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let pending = self.ai_review_pending.take();
+                    let pending = self.ai_review_run.finish();
                     let detail = "AI review worker disconnected unexpectedly";
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
                     if let Some(pending) = pending {
@@ -1704,7 +2575,7 @@ impl App {
     /// Cancel the running screen (`esc`/`q`): return to the AI Review pane.
     /// The background thread isn't aborted — if it finishes later,
     /// [`Self::poll_ai_pr_review_bg`] still surfaces the result (via
-    /// [`Self::ai_review_pending`], which survives this).
+    /// the pending run origin, which survives this).
     pub fn cancel_ai_pr_review(&mut self) {
         if let AppMode::AiReviewRunning(state) = &self.mode {
             self.mode = AppMode::AiReview(state.origin.clone());
@@ -1714,8 +2585,12 @@ impl App {
     /// Open the post-to-GitHub confirm dialog (`W`) for every kept
     /// (not-skipped, not-already-published) finding.
     pub fn ai_review_open_post_confirm(&mut self) {
-        let (findings, generated_summary): (Vec<AiReviewFinding>, Option<String>) = match &self.mode
-        {
+        #[allow(clippy::type_complexity)]
+        let (findings, generated_summary, attribution): (
+            Vec<AiReviewFinding>,
+            Option<String>,
+            Option<AiReviewAttribution>,
+        ) = match &self.mode {
             AppMode::AiReview(state) if state.post_confirm.is_none() => {
                 let findings: Vec<AiReviewFinding> = state
                     .findings
@@ -1736,7 +2611,7 @@ impl App {
                 } else {
                     state.summary.clone()
                 };
-                (findings, generated_summary)
+                (findings, generated_summary, state.attribution.clone())
             }
             _ => return,
         };
@@ -1745,7 +2620,8 @@ impl App {
             return;
         }
         let refs: Vec<&AiReviewFinding> = findings.iter().collect();
-        let (summary, inline) = build_ai_review(&refs, generated_summary.as_deref());
+        let (summary, inline) =
+            build_ai_review(&refs, generated_summary.as_deref(), attribution.as_ref());
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.post_confirm = Some(AiReviewPostConfirmState {
@@ -1813,7 +2689,10 @@ impl App {
                     state.workdir.clone(),
                     state.pr.clone(),
                     post.inline.clone(),
-                    ensure_ai_review_attribution(post.editor.text().trim()),
+                    ensure_ai_review_attribution(
+                        post.editor.text().trim(),
+                        state.attribution.as_ref(),
+                    ),
                     state
                         .findings
                         .iter()
@@ -2034,9 +2913,10 @@ impl App {
     /// workdir rather than assuming `self.mode` still points at the pane that
     /// kicked it off.
     pub(crate) fn ai_review_running_for_workdir(&self, workdir: &Path) -> bool {
-        self.ai_review_bg.is_some()
+        self.ai_review_run.is_pending()
             && self
-                .ai_review_pending
+                .ai_review_run
+                .origin()
                 .as_ref()
                 .is_some_and(|pending| pending.workdir == workdir)
     }
@@ -2241,6 +3121,34 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
     }
 
     #[test]
+    fn batched_coverage_note_is_absent_for_a_complete_batched_review() {
+        let review = crate::review_batch::SynthesizedReview {
+            text: "## Summary\nall good".to_string(),
+            synthesis_ran: true,
+            uncovered: vec![],
+        };
+        assert!(batched_coverage_note(&review).is_none());
+    }
+
+    #[test]
+    fn batched_coverage_note_lists_uncovered_slices_and_a_skipped_synthesis() {
+        let review = crate::review_batch::SynthesizedReview {
+            text: String::new(),
+            synthesis_ran: false,
+            uncovered: vec![crate::review_batch::UncoveredSlice {
+                path: "src/huge.rs".to_string(),
+                label: "hunk 7".to_string(),
+                reason: "exceeds the size budget even as a single hunk".to_string(),
+            }],
+        };
+        let note = batched_coverage_note(&review).expect("note present");
+        assert!(note.starts_with("> ⚠ Partial coverage"));
+        assert!(note.contains("could not be combined by a synthesis pass"));
+        assert!(note.contains("1 slice(s) could not be reviewed"));
+        assert!(note.contains("`src/huge.rs` hunk 7 — exceeds the size budget"));
+    }
+
+    #[test]
     fn parse_ai_findings_malformed_heading_is_pathless() {
         let output = "### not-a-path-line\nSome finding text.\n";
         let findings = parse_ai_findings(output);
@@ -2356,7 +3264,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         )
         .unwrap();
         let refs: Vec<&AiReviewFinding> = outcome.findings.iter().collect();
-        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref());
+        let (_, inline) = build_ai_review(&refs, outcome.summary.as_deref(), None);
 
         assert_eq!(inline.len(), 2);
         assert_eq!((inline[0].side, inline[0].line), ("LEFT", 19));
@@ -2376,16 +3284,20 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
     }
 
     #[test]
-    fn model_pick_rows_offers_verified_presets_for_claude_only() {
-        let claude = model_pick_rows(&AgentKind::Claude);
-        assert!(claude.contains(&ModelPickRow::Preset("sonnet")));
-        let codex = model_pick_rows(&AgentKind::Codex);
+    fn model_pick_rows_offers_verified_presets_for_claude_and_no_codex_presets_in_tests() {
+        let claude = model_pick_rows(&AgentKind::Claude, true);
+        assert!(claude.contains(&ModelPickRow::Preset("sonnet".to_string())));
+        // `codex_config::known_models` no-ops under `cfg!(test)` (never reads
+        // the real machine's `~/.codex/config.toml`), so Codex gets no
+        // presets here even though outside tests it would offer whatever
+        // model ids that account's config records.
+        let codex = model_pick_rows(&AgentKind::Codex, true);
         assert!(!codex.iter().any(|r| matches!(r, ModelPickRow::Preset(_))));
         // Pi accepts `--model` (see `HeadlessRunner::supports_model_flag`), so
         // it gets the same Default/Custom picker as the other unenumerable
         // harnesses rather than being skipped.
         assert_eq!(
-            model_pick_rows(&AgentKind::Pi),
+            model_pick_rows(&AgentKind::Pi, true),
             vec![ModelPickRow::Default, ModelPickRow::Custom]
         );
     }
@@ -2428,6 +3340,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let (summary, inline) = build_ai_review(
             &[&anchored, &general],
             Some("The patch has an anchored and a broad risk."),
+            None,
         );
         assert_eq!(inline.len(), 1);
         assert_eq!(inline[0].path, "src/lib.rs");
@@ -2445,7 +3358,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             "fix this",
             Some("@@ -1 +1 @@"),
         );
-        let (summary, inline) = build_ai_review(&[&anchored], None);
+        let (summary, inline) = build_ai_review(&[&anchored], None, None);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
     }
@@ -2456,7 +3369,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         // time — GitHub would reject the whole review if this were posted
         // inline, so it must fold into the summary instead.
         let unmatched = finding(Some("src/lib.rs"), Some(999), "miscounted line", None);
-        let (summary, inline) = build_ai_review(&[&unmatched], None);
+        let (summary, inline) = build_ai_review(&[&unmatched], None, None);
         assert!(inline.is_empty());
         assert!(summary.contains("miscounted line"));
     }
@@ -2475,6 +3388,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
                 outcome: AiReviewRunOutcome::Findings(3),
             }),
             summary: Some("One finding remains.".to_string()),
+            attribution: None,
         };
 
         assert_eq!(entry.publishable_finding_count(), 1);
@@ -2487,22 +3401,223 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
 
     #[test]
     fn append_ai_review_attribution_appends_footer_and_trims_trailing_whitespace() {
-        let body = append_ai_review_attribution("finding text  \n\n");
+        let body = append_ai_review_attribution("finding text  \n\n", None);
         assert_eq!(body, "finding text\n\n— AI review via AMF");
     }
 
+    fn sample_attribution() -> AiReviewAttribution {
+        AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            model: Some("sonnet".to_string()),
+            input_tokens: Some(12_300),
+            output_tokens: Some(4_500),
+            estimated_cost: Some("$0.10".to_string()),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn ensure_ai_review_attribution_restores_a_footer_the_user_deleted() {
+    fn usage_summary_formats_complete_usage_deterministically() {
+        let attribution = AiReviewAttribution {
+            cached_tokens: Some(3_200),
+            total_tokens: Some(20_000),
+            elapsed_ms: Some(125_000),
+            ..sample_attribution()
+        };
+        let body = append_ai_review_attribution("finding text", Some(&attribution));
+        assert_eq!(
+            body,
+            "finding text\n\n### AI review usage\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n— AI review via AMF"
+        );
+    }
+
+    #[test]
+    fn attribution_disclosure_degrades_when_usage_and_cost_are_missing() {
+        let attribution = AiReviewAttribution {
+            harness: Some("codex".to_string()),
+            model: None,
+            input_tokens: None,
+            output_tokens: None,
+            estimated_cost: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            attribution.plain_label(),
+            "harness codex · model harness default"
+        );
+        assert!(!attribution.has_usage());
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Input tokens: unavailable")
+        );
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Estimated cost: unavailable")
+        );
+    }
+
+    #[test]
+    fn usage_summary_preserves_partial_usage_without_pricing_it() {
+        let attribution = AiReviewAttribution {
+            harness: Some("pi".to_string()),
+            model: None,
+            input_tokens: Some(700),
+            elapsed_ms: Some(500),
+            ..Default::default()
+        };
+        let summary = attribution.usage_summary();
+        assert!(summary.contains("Input tokens: 700"));
+        assert!(summary.contains("Output tokens: unavailable"));
+        assert!(summary.contains("Estimated cost: unavailable"));
+    }
+
+    #[test]
+    fn run_attribution_retains_complete_usage_elapsed_time_and_configured_cost() {
+        let usage = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(50),
+            total_tokens: Some(1_250),
+        };
+        let attribution = AiReviewAttribution::from_run(
+            &AgentKind::Claude,
+            Some("sonnet"),
+            Some(&usage),
+            &crate::token_tracking::TokenPricingConfig::default(),
+            std::time::Duration::from_secs(3),
+        );
+        assert_eq!(attribution.total_tokens, Some(1_250));
+        assert_eq!(attribution.elapsed_ms, Some(3_000));
+        assert!(attribution.estimated_cost.is_some());
+    }
+
+    #[test]
+    fn partial_run_usage_leaves_cost_unavailable() {
+        let usage = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            ..Default::default()
+        };
+        let attribution = AiReviewAttribution::from_run(
+            &AgentKind::Opencode,
+            None,
+            Some(&usage),
+            &crate::token_tracking::TokenPricingConfig::default(),
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(attribution.estimated_cost, None);
+        assert!(
+            attribution
+                .usage_summary()
+                .contains("Estimated cost: unavailable")
+        );
+    }
+
+    #[test]
+    fn failed_run_has_no_publishable_findings_or_usage_post() {
+        let entry = AiReviewCacheEntry {
+            findings: vec![finding(None, None, "stale draft", None)],
+            last_run: Some(AiReviewRun {
+                ran_at: Local::now(),
+                outcome: AiReviewRunOutcome::Error("provider failed".to_string()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(entry.publishable_finding_count(), 0);
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_restores_a_marker_the_user_deleted() {
         // The summary body is editable right up to `W`; a user who trims the
-        // seeded footer while editing must still get an attributed post.
-        let body = ensure_ai_review_attribution("Fixed the summary text.");
+        // seeded attribution while editing must still get an attributed post.
+        let body = ensure_ai_review_attribution("Fixed the summary text.", None);
         assert_eq!(body, "Fixed the summary text.\n\n— AI review via AMF");
     }
 
     #[test]
-    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_footer() {
-        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF");
+    fn ensure_ai_review_attribution_does_not_duplicate_an_existing_marker() {
+        let body = ensure_ai_review_attribution("Summary.\n\n— AI review via AMF", None);
         assert_eq!(body, "Summary.\n\n— AI review via AMF");
+    }
+
+    #[test]
+    fn ensure_ai_review_attribution_replaces_a_stale_usage_summary() {
+        // A re-priced run must not stack a second `_AI review · …_` line on
+        // top of the one the dialog was seeded with.
+        let attribution = sample_attribution();
+        let seeded = append_ai_review_attribution("Summary.", Some(&attribution));
+        let repriced = AiReviewAttribution {
+            estimated_cost: Some("$0.20".to_string()),
+            ..sample_attribution()
+        };
+        let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
+        assert_eq!(body.matches("### AI review usage").count(), 1);
+        assert!(body.ends_with("Estimated cost: $0.20\n\n— AI review via AMF"));
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_ignores_the_heading_mid_paragraph() {
+        // A finding that merely quotes or discusses the heading text (not as
+        // its own trailing paragraph) must not be truncated as if it were the
+        // real deterministic usage block.
+        let body = "Findings should avoid emitting a literal \"### AI review usage\" \
+                     heading inside generated text.\n\n— AI review via AMF";
+        assert_eq!(
+            strip_ai_review_attribution(body),
+            body.strip_suffix("\n\n— AI review via AMF").unwrap()
+        );
+    }
+
+    #[test]
+    fn non_claude_cached_tokens_are_not_double_counted_into_cost() {
+        // Codex/Opencode/Pi report `cached_tokens` via generic fallback keys
+        // that are typically already a subset of `input_tokens`, unlike
+        // Anthropic's separate, additive `cache_read_input_tokens`.
+        let with_cache = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: Some(500),
+            total_tokens: None,
+        };
+        let without_cache = crate::headless::HeadlessUsage {
+            input_tokens: Some(1_000),
+            output_tokens: Some(200),
+            cached_tokens: None,
+            total_tokens: None,
+        };
+        let pricing = crate::token_tracking::TokenPricingConfig::default();
+        let cost_with_cache = AiReviewAttribution::from_run(
+            &AgentKind::Codex,
+            None,
+            Some(&with_cache),
+            &pricing,
+            std::time::Duration::ZERO,
+        )
+        .estimated_cost;
+        let cost_without_cache = AiReviewAttribution::from_run(
+            &AgentKind::Codex,
+            None,
+            Some(&without_cache),
+            &pricing,
+            std::time::Duration::ZERO,
+        )
+        .estimated_cost;
+        assert_eq!(cost_with_cache, cost_without_cache);
+    }
+
+    #[test]
+    fn usage_is_never_appended_to_inline_findings() {
+        let anchored = finding(
+            Some("src/lib.rs"),
+            Some(10),
+            "fix this",
+            Some("@@ -1 +1 @@"),
+        );
+        let attribution = sample_attribution();
+        let (_, inline) = build_ai_review(&[&anchored], Some("One issue."), Some(&attribution));
+        assert_eq!(inline.len(), 1);
+        assert!(!inline[0].body.contains("AI review usage"));
     }
 
     #[test]
@@ -2521,13 +3636,14 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             outdated: false,
             file_level: false,
             diff_hunk: None,
-            body: append_ai_review_attribution("fix this"),
+            body: append_ai_review_attribution("fix this", None),
             snippet: String::new(),
             in_reply_to: Some(2),
             thread_id: None,
             is_resolved: false,
             triage: crate::app::pr_review::TriageState::Untriaged,
             local_note: None,
+            batch_id: None,
             github_id: None,
             github_review_id: None,
         };

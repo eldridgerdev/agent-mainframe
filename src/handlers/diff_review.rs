@@ -261,7 +261,7 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
     Ok(())
 }
 
-fn generate_diff_review_explanation(app: &mut App) {
+pub(crate) fn generate_diff_review_explanation(app: &mut App) {
     let (workdir, relative_path, old_snippet, new_snippet) = match &app.mode {
         AppMode::DiffReviewPrompt(state) => (
             state.workdir.clone(),
@@ -279,9 +279,26 @@ fn generate_diff_review_explanation(app: &mut App) {
         return;
     }
 
-    let prompt = format!(
-        "Explain these code changes concisely. What is being changed and why?\n\nFile: {relative_path}\n\nOld:\n```\n{old_snippet}\n```\n\nNew:\n```\n{new_snippet}\n```"
+    let repo =
+        crate::worktree::WorktreeManager::repo_root(&workdir).unwrap_or_else(|_| workdir.clone());
+    let ctx = crate::prompts::PromptContext::new()
+        .with("file_path", relative_path)
+        .with("old_snippet", old_snippet)
+        .with("new_snippet", new_snippet);
+    let prompt = app.resolve_headless_prompt(
+        crate::prompts::PromptId::ReviewDiffExplain,
+        &crate::project::AgentKind::Claude,
+        &repo,
+        &workdir,
+        &ctx,
     );
+    if !app.precall_gate(
+        crate::app::precall::PrecallAction::ReviewDiffExplain,
+        &crate::project::AgentKind::Claude,
+        &prompt,
+    ) {
+        return;
+    }
 
     let model = app
         .config

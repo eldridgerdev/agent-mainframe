@@ -1,8 +1,9 @@
 # Token-efficient agent sessions
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** [per-session agent usage](per-session-usage-plan.md),
+  [premium-model efficiency options](premium-model-efficiency-options-plan.md),
   [plan-mode interview](plan-mode-interview-plan.md),
   [prompt library](prompt-library-plan.md),
   [final-review enhancements](final-review-enhancements-plan.md),
@@ -37,10 +38,11 @@ the decisions that prevent avoidable usage:
   bound to the selected AMF session, has no size limit, does not work
   for other harnesses, and is written to `.claude/context.md` without
   an explicit handoff to the newly launched agent.
-- Review Mode instructs the agent to append a prose note before every
-  Edit or Write. This spends model output and tool calls throughout the
-  implementation even though AMF can derive changed files from the diff
-  and can already generate missing walkthroughs on demand.
+- Review Mode has the agent maintain `.claude/review-notes.md` batch by
+  batch. Historically the expensive part was the per-batch *read* of that
+  growing file and its context carry; that read is now removed (the agent
+  blind-appends — see §7), leaving only the writes, which AMF could still
+  derive from the diff plus on-demand walkthroughs.
 - Several small AMF helper jobs use a paid model. Session summaries
   always invoke headless Claude even for another harness. Review
   walkthroughs and changeset overviews are cached only in the open
@@ -290,6 +292,25 @@ cap accumulated Q&A by token size rather than characters alone.
 
 ### 7. Remove the Review Mode per-edit token tax
 
+> **See also:** [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md)
+> — a standalone investigation of how to take the `.claude/review-notes.md`
+> read/rewrite cost off the primary agent. Its recommendation is to **start
+> with a one-line instruction change** (tell the agent to blind-append and never
+> read the file — the read is redundant with dedup AMF already runs every turn),
+> and only build a model-free AMF notes writer + opt-in headless enrichment pass
+> if that proves insufficient. Two side findings: the "before every Edit or
+> Write" framing below is stale (the shipped `CLAUDE.local.md` block batches per
+> logical group), and Review Mode only reaches Claude today
+> (`ensure_review_claude_md` writes only `CLAUDE.local.md`).
+
+> **Step 1 shipped.** `ensure_review_claude_md`'s Review-Mode block now tells
+> the agent to **blind-append and never read `.claude/review-notes.md`**
+> (Option F). The per-batch read and its context carry — the dominant cost
+> terms — are gone; `archive_review_notes` still collapses to the newest note
+> per file after every turn, so blind-appended duplicates are harmless. Options
+> I (AMF-filtered changed-file list) and K (terser section format) and the
+> AMF-driven writer below remain deferred to Step 2, pending dogfood results.
+
 Stop requiring a note before every Edit or Write in
 `ensure_review_claude_md`. Replace it with:
 
@@ -445,8 +466,11 @@ not prevent the session from launching.
       per-session usage backlog.
 - [ ] Replace model-generated session summaries with a local default;
       route the fallback through `HeadlessRunner`.
-- [ ] Remove the Review Mode instruction requiring a note before every
-      edit and retain on-demand walkthrough behavior.
+- [~] Remove the Review Mode instruction requiring a note before every
+      edit and retain on-demand walkthrough behavior. _Step 1 done: the
+      agent now blind-appends and never reads `.claude/review-notes.md`
+      (Option F). Removing the write requirement in favour of AMF-derived
+      metadata is deferred to Step 2._
 - [ ] Add tests proving mixed models do not use a single default price,
       a summary can be generated without a headless call, and Review
       Mode no longer requests per-edit notes.
@@ -499,15 +523,33 @@ Acceptance criteria:
 
 - [x] Calculate provider-specific active-context estimates and record
       known model context windows.
-- [x] Render context pressure in agent session rows, with direct/estimated,
-      stale, warning, critical, and reset states.
+- [x] Render context pressure in agent session rows and in a `Context`
+      section of the Claude, Codex, and opencode sidebars, in every band
+      (calm/warning/critical), with direct/estimated, stale, warning,
+      critical, and reset states.
 - [ ] Render latest-turn usage and recent burn in the session row/sidebar.
-- [ ] Add configurable soft context and cumulative usage thresholds.
-- [ ] Add dashboard/sidebar warnings and deduplicate repeated alerts.
+- [x] Add configurable context-window-size and warning/critical percentage
+      thresholds, global via `AppConfig` and a dedicated dashboard dialog
+      (`w`, `src/app/context_settings.rs`, `src/context_tracking.rs`).
+      Cumulative token/dollar usage thresholds and per-utility-call budgets
+      are still open.
+- [x] Show the viewed session's context reading in the sidebar in every
+      band, and at the warning or critical band add a fresh-context call to
+      action (`<leader F>`, advertised once in the `Context` section's
+      title) that re-arms on the next context reset or cleared trigger.
+      There is no manual dismiss — a prior dismiss-and-rearm lifecycle was
+      removed as an unneeded extra binding. Dashboard-wide alerts and
+      broader repeated-alert deduplication remain open.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.
-- [ ] Add a leader command for compact or fresh-session rotation.
+- [x] Add a leader command for fresh-session rotation (`Ctrl+Space` then
+      `F`, `src/app/handoff.rs`): starts a new agent session in the same
+      feature/worktree, seeded with an editable prompt built from the
+      effective plan, changed files, feature summary, latest prompt, and a
+      conservative inspect-and-continue instruction. Context-pressure hints
+      can open the same workflow directly. Compact rotation and the full
+      structured-handoff schema in P3 below are still open.
 - [ ] Add tests for unknown context limits, threshold crossings, exact
       versus inferred sources, and unsupported compaction.
 
@@ -521,6 +563,11 @@ Acceptance criteria:
 - Compaction/fresh actions are never triggered silently.
 
 ### P3 — Structured handoffs and fork repair
+
+The context-pressure feature now provides a bounded, editable seeded
+continuation prompt for the selected feature. The provider-neutral persisted
+handoff format and selectable `None` / `Structured` / `Full` modes below
+remain future work.
 
 - [ ] Define the provider-neutral handoff schema and gitignored storage
       location.

@@ -17,6 +17,7 @@ use crate::{
         AiHarnessPickState, AiModelPickState, AiReviewPostConfirmState, AiReviewRunState,
         AiReviewState, ModelPickRow,
     },
+    project::AgentKind,
     theme::Theme,
 };
 
@@ -182,6 +183,7 @@ fn finding_location(f: &AiReviewFinding) -> String {
 fn finding_list_line(
     index: usize,
     f: &AiReviewFinding,
+    has_combined_cost: bool,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
@@ -201,13 +203,18 @@ fn finding_list_line(
     };
     let marker_span = format!("[{marker}] ");
     let index_span = format!("{}. ", index + 1);
-    let prefix_width = marker_span.chars().count() + index_span.chars().count();
+    // `⧉` flags a finding that was fixed in PR Triage as part of a combined
+    // batch (its shared cost shows in the detail pane).
+    let combined_span = if has_combined_cost { "⧉ " } else { "" };
+    let prefix_width =
+        marker_span.chars().count() + index_span.chars().count() + combined_span.chars().count();
     let location = truncate_left(&finding_location(f), width.saturating_sub(prefix_width));
     let snippet = f.body.lines().next().unwrap_or("").to_string();
 
     Line::from(vec![
         Span::styled(marker_span, Style::default().fg(marker_color)),
         Span::styled(index_span, Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(combined_span, Style::default().fg(theme.info.to_color())),
         Span::styled(
             location,
             Style::default()
@@ -221,7 +228,13 @@ fn finding_list_line(
     ])
 }
 
-fn draw_finding_list(frame: &mut Frame, area: Rect, state: &AiReviewState, theme: &Theme) {
+fn draw_finding_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &AiReviewState,
+    theme: &Theme,
+    finding_fix_costs: &[Option<String>],
+) {
     let block = pane_block(theme)
         .border_style(Style::default().fg(theme.primary.to_color()))
         .title(" Findings ");
@@ -244,7 +257,8 @@ fn draw_finding_list(frame: &mut Frame, area: Rect, state: &AiReviewState, theme
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let line = finding_list_line(i, f, theme, width);
+            let has_combined = finding_fix_costs.get(i).is_some_and(Option::is_some);
+            let line = finding_list_line(i, f, has_combined, theme, width);
             if i == state.selected {
                 Line::from(
                     line.spans
@@ -269,6 +283,7 @@ fn draw_finding_detail(
     frame: &mut Frame,
     area: Rect,
     finding: Option<&AiReviewFinding>,
+    fix_cost_line: Option<&str>,
     scroll: usize,
     theme: &Theme,
 ) -> usize {
@@ -297,6 +312,16 @@ fn draw_finding_detail(
     }
     lines.push(Line::from(header_spans));
     lines.push(Line::from(chip("ai", theme.info.to_color())));
+    // Shown only when this finding was posted and then fixed in PR Triage as
+    // part of a combined batch — the shared cost of that one agent run.
+    if let Some(fix_cost_line) = fix_cost_line {
+        lines.push(Line::from(Span::styled(
+            fix_cost_line.to_string(),
+            Style::default()
+                .fg(theme.info.to_color())
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
 
     if let Some(hunk) = &f.diff_hunk {
         lines.push(divider(width, theme));
@@ -336,14 +361,32 @@ pub fn draw_ai_review(
     theme: &Theme,
     ai_review_running: bool,
     throbber_state: &throbber_widgets_tui::ThrobberState,
+    finding_fix_costs: &[Option<String>],
 ) {
     let area = frame.area();
+    // A sub-header line naming the harness/model that produced the current
+    // findings and what the run cost. Absent until a run completes for this
+    // head SHA (or for a legacy cache row with no attribution).
+    let attribution_line: Option<Line<'static>> = state.attribution.as_ref().map(|attribution| {
+        let mut label = format!("  {}", attribution.plain_label());
+        if !attribution.has_usage() {
+            // The run finished but the harness reported no token counts, so
+            // there is no cost to show — say so rather than leave it looking
+            // truncated.
+            label.push_str(" · usage not reported");
+        }
+        Line::from(Span::styled(
+            label,
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    });
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
-            Constraint::Min(1),    // body
-            Constraint::Length(1), // footer
+            Constraint::Length(1),                                     // header
+            Constraint::Length(u16::from(attribution_line.is_some())), // attribution
+            Constraint::Min(1),                                        // body
+            Constraint::Length(1),                                     // footer
         ])
         .split(area);
 
@@ -387,15 +430,22 @@ pub fn draw_ai_review(
     }
     frame.render_widget(Paragraph::new(Line::from(header_spans)), outer[0]);
 
+    if let Some(attribution_line) = attribution_line {
+        frame.render_widget(Paragraph::new(attribution_line), outer[1]);
+    }
+
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(outer[1]);
-    draw_finding_list(frame, body[0], state, theme);
+        .split(outer[2]);
+    draw_finding_list(frame, body[0], state, theme, finding_fix_costs);
     let detail_lines = draw_finding_detail(
         frame,
         body[1],
         state.findings.get(state.selected),
+        finding_fix_costs
+            .get(state.selected)
+            .and_then(Option::as_deref),
         state.detail_scroll,
         theme,
     );
@@ -410,13 +460,13 @@ pub fn draw_ai_review(
         format!(" j/k move   s skip/unskip   e edit   {ai_action}   W post   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
-    frame.render_widget(keys, outer[2]);
+    frame.render_widget(keys, outer[3]);
 
     if let Some(pick) = &state.harness_pick {
         draw_ai_harness_pick(frame, pick, theme);
     }
     if let Some(pick) = &state.model_pick {
-        draw_ai_model_pick(frame, pick, theme);
+        draw_ai_model_pick(frame, pick, state.harness.as_ref(), theme);
     }
     if let Some(editor) = &state.finding_editor {
         draw_finding_editor(frame, editor, theme);
@@ -522,7 +572,23 @@ fn model_pick_row_label(row: &ModelPickRow) -> String {
     }
 }
 
-fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme) {
+/// Codex has no fixed alias list to fall back on the way Claude does — its
+/// presets come from `codex_config::known_models`, which is only populated
+/// once `~/.codex/config.toml` records a `[tui.model_availability_nux]`
+/// table (written by Codex itself the first time its own model picker is
+/// opened). A Codex picker with no `Preset` rows is otherwise silent about
+/// *why* it's bare, so surface the fix inline rather than leaving the user
+/// to guess.
+const NO_CODEX_MODELS_NOTE: &str = "No Codex models recorded yet. Open Codex's own model picker \
+    once, or add a [tui.model_availability_nux] table to ~/.codex/config.toml, and presets will \
+    show up here. Custom still accepts any model name in the meantime.";
+
+fn draw_ai_model_pick(
+    frame: &mut Frame,
+    pick: &AiModelPickState,
+    harness: Option<&AgentKind>,
+    theme: &Theme,
+) {
     let area = super::super::dashboard::centered_rect(54, 46, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -534,11 +600,17 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    let show_no_codex_models_note = matches!(harness, Some(AgentKind::Codex))
+        && !pick
+            .rows
+            .iter()
+            .any(|row| matches!(row, ModelPickRow::Preset(_)));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(1),
+            Constraint::Length(if show_no_codex_models_note { 4 } else { 0 }),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
             Constraint::Length(1),
         ])
@@ -572,11 +644,19 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
         ])
     });
     frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if show_no_codex_models_note {
+        frame.render_widget(
+            Paragraph::new(format!("  {NO_CODEX_MODELS_NOTE}"))
+                .style(Style::default().fg(theme.text_muted.to_color()))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    }
     if pick.editing_custom {
         frame.render_widget(
             Paragraph::new(format!("  model: {}▏", pick.custom_input))
                 .style(Style::default().fg(theme.text.to_color())),
-            chunks[2],
+            chunks[3],
         );
     }
     let hints = if pick.editing_custom {
@@ -588,7 +668,7 @@ fn draw_ai_model_pick(frame: &mut Frame, pick: &AiModelPickState, theme: &Theme)
     };
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
+        chunks[4],
     );
 }
 
@@ -682,7 +762,7 @@ mod tests {
 
     use super::{draw_ai_review, draw_ai_review_running, finding_location, format_elapsed};
     use crate::{
-        app::{AiReviewRunState, AiReviewState},
+        app::{AiModelPickState, AiReviewRunState, AiReviewState, ModelPickRow},
         project::AgentKind,
         theme::Theme,
     };
@@ -738,6 +818,7 @@ mod tests {
                 },
                 findings: Vec::new(),
                 summary: None,
+                attribution: None,
                 selected: 0,
                 detail_scroll: 0,
                 detail_content_lines: 0,
@@ -782,7 +863,14 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw_ai_review(frame, &mut state.origin, &Theme::default(), true, &throbber)
+                draw_ai_review(
+                    frame,
+                    &mut state.origin,
+                    &Theme::default(),
+                    true,
+                    &throbber,
+                    &[],
+                )
             })
             .unwrap();
         let rendered = terminal
@@ -793,5 +881,152 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered.contains("A view progress"));
+    }
+
+    fn pane_state_with_attribution(
+        attribution: Option<crate::app::ai_review::AiReviewAttribution>,
+    ) -> AiReviewState {
+        AiReviewState {
+            workdir: PathBuf::from("/tmp/review"),
+            pr: crate::github::PrRef {
+                number: 12,
+                head_sha: "abc123".to_string(),
+                url: "https://github.com/o/r/pull/12".to_string(),
+                owner: "o".to_string(),
+                repo: "r".to_string(),
+                head_ref: "feature".to_string(),
+            },
+            findings: Vec::new(),
+            summary: None,
+            attribution,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            last_run: None,
+            harness: None,
+            harness_pick: None,
+            harness_pick_origin: None,
+            model: None,
+            model_picked: false,
+            model_pick: None,
+            finding_editor: None,
+            post_confirm: None,
+        }
+    }
+
+    fn render_pane(state: &mut AiReviewState) -> String {
+        let backend = TestBackend::new(120, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let throbber = throbber_widgets_tui::ThrobberState::default();
+        terminal
+            .draw(|frame| draw_ai_review(frame, state, &Theme::default(), false, &throbber, &[]))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn pane_shows_the_model_token_cost_attribution_line_after_a_run() {
+        let mut state =
+            pane_state_with_attribution(Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("claude".to_string()),
+                model: Some("sonnet".to_string()),
+                input_tokens: Some(12_300),
+                output_tokens: Some(4_500),
+                estimated_cost: Some("$0.10".to_string()),
+                ..Default::default()
+            }));
+        let rendered = render_pane(&mut state);
+        assert!(
+            rendered.contains("harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn pane_attribution_line_degrades_to_model_only_without_usage() {
+        let mut state =
+            pane_state_with_attribution(Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("codex".to_string()),
+                model: None,
+                input_tokens: None,
+                output_tokens: None,
+                estimated_cost: None,
+                ..Default::default()
+            }));
+        let rendered = render_pane(&mut state);
+        assert!(rendered.contains("harness codex · model harness default · usage not reported"));
+        assert!(!rendered.contains("est. $"));
+    }
+
+    #[test]
+    fn pane_has_no_attribution_line_before_the_first_run() {
+        let mut state = pane_state_with_attribution(None);
+        let rendered = render_pane(&mut state);
+        assert!(!rendered.contains("harness "));
+    }
+
+    #[test]
+    fn model_pick_explains_why_codex_has_no_presets_yet() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Codex);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![ModelPickRow::Default, ModelPickRow::Custom],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(
+            rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("~/.codex/config.toml"),
+            "the note should point at the file to edit: {rendered}"
+        );
+    }
+
+    #[test]
+    fn model_pick_omits_the_no_presets_note_once_codex_has_presets() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Codex);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![
+                ModelPickRow::Default,
+                ModelPickRow::Preset("gpt-5.5".to_string()),
+                ModelPickRow::Custom,
+            ],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(
+            !rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn model_pick_never_shows_the_codex_note_for_claude() {
+        let mut state = pane_state_with_attribution(None);
+        state.harness = Some(AgentKind::Claude);
+        state.model_pick = Some(AiModelPickState {
+            rows: vec![ModelPickRow::Default, ModelPickRow::Custom],
+            selected: 0,
+            custom_input: String::new(),
+            editing_custom: false,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(
+            !rendered.contains("No Codex models recorded yet"),
+            "{rendered}"
+        );
     }
 }

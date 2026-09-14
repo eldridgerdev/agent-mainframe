@@ -3,6 +3,14 @@ use anyhow::Result;
 use super::*;
 use crate::tmux::TmuxManager;
 
+/// Result of the background scan started by
+/// [`App::open_latest_prompt_from_view`], delivered through
+/// `App::latest_prompt_menu_bg`.
+pub(crate) struct LatestPromptScanResult {
+    view: ViewState,
+    prompts: Vec<crate::app::util::PromptEntry>,
+}
+
 impl App {
     fn feature_workdir_for_view(&self, view: &ViewState) -> Option<PathBuf> {
         self.store
@@ -234,6 +242,11 @@ impl App {
     }
 
     pub fn open_latest_prompt_from_view(&mut self) {
+        if self.latest_prompt_menu_bg.is_some() {
+            self.message = Some("Already loading latest prompts...".into());
+            return;
+        }
+
         let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::Viewing(view) => view,
             other => {
@@ -254,30 +267,17 @@ impl App {
                     .find(|feature| feature.name == view.feature_name)
             })
             .map(|feature| {
+                // The session this window is actually running, not just any
+                // session sharing the workdir — two harness windows in the
+                // same worktree write their transcripts into the same
+                // on-disk directory, and without this the scan below could
+                // surface (and let the user inject) another session's
+                // prompts.
                 let preferred_session_id = feature
                     .sessions
                     .iter()
                     .find(|session| session.tmux_window == view.window)
-                    .and_then(|session| {
-                        session.token_usage_source.as_ref().and_then(|source| {
-                            let provider = &source.provider;
-                            match view.session_kind {
-                                SessionKind::Opencode
-                                    if *provider
-                                        == crate::token_tracking::TokenUsageProvider::Opencode =>
-                                {
-                                    Some(source.id.clone())
-                                }
-                                SessionKind::Codex
-                                    if *provider
-                                        == crate::token_tracking::TokenUsageProvider::Codex =>
-                                {
-                                    Some(source.id.clone())
-                                }
-                                _ => None,
-                            }
-                        })
-                    });
+                    .and_then(super::session_ops::persisted_resume_id);
 
                 (
                     feature.workdir.clone(),
@@ -292,17 +292,70 @@ impl App {
             return;
         };
 
-        let prompts = crate::app::util::read_all_prompts_for_session(
-            &workdir,
-            Some(&session_kind),
-            preferred_session_id.as_deref(),
-        );
-        self.mode = AppMode::LatestPrompt(LatestPromptState {
-            prompts,
-            selected: 0,
-            view,
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.latest_prompt_menu_bg = Some(rx);
+        let result_view = view.clone();
+        std::thread::spawn(move || {
+            // Reading and parsing every transcript file for a session can be
+            // slow (large or numerous histories), so it happens off the UI
+            // thread; the result is still the complete list, just delivered
+            // once `poll_latest_prompt_menu_bg` picks it up.
+            let prompts = crate::app::util::read_all_prompts_for_session(
+                &workdir,
+                Some(&session_kind),
+                preferred_session_id.as_deref(),
+            );
+            let _ = tx.send(LatestPromptScanResult {
+                view: result_view,
+                prompts,
+            });
         });
-        self.message = None;
+        self.mode = AppMode::Viewing(view);
+        self.message = Some("Loading latest prompts...".into());
+    }
+
+    /// Drain the background "all prompts" scan started by
+    /// [`Self::open_latest_prompt_from_view`]. Called from the main loop
+    /// beside the other `poll_*_bg` calls; returns true when the UI should
+    /// redraw.
+    pub fn poll_latest_prompt_menu_bg(&mut self) -> bool {
+        let Some(rx) = self.latest_prompt_menu_bg.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.latest_prompt_menu_bg = None;
+                // The user may have exited this view (or switched windows)
+                // while the scan was running; only land the menu if they're
+                // still looking at the same one.
+                let still_here = matches!(
+                    &self.mode,
+                    AppMode::Viewing(current)
+                        if current.session == result.view.session
+                            && current.window == result.view.window
+                );
+                if still_here {
+                    self.mode = AppMode::LatestPrompt(LatestPromptState {
+                        prompts: result.prompts,
+                        selected: 0,
+                        view: result.view,
+                    });
+                    self.message = None;
+                } else {
+                    self.log_debug(
+                        "latest_prompt",
+                        "discarding latest-prompt scan result: view changed during load"
+                            .to_string(),
+                    );
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.latest_prompt_menu_bg = None;
+                false
+            }
+        }
     }
 
     pub fn toggle_expanded_todos_in_view(&mut self) {

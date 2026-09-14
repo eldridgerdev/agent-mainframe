@@ -5,8 +5,11 @@ pub mod learning;
 mod migrations;
 pub mod plan_interviews;
 pub mod pr_comment_triage;
+pub mod pr_investigations;
 mod pr_review_cache;
 mod pr_terminal_state;
+pub mod prompt_overrides;
+pub mod prompt_templates;
 pub mod remote_devices;
 mod session_status;
 pub mod store;
@@ -115,6 +118,30 @@ impl AmfDb {
         store::save(&self.conn, store)
     }
 
+    /// Fresh from disk, not the in-memory `ProjectStore` snapshot — see
+    /// `db::prompt_templates` for why templates are read/written directly.
+    pub fn load_prompt_templates(&self) -> Result<Vec<crate::prompt_library::PromptTemplate>> {
+        prompt_templates::load(&self.conn)
+    }
+
+    pub fn insert_prompt_template(
+        &self,
+        template: &crate::prompt_library::PromptTemplate,
+    ) -> Result<()> {
+        prompt_templates::insert(&self.conn, template)
+    }
+
+    pub fn update_prompt_template(
+        &self,
+        template: &crate::prompt_library::PromptTemplate,
+    ) -> Result<()> {
+        prompt_templates::update(&self.conn, template)
+    }
+
+    pub fn delete_prompt_template(&self, id: &str) -> Result<()> {
+        prompt_templates::delete(&self.conn, id)
+    }
+
     pub fn load_token_cache(&self) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
         token_cache::load(&self.conn)
     }
@@ -178,7 +205,7 @@ impl AmfDb {
         pr_terminal_state::delete(&self.conn, repo, branch)
     }
 
-    /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,
+    /// Local triage rows for `pr_number` as `comment_id -> TriageRow`,
     /// across every head SHA (triage survives a push).
     pub fn load_pr_comment_triage(
         &self,
@@ -187,6 +214,9 @@ impl AmfDb {
         pr_comment_triage::load(&self.conn, pr_number)
     }
 
+    /// Upsert a comment's triage state/note. `batch_id` is sticky — `Some`
+    /// stamps combined-batch membership, `None` leaves any existing membership
+    /// in place (see [`pr_comment_triage::upsert`]).
     pub fn save_pr_comment_triage(
         &self,
         pr_number: u32,
@@ -194,8 +224,32 @@ impl AmfDb {
         comment_id: u64,
         state: crate::app::pr_review::TriageState,
         note: Option<&str>,
+        batch_id: Option<&str>,
     ) -> Result<()> {
-        pr_comment_triage::upsert(&self.conn, pr_number, head_sha, comment_id, state, note)
+        pr_comment_triage::upsert(
+            &self.conn, pr_number, head_sha, comment_id, state, note, batch_id,
+        )
+    }
+
+    /// Comment ids sharing `batch_id` in `pr_number` — the siblings of a
+    /// combined-batch fix.
+    pub fn pr_comment_triage_batch_siblings(
+        &self,
+        pr_number: u32,
+        batch_id: &str,
+    ) -> Result<Vec<u64>> {
+        pr_comment_triage::batch_sibling_ids(&self.conn, pr_number, batch_id)
+    }
+
+    /// Persist the shared fix cost across a batch's sibling rows (first writer
+    /// wins). Returns rows updated.
+    pub fn set_pr_comment_batch_fix_cost(
+        &self,
+        pr_number: u32,
+        batch_id: &str,
+        cost: &str,
+    ) -> Result<usize> {
+        pr_comment_triage::set_batch_fix_cost(&self.conn, pr_number, batch_id, cost)
     }
 
     pub fn begin_pr_comment_reply_draft(
@@ -496,6 +550,12 @@ impl AmfDb {
         todos::find_todo_by_id(&self.conn, todo_id)
     }
 
+    /// Resolve a TODO by its stable id together with the scope of the list
+    /// that currently owns it.  This follows TODO moves automatically.
+    pub fn resolve_todo_by_id(&self, todo_id: &str) -> Result<Option<todos::ResolvedTodo>> {
+        todos::resolve_todo_by_id(&self.conn, todo_id)
+    }
+
     pub fn add_todo(
         &self,
         list_id: &str,
@@ -677,6 +737,11 @@ impl AmfDb {
         plan_interviews::save(&self.conn, record)
     }
 
+    /// Export durable preflight lifecycle data for quality and cost analysis.
+    pub fn export_plan_preflight_evaluation(&self, feature_id: &str) -> Result<String> {
+        plan_interviews::export_preflight_evaluation(&self.conn, feature_id)
+    }
+
     /// Promote the draft filed under `draft_feature_id` to the accepted
     /// transcript of `final_feature_id`. `false` when there was no draft to
     /// promote. The keys differ only for a feature-creation interview, whose
@@ -712,6 +777,112 @@ impl AmfDb {
             rusqlite::params![feature_id],
             |row| row.get(0),
         )?)
+    }
+}
+
+/// PR Triage "Investigate" findings: a read-only headless investigation of one
+/// review comment, persisted per `(project id, PR#, comment id)` and reloaded
+/// with the triage overlay. The persistence layer lands ahead of its UI
+/// consumers (later `AMF_PLAN.md` tasks), so this is allowed to be unused for
+/// now — mirroring the todo / learning blocks above.
+#[allow(dead_code)]
+impl AmfDb {
+    /// Every persisted investigation for one PR in one project, oldest first.
+    pub fn load_pr_investigations(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+    ) -> Result<Vec<pr_investigations::PrInvestigation>> {
+        pr_investigations::load_by_pr(&self.conn, project_id, pr_number)
+    }
+
+    /// Insert or update one investigation, keyed by `(project_id, PR#, comment id)`.
+    pub fn upsert_pr_investigation(&self, inv: &pr_investigations::PrInvestigation) -> Result<()> {
+        pr_investigations::upsert(&self.conn, inv)
+    }
+
+    /// Record a finished run against one investigation by key (for a run that
+    /// outlived the overlay). Returns whether a row matched.
+    pub fn finish_pr_investigation(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+        answer: Option<&str>,
+        status: pr_investigations::PrInvestigationStatus,
+        error: Option<&str>,
+    ) -> Result<bool> {
+        pr_investigations::finish(
+            &self.conn, project_id, pr_number, comment_id, answer, status, error,
+        )
+    }
+
+    /// Set just the status of one investigation (the `dismiss` action).
+    pub fn set_pr_investigation_status(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+        status: pr_investigations::PrInvestigationStatus,
+    ) -> Result<bool> {
+        pr_investigations::set_status(&self.conn, project_id, pr_number, comment_id, status)
+    }
+
+    pub fn delete_pr_investigation(
+        &self,
+        project_id: &str,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Result<()> {
+        pr_investigations::delete(&self.conn, project_id, pr_number, comment_id)
+    }
+
+    /// Drop every investigation for a project (called on project deletion —
+    /// there is no FK cascade).
+    pub fn delete_pr_investigations_for_project(&self, project_id: &str) -> Result<()> {
+        pr_investigations::delete_for_project(&self.conn, project_id)
+    }
+}
+
+/// Feature- and global-scope headless prompt overrides (see
+/// `db/prompt_overrides.rs`). Project scope is an `amf.json` `prompt_overrides`
+/// map, resolved in `src/prompts/`, not here.
+#[allow(dead_code)]
+impl AmfDb {
+    /// Every persisted feature/global prompt override.
+    pub fn prompt_overrides(&self) -> Result<Vec<prompt_overrides::PromptOverride>> {
+        prompt_overrides::load_all(&self.conn)
+    }
+
+    /// Load the persisted overrides into an editable in-memory view.
+    pub fn load_prompt_overrides(&self) -> Result<prompt_overrides::PromptOverrides> {
+        prompt_overrides::PromptOverrides::load(Some(&self.conn))
+    }
+
+    /// Insert or replace one override; the template is stored verbatim.
+    pub fn upsert_prompt_override(
+        &self,
+        prompt_id: &str,
+        scope: &prompt_overrides::OverrideScope,
+        harness: Option<&crate::project::AgentKind>,
+        template: &str,
+    ) -> Result<()> {
+        prompt_overrides::upsert(&self.conn, prompt_id, scope, harness, template)
+    }
+
+    /// Delete one override; `true` if a row was removed.
+    pub fn delete_prompt_override(
+        &self,
+        prompt_id: &str,
+        scope: &prompt_overrides::OverrideScope,
+        harness: Option<&crate::project::AgentKind>,
+    ) -> Result<bool> {
+        prompt_overrides::delete(&self.conn, prompt_id, scope, harness)
+    }
+
+    /// Drop every feature-scope override for a checkout being deleted.
+    pub fn delete_prompt_overrides_for_workdir(&self, workdir: &str) -> Result<()> {
+        prompt_overrides::delete_for_workdir(&self.conn, workdir)
     }
 }
 

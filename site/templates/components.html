@@ -1,0 +1,11 @@
+{% component docs_nav(pages: array, current_path: string = "") %}
+<nav class="docs-nav" aria-label="Documentation">
+  <ul>
+    {% for p in pages %}
+    <li>
+      <a href="{{ p.permalink }}"{% if p.relative_path == current_path %} class="active" aria-current="page"{% endif %}>{{ p.title }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+</nav>
+{% endcomponent docs_nav %}

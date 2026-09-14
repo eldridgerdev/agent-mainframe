@@ -1885,6 +1885,18 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       follow-up work. → `src/headless.rs`, `src/app/ai_review.rs`,
       `CHANGELOG.md`.
 
+      **Follow-up, 2026-09-04 — include review usage in the GitHub summary.**
+      A completed AI review now retains its effective harness and model,
+      elapsed time, and independently optional input, output, cached, and
+      provider-total token counts. `W` appends those values, plus the estimate
+      calculated from AMF's configured rates when input and output are both
+      known, to the one overall GitHub review body. Inline findings never carry
+      the usage block. Each unavailable metric and cost is labelled explicitly,
+      and failed or non-postable reviews create no separate status comment.
+      Structured Claude, Codex, OpenCode, and Pi output preserves omitted
+      fields rather than converting them to zero. → `src/headless.rs`,
+      `src/app/ai_review.rs`, `CHANGELOG.md`.
+
 - [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and
@@ -2730,6 +2742,79 @@ non-goal for v1 (GitHub `gh` only), not an open question.
       failure is the pre-existing `wsl_clipboard_round_trips_image_and_text`
       test, which needs `wl-paste`/`xclip` and is unrelated); strict Clippy and
       formatting clean. → `src/ui/list.rs`, `CHANGELOG.md`.
+
+- [x] **Combined-batch fix cost is attributed to every resolved comment,
+      marked as shared.** A `B` batch is one agent run, so its cost was
+      invisible per issue. On dispatch, `pr_review_inject_fix` now stamps one
+      UUID `batch_id` on every selected comment's `pr_comment_triage` row
+      (migration 032 adds nullable `batch_id` + `batch_fix_cost`; pre-existing
+      rows stay `NULL`). `upsert`'s `batch_id` is sticky (`COALESCE`) so the
+      later `Done` write keeps it. When the first sibling is resolved,
+      `set_batch_fix_cost` records the run's cost string across the batch
+      (first-writer-wins) — captured *before* `clear_reply_draft` deletes the
+      draft the live figure comes from. A shared helper
+      (`src/app/fix_cost.rs`) renders it everywhere as
+      `Fix cost (est.): $X · combined (N)`: in the PR Triage reply dialog and
+      the posted GitHub reply (which also gets a plain sentence explaining the
+      shared figure), and — matched back by `path`/`line`/`side` —
+      on an AI Review finding that was posted and then batch-fixed. PR Triage
+      list rows gain a `⧉` marker that brightens on the selected comment's
+      siblings, and `[` / `]` jump between them. Only *resolved* batch comments
+      show the cost/badge (partial-batch rule); an unresolved sibling shows
+      nothing. Investigated whether any pane sums per-issue costs (the triage
+      header + AI review attribution are session/run meters, not sums) — nothing
+      double-counts. Final-review feedback is out of scope (shows no per-issue
+      cost). Offline screenshot fixture added
+      (`scripts/dev/screenshot/scenarios/pr-triage-batch-fix-cost.txt`).
+      Unit-tested (helper output; `batch_id` round-trip + stickiness; sibling
+      query; first-writer-wins cost; sibling-jump cycling; batched reply
+      disclosure; AI-review correlation incl. the partial-batch case);
+      `cargo test -j2 --bin amf` 2393 passed, fmt + clippy clean. →
+      `src/db/migrations.rs`, `src/db/pr_comment_triage.rs`, `src/db/mod.rs`,
+      `src/app/fix_cost.rs`, `src/app/pr_review.rs`, `src/app/ai_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/ai_review.rs`, `src/ui/dashboard.rs`, `CHANGELOG.md`.
+
+      **Shipped, 2026-09-02.**
+
+- [x] **Investigate a review comment instead of fixing it (read-only headless
+      pass).** Some review comments ask a question — "does this handle the empty
+      case?", "why is the lock held here?" — rather than requesting a change.
+      Answering them by injecting a fix prompt is the wrong tool. `v` in the
+      triage list runs a **strictly read-only** headless pass on the selected
+      comment directly (it does not change what `f`/`B` do — those still fix and
+      batch a comment normally, investigation or not): minimal context (comment
+      body + PR title/description + changed-file list, no file contents), the
+      harness picked per run, blocking (the overlay waits, contrasting with
+      Learning Mode's non-blocking queue), and `HeadlessRunner::run_investigation`
+      — a named seam over the read-only command whose contract repo config
+      cannot loosen, so no worktree write and no Vibeless edit-review hook is
+      reachable. The answer persists per `(project, PR#, comment id)` in a new
+      `pr_investigations` table (`MIGRATION_033`) and reopens with the triage
+      overlay, rendered in the right panel (status · harness · time, then the
+      answer markdown, then any follow-up turns); a run left `running` by a
+      killed process reconciles to `failed` on load. `a` on a finished
+      investigation opens an action menu — post an editable reply
+      (`ReplyKind::Investigation` → marks the comment `Replied`, reuses the `gh`
+      reply path), ask a follow-up (re-runs read-only with the prior answer as
+      context, appends a thread turn), dismiss, or keep as a TODO (Learning Mode
+      `a`'s route). Investigate is single-item and never participates in batch
+      dispatch. →
+      `src/db/migrations.rs`, `src/db/pr_investigations.rs`, `src/db/mod.rs`,
+      `src/github.rs`, `src/headless.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/app/mod.rs`, `src/handlers/pr_review.rs`,
+      `src/handlers/mod.rs`, `src/main.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/ui/status.rs`, `src/ui/dialogs/help.rs`,
+      `README.md`, `CHANGELOG.md`, and an offline screenshot fixture
+      (`scripts/dev/screenshot/scenarios/pr-triage-investigate.txt`,
+      `scripts/dev/screenshot/seed-investigation-fixture.py`). Unit-tested
+      (accessor round-trip; prompt shape incl. follow-up trimming;
+      stuck-`running` reconcile on load; the four `a` actions; the read-only
+      guard predicate per harness + that the investigate path never enters the
+      writable fix machinery). `cargo test -j 2 --bin amf` 2427 passed, `fmt` +
+      `clippy --all-targets` clean.
+
+      **Shipped, 2026-09-02.**
 
 ## Reasoning / when to build
 

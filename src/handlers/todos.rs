@@ -2,9 +2,10 @@
 //!
 //! Five input layers, checked in order: a pending delete confirmation, the
 //! launch chooser / destination step, the move/copy scope chooser, an active
-//! inline edit (add / title / notes / scratchpad), and the normal navigation +
-//! action keys — which now also move focus between panes (`Tab`), reveal them
-//! (`\`), and re-file the selected item across scopes (`M` / `C`).
+//! inline edit (add / title / notes / scratchpad — `Ctrl+T` toggles the Vim
+//! keymap, `Ctrl+Q` cancels), and the normal navigation + action keys — which
+//! now also move focus between panes (`Tab`), reveal them independently
+//! (`p` / `g`), and re-file the selected item across scopes (`M` / `C`).
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -61,22 +62,23 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('b') => app.todos_begin_edit_scratchpad(),
         KeyCode::Char(' ') | KeyCode::Char('x') => app.todos_toggle_done()?,
         KeyCode::Char('i') => app.todos_toggle_in_progress()?,
-        KeyCode::Char('p') => app.todos_cycle_priority()?,
+        KeyCode::Char('P') => app.todos_cycle_priority()?,
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
-        KeyCode::Char('g') | KeyCode::Enter => app.todos_launch_selected()?,
-        // Pane focus and the side-pane reveal. `BackTab` is what a terminal
-        // reports for Shift+Tab.
+        KeyCode::Enter => app.todos_launch_selected()?,
+        // Pane focus and independent project/global visibility. `BackTab` is
+        // what a terminal reports for Shift+Tab.
         KeyCode::Tab => app.todos_cycle_focus(1),
         KeyCode::BackTab => app.todos_cycle_focus(-1),
-        KeyCode::Char('\\') => app.todos_toggle_side_panes(),
+        KeyCode::Char('p') => app.todos_toggle_project_visibility(),
+        KeyCode::Char('g') => app.todos_toggle_global_visibility(),
         // Re-file the selected item into another scope: `M` moves it (links
         // and all), `C` leaves a copy behind as fresh, unstarted work.
         KeyCode::Char('M') => app.todos_begin_scope_move(false),
         KeyCode::Char('C') => app.todos_begin_scope_move(true),
-        // Distinct from `g`/`Enter`: those act on the cursor, this picks the
-        // next TODO in priority order wherever it is in the list.
+        // Distinct from `Enter`: that acts on the cursor, while this picks the
+        // next TODO in priority order wherever it is in the view.
         KeyCode::Char('I') => app.implement_next_todo_in_overlay()?,
         _ => {}
     }
@@ -151,10 +153,31 @@ fn handle_launch_step_key(app: &mut App, key: KeyCode) -> Result<()> {
 }
 
 fn handle_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    // Ctrl+Q always cancels the edit, matching the overlay's exit chord and the
+    // other multi-line editors — it is the escape hatch vim's Esc gives up.
+    if ctrl && key.code == KeyCode::Char('q') {
+        app.todos_cancel_edit();
+        return Ok(());
+    }
+
+    // Ctrl+T toggles the vim keymap for this and later edits, mirroring the
+    // compose box.
+    if ctrl && key.code == KeyCode::Char('t') {
+        app.todos_toggle_edit_vim();
+        return Ok(());
+    }
+
+    // In vim mode Esc is Insert→Normal inside the editor, so only plain mode
+    // treats it as cancel.
+    let vim = matches!(&app.mode, AppMode::Todos(state)
+        if state.editor.as_ref().is_some_and(|ed| ed.editor.vim_mode().is_some()));
+
     match key.code {
-        // Alt+Enter inserts a newline (notes are multi-line); plain Enter
+        // Shift+Enter inserts a newline (notes are multi-line); plain Enter
         // commits. Mirrors the compose editor.
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
             if let AppMode::Todos(state) = &mut app.mode
                 && let Some(ed) = &mut state.editor
             {
@@ -162,7 +185,7 @@ fn handle_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter => app.todos_commit_edit()?,
-        KeyCode::Esc => app.todos_cancel_edit(),
+        KeyCode::Esc if !vim => app.todos_cancel_edit(),
         _ => {
             if let AppMode::Todos(state) = &mut app.mode
                 && let Some(ed) = &mut state.editor
@@ -203,6 +226,18 @@ pub fn handle_todo_delete_disposition_key(app: &mut App, key: KeyCode) -> Result
         KeyCode::Char('k') | KeyCode::Up => app.todo_delete_disposition_move(-1),
         KeyCode::Enter => app.confirm_todo_delete_disposition()?,
         KeyCode::Esc => app.cancel_todo_delete_disposition(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key dispatch for completing an embedded agent session's referenced TODO.
+pub fn handle_todo_reference_completion_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('y') | KeyCode::Enter => app.confirm_todo_reference_completion()?,
+        KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_todo_reference_completion()
+        }
         _ => {}
     }
     Ok(())

@@ -1,0 +1,5 @@
+original_test	current_test
+app::state::tests::branch_mismatch_none_when_branches_match	app::pr_review::state::tests::branch_mismatch_none_when_branches_match
+app::state::tests::branch_mismatch_none_when_checked_out_branch_unknown	app::pr_review::state::tests::branch_mismatch_none_when_checked_out_branch_unknown
+app::state::tests::branch_mismatch_none_when_pr_head_ref_unknown	app::pr_review::state::tests::branch_mismatch_none_when_pr_head_ref_unknown
+app::state::tests::branch_mismatch_some_when_branches_differ	app::pr_review::state::tests::branch_mismatch_some_when_branches_differ

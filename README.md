@@ -13,6 +13,8 @@ reviewed.
 
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
+**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
+
 ## What AMF does
 
 - Runs several coding-agent sessions side by side from one dashboard.
@@ -75,15 +77,44 @@ sudo mv amf-x86_64-unknown-linux-musl /opt/amf
 sudo ln -s /opt/amf/amf /usr/local/bin/amf
 ```
 
+On macOS with Apple Silicon:
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo install -m 755 amf-aarch64-apple-darwin/amf /usr/local/bin/amf
+```
+
+### Install from crates.io
+
+Install the `agent-mainframe` crate with Cargo:
+
+```bash
+cargo install agent-mainframe --locked
+```
+
+The crate installs the `amf` binary. Make sure `~/.cargo/bin` is in your
+`PATH`, then run:
+
+```bash
+amf
+```
+
+This source installation requires Rust, a C compiler, and `tmux`.
+
 ### Build from source
 
-Building requires Rust 1.85 or newer and `tmux`:
+Building uses the current stable Rust toolchain, a C compiler, and `tmux`:
 
 ```bash
 git clone https://github.com/eldridgerdev/agent-mainframe
 cd agent-mainframe
-cargo install --path .
+cargo install --path . --locked
 ```
+
+For contributor setup, focused tests and CI commands, see the
+[development checks](docs/development/checks.md) and
+[architecture guide](docs/development/architecture.md).
 
 For a container installation, see the
 [Docker guide](docs/docker-no-tmux.md).
@@ -158,6 +189,12 @@ review and edit the resulting plan, ask an agent to improve it, or cancel it.
 AMF does not save the plan or launch the feature until you accept it. Press `P`
 on an existing feature to run the interview again.
 
+Multiple-choice questions in the interview also take your own answer: press `e`
+to type into the "Your own answer" box under the options. You can answer with
+your own text alone or add it alongside a picked option; `Enter` in the box
+returns to the options without submitting, and `Enter` on the option list
+submits.
+
 ## Essential controls
 
 ### Dashboard
@@ -169,8 +206,10 @@ on an existing feature to run the interview again.
 | `Enter` | Open the selected session or expand/collapse an item |
 | `N` / `n` | Create a project / feature |
 | `s` | Add a session to a feature |
-| `c` / `x` | Start / stop the selected feature or session |
-| `r` / `d` | Rename / delete the selected item |
+| `c` | Start the selected feature |
+| `x` | Stop a feature, or remove the selected session |
+| `r` | Rename a feature or session |
+| `d` | Delete a project, feature, or session |
 | `/` | Search and jump |
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
@@ -179,10 +218,14 @@ on an existing feature to run the interview again.
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
+| `E` | Edit headless AI prompt templates (overrides) |
 | `T` | Choose a theme |
 | `A` | Manage installed agent harnesses |
 | `?` | Show all keybindings |
 | `q` / `Esc` | Quit |
+
+Search accepts every letter, including `j` and `k`. Use arrow keys or
+`Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.
 
 ### Embedded session
 
@@ -196,6 +239,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
+| `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
 | `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
 | `Ctrl+Space`, then `?` | Show all leader commands |
 
@@ -289,6 +333,10 @@ changes. When you finish, AMF writes the feedback and hands it to an agent.
 With an authenticated `gh` CLI, AMF can also post the feedback to the branch's
 pull request.
 
+The optional AI co-reviewer that drafts line comments for the current file
+reviews an oversized file hunk group by hunk group rather than sending one
+truncated prompt; the status line reports if any group could not be reviewed.
+
 ### Work through pull-request feedback
 
 With an authenticated `gh` and a GitHub remote, a feature whose branch has a
@@ -307,8 +355,40 @@ actions are presented for confirmation before AMF writes to the pull request.
 When `f` or `B` targets a dedicated session, AMF lets you name it so multiple
 PR Triage agents can run simultaneously; leave the name blank to reuse the
 default `PR Triage` session.
+
+A comment that asks a question rather than requesting a change can be
+investigated instead of fixed: press `v` to run a strictly read-only headless
+pass on the selected comment — it inspects the repo but changes nothing — and
+the overlay blocks until it returns. Its answer persists per PR and reopens in
+the detail panel. Before pressing `v`, press `e` to attach an optional note —
+a hypothesis the investigation verifies against the PR and repo (for example,
+"I think this is already handled in `foo.rs` — double-check"), not a fact it
+assumes. The note shows in a banner so you can confirm or clear it; leaving it
+empty runs the investigation exactly as before. `f` and `B` still fix and batch a comment normally whether or
+not it has an investigation — and when it does, the investigation's findings are
+appended to the fix prompt as a starting point. Press `a` on a finished
+investigation to act on it:
+post an editable reply, ask a follow-up (re-runs read-only with the prior answer
+as context), dismiss it, or keep it as a TODO.
 An unchanged AI-drafted reply discloses the harness, best-effort model,
-estimated tokens, and estimated cost of the session that wrote it.
+estimated tokens, and estimated cost of the session that wrote it. AMF's own
+AI review (`W`) carries the same attribution: once a run finishes, the pane
+shows which harness and model produced it and the run's token usage and
+estimated cost, and that line is included above the `— AI review via AMF`
+marker on the posted summary and every inline comment. A harness that reports
+no usage degrades to model-only attribution rather than showing a fake `$0.00`.
+
+When a PR diff is too large to review in one prompt, `W` splits it into
+per-file batches, reviews each on its own (splitting an oversized file hunk by
+hunk), and combines the findings with a synthesis pass — the running screen
+shows the batch progress. Coverage stays complete: any slice that still will
+not fit is listed rather than dropped, and the review summary is prefixed with
+a "⚠ Partial coverage" note whenever the diff had to be split. The size
+threshold is a per-harness default; set `review_prompt_budget_tokens` in
+`~/.config/amf/config.json` (or per repo in `amf.json`) to change it, or to
+`0` to turn pre-send splitting off. For a sprawling refactor, reviewing the
+branch commit by commit still gives the sharpest results — per-slice review
+cannot see across files.
 
 To seed review memory from earlier reviews, open the PR picker and press `b`.
 If `G` opened the feature's pull request directly, press `g` from PR Triage to
@@ -337,13 +417,15 @@ editor shows up to three lists side by side:
 | **Project** | Work belonging to the project as a whole, whichever checkout you are in. |
 | **Global** | Work belonging to no project at all, shared across every repo AMF knows about. |
 
-Only the worktree list is on screen until you press `\`, which reveals the
-project and global lists beside it and remembers the choice. `Tab` /
-`Shift+Tab` move between the lists on screen; each keeps its own cursor,
-scroll, and scratchpad. `M` moves the selected TODO to another list and `C`
-copies it — a move carries whatever was already started for the item, a copy
-lands as fresh, unstarted work. The global list has no entry point of its own:
-you reach it as a side pane here.
+All three scopes start visible. Press `p` to hide or show the project list and
+`g` to hide or show the global list independently; the worktree list is always
+visible when the feature has one. Hidden scopes stay represented by compact
+labeled placeholders. The choice is shared by every TODO view for the rest of
+the current AMF run and resets the next time AMF starts. `Tab` / `Shift+Tab`
+move between visible lists; each list keeps its own cursor, scroll, and
+scratchpad while hidden. `M` moves the selected TODO to another visible list
+and `C` copies it — a move carries whatever was already started for the item,
+while a copy lands as fresh, unstarted work.
 
 From any session, press `Ctrl+Space`, then `N` to capture a TODO without
 leaving your current work. It lands in that feature's worktree list (the
@@ -354,11 +436,12 @@ Existing TODO lists are unchanged by the upgrade: they stay project-scoped,
 keep their host feature and their links, and show up in the project pane. New
 worktree lists start empty.
 
-Press `g` (or `Enter`) on a TODO to start work on it. AMF asks how:
+Press `Enter` on a TODO to start work on it. AMF asks how:
 
 | Choice | What happens |
 | --- | --- |
 | **Start an agent on this TODO** | Opens a session with the TODO in the composer, unsent — in this feature for a worktree TODO, or in a feature you pick for a project or global one. |
+| **Start an agent in a new feature** | Opens the ordinary create-feature wizard, pre-filled with a branch name from the TODO title and plan mode off; once the feature exists, the TODO is linked to it and its agent is seeded with the TODO, unsent. Needs a git repository. |
 | **Plan this TODO first** | Runs the guided plan interview, with the TODO's title, notes, and the list scratchpad already filled in as the feature brief — editable before the first question. |
 
 If you choose to plan it, AMF then asks where the plan should land: **here**, in
@@ -374,23 +457,22 @@ lands in an existing feature is written to `AMF_PLAN.todo-<name>.md` rather than
 it, and the agent is told which file is its own.
 
 A TODO planned into a new feature stays open on the list, marked as linked, and
-`g` afterwards jumps to that feature rather than asking again. If the feature is
-later deleted the TODO survives, the link is dropped, and `g` offers the choice
-again. An interrupted interview is saved as a draft and offered back the next
-time you press `g` on that TODO.
+`Enter` afterwards jumps to that feature rather than asking again. If the
+feature is later deleted the TODO survives, the link is dropped, and `Enter`
+offers the choice again. An interrupted interview is saved as a draft and
+offered back the next time you press `Enter` on that TODO.
 
 Press `I` to work the list rather than a particular item: AMF takes the
 highest-priority TODO nobody has started, opens an agent on it, and marks the
 item in progress (`[~]`) so the next `I` moves on. It considers whichever
-lists are currently showing — the worktree list alone with the side panes
-closed, all three with them open — and at equal priority prefers the narrower
-scope: worktree, then project, then global. It works on the list itself and on
-the `TODOs` row on the dashboard, and the composer is seeded but unsent,
-exactly as `g` leaves it.
+lists are currently visible. Hidden project and global scopes are excluded;
+at equal priority AMF prefers the narrower visible scope: worktree, then
+project, then global. It works on the list itself and on the `TODOs` row on the
+dashboard, and the composer is seeded but unsent, exactly as `Enter` leaves it.
 
 A worktree TODO is worked in the feature that owns the checkout. A project or
-global TODO belongs to no one checkout, so `g`, `Enter`, and `I` ask which
-feature should work it; the feature you pick supplies the agent and permission
+global TODO belongs to no one checkout, so `Enter` and `I` ask which feature
+should work it; the feature you pick supplies the agent and permission
 mode exactly as a worktree TODO's own feature would. Press `i` on a TODO to
 set or clear that in-progress mark by hand — useful when you abandoned a session
 without closing it. When every remaining TODO is already underway, AMF offers
@@ -401,6 +483,60 @@ Deleting a feature deletes its worktree list along with the checkout, so if
 that list still has unfinished items AMF asks first: move them to the project
 list, move them to the global list, delete them with the worktree, or cancel
 the deletion. Nothing is killed or removed until you answer.
+
+### Override the AI prompts AMF sends
+
+Behind the plan interview, Learning Mode, the final-review diff helpers, the AI
+PR review, and the review-memory bootstrap/compaction, AMF makes one-shot
+("headless") AI calls with prompts it builds for you. Press `E` on the
+dashboard — or `Ctrl+Space`, then `E` from a session — to open the
+**prompt-override manager**. It lists every template with its effective source
+(`built-in`, `feature`, `project`, or `global`) and `[F][P][G]` flags for which
+scopes already carry an override.
+
+`Enter` or `e` opens an editor on the effective template. `Ctrl+S` moves to a
+scope picker, then a harness picker, then saves:
+
+| Scope | Where it lives | Applies to |
+| --- | --- | --- |
+| **This feature** | `amf.db` | just this checkout |
+| **This project** | `amf.json` `prompt_overrides` key | the repo — committed, shared with everyone |
+| **Global** | `amf.db` | every project on this machine |
+
+The nearest scope wins — feature → project → global → built-in — and within the
+winning scope a per-harness template beats the shared one. `d`, `d` clears the
+effective override. Templates carry visible `{{token}}` placeholders that AMF
+re-fills with live context (the diff, the question, the interview answers) each
+time the prompt runs. **There is no validation**: if you delete a required
+token or add one AMF does not supply, it is saved and rendered exactly as
+written.
+
+Project-scope overrides sit in `amf.json` under `prompt_overrides`, keyed by
+the stable prompt id (shown in the manager):
+
+```json
+{
+  "prompt_overrides": {
+    "pr_review.ai_review": {
+      "template": "You are reviewing a diff... {{annotated_diff}} ..."
+    },
+    "learning.answer": {
+      "template": "shared text with {{question}}",
+      "harnesses": { "codex": "codex-specific text with {{question}}" }
+    }
+  }
+}
+```
+
+`.amf/` is generated and gitignored, so these overrides live in `amf.json`
+(the tracked repo config) rather than a file under `.amf/`.
+
+Before each user-initiated headless call, a **pre-call notice** names the
+prompt and target harness: `v` shows the exact rendered prompt, `e` jumps to
+the manager for that prompt (continue afterwards and the override applies to
+this run), `Enter` makes the call, `Esc` cancels it. There is no "don't ask
+again". Calls that run without you watching — the Learning Mode answer queue
+and session summaries — announce with a toast instead of the modal.
 
 ### See which agents need you
 

@@ -39,8 +39,23 @@ Options:
                           text:<text>  tmux send-keys -l literal text
                                        (e.g. text:my feature name)
                           wait:<ms>    sleep this many milliseconds
+                          note:<text>  explain what the next shot proves
+                          expect:<text>     require this literal substring
+                                       in the NEXT shot's captured pane
+                                       (checked against the escape-free
+                                       .txt) -- fails the whole run
+                                       immediately, before any further
+                                       shots, if it is missing. Stack
+                                       several expect: lines before one
+                                       shot: to require all of them.
+                          expect_not:<text> require this literal substring
+                                       to be ABSENT from the next shot;
+                                       same all-or-nothing, fail-fast
+                                       behavior as expect:.
                           shot:<label> capture-pane -> NNN-<label>.ansi
-                                       (+ escape-free NNN-<label>.txt)
+                                       (+ escape-free NNN-<label>.txt),
+                                       then checks that shot's pending
+                                       expect:/expect_not: assertions
                           run:<cmd>    eval an arbitrary shell command
                                        (this shell already has AMF_BIN and
                                        the scratch instance's env
@@ -222,6 +237,10 @@ if [[ -z "$AMF_BIN" ]]; then
         echo "amf binary not found, building (cargo build -j 2)..." >&2
         (cd "$REPO_ROOT" && cargo build -j 2)
     fi
+elif [[ "$AMF_BIN" != /* ]]; then
+    # tmux starts the pane in the scratch root, so resolve the documented
+    # repository-relative override before handing it to new-session.
+    AMF_BIN="$REPO_ROOT/$AMF_BIN"
 fi
 if [[ ! -x "$AMF_BIN" ]]; then
     echo "error: amf binary not found or not executable: $AMF_BIN" >&2
@@ -288,6 +307,32 @@ tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
     "$AMF_BIN"
 
 step=0
+shot_note=""
+shot_expectations=()
+shot_negations=()
+# Fails the whole run (nonzero exit, `set -e` propagates it) the moment a
+# shot's content doesn't match what the scenario claimed it would -- e.g. via
+# expect:/expect_not:. A scenario is evidence, not narration: a shot whose
+# content is wrong is worse than no shot at all, because it gets trusted.
+# Never delete an assertion to get a run past this -- either the scenario's
+# assumptions are wrong (a missing --seed/--seed-feature, a stale key
+# sequence after a UI change) or the feature itself is broken; fix whichever
+# it is and re-run.
+fail_expectation() {
+    local kind="$1" label="$2" file="$3" needle="$4" content="$5"
+    echo "" >&2
+    echo "$kind FAILED for shot '$label' (${file##*/}):" >&2
+    echo "  needle: $needle" >&2
+    echo "  --- actual captured pane ---" >&2
+    echo "$content" >&2
+    echo "  ----------------------------" >&2
+    echo "This scenario claims '$label' shows something it doesn't (or shows" >&2
+    echo "something it claims it doesn't). Do not publish this capture. Determine" >&2
+    echo "whether the scenario's assumptions are wrong (missing --seed/--seed-feature," >&2
+    echo "a stale key sequence, wrong step order) or whether the feature itself is" >&2
+    echo "broken, fix the root cause, and re-run the whole scenario from the start." >&2
+    exit 1
+}
 shot() {
     local label="$1"
     step=$((step + 1))
@@ -297,6 +342,32 @@ shot() {
     # Plain-text twin: escape-free, so an agent can grep/read it to verify
     # content far more cheaply than reading the .ansi or the rendered PNG.
     tmux capture-pane -p -t "$SESSION" >"${file%.ansi}.txt"
+
+    local content
+    content="$(cat "${file%.ansi}.txt")"
+    if ((${#shot_expectations[@]} > 0)); then
+        local needle
+        for needle in "${shot_expectations[@]}"; do
+            grep -qF -- "$needle" <<<"$content" \
+                || fail_expectation "EXPECTATION" "$label" "$file" "$needle" "$content"
+        done
+    fi
+    if ((${#shot_negations[@]} > 0)); then
+        local needle
+        for needle in "${shot_negations[@]}"; do
+            grep -qF -- "$needle" <<<"$content" \
+                && fail_expectation "NEGATIVE EXPECTATION" "$label" "$file" "$needle" "$content"
+        done
+    fi
+
+    NOTE="$shot_note" CAPTURE_FILE="${file##*/}" python3 - "$OUT_DIR/capture-notes.jsonl" <<'PY'
+import json, os, sys
+with open(sys.argv[1], "a", encoding="utf-8") as out:
+    out.write(json.dumps({"file": os.environ["CAPTURE_FILE"], "note": os.environ["NOTE"]}) + "\n")
+PY
+    shot_note=""
+    shot_expectations=()
+    shot_negations=()
     echo "shot: $file" >&2
 }
 
@@ -351,17 +422,33 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     echo "resolving first-run harness setup dialog" >&2
     # The dialog's title renders before amf starts reading keys, so a single
     # immediate Enter is silently dropped. Re-send it until the availability
-    # check actually starts (or resolves).
-    harness_resolved=""
-    for _ in 1 2 3 4 5 6; do
-        tmux send-keys -t "$SESSION" Enter
-        if harness_resolved="$(wait_for_any 3 "(installed)" "(not found" 2>/dev/null)"; then
+    # check actually starts (or resolves). Probe each row because a runner
+    # may provide Codex, Opencode, or Pi without having Claude installed.
+    harness_installed=0
+    harness_names=(Claude Opencode Codex Pi)
+    for harness_name in "${harness_names[@]}"; do
+        harness_resolved=""
+        for _ in 1 2 3 4 5 6; do
+            tmux send-keys -t "$SESSION" Enter
+            if harness_resolved="$(wait_for_any 3 "$harness_name (installed)" "$harness_name (not found" 2>/dev/null)"; then
+                break
+            fi
+            harness_resolved=""
+        done
+        if [[ "$harness_resolved" == *"(installed)" ]]; then
+            harness_installed=1
+            # Which harness the scratch instance ends up with is
+            # environment-dependent (Claude locally, Codex on the CI runner).
+            # Export the lowercase slug so a seed can say "agent": "__HARNESS__"
+            # and match whatever this run enabled.
+            CAPTURE_HARNESS_SLUG="$(printf '%s' "$harness_name" | tr '[:upper:]' '[:lower:]')"
+            export CAPTURE_HARNESS_SLUG
             break
         fi
-        harness_resolved=""
+        tmux send-keys -t "$SESSION" j
     done
-    if [[ -z "$harness_resolved" ]]; then
-        echo "error: harness setup dialog never resolved an availability check" >&2
+    if [[ "$harness_installed" -ne 1 ]]; then
+        echo "error: harness setup dialog found no installed harness" >&2
         tmux capture-pane -p -t "$SESSION" >&2 || true
         exit 1
     fi
@@ -381,6 +468,35 @@ if [[ "$first_screen" == "Configure Agent Harnesses" ]]; then
     fi
 fi
 echo "dashboard ready" >&2
+
+# A committed seed can't carry two things it sometimes needs: an absolute
+# path to *this* checkout (the running AMF instance resolves a relative
+# `path` against its own scratch CWD, so `"path": "."` lands on a non-git
+# dir), and the harness this scratch instance actually enabled (Claude
+# locally, Codex on the CI runner). A seed may use the literal tokens
+# __REPO_ROOT__ (in `path`/`workspace_path`) and __HARNESS__ (in `agent`);
+# we expand them in a temp copy and seed from that.
+SEED_TMPDIR=""
+expand_seed_tokens() {
+    local src="$1"
+    if ! grep -q '__REPO_ROOT__\|__HARNESS__' "$src"; then
+        printf '%s' "$src"
+        return
+    fi
+    [[ -n "$SEED_TMPDIR" ]] || SEED_TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/amf-seed.XXXXXX")"
+    local dst="$SEED_TMPDIR/$(basename "$src")"
+    REPO_ROOT="$REPO_ROOT" HARNESS="${CAPTURE_HARNESS_SLUG:-claude}" python3 - "$src" "$dst" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
+    text = f.read()
+text = text.replace("__REPO_ROOT__", os.environ["REPO_ROOT"])
+text = text.replace("__HARNESS__", os.environ["HARNESS"])
+with open(dst, "w") as f:
+    f.write(text)
+PY
+    printf '%s' "$dst"
+}
 
 # The automation JSON shape (docs/automation/*.template.json) has no
 # "action" field of its own -- the CLI subcommand IS the action, so we
@@ -415,14 +531,17 @@ if [[ -n "$SEED" ]]; then
         echo "error: could not infer automation action from seed file '$SEED' (expected a 'path' key for create-project, a 'branch' key for create-feature, or a 'workspace_path' key for create-batch-features)" >&2
         exit 1
     fi
-    echo "seeding: $AMF_BIN automation $kind --file $SEED" >&2
-    "$AMF_BIN" automation "$kind" --file "$SEED"
+    seed_file="$(expand_seed_tokens "$SEED")"
+    echo "seeding: $AMF_BIN automation $kind --file $seed_file" >&2
+    "$AMF_BIN" automation "$kind" --file "$seed_file"
 fi
 
 if [[ -n "$SEED_FEATURE" ]]; then
-    echo "seeding: $AMF_BIN automation create-feature --file $SEED_FEATURE" >&2
-    "$AMF_BIN" automation create-feature --file "$SEED_FEATURE"
+    seed_feature_file="$(expand_seed_tokens "$SEED_FEATURE")"
+    echo "seeding: $AMF_BIN automation create-feature --file $seed_feature_file" >&2
+    "$AMF_BIN" automation create-feature --file "$seed_feature_file"
 fi
+[[ -n "$SEED_TMPDIR" ]] && rm -rf "$SEED_TMPDIR"
 
 run_scenario() {
     local file="$1"
@@ -448,6 +567,19 @@ run_scenario() {
                     local ms="${part#wait:}"
                     sleep "$(awk "BEGIN { printf \"%.3f\", $ms / 1000 }")"
                     ;;
+                note:*)
+                    shot_note="${part#note:}"
+                    if (( ${#shot_note} > 600 )); then
+                        echo "error: note: must be 600 characters or fewer" >&2
+                        return 1
+                    fi
+                    ;;
+                expect:*)
+                    shot_expectations+=("${part#expect:}")
+                    ;;
+                expect_not:*)
+                    shot_negations+=("${part#expect_not:}")
+                    ;;
                 shot:*)
                     shot "${part#shot:}"
                     ;;
@@ -471,6 +603,10 @@ run_scenario() {
             esac
         done
     done <"$file"
+    if ((${#shot_expectations[@]} > 0 || ${#shot_negations[@]} > 0)); then
+        echo "error: scenario ended with an expect:/expect_not: that no later shot: consumed -- a dead assertion proves nothing; add the shot: or remove the expect:" >&2
+        return 1
+    fi
 }
 
 if [[ -n "$SCENARIO" ]]; then

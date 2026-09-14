@@ -750,12 +750,27 @@ impl<'a> MarkdownRenderer<'a> {
 
     fn push_task_marker(&mut self, checked: bool) {
         let (symbol, color) = if checked {
-            ("☑", self.theme.success.to_color())
+            ("[✓]", self.theme.success.to_color())
         } else {
-            ("☐", self.theme.text_muted.to_color())
+            // A single Unicode ballot box is small or faint in many terminal
+            // fonts. The explicit, three-column marker is legible everywhere
+            // and the primary color keeps an open task from fading into the
+            // document's muted text.
+            ("[ ]", self.theme.primary.to_color())
         };
+        let marker = format!("{symbol} ");
+
+        // A task marker is part of a list item's first line. Keep continuations
+        // aligned with its content rather than with the bullet itself.
+        self.ensure_text_block();
+        if let Some(block) = &mut self.current_text {
+            block.rest_prefix = combine_prefixes(
+                &block.rest_prefix,
+                &raw_prefix(" ".repeat(display_width(&marker))),
+            );
+        }
         self.push_inline_text(
-            format!("{symbol} "),
+            marker,
             Style::default().fg(color).add_modifier(Modifier::BOLD),
             true,
         );
@@ -1849,7 +1864,7 @@ mod tests {
         // dropped for the same reason.
         assert_eq!(
             render("- [ ] not done\n- [x] done"),
-            vec!["• ☐ not done", "• ☑ done"],
+            vec!["• [ ] not done", "• [✓] done"],
             "task checkboxes survive"
         );
 
@@ -1857,6 +1872,32 @@ mod tests {
         assert_eq!(
             render("- plain first, then `Ok(())`"),
             vec!["• plain first, then Ok(())"]
+        );
+    }
+
+    #[test]
+    fn render_markdown_aligns_wrapped_task_list_content() {
+        let theme = Theme::default();
+        let lines = render_markdown(
+            "- [ ] a task with enough words to wrap onto its next line",
+            &theme,
+            28,
+            None,
+        )
+        .lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+        assert_eq!(lines[0], "• [ ] a task with enough");
+        assert!(
+            lines.iter().skip(1).all(|line| line.starts_with("      ")),
+            "wrapped task text should start below the first character after [ ]: {lines:#?}"
         );
     }
 

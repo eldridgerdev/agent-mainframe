@@ -104,10 +104,168 @@ pub struct HeadlessRunner;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadlessProgress {
     Activity(String),
-    Usage {
-        input_tokens: u64,
-        output_tokens: u64,
-    },
+    Usage(HeadlessUsage),
+}
+
+/// Usage reported by a single headless harness run. Each counter is optional:
+/// an omitted provider field means "unavailable", not zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadlessUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Prompt-size estimation
+//
+// A pre-send soft gate for the batched-review orchestrator: if a rendered
+// prompt is estimated to overflow the harness it is split into bounded
+// prompts *before* the call rather than after a "prompt too long" failure.
+// The estimate is deliberately crude — real tokenizers and context windows
+// are not exposed by any of the four CLIs — so it fails safe toward splitting,
+// and the adaptive halving in `crate::review_batch` is the hard backstop.
+//
+// `allow(dead_code)`: the callers are `crate::review_batch` and the review
+// call sites; a couple of the entry points here (`will_overflow`,
+// `PROMPT_ESTIMATE_BYTES_PER_TOKEN`) have no caller yet.
+// ---------------------------------------------------------------------------
+
+/// Bytes per token for the size estimate. GPT/Claude-family tokenizers land
+/// near four bytes per token on source and prose; four keeps the estimate a
+/// touch pessimistic on dense code.
+#[allow(dead_code)]
+pub const PROMPT_ESTIMATE_BYTES_PER_TOKEN: usize = 4;
+
+/// Rough token count of `prompt`, rounding up. Uses byte length rather than
+/// `chars().count()` on purpose: multibyte text then estimates *higher*, which
+/// errs toward splitting instead of toward an over-long prompt.
+#[allow(dead_code)]
+pub fn estimate_prompt_tokens(prompt: &str) -> usize {
+    prompt.len().div_ceil(PROMPT_ESTIMATE_BYTES_PER_TOKEN)
+}
+
+/// Conservative ceiling on the *prompt* tokens a single one-shot run for
+/// `harness` should carry. Set well under each harness's real context window
+/// so there is room for its system prompt, tool schemas, and the response.
+/// These are only the built-in defaults; `AppConfig` /
+/// `ExtensionConfig::review_prompt_budget_tokens` override them without a
+/// rebuild (resolved by `App::review_prompt_budget`).
+#[allow(dead_code)]
+pub const fn default_prompt_budget_tokens(harness: &AgentKind) -> usize {
+    match harness {
+        // ~200k-token context; keep a wide margin for tools + output.
+        AgentKind::Claude => 128_000,
+        // Comparable large context through `codex exec`.
+        AgentKind::Codex => 128_000,
+        // Model-dependent and frequently smaller — stay further back.
+        AgentKind::Opencode => 96_000,
+        AgentKind::Pi => 96_000,
+    }
+}
+
+/// Whether `prompt` should be assumed to overflow `harness` and be split
+/// before sending, using [`default_prompt_budget_tokens`]. Callers with a
+/// configured budget use [`will_overflow_with_budget`] directly.
+#[allow(dead_code)]
+pub fn will_overflow(prompt: &str, harness: &AgentKind) -> bool {
+    will_overflow_with_budget(prompt, default_prompt_budget_tokens(harness))
+}
+
+/// Whether `prompt`'s estimated token count exceeds `budget_tokens`. A budget
+/// of `0` disables the gate (never reports overflow) so config can opt out of
+/// pre-send splitting and lean entirely on adaptive halving.
+#[allow(dead_code)]
+pub fn will_overflow_with_budget(prompt: &str, budget_tokens: usize) -> bool {
+    budget_tokens != 0 && estimate_prompt_tokens(prompt) > budget_tokens
+}
+
+// ---------------------------------------------------------------------------
+// Overflow-error classification
+//
+// The hard backstop behind the soft size gate: when a harness rejects a
+// prompt as too long *despite* the estimate clearing the budget, the run
+// fails with a typed [`PromptTooLong`] instead of a generic error string so
+// `crate::review_batch` can halve that batch and retry rather than
+// abandoning coverage. Any failure the classifier does not recognize stays a
+// plain `anyhow` error — see AMF_PLAN.md's risk note on unverified CLI
+// phrasings.
+// ---------------------------------------------------------------------------
+
+/// A one-shot run rejected because the prompt exceeded the model's context
+/// window. Carried through `anyhow` so a caller can `downcast` / use
+/// [`as_prompt_too_long`] to tell it apart from auth, quota, and network
+/// failures, which no amount of splitting would fix.
+#[derive(Debug, Clone)]
+pub struct PromptTooLong {
+    pub harness: AgentKind,
+    /// The provider/CLI text that was classified as an overflow, trimmed.
+    pub detail: String,
+}
+
+impl std::fmt::Display for PromptTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} rejected the prompt as too long for its context window{}{}",
+            self.harness.display_name(),
+            if self.detail.is_empty() { "" } else { ": " },
+            self.detail
+        )
+    }
+}
+
+impl std::error::Error for PromptTooLong {}
+
+/// Build the typed error for `harness` from the classified `detail` text.
+pub fn prompt_too_long_error(harness: &AgentKind, detail: &str) -> anyhow::Error {
+    anyhow::Error::new(PromptTooLong {
+        harness: harness.clone(),
+        detail: detail.trim().to_string(),
+    })
+}
+
+/// The [`PromptTooLong`] in `err`'s chain, if any — set even when the error
+/// has since been wrapped with extra `.context(...)`.
+#[allow(dead_code)]
+pub fn as_prompt_too_long(err: &anyhow::Error) -> Option<&PromptTooLong> {
+    err.chain()
+        .find_map(|cause| cause.downcast_ref::<PromptTooLong>())
+}
+
+/// Best-effort detection of a "prompt exceeds the context window" failure in a
+/// harness's error text (stderr on non-zero exit, or a structured event
+/// error). Matches the phrasings each CLI/provider is known to emit:
+/// Anthropic/Claude Code, OpenAI/Codex, and the assorted providers OpenCode
+/// and Pi route to. An unrecognized phrasing falls through and surfaces as an
+/// ordinary failure until it is verified against that CLI.
+pub fn is_prompt_too_long_message(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        // Anthropic / Claude Code
+        "prompt is too long",
+        "prompt too long",
+        // OpenAI / Codex
+        "maximum context length",
+        "context_length_exceeded",
+        "reduce the length of the messages",
+        // Generic provider phrasings (OpenCode model routing, Pi)
+        "context length exceeded",
+        "context window exceeded",
+        "exceeds the context window",
+        "exceed the context window",
+        "input is too long",
+        "input too long",
+        "too many tokens",
+        "too many input tokens",
+    ];
+    if NEEDLES.iter().any(|needle| lowered.contains(needle)) {
+        return true;
+    }
+    // "... 210000 tokens > 200000 maximum ..." style, where no fixed phrase
+    // is present but the shape is unambiguous.
+    lowered.contains("tokens >") && lowered.contains("maximum")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -277,6 +435,25 @@ impl HeadlessRunner {
     ) -> Result<String> {
         let spec = read_only_command_for(harness)?;
         run_command(harness, &spec, workdir, prompt, model)
+    }
+
+    /// The **strictly read-only** entry the PR-triage "Investigate" flow uses
+    /// (`AMF_PLAN.md`). A named seam over [`read_only_command_for`] so the
+    /// read-only contract is greppable and cannot be swapped for a
+    /// tool-enabled path ([`Self::run`] / [`Self::run_with_progress`]) in a
+    /// later refactor without it being obvious. The command it builds cannot
+    /// edit files, run shell commands, or apply patches, and repo-controlled
+    /// config (settings files, hooks, plugins, MCP servers) cannot loosen it —
+    /// so no Vibeless edit-review hook and no worktree write is reachable from
+    /// an investigation. `debug_assert`s that the spec really is read-only.
+    pub fn run_investigation(harness: &AgentKind, workdir: &Path, prompt: &str) -> Result<String> {
+        let spec = read_only_command_for(harness)?;
+        debug_assert!(
+            headless_command_is_read_only(harness, &spec),
+            "investigation headless command for {harness:?} is not read-only: {:?}",
+            spec.args
+        );
+        run_command(harness, &spec, workdir, prompt, None)
     }
 
     /// Run a headless pass while reporting sanitized provider activity.
@@ -543,9 +720,13 @@ fn run_command(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let detail = stderr.trim();
+        if is_prompt_too_long_message(detail) {
+            return Err(prompt_too_long_error(harness, detail));
+        }
         anyhow::bail!(
-            "{} headless command failed{}{}",
+            "{} headless command failed ({}){}{}",
             harness.display_name(),
+            output.status,
             if detail.is_empty() { "" } else { ": " },
             detail
         );
@@ -559,8 +740,7 @@ fn run_command(
 struct JsonlOutput {
     final_message: Option<String>,
     event_error: Option<String>,
-    input_tokens: u64,
-    output_tokens: u64,
+    usage: HeadlessUsage,
 }
 
 /// Drain a harness's structured event stream while the child is alive so the
@@ -654,9 +834,25 @@ fn run_jsonl_command(
 
     if !status.success() {
         let stderr = String::from_utf8_lossy(&stderr);
-        let detail = stderr.trim();
+        let mut details = Vec::new();
+        if !stderr.trim().is_empty() {
+            details.push(stderr.trim().to_string());
+        }
+        if let Some(error) = &json_output.event_error
+            && !error.trim().is_empty()
+            && !details.iter().any(|detail| detail == error.trim())
+        {
+            details.push(error.trim().to_string());
+        }
+        let detail = details.join("; ");
+        if is_prompt_too_long_message(&detail) {
+            return Err(prompt_too_long_error(
+                harness,
+                &format!("{detail} ({status})"),
+            ));
+        }
         anyhow::bail!(
-            "{} headless command failed{}{}",
+            "{} headless command failed ({status}){}{}",
             harness.display_name(),
             if detail.is_empty() { "" } else { ": " },
             detail
@@ -667,6 +863,9 @@ fn run_jsonl_command(
         return Ok(message);
     }
     if let Some(error) = json_output.event_error {
+        if is_prompt_too_long_message(&error) {
+            return Err(prompt_too_long_error(harness, &error));
+        }
         anyhow::bail!(
             "{} headless command failed: {error}",
             harness.display_name()
@@ -763,18 +962,7 @@ fn apply_codex_json_event(
         }
         Some("turn.completed") => {
             let usage = event.get("usage").unwrap_or(&serde_json::Value::Null);
-            let input_tokens = usage
-                .get("input_tokens")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let output_tokens = usage
-                .get("output_tokens")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            on_progress(HeadlessProgress::Usage {
-                input_tokens,
-                output_tokens,
-            });
+            emit_usage_from(Some(usage), false, output, on_progress);
         }
         Some("turn.failed") | Some("error") => {
             output.event_error = event
@@ -842,7 +1030,21 @@ fn apply_claude_json_event(
                 output.event_error = event
                     .get("result")
                     .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
+                    .filter(|message| !message.trim().is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        let errors = event.get("errors")?.as_array()?;
+                        let messages: Vec<_> =
+                            errors.iter().filter_map(|error| error.as_str()).collect();
+                        let detail = messages.join("; ");
+                        (!detail.trim().is_empty()).then_some(detail)
+                    })
+                    .or_else(|| {
+                        event
+                            .get("subtype")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string)
+                    });
             } else {
                 output.final_message = event
                     .get("result")
@@ -1007,24 +1209,44 @@ fn emit_usage_from(
     let input = usage
         .get("input_tokens")
         .or_else(|| usage.get("input"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
     let output_tokens = usage
         .get("output_tokens")
         .or_else(|| usage.get("output"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+        .and_then(serde_json::Value::as_u64);
+    let cached = usage
+        .get("cache_read_input_tokens")
+        .or_else(|| usage.get("cached_input_tokens"))
+        .or_else(|| usage.get("cache_read"))
+        .or_else(|| usage.get("cached"))
+        .and_then(serde_json::Value::as_u64);
+    let total = usage
+        .get("total_tokens")
+        .or_else(|| usage.get("total"))
+        .and_then(serde_json::Value::as_u64);
     if accumulate {
-        output.input_tokens = output.input_tokens.saturating_add(input);
-        output.output_tokens = output.output_tokens.saturating_add(output_tokens);
+        output.usage.input_tokens = add_optional(output.usage.input_tokens, input);
+        output.usage.output_tokens = add_optional(output.usage.output_tokens, output_tokens);
+        output.usage.cached_tokens = add_optional(output.usage.cached_tokens, cached);
+        output.usage.total_tokens = add_optional(output.usage.total_tokens, total);
     } else {
-        output.input_tokens = input;
-        output.output_tokens = output_tokens;
+        output.usage = HeadlessUsage {
+            input_tokens: input,
+            output_tokens,
+            cached_tokens: cached,
+            total_tokens: total,
+        };
     }
-    on_progress(HeadlessProgress::Usage {
-        input_tokens: output.input_tokens,
-        output_tokens: output.output_tokens,
-    });
+    on_progress(HeadlessProgress::Usage(output.usage.clone()));
+}
+
+fn add_optional(current: Option<u64>, incoming: Option<u64>) -> Option<u64> {
+    match (current, incoming) {
+        (Some(current), Some(incoming)) => Some(current.saturating_add(incoming)),
+        (Some(current), None) => Some(current),
+        (None, Some(incoming)) => Some(incoming),
+        (None, None) => None,
+    }
 }
 
 fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
@@ -1118,6 +1340,53 @@ fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
 
 /// Commands used when the model must investigate a repository without being
 /// able to alter it.
+/// Positive per-harness check that a [`HeadlessCommand`] can only read the
+/// repository. Deliberately conservative: absence of an explicit restriction
+/// counts as *not* read-only, because e.g. Claude with no `--tools` flag runs
+/// its full default toolset (Bash/Edit/Write). Backs the `run_investigation`
+/// `debug_assert` and its test.
+fn headless_command_is_read_only(harness: &AgentKind, cmd: &HeadlessCommand) -> bool {
+    let value_after = |flag: &str| -> Option<&str> {
+        cmd.args
+            .iter()
+            .position(|a| *a == flag)
+            .and_then(|i| cmd.args.get(i + 1))
+            .copied()
+    };
+    let no_loose_permission = !cmd.args.windows(2).any(|w| {
+        w[0] == "--permission-mode" && matches!(w[1], "acceptEdits" | "bypassPermissions")
+    });
+    let read_only_tools = |list: &str, allowed: &[&str]| {
+        list.split([',', ' '])
+            .filter(|t| !t.is_empty())
+            .all(|t| allowed.iter().any(|a| a.eq_ignore_ascii_case(t)))
+    };
+    match harness {
+        AgentKind::Claude => {
+            cmd.args.contains(&"--safe-mode")
+                && value_after("--tools")
+                    .is_some_and(|t| read_only_tools(t, &["read", "glob", "grep"]))
+                && no_loose_permission
+        }
+        // Codex's headless command is an ephemeral read-only sandbox.
+        AgentKind::Codex => value_after("--sandbox") == Some("read-only"),
+        AgentKind::Opencode => {
+            cmd.args.contains(&"--pure")
+                && cmd.envs.iter().any(|(k, v)| {
+                    *k == "OPENCODE_PERMISSION"
+                        && (*v == OPENCODE_READ_ONLY_PERMISSION
+                            || *v == OPENCODE_RESTRICTED_PERMISSION)
+                })
+        }
+        AgentKind::Pi => {
+            (cmd.args.contains(&"--no-tools")
+                || value_after("--tools")
+                    .is_some_and(|t| read_only_tools(t, &["read", "grep", "find", "ls"])))
+                && cmd.args.contains(&"--no-approve")
+        }
+    }
+}
+
 fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
     match harness {
         AgentKind::Claude => Ok(HeadlessCommand {
@@ -1422,6 +1691,50 @@ mod tests {
         assert!(pi.args.contains(&"--no-approve"));
     }
 
+    /// The PR-triage "Investigate" contract: `run_investigation`'s command is
+    /// read-only for every harness, and the predicate that guards it is not
+    /// vacuous — a tool-enabled command fails it.
+    #[test]
+    fn investigation_headless_command_is_read_only_for_every_harness() {
+        for harness in [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Opencode,
+            AgentKind::Pi,
+        ] {
+            let spec = read_only_command_for(&harness).unwrap();
+            assert!(
+                headless_command_is_read_only(&harness, &spec),
+                "{harness:?} read-only command is not recognised as read-only"
+            );
+        }
+
+        // Sanity: the *unrestricted* Claude command (no `--tools` cap → full
+        // default toolset) is correctly rejected, so the check has teeth.
+        assert!(!headless_command_is_read_only(
+            &AgentKind::Claude,
+            &command_for(&AgentKind::Claude, false)
+        ));
+        // ...and a hand-built command that re-enables editing is rejected too.
+        let loosened = HeadlessCommand {
+            binary: "claude".into(),
+            args: vec![
+                "-p",
+                "--safe-mode",
+                "--tools",
+                "Read,Edit,Bash",
+                "--permission-mode",
+                "acceptEdits",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        assert!(!headless_command_is_read_only(
+            &AgentKind::Claude,
+            &loosened
+        ));
+    }
+
     #[test]
     fn runner_pipes_the_prompt_over_stdin() {
         let spec = HeadlessCommand {
@@ -1457,6 +1770,34 @@ mod tests {
         .to_string();
         assert!(error.contains("Opencode headless command failed"));
         assert!(error.contains("quota exhausted"));
+    }
+
+    #[test]
+    fn failed_claude_run_preserves_json_error_without_stderr() {
+        for script in [
+            r#"printf '%s\n' '{"type":"result","is_error":true,"result":"context window exceeded"}'; exit 7"#,
+            r#"printf '%s\n' '{"type":"result","is_error":true,"errors":["context window exceeded"]}'; exit 7"#,
+        ] {
+            let spec = HeadlessCommand {
+                binary: "sh".into(),
+                args: vec!["-c", script],
+                trailing: vec![],
+                envs: vec![],
+            };
+            let error = run_jsonl_command(
+                &AgentKind::Claude,
+                &spec,
+                Path::new("/tmp"),
+                "hello",
+                None,
+                |_| {},
+            )
+            .unwrap_err();
+            assert!(as_prompt_too_long(&error).is_some(), "{error}");
+            let error = error.to_string();
+            assert!(error.contains("context window exceeded"), "{error}");
+            assert!(error.contains("exit status: 7"), "{error}");
+        }
     }
 
     #[test]
@@ -1680,7 +2021,7 @@ mod tests {
             }),
             serde_json::json!({
                 "type": "turn.completed",
-                "usage": {"input_tokens": 1200, "output_tokens": 34}
+                "usage": {"input_tokens": 1200, "output_tokens": 34, "cached_input_tokens": 800, "total_tokens": 2034}
             }),
         ] {
             apply_codex_json_event(&event, &mut output, &|event| {
@@ -1695,10 +2036,16 @@ mod tests {
         assert!(progress.borrow().contains(&HeadlessProgress::Activity(
             "Inspecting the repository".to_string()
         )));
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 1200,
-            output_tokens: 34,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(1200),
+                    output_tokens: Some(34),
+                    cached_tokens: Some(800),
+                    total_tokens: Some(2034),
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("super-secret-review-input"));
         assert!(!rendered.contains("Finding body"));
@@ -1754,10 +2101,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/lib.rs:7\nFinding body")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 450,
-            output_tokens: 21,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(450),
+                    output_tokens: Some(21),
+                    ..Default::default()
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("private-diff"));
         assert!(!rendered.contains("Finding body"));
@@ -1798,10 +2150,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/main.rs:9\nFinding")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 150,
-            output_tokens: 15,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(150),
+                    output_tokens: Some(15),
+                    ..Default::default()
+                }))
+        );
         assert!(!format!("{:?}", progress.borrow()).contains("private output"));
     }
 
@@ -1837,10 +2194,15 @@ mod tests {
             output.final_message.as_deref(),
             Some("### src/app.rs:4\nFinding")
         );
-        assert!(progress.borrow().contains(&HeadlessProgress::Usage {
-            input_tokens: 88,
-            output_tokens: 12,
-        }));
+        assert!(
+            progress
+                .borrow()
+                .contains(&HeadlessProgress::Usage(HeadlessUsage {
+                    input_tokens: Some(88),
+                    output_tokens: Some(12),
+                    ..Default::default()
+                }))
+        );
         let rendered = format!("{:?}", progress.borrow());
         assert!(!rendered.contains("private-diff"));
         assert!(!rendered.contains("private reasoning"));
@@ -1899,5 +2261,124 @@ mod tests {
 
         let selected = select_interview_harness_with(&AgentKind::Claude, |_| false);
         assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn estimate_prompt_tokens_rounds_up_by_byte_length() {
+        assert_eq!(estimate_prompt_tokens(""), 0);
+        assert_eq!(estimate_prompt_tokens("a"), 1);
+        assert_eq!(estimate_prompt_tokens("aaaa"), 1);
+        assert_eq!(estimate_prompt_tokens("aaaaa"), 2);
+        // Multibyte text is measured by bytes, so it estimates higher — the
+        // safe direction (splits sooner rather than sending an over-long
+        // prompt). "é" is two bytes; ten of them → 20 bytes → 5 tokens.
+        assert_eq!(estimate_prompt_tokens(&"é".repeat(10)), 5);
+    }
+
+    #[test]
+    fn every_harness_has_a_nonzero_default_budget() {
+        for harness in AgentKind::ALL {
+            assert!(
+                default_prompt_budget_tokens(&harness) > 0,
+                "{harness:?} needs a positive default prompt budget"
+            );
+        }
+    }
+
+    #[test]
+    fn will_overflow_gates_on_the_default_budget() {
+        for harness in AgentKind::ALL {
+            let budget = default_prompt_budget_tokens(&harness);
+            assert!(!will_overflow("a short prompt", &harness));
+            // One byte per token-worth over the budget, guaranteed to exceed.
+            let huge = "x".repeat((budget + 1) * PROMPT_ESTIMATE_BYTES_PER_TOKEN);
+            assert!(
+                will_overflow(&huge, &harness),
+                "{harness:?} should flag a prompt past its budget"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_budget_disables_the_gate() {
+        let huge = "x".repeat(1_000_000);
+        assert!(!will_overflow_with_budget(&huge, 0));
+    }
+
+    #[test]
+    fn will_overflow_with_budget_compares_estimate_to_budget() {
+        // Exactly at the budget is not overflow; one token over is.
+        let at_budget = "x".repeat(100 * PROMPT_ESTIMATE_BYTES_PER_TOKEN);
+        assert!(!will_overflow_with_budget(&at_budget, 100));
+        let over = "x".repeat(100 * PROMPT_ESTIMATE_BYTES_PER_TOKEN + 1);
+        assert!(will_overflow_with_budget(&over, 100));
+    }
+
+    #[test]
+    fn classifies_known_overflow_messages_for_every_harness() {
+        // Anthropic / Claude Code (`claude -p`)
+        assert!(is_prompt_too_long_message("Prompt is too long"));
+        assert!(is_prompt_too_long_message(
+            "API Error: 400 {\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 210000 tokens > 200000 maximum\"}"
+        ));
+        // OpenAI / Codex (`codex exec`)
+        assert!(is_prompt_too_long_message(
+            "This model's maximum context length is 272000 tokens. However, your messages resulted in 401000 tokens. Please reduce the length of the messages."
+        ));
+        assert!(is_prompt_too_long_message(
+            "Error code: 400 - {'error': {'code': 'context_length_exceeded'}}"
+        ));
+        // Providers OpenCode routes to
+        assert!(is_prompt_too_long_message(
+            "input is too long for requested model"
+        ));
+        // Generic phrasing that could come back from Pi
+        assert!(is_prompt_too_long_message(
+            "the request exceeds the context window for this model"
+        ));
+        // The bare "N tokens > M maximum" shape with no fixed phrase.
+        assert!(is_prompt_too_long_message(
+            "got 500000 tokens > 200000 maximum"
+        ));
+    }
+
+    #[test]
+    fn does_not_classify_unrelated_failures_as_overflow() {
+        assert!(!is_prompt_too_long_message(""));
+        assert!(!is_prompt_too_long_message(
+            "401 Unauthorized: invalid API key"
+        ));
+        assert!(!is_prompt_too_long_message(
+            "rate limit exceeded, please retry after 20s"
+        ));
+        assert!(!is_prompt_too_long_message(
+            "error: could not connect to the model provider"
+        ));
+        assert!(!is_prompt_too_long_message(
+            "the diff exceeds the maximum number of lines"
+        ));
+    }
+
+    #[test]
+    fn prompt_too_long_error_survives_anyhow_context_wrapping() {
+        let err = prompt_too_long_error(
+            &AgentKind::Codex,
+            "  maximum context length is 272000 tokens  ",
+        );
+        let typed = as_prompt_too_long(&err).expect("typed error at the root");
+        assert_eq!(typed.harness, AgentKind::Codex);
+        assert_eq!(typed.detail, "maximum context length is 272000 tokens");
+
+        let wrapped = err.context("batch 3 of 12 failed");
+        assert!(
+            as_prompt_too_long(&wrapped).is_some(),
+            "wrapping with .context() must not hide the typed cause"
+        );
+    }
+
+    #[test]
+    fn a_plain_failure_is_not_seen_as_prompt_too_long() {
+        let err = anyhow::anyhow!("Codex headless command failed: 401 Unauthorized");
+        assert!(as_prompt_too_long(&err).is_none());
     }
 }

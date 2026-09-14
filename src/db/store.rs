@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use crate::project::{
     AgentKind, CURRENT_PROJECT_STORE_VERSION, Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionBookmark, SessionKind, TokenUsageSourceMatch, VibeMode,
+    ProjectStore, SessionBookmark, SessionKind, TodoSessionReference, TokenUsageSourceMatch,
+    VibeMode,
 };
-use crate::prompt_library::{PromptPlaceholder, PromptTemplate};
 use crate::token_tracking::TokenUsageSource;
 
 // ── enum ↔ str helpers ───────────────────────────────────────
@@ -156,7 +156,11 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let prompt_templates = load_prompt_templates(conn)?;
+    // Templates are global, frequently mutated, and shared across every
+    // concurrently running AMF process, so they're read/written through
+    // `db::prompt_templates` directly rather than as part of this
+    // full-replace store — see that module's doc comment.
+    let prompt_templates = super::prompt_templates::load(conn)?;
 
     let mut proj_stmt = conn.prepare(
         "SELECT id, name, repo, collapsed, preferred_agent, is_git, created_at
@@ -201,37 +205,11 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
     })
 }
 
-fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description, body, tags, placeholders, created_at, updated_at
-         FROM prompt_templates ORDER BY sort_order ASC, rowid ASC",
-    )?;
-
-    let templates = stmt
-        .query_map([], |row| {
-            let tags_json: String = row.get(4)?;
-            let placeholders_json: String = row.get(5)?;
-            Ok(PromptTemplate {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-                body: row.get(3)?,
-                tags: serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default(),
-                placeholders: serde_json::from_str::<Vec<PromptPlaceholder>>(&placeholders_json)
-                    .unwrap_or_default(),
-                created_at: dt_from_str(&row.get::<_, String>(6)?),
-                updated_at: dt_from_str(&row.get::<_, String>(7)?),
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(templates)
-}
-
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
-/// created_at, last_accessed, ready, triage_source, selected_plan_path.
+/// created_at, last_accessed, ready, triage_source, selected_plan_path,
+/// review_source.
 type FeatureRow = (
     String,
     String,
@@ -254,6 +232,7 @@ type FeatureRow = (
     bool,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -262,7 +241,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
                 created_at, last_accessed, ready, triage_source,
-                selected_plan_path
+                selected_plan_path, review_source
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -291,6 +270,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(18)?,
                 row.get(19)?,
                 row.get(20)?,
+                row.get(21)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -318,6 +298,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         ready,
         triage_source_json,
         selected_plan_path,
+        review_source_json,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -351,6 +332,11 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             triage_source: triage_source_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
+            // Same degradation rule as `triage_source`: a malformed blob reads
+            // as "not a companion review feature" rather than failing the load.
+            review_source: review_source_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
         });
     }
     Ok(features)
@@ -360,7 +346,8 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
     let mut stmt = conn.prepare(
         "SELECT id, kind, label, tmux_window, claude_session_id,
                 token_usage_source, token_usage_source_match,
-                created_at, command, on_stop, pre_check
+                created_at, command, on_stop, pre_check,
+                todo_id, todo_launched_from_menu
          FROM feature_sessions WHERE feature_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -373,6 +360,12 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 label: row.get(2)?,
                 tmux_window: row.get(3)?,
                 claude_session_id: row.get(4)?,
+                todo_reference: row.get::<_, Option<String>>(11)?.map(|todo_id| {
+                    TodoSessionReference {
+                        todo_id,
+                        launched_from_todo_menu: row.get::<_, i64>(12).unwrap_or(0) != 0,
+                    }
+                }),
                 token_usage_source: row
                     .get::<_, Option<String>>(5)?
                     .as_deref()
@@ -411,32 +404,10 @@ pub fn save(conn: &Connection, store: &ProjectStore) -> Result<()> {
 }
 
 fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
-    // Full replace: CASCADE deletes features → sessions.
-    conn.execute_batch(
-        "DELETE FROM session_bookmarks; DELETE FROM projects; DELETE FROM prompt_templates;",
-    )?;
-
-    for (idx, template) in store.prompt_templates.iter().enumerate() {
-        let tags_json = serde_json::to_string(&template.tags)?;
-        let placeholders_json = serde_json::to_string(&template.placeholders)?;
-        conn.execute(
-            "INSERT INTO prompt_templates (
-                id, name, description, body, tags, placeholders,
-                created_at, updated_at, sort_order
-            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![
-                template.id,
-                template.name,
-                template.description,
-                template.body,
-                tags_json,
-                placeholders_json,
-                dt_to_str(&template.created_at),
-                dt_to_str(&template.updated_at),
-                idx as i64,
-            ],
-        )?;
-    }
+    // Full replace: CASCADE deletes features → sessions. `prompt_templates`
+    // is deliberately excluded — it's persisted independently through
+    // `db::prompt_templates`, see that module's doc comment for why.
+    conn.execute_batch("DELETE FROM session_bookmarks; DELETE FROM projects;")?;
 
     let harnesses_json = serde_json::to_string(
         &store
@@ -496,9 +467,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
                     created_at, last_accessed, ready, sort_order, triage_source,
-                    selected_plan_path
+                    selected_plan_path, review_source
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24
                 )",
                 params![
                     feature.id,
@@ -530,6 +501,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .selected_plan_path
                         .as_ref()
                         .map(|path| path.to_string_lossy()),
+                    feature
+                        .review_source
+                        .as_ref()
+                        .and_then(|link| serde_json::to_string(link).ok()),
                 ],
             )?;
 
@@ -539,9 +514,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         id, feature_id, kind, label, tmux_window,
                         claude_session_id, token_usage_source,
                         token_usage_source_match, created_at,
-                        command, on_stop, pre_check, sort_order
+                        command, on_stop, pre_check, todo_id,
+                        todo_launched_from_menu, sort_order
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15
                     )",
                     params![
                         session.id,
@@ -556,6 +532,15 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         session.command,
                         session.on_stop,
                         session.pre_check,
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .map(|reference| &reference.todo_id),
+                        session
+                            .todo_reference
+                            .as_ref()
+                            .is_some_and(|reference| reference.launched_from_todo_menu)
+                            as i32,
                         si as i64,
                     ],
                 )?;
@@ -602,43 +587,28 @@ mod tests {
         assert_eq!(loaded.prompt_templates.len(), 0);
     }
 
+    /// `prompt_templates` is deliberately excluded from the full-replace
+    /// save path (see `db::prompt_templates`'s doc comment): a store whose
+    /// in-memory `prompt_templates` disagrees with the table must not touch
+    /// it either way. Round-trip coverage for the templates table itself
+    /// lives in `db::prompt_templates`'s own tests.
     #[test]
-    fn prompt_templates_roundtrip_preserves_order_and_fields() {
-        use crate::prompt_library::{PlaceholderKind, PromptPlaceholder, PromptTemplate};
+    fn save_store_does_not_touch_prompt_templates_table() {
+        use crate::prompt_library::PromptTemplate;
 
         let (_tmp, db) = open_temp_db();
-        let mut store = empty_store();
 
-        let mut first = PromptTemplate::new("Fix bug".to_string(), "Fix {{area}}".to_string());
-        first.id = "tpl-1".to_string();
-        first.description = Some("a description".to_string());
-        first.tags = vec!["dev".to_string(), "fix".to_string()];
-        first.placeholders = vec![PromptPlaceholder {
-            key: "area".to_string(),
-            label: Some("Area".to_string()),
-            kind: PlaceholderKind::Text { default: None },
-            required: true,
-        }];
+        let on_disk = PromptTemplate::new("On disk".to_string(), "Body".to_string());
+        db.insert_prompt_template(&on_disk).unwrap();
 
-        let mut second = PromptTemplate::new("Review".to_string(), "Review the diff".to_string());
-        second.id = "tpl-2".to_string();
-
-        store.prompt_templates = vec![first.clone(), second.clone()];
-
+        // A store snapshot that disagrees with the table (empty here, but
+        // any mismatch would do) must not overwrite it.
+        let store = empty_store();
         db.save_store(&store).unwrap();
-        let loaded = db.load_store().unwrap();
 
-        assert_eq!(loaded.prompt_templates.len(), 2);
-        // Insertion order is preserved via sort_order.
-        assert_eq!(loaded.prompt_templates[0].id, "tpl-1");
-        assert_eq!(loaded.prompt_templates[1].id, "tpl-2");
-
-        let lt = &loaded.prompt_templates[0];
-        assert_eq!(lt.name, "Fix bug");
-        assert_eq!(lt.body, "Fix {{area}}");
-        assert_eq!(lt.description, Some("a description".to_string()));
-        assert_eq!(lt.tags, vec!["dev".to_string(), "fix".to_string()]);
-        assert_eq!(lt.placeholders, first.placeholders);
+        let loaded = db.load_prompt_templates().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "On disk");
     }
 
     #[test]
@@ -651,6 +621,10 @@ mod tests {
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
             claude_session_id: Some("claude-abc123".to_string()),
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            }),
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -694,6 +668,14 @@ mod tests {
                 source_feature_id: "feat-source".to_string(),
                 pr_branch: "feature/my-feature".to_string(),
                 base_sha: "abc123".to_string(),
+            }),
+            // A companion review feature's link back to the feature its final
+            // review ran from — the parallel of `triage_source` for the "New
+            // feature…" review destination.
+            review_source: Some(crate::project::ReviewSource {
+                source_feature_id: "feat-source".to_string(),
+                target_branch: "feature/my-feature".to_string(),
+                base_sha: "def456".to_string(),
             }),
         };
 
@@ -744,11 +726,27 @@ mod tests {
             }),
             "the PR/source-feature link must survive a save/load round trip"
         );
+        assert_eq!(
+            lf.review_source,
+            Some(crate::project::ReviewSource {
+                source_feature_id: "feat-source".to_string(),
+                target_branch: "feature/my-feature".to_string(),
+                base_sha: "def456".to_string(),
+            }),
+            "the companion review feature's source link must survive a save/load round trip"
+        );
 
         assert_eq!(lf.sessions.len(), 1);
         let ls = &lf.sessions[0];
         assert_eq!(ls.kind, SessionKind::Claude);
         assert_eq!(ls.claude_session_id, Some("claude-abc123".to_string()));
+        assert_eq!(
+            ls.todo_reference,
+            Some(TodoSessionReference {
+                todo_id: "todo-123".to_string(),
+                launched_from_todo_menu: true,
+            })
+        );
         assert!(ls.status_text.is_none()); // transient — never persisted
     }
 
@@ -849,6 +847,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 },
                 Feature {
                     id: "feat-skip".to_string(),
@@ -875,6 +874,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 },
             ],
             created_at: Utc::now(),

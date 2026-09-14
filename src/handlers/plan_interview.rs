@@ -12,6 +12,40 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    let choosing_expert_model = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.expert_model_pick.is_some()
+    );
+    if choosing_expert_model {
+        let editing_custom = matches!(
+            &app.mode,
+            AppMode::PlanInterview(state)
+                if state.expert_model_pick.as_ref().is_some_and(|pick| pick.editing_custom)
+        );
+        if editing_custom {
+            match key.code {
+                KeyCode::Esc => app.cancel_plan_expert_model_picker(),
+                KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
+                KeyCode::Backspace => app.plan_expert_model_backspace(),
+                KeyCode::Char(c)
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    app.plan_expert_model_push(c)
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Esc => app.cancel_plan_expert_model_picker(),
+            KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
+            KeyCode::Down | KeyCode::Char('j') => app.plan_expert_model_pick_move(1),
+            KeyCode::Up | KeyCode::Char('k') => app.plan_expert_model_pick_move(-1),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let confirming_abort =
         matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation);
     // Only a feature-creation interview has a launch to cancel; for an
@@ -69,6 +103,15 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return handle_plan_critique_key(app, key);
     }
 
+    // A focused custom-answer editor owns every key except the two that leave
+    // it: Enter commits (back to the option list, no submit) and Esc restores
+    // the buffer it opened with.
+    let custom_answer_focused =
+        matches!(&app.mode, AppMode::PlanInterview(state) if state.custom_answer_focused);
+    if custom_answer_focused {
+        return handle_custom_answer_editor_key(app, key);
+    }
+
     let is_select = matches!(
         &app.mode,
         AppMode::PlanInterview(state)
@@ -106,7 +149,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
-        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
             let result = match &mut app.mode {
                 AppMode::PlanInterview(state) => state.advance(),
                 _ => return Ok(()),
@@ -122,7 +165,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) && accepts_text => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) && accepts_text => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state
                     .editor
@@ -189,6 +232,61 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.continue_plan_interview_after_done()?;
             }
         }
+        // Attach / detach a reference document. Brief step only: the list is
+        // the interview's, set before any question, and the read-only switch it
+        // triggers applies to every later pass.
+        KeyCode::Char('d') if control => {
+            let on_brief = matches!(
+                &app.mode,
+                AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Brief
+            );
+            if on_brief {
+                app.message = None;
+                app.open_plan_interview_attach_doc();
+            }
+        }
+        KeyCode::Char('x') if control => {
+            let on_brief = matches!(
+                &app.mode,
+                AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Brief
+            );
+            if on_brief {
+                let removed = match &mut app.mode {
+                    AppMode::PlanInterview(state) => state.remove_last_attached_doc(),
+                    _ => None,
+                };
+                match removed {
+                    Some(name) => {
+                        app.persist_plan_interview_draft();
+                        app.message = Some(format!("Removed {name}"));
+                    }
+                    None => app.message = Some("No attached reference docs to remove".into()),
+                }
+            }
+        }
+        // Open the always-available custom-answer box for a choice question.
+        // Free-text questions keep `e` as a literal character (handled by the
+        // text catch-all below).
+        KeyCode::Char('e') if is_select && key.modifiers.is_empty() => {
+            let opened = match &mut app.mode {
+                AppMode::PlanInterview(state) => state.open_custom_answer_editor(),
+                _ => false,
+            };
+            if opened {
+                app.message = None;
+            }
+        }
+        // Back to "nothing picked" — the arrows only move between real options,
+        // so without this a stray j/k/arrow commits a pick that cannot be
+        // undone within the question. Nothing picked is a valid answer (custom
+        // text alone).
+        KeyCode::Backspace | KeyCode::Delete if is_select && key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode
+                && state.clear_option_selection()
+            {
+                app.message = None;
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') if is_select => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.select_previous_option();
@@ -205,6 +303,40 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// The inline custom-answer editor for a choice question. `Enter` commits and
+/// returns focus to the option list *without* submitting the question; `Esc`
+/// restores the buffer captured when it opened; every other key edits, with the
+/// character cap enforced on each change. `Shift+Enter` inserts a newline —
+/// custom answers may be multi-line.
+fn handle_custom_answer_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.cancel_custom_answer();
+            }
+            app.message = None;
+        }
+        KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.commit_custom_answer();
+            }
+            app.persist_plan_interview_draft();
+            app.message = None;
+        }
+        _ => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                let event = if key.code == KeyCode::Enter {
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+                } else {
+                    key
+                };
+                state.custom_answer_handle_key(event);
+            }
+        }
     }
     Ok(())
 }
@@ -373,10 +505,34 @@ fn handle_plan_investigation_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// The advisory agent review of the draft plan. Every action here either
+/// The advisory Expert review of the draft plan. Every action here either
 /// scrolls, returns to the untouched plan, or asks for an explicit revision —
 /// the review never rewrites the plan on its own.
 fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let answering = matches!(
+        &app.mode,
+        AppMode::PlanInterview(state) if state.critique_answering
+    );
+    if answering {
+        match key.code {
+            KeyCode::Esc => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.critique_answering = false;
+                }
+            }
+            KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.save_critique_answer();
+                }
+            }
+            _ => {
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.editor.handle_key(key);
+                }
+            }
+        }
+        return Ok(());
+    }
     let loading = matches!(
         &app.mode,
         AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::CritiqueLoading
@@ -404,6 +560,14 @@ fn handle_plan_critique_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = None;
                 app.start_plan_interview_synthesis()?;
             }
+        }
+        KeyCode::Char('e') if !loading && key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.begin_critique_answers();
+            }
+        }
+        KeyCode::Char('f') if !loading && key.modifiers.is_empty() => {
+            app.start_plan_interview_critique_followup()?;
         }
         _ if !loading => {
             if let AppMode::PlanInterview(state) = &mut app.mode {

@@ -3,18 +3,18 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 use super::super::dashboard::centered_rect;
 use crate::theme::Theme;
 
-pub fn draw_help(frame: &mut Frame, scroll_offset: usize, theme: &Theme) {
-    let area = centered_rect(55, 70, frame.area());
-    draw_help_at(frame, area, scroll_offset, theme);
+pub fn draw_help(frame: &mut Frame, scroll_offset: usize, theme: &Theme) -> usize {
+    let area = centered_rect(90, 85, frame.area());
+    draw_help_at(frame, area, scroll_offset, theme)
 }
 
-fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &Theme) {
+fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &Theme) -> usize {
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let normal_keybinds: Vec<(&str, &str)> = vec![
@@ -33,6 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
+        ("E", "Edit headless AI prompt templates (overrides)"),
         ("G", "Open PR Triage (experimental)"),
         ("W", "Open AI Review for this feature (experimental)"),
         (
@@ -40,7 +41,12 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Open Learning Mode (read this codebase, ask questions)",
         ),
         ("P", "Run a plan interview for this feature"),
+        ("Q", "Run a Quick Plan interview for this feature"),
         ("T", "Theme picker"),
+        (
+            "t",
+            "Companion review feature: land its commits on the source branch",
+        ),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session/feature"),
@@ -51,6 +57,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("z", "Dormant features (idle + unattended)"),
+        ("w", "Context window / warning settings"),
         ("i", "Needs attention: questions and finished work"),
         ("I", "On a TODOs row: start the next TODO"),
         ("/", "Search and jump to item"),
@@ -109,8 +116,16 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Enter",
             "Save answer and continue; at the AI prompt, review raw plan (no tokens)",
         ),
-        ("Alt+Enter", "Insert a newline (free-text answers)"),
+        ("Shift+Enter", "Insert a newline (free-text answers)"),
         ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
+        (
+            "Backspace",
+            "Clear the picked option (back to nothing picked; lets you answer with custom text alone)",
+        ),
+        (
+            "e",
+            "Type your own answer to a select question (submitted with any picked option; Enter still submits)",
+        ),
         ("Ctrl+B", "Return to the previous question"),
         ("Ctrl+S", "Skip an optional question"),
         ("Ctrl+R", "Restore the previous interview's answer (re-run)"),
@@ -155,7 +170,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Edit raw plan markdown"),
         (
             "a",
-            "Agent review of the plan, or re-open one already held (uses tokens for a new review)",
+            "Expert review with an explicit frontier model, or re-open one already held (uses tokens for a new review)",
         ),
         (
             "f",
@@ -194,7 +209,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  During an agent review of the plan:",
+        "  During an Expert review of the plan:",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
@@ -221,7 +236,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  While viewing (embedded tmux):",
+        "  While viewing: Ctrl+Q exits; Ctrl+Space opens leader commands.",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
@@ -230,14 +245,23 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let view_keybinds: Vec<(&str, &str)> = vec![
         ("Ctrl+Q", "Exit view"),
         ("Ctrl+Space", "Open leader command menu"),
-        ("any text key", "Open compose input (agent sessions)"),
+        (
+            "any text key",
+            "Open compose input (agent sessions, without leader)",
+        ),
+        ("", "Commands below require Ctrl+Space first:"),
         ("s", "Steering coach (experimental)"),
         ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
         ("n", "Open current plan"),
+        (
+            "F",
+            "Start a fresh-context session (asks for your prompt first)",
+        ),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
+        ("z", "Complete this session's referenced TODO"),
         ("N", "Quick-capture a TODO for this worktree"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),
@@ -247,6 +271,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("/", "Command picker (slash + AMF actions)"),
         ("a", "AMF local actions picker"),
         ("p", "Prompt library (inject saved prompt)"),
+        ("E", "Edit headless AI prompt templates (overrides)"),
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
@@ -283,15 +308,17 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("o", "Edit notes"),
         ("b", "Edit scratchpad banner"),
         ("Space / x", "Cycle state: todo → in progress → done"),
-        ("p", "Cycle priority (High/Med/Low)"),
+        ("P", "Cycle priority (High/Med/Low)"),
         ("J / K", "Reorder up/down"),
         ("d", "Delete TODO (y/n confirm)"),
         ("I", "Start the next TODO in the visible lists"),
-        ("g / Enter", "Start work: agent now, or plan it first"),
+        ("Enter", "Start work: agent now, or plan it first"),
         ("", "  (jumps straight to a linked session or feature)"),
         ("", "  (an in-progress TODO cannot launch another agent)"),
-        ("\\", "Show/hide the project + global lists"),
-        ("Tab / Shift+Tab", "Move between the lists on screen"),
+        ("p", "Show/hide the project TODO list"),
+        ("g", "Show/hide the global TODO list"),
+        ("", "  (visibility is shared until AMF exits)"),
+        ("Tab / Shift+Tab", "Move between visible TODO lists"),
         ("M / C", "Move / copy the TODO to another list"),
         ("q / Esc / Ctrl+Q", "Exit TODOs view"),
     ];
@@ -327,10 +354,18 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("f", "Inject scoped fix into agent session"),
         ("", "(e edit · Tab inject · Ctrl+T vim)"),
+        ("", "(a finished investigation's findings are appended)"),
         ("", "(first fix/batch picks the fix target: existing"),
         ("", "live session, a named dedicated session + harness, or"),
         ("", "New feature… — an isolated worktree with its own"),
         ("", "harness + vibe mode, set up in one compact form)"),
+        ("v", "Investigate this comment — read-only headless pass"),
+        ("", "(pick a harness; the answer persists and shows in"),
+        ("", "the detail panel)"),
+        ("e", "Attach optional context for the next Investigate —"),
+        ("", "a hypothesis the run verifies, not a fact to assume"),
+        ("a", "Act on a finished investigation: post reply,"),
+        ("", "ask follow-up, dismiss, keep as TODO"),
         ("Space", "Mark comment for batch fix"),
         ("B", "Inject one combined prompt for all marked"),
         ("P", "Jump to the linked fix session"),
@@ -435,12 +470,13 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ]));
     }
 
-    let total_lines = lines.len();
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let total_lines = paragraph.line_count(area.width.saturating_sub(2));
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
     let scroll = scroll_offset.min(max_scroll) as u16;
 
-    let help = Paragraph::new(lines).scroll((scroll, 0)).block(
+    let help = paragraph.scroll((scroll, 0)).block(
         Block::default()
             .title(" Keybindings ")
             .borders(Borders::ALL)
@@ -450,7 +486,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     frame.render_widget(help, area);
 
-    if total_lines > visible_height {
+    if total_lines > visible_height && area.width > 0 && area.height > 2 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         let mut scrollbar_state =
             ScrollbarState::new(max_scroll).position(scroll_offset.min(max_scroll));
@@ -462,4 +498,5 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         };
         frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
     }
+    scroll as usize
 }

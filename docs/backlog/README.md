@@ -63,6 +63,37 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Docs site feature coverage](docs-site-coverage-plan.md) — _All 7 epics
+  shipped._ Audit of `site/content/docs/` against `src/` and `CLAUDE.md`
+  turned up shipped features with no site coverage: two (`amf doctor`, the
+  automation CLI) already documented in README and just missing a site
+  page, plus context-window/usage tracking, a multi-harness capability
+  matrix, the `amf.json` project-config schema, session bookmarks/saved-
+  transcript resume/Fresh Context handoff, Remote Control, task-prompt
+  coaching, plan-interview reference-doc attachment, and combined-batch
+  fix-cost disclosure. Landed as three new pages —
+  [Choosing a Harness](../../site/content/docs/harnesses.md),
+  [Project Config Reference](../../site/content/docs/project-config.md),
+  [More Session Tools](../../site/content/docs/session-tools.md) — plus a
+  `troubleshooting.md` page and new sections in `attention-and-limits.md`,
+  `core-concepts.md`, `prompts-and-todos.md`, `review-and-pr-feedback.md`,
+  and `keybindings.md`, all cross-linked. Verifying Epic 1 turned up and
+  fixed a separate, pre-existing bug that had the whole site failing to
+  build (see [bug backlog](bug-backlog-plan.md)). One follow-up open
+  question: nothing was checked against a live `amf` session across all
+  four harnesses, only against source.
+- [Crate package size](crate-package-size-plan.md) — _Shipped._ The
+  published crate was 20MB/703 files (11.1MiB compressed) — over
+  crates.io's 10MB compressed cap, which is what turned every publish
+  attempt into an opaque `503` instead of a clean rejection. Trimmed via
+  a targeted `Cargo.toml` `exclude` list checked against the handful of
+  files `src/` actually pulls in via `include_str!`, down to 8.2MiB/1.7MiB
+  compressed.
+- [Premium-model efficiency options](premium-model-efficiency-options-plan.md) —
+  _Backlog._ Planning reference for eight ways AMF could make Astra/Fable more
+  affordable, with worked savings calculations, implementation boundaries,
+  evaluation criteria, and dependencies for later feature plans.
+
 - [Project config location](project-config-location-plan.md) — _Shipped._
   Moved hand-authored project config out of the generated
   `.amf/` directory to `amf.json` at the repo root, so `.amf/` is purely
@@ -84,10 +115,11 @@ doc always says exactly what remains.
 - [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ Scoped
   TODO lists added as a `SessionKind::Todos` session via the `s` picker
   (one per feature, native UI, SQLite-backed). A feature's editor opens
-  on its own **worktree** list, with the **project** list and a
-  machine-wide **global** list one keypress away as side panes; items
-  move or copy between scopes. Each TODO carries priority, notes, and
-  done state. Full editing (add/edit/notes/done/priority/reorder/delete
+  on its own **worktree** list, with the **project** list (`p`) and a
+  machine-wide **global** list (`g`) each independently toggled on or off
+  as side panes; items move or copy between scopes. Each TODO carries
+  priority, notes, and done state. Full editing
+  (add/edit/notes/done/priority/reorder/delete
   + a per-list scratchpad), spawning an agent from a TODO with a
   pre-filled composer prompt, "implement next" across the visible
   scopes, plan mode from a TODO, and quick-capture from any session view
@@ -151,7 +183,7 @@ doc always says exactly what remains.
   have shipped for Claude, Codex, and opencode; feature-row aggregation
   remains. Pi remains unsupported until it exposes usable per-session
   usage metadata.
-- [Token-efficient agent sessions](token-efficiency-plan.md) — _Backlog._
+- [Token-efficient agent sessions](token-efficiency-plan.md) — _Partial._
   Move AMF from cumulative usage accounting to active usage management:
   provider/model-aware costs, Economy/Balanced/Deep session profiles,
   context-pressure warnings and soft budgets, deliberate
@@ -221,7 +253,20 @@ doc always says exactly what remains.
   (`~/.config/amf/review-memory.md`) that AI review merges on top of each
   repo's own doc, with `g` picking which doc `M` and the bootstrap write to.
   One small backlog item remains: teaching the compact pass (`c`) to prune
-  the global doc as well as the project one.
+  the global doc as well as the project one. A later addition — investigating
+  a review comment read-only (`v`) instead of fixing it — shipped in PR #602;
+  its deferred polish is tracked in
+  [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md).
+  A follow-on lets the operator attach optional free-form context to the next
+  `v` run (`e`): a hypothesis the read-only pass verifies against the PR and
+  repo, reviewable in a banner and cleared once consumed (empty box = prior
+  behaviour).
+- [PR Triage — Investigate: follow-ups](pr-triage-investigate-followups-plan.md)
+  — _Backlog._ Ergonomic gaps on the shipped read-only investigation flow:
+  offer "Investigation findings" from the `R` reply-kind picker (today it's
+  only reachable via the `a` menu); auto-scroll the detail pane to the answer
+  when a run finishes; mouse-wheel / `j`-`k` scrolling for the right-side box;
+  and a follow-up-thread count on the section header.
 - [Screenshot & video review harness](screenshot-review-plan.md) —
   _All epics shipped._ Lets an agent run AMF in an isolated scratch
   instance (private `XDG_CONFIG_HOME`/`XDG_STATE_HOME` + tmux session, no

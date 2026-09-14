@@ -122,6 +122,30 @@ impl AgentKind {
         }
     }
 
+    /// The lowercase, machine-stable name — matches this enum's serde
+    /// representation. Used as a key/token wherever a harness has to be
+    /// written to storage (prompt-override rows and `amf.json` entries).
+    pub fn slug(&self) -> &'static str {
+        match self {
+            AgentKind::Claude => "claude",
+            AgentKind::Opencode => "opencode",
+            AgentKind::Codex => "codex",
+            AgentKind::Pi => "pi",
+        }
+    }
+
+    /// Parse a [`Self::slug`] back to an `AgentKind`. `None` for an
+    /// unrecognized token.
+    pub fn from_slug(token: &str) -> Option<AgentKind> {
+        match token {
+            "claude" => Some(AgentKind::Claude),
+            "opencode" => Some(AgentKind::Opencode),
+            "codex" => Some(AgentKind::Codex),
+            "pi" => Some(AgentKind::Pi),
+            _ => None,
+        }
+    }
+
     pub const ALL: [AgentKind; 4] = [
         AgentKind::Claude,
         AgentKind::Opencode,
@@ -151,6 +175,11 @@ pub struct FeatureSession {
     pub label: String,
     pub tmux_window: String,
     pub claude_session_id: Option<String>,
+    /// The TODO that initiated this agent session, when it was launched from
+    /// the TODO menu.  The identity is stable across TODO list moves; the
+    /// current TODO data is always resolved from SQLite rather than copied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo_reference: Option<TodoSessionReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage_source: Option<TokenUsageSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +195,17 @@ pub struct FeatureSession {
     pub status_text: Option<String>,
     #[serde(skip)]
     pub token_usage: Option<SessionTokenUsage>,
+}
+
+/// Provenance retained on an agent session started through the TODO menu.
+///
+/// `launched_from_todo_menu` is deliberately stored alongside the TODO id so
+/// legacy TODO/session associations cannot be mistaken for this feature's
+/// explicit sidebar reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TodoSessionReference {
+    pub todo_id: String,
+    pub launched_from_todo_menu: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -353,6 +393,14 @@ pub struct Feature {
     /// triage was started from. `None` for every ordinary feature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_source: Option<TriageSource>,
+    /// Set only on a **companion review feature**: the isolated worktree the
+    /// final review creates when the reviewer picks the "New feature…"
+    /// destination. Like `triage_source` this ties the companion back to the
+    /// feature the review was run from and records the commit it was branched
+    /// from (the base of the integration commit range). `None` for every
+    /// ordinary feature and for PR-triage companions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_source: Option<ReviewSource>,
 }
 
 /// The PR and source feature a companion triage feature was created for. Also
@@ -373,6 +421,22 @@ pub struct TriageSource {
     pub pr_branch: String,
     /// Commit the companion worktree was branched from. Everything after it on
     /// the triage branch is what integration pushes or cherry-picks back.
+    pub base_sha: String,
+}
+
+/// The source feature a **companion review feature** was created from (the
+/// final review's "New feature…" destination). Kept separate from
+/// [`TriageSource`] because there is no PR involved: integration lands the
+/// companion's commits on the source feature's own branch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReviewSource {
+    /// `Feature::id` of the feature the final review was run from.
+    pub source_feature_id: String,
+    /// The source feature's branch — the ref integration pushes onto or
+    /// cherry-picks into.
+    pub target_branch: String,
+    /// Commit the companion worktree was branched from. Everything after it on
+    /// the companion branch is what integration pushes or cherry-picks back.
     pub base_sha: String,
 }
 
@@ -415,6 +479,8 @@ struct FeatureDe {
     selected_plan_path: Option<PathBuf>,
     #[serde(default)]
     triage_source: Option<TriageSource>,
+    #[serde(default)]
+    review_source: Option<ReviewSource>,
 }
 
 impl<'de> Deserialize<'de> for Feature {
@@ -449,6 +515,7 @@ impl<'de> Deserialize<'de> for Feature {
             nickname: feature.nickname,
             selected_plan_path: feature.selected_plan_path,
             triage_source: feature.triage_source,
+            review_source: feature.review_source,
         })
     }
 }
@@ -568,6 +635,7 @@ impl Feature {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         }
     }
 
@@ -654,6 +722,7 @@ impl Feature {
             label,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -690,6 +759,7 @@ impl Feature {
             label: name,
             tmux_window: window,
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -1119,6 +1189,7 @@ impl ProjectStore {
                                 label: "Claude 1".into(),
                                 tmux_window: "claude".into(),
                                 claude_session_id: f.claude_session_id,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1134,6 +1205,7 @@ impl ProjectStore {
                                 label: "Terminal 1".into(),
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: f.created_at,
@@ -1169,6 +1241,7 @@ impl ProjectStore {
                             nickname: None,
                             selected_plan_path: None,
                             triage_source: None,
+                            review_source: None,
                         }
                     })
                     .collect();
@@ -1444,6 +1517,7 @@ mod tests {
             label: "test".to_string(),
             tmux_window: window.to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -1453,6 +1527,35 @@ mod tests {
             status_text: None,
             token_usage: None,
         }
+    }
+
+    #[test]
+    fn session_todo_reference_is_backward_compatible_and_serializes_when_present() {
+        let legacy = r#"{
+            "id":"session-1",
+            "kind":"claude",
+            "label":"Claude 1",
+            "tmux_window":"claude",
+            "claude_session_id":null,
+            "created_at":"2025-01-01T00:00:00Z"
+        }"#;
+
+        let legacy_session: FeatureSession = serde_json::from_str(legacy).unwrap();
+        assert!(legacy_session.todo_reference.is_none());
+
+        let referenced = FeatureSession {
+            todo_reference: Some(TodoSessionReference {
+                todo_id: "todo-1".to_string(),
+                launched_from_todo_menu: true,
+            }),
+            ..legacy_session
+        };
+        let serialized = serde_json::to_value(referenced).unwrap();
+        assert_eq!(serialized["todo_reference"]["todo_id"], "todo-1");
+        assert_eq!(
+            serialized["todo_reference"]["launched_from_todo_menu"],
+            true
+        );
     }
 
     fn make_feature() -> Feature {
@@ -1481,6 +1584,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         }
     }
 
@@ -1516,6 +1620,7 @@ mod tests {
                         label: "Claude 1".to_string(),
                         tmux_window: "claude".to_string(),
                         claude_session_id: None,
+                        todo_reference: None,
                         token_usage_source: None,
                         token_usage_source_match: None,
                         created_at: Utc::now(),
@@ -1542,6 +1647,7 @@ mod tests {
                     nickname: None,
                     selected_plan_path: None,
                     triage_source: None,
+                    review_source: None,
                 }],
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
@@ -1579,6 +1685,7 @@ mod tests {
                                 label: "Terminal 1".to_string(),
                                 tmux_window: "terminal".to_string(),
                                 claude_session_id: Some("claude-123".to_string()),
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),
@@ -1594,6 +1701,7 @@ mod tests {
                                 label: "Claude 2".to_string(),
                                 tmux_window: "claude-2".to_string(),
                                 claude_session_id: None,
+                                todo_reference: None,
                                 token_usage_source: None,
                                 token_usage_source_match: None,
                                 created_at: Utc::now(),
@@ -1621,6 +1729,7 @@ mod tests {
                         nickname: Some("nick".to_string()),
                         selected_plan_path: None,
                         triage_source: None,
+                        review_source: None,
                     },
                     Feature {
                         id: "feature-2".to_string(),
@@ -1647,6 +1756,7 @@ mod tests {
                         nickname: None,
                         selected_plan_path: None,
                         triage_source: None,
+                        review_source: None,
                     },
                 ],
                 created_at: Utc::now(),

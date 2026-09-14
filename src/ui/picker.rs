@@ -3,7 +3,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
@@ -16,6 +16,7 @@ use crate::app::{
 use crate::custom_session_icons::resolve_custom_session_icon;
 use crate::project::SessionKind;
 use crate::theme::Theme;
+use crate::usage::{UsageData, format_usage_summary, usage_windows_for_session_kind};
 
 use super::dashboard::centered_rect;
 
@@ -135,7 +136,8 @@ pub fn draw_notification_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -192,6 +194,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
 
     let mut items: Vec<ListItem> = Vec::new();
     let mut current_source = String::new();
+    let mut selected_row = None;
 
     for (i, cmd) in state.commands.iter().enumerate() {
         if cmd.source != current_source {
@@ -231,6 +234,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         ]);
 
         if is_selected {
+            selected_row = Some(items.len());
             items.push(
                 ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg())),
             );
@@ -240,7 +244,8 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
     }
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(selected_row);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -720,7 +725,7 @@ pub fn draw_markdown_file_picker(
     let hints = if state.search_active {
         Paragraph::new(Line::from(vec![
             Span::styled(
-                "  j/k or \u{2191}/\u{2193}",
+                "  \u{2191}/\u{2193} or Tab/Shift+Tab",
                 Style::default().fg(theme.warning.to_color()),
             ),
             Span::styled(
@@ -823,7 +828,7 @@ pub fn draw_bookmark_picker(
 
     if rows.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
-            "  No bookmarks yet. Use leader+m on a session.",
+            "  No bookmarks. Use Ctrl+Space H in a session.",
             Style::default().fg(theme.text_muted.to_color()),
         )));
         frame.render_widget(empty, chunks[0]);
@@ -865,7 +870,8 @@ pub fn draw_bookmark_picker(
         })
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(List::new(items), chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1022,7 +1028,8 @@ pub fn draw_session_switcher(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1109,7 +1116,8 @@ pub fn draw_opencode_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1183,7 +1191,8 @@ pub fn draw_claude_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1257,7 +1266,8 @@ pub fn draw_codex_session_picker(
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -1533,6 +1543,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame, theme: &Theme) {
 pub fn draw_session_picker(
     frame: &mut Frame,
     state: &SessionPickerState,
+    usage: &UsageData,
     nerd_font: bool,
     theme: &Theme,
 ) {
@@ -1653,13 +1664,33 @@ pub fn draw_session_picker(
 
             let line = Line::from(spans);
 
+            let usage_summary =
+                format_usage_summary(&usage_windows_for_session_kind(&session.kind, usage));
+            let text: Text = match usage_summary {
+                Some(summary) => {
+                    // `text_muted` and the selection background are the
+                    // same "darkgray" in the default theme, so the muted
+                    // color would be invisible on a highlighted row.
+                    let usage_style = if is_selected && !is_disabled {
+                        Style::default().fg(theme.text.to_color())
+                    } else {
+                        Style::default().fg(theme.text_muted.to_color())
+                    };
+                    Text::from(vec![
+                        line,
+                        Line::from(Span::styled(format!("      {summary}"), usage_style)),
+                    ])
+                }
+                None => Text::from(line),
+            };
+
             if is_selected && !is_disabled {
                 selected_item_idx = Some(items.len());
                 items.push(
-                    ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg())),
+                    ListItem::new(text).style(Style::default().bg(theme.effective_selection_bg())),
                 );
             } else {
-                items.push(ListItem::new(line));
+                items.push(ListItem::new(text));
             }
         }
     }

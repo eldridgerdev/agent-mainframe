@@ -99,6 +99,20 @@ These changes shipped in PR #308.
 - [ ] Add large-transcript fixtures that prove work scales with appended
   bytes rather than total history size.
 
+  **Caution for this item:** `read_prompts_from_claude_sessions`
+  (`src/app/util.rs`) already had a bounded-tail fast path — newest
+  session file only, last 64 KB only — but it was being reused for the
+  "all prompts sent in this session" menu (leader, then `l`) as well as
+  the single-latest-prompt sidebar preview. That silently dropped
+  prompts from before a resume/compaction (a new session file) or
+  outside the tail window. The fix (see CHANGELOG "Unreleased") gave the
+  menu its own `full: true` path that scans every session file in full,
+  and kept the bounded-tail path only for the sidebar preview, which
+  polls every status-sync tick and only ever needs the single latest
+  entry. Any further "bounded tail" work here should stay scoped to
+  readers that only need the *latest* value — never to a reader whose
+  contract is "show everything."
+
 ### 3. Prioritize visible work during sidebar warming
 
 - [ ] Queue the selected feature and expanded project rows first.

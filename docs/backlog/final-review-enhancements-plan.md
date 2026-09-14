@@ -32,7 +32,11 @@
   (`src/app/review.rs`, `src/handlers/diff.rs`,
   `src/ui/dialogs/diff.rs`, `DiffViewerState` in `src/app/state.rs`);
   the per-file diff review (`src/handlers/diff_review.rs`); review
-  mode (`CLAUDE.local.md` → `.claude/review-notes.md`).
+  mode (`CLAUDE.local.md` → `.claude/review-notes.md`);
+  [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md)
+  (investigation: offloading `review-notes.md` writing off the primary agent's
+  context — covers the "attribution of review-note generation cost" Cost
+  follow-up).
 
 ## Why / problem
 
@@ -497,8 +501,21 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       just leaves it for later. Reuses the PR-review `FixTarget` toggle (now
       parameterized by session label) and `create_dedicated_review_session`
       (now accepting a label + optional harness override).
-
-### Round 2 (planned)
+- [x] Choose *where* review fixes are applied (not just live vs. dedicated) —
+      `t` now opens a destination picker (`AppMode::DiffViewer` sub-state
+      `destination_pick`, `src/app/review_destination.rs` +
+      `src/handlers/review_destination.rs` + `src/ui/dialogs/review_destination.rs`),
+      modelled on PR Triage's fix-target picker. Four rows: this feature's live
+      session, a dedicated review session per enabled harness, **any other
+      existing feature** (`FixTarget::ExistingFeature`, routed by feature id),
+      and **a new companion feature** — an isolated worktree branched from the
+      feature under review with its own harness / vibe mode / branch
+      (`TriageFeatureSetupState` reused; `Feature.review_source` +
+      `MIGRATION_031` persist the link). The companion carries an integration
+      step: dashboard `t` on a `review_source` feature opens a push /
+      cherry-pick overlay (`AppMode::ReviewIntegrate`, reuses
+      `triage_feature.rs`'s git helpers). `dispatch_review_feedback` routes all
+      four; the footer target label and the `?` help overlay were updated.
 
 - [x] AI co-reviewer first pass (pre-fill draft comments) — press `A` in
       the final review to run a headless Claude pass over the **current
@@ -835,6 +852,24 @@ Cost:
       (`O`), and the config-wizard diff explain — all four used to always
       run on the CLI's default model with no way to point them at a
       cheaper one.
+- [x] Codex presets in the AI-review model picker — `model_pick_rows`
+      (`src/app/ai_review.rs`) offered Claude's four verified tier aliases
+      (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`)
+      but fell straight through to `Default`/`Custom` for Codex, since
+      Codex's `--model` values are arbitrary account-specific ids with no
+      CLI-enumerable alias list to hardcode. `codex_config::known_models`
+      (`src/codex_config.rs`) now reads the account's own recorded model
+      list from `~/.codex/config.toml`'s `[tui.model_availability_nux]`
+      table and offers those as presets, falling back to `Default`/
+      `Custom` only when that table is absent (a fresh install that has
+      never opened the Codex TUI's model picker). No-ops under
+      `cfg!(test)` so unit tests stay independent of the machine's real
+      Codex config. When that fallback triggers, `draw_ai_model_pick`
+      (`src/ui/dialogs/ai_review.rs`) now says why inline — a picker with
+      just `Default`/`Custom` otherwise looks identical to "this harness
+      has no enumerable presets at all" (Opencode/Pi), leaving no clue
+      that opening Codex's own model picker once (or hand-editing
+      `~/.codex/config.toml`) would populate it.
 - [x] Capped `.claude/final-review-feedback.md` growth — rounds were
       prepended and kept forever, but `REVIEW_FEEDBACK_PROMPT` and
       `parse_agent_responses` only ever consume the newest round, so a
@@ -853,6 +888,24 @@ Cost:
       a file that already has a note with nothing new to add), instead of
       one per individual edit. Output format (and `parse_review_notes`)
       unchanged.
+- [x] Blind-append REVIEW MODE notes (Option F, Step 1 of
+      [`docs/final-review-subagent-notes-investigation.md`](../final-review-subagent-notes-investigation.md))
+      — the Review-Mode block in `ensure_review_claude_md`
+      (`src/app/setup.rs`) now tells the agent to **append without reading
+      `.claude/review-notes.md` or its archive** and rely on session
+      memory to skip an already-covered file. The investigation's §2
+      baseline found the per-batch *read* of the growing file plus its
+      context carry — not the write — dominated the cost, and §3.6 showed
+      that read is redundant with the dedup `archive_review_notes` /
+      `split_overflow_review_notes` (`src/app/review.rs`) already run on
+      every agent-turn boundary. Blind-appended duplicates for one path
+      collapse to the newest section on the next turn (covered by
+      `blind_appended_duplicates_collapse_below_the_cap` and
+      `archive_review_notes_collapses_blind_appended_duplicates_on_disk`).
+      No code paths added; file spec, parser, and diff-viewer panel
+      unchanged. Options I (AMF-filtered changed-file list) and K (terser
+      section format), plus the AMF-driven mechanical writer, stay
+      deferred to Step 2 pending dogfood results.
 - [x] Per-action model overrides — a new `review_models` map
       (`BTreeMap<String, String>` on `AppConfig`) keyed by
       `ReviewAction::config_key()` (`walkthrough` / `co_review` /
@@ -873,10 +926,11 @@ Cost:
       gitignored `.claude/review-notes-archive.md`. `archive_review_notes`
       / `split_overflow_review_notes` (`src/app/review.rs`) run when Review
       Mode is configured (migrating an existing long-lived file) and when
-      an agent-turn boundary reaches `notifications.rs`, so the next batch
-      never pays to read unbounded history. The managed Review Mode
-      instruction is refreshed on upgrade and explicitly tells the agent
-      to inspect only the bounded live file. AMF's final-review viewer and
+      an agent-turn boundary reaches `notifications.rs`, so history never
+      accumulates unbounded. The managed Review Mode instruction is
+      refreshed on upgrade; it now tells the agent to blind-append and not
+      read the file at all (see the blind-append entry above). AMF's
+      final-review viewer and
       per-edit explanation lookup use `load_review_notes`, which merges the
       archive first and the live file second, preserving old reviewer
       context while allowing a current note to override its archived

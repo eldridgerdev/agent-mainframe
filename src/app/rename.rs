@@ -108,8 +108,9 @@ impl App {
             _ => return Ok(()),
         };
 
-        if input.is_empty() {
+        if input.trim().is_empty() {
             self.message = Some("Name cannot be empty".into());
+            self.push_toast_warning("Name cannot be empty");
             return Ok(());
         }
 

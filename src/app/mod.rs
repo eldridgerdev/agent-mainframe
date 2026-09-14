@@ -10,10 +10,14 @@ mod codex_sessions;
 pub mod commands;
 mod compose;
 mod config_wizard;
+mod context_hints;
+mod context_settings;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
+pub(crate) mod fix_cost;
+mod handoff;
 mod hooks;
 pub(crate) mod learning;
 mod navigation;
@@ -22,14 +26,18 @@ mod opencode;
 pub(crate) mod opencode_storage;
 pub(crate) mod plan;
 mod plan_interview;
+mod plan_interview_attach;
 pub(crate) mod pr_review;
+pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
+pub(crate) mod prompt_overrides;
 pub mod remote_control;
 pub(crate) mod remote_server;
 mod rename;
 pub(crate) mod resource_gate;
 pub(crate) mod review;
+pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 mod search;
 mod session_config;
@@ -541,13 +549,30 @@ pub struct AppConfig {
     /// [`Self::low_memory_warn_mb`].
     #[serde(default = "default_waiting_stale_minutes")]
     pub waiting_stale_minutes: u64,
-    /// Whether the TODO editor reveals the project and global panes beside the
-    /// worktree one. App-level rather than per-overlay on purpose: the
-    /// dashboard's "implement next" runs with no overlay open and still has to
-    /// know which scopes count as visible, so the toggle has to live somewhere
-    /// both surfaces can read. Default closed — the worktree list alone.
-    #[serde(default)]
-    pub todo_side_panes: bool,
+    /// Overrides the context-window size AMF assumes when a harness's own
+    /// telemetry doesn't report one (Claude falls back to a hardcoded
+    /// 900,000; Codex, OpenCode, and Pi otherwise have no fallback at all —
+    /// see `CLAUDE_DEFAULT_CONTEXT_LIMIT` in `context_collectors.rs`). `None`
+    /// keeps each harness's existing default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_override: Option<u64>,
+    /// Percentage of the context window at which the severity indicator
+    /// switches from normal to `ContextBand::Warning`.
+    #[serde(default = "default_context_warning_percent")]
+    pub context_warning_percent: u8,
+    /// Percentage of the context window at which the severity indicator
+    /// switches to `ContextBand::Critical`. Must stay greater than
+    /// `context_warning_percent` for the bands to remain meaningful.
+    #[serde(default = "default_context_critical_percent")]
+    pub context_critical_percent: u8,
+    /// Global fallback for [`crate::extension::ExtensionConfig::review_prompt_budget_tokens`]:
+    /// the estimated prompt-token ceiling above which `W` AI PR review and
+    /// final-review co-review split an oversized diff into slices. `None` uses
+    /// the built-in per-harness default (Claude/Codex 128k, OpenCode/Pi 96k);
+    /// `0` disables pre-send splitting (adaptive halving only). A project's
+    /// `amf.json` `review_prompt_budget_tokens` overrides this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt_budget_tokens: Option<usize>,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -557,6 +582,8 @@ pub struct AppConfig {
 /// them would just be two knobs for one decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewAction {
+    /// Explicit Expert review of a synthesized implementation plan.
+    PlanPreflight,
     /// On-demand walkthrough for a noteless file (`w` in Final Review).
     Walkthrough,
     /// AI co-reviewer first pass over the current file (`A` in Final Review).
@@ -574,6 +601,7 @@ pub enum ReviewAction {
 impl ReviewAction {
     pub fn config_key(self) -> &'static str {
         match self {
+            ReviewAction::PlanPreflight => "plan_preflight",
             ReviewAction::Walkthrough => "walkthrough",
             ReviewAction::CoReview => "co_review",
             ReviewAction::ChangesetOverview => "changeset_overview",
@@ -624,6 +652,14 @@ fn default_dormant_last_accessed_hours() -> u64 {
 // 60-minute dormancy check surfaces it in `z`.
 fn default_waiting_stale_minutes() -> u64 {
     30
+}
+
+fn default_context_warning_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_WARNING_PERCENT
+}
+
+fn default_context_critical_percent() -> u8 {
+    crate::context_tracking::DEFAULT_CONTEXT_CRITICAL_PERCENT
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -682,7 +718,10 @@ impl Default for AppConfig {
             dormant_idle_minutes: default_dormant_idle_minutes(),
             dormant_last_accessed_hours: default_dormant_last_accessed_hours(),
             waiting_stale_minutes: default_waiting_stale_minutes(),
-            todo_side_panes: false,
+            context_window_override: None,
+            context_warning_percent: default_context_warning_percent(),
+            context_critical_percent: default_context_critical_percent(),
+            review_prompt_budget_tokens: None,
         }
     }
 }
@@ -704,10 +743,15 @@ impl AppConfig {
     /// entry for [`ReviewAction::config_key`] if set, else the shared
     /// `review_model` default, else `None` (harness default).
     pub fn review_model_for(&self, action: ReviewAction) -> Option<String> {
-        self.review_models
-            .get(action.config_key())
-            .cloned()
-            .or_else(|| self.review_model.clone())
+        let action_model = self.review_models.get(action.config_key()).cloned();
+        if action == ReviewAction::PlanPreflight {
+            // An Expert plan review must never silently inherit an ordinary
+            // review model. The user either names its model at dispatch time
+            // or configures this action explicitly.
+            action_model
+        } else {
+            action_model.or_else(|| self.review_model.clone())
+        }
     }
 
     /// The concurrency cap, or `None` when the check is disabled (`0`).
@@ -806,6 +850,12 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub db: Option<crate::db::AmfDb>,
+    /// Set by `precall_confirm` when the user clears a pre-call notice; the
+    /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
+    pub precall_cleared: Option<precall::PrecallAction>,
+    /// Stashed pre-call notice while the user is in the override manager it
+    /// opened (`e`); restored when the manager closes.
+    pub precall_return: Option<Box<precall::PendingPrecall>>,
     pub config: AppConfig,
     pub active_extension: ExtensionConfig,
     pub theme: crate::theme::Theme,
@@ -824,6 +874,20 @@ pub struct App {
     /// `todo_origin`, so an unrelated feature created afterwards cannot pick up
     /// a stale brief.
     pub pending_todo_plan_brief: Option<String>,
+    /// Composer seed for a "start an agent in a new feature" spawn from a TODO,
+    /// waiting for the create-feature wizard to finish. Kept here rather than on
+    /// the wizard state for the same reason [`Self::pending_todo_plan_brief`]
+    /// is: the wizard can detour through an `on_worktree_created` hook that
+    /// rebuilds its launch from scratch. Taken unconditionally by
+    /// `finish_feature_launch_with_resource_approval`, and only read when that
+    /// launch carries a `todo_origin` and is not a plan run.
+    pub pending_todo_spawn_prompt: Option<String>,
+    /// Process-lifetime visibility for the project TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_project_visible: bool,
+    /// Process-lifetime visibility for the global TODO scope. This is shared
+    /// by every TODO view but intentionally resets whenever AMF starts.
+    pub todo_global_visible: bool,
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
@@ -876,17 +940,15 @@ pub struct App {
     pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
     pub codex_sidebar_metadata_inflight: std::collections::HashSet<String>,
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
+    /// Rendered per-session active-TODO sidebar text, rebuilt on status sync and
+    /// after any local mutation that affects it (completion, deletion,
+    /// spawn) rather than on every frame. Resolving it runs two SQLite
+    /// queries per TODO-referenced session, and
+    /// `build_agent_sidebar_data` is rebuilt up to ~20x/sec in Viewing mode.
+    pub active_todos_sidebar_cache: HashMap<String, String>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
-    /// Finished Learning Mode answers, delivered from the per-question
-    /// threads. A persistent channel (rather than one `Option<Receiver>` per
-    /// run) is what lets several questions be in flight at once.
-    pub learning_answer_tx: Sender<learning::LearningAnswer>,
-    pub learning_answer_rx: Receiver<learning::LearningAnswer>,
-    /// `learning_qa` ids this process has a live run for. Only the ids not in
-    /// here are safe to treat as stranded when a session's history is loaded —
-    /// see `App::reconcile_interrupted_qa`.
-    pub learning_runs_in_flight: std::collections::HashSet<String>,
+    pub(crate) learning_runs: learning::runtime::LearningRuns,
     sidebar_load_executor: Option<SidebarLoadExecutor>,
     sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
@@ -894,6 +956,8 @@ pub struct App {
     pub token_tracker: SessionTokenTracker,
     /// Transient context-window telemetry keyed by AMF session ID.
     pub context_states: HashMap<String, SessionContextState>,
+    /// Transient context-hint dismissal state keyed by AMF session ID.
+    pub(crate) context_hint_states: context_hints::ContextHintStates,
     pub context_collector: SessionContextCollector,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
@@ -923,8 +987,12 @@ pub struct App {
     /// that opens and later closes is re-checked rather than staying stuck on
     /// a stale negative answer.
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
-    /// Receiver for the background PR-comment fetch (see `app::pr_review`).
-    pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    pub(crate) pr_review_work: pr_review::runtime::PrReviewWork,
+    /// Receiver for the background "all prompts" scan (leader-key latest-prompt
+    /// menu). Reading and parsing every Claude/Codex/opencode transcript file
+    /// for a session can be slow, so it runs off the UI thread; see
+    /// `app::view::open_latest_prompt_from_view`.
+    pub(crate) latest_prompt_menu_bg: Option<Receiver<view::LatestPromptScanResult>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
     /// headless harness call). Carries the round number alongside the
     /// result so a late-arriving response can be matched or discarded. See
@@ -934,7 +1002,7 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
-    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// Receiver for the optional Expert review of a draft plan. Separate again
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.
     pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
@@ -965,27 +1033,11 @@ pub struct App {
     /// `PrPicker` well before the background pass finishes. Without this, a
     /// `Done` arriving after a cancel would find `self.mode` is no longer
     /// `ReviewMemoryCompactRunning` and has nowhere to land the proposed
-    /// rewrite — mirrors [`Self::ai_review_pending`]. `Some` exactly while
+    /// rewrite — mirrors the pending AI-review run origin. `Some` exactly while
     /// `review_memory_compact_bg` is `Some`; both are cleared together once
     /// `Done` is processed.
     pub review_memory_compact_pending: Option<CompactRunState>,
-    /// Receiver for the background AI review of the current PR's diff (the
-    /// `A` action, AI Review pane). See `app::ai_review::run_ai_pr_review`.
-    pub ai_review_bg: Option<Receiver<ai_review::AiReviewProgress>>,
-    /// Live progress is kept outside `AppMode` so `esc` can leave the running
-    /// screen and `A` can later reconstruct it without resetting its timer or
-    /// losing activity received while the user was elsewhere.
-    pub ai_review_progress: Option<AiReviewRunProgress>,
-    /// The AI Review pane snapshot a background review ([`Self::ai_review_bg`])
-    /// was started against, kept alive independent of `self.mode` — in
-    /// particular across `cancel_ai_pr_review` (`esc`), which restores
-    /// `self.mode` to `AiReview` well before the background pass finishes.
-    /// Without this, `Done` arriving after a cancel finds `self.mode` is no
-    /// longer `AiReviewRunning` and has nowhere to merge the findings.
-    /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
-    /// together once `Done` is processed. See
-    /// `app::ai_review::poll_ai_pr_review_bg`.
-    pub ai_review_pending: Option<AiReviewState>,
+    pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -993,12 +1045,26 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
+    /// Memoized result of [`Self::ai_review_finding_fix_costs`], valid only
+    /// while its key still matches the open AI Review pane. Recomputed lazily
+    /// (a triage DB load + a full cached-review JSON parse + a sibling query
+    /// per correlated finding) when the key changes, instead of every render
+    /// tick; cleared on pane (re)open and when an `A` run lands.
+    pub(crate) ai_review_fix_cost_cache:
+        Option<(ai_review::AiReviewFixCostKey, Vec<Option<String>>)>,
     /// Background PR Triage refresh kicked off only after GitHub confirms an
-    /// AI Review post. Separate from `pr_review_bg` so it can update a stashed
+    /// AI Review post. Separate from the PR fetch slot so it can update a stashed
     /// pane without changing the current AI Review mode.
     pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
     pub ai_review_triage_refresh_pending: Option<AiReviewTriageRefresh>,
+    /// Background `codex debug models` catalog probe
+    /// (`codex_config::spawn_cli_catalog_probe`), kicked off when a Codex
+    /// model picker opens with no preset rows (cache and availability table
+    /// both empty — a fresh install). Polled and, once it resolves, merged
+    /// into whichever model picker is still open; never awaited inline, since
+    /// that would block the event loop on the `codex` CLI.
+    pub codex_models_cli_bg: Option<Receiver<Option<Vec<String>>>>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -1231,7 +1297,7 @@ impl App {
             // The AI review keeps running in the background after `esc`
             // returns here; animate the header's throbber for as long as it
             // is in flight (see `ui::dialogs::draw_ai_review`).
-            AppMode::AiReview(_) => self.ai_review_bg.is_some(),
+            AppMode::AiReview(_) => self.ai_review_run.is_pending(),
             // Full-screen loading/running views: `redraw_signature()` only
             // hashes the mode's discriminant, not its stage, so without this
             // the throbber only advances on the rare frame something else
@@ -1240,6 +1306,7 @@ impl App {
             // sits frozen, reading as "nothing is happening" even though the
             // background thread is working.
             AppMode::PrReviewLoading(_)
+            | AppMode::PrInvestigationLoading(_)
             | AppMode::ReviewMemoryBootstrapRunning(_)
             | AppMode::ReviewMemoryCompactRunning(_)
             | AppMode::AiReviewRunning(_) => true,
@@ -1276,6 +1343,8 @@ impl App {
         self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
         self.tmux_cursor.hash(&mut hasher);
+        self.todo_project_visible.hash(&mut hasher);
+        self.todo_global_visible.hash(&mut hasher);
 
         match &self.selection {
             Selection::Project(pi) => {
@@ -2286,7 +2355,6 @@ impl App {
         let store = db.load_store()?;
         setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
         // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
         // Building them synchronously here required reading every Claude JSONL
@@ -2329,6 +2397,8 @@ impl App {
             store,
             store_path,
             db: Some(db),
+            precall_cleared: None,
+            precall_return: None,
             config,
             active_extension,
             theme,
@@ -2336,6 +2406,9 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            pending_todo_spawn_prompt: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2370,17 +2443,17 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
-            learning_answer_tx,
-            learning_answer_rx,
-            learning_runs_in_flight: std::collections::HashSet::new(),
+            learning_runs: learning::runtime::LearningRuns::default(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
             context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
@@ -2388,7 +2461,8 @@ impl App {
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
-            pr_review_bg: None,
+            pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
@@ -2398,12 +2472,12 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
-            ai_review_bg: None,
-            ai_review_progress: None,
-            ai_review_pending: None,
+            ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
+            ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2544,7 +2618,6 @@ impl App {
         // running them.
         crate::extension::set_test_global_extension_config(Some(ExtensionConfig::default()));
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
@@ -2568,6 +2641,8 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
+            precall_cleared: None,
+            precall_return: None,
             config: AppConfig {
                 // Whether a test warns before starting an agent must not
                 // depend on how much memory the machine running it happens to
@@ -2582,6 +2657,9 @@ impl App {
             mode: AppMode::Normal,
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
+            pending_todo_spawn_prompt: None,
+            todo_project_visible: true,
+            todo_global_visible: true,
             message: None,
             toasts: Vec::new(),
             should_quit: false,
@@ -2616,17 +2694,17 @@ impl App {
             codex_sidebar_metadata_rx,
             codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             opencode_sidebar_cache: HashMap::new(),
+            active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
-            learning_answer_tx,
-            learning_answer_rx,
-            learning_runs_in_flight: std::collections::HashSet::new(),
+            learning_runs: learning::runtime::LearningRuns::default(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             context_states: HashMap::new(),
+            context_hint_states: context_hints::ContextHintStates::default(),
             context_collector: SessionContextCollector::default(),
             session_status_bg: None,
             active_pr_bg: None,
@@ -2634,7 +2712,8 @@ impl App {
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
-            pr_review_bg: None,
+            pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
@@ -2644,12 +2723,12 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
-            ai_review_bg: None,
-            ai_review_progress: None,
-            ai_review_pending: None,
+            ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
+            ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -3170,6 +3249,71 @@ impl App {
     pub(crate) fn extension_for_repo(&self, repo: &Path) -> ExtensionConfig {
         let global_ext = load_global_extension_config();
         merge_project_extension_config(&global_ext, repo)
+    }
+
+    /// The effective template for a headless prompt on the feature at
+    /// `repo` / `workdir`, plus where it came from. Consults, nearest-first:
+    /// the feature-scope `prompt_overrides` row (keyed by `workdir`), the
+    /// repo's `amf.json` `prompt_overrides`, the global-scope row, then the
+    /// built-in default. Read fresh each call so a hand-edit to `amf.json` or
+    /// an override saved from the manager takes effect on the next run.
+    ///
+    /// Returned without interpolation so a caller that renders on a worker
+    /// thread can resolve here (on the UI thread, where `self` lives) and
+    /// [`crate::prompts::render_template`] there.
+    pub(crate) fn resolve_headless_template(
+        &self,
+        id: crate::prompts::PromptId,
+        harness: &AgentKind,
+        repo: &Path,
+        workdir: &Path,
+    ) -> (String, crate::prompts::PromptSource) {
+        let db_view = self
+            .db
+            .as_ref()
+            .and_then(|db| db.load_prompt_overrides().ok());
+        let project = crate::prompts::project::load_from_repo(repo);
+        let layers = crate::prompts::PromptLayers {
+            feature_workdir: workdir.to_str(),
+            db: db_view.as_ref(),
+            project: Some(&project),
+        };
+        let (text, source) = crate::prompts::resolve_template_layered(id, harness, &layers);
+        if source.is_override() {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Debug,
+                "prompts",
+                &format!("{} resolved from {}", id.as_str(), source.label()),
+            );
+        }
+        (text.into_owned(), source)
+    }
+
+    /// [`Self::resolve_headless_template`] followed by interpolation of `ctx`.
+    /// The common path: a call site that builds its context and dispatches on
+    /// the UI thread.
+    pub(crate) fn resolve_headless_prompt(
+        &self,
+        id: crate::prompts::PromptId,
+        harness: &AgentKind,
+        repo: &Path,
+        workdir: &Path,
+        ctx: &crate::prompts::PromptContext,
+    ) -> String {
+        let (text, _source) = self.resolve_headless_template(id, harness, repo, workdir);
+        crate::prompts::render_template(&text, ctx)
+    }
+
+    /// The batched-review size budget in estimated prompt tokens for a run of
+    /// `harness` against `repo`: the project's `amf.json`
+    /// `review_prompt_budget_tokens`, else the global
+    /// `AppConfig::review_prompt_budget_tokens`, else the built-in per-harness
+    /// default. A configured `0` is honored (disables pre-send splitting).
+    pub(crate) fn review_prompt_budget(&self, repo: &Path, harness: &AgentKind) -> usize {
+        self.extension_for_repo(repo)
+            .review_prompt_budget_tokens
+            .or(self.config.review_prompt_budget_tokens)
+            .unwrap_or_else(|| crate::headless::default_prompt_budget_tokens(harness))
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {

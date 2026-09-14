@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const CLAUDE_DEFAULT_CONTEXT_LIMIT: u64 = 200_000;
+const CLAUDE_DEFAULT_CONTEXT_LIMIT: u64 = 900_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextUnavailableReason {
@@ -1312,7 +1312,7 @@ fn escape_json_pointer(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context_tracking::{ContextBand, calculate_context_snapshot};
+    use crate::context_tracking::{ContextBand, ContextThresholds, calculate_context_snapshot};
     use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
     use std::fs;
     use tempfile::TempDir;
@@ -1378,7 +1378,9 @@ mod tests {
         assert_eq!(sample.provenance, ContextProvenance::Direct);
         assert_eq!(sample.used_tokens, 140_000);
         assert_eq!(
-            calculate_context_snapshot(sample).unwrap().band,
+            calculate_context_snapshot(sample, ContextThresholds::default())
+                .unwrap()
+                .band,
             ContextBand::Warning
         );
 
@@ -1421,7 +1423,7 @@ mod tests {
             panic!("expected transcript fallback");
         };
         assert_eq!(sample.used_tokens, 101_002);
-        assert_eq!(sample.context_limit, Some(200_000));
+        assert_eq!(sample.context_limit, Some(900_000));
         assert_eq!(sample.provenance, ContextProvenance::Estimated);
     }
 
@@ -1451,7 +1453,9 @@ mod tests {
         assert_eq!(sample.context_limit, Some(200_000));
         assert_eq!(sample.provenance, ContextProvenance::Direct);
         assert_eq!(
-            calculate_context_snapshot(sample).unwrap().band,
+            calculate_context_snapshot(sample, ContextThresholds::default())
+                .unwrap()
+                .band,
             ContextBand::Critical
         );
     }
@@ -1503,7 +1507,9 @@ mod tests {
         assert_eq!(sample.context_limit, Some(100_000));
         assert_eq!(sample.provenance, ContextProvenance::Estimated);
         assert_eq!(
-            calculate_context_snapshot(sample).unwrap().band,
+            calculate_context_snapshot(sample, ContextThresholds::default())
+                .unwrap()
+                .band,
             ContextBand::Warning
         );
     }

@@ -10,3 +10,6 @@ pub mod doctor;
 pub mod limits;
 pub mod mem;
 pub mod procs;
+
+#[cfg(test)]
+pub(crate) mod test_support;

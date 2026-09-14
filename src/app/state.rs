@@ -1,5 +1,9 @@
+pub use crate::app::learning::state::*;
+pub use crate::app::pr_review::state::*;
+pub use crate::app::review::state::*;
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Child;
@@ -11,9 +15,11 @@ use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
-use crate::plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource};
+use crate::plan_interview::{
+    CUSTOM_ANSWER_MAX_LEN, PlanClarificationQuestion, PlanQuestion, PlanQuestionKind,
+    QuestionSource, serialize_choice_answer, split_choice_answer,
+};
 use crate::project::{AgentKind, SessionKind, VibeMode};
-use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
 
 pub const STARTUP_MASK_MAX_DURATION: Duration = Duration::from_secs(8);
@@ -207,21 +213,6 @@ impl PendingInput {
     }
 }
 
-/// A feature whose dispatched review-fix prompt is being watched via the
-/// thinking-status sync so a "fixes ready — re-review?" notification can be
-/// raised once the agent goes idle again. Keyed by `feature.tmux_session` in
-/// `App::awaiting_review_fixes` (thinking status is tracked per tmux session,
-/// not per window, so this is the same granularity the dedicated-review-
-/// session target already lives with).
-#[derive(Debug, Clone)]
-pub struct AwaitingReviewFix {
-    /// Set once the session is observed thinking after the prompt was
-    /// dispatched, so an idle transition only fires the notification after
-    /// the agent has actually started (and finished) working — not on
-    /// whatever idle/thinking state happened to precede the dispatch.
-    pub started_thinking: bool,
-}
-
 /// A request to suspend the TUI and hand the terminal to `$VISUAL`/`$EDITOR`.
 /// Raised by the review viewer (`E`) and drained by the main loop, which owns
 /// the terminal's raw-mode/alternate-screen state — the app layer can resolve
@@ -273,6 +264,48 @@ pub struct RenameFeatureState {
     pub project_idx: usize,
     pub feature_idx: usize,
     pub input: String,
+}
+
+/// Which field of [`ContextSettingsState`] currently has input focus.
+/// Declared in edit order so `next()`/`prev()` can wrap with simple
+/// arithmetic instead of a match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextSettingsField {
+    WindowLimit,
+    WarningPercent,
+    CriticalPercent,
+}
+
+impl ContextSettingsField {
+    const ALL: [Self; 3] = [
+        Self::WindowLimit,
+        Self::WarningPercent,
+        Self::CriticalPercent,
+    ];
+
+    pub fn next(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let index = Self::ALL.iter().position(|f| *f == self).unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Global context-window/severity settings dialog (`w` on the dashboard).
+/// Edits [`super::AppConfig::context_window_override`],
+/// `context_warning_percent`, and `context_critical_percent` directly —
+/// unlike `ConfigWizard` this has no project/global scope choice, since the
+/// values it edits are process-wide by design.
+pub struct ContextSettingsState {
+    pub field: ContextSettingsField,
+    /// Empty means "no override" (falls back to each harness's own default).
+    pub window_limit_input: String,
+    pub warning_input: String,
+    pub critical_input: String,
+    pub error: Option<String>,
 }
 
 pub struct SessionConfigState {
@@ -383,1146 +416,8 @@ pub struct DiffPickerState {
     pub error: Option<String>,
 }
 
-/// Severity tag on a line comment or file rejection, conventional-comments
-/// style. Drives three things: the GitHub review *event* (any `Blocker` →
-/// `REQUEST_CHANGES`), the agent prompt's mandatory-vs-optional framing, and
-/// the "blockers only" file filter. Defaults to `Suggestion` — a change worth
-/// making that isn't blocking — so older progress files (which carried no
-/// severity) deserialize to a sane middle ground.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Severity {
-    /// Must be addressed before merge.
-    Blocker,
-    /// Should change, but not blocking (the default).
-    #[default]
-    Suggestion,
-    /// Minor / optional polish.
-    Nit,
-    /// A question for the author, not a demand.
-    Question,
-    /// Positive note; no action needed.
-    Praise,
-}
-
-impl Severity {
-    /// Cycle Blocker → Suggestion → Nit → Question → Praise → Blocker, for the
-    /// editor's Ctrl+E toggle.
-    pub fn next(self) -> Self {
-        match self {
-            Severity::Blocker => Severity::Suggestion,
-            Severity::Suggestion => Severity::Nit,
-            Severity::Nit => Severity::Question,
-            Severity::Question => Severity::Praise,
-            Severity::Praise => Severity::Blocker,
-        }
-    }
-
-    /// The conventional-comments label — also the prefix rendered into the
-    /// feedback file and the PR comment body.
-    pub fn label(self) -> &'static str {
-        match self {
-            Severity::Blocker => "blocker",
-            Severity::Suggestion => "suggestion",
-            Severity::Nit => "nit",
-            Severity::Question => "question",
-            Severity::Praise => "praise",
-        }
-    }
-
-    pub fn is_blocker(self) -> bool {
-        matches!(self, Severity::Blocker)
-    }
-}
-
-/// Per-file verdict in a final review. Absence of an entry means the file
-/// was skipped (neither approved nor rejected).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReviewDecision {
-    Approve,
-    Reject {
-        feedback: String,
-        /// How blocking the rejection is. Defaulted (`Suggestion`) so older
-        /// progress files load, and so an auto-rejection implied by line
-        /// comments carries a neutral verdict severity — the real severities
-        /// live on its line comments.
-        #[serde(default)]
-        severity: Severity,
-    },
-}
-
-/// How many addressable lines of context are captured on each side of a
-/// comment's anchor for re-location. Small enough to stay cheap and to tolerate
-/// nearby edits, large enough to disambiguate repeated lines.
-pub const ANCHOR_CONTEXT_RADIUS: usize = 2;
-
-/// A snapshot of a commented line's text plus a few neighbours, captured when
-/// the comment was anchored. Lets the re-anchor pass re-locate a comment when
-/// the exact `DiffLineLocation` no longer exists after the diff is refreshed
-/// (the agent edited the code, or the reviewer changed the base ref). Lines are
-/// the diff-prefix-stripped `addressable_line_texts()`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommentAnchorContext {
-    /// Text of the anchored line itself.
-    pub line: String,
-    /// Up to `ANCHOR_CONTEXT_RADIUS` addressable-line texts immediately before,
-    /// in ascending order (closest neighbour last).
-    pub before: Vec<String>,
-    /// Up to `ANCHOR_CONTEXT_RADIUS` addressable-line texts immediately after,
-    /// in ascending order (closest neighbour first).
-    pub after: Vec<String>,
-}
-
-impl CommentAnchorContext {
-    /// Capture the context around `idx` in a file's `addressable_line_texts()`.
-    /// Returns `None` if `idx` is out of range.
-    pub fn capture(texts: &[String], idx: usize) -> Option<Self> {
-        let line = texts.get(idx)?.clone();
-        let before = texts[idx.saturating_sub(ANCHOR_CONTEXT_RADIUS)..idx].to_vec();
-        let after = texts
-            .get(idx + 1..(idx + 1 + ANCHOR_CONTEXT_RADIUS).min(texts.len()))
-            .unwrap_or(&[])
-            .to_vec();
-        Some(Self {
-            line,
-            before,
-            after,
-        })
-    }
-
-    /// Best-effort re-location of this context within `texts`. Considers every
-    /// index whose (trimmed) line text matches the anchor line, scoring each by
-    /// how many trimmed neighbours also agree, and returns the single best
-    /// candidate. A blank anchor line, no line match, or an ambiguous tie for
-    /// the top score all yield `None` (the comment is then treated as lost —
-    /// the conservative direction, never a silently wrong re-anchor).
-    pub fn best_match(&self, texts: &[String]) -> Option<usize> {
-        let target = self.line.trim();
-        if target.is_empty() {
-            return None;
-        }
-        let mut best: Option<(usize, usize)> = None; // (score, idx)
-        let mut tied = false;
-        for (idx, text) in texts.iter().enumerate() {
-            if text.trim() != target {
-                continue;
-            }
-            let score = self.neighbour_score(texts, idx);
-            match best {
-                Some((best_score, _)) if score < best_score => {}
-                Some((best_score, _)) if score == best_score => tied = true,
-                _ => {
-                    best = Some((score, idx));
-                    tied = false;
-                }
-            }
-        }
-        match best {
-            Some((_, idx)) if !tied => Some(idx),
-            _ => None,
-        }
-    }
-
-    /// How many of the captured neighbours (trimmed) still surround `idx`.
-    fn neighbour_score(&self, texts: &[String], idx: usize) -> usize {
-        let mut score = 0;
-        // `before` is ascending, so its last entry is the immediate predecessor.
-        for (offset, want) in self.before.iter().rev().enumerate() {
-            let Some(pos) = idx.checked_sub(offset + 1) else {
-                break;
-            };
-            if texts.get(pos).map(|t| t.trim()) == Some(want.trim()) {
-                score += 1;
-            }
-        }
-        for (offset, want) in self.after.iter().enumerate() {
-            if texts.get(idx + offset + 1).map(|t| t.trim()) == Some(want.trim()) {
-                score += 1;
-            }
-        }
-        score
-    }
-}
-
-/// A reviewer comment anchored to a diff line (or a span of lines) during a
-/// final review. `location` is the end anchor (GitHub's `line`); `start`, when
-/// set, is the first line of a multi-line span (GitHub's `start_line`). A `None`
-/// start is a single-line comment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LineComment {
-    pub location: crate::diff::DiffLineLocation,
-    /// Start of a multi-line span. `None` for a single-line comment. Defaulted
-    /// so older single-line progress files deserialize unchanged.
-    #[serde(default)]
-    pub start: Option<crate::diff::DiffLineLocation>,
-    pub text: String,
-    /// True while this is an AI co-reviewer *draft* the human has not yet
-    /// accepted. Draft comments render distinctly and are excluded from the
-    /// finished feedback file / PR review until accepted. Defaulted so older
-    /// progress files (all human comments) deserialize unchanged.
-    #[serde(default)]
-    pub draft: bool,
-    /// A suggested replacement for the commented line/span (GitHub-style
-    /// "suggestion"). `None` for a plain comment. Rendered as a fenced
-    /// ```suggestion block in the feedback file and PR review, and fed to the
-    /// agent as a verbatim patch. Defaulted so older progress files load.
-    #[serde(default)]
-    pub suggestion: Option<String>,
-    /// Conventional-comments severity for this comment. Chosen in the comment
-    /// editor (Ctrl+E cycles it); defaults to `Suggestion` so older progress
-    /// files load unchanged.
-    #[serde(default)]
-    pub severity: Severity,
-    /// Context snapshot around `location`, captured for re-anchoring after a
-    /// diff refresh. `None` until the next progress persist captures it (and for
-    /// older progress files, which simply can't be re-anchored).
-    #[serde(default)]
-    pub anchor_context: Option<CommentAnchorContext>,
-    /// Context snapshot around `start` (range comments only). `None` for a
-    /// single-line comment.
-    #[serde(default)]
-    pub start_anchor_context: Option<CommentAnchorContext>,
-    /// Set by the re-anchor pass when the comment could not be re-located in a
-    /// refreshed diff. Such a comment is surfaced as "anchor lost — possibly
-    /// addressed" rather than silently dropped. Cleared whenever it resolves.
-    #[serde(default)]
-    pub anchor_lost: bool,
-    /// Thread state: `true` once the reviewer has marked this conversation
-    /// settled (`R` on the cursored comment). A resolved thread stays visible so
-    /// it can be un-resolved, but is withheld from the feedback file, the PR
-    /// review, the `Unresolved` filter and the auto-reject rule. Defaulted so
-    /// older progress files load as open threads — the conservative direction.
-    #[serde(default)]
-    pub resolved: bool,
-    /// `true` when this comment was carried in from a *previous* finished review
-    /// round rather than authored in this session. Drives the "(unresolved from a
-    /// previous round)" tag in the feedback file and keeps carried threads from
-    /// making a fresh re-review read as work-in-progress. Defaulted so older
-    /// progress files load as freshly-authored.
-    #[serde(default)]
-    pub carried: bool,
-}
-
-impl LineComment {
-    /// Whether this comment spans more than one line.
-    pub fn is_range(&self) -> bool {
-        self.start.is_some()
-    }
-
-    /// An *open thread*: a comment the human kept (not an unadjudicated AI draft)
-    /// and has not yet marked resolved. Open threads are what a review round
-    /// actually sends to the agent, and what a re-review counts and filters on.
-    pub fn is_open_thread(&self) -> bool {
-        !self.draft && !self.resolved
-    }
-
-    /// The inclusive range of indices into a file's `addressable_lines()` that
-    /// this comment covers, best-effort located by line number. `None` when the
-    /// end anchor can no longer be found in the diff (e.g. after a refresh that
-    /// dropped the line). For a single-line comment this is `idx..=idx`.
-    pub fn covered_indices(
-        &self,
-        locs: &[crate::diff::DiffLineLocation],
-    ) -> Option<std::ops::RangeInclusive<usize>> {
-        let end = locs.iter().position(|l| *l == self.location)?;
-        match self.start.and_then(|s| locs.iter().position(|l| *l == s)) {
-            Some(start) => Some(start.min(end)..=start.max(end)),
-            None => Some(end..=end),
-        }
-    }
-}
-
-/// A reviewer comment anchored to a whole file, independent of that file's
-/// approve/reject verdict. Unlike a line comment it never auto-rejects the
-/// file: its severity communicates priority without changing the verdict.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileComment {
-    pub text: String,
-    #[serde(default)]
-    pub severity: Severity,
-    #[serde(default)]
-    pub resolved: bool,
-    #[serde(default)]
-    pub carried: bool,
-}
-
-impl FileComment {
-    pub fn is_open_thread(&self) -> bool {
-        !self.resolved
-    }
-}
-
-/// Which files the review file-list shows. Lets a reviewer narrow a large
-/// changeset to the work that still needs attention. Only meaningful in review
-/// mode; the read-only viewer always behaves as `All`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FileFilter {
-    /// Every changed file (default).
-    #[default]
-    All,
-    /// Files with no verdict yet.
-    Undecided,
-    /// Files marked as needing revision.
-    Rejected,
-    /// Files that carry a `Blocker`-severity rejection or line comment, so a
-    /// reviewer can focus on the must-fix items in a large changeset.
-    Blockers,
-    /// Files carrying an open whole-file comment.
-    FileComments,
-    /// Files carrying at least one unresolved thread (a kept, non-draft line
-    /// comment the reviewer hasn't settled). Empty when nothing is open, so the
-    /// cycle skips it unless an open thread exists.
-    Unresolved,
-    /// Files whose diff changed since the last finished review round (the
-    /// re-review loop). Empty on a first review, so the cycle skips it unless a
-    /// prior snapshot exists.
-    Changed,
-}
-
-impl FileFilter {
-    /// Cycle All → Undecided → Rejected → Blockers → File comments →
-    /// Unresolved → Changed → All.
-    /// Steps with nothing to show are skipped by the caller (see
-    /// `diff_review_cycle_file_filter`): `Changed` without a prior review
-    /// snapshot, `Unresolved` without an open thread.
-    pub fn next(self) -> Self {
-        match self {
-            FileFilter::All => FileFilter::Undecided,
-            FileFilter::Undecided => FileFilter::Rejected,
-            FileFilter::Rejected => FileFilter::Blockers,
-            FileFilter::Blockers => FileFilter::FileComments,
-            FileFilter::FileComments => FileFilter::Unresolved,
-            FileFilter::Unresolved => FileFilter::Changed,
-            FileFilter::Changed => FileFilter::All,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            FileFilter::All => "all",
-            FileFilter::Undecided => "undecided",
-            FileFilter::Rejected => "rejected",
-            FileFilter::Blockers => "blockers",
-            FileFilter::FileComments => "file comments",
-            FileFilter::Unresolved => "unresolved",
-            FileFilter::Changed => "changed",
-        }
-    }
-}
-
-/// One rendered row of the changed-file tree: either a directory header or a
-/// file beneath it. Produced by `DiffViewerState::file_tree_rows`, which is the
-/// single source of truth for both the file-list rendering and the `j`/`k` row
-/// cursor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FileTreeRow {
-    Dir {
-        /// Full directory path from the repo root, e.g. `src/app`. Also the key
-        /// used in `collapsed_dirs` / `tree_cursor_dir`.
-        path: String,
-        /// Just this level's segment, e.g. `app` — what the row displays.
-        label: String,
-        depth: usize,
-        collapsed: bool,
-        /// Visible files anywhere beneath this directory.
-        files: usize,
-    },
-    File {
-        /// Index into `DiffViewerState::files` — the selection everything else
-        /// in the viewer is keyed by.
-        index: usize,
-        depth: usize,
-        /// Basename only; the path's directories are shown by the rows above.
-        name: String,
-    },
-}
-
-/// Every ancestor directory of `path`, shallowest first (`src`, `src/app`, …).
-/// Empty for a repo-root file.
-pub fn ancestor_dirs(path: &str) -> Vec<String> {
-    let Some(dir_end) = path.rfind('/') else {
-        return Vec::new();
-    };
-    let mut dirs = Vec::new();
-    for (i, _) in path[..dir_end].match_indices('/') {
-        dirs.push(path[..i].to_string());
-    }
-    dirs.push(path[..dir_end].to_string());
-    dirs
-}
-
-/// A reply the feature's agent wrote back under a review item in the previous
-/// round. Parsed out of `.claude/final-review-feedback.md` on re-review (from the
-/// `**Agent:**` blocks `REVIEW_FEEDBACK_PROMPT` asks the agent to append) and
-/// surfaced beside the diff so the reviewer sees what the agent claimed to do.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentResponse {
-    /// The item's anchor heading text, e.g. `src/foo.rs:42` or `src/foo.rs`.
-    pub anchor: String,
-    /// The agent's reply text (the `**Agent:**` block, marker stripped).
-    pub response: String,
-}
-
-/// One finished final-review round loaded from the bounded live feedback log
-/// (or, on demand, its archive). The markdown is kept intact so the history
-/// browser can show everything the round recorded — verdict counts, comments,
-/// suggestions, check output and agent replies — without inventing a second
-/// persisted format.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewHistoryRound {
-    /// The `## Review — ...` heading text, used for the timeline's compact
-    /// label. Falls back to `Review` for a malformed/legacy round.
-    pub title: String,
-    /// The complete self-contained round, including its heading.
-    pub markdown: String,
-    /// Number of unresolved comments explicitly carried into this round.
-    pub carried_unresolved: usize,
-}
-
-/// Transient state for the read-only final-review timeline/history browser.
-/// `rounds` is newest-first. It starts with only the bounded live feedback
-/// file; older archived rounds are appended lazily when navigation reaches
-/// past the loaded tail.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReviewHistoryState {
-    pub rounds: Vec<ReviewHistoryRound>,
-    /// `0` is the live editable `Current` review; `1..` index `rounds`.
-    pub selected: usize,
-    pub scroll: usize,
-    pub rendered_lines: usize,
-    pub view_height: usize,
-    pub archive_available: bool,
-    pub archive_loaded: bool,
-    pub error: Option<String>,
-}
-
-/// One row of the pre-finish summary list (`summary_items`): every verdict,
-/// open comment and suggestion in the review, in file order. Built fresh from
-/// `DiffViewerState` each time the modal is opened or navigated — nothing here
-/// is persisted separately from the decisions/comments it's derived from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SummaryItem {
-    /// A file's verdict row (approved / needs work / skipped / no verdict).
-    File { file_idx: usize },
-    /// An open (kept, unresolved) line comment or suggestion, in the same
-    /// order as the file's `line_comments` vec (already sorted by line).
-    LineComment { file_idx: usize, comment_idx: usize },
-    /// An open whole-file comment.
-    FileComment { file_idx: usize },
-    /// The overall (non-file) review feedback. Only present when non-empty.
-    General,
-}
-
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
 // generation (matching `DiffReviewState`). Nothing clones this state wholesale.
-pub struct DiffViewerState {
-    pub from_view: ViewState,
-    pub workdir: PathBuf,
-    pub scope: DiffScope,
-    pub branch: String,
-    pub base_ref: String,
-    pub base_commit: String,
-    /// Reviewer-chosen base ref override. When set, the loader compares against
-    /// this ref/commit instead of the auto-resolved base. Kept across refreshes.
-    pub override_base_ref: Option<String>,
-    /// True while the reviewer is typing a base ref in the prompt.
-    pub editing_base_ref: bool,
-    /// In-progress base-ref text for the prompt.
-    pub base_ref_input: String,
-    pub files: Vec<crate::diff::DiffFile>,
-    pub selected_file: usize,
-    pub patch_scroll: usize,
-    pub focus: DiffViewerFocus,
-    pub layout: DiffViewerLayout,
-    pub error: Option<String>,
-    /// When true the viewer is a final-review session: each file can be
-    /// approved/rejected/skipped and feedback is collected on finish.
-    pub review: bool,
-    /// File path -> verdict. Skipped files have no entry.
-    pub decisions: std::collections::HashMap<String, ReviewDecision>,
-    /// Paths whose `Reject` entry in `decisions` was defaulted by storing a
-    /// kept line comment (a commented file implicitly needs revision) rather
-    /// than set explicitly. Removing the file's last kept comment clears an
-    /// auto-set rejection; an explicit approve/skip/reject drops the path from
-    /// this set so the reviewer's verdict sticks.
-    pub auto_rejected: std::collections::HashSet<String>,
-    /// File path -> line-level comments anchored to specific diff lines.
-    pub line_comments: std::collections::HashMap<String, Vec<LineComment>>,
-    /// File path -> verdict-free comment anchored to the whole file.
-    pub file_comments: std::collections::HashMap<String, FileComment>,
-    /// Active line-comment cursor: index into the current file's
-    /// `addressable_lines()`. `None` when the line cursor is inactive.
-    pub comment_cursor: Option<usize>,
-    /// Selection anchor for an in-progress multi-line comment: the index into
-    /// `addressable_lines()` where the reviewer started the range. The selected
-    /// span is `min(anchor, cursor)..=max(anchor, cursor)`. `None` selects only
-    /// the cursor line.
-    pub comment_anchor: Option<usize>,
-    /// True while typing a comment for the cursored line (reuses
-    /// `feedback_editor`).
-    pub editing_line_comment: bool,
-    /// True while editing the current file's verdict-free whole-file comment.
-    pub editing_file_comment: bool,
-    /// True while typing a *suggested replacement* for the cursored line/span
-    /// (also reuses `feedback_editor`; mutually exclusive with
-    /// `editing_line_comment`). The editor content is the replacement code.
-    pub editing_suggestion: bool,
-    /// Opt-in toggle: apply every still-open suggested change directly to the
-    /// worktree before the build/test gate runs and the review finishes. Kept
-    /// separate from suggestion authoring so finishing never mutates source
-    /// files unless the reviewer explicitly enables it.
-    pub apply_suggestions_on_finish: bool,
-    /// Human-readable anchors of suggestions successfully applied during this
-    /// review (either individually or by the finish-time batch). Carried until
-    /// finish so the summary can say exactly what AMF changed locally.
-    pub applied_suggestions: Vec<String>,
-    /// Finish-time application failures (`anchor: reason`). The affected
-    /// suggestions remain open and are sent to the fixing agent normally.
-    pub suggestion_apply_failures: Vec<String>,
-    /// Severity being composed in the line-comment or rejection editor. Seeded
-    /// when the editor opens (from an existing comment/rejection, else a sensible
-    /// default) and cycled with Ctrl+E; read on submit. Transient — not
-    /// persisted directly (the stored `LineComment` / `ReviewDecision` carries it).
-    pub comment_severity: Severity,
-    /// When true the next draw scrolls the patch to keep the comment cursor
-    /// visible, mirroring `feedback_sync_to_cursor`.
-    pub cursor_sync_to_view: bool,
-    /// True while a finish attempt is awaiting confirmation because some files
-    /// still have no verdict (set by `confirm_or_finish_review`).
-    pub finish_confirm: bool,
-    /// True while the user is typing rejection feedback for the current file.
-    pub feedback_editing: bool,
-    /// True while the user is typing general (non-file) review feedback.
-    pub editing_general: bool,
-    /// Active editor, shared by the per-file rejection editor and the
-    /// general-feedback editor (only one is open at a time). Vim-capable so
-    /// reviewers can write multi-paragraph / list feedback.
-    pub feedback_editor: TextEditor,
-    /// Scroll offset (in wrapped visual lines) for the feedback editor.
-    pub feedback_scroll: usize,
-    /// When true, the next draw scrolls the feedback editor to keep the cursor
-    /// visible.
-    pub feedback_sync_to_cursor: bool,
-    /// Overall review feedback not tied to a specific file.
-    pub general_feedback: String,
-    /// File path -> developer note parsed from `.claude/review-notes.md`
-    /// (written by review mode). Shown beside the diff during final review.
-    pub review_notes: std::collections::HashMap<String, String>,
-    /// File path -> walkthrough generated on demand (via headless Claude) for a
-    /// file with no developer note. Cached so it survives file switches.
-    pub generated_notes: std::collections::HashMap<String, String>,
-    /// In-flight headless process generating a walkthrough (one at a time).
-    pub walkthrough_child: Option<crate::headless::LeasedChild>,
-    /// Path the in-flight walkthrough is being generated for, so the result is
-    /// filed correctly even if the reviewer navigates to another file.
-    pub walkthrough_file: Option<String>,
-    /// In-flight headless AI co-review pass (one at a time). Separate slot from
-    /// the walkthrough so the two can't clobber each other.
-    pub co_review_child: Option<crate::headless::LeasedChild>,
-    /// Path the in-flight co-review is being generated for, so draft comments
-    /// land on the right file even if the reviewer navigates away.
-    pub co_review_file: Option<String>,
-    /// Cached on-demand whole-changeset overview / risk summary (headless,
-    /// reviewer-triggered — see `changeset_overview_open`). Kept until the
-    /// reviewer explicitly regenerates it so reopening the modal is free.
-    pub changeset_overview: Option<String>,
-    /// In-flight headless process generating the changeset overview.
-    pub changeset_overview_child: Option<crate::headless::LeasedChild>,
-    /// True while the changeset-overview modal is shown. Independent of
-    /// generation state so a cached overview can be reopened without
-    /// re-running the headless pass.
-    pub changeset_overview_open: bool,
-    pub changeset_overview_scroll: usize,
-    /// Rendered (markdown-wrapped) line count / viewport height of the modal at
-    /// the last draw, mirroring `notes_rendered_lines` / `notes_view_height` so
-    /// scroll clamps to the real visual bottom.
-    pub changeset_overview_rendered_lines: usize,
-    pub changeset_overview_view_height: usize,
-    /// When true the developer-notes panel takes the full patch column.
-    pub notes_expanded: bool,
-    pub notes_scroll: usize,
-    /// Rendered (markdown-wrapped) line count of the current note, recorded by
-    /// the renderer each frame so scroll clamping uses real visual lines.
-    pub notes_rendered_lines: usize,
-    /// Inner height of the notes panel at the last draw, used with
-    /// `notes_rendered_lines` to clamp scroll to the visual bottom.
-    pub notes_view_height: usize,
-    /// Active file-list filter (review mode only). Narrows the file list to
-    /// undecided / rejected / changed files for large changesets.
-    pub file_filter: FileFilter,
-    /// Paths whose diff fingerprint differs from (or is absent in) the last
-    /// finished review snapshot — i.e. files that changed since the reviewer
-    /// last looked. Drives the `Changed` filter and the file-list marker.
-    /// Empty on a first review.
-    pub changed_since_last: std::collections::HashSet<String>,
-    /// Whether a prior review snapshot existed when this review opened. Lets the
-    /// UI and the filter cycle distinguish a first review from a re-review.
-    pub has_prior_review: bool,
-    /// File path -> the feature agent's replies from the previous review round,
-    /// parsed from `.claude/final-review-feedback.md` on open. Surfaced beside the
-    /// diff so a re-review shows what the agent said it did per file. Empty on a
-    /// first review or when the agent left no `**Agent:**` replies.
-    pub prior_agent_responses: std::collections::HashMap<String, Vec<AgentResponse>>,
-    /// Where a finished review's "address this feedback" prompt is dispatched:
-    /// the feature's existing agent pane (the default, unchanged behaviour) or a
-    /// fresh dedicated review session. Toggled with `t` in the review viewer.
-    pub fix_target: crate::app::pr_review::FixTarget,
-    /// True while the reviewer is typing a diff search query in the prompt
-    /// (opened with `/`). Takes precedence over every other key binding.
-    pub editing_search: bool,
-    /// Active diff search query — also the in-progress text while
-    /// `editing_search`. Empty when no search is active. Matched
-    /// case-insensitively as a substring of the current file's addressable line
-    /// texts.
-    pub search_query: String,
-    /// Indices into the current file's `addressable_lines()` that match
-    /// `search_query`, ascending. Recomputed whenever the query or selected file
-    /// changes; empty when there is no match (or no query). Current-file only.
-    pub search_matches: Vec<usize>,
-    /// Position within `search_matches` of the current match (the one the line
-    /// cursor sits on). `None` when there are no matches.
-    pub search_match_pos: Option<usize>,
-    /// In-flight background process running the project's configured
-    /// `final_review_check_command` (a build/test gate), spawned by
-    /// `finish_final_review` and polled to completion like
-    /// `changeset_overview_child`. `None` when no check is configured or
-    /// none is currently running.
-    pub finish_check_child: Option<Child>,
-    /// The command `finish_check_child` is running, kept so the result can
-    /// be reported once it exits.
-    pub finish_check_command: Option<String>,
-    /// On-demand "since last review" diff for the current file (`I` in the
-    /// final review), computed against the last review snapshot's saved
-    /// content by `open_interdiff`. Recomputed on each open (a single cheap
-    /// local `git diff --no-index`, not a headless pass) rather than kept
-    /// across files like `changeset_overview`.
-    pub interdiff_file: Option<crate::diff::DiffFile>,
-    /// True while the interdiff modal is shown; takes full key precedence
-    /// while open, mirroring `changeset_overview_open`.
-    pub interdiff_open: bool,
-    pub interdiff_scroll: usize,
-    /// True while the pre-finish summary modal is shown: every verdict, open
-    /// comment and suggestion in one navigable list, so `q` gives one last
-    /// look before feedback is written and dispatched. Opened by
-    /// `confirm_or_finish_review` once the undecided-files gate (if any) has
-    /// been cleared; takes full key precedence while open, mirroring
-    /// `changeset_overview_open`.
-    pub summary_open: bool,
-    /// Selected row in `summary_items()`, clamped to its length on navigation.
-    pub summary_selected: usize,
-    /// Read-only review-round timeline/history browser (`H`). `None` while
-    /// closed. Historical rounds are loaded from the live feedback log first;
-    /// the archive is read only when the reviewer navigates beyond that tail.
-    pub review_history: Option<ReviewHistoryState>,
-    /// Directory paths (repo-relative, no trailing slash) currently collapsed in
-    /// the file tree. Purely a view concern: a collapsed directory hides its
-    /// rows, but never its files from filters, counts or file-order navigation —
-    /// landing on a file inside one re-expands its ancestors
-    /// (`reveal_selected_file`) so the selection is always reachable.
-    pub collapsed_dirs: std::collections::BTreeSet<String>,
-    /// Set while the file-list row cursor is parked on a *directory* row rather
-    /// than a file. The selected file (and therefore the patch panel) is left
-    /// alone, so collapsing a tree never changes what's being diffed.
-    pub tree_cursor_dir: Option<String>,
-    /// When true the diff is loaded with `git diff -w`, so lines that differ
-    /// only in whitespace don't show as changes. Toggling re-runs the loader
-    /// (it changes what git emits, not just how it's drawn), so it survives via
-    /// the same reload path as a base-ref change.
-    pub ignore_whitespace: bool,
-    /// File path -> how many context lines that file's hunks are currently
-    /// rendered with (`usize::MAX` = the whole file). An absent entry is git's
-    /// `--unified=3` default. Applied by rewriting the file's hunks, so every
-    /// consumer — `addressable_lines()`, the renderers, comment anchors —
-    /// agrees on what the reviewer is looking at. View state only: re-applied
-    /// after a reload, never written to the progress file.
-    pub context_expansion: std::collections::HashMap<String, usize>,
-    /// Undo stack for explicit verdicts (approve / skip / typed rejection), most
-    /// recent last. Session-only: an undo is a correction of the key you just
-    /// pressed, so it deliberately doesn't survive a pause/resume the way the
-    /// verdicts themselves do.
-    pub verdict_undo: Vec<VerdictUndo>,
-    /// True while the review-mode `?` help overlay is shown. The review key
-    /// surface outgrew what two footer rows can teach, so the overlay lists it
-    /// grouped by task. Read-only and takes full key precedence while open,
-    /// mirroring `changeset_overview_open`.
-    pub help_open: bool,
-    pub help_scroll: usize,
-    /// Rendered line count / viewport height of the help overlay at the last
-    /// draw, mirroring `changeset_overview_rendered_lines` /
-    /// `changeset_overview_view_height` so scroll clamps to the real bottom.
-    pub help_rendered_lines: usize,
-    pub help_view_height: usize,
-}
-
-/// One entry on the verdict undo stack: everything needed to put a file's
-/// verdict back exactly as it was before the reviewer's last `a` / `s` / `r`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerdictUndo {
-    pub path: String,
-    /// The file's verdict before the undone action. `None` when it had none
-    /// (undecided or previously skipped).
-    pub previous: Option<ReviewDecision>,
-    /// Whether that previous verdict was one the line-comment rule had set
-    /// implicitly, so undoing restores the implicit/explicit distinction too.
-    pub previous_auto_rejected: bool,
-}
-
-/// How many verdicts back `U` can walk. A bound only so a very long review
-/// can't grow the stack without limit; deep undo is not the point.
-pub const VERDICT_UNDO_LIMIT: usize = 50;
-
-impl DiffViewerState {
-    pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
-        Self {
-            from_view,
-            workdir,
-            scope: DiffScope::CurrentChanges,
-            branch: String::new(),
-            base_ref: String::new(),
-            base_commit: String::new(),
-            override_base_ref: None,
-            editing_base_ref: false,
-            base_ref_input: String::new(),
-            files: Vec::new(),
-            selected_file: 0,
-            patch_scroll: 0,
-            focus: DiffViewerFocus::FileList,
-            layout: DiffViewerLayout::Unified,
-            error: None,
-            review: false,
-            decisions: std::collections::HashMap::new(),
-            auto_rejected: std::collections::HashSet::new(),
-            line_comments: std::collections::HashMap::new(),
-            file_comments: std::collections::HashMap::new(),
-            comment_cursor: None,
-            comment_anchor: None,
-            editing_line_comment: false,
-            editing_file_comment: false,
-            editing_suggestion: false,
-            apply_suggestions_on_finish: false,
-            applied_suggestions: Vec::new(),
-            suggestion_apply_failures: Vec::new(),
-            comment_severity: Severity::default(),
-            cursor_sync_to_view: false,
-            finish_confirm: false,
-            feedback_editing: false,
-            editing_general: false,
-            feedback_editor: TextEditor::new(String::new()),
-            feedback_scroll: 0,
-            feedback_sync_to_cursor: true,
-            general_feedback: String::new(),
-            review_notes: std::collections::HashMap::new(),
-            generated_notes: std::collections::HashMap::new(),
-            walkthrough_child: None,
-            walkthrough_file: None,
-            co_review_child: None,
-            co_review_file: None,
-            changeset_overview: None,
-            changeset_overview_child: None,
-            changeset_overview_open: false,
-            changeset_overview_scroll: 0,
-            changeset_overview_rendered_lines: 0,
-            changeset_overview_view_height: 0,
-            notes_expanded: false,
-            notes_scroll: 0,
-            notes_rendered_lines: 0,
-            notes_view_height: 0,
-            file_filter: FileFilter::All,
-            changed_since_last: std::collections::HashSet::new(),
-            has_prior_review: false,
-            prior_agent_responses: std::collections::HashMap::new(),
-            fix_target: crate::app::pr_review::FixTarget::ExistingLive,
-            editing_search: false,
-            search_query: String::new(),
-            search_matches: Vec::new(),
-            search_match_pos: None,
-            finish_check_child: None,
-            finish_check_command: None,
-            interdiff_file: None,
-            interdiff_open: false,
-            interdiff_scroll: 0,
-            summary_open: false,
-            summary_selected: 0,
-            review_history: None,
-            collapsed_dirs: std::collections::BTreeSet::new(),
-            tree_cursor_dir: None,
-            ignore_whitespace: false,
-            context_expansion: std::collections::HashMap::new(),
-            verdict_undo: Vec::new(),
-            help_open: false,
-            help_scroll: 0,
-            help_rendered_lines: 0,
-            help_view_height: 0,
-        }
-    }
-
-    /// Drop any active diff search (query, matches and current-match position).
-    /// Called when the search is cancelled/cleared and whenever the selected
-    /// file changes, since matches are anchored to a single file.
-    pub fn clear_search(&mut self) {
-        self.editing_search = false;
-        self.search_query.clear();
-        self.search_matches.clear();
-        self.search_match_pos = None;
-    }
-
-    /// Reset the per-file view state after the selected file changes (patch /
-    /// notes scroll, and the line-comment cursor). Centralizes what several
-    /// navigation paths previously duplicated.
-    /// Re-apply the reviewer's per-file context expansion to a freshly loaded
-    /// diff. Expansion is a view preference rather than part of the diff, so a
-    /// refresh (or a base-ref change) must not silently collapse what was
-    /// expanded. Files that dropped out of the changeset — or can no longer be
-    /// expanded against the new blobs — fall back to the default and lose their
-    /// entry.
-    pub fn reapply_context_expansion(&mut self) {
-        if self.context_expansion.is_empty() {
-            return;
-        }
-        let levels = std::mem::take(&mut self.context_expansion);
-        for file in self.files.iter_mut() {
-            let Some(&level) = levels.get(&file.path) else {
-                continue;
-            };
-            if let Some(hunks) = file.hunks_with_context(level) {
-                file.hunks = hunks;
-                self.context_expansion.insert(file.path.clone(), level);
-            }
-        }
-    }
-
-    pub fn on_file_changed(&mut self) {
-        self.patch_scroll = 0;
-        self.notes_scroll = 0;
-        if self.comment_cursor.is_some() {
-            self.comment_cursor = Some(0);
-            self.cursor_sync_to_view = true;
-        }
-        // A range selection can't carry across files.
-        self.comment_anchor = None;
-        // Search matches are anchored to a single file; end the search rather
-        // than leaving a stale query pointing at the previous file.
-        self.clear_search();
-        // The cursor is on a file again, and that file must be visible: every
-        // file-order navigation path funnels through here, so no caller has to
-        // know the tree can be folded.
-        self.tree_cursor_dir = None;
-        self.reveal_selected_file();
-    }
-
-    /// Record `path`'s current verdict on the undo stack before an explicit
-    /// verdict replaces it, so `U` can put it back exactly — including whether
-    /// the rejection being replaced was one the line-comment rule had set
-    /// implicitly. A press that changes nothing isn't recorded: re-approving an
-    /// already-approved file would otherwise leave a `U` that does nothing
-    /// visible.
-    pub fn push_verdict_undo(&mut self, path: &str, next: Option<&ReviewDecision>) {
-        let previous = self.decisions.get(path).cloned();
-        let previous_auto_rejected = self.auto_rejected.contains(path);
-        // Every verdict path also drops the file from `auto_rejected`, so an
-        // implicit rejection is a real change even when the verdict compares
-        // equal.
-        if previous.as_ref() == next && !previous_auto_rejected {
-            return;
-        }
-        if self.verdict_undo.len() >= VERDICT_UNDO_LIMIT {
-            self.verdict_undo.remove(0);
-        }
-        self.verdict_undo.push(VerdictUndo {
-            path: path.to_string(),
-            previous,
-            previous_auto_rejected,
-        });
-    }
-
-    /// Whether the file at `path` carries a `Blocker`-severity signal: either a
-    /// blocker rejection or any kept (non-draft) blocker line comment. Feeds the
-    /// `Blockers` file filter and the GitHub review-event escalation.
-    pub fn file_has_blocker(&self, path: &str) -> bool {
-        let reject_blocks = matches!(
-            self.decisions.get(path),
-            Some(ReviewDecision::Reject { severity, .. }) if severity.is_blocker()
-        );
-        // A resolved thread is settled: it must not keep its file pinned in the
-        // blockers filter, nor escalate the GitHub review event.
-        let comment_blocks = self.line_comments.get(path).is_some_and(|cs| {
-            cs.iter()
-                .any(|c| c.is_open_thread() && c.severity.is_blocker())
-        });
-        let file_comment_blocks = self
-            .file_comments
-            .get(path)
-            .is_some_and(|c| c.is_open_thread() && c.severity.is_blocker());
-        reject_blocks || comment_blocks || file_comment_blocks
-    }
-
-    /// Whether the file at `path` carries at least one open thread — a kept,
-    /// unresolved line comment. Backs the `Unresolved` filter and the auto-reject
-    /// rule (an open thread means the file still needs work).
-    pub fn file_has_unresolved_thread(&self, path: &str) -> bool {
-        self.line_comments
-            .get(path)
-            .is_some_and(|cs| cs.iter().any(|c| c.is_open_thread()))
-            || self
-                .file_comments
-                .get(path)
-                .is_some_and(FileComment::is_open_thread)
-    }
-
-    /// Total open threads across every file in the diff. Reported on opening a
-    /// re-review and used to decide whether the `Unresolved` filter has anything
-    /// to show.
-    pub fn unresolved_thread_count(&self) -> usize {
-        let line = self
-            .line_comments
-            .values()
-            .flatten()
-            .filter(|c| c.is_open_thread())
-            .count();
-        line + self
-            .file_comments
-            .values()
-            .filter(|c| c.is_open_thread())
-            .count()
-    }
-
-    /// Number of kept, unresolved suggested changes that could be applied to
-    /// the worktree. Lost anchors are included so an attempted batch reports
-    /// why they were skipped instead of silently hiding them.
-    pub fn pending_suggestion_count(&self) -> usize {
-        self.line_comments
-            .values()
-            .flatten()
-            .filter(|comment| comment.is_open_thread() && comment.suggestion.is_some())
-            .count()
-    }
-
-    /// True when no line comment was authored in *this* session — every stored
-    /// comment (if any) was carried in from a previous finished round. Lets a
-    /// fresh re-review still read as "pristine" for the purposes of auto-applying
-    /// the `Changed` filter, even though it opens with threads restored.
-    pub fn has_only_carried_comments(&self) -> bool {
-        self.line_comments.values().flatten().all(|c| c.carried)
-            && self.file_comments.values().all(|c| c.carried)
-    }
-
-    /// Whether `file` passes the active file-list filter. Always true outside
-    /// review mode or under the `All` filter.
-    fn file_passes_filter(&self, file: &crate::diff::DiffFile) -> bool {
-        match self.file_filter {
-            FileFilter::All => true,
-            FileFilter::Undecided => !self.decisions.contains_key(&file.path),
-            FileFilter::Rejected => matches!(
-                self.decisions.get(&file.path),
-                Some(ReviewDecision::Reject { .. })
-            ),
-            FileFilter::Blockers => self.file_has_blocker(&file.path),
-            FileFilter::FileComments => self
-                .file_comments
-                .get(&file.path)
-                .is_some_and(FileComment::is_open_thread),
-            FileFilter::Unresolved => self.file_has_unresolved_thread(&file.path),
-            FileFilter::Changed => self.changed_since_last.contains(&file.path),
-        }
-    }
-
-    /// Indices into `files` of the files currently shown under the active
-    /// filter, in file order. The full list outside review / with `All`.
-    pub fn visible_file_indices(&self) -> Vec<usize> {
-        if !self.review || self.file_filter == FileFilter::All {
-            return (0..self.files.len()).collect();
-        }
-        self.files
-            .iter()
-            .enumerate()
-            .filter(|(_, file)| self.file_passes_filter(file))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// The file list as a directory tree, in the same order as
-    /// `visible_file_indices` — `files` is sorted by full path
-    /// (`crate::diff`), and comparing a directory as `name/` against a file as
-    /// `name` reproduces exactly that ordering, so grouping never reorders the
-    /// list. Directory rows are emitted when the path prefix changes; a
-    /// collapsed directory emits its own row and swallows everything beneath
-    /// it.
-    pub fn file_tree_rows(&self) -> Vec<FileTreeRow> {
-        let visible = self.visible_file_indices();
-        // Visible-file count per ancestor directory, for the row's `(n)` badge.
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for &idx in &visible {
-            for dir in ancestor_dirs(&self.files[idx].path) {
-                *counts.entry(dir).or_default() += 1;
-            }
-        }
-
-        let mut rows = Vec::new();
-        // Directory segments of the previous file, so a shared prefix is only
-        // emitted once.
-        let mut open: Vec<&str> = Vec::new();
-        for &idx in &visible {
-            let path = self.files[idx].path.as_str();
-            let (dir_part, name) = match path.rfind('/') {
-                Some(pos) => (&path[..pos], &path[pos + 1..]),
-                None => ("", path),
-            };
-            let comps: Vec<&str> = if dir_part.is_empty() {
-                Vec::new()
-            } else {
-                dir_part.split('/').collect()
-            };
-
-            let mut common = 0;
-            while common < open.len() && common < comps.len() && open[common] == comps[common] {
-                common += 1;
-            }
-            open.truncate(common);
-
-            // A directory already on the stack may be collapsed, in which case
-            // its row was emitted earlier and everything below it is hidden.
-            let mut hidden = (1..=open.len())
-                .any(|depth| self.collapsed_dirs.contains(&comps[..depth].join("/")));
-
-            for depth in common..comps.len() {
-                open.push(comps[depth]);
-                if hidden {
-                    continue;
-                }
-                let full = comps[..=depth].join("/");
-                let collapsed = self.collapsed_dirs.contains(&full);
-                rows.push(FileTreeRow::Dir {
-                    label: comps[depth].to_string(),
-                    depth,
-                    collapsed,
-                    files: counts.get(&full).copied().unwrap_or(0),
-                    path: full,
-                });
-                if collapsed {
-                    hidden = true;
-                }
-            }
-
-            if !hidden {
-                rows.push(FileTreeRow::File {
-                    index: idx,
-                    depth: comps.len(),
-                    name: name.to_string(),
-                });
-            }
-        }
-        rows
-    }
-
-    /// Expand every collapsed ancestor of the selected file so the selection is
-    /// always on a row the reviewer can see. Called from `on_file_changed`, so
-    /// every file-order navigation path (n/p, verdict advance, filters, search,
-    /// summary jumps) reveals its target without having to know about the tree.
-    pub fn reveal_selected_file(&mut self) {
-        let Some(file) = self.files.get(self.selected_file) else {
-            return;
-        };
-        for dir in ancestor_dirs(&file.path) {
-            self.collapsed_dirs.remove(&dir);
-        }
-    }
-
-    /// Toggle a directory's collapsed state. Collapsing an ancestor of the
-    /// selected file is allowed — the file stays selected and the patch panel
-    /// keeps showing it; only the row is folded away.
-    pub fn toggle_dir_collapsed(&mut self, dir: &str) {
-        if !self.collapsed_dirs.remove(dir) {
-            self.collapsed_dirs.insert(dir.to_string());
-        }
-    }
-
-    /// Every directory that currently has a row in the tree (regardless of
-    /// collapse state), in row order.
-    pub fn tree_dirs(&self) -> Vec<String> {
-        self.file_tree_rows()
-            .into_iter()
-            .filter_map(|row| match row {
-                FileTreeRow::Dir { path, .. } => Some(path),
-                FileTreeRow::File { .. } => None,
-            })
-            .collect()
-    }
-
-    /// Row index the file-list cursor sits on: the directory row when the
-    /// cursor is parked on one, else the selected file's row. Falls back to the
-    /// deepest visible ancestor directory if the selected file happens to be
-    /// folded away, so a row is always highlighted.
-    pub fn tree_cursor_row(&self, rows: &[FileTreeRow]) -> Option<usize> {
-        if let Some(dir) = &self.tree_cursor_dir
-            && let Some(pos) = rows
-                .iter()
-                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if path == dir))
-        {
-            return Some(pos);
-        }
-        if let Some(pos) = rows.iter().position(
-            |row| matches!(row, FileTreeRow::File { index, .. } if *index == self.selected_file),
-        ) {
-            return Some(pos);
-        }
-        let path = self.files.get(self.selected_file)?.path.as_str();
-        ancestor_dirs(path).into_iter().rev().find_map(|dir| {
-            rows.iter()
-                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if *path == dir))
-        })
-    }
-
-    /// Directory the fold commands act on, derived from whichever row
-    /// `tree_cursor_row` highlights: a directory row folds itself, a file row
-    /// folds its own directory. Reading it back off the highlighted row —
-    /// rather than off the selected file — matters when the selection is
-    /// hidden by the active filter, where the highlight falls back to some
-    /// *shallower* ancestor than the selected file's own directory.
-    pub fn tree_cursor_target_dir(&self, rows: &[FileTreeRow]) -> Option<String> {
-        match rows.get(self.tree_cursor_row(rows)?)? {
-            FileTreeRow::Dir { path, .. } => Some(path.clone()),
-            FileTreeRow::File { index, .. } => self
-                .files
-                .get(*index)
-                .and_then(|file| ancestor_dirs(&file.path).pop()),
-        }
-    }
-
-    /// Every row of the pre-finish summary, in file order: each file's verdict
-    /// row, then its open line comments (already sorted by line) and open file
-    /// comment, followed by the overall feedback if any was written. Ignores
-    /// the active file-list filter — the summary is deliberately everything,
-    /// not just what's currently visible. Rebuilt fresh on every open/jump
-    /// rather than cached, since it's cheap and always derived from state that
-    /// can change underneath it (a jump-to-edit round-trip).
-    pub fn summary_items(&self) -> Vec<SummaryItem> {
-        let mut items = Vec::new();
-        for (file_idx, file) in self.files.iter().enumerate() {
-            items.push(SummaryItem::File { file_idx });
-            if let Some(comments) = self.line_comments.get(&file.path) {
-                for (comment_idx, comment) in comments.iter().enumerate() {
-                    if comment.is_open_thread() {
-                        items.push(SummaryItem::LineComment {
-                            file_idx,
-                            comment_idx,
-                        });
-                    }
-                }
-            }
-            if self
-                .file_comments
-                .get(&file.path)
-                .is_some_and(FileComment::is_open_thread)
-            {
-                items.push(SummaryItem::FileComment { file_idx });
-            }
-        }
-        if !self.general_feedback.trim().is_empty() {
-            items.push(SummaryItem::General);
-        }
-        items
-    }
-}
 
 #[derive(Clone)]
 pub struct SteeringPromptState {
@@ -2030,6 +925,98 @@ impl PlaceholderFillState {
     }
 }
 
+// ── Prompt-override manager (Editable Headless Prompts) ──────────────────
+
+/// Which scope an override is being saved to. `Feature` is only offered when
+/// a feature is in context and a database is present.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptOverrideScope {
+    Feature,
+    Project,
+    Global,
+}
+
+impl PromptOverrideScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            PromptOverrideScope::Feature => "This feature",
+            PromptOverrideScope::Project => "This project (amf.json)",
+            PromptOverrideScope::Global => "Global (all projects)",
+        }
+    }
+}
+
+/// The step the editor is on: typing the template, then picking a scope, then
+/// picking a harness variant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PromptOverrideStep {
+    Editing,
+    ScopePicker,
+    HarnessPicker,
+}
+
+/// One list row: a registry prompt and where its effective template (for the
+/// shared/no-harness view) currently comes from.
+#[derive(Clone)]
+pub struct PromptOverrideRow {
+    pub id: crate::prompts::PromptId,
+    pub source: crate::prompts::PromptSource,
+    /// True when the row has an override at that scope (any harness).
+    pub has_feature: bool,
+    pub has_project: bool,
+    pub has_global: bool,
+}
+
+/// The editor sub-state, open for `rows[row]`.
+pub struct PromptOverrideEditState {
+    pub row: usize,
+    pub editor: TextEditor,
+    pub step: PromptOverrideStep,
+    /// Scopes offered, narrowest first. `Feature` is present only with a
+    /// feature in context and a DB.
+    pub scopes: Vec<PromptOverrideScope>,
+    pub scope_index: usize,
+    /// 0 = shared; 1..=4 = `AgentKind::ALL[i-1]`.
+    pub harness_index: usize,
+}
+
+impl PromptOverrideEditState {
+    pub fn scope(&self) -> PromptOverrideScope {
+        self.scopes
+            .get(self.scope_index)
+            .copied()
+            .unwrap_or(PromptOverrideScope::Global)
+    }
+
+    /// `None` = shared across harnesses; `Some` = one specific harness.
+    pub fn harness(&self) -> Option<crate::project::AgentKind> {
+        self.harness_index
+            .checked_sub(1)
+            .and_then(|i| crate::project::AgentKind::ALL.get(i).cloned())
+    }
+}
+
+/// The prompt-override manager overlay: a list of every registry prompt with
+/// its effective source, an inline template editor, and scope / harness
+/// pickers on save.
+pub struct PromptOverridesState {
+    /// One row per `crate::prompts::PromptId::ALL`, in that order.
+    pub rows: Vec<PromptOverrideRow>,
+    pub selected: usize,
+    pub scroll: usize,
+    pub edit: Option<PromptOverrideEditState>,
+    pub help_open: bool,
+    /// A second `d` in the list confirms clearing the selected row's override.
+    pub confirm_clear: bool,
+    pub from_view: Option<ViewState>,
+}
+
+impl PromptOverridesState {
+    pub fn selected_row(&self) -> Option<&PromptOverrideRow> {
+        self.rows.get(self.selected)
+    }
+}
+
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
@@ -2058,897 +1045,6 @@ impl SkillPickerState {
             .get(self.selected)
             .and_then(|idx| self.skills.get(*idx))
     }
-}
-
-/// Transient state while a PR's comments are being fetched off the UI thread.
-#[derive(Debug, Clone)]
-pub struct PrReviewLoadState {
-    /// Working directory of the feature whose PR we're reviewing.
-    pub workdir: PathBuf,
-    /// The resolved PR being loaded.
-    pub pr: crate::github::PrRef,
-    /// Usage snapshots carried through a manual refresh so refreshing comments
-    /// does not restart the current triage-visit tally.
-    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
-}
-
-/// Manual PR-number override prompt: shown when the branch has no detectable
-/// open PR (or the user wants to review a different one). Collects a number,
-/// then resolves it via `gh pr view <n>` and starts the comment fetch.
-#[derive(Debug, Clone)]
-pub struct PrNumberPromptState {
-    /// Working directory of the feature whose PR we're reviewing.
-    pub workdir: PathBuf,
-    /// Digits typed so far.
-    pub input: String,
-    /// Last resolve failure, shown inline so the user can correct and retry.
-    pub error: Option<String>,
-}
-
-/// PR picker: a selectable list of the repo's pull requests, so the user can
-/// open a PR for review without knowing its number. Reached when the branch has
-/// no auto-detectable PR, or on demand from PR Triage to switch PRs. The
-/// manual number prompt stays one keypress away (`#`).
-#[derive(Debug, Clone)]
-pub struct PrPickerState {
-    /// Working directory of the feature whose repo we're listing PRs for.
-    pub workdir: PathBuf,
-    /// The fetched PR rows (newest-updated first).
-    pub entries: Vec<crate::github::PrListEntry>,
-    /// Index of the highlighted row.
-    pub selected: usize,
-    /// When true the list includes closed/merged PRs (`gh pr list --state all`);
-    /// otherwise open-only. Toggled with `a`.
-    pub include_closed: bool,
-    /// Last fetch/resolve failure, shown inline.
-    pub error: Option<String>,
-    /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
-    /// picker.
-    pub bootstrap_pick: Option<BootstrapPickState>,
-    /// When `Some`, the review-memory compact confirm overlay (`c`) is open
-    /// over the picker.
-    pub compact_confirm: Option<CompactConfirmState>,
-    /// The logged-in `gh` user's login, when resolvable — used to highlight
-    /// the user's own PRs in the row rendering. `None` if unresolved/failed.
-    pub current_user: Option<String>,
-}
-
-/// Depth picker for the review-memory lookback bootstrap (`b` in the PR
-/// picker): pick how many recent merged/closed PRs to learn from before
-/// running the fetch + distill pass.
-#[derive(Debug, Clone)]
-pub struct BootstrapPickState {
-    /// Index into [`crate::app::pr_review::BootstrapDepth::ALL`].
-    pub selected: usize,
-    /// Which doc the distilled findings land in, toggled with `g`. Defaults to
-    /// `Project`: a bootstrap learns from *this* repo's PR history, so its
-    /// findings belong to this repo unless the user says otherwise.
-    pub scope: crate::app::review_memory::MemoryScope,
-}
-
-/// Full-screen progress view for the lookback bootstrap's background fetch +
-/// distill pass, entered once a depth is confirmed.
-#[derive(Debug, Clone)]
-pub struct BootstrapRunState {
-    /// The PR picker to return to on completion or cancel.
-    pub origin: PrPickerState,
-    pub depth: crate::app::pr_review::BootstrapDepth,
-    /// Which doc the run is appending to, carried through from the picker so
-    /// the running screen and completion toast can name it.
-    pub scope: crate::app::review_memory::MemoryScope,
-    pub stage: crate::app::pr_review::BootstrapStage,
-}
-
-/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
-/// shows how many findings are currently in the doc before spending an agent
-/// pass to merge near-duplicates and prune stale ones (Epic E "prevent
-/// review-memory rot").
-#[derive(Debug, Clone)]
-pub struct CompactConfirmState {
-    /// Bullet count in the doc as it stands, read synchronously when the
-    /// overlay opens (a local file read — cheap enough not to background).
-    /// Re-read for the newly selected doc on every `scope` toggle, so the
-    /// number always describes what `⏎` would actually compact.
-    pub existing_findings: usize,
-    /// Which doc gets compacted, toggled with `g`. Defaults to `Project` when
-    /// that doc has findings, otherwise `Global` — so `c` still reaches the
-    /// only non-empty doc without the user having to know to press `g`.
-    pub scope: crate::app::review_memory::MemoryScope,
-}
-
-/// Full-screen progress view for the review-memory compact pass's background
-/// read + rewrite, entered once the confirm overlay is accepted.
-#[derive(Debug, Clone)]
-pub struct CompactRunState {
-    /// The PR picker to return to on completion or cancel.
-    pub origin: PrPickerState,
-    /// Resolved path of the review-memory doc being compacted, carried
-    /// through from confirm so the poll's success path doesn't need to
-    /// re-resolve it (a second `repo_root` lookup) once the background
-    /// thread reports back.
-    pub path: PathBuf,
-    /// Which doc the run is rewriting, carried through from confirm so the
-    /// running screen can name it (the path alone doesn't read as
-    /// project-vs-global at a glance).
-    pub scope: crate::app::review_memory::MemoryScope,
-    pub stage: crate::app::pr_review::CompactStage,
-}
-
-/// Full-screen review of the compact pass's proposed replacement doc, entered
-/// once the background run finishes. Unlike [`append_finding`]-backed dialogs
-/// (`M`, the bootstrap), this proposes rewriting the *entire* doc, so nothing
-/// is written until the user explicitly confirms here — editable first, same
-/// as every other write in this pane.
-///
-/// [`append_finding`]: crate::app::review_memory::append_finding
-#[derive(Debug, Clone)]
-pub struct CompactReviewState {
-    /// The PR picker to return to on write or discard.
-    pub origin: PrPickerState,
-    /// Resolved path of the review-memory doc this will write to.
-    pub path: PathBuf,
-    /// Which doc is being rewritten, so the success toast names it.
-    pub scope: crate::app::review_memory::MemoryScope,
-    /// Bullet count in the doc before compacting, for the "N -> M" summary.
-    pub original_findings: usize,
-    /// Bullet count in the agent's proposed replacement, for the same summary.
-    pub proposed_findings: usize,
-    /// The proposed replacement text, editable before writing.
-    pub editor: TextEditor,
-    /// The doc exactly as the compact pass read it. The write re-reads the file
-    /// and compares against this before overwriting, so findings another AMF
-    /// session appended while the agent ran (or while this dialog sat open) are
-    /// re-applied rather than clobbered — the cross-project doc in particular is
-    /// shared by every AMF session on the machine.
-    pub original_content: String,
-    /// Set once a write has been refused because the doc on disk diverged in
-    /// ways an append can't explain. The next confirm overwrites deliberately,
-    /// so the user is warned but never stuck.
-    pub overwrite_confirmed: bool,
-    /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// confirm view (`⏎`/`w` write / `e` edit / `esc` discard).
-    pub editing: bool,
-    /// Scroll offset, in wrapped visual rows, for docs taller than the screen.
-    pub scroll: usize,
-    /// Request that the next render scroll the cursor back into view. Mirrors
-    /// [`FixConfirmState::sync_to_cursor`].
-    pub sync_to_cursor: bool,
-    /// Last write failure, shown inline so it's recoverable without losing
-    /// the edited content.
-    pub error: Option<String>,
-}
-
-/// Full-screen progress view for the AI PR review's background diff-fetch +
-/// review pass (`A`), entered from the AI Review pane.
-#[derive(Debug, Clone)]
-pub struct AiReviewRunProgress {
-    pub stage: crate::app::ai_review::AiReviewStage,
-    /// Wall-clock start for a live elapsed timer. This state is intentionally
-    /// not persisted; an in-flight headless process belongs to this AMF
-    /// process and cannot be resumed after restart.
-    pub started_at: std::time::Instant,
-    /// Latest sanitized activity label from the harness's structured stream.
-    pub activity: Option<String>,
-    /// Final token usage, when the harness reports it before completion.
-    pub usage: Option<(u64, u64)>,
-}
-
-#[derive(Debug, Clone)]
-pub struct AiReviewRunState {
-    /// The AI Review pane to return to on completion or cancel (dialogs
-    /// cleared before stashing, matching the PR Triage `P`/`f` stash
-    /// convention).
-    pub origin: AiReviewState,
-    pub progress: AiReviewRunProgress,
-}
-
-/// State for the full-screen AI Review pane — AMF's own review of a PR's
-/// diff, independent of PR Triage (see `crate::app::ai_review`'s module doc
-/// for why this is a separate workflow rather than bolted onto triage).
-#[derive(Debug, Clone)]
-pub struct AiReviewState {
-    /// Working directory of the feature whose PR this reviews.
-    pub workdir: PathBuf,
-    /// The PR being reviewed.
-    pub pr: crate::github::PrRef,
-    /// Findings from the most recent `A` run (or loaded from `ai_review_cache`
-    /// on entry), in generation order.
-    pub findings: Vec<crate::app::ai_review::AiReviewFinding>,
-    /// Overall one-to-three sentence review summary generated in the same
-    /// pass as `findings`, and loaded from the same cache row. Older cache
-    /// entries may not have one.
-    pub summary: Option<String>,
-    /// Index into `findings` of the highlighted finding.
-    pub selected: usize,
-    /// Scroll offset (in lines) for the detail pane of the selected finding.
-    pub detail_scroll: usize,
-    /// Number of lines the detail pane rendered on the last frame, so the
-    /// scroll clamp bounds against what was actually shown.
-    pub detail_content_lines: usize,
-    /// Record of the most recent `A` run (success/error/finding-count),
-    /// shown as a header badge so a review that already ran doesn't look
-    /// identical to one that never did.
-    pub last_run: Option<crate::app::ai_review::AiReviewRun>,
-    /// Harness chosen for this pane's `A` runs, picked once via `harness_pick`
-    /// and remembered for the rest of the visit.
-    pub harness: Option<AgentKind>,
-    /// Single-select picker shown before the first `A` run in this pane.
-    pub harness_pick: Option<AiHarnessPickState>,
-    /// Harness in effect when the current harness-pick "chain" started —
-    /// set the first time this pane's picker steps back from the model
-    /// picker to the harness picker, and left untouched by any further
-    /// back-and-forth within the same chain (cleared once a review actually
-    /// starts). Lets [`App::accept_ai_review_harness_pick`] detect a switch
-    /// away from the *original* harness even after the user backs out and
-    /// re-confirms an already-switched-to harness, so `AppConfig::review_model`
-    /// (which may only be valid for the original harness) isn't reseeded as
-    /// an incompatible model for the new one. See `AiHarnessPickState::previous_harness`.
-    pub harness_pick_origin: Option<AgentKind>,
-    /// Model chosen for this pane's `A` runs, picked once via `model_pick`
-    /// right after the harness. `None` means "use the default" — either the
-    /// picker hasn't run yet (see `model_picked`) or the user explicitly
-    /// chose the "Default" row.
-    pub model: Option<String>,
-    /// Whether the model has been picked (or auto-skipped, e.g. for Pi) yet
-    /// this pane visit.
-    pub model_picked: bool,
-    /// Single-select picker shown once per pane, right after the harness.
-    pub model_pick: Option<AiModelPickState>,
-    /// When `Some`, the selected finding's body is open for editing (`e`).
-    pub finding_editor: Option<TextEditor>,
-    /// When `Some`, the post-to-GitHub confirm dialog is open (`W`).
-    pub post_confirm: Option<AiReviewPostConfirmState>,
-}
-
-/// State for the full-screen PR Triage pane.
-#[derive(Debug, Clone)]
-pub struct PrReviewState {
-    /// Working directory of the feature whose PR we're reviewing. Used by the
-    /// manual-refresh action (`r`) to re-resolve and re-fetch the PR.
-    pub workdir: PathBuf,
-    /// The fetched, normalized review.
-    pub review: crate::app::pr_review::PrReview,
-    /// Index into `review.comments` of the highlighted comment.
-    pub selected: usize,
-    /// Scroll offset (in lines) for the detail pane of the selected comment.
-    pub detail_scroll: usize,
-    /// Number of lines the detail pane rendered on the last frame. The renderer
-    /// (`ui::dialogs::pr_review`) writes this each draw so the scroll clamp can
-    /// bound against what was actually shown, rather than a hand-synced estimate
-    /// that drifts as the detail layout (Markdown, dividers) changes.
-    pub detail_content_lines: usize,
-    /// When true, comments already resolved on GitHub are hidden from the list.
-    pub hide_resolved: bool,
-    /// Order the comment list is shown in (cycled with `o`), independent of
-    /// `hide_resolved`.
-    pub sort_mode: crate::app::pr_review::PrSortMode,
-    /// Which agent session "fix" prompts are injected into. Chosen once, via
-    /// `harness_pick`, before the first `f`/`B` of a pane visit.
-    pub fix_target: crate::app::pr_review::FixTarget,
-    /// Whether `fix_target` (and, for the dedicated case, `review_harness`)
-    /// has already been explicitly resolved for this pane visit by the user
-    /// confirming `harness_pick`. Prevents re-opening the picker on every
-    /// subsequent `f`/`B` while still allowing each new visit to name another
-    /// dedicated session.
-    pub fix_target_picked: bool,
-    /// Token totals already present when each fix-target session joined this
-    /// visit to the PR pane. Current totals minus these snapshots are the live
-    /// "this visit" tally; a target created after the pane opened has no
-    /// baseline, so all of its usage belongs to the visit.
-    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
-    /// Harness chosen for the dedicated triage session, picked once before the
-    /// first fix is injected and reused for the rest of the pane visit. `None`
-    /// until the user picks (or when a dedicated session isn't the target).
-    /// Lets PR triage run on a different harness than the feature's working
-    /// session.
-    pub review_harness: Option<AgentKind>,
-    /// Label (and lookup identity) of the dedicated triage session selected for
-    /// this pane visit. Defaults to `PR Triage` for backwards compatibility,
-    /// but can be named before the first `f`/`B` hand-off so several triage
-    /// agents can run alongside one another in the same feature.
-    pub dedicated_session_label: String,
-    /// When `Some`, the fix-target picker is open over the pane: the user is
-    /// choosing whether fixes go to the feature's existing live session or a
-    /// dedicated triage session (and, for the latter, which harness) before
-    /// the first fix/batch is injected. Replaces the old standalone `t`
-    /// toggle — the choice is made once, at the point it's needed.
-    pub harness_pick: Option<HarnessPickState>,
-    /// When `Some`, the compact triage-feature setup overlay is open: the user
-    /// picked `New feature…` in the fix-target picker and is choosing the
-    /// companion feature's preset / harness / vibe mode before it is created.
-    pub new_feature_setup: Option<TriageFeatureSetupState>,
-    /// When `Some`, the integration overlay is open: the review of what the
-    /// companion triage feature has committed and how to land it on the PR
-    /// branch (push, or cherry-pick into the source worktree).
-    pub integrate: Option<TriageIntegrateState>,
-    /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
-    /// the assembled (and editable) prompt awaiting the user's approval before
-    /// it is injected into the agent session.
-    pub fix_confirm: Option<FixConfirmState>,
-    /// Whether the fix confirm/edit dialog opens with the vim keymap. Persisted
-    /// on the pane (not the editor, which is rebuilt on each `f`) so the choice
-    /// survives reopening the dialog for another comment — the same approach as
-    /// [`PlaceholderFillState::vim_enabled`].
-    pub fix_vim_enabled: bool,
-    /// When `Some`, the reply-kind picker (`R`) is open: choosing between a
-    /// "Done" report and a "not needed" explanation before the reply dialog
-    /// itself opens.
-    pub reply_kind_pick: Option<ReplyKindPickState>,
-    /// When `Some`, the "Mark" picker (`m`) is open: choosing Done / Skip /
-    /// Resolve-on-GitHub for the selected comment.
-    pub mark_pick: Option<MarkPickState>,
-    /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
-    /// editable reply awaiting the user's approval before it is posted to GitHub.
-    pub reply: Option<ReplyState>,
-    /// When `Some`, the "add to memory" dialog is open over the pane: the
-    /// selected comment's finding, editable, awaiting the user's approval
-    /// before it's appended to the review-memory doc.
-    pub memory_add: Option<MemoryAddState>,
-    /// Comment ids marked (with `space`) for a combined batch fix via `B`.
-    /// Keyed by id (not index) so marks survive the hide-resolved filter
-    /// shifting the visible rows. Cleared once the batch is injected.
-    pub marked: std::collections::HashSet<u64>,
-    /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
-    /// after the user picks the review harness, the continuation opens the
-    /// combined-batch confirm dialog instead of the single-comment one. Cleared
-    /// when the picker is confirmed or cancelled.
-    pub pending_batch: bool,
-    /// The branch actually checked out in `workdir`, snapshotted when the pane
-    /// was entered/refreshed (`WorktreeManager::current_branch`). `f`/`B` fix
-    /// injection reads files from this workdir regardless of which PR is being
-    /// triaged (`G`/`g`/`#` allow picking *any* PR in the repo), so when this
-    /// doesn't match `review.pr.head_ref` a fix would silently land on the
-    /// wrong branch — see [`Self::branch_mismatch`]. `None` when the branch
-    /// couldn't be determined (e.g. detached HEAD).
-    pub checked_out_branch: Option<String>,
-    /// Completed AI-review findings for this exact PR/head SHA that are still
-    /// publishable. Loaded from `ai_review_cache` on entry and kept in sync as
-    /// the linked AI Review is generated, skipped, or posted.
-    pub pending_ai_review_findings: usize,
-    /// Most recent terminal AI Review result for this exact PR/head SHA.
-    /// Kept alongside the pending count so a successful zero-finding run or a
-    /// failure remains distinguishable from a review that has never run.
-    pub ai_review_last_run: Option<crate::app::ai_review::AiReviewRun>,
-}
-
-/// Identity of the PR Triage refresh started after a successful AI Review
-/// post. Kept outside `AppMode` so the refresh can update a stashed triage
-/// pane while the user remains in AI Review.
-#[derive(Debug, Clone)]
-pub struct AiReviewTriageRefresh {
-    pub workdir: PathBuf,
-    pub pr: crate::github::PrRef,
-}
-
-/// Confirm/edit dialog for posting the kept AI-review findings to GitHub as a
-/// real review (`W`). Built once from every not-skipped, not-yet-published
-/// finding; `⏎` posts as-is. Only the summary body is editable — the
-/// per-finding inline comment bodies are the AI's own text, vetted by
-/// skipping (`s`) rather than hand-edited here.
-#[derive(Debug, Clone)]
-pub struct AiReviewPostConfirmState {
-    /// Inline review comments built from the anchored findings.
-    pub inline: Vec<crate::github::PrReviewComment>,
-    pub editor: TextEditor,
-    pub editing: bool,
-    /// Last post failure, shown inline so a recoverable error (e.g. GitHub
-    /// rejecting the review because a finding no longer matches the current
-    /// diff) doesn't require leaving the dialog to notice — `show_error`
-    /// unconditionally resets `self.mode` to `Normal` outside of
-    /// `Normal`/`Help`/`Viewing`, so the pane is restored with this set
-    /// rather than losing the dialog entirely.
-    pub error: Option<String>,
-}
-
-/// A [`PrReviewState`] stashed while the user is watching the linked fix
-/// session (`P` from PR Triage), so `leader+P` can jump straight back
-/// to the exact comment/scroll/dialog state without re-fetching. `session`
-/// and `window` identify the tmux target the stash was jumped *to*, so the
-/// restore only fires from that same session's view — a stash left behind
-/// after navigating elsewhere is not mistaken for a different PR's pane.
-#[derive(Debug, Clone)]
-pub struct PrReviewReturn {
-    pub session: String,
-    pub window: String,
-    pub state: PrReviewState,
-}
-
-/// Single-select fix-target picker shown before the first fix/batch of a PR
-/// Triage pane visit: whether fixes go to the feature's existing live
-/// session, or a dedicated triage session pinned to a specific harness.
-/// Replaces the old standalone `t` toggle — the choice is made once, at the
-/// point it's needed, instead of living as an always-on key. Highlights the
-/// dedicated-review row for the project's preferred agent by default.
-#[derive(Debug, Clone)]
-pub struct HarnessPickState {
-    /// The rows to choose from: the existing-live option, plus one row per
-    /// allowed agent for a dedicated session.
-    pub rows: Vec<crate::app::pr_review::FixTargetPickRow>,
-    /// Index into `rows` of the highlighted choice.
-    pub selected: usize,
-    /// `Some` after a dedicated harness row is chosen, while the picker is on
-    /// its second step accepting an optional session name. An empty name means
-    /// the backwards-compatible `PR Triage` label.
-    pub session_name: Option<String>,
-}
-
-/// One editable row of the compact triage-feature setup overlay
-/// ([`TriageFeatureSetupState`]). Deliberately much smaller than the full
-/// feature-creation wizard: only the settings that change how the *triage*
-/// agent behaves, plus the branch it lands on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriageSetupRow {
-    /// Apply a configured feature preset (or "Manual", which changes nothing).
-    Preset,
-    /// Which agent harness the triage feature runs.
-    Harness,
-    /// Vibe mode — the setting the whole feature exists for: triaging review
-    /// comments in, say, Vibeless while the source feature runs SuperVibe.
-    Mode,
-    /// Review mode (developer notes on every change).
-    Review,
-    /// Chrome/browser automation.
-    Chrome,
-    /// The companion branch name. Pre-filled and editable.
-    Branch,
-}
-
-impl TriageSetupRow {
-    pub const ALL: [TriageSetupRow; 6] = [
-        TriageSetupRow::Preset,
-        TriageSetupRow::Harness,
-        TriageSetupRow::Mode,
-        TriageSetupRow::Review,
-        TriageSetupRow::Chrome,
-        TriageSetupRow::Branch,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TriageSetupRow::Preset => "Preset",
-            TriageSetupRow::Harness => "Harness",
-            TriageSetupRow::Mode => "Vibe mode",
-            TriageSetupRow::Review => "Review mode",
-            TriageSetupRow::Chrome => "Chrome",
-            TriageSetupRow::Branch => "Branch",
-        }
-    }
-}
-
-/// The compact feature-creation flow shown when the user picks `New feature…`
-/// as the fix target: a single settings list (no multi-step wizard) that
-/// creates an isolated, worktree-backed companion feature for this PR's
-/// triage work.
-///
-/// Plan mode is deliberately absent — it defers the launch into a planning
-/// interview, which makes no sense for a feature whose whole job is to apply
-/// review comments that already say what to do.
-#[derive(Debug, Clone)]
-pub struct TriageFeatureSetupState {
-    /// Presets available for this repo. Index 0 of the *choice* is "Manual"
-    /// (no preset); `presets[i - 1]` for any higher index.
-    pub presets: Vec<crate::extension::FeaturePreset>,
-    pub preset_index: usize,
-    /// Harnesses allowed for this repo.
-    pub agents: Vec<AgentKind>,
-    pub agent_index: usize,
-    pub mode: VibeMode,
-    pub review: bool,
-    pub enable_chrome: bool,
-    /// Companion branch name — deliberately *not* the PR's branch, which git
-    /// can't check out in a second worktree.
-    pub branch: String,
-    /// Focused row.
-    pub row: usize,
-    /// Inline validation/creation error (e.g. a duplicate feature name), shown
-    /// in the overlay so the user can correct it without losing the pane.
-    pub error: Option<String>,
-    /// True when the combined-batch flow (`B`) opened this, so the
-    /// continuation after creation reopens the batch dialog rather than the
-    /// single-comment one — mirroring `PrReviewState::pending_batch`.
-    pub pending_batch: bool,
-}
-
-impl TriageFeatureSetupState {
-    /// The chosen preset, or `None` for "Manual".
-    pub fn selected_preset(&self) -> Option<&crate::extension::FeaturePreset> {
-        self.preset_index
-            .checked_sub(1)
-            .and_then(|i| self.presets.get(i))
-    }
-
-    /// Display text for the preset row.
-    pub fn preset_label(&self) -> String {
-        match self.selected_preset() {
-            Some(preset) => preset.name.clone(),
-            None => "Manual".to_string(),
-        }
-    }
-
-    /// The focused row, or `Branch` if `row` somehow ran past the list.
-    pub fn focused_row(&self) -> TriageSetupRow {
-        TriageSetupRow::ALL
-            .get(self.row)
-            .copied()
-            .unwrap_or(TriageSetupRow::Branch)
-    }
-
-    pub fn agent(&self) -> AgentKind {
-        self.agents
-            .get(self.agent_index)
-            .cloned()
-            .unwrap_or_default()
-    }
-}
-
-/// How the companion triage feature's commits get back onto the PR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriageIntegration {
-    /// `git push <remote> <triage-branch>:<pr-branch>` — a normal
-    /// fast-forward push. Never forced: a diverged PR branch is reported, not
-    /// overwritten.
-    Push,
-    /// Cherry-pick the triage commits into the source worktree. Offered only
-    /// when that worktree is clean, so an in-progress change is never
-    /// clobbered.
-    CherryPick,
-}
-
-impl TriageIntegration {
-    pub const ALL: [TriageIntegration; 2] =
-        [TriageIntegration::Push, TriageIntegration::CherryPick];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TriageIntegration::Push => "Push to the PR branch",
-            TriageIntegration::CherryPick => "Cherry-pick into the source worktree",
-        }
-    }
-}
-
-/// The integration overlay (`I`): what the companion triage feature has
-/// committed since it branched, and the two explicit, non-destructive ways to
-/// land it on the PR. Everything here is computed before the overlay opens, so
-/// the user sees exactly what will happen before confirming.
-#[derive(Debug, Clone)]
-pub struct TriageIntegrateState {
-    /// Companion branch holding the triage commits.
-    pub triage_branch: String,
-    /// The PR's own head branch — where a push lands. Not necessarily the
-    /// branch the source worktree has checked out.
-    pub pr_branch: String,
-    /// One-line summaries of the commits on the triage branch since it
-    /// branched (newest first), for the "what will land" preview.
-    pub commits: Vec<String>,
-    /// Set when the source worktree has uncommitted changes: the cherry-pick
-    /// option is disabled and this explains why. Pushing is unaffected — it
-    /// never touches the source worktree.
-    pub source_dirty: Option<String>,
-    /// Set when the companion worktree itself has uncommitted changes — those
-    /// wouldn't be included, so say so rather than silently landing less than
-    /// the user expects.
-    pub triage_dirty: bool,
-    pub selected: usize,
-    /// Inline result/error from the last attempt, kept in the overlay so a
-    /// rejected push can be read and retried in place.
-    pub error: Option<String>,
-    /// Set once an integration succeeded, so the overlay reports the outcome
-    /// instead of inviting the same action again.
-    pub done: Option<String>,
-}
-
-impl TriageIntegrateState {
-    pub fn focused(&self) -> TriageIntegration {
-        TriageIntegration::ALL
-            .get(self.selected)
-            .copied()
-            .unwrap_or(TriageIntegration::Push)
-    }
-}
-
-/// Harness picker for the paid, headless `A` review pass. An unavailable CLI
-/// leaves the picker open and records an actionable inline error.
-#[derive(Debug, Clone)]
-pub struct AiHarnessPickState {
-    pub agents: Vec<AgentKind>,
-    pub selected: usize,
-    pub error: Option<String>,
-    /// The harness-pick chain's original harness (`AiReviewState::harness_pick_origin`),
-    /// carried into this picker so a confirm can tell whether the choice has
-    /// actually diverged from where the chain started — not just from the
-    /// harness shown on the immediately preceding screen. `None` on the
-    /// initial harness step. Used to avoid seeding one harness's model choice
-    /// (or the globally configured default model) into a different harness's
-    /// rebuilt model picker.
-    pub previous_harness: Option<AgentKind>,
-}
-
-/// One row of the model picker: either "use the default", a known-good
-/// preset `--model` value, or "type your own".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ModelPickRow {
-    /// No explicit model — the harness's own default (or `AppConfig::review_model`
-    /// as an underlying override) applies.
-    Default,
-    /// A verified alias/name for the chosen harness (e.g. Claude's `"sonnet"`).
-    Preset(&'static str),
-    /// Free-text entry for anything not in the preset list.
-    Custom,
-}
-
-/// Single-select model picker for the `A` AI review, shown once per pane
-/// right after the harness is chosen. Presets are a best-effort, *verified*
-/// set of model aliases for the chosen harness — currently only Claude's
-/// (`sonnet`/`opus`/`haiku`/`fable`, confirmed against `claude --help`).
-/// Other harnesses offer just `Default` and `Custom`, since their valid
-/// model strings aren't reliably enumerable here; guessing wrong presets
-/// would be worse than not offering any.
-#[derive(Debug, Clone)]
-pub struct AiModelPickState {
-    pub rows: Vec<ModelPickRow>,
-    /// Index into `rows` of the highlighted choice.
-    pub selected: usize,
-    /// Free-text buffer for the `Custom` row, live only while `editing_custom`.
-    pub custom_input: String,
-    /// True while keystrokes go to `custom_input` (opened by `⏎`/`e` on the
-    /// `Custom` row); false in the plain list-navigation view.
-    pub editing_custom: bool,
-}
-
-/// Single-select picker shown by `R` before the reply dialog itself: choose
-/// between a "Done in `<sha>`" report and a "not needed" explanation. Once
-/// confirmed, routes into the same [`ReplyState`] flow either kind already
-/// used — this is purely a UI step in front of it, replacing the old
-/// separate `R`/`n` top-level keys.
-#[derive(Debug, Clone)]
-pub struct ReplyKindPickState {
-    /// Index into `ReplyKind::ALL` of the highlighted choice.
-    pub selected: usize,
-}
-
-/// Single-select picker shown by `m` ("Mark"): choose between marking the
-/// selected comment `Done` (local), `Skip` (local), or toggling its GitHub
-/// review thread's resolved state. Replaces the old separate `m`/`s`/`x`
-/// top-level keys with one entry point; applying a row is immediate (no
-/// further confirm step, matching the original single-key behavior) since
-/// none of the three actions need editable text.
-#[derive(Debug, Clone)]
-pub struct MarkPickState {
-    /// Index into `MarkAction::ALL` of the highlighted choice.
-    pub selected: usize,
-}
-
-/// Reply dialog for one comment. Replies are contextual, not free-form: either
-/// a "Done in `<sha>`." report of a completed fix or a "not needed" explanation.
-/// The seeded body is editable; nothing is posted until the user confirms.
-#[derive(Debug, Clone)]
-pub struct ReplyState {
-    /// GitHub id of the comment being replied to (resolves the post target).
-    pub comment_id: u64,
-    /// Which contextual reply this is (drives the seed, title, and the triage
-    /// outcome applied on post).
-    pub kind: crate::app::pr_review::ReplyKind,
-    /// The reply body, editable before posting.
-    pub editor: TextEditor,
-    /// Whether the initial body came back from an agent fix session. Agent
-    /// drafts receive AI-authorship attribution; deterministic templates and
-    /// user-written not-needed replies receive channel-only AMF attribution.
-    /// Only ever `true` for [`super::pr_review::ReplyKind::Done`] — see
-    /// [`super::pr_review::App::open_reply`].
-    pub agent_drafted: bool,
-    /// Best-effort details about the agent session that produced the draft.
-    /// Captured when the reply opens so the confirmation UI previews the exact
-    /// disclosure that will be posted with an unchanged AI-authored reply.
-    pub generation_metadata: Option<crate::app::pr_review::ReplyGenerationMetadata>,
-    /// The exact body the editor was seeded with when the dialog opened.
-    /// Compared against the current editor text at post time: if the user has
-    /// changed it, the draft is no longer purely the agent's own words, so
-    /// `agent_drafted` attribution no longer applies (see
-    /// [`super::pr_review::reply_effective_agent_drafted`]).
-    pub original_seed: String,
-    /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// confirm view (`⏎` post / `e` edit / `esc` cancel).
-    pub editing: bool,
-}
-
-/// "Add to memory" dialog (`M`): appends the selected comment's distilled
-/// finding to the review-findings memory doc
-/// (`review_memory::append_finding`). Mirrors [`ReplyState`]'s edit/confirm
-/// split, plus a category cycled with `Tab` in the confirm view.
-#[derive(Debug, Clone)]
-pub struct MemoryAddState {
-    /// GitHub id of the comment the finding is drawn from.
-    pub comment_id: u64,
-    /// Index into `crate::app::pr_review::MEMORY_CATEGORIES`, cycled with `Tab`.
-    pub category: usize,
-    /// Which doc the finding lands in, toggled with `g`. Defaults to
-    /// `Project` — a finding from this PR is about this repo until the user
-    /// says it's a habit worth carrying everywhere.
-    pub scope: crate::app::review_memory::MemoryScope,
-    /// The finding text, editable before it's appended.
-    pub editor: TextEditor,
-    /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `g` toggle
-    /// scope / `esc` cancel).
-    pub editing: bool,
-}
-
-/// Confirm/edit dialog for a fix prompt: shows the exact text that will be
-/// injected (token principle #3 — no file contents), with a `~N tokens`
-/// preview, before it reaches the agent. The prompt is editable so the user can
-/// tweak it before sending.
-#[derive(Debug, Clone)]
-pub struct FixConfirmState {
-    /// The assembled fix prompt, editable before injection.
-    pub editor: TextEditor,
-    /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// default confirm view (`⏎` inject / `e` edit / `esc` cancel).
-    pub editing: bool,
-    /// Scroll offset, in wrapped visual rows, for prompts taller than the
-    /// dialog. Clamped to the rendered content each frame.
-    pub scroll: usize,
-    /// Request that the next render scroll the cursor back into view. Set on
-    /// edits / cursor moves and cleared once applied; an explicit scroll key
-    /// clears it so the user can scroll away from the cursor.
-    pub sync_to_cursor: bool,
-    /// When `Some`, this dialog holds a **combined** batch prompt built from
-    /// several marked comments (the `B` flow) rather than a single comment's
-    /// fix. The vector is the ids of every comment included in the batch;
-    /// injecting marks all of them `Fixing` and clears the marked set. `None`
-    /// for an ordinary single-comment fix (only the selected comment is marked).
-    pub batch: Option<Vec<u64>>,
-    /// Per-comment correlation ids embedded in the prompt's `amf reply-draft`
-    /// handoff commands. They become authoritative only when the user confirms
-    /// injection, at which point AMF invalidates any older stored draft.
-    pub reply_draft_requests: Vec<crate::app::pr_review::ReplyDraftRequest>,
-}
-
-impl PrReviewState {
-    pub fn selected_comment(&self) -> Option<&crate::app::pr_review::PrComment> {
-        self.review.comments.get(self.selected)
-    }
-
-    /// The checked-out branch when it's known and doesn't match the PR being
-    /// triaged — `None` when they match, or either side is unknown (an empty
-    /// `head_ref` means the PR was resolved before this field existed; a
-    /// `None` `checked_out_branch` means detached HEAD or the branch lookup
-    /// failed). Surfaced as a pane-header warning and inside the fix confirm
-    /// dialog, since fix injection reads files from `workdir` regardless of
-    /// which PR is loaded.
-    pub fn branch_mismatch(&self) -> Option<&str> {
-        branch_mismatch(&self.review.pr.head_ref, self.checked_out_branch.as_deref())
-    }
-
-    /// Indices into `review.comments` that pass the current filter, ordered by
-    /// `sort_mode`. With `hide_resolved` on, GitHub-resolved comments are
-    /// dropped. AMF follow-up replies whose root is present are always
-    /// collated under that root's detail view instead of duplicated here.
-    pub fn visible_indices(&self) -> Vec<usize> {
-        let indices = self
-            .review
-            .comments
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                !self.review.is_collated_amf_reply(c) && (!self.hide_resolved || !c.is_resolved)
-            })
-            .map(|(i, _)| i)
-            .collect();
-        self.sort_indices(indices)
-    }
-
-    /// Every comment index — including ones `visible_indices` would drop for
-    /// `hide_resolved` or collation — in `sort_mode` order. Used to find a
-    /// hidden selection's nearest visible neighbor when a filter or refresh
-    /// hides it. Must stay unfiltered so `self.selected` itself can always be
-    /// located by `position()`, even when `selected` is the very comment that
-    /// just became hidden (e.g. an orphaned AMF reply that a refresh just
-    /// collated under its now-present root); the neighbor search then walks
-    /// this order and tests `visible_indices().contains()` to find the
-    /// nearest comment that's actually shown.
-    pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
-        self.sort_indices((0..self.review.comments.len()).collect())
-    }
-
-    /// If `selected` is currently hidden by `hide_resolved`, snap it to the
-    /// nearest remaining visible comment in sort order (forward first, then
-    /// backward, then the first visible comment). No-op when `selected` is
-    /// already visible, or nothing is visible at all. Shared by the `x`
-    /// toggle and by a PR Triage refresh, either of which can newly hide the
-    /// selected comment (resolved on GitHub, in the toggle case; refreshed
-    /// into a resolved state, in the refresh case).
-    pub fn snap_selection_to_visible(&mut self) {
-        let visible = self.visible_indices();
-        if visible.is_empty() || visible.contains(&self.selected) {
-            return;
-        }
-        let order = self.all_sorted_indices();
-        let pos = order.iter().position(|&i| i == self.selected);
-        let snapped = pos
-            .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
-            .or_else(|| pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i))))
-            .copied()
-            .unwrap_or(visible[0]);
-        self.selected = snapped;
-        self.detail_scroll = 0;
-    }
-
-    /// Apply `sort_mode` to a set of comment indices. Stable, so ties keep
-    /// their relative (fetch) order.
-    fn sort_indices(&self, mut indices: Vec<usize>) -> Vec<usize> {
-        use crate::app::pr_review::PrSortMode;
-        match self.sort_mode {
-            PrSortMode::FetchOrder => {}
-            PrSortMode::ByFile => indices.sort_by(|&a, &b| {
-                let path = |i: usize| self.review.comments[i].path.as_deref();
-                match (path(a), path(b)) {
-                    (Some(pa), Some(pb)) => pa.cmp(pb),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                }
-            }),
-            PrSortMode::ByAuthor => indices.sort_by(|&a, &b| {
-                self.review.comments[a]
-                    .author
-                    .cmp(&self.review.comments[b].author)
-            }),
-            PrSortMode::HumansFirst => indices.sort_by_key(|&i| self.review.comments[i].is_bot),
-            PrSortMode::Conversations => indices.sort_by_key(|&i| {
-                matches!(
-                    self.review.comments[i].kind,
-                    crate::app::pr_review::CommentKind::Conversation
-                )
-            }),
-        }
-        indices
-    }
-
-    /// Under [`PrSortMode::Conversations`], the position within
-    /// [`Self::visible_indices`] where the conversation-comment section
-    /// begins — `None` when not in that mode, or when the visible list has no
-    /// conversation comments (nothing to separate) or is *entirely*
-    /// conversation comments (no code-anchored section to divide from).
-    /// `draw_comment_list` uses this to insert a section divider rather than
-    /// silently reordering the list.
-    pub fn conversation_section_start(&self) -> Option<usize> {
-        if self.sort_mode != crate::app::pr_review::PrSortMode::Conversations {
-            return None;
-        }
-        let visible = self.visible_indices();
-        let start = visible.iter().position(|&i| {
-            matches!(
-                self.review.comments[i].kind,
-                crate::app::pr_review::CommentKind::Conversation
-            )
-        })?;
-        (start > 0).then_some(start)
-    }
-
-    /// Number of comments hidden by the resolved filter (0 when showing all).
-    pub fn hidden_resolved_count(&self) -> usize {
-        if !self.hide_resolved {
-            return 0;
-        }
-        self.review
-            .comments
-            .iter()
-            .filter(|c| c.is_resolved)
-            .count()
-    }
-}
-
-/// Free function behind [`PrReviewState::branch_mismatch`] — pulled out so it's
-/// testable without constructing a full `PrReviewState`. `None` when the
-/// branches match, or when either side is unknown (empty `head_ref` from a
-/// pre-existing cache row, or no `checked_out_branch` — detached HEAD / lookup
-/// failure).
-fn branch_mismatch<'a>(pr_head_ref: &str, checked_out_branch: Option<&'a str>) -> Option<&'a str> {
-    let checked_out = checked_out_branch?;
-    if pr_head_ref.is_empty() || pr_head_ref == checked_out {
-        return None;
-    }
-    Some(checked_out)
 }
 
 /// What an active TODOs inline edit targets.
@@ -3048,16 +1144,17 @@ pub struct TodoViewState {
     /// worktree pane is absent for a feature on the repo root, which is the
     /// only way this is shorter than three.
     pub panes: Vec<TodoPane>,
-    /// Index into `panes` of the pane that owns the cursor. Always within
-    /// [`Self::visible_panes`].
-    pub focus: usize,
-    /// Whether the project and global panes are revealed. Seeded from
-    /// `AppConfig::todo_side_panes` and written back when toggled, so a
-    /// dashboard `I` — which runs with no overlay open — reads the same
-    /// setting the overlay would.
-    pub side_panes_open: bool,
+    /// Index into `panes` of the visible pane that owns the cursor. `None` is
+    /// valid for a repository-root feature when both optional scopes are
+    /// hidden.
+    pub focus: Option<usize>,
     /// Active inline edit, if any (add/edit title/notes/scratchpad).
     pub editor: Option<TodoEditor>,
+    /// Whether inline edits open with the vim keymap. Remembered on the state
+    /// (not the editor, which is rebuilt for each edit) for the life of the
+    /// overlay; a fresh overlay starts with vim off, matching the other opt-in
+    /// editor surfaces (compose, final review). Toggled with `Ctrl+T`.
+    pub todo_vim_enabled: bool,
     /// Set when a delete is awaiting y/n confirmation.
     pub pending_delete: bool,
     /// Active launch step (chooser / destination), layered over the list.
@@ -3067,41 +1164,31 @@ pub struct TodoViewState {
 }
 
 impl TodoViewState {
-    /// How many panes are on screen: just the worktree pane when the side
-    /// panes are closed, otherwise all of them.
-    ///
-    /// A feature with no worktree pane always shows all of them — closing the
-    /// side panes there would leave nothing at all, and the project and global
-    /// lists are that feature's only lists.
-    pub fn visible_pane_count(&self) -> usize {
-        if self.side_panes_open || self.panes.is_empty() {
-            return self.panes.len();
-        }
-        match self.panes[0].kind {
-            TodoPaneKind::Worktree => 1,
-            _ => self.panes.len(),
+    pub fn pane_is_visible(pane: &TodoPane, project_visible: bool, global_visible: bool) -> bool {
+        match pane.kind {
+            TodoPaneKind::Worktree => true,
+            TodoPaneKind::Project => project_visible,
+            TodoPaneKind::Global => global_visible,
         }
     }
 
-    /// The panes on screen, in layout order.
-    pub fn visible_panes(&self) -> &[TodoPane] {
-        &self.panes[..self.visible_pane_count()]
+    /// Indices of actionable panes in worktree → project → global order.
+    pub fn visible_pane_indices(&self, project_visible: bool, global_visible: bool) -> Vec<usize> {
+        self.panes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pane)| {
+                Self::pane_is_visible(pane, project_visible, global_visible).then_some(index)
+            })
+            .collect()
     }
 
     pub fn focused(&self) -> Option<&TodoPane> {
-        self.panes.get(self.focus)
+        self.focus.and_then(|focus| self.panes.get(focus))
     }
 
     pub fn focused_mut(&mut self) -> Option<&mut TodoPane> {
-        self.panes.get_mut(self.focus)
-    }
-
-    /// Pull focus back into view — used after the side panes are closed, which
-    /// can leave the cursor on a pane that is no longer drawn.
-    pub fn clamp_focus(&mut self) {
-        if self.focus >= self.visible_pane_count() {
-            self.focus = 0;
-        }
+        self.focus.and_then(|focus| self.panes.get_mut(focus))
     }
 }
 
@@ -3148,6 +1235,26 @@ pub struct TodoQuickCaptureState {
     pub input: String,
 }
 
+/// Collects the user's instruction before starting a fresh-context agent
+/// session (`Ctrl+Space` then `Shift+F`, `crate::app::handoff`), so the
+/// seeded prompt is complete on arrival instead of asking the user to type
+/// over a placeholder in the new session's compose box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshContextPromptSource {
+    Manual,
+    ContextHint,
+}
+
+pub struct FreshContextPromptState {
+    pub view: ViewState,
+    /// Feature the fresh session will be created in, shown in the dialog.
+    pub feature_name: String,
+    /// The instruction being typed.
+    pub input: String,
+    /// Whether the input came from the context-hint continuation generator.
+    pub source: FreshContextPromptSource,
+}
+
 /// Prompt shown when the feature that hosts a project's TODO list is deleted
 /// while the project survives (see `docs/backlog/feature-todos-plan.md`, Epic 1).
 /// The user chooses which surviving feature re-homes the list, or deletes it.
@@ -3188,24 +1295,32 @@ pub struct TodoPlanOrigin {
     pub host_feature_id: String,
 }
 
-/// What `g`/`Enter` on an unlinked TODO offers: the original spawn, or a plan
-/// interview.
+/// What `g`/`Enter` on an unlinked TODO offers: spawn in an existing feature,
+/// spawn in a fresh worktree, or run a plan interview first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TodoLaunchAction {
-    /// Today's behavior: an agent session in the host feature, composer seeded
-    /// with the TODO, editable and unsent.
+    /// Today's behavior: an agent session in the host feature (or, for a
+    /// project/global TODO, a feature the user picks), composer seeded with the
+    /// TODO, editable and unsent.
     SpawnSession,
+    /// Create a new AMF feature and git worktree for this TODO — no plan
+    /// interview — then seed its agent with the TODO.
+    SpawnInNewFeature,
     /// Run the guided plan interview with the TODO as its brief.
     PlanMode,
 }
 
 impl TodoLaunchAction {
-    pub const ALL: [TodoLaunchAction; 2] =
-        [TodoLaunchAction::SpawnSession, TodoLaunchAction::PlanMode];
+    pub const ALL: [TodoLaunchAction; 3] = [
+        TodoLaunchAction::SpawnSession,
+        TodoLaunchAction::SpawnInNewFeature,
+        TodoLaunchAction::PlanMode,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             TodoLaunchAction::SpawnSession => "Start an agent on this TODO",
+            TodoLaunchAction::SpawnInNewFeature => "Start an agent in a new feature",
             TodoLaunchAction::PlanMode => "Plan this TODO first",
         }
     }
@@ -3214,6 +1329,9 @@ impl TodoLaunchAction {
         match self {
             TodoLaunchAction::SpawnSession => {
                 "Opens a session in this feature with the TODO in the composer, unsent."
+            }
+            TodoLaunchAction::SpawnInNewFeature => {
+                "Creates a new branch and worktree, then seeds its agent with the TODO, unsent."
             }
             TodoLaunchAction::PlanMode => {
                 "Runs the discovery interview, then starts work from the plan you accept."
@@ -3532,857 +1650,6 @@ impl TodoLaunchStep {
     }
 }
 
-/// Which files Learning Mode lists.
-// Learning Mode's overlay lands in the plan's Epics 2-5
-// (`docs/backlog/learning-mode-plan.md`), so this state is written before
-// anything reads it. The `dead_code` allows through the end of
-// `LearningViewState` come off in Epic 6.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrowseScope {
-    /// Every file in the project's working tree (git-tracked plus untracked
-    /// files git doesn't ignore).
-    RepoTree,
-    /// Only the files changed on the feature's branch.
-    BranchChanges,
-}
-
-#[allow(dead_code)]
-impl BrowseScope {
-    /// Short header label.
-    pub fn label(self) -> &'static str {
-        match self {
-            BrowseScope::RepoTree => "Repo tree",
-            BrowseScope::BranchChanges => "Branch changes",
-        }
-    }
-
-    /// Spelled-out description — the header says what the scope *is* rather
-    /// than relying on the user knowing AMF's vocabulary.
-    pub fn description(self) -> &'static str {
-        match self {
-            BrowseScope::RepoTree => "all files in this project",
-            BrowseScope::BranchChanges => "files changed on this branch",
-        }
-    }
-
-    pub fn toggled(self) -> Self {
-        match self {
-            BrowseScope::RepoTree => BrowseScope::BranchChanges,
-            BrowseScope::BranchChanges => BrowseScope::RepoTree,
-        }
-    }
-}
-
-/// What a Learning Mode question is asked *about*. Persisted as an
-/// `anchor_kind` string plus an optional line range (see [`LearningAnchor::kind_str`]
-/// and [`LearningAnchor::from_parts`]).
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningAnchor {
-    /// The repository as a whole — used by the orientation ("give me a tour")
-    /// question, which has no file to point at.
-    Project,
-    /// The whole of the currently loaded file.
-    File,
-    /// A hunk of the current file's diff, by index into `DiffFile::hunks`.
-    /// Only reachable in [`BrowseScope::BranchChanges`] — repo-tree browsing
-    /// has no diff, so a hunk has nothing to mean there.
-    Hunk { index: usize },
-    /// An inclusive 1-based line range in the current file.
-    Lines { start: usize, end: usize },
-}
-
-#[allow(dead_code)]
-impl LearningAnchor {
-    /// Stable string stored in `learning_qa.anchor_kind`.
-    pub fn kind_str(self) -> &'static str {
-        match self {
-            LearningAnchor::Project => "project",
-            LearningAnchor::File => "file",
-            LearningAnchor::Hunk { .. } => "hunk",
-            LearningAnchor::Lines { .. } => "lines",
-        }
-    }
-
-    /// The persisted line range: `(line_start, line_end)`, both `None` for
-    /// anchors that cover no specific lines.
-    pub fn line_range(self) -> (Option<usize>, Option<usize>) {
-        match self {
-            LearningAnchor::Project | LearningAnchor::File => (None, None),
-            LearningAnchor::Hunk { index } => (Some(index), None),
-            LearningAnchor::Lines { start, end } => (Some(start), Some(end)),
-        }
-    }
-
-    /// Rebuild an anchor from its persisted parts. Unknown kinds and
-    /// range-less `lines` rows fall back to [`LearningAnchor::File`] rather
-    /// than failing the load — a slightly coarse anchor beats a lost note.
-    pub fn from_parts(kind: &str, start: Option<usize>, end: Option<usize>) -> Self {
-        match kind {
-            "project" => LearningAnchor::Project,
-            "hunk" => match start {
-                Some(index) => LearningAnchor::Hunk { index },
-                None => LearningAnchor::File,
-            },
-            "lines" => match (start, end) {
-                (Some(start), Some(end)) => LearningAnchor::Lines { start, end },
-                (Some(start), None) => LearningAnchor::Lines { start, end: start },
-                _ => LearningAnchor::File,
-            },
-            _ => LearningAnchor::File,
-        }
-    }
-
-    /// The 1-based inclusive line range this anchor actually names, for prose
-    /// that quotes it back. Unlike [`line_range`](Self::line_range) — which is
-    /// the persistence shape and reuses `line_start` to hold a hunk index —
-    /// this is `None` for every anchor that does not cover specific lines.
-    pub fn line_range_for_display(self) -> Option<(usize, usize)> {
-        match self {
-            LearningAnchor::Lines { start, end } => Some((start, end)),
-            _ => None,
-        }
-    }
-
-    /// Plain-words description echoed above the question input, e.g.
-    /// `lines 40-58 of src/app/learning.rs`.
-    pub fn describe(self, path: Option<&str>) -> String {
-        let path = path.unwrap_or("this file");
-        match self {
-            LearningAnchor::Project => "this whole project".to_string(),
-            LearningAnchor::File => format!("all of {path}"),
-            LearningAnchor::Hunk { index } => format!("change #{} in {path}", index + 1),
-            LearningAnchor::Lines { start, end } if start == end => {
-                format!("line {start} of {path}")
-            }
-            LearningAnchor::Lines { start, end } => format!("lines {start}-{end} of {path}"),
-        }
-    }
-}
-
-/// What became of a stored Q&A anchor when it was checked against the file as
-/// it stands now.
-///
-/// Computed when the history loads and **never persisted**. The row's
-/// `selection_text` is the evidence, so the verdict can always be re-derived,
-/// and the stored `line_start`/`line_end` stay what they have always been: the
-/// historical fact of where the question was asked. Overwriting them would
-/// trade a recoverable answer for an unrecoverable one.
-///
-/// Absence of a verdict means "still where it was stored, as far as we can
-/// tell" — which is also what a row with nothing to check against reports, so
-/// the common case costs nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningAnchorDrift {
-    /// The code moved and was found again, at this 1-based inclusive range.
-    Reanchored { start: usize, end: usize },
-    /// The code the question was asked about can no longer be pointed at.
-    Lost(LearningAnchorLoss),
-}
-
-/// Why an anchor was given up on. Each reads differently to the user: a
-/// deleted file is not the same event as code that was rewritten, and neither
-/// is the same as code that now appears in several places.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningAnchorLoss {
-    /// The file itself is no longer in the working directory.
-    FileGone,
-    /// The file is there, but the selected text is not in it any more.
-    NotFound,
-    /// The selected text now appears more than once, so there is no honest
-    /// way to say which copy the question was about.
-    Ambiguous,
-}
-
-#[allow(dead_code)]
-impl LearningAnchorDrift {
-    /// Compact marker for the Q&A history row.
-    pub fn marker(self) -> &'static str {
-        match self {
-            LearningAnchorDrift::Reanchored { .. } => "⚠ moved",
-            LearningAnchorDrift::Lost(_) => "⚠ anchor lost",
-        }
-    }
-
-    /// Whether this is a loss rather than a relocation — the two are coloured
-    /// differently, because one of them still points at the right code.
-    pub fn is_lost(self) -> bool {
-        matches!(self, LearningAnchorDrift::Lost(_))
-    }
-
-    /// Full sentence for the answer pane, given the range the row was stored
-    /// with. Says what happened *and* that the question and answer are intact,
-    /// since a newcomer's reading of "anchor lost" is otherwise "this entry is
-    /// broken".
-    pub fn describe(self, stored: Option<(usize, usize)>) -> String {
-        let was = match stored {
-            Some((start, end)) if start == end => format!("line {start}"),
-            Some((start, end)) => format!("lines {start}-{end}"),
-            None => "this file".to_string(),
-        };
-        match self {
-            LearningAnchorDrift::Reanchored { start, end } if start == end => {
-                format!("The code has moved since this was asked: it was {was}, it is now line {start}.")
-            }
-            LearningAnchorDrift::Reanchored { start, end } => {
-                format!(
-                    "The code has moved since this was asked: it was {was}, it is now lines {start}-{end}."
-                )
-            }
-            LearningAnchorDrift::Lost(LearningAnchorLoss::FileGone) => {
-                "This file is no longer in the project, so there is nothing left to point at. The question and answer below are unchanged.".to_string()
-            }
-            LearningAnchorDrift::Lost(LearningAnchorLoss::NotFound) => {
-                format!(
-                    "The code this was asked about is no longer in the file, so {was} now shows something else. The question and answer below are unchanged."
-                )
-            }
-            LearningAnchorDrift::Lost(LearningAnchorLoss::Ambiguous) => {
-                "This code now appears in more than one place in the file, so there is no way to say which copy the question was about. The question and answer below are unchanged.".to_string()
-            }
-        }
-    }
-}
-
-/// What the user is asking for. Chosen at ask time and re-labelable
-/// afterwards; it shapes the prompt framing and which follow-up action the UI
-/// offers first, nothing else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningQaIntent {
-    /// Teach me what this does. No change is proposed; the answer lives on as
-    /// an anchored note.
-    Explain,
-    /// Propose a concrete change.
-    Action,
-}
-
-#[allow(dead_code)]
-impl LearningQaIntent {
-    /// Stable string stored in `learning_qa.intent`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LearningQaIntent::Explain => "explain",
-            LearningQaIntent::Action => "action",
-        }
-    }
-
-    pub fn from_str(raw: &str) -> Self {
-        match raw {
-            "action" => LearningQaIntent::Action,
-            _ => LearningQaIntent::Explain,
-        }
-    }
-
-    /// The label the ask keys carry in the UI.
-    pub fn label(self) -> &'static str {
-        match self {
-            LearningQaIntent::Explain => "Explain this to me",
-            LearningQaIntent::Action => "Ask for a change",
-        }
-    }
-
-    /// Compact marker + word shown on a Q&A row.
-    pub fn marker(self) -> &'static str {
-        match self {
-            LearningQaIntent::Explain => "? explain",
-            LearningQaIntent::Action => "! change",
-        }
-    }
-
-    pub fn toggled(self) -> Self {
-        match self {
-            LearningQaIntent::Explain => LearningQaIntent::Action,
-            LearningQaIntent::Action => LearningQaIntent::Explain,
-        }
-    }
-}
-
-/// How much the answer should assume. A per-session setting, not a
-/// per-question one; it changes prompt wording only — never tools, model, or
-/// which files are visible.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningLevel {
-    /// Default: assume no prior knowledge of this codebase, define jargon,
-    /// end with a "Where to look next" pointer.
-    Newcomer,
-    /// Denser answers for a user who has outgrown the newcomer framing.
-    Familiar,
-}
-
-#[allow(dead_code)]
-impl LearningLevel {
-    /// Stable string stored in `learning_sessions.level` / `learning_qa.level`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LearningLevel::Newcomer => "newcomer",
-            LearningLevel::Familiar => "familiar",
-        }
-    }
-
-    pub fn from_str(raw: &str) -> Self {
-        match raw {
-            "familiar" => LearningLevel::Familiar,
-            _ => LearningLevel::Newcomer,
-        }
-    }
-
-    pub fn toggled(self) -> Self {
-        match self {
-            LearningLevel::Newcomer => LearningLevel::Familiar,
-            LearningLevel::Familiar => LearningLevel::Newcomer,
-        }
-    }
-}
-
-/// Whether an answer came from the fast no-tools pass or the slower pass that
-/// lets the agent read the rest of the repo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningRunMode {
-    /// `HeadlessRunner::run(.., restricted = true)` — answered from the
-    /// prompt's own context only.
-    NoTools,
-    /// `HeadlessRunner::run_read_only` — the agent may read the repository.
-    DeepDive,
-}
-
-#[allow(dead_code)]
-impl LearningRunMode {
-    /// Stable string stored in `learning_qa.run_mode`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LearningRunMode::NoTools => "no_tools",
-            LearningRunMode::DeepDive => "deep_dive",
-        }
-    }
-
-    pub fn from_str(raw: &str) -> Self {
-        match raw {
-            "deep_dive" => LearningRunMode::DeepDive,
-            _ => LearningRunMode::NoTools,
-        }
-    }
-
-    /// The mode `harness` can actually deliver.
-    ///
-    /// Codex has no no-tools headless invocation: `codex exec` is always an
-    /// ephemeral read-only sandbox that can read the whole repository, and
-    /// `HeadlessRunner::run` ignores `restricted` for it. Asking for
-    /// [`NoTools`](Self::NoTools) there would run a repo-reading agent while
-    /// the row claimed "this file only", so the request is downgraded to
-    /// [`DeepDive`](Self::DeepDive) before it is recorded or run — the label,
-    /// the stored row, and the command then all say the same thing.
-    pub fn effective_for(self, harness: &AgentKind) -> Self {
-        match (self, harness) {
-            (LearningRunMode::NoTools, AgentKind::Codex) => LearningRunMode::DeepDive,
-            _ => self,
-        }
-    }
-
-    /// What the mode does, in the user's terms rather than AMF's.
-    pub fn description(self) -> &'static str {
-        match self {
-            LearningRunMode::NoTools => "this file only",
-            LearningRunMode::DeepDive => "read the repo",
-        }
-    }
-}
-
-/// Lifecycle of one queued question. Rendered as a full word, never a glyph
-/// alone — a stalled screen must not be ambiguous between "thinking" and
-/// "broken".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningQaStatus {
-    /// Enqueued, no thread started yet.
-    Pending,
-    /// A headless run is in flight.
-    Running,
-    /// An answer arrived.
-    Answered,
-    /// The run failed; `LearningQa::error` carries what to do about it.
-    Failed,
-}
-
-#[allow(dead_code)]
-impl LearningQaStatus {
-    /// Stable string stored in `learning_qa.status`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LearningQaStatus::Pending => "pending",
-            LearningQaStatus::Running => "running",
-            LearningQaStatus::Answered => "answered",
-            LearningQaStatus::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(raw: &str) -> Self {
-        match raw {
-            "running" => LearningQaStatus::Running,
-            "answered" => LearningQaStatus::Answered,
-            "failed" => LearningQaStatus::Failed,
-            _ => LearningQaStatus::Pending,
-        }
-    }
-
-    /// The word shown on the row.
-    pub fn word(self) -> &'static str {
-        match self {
-            LearningQaStatus::Pending => "queued",
-            LearningQaStatus::Running => "thinking…",
-            LearningQaStatus::Answered => "answered",
-            LearningQaStatus::Failed => "failed",
-        }
-    }
-
-    /// True while the user is still waiting on this row (drives the header's
-    /// in-flight counter).
-    pub fn is_in_flight(self) -> bool {
-        matches!(self, LearningQaStatus::Pending | LearningQaStatus::Running)
-    }
-}
-
-/// One question and its answer, anchored to a place in the project. The
-/// in-memory list is the overlay's source of truth; the DB persists it when
-/// one is available (mirroring the TODOs overlay).
-#[derive(Debug, Clone, PartialEq)]
-pub struct LearningQa {
-    pub id: String,
-    /// `learning_sessions.id` this row belongs to.
-    pub session_id: String,
-    /// Set on a follow-up: the row whose question and answer are carried into
-    /// this one's prompt. Follow-ups render indented under their parent.
-    ///
-    /// Also set on a deep dive, which hangs under the answer it re-derives —
-    /// see [`deep_dive_of`](Self::deep_dive_of) for why that one is *not* a
-    /// conversational parent.
-    pub parent_qa_id: Option<String>,
-    /// Set only on a deep dive: the row this one re-ran.
-    ///
-    /// A deep dive is threaded under its origin so the two read as a pair, but
-    /// it *replaces* that answer rather than continuing from it. Without this
-    /// field the two relationships are indistinguishable — a follow-up on a
-    /// deep dive would walk `parent_qa_id` straight back into the shallow
-    /// answer the deep dive was run to check, feeding possibly-fabricated
-    /// claims into the prompt that was meant to be free of them. It cannot be
-    /// inferred from `run_mode` either: every Codex row is a `DeepDive` (see
-    /// [`LearningRunMode::effective_for`]), including ordinary follow-ups
-    /// whose ancestry must be kept.
-    pub deep_dive_of: Option<String>,
-    /// Repo-relative path, `None` for the project-level anchor.
-    pub file_path: Option<String>,
-    pub anchor: LearningAnchor,
-    /// The text the anchor covered when the question was asked. Kept verbatim
-    /// so the answer stays readable even after the file moves on.
-    pub selection_text: String,
-    /// Whether [`selection_text`](Self::selection_text) is a unified-diff
-    /// excerpt. Stored rather than re-derived: a line anchor from the repo tree
-    /// and one from a diff are indistinguishable once the browse scope is gone,
-    /// and a follow-up needs to label its parent's capture correctly however
-    /// far the file list has moved on since.
-    pub selection_is_diff: bool,
-    pub question: String,
-    pub intent: LearningQaIntent,
-    /// The level this row was answered at, so a reloaded answer explains why
-    /// it reads the way it does.
-    pub level: LearningLevel,
-    pub answer: Option<String>,
-    pub harness: AgentKind,
-    pub run_mode: LearningRunMode,
-    pub status: LearningQaStatus,
-    /// Failure text for a `Failed` row, phrased as what to do next.
-    pub error: Option<String>,
-    /// `todos.id`, set only once the user explicitly made this answer
-    /// actionable. Renders as `→ TODO` and makes re-invocation jump to the
-    /// item instead of duplicating it.
-    pub todo_id: Option<String>,
-    /// `FeatureSession.id` of a live session escalated from this row.
-    pub spawned_session_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-impl LearningQa {
-    /// The row this one stands in for, when it is a deep dive threaded under
-    /// the answer it re-derived.
-    ///
-    /// Ancestor traversal uses this to step *over* that row: the deep dive
-    /// occupies its position in the conversation, so the answer it was run to
-    /// check is not a turn that ever happened. Only honoured when it is also
-    /// this row's thread parent, which is the only shape
-    /// [`App::learning_deep_dive`](crate::app::App::learning_deep_dive)
-    /// writes — a mismatch means the ancestry never runs through it anyway.
-    pub fn superseded_id(&self) -> Option<&str> {
-        match (self.deep_dive_of.as_deref(), self.parent_qa_id.as_deref()) {
-            (Some(origin), Some(parent)) if origin == parent => Some(origin),
-            _ => None,
-        }
-    }
-}
-
-/// A Learning Mode session: one per project, carrying the settings that
-/// outlive a single question.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LearningSession {
-    pub id: String,
-    pub project_id: String,
-    /// Feature the session was opened under (its workdir is what gets read).
-    pub feature_id: String,
-    pub title: String,
-    pub harness: AgentKind,
-    pub level: LearningLevel,
-    /// False until the first-open help overlay has been shown once.
-    pub onboarding_seen: bool,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// Which group a file-list row belongs to.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningListGroup {
-    /// The pinned orientation group shown at the top of repo-tree scope until
-    /// the project has some Q&A history.
-    StartHere,
-    /// The ordinary file list.
-    Files,
-}
-
-/// One row in Learning Mode's file list.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LearningListEntry {
-    /// Collapsible header for the `Start here` group.
-    StartHereHeader,
-    /// The repo-level orientation question — anchors to the project rather
-    /// than to any file.
-    ProjectTour,
-    /// A directory in the repo tree. Navigation only: a directory is not a
-    /// question anchor, so resting on one leaves the loaded file and the
-    /// anchor exactly where they were. Only ever built in repo-tree scope.
-    Dir {
-        /// Repo-relative path with no trailing slash, e.g. `src/app`. This is
-        /// the key `LearningViewState::expanded_dirs` stores.
-        path: String,
-        /// Nesting depth; 0 for a top-level directory.
-        depth: usize,
-        expanded: bool,
-        /// Files anywhere beneath this directory, so a collapsed row can still
-        /// say how much it is hiding.
-        file_count: usize,
-        /// Children not listed because this one directory exceeded
-        /// `MAX_DIR_CHILDREN`. Non-zero rows say so rather than looking
-        /// complete — the whole-listing cap this replaced had the same duty.
-        truncated: usize,
-    },
-    /// A file. `diff_index` indexes `LearningViewState::diff_files` in
-    /// branch-changes scope and is `None` in repo-tree scope. `depth` is the
-    /// tree indent; it is 0 for the flat branch-changes list and for the
-    /// `Start here` group, neither of which is a tree.
-    File {
-        path: String,
-        group: LearningListGroup,
-        diff_index: Option<usize>,
-        depth: usize,
-    },
-}
-
-#[allow(dead_code)]
-impl LearningListEntry {
-    /// The repo-relative path this row loads, if it loads one. Deliberately
-    /// `None` for a directory: this is what the content pane and the anchor
-    /// follow, and a directory must move neither.
-    pub fn path(&self) -> Option<&str> {
-        match self {
-            LearningListEntry::File { path, .. } => Some(path.as_str()),
-            _ => None,
-        }
-    }
-
-    /// The directory this row is, if it is one.
-    pub fn dir_path(&self) -> Option<&str> {
-        match self {
-            LearningListEntry::Dir { path, .. } => Some(path.as_str()),
-            _ => None,
-        }
-    }
-
-    /// A stable identity for the row, used to put the cursor back on the same
-    /// thing after the list is rebuilt. Unlike `path()` this covers
-    /// directories, because collapsing one must leave the cursor on it.
-    pub fn row_key(&self) -> Option<(bool, &str)> {
-        match self {
-            LearningListEntry::Dir { path, .. } => Some((true, path.as_str())),
-            LearningListEntry::File { path, .. } => Some((false, path.as_str())),
-            _ => None,
-        }
-    }
-
-    /// How far the row is indented in the tree.
-    pub fn depth(&self) -> usize {
-        match self {
-            LearningListEntry::Dir { depth, .. } | LearningListEntry::File { depth, .. } => *depth,
-            _ => 0,
-        }
-    }
-
-    /// Whether the cursor can rest here (group headers are skipped by
-    /// navigation only when collapsed — they stay selectable so the group can
-    /// be expanded again).
-    pub fn is_file(&self) -> bool {
-        matches!(self, LearningListEntry::File { .. })
-    }
-}
-
-/// Which pane has focus in the Learning Mode overlay.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LearningFocus {
-    FileList,
-    Content,
-    Qa,
-}
-
-/// An open starter-question picker: indices into
-/// `crate::app::learning::STARTER_QUESTIONS`, filtered to the ones that make
-/// sense for the current anchor. Picking one fills the prompt so it can still
-/// be edited before it's asked.
-#[allow(dead_code)]
-pub struct LearningStarterPicker {
-    pub indices: Vec<usize>,
-    pub selected: usize,
-}
-
-/// Which harness answers questions from here on. Pre-selected when the
-/// overlay opens, so this only exists while the user is actively changing it.
-#[allow(dead_code)]
-pub struct LearningHarnessPicker {
-    pub harnesses: Vec<AgentKind>,
-    pub selected: usize,
-}
-
-/// An open question prompt. The same editor serves both intents and
-/// follow-ups; the title bar shows the resolved anchor and chosen intent.
-#[allow(dead_code)]
-pub struct LearningQuestionEditor {
-    pub editor: TextEditor,
-    pub intent: LearningQaIntent,
-    /// Set when this prompt is a follow-up to an existing row.
-    pub parent_qa_id: Option<String>,
-    /// Anchor captured when the prompt opened, so browsing can't move it.
-    pub anchor: LearningAnchor,
-    pub file_path: Option<String>,
-    /// The anchored text captured alongside `anchor`.
-    pub selection_text: String,
-    /// Whether `selection_text` is a unified-diff excerpt, captured with it so
-    /// the prompt labels it the same way however the browse scope changes
-    /// before the question is submitted.
-    pub selection_is_diff: bool,
-    pub scroll: usize,
-    pub sync_to_cursor: bool,
-}
-
-/// An open "add this answer to the project's TODO list" confirmation.
-///
-/// Lives inside [`LearningViewState`] like the pickers rather than as its own
-/// `AppMode`, so cancelling returns to exactly the browsing state underneath.
-/// Nothing is written until it is confirmed: the seeded title is a guess, and
-/// this mode's audience is the least likely to notice a wrong one going in
-/// behind their back.
-#[allow(dead_code)]
-pub struct LearningActionEditor {
-    /// The Q&A row the item is being made from.
-    pub qa_id: String,
-    /// Editable title, seeded from the answer. An explanation has no one-line
-    /// summary in it, so the seed there is a truncation the user is expected to
-    /// fix — which is most of why this dialog exists at all.
-    pub title: TextEditor,
-    /// The note's body: where the question was anchored, what was asked, and an
-    /// excerpt of the answer. Shown but not edited here, so what gets written
-    /// is never a surprise.
-    pub body: String,
-    /// Refusal raised by a key pressed *in* the dialog (an emptied title). Kept
-    /// here rather than on the overlay because the dialog covers the overlay's
-    /// banner line.
-    pub error: Option<String>,
-    pub scroll: usize,
-    pub sync_to_cursor: bool,
-}
-
-/// State for the Learning Mode overlay (`AppMode::Learning`) — a read-only
-/// file browser over a project, with an agent answering questions about
-/// whatever the cursor is on. Nothing in this mode writes to the repository.
-#[allow(dead_code)]
-pub struct LearningViewState {
-    /// Project being studied.
-    pub project_id: String,
-    /// Project / feature indices the overlay was opened from, used to resolve
-    /// the feature for escalation and to restore dashboard selection on close.
-    pub pi: usize,
-    pub fi: usize,
-    /// Display labels for the header.
-    pub project_name: String,
-    pub feature_name: String,
-    /// The feature's working directory — everything is read from here.
-    pub workdir: PathBuf,
-    /// False for non-git projects, where branch-changes scope has no meaning
-    /// and the file list falls back to a capped plain walk.
-    pub is_git: bool,
-    pub scope: BrowseScope,
-    /// File-list rows in display order (`Start here` group first, when shown).
-    pub entries: Vec<LearningListEntry>,
-    pub selected_entry: usize,
-    pub list_scroll: usize,
-    pub start_here_collapsed: bool,
-    /// Which repo-tree directories are expanded, by repo-relative path. The
-    /// tree is rebuilt from this on every reload, so it — not `entries` — is
-    /// what expansion state actually lives in. Seeded on open with the
-    /// ancestors of the `Start here` candidates, so `src/` is open at the file
-    /// a newcomer is most likely to want.
-    pub expanded_dirs: std::collections::BTreeSet<String>,
-    /// Whether that seeding has happened. It runs once per overlay, so a later
-    /// reload can't re-open a directory the user deliberately closed.
-    pub expanded_seeded: bool,
-    /// The repo's flat path list, kept so expanding or collapsing a directory
-    /// rebuilds `entries` from memory instead of shelling out to `git ls-files`
-    /// again. `entries` is derived from this plus `expanded_dirs`; this is the
-    /// input, and it only changes when the listing is genuinely re-read.
-    pub repo_files: Vec<String>,
-    /// The surviving `Start here` candidates, cached for the same reason.
-    pub start_here: Vec<String>,
-    /// Diff snapshot backing `BrowseScope::BranchChanges`.
-    pub diff_files: Vec<crate::diff::DiffFile>,
-    /// Lines of the loaded file, and the path they came from.
-    pub content: Vec<String>,
-    pub content_path: Option<String>,
-    pub content_scroll: usize,
-    /// Why the selected file could not be shown (binary, too large, unreadable).
-    pub content_error: Option<String>,
-    /// Cursor into the content pane: a 0-based index into `content` in
-    /// repo-tree scope, or into the file's `addressable_lines()` in
-    /// branch-changes scope.
-    pub cursor_line: usize,
-    /// Start of an in-progress multi-line selection; `None` selects only the
-    /// cursor line.
-    pub selection_anchor: Option<usize>,
-    /// The anchor a question would currently be asked against.
-    pub anchor: LearningAnchor,
-    pub focus: LearningFocus,
-    /// Open question prompt, if any.
-    pub question: Option<LearningQuestionEditor>,
-    /// Q&A history for this project, oldest first, follow-ups after parents.
-    pub qa: Vec<LearningQa>,
-    /// Anchors that no longer point where they were stored, by `LearningQa::id`.
-    ///
-    /// Deliberately a side table rather than a field on the row: a verdict is a
-    /// judgment about the working directory as it is right now, not something
-    /// the row carries, and keeping the two apart is what stops it being
-    /// written back over the range the question was actually asked at. A row
-    /// with no entry here is anchored as stored.
-    pub anchor_drift: std::collections::HashMap<String, LearningAnchorDrift>,
-    pub selected_qa: usize,
-    pub qa_scroll: usize,
-    /// Answer pane state — offset plus the render cache
-    /// `draw_markdown_document` needs.
-    pub answer_open: bool,
-    pub answer_scroll: usize,
-    pub answer_rendered_width: u16,
-    pub answer_rendered_lines: Vec<ratatui::text::Line<'static>>,
-    /// Harness answering questions. Pre-selected, so the picker is optional.
-    pub harness: AgentKind,
-    /// Open harness picker, if any. Lives inside the overlay rather than as
-    /// its own `AppMode` so opening it can't lose the browsing state behind it.
-    pub harness_picker: Option<LearningHarnessPicker>,
-    /// Open starter-question picker, if any.
-    pub starter_picker: Option<LearningStarterPicker>,
-    /// Open "add this to the TODO list" confirmation, if any.
-    pub action_editor: Option<LearningActionEditor>,
-    pub level: LearningLevel,
-    /// `learning_sessions.id` backing this overlay.
-    pub session_id: String,
-    /// True while the `?` help overlay is open (also shown automatically on
-    /// first open, per `onboarding_seen`).
-    pub help_open: bool,
-    pub help_scroll: usize,
-    /// Transient error banner (file load, DB, run dispatch).
-    pub error: Option<String>,
-    /// Transient confirmation banner — what a key just *did*, as opposed to
-    /// why it refused. Shares the error's line but not its colour: telling
-    /// someone their entry was re-filed in the failure red is its own small
-    /// lie, and this mode's audience is the least equipped to discount it.
-    pub notice: Option<String>,
-    /// The Q&A row `notice` was raised on, when it describes one. The wording
-    /// is only true of that row as it stood at the keypress ("the answer on
-    /// its way was asked for as an explanation"), so the banner is dropped
-    /// when the cursor leaves the row or the row's run lands.
-    pub notice_qa_id: Option<String>,
-}
-
-#[allow(dead_code)]
-impl LearningViewState {
-    /// How many answers are still generating — shown in the header so a slow
-    /// run reads as progress rather than a hang.
-    pub fn in_flight_count(&self) -> usize {
-        self.qa.iter().filter(|q| q.status.is_in_flight()).count()
-    }
-
-    /// The path a question would anchor to, `None` for the project anchor.
-    pub fn anchor_path(&self) -> Option<&str> {
-        match self.anchor {
-            LearningAnchor::Project => None,
-            _ => self.content_path.as_deref(),
-        }
-    }
-
-    /// The currently selected file-list entry.
-    pub fn selected_entry(&self) -> Option<&LearningListEntry> {
-        self.entries.get(self.selected_entry)
-    }
-
-    /// The `DiffFile` behind the selected entry, in branch-changes scope.
-    pub fn selected_diff_file(&self) -> Option<&crate::diff::DiffFile> {
-        match self.entries.get(self.selected_entry) {
-            Some(LearningListEntry::File {
-                diff_index: Some(i),
-                ..
-            }) => self.diff_files.get(*i),
-            _ => None,
-        }
-    }
-
-    /// Whether hunk selection is available — it needs a diff, so repo-tree
-    /// scope has none.
-    pub fn hunk_selection_available(&self) -> bool {
-        self.scope == BrowseScope::BranchChanges && self.selected_diff_file().is_some()
-    }
-
-    /// The Q&A row under the history cursor.
-    pub fn selected_qa(&self) -> Option<&LearningQa> {
-        self.qa.get(self.selected_qa)
-    }
-
-    /// Drop the confirmation banner and whatever row it was raised on.
-    pub fn clear_notice(&mut self) {
-        self.notice = None;
-        self.notice_qa_id = None;
-    }
-
-    /// Move the history cursor to `index`, dropping a banner raised on the row
-    /// being left.
-    ///
-    /// A notice describes the row it was raised on ("re-filed as a change
-    /// request"), so it must not follow the cursor onto a different entry and
-    /// appear to describe that one instead. Every cursor move goes through
-    /// here — including the programmatic ones (a follow-up selecting its new
-    /// row, a deep dive jumping to the one that already exists), which is
-    /// where a notice would otherwise survive untouched.
-    pub fn select_qa(&mut self, index: usize) {
-        if index != self.selected_qa {
-            self.clear_notice();
-        }
-        self.selected_qa = index;
-    }
-}
-
 pub enum AppMode {
     Normal,
     Todos(TodoViewState),
@@ -4391,6 +1658,9 @@ pub enum AppMode {
     #[allow(dead_code)] // Entered by the plan's Epic 4 dashboard key.
     Learning(Box<LearningViewState>),
     TodoQuickCapture(TodoQuickCaptureState),
+    /// Collect the user's instruction before starting a fresh-context agent
+    /// session (see `FreshContextPromptState`).
+    FreshContextPrompt(FreshContextPromptState),
     /// Re-home or delete a project's TODO list after its host feature is deleted.
     TodosHostReassign(TodosHostReassignState),
     /// "Implement next" landed on a TODO that already has work started for it.
@@ -4403,6 +1673,9 @@ pub enum AppMode {
     /// unfinished TODOs: move them to the project list, move them to the
     /// global list, delete them, or cancel the deletion outright.
     TodoDeleteDisposition(TodoDeleteDispositionState),
+    /// Confirm completing the TODO explicitly referenced by the embedded
+    /// agent session currently being viewed.
+    ConfirmTodoReferenceCompletion(TodoReferenceCompletionState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
@@ -4419,6 +1692,10 @@ pub enum AppMode {
     SessionConfig(SessionConfigState),
     ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
+    /// A file browser opened from the plan-interview brief step to attach a
+    /// reference document. Stashes the live [`PlanInterviewState`] so both
+    /// confirm and cancel return to the interview exactly as it was.
+    PlanInterviewAttachDoc(Box<AttachDocState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
     NamingNewSession(NewSessionNameState),
@@ -4450,6 +1727,9 @@ pub enum AppMode {
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen PR Triage pane.
     PrReview(PrReviewState),
+    /// Running a strictly read-only investigation of one review comment off the
+    /// UI thread; shows a modal loading frame over the stashed PR Triage pane.
+    PrInvestigationLoading(PrInvestigationLoadState),
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
@@ -4475,6 +1755,15 @@ pub enum AppMode {
     PromptLibrary(PromptLibraryState),
     PromptEditor(PromptEditorState),
     PlaceholderFill(PlaceholderFillState),
+    /// The headless-prompt override manager (`P` on the dashboard / a leader
+    /// command). Lists every registry prompt with its effective scope/source
+    /// and an inline template editor with scope + harness pickers on save.
+    PromptOverrides(Box<PromptOverridesState>),
+    /// The blocking pre-call notice shown before a user-initiated headless AI
+    /// run: announces the prompt ID + harness, with view / edit / continue /
+    /// cancel. Automated runs (Learning Mode answers, session summaries) show
+    /// a toast instead and never reach this.
+    PromptPrecall(Box<crate::app::precall::PendingPrecall>),
     SkillPicker(SkillPickerState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
@@ -4491,11 +1780,25 @@ pub enum AppMode {
     /// no review session exists yet). The feedback file is already written; this
     /// only governs where the "address the feedback" prompt is dispatched.
     ReviewHarnessPick(ReviewHarnessPickState),
+    /// Landing a companion review feature's commits back on the source feature's
+    /// branch (push or cherry-pick). Opened with `t` on the dashboard for a
+    /// feature carrying a [`crate::project::ReviewSource`] link. Reuses PR
+    /// Triage's [`TriageIntegrateState`] (`triage_branch` = the companion
+    /// branch, `pr_branch` = the source feature's branch).
+    ReviewIntegrate(TriageIntegrateState),
     /// Soft warning shown before starting an agent when the machine is already
     /// at the concurrency cap and/or low on memory. Confirming starts anyway.
     ConfirmResourceStart(Box<ResourceConfirmState>),
     /// Features that are idle and unattended, with per-row reclaim actions.
     Dormant(DormantViewState),
+    /// Global context-window/severity settings (`w` on the dashboard).
+    ContextSettings(ContextSettingsState),
+}
+
+/// The view to return to plus the stable TODO identity to complete.
+pub struct TodoReferenceCompletionState {
+    pub view: ViewState,
+    pub todo_id: String,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up
@@ -4865,45 +2168,6 @@ pub struct BuiltinSessionOption {
     pub disabled: Option<String>,
 }
 
-pub struct DiffReviewState {
-    pub session_id: String,
-    pub workdir: PathBuf,
-    #[allow(dead_code)] // populated but not read yet
-    pub file_path: String,
-    pub relative_path: String,
-    #[allow(dead_code)] // populated but not read yet
-    pub change_id: String,
-    pub tool: String,
-    pub old_snippet: String,
-    pub new_snippet: String,
-    pub diff_file: Option<crate::diff::DiffFile>,
-    pub diff_error: Option<String>,
-    pub patch_scroll: usize,
-    pub reason: String,
-    pub editing_feedback: bool,
-    pub layout: DiffViewerLayout,
-    pub explanation: Option<String>,
-    pub explanation_child: Option<crate::headless::LeasedChild>,
-    pub response_file: PathBuf,
-    pub proceed_signal: PathBuf,
-    pub request_id: Option<String>,
-    pub reply_socket: Option<String>,
-    pub return_to_view: Option<ViewState>,
-    pub opened_at: Instant,
-    pub hold_secs: f64,
-}
-
-impl DiffReviewState {
-    pub fn hold_remaining_secs(&self) -> f64 {
-        let elapsed = self.opened_at.elapsed().as_secs_f64();
-        (self.hold_secs - elapsed).max(0.0)
-    }
-
-    pub fn hold_active(&self) -> bool {
-        self.hold_remaining_secs() > 0.0
-    }
-}
-
 /// The dormant-features overlay: features that are idle *and* unattended, with
 /// what each is still holding.
 pub struct DormantViewState {
@@ -4946,6 +2210,10 @@ pub enum PendingStart {
     EnterView { auto_compose: bool },
     /// Jumping to a stopped feature from inside a session view (leader n/p).
     SwitchViewToFeature { pi: usize, fi: usize },
+    /// Creating and starting a newly accepted plan-mode feature. Unlike the
+    /// ordinary creation autostart, this operation can be parked because the
+    /// resource dialog retains the completed interview below.
+    PlannedFeature(Box<PendingPlanLaunch>),
 }
 
 /// The pre-start warning: what tripped, what it was about to do, and where to
@@ -4961,6 +2229,10 @@ pub struct ResourceConfirmState {
     /// Session view to restore after confirming or cancelling, when the start
     /// was initiated from inside an embedded session rather than the dashboard.
     pub from_view: Option<ViewState>,
+    /// Completed plan review restored verbatim when a planned feature start is
+    /// cancelled. Other resource-gate callers originate from the dashboard or
+    /// a session view and leave this empty.
+    pub plan_interview: Option<PlanInterviewState>,
 }
 
 pub enum HookNext {
@@ -5140,6 +2412,20 @@ pub struct BrowsePathState {
     pub creating_folder: bool,
 }
 
+/// A file-picking browser for attaching a reference document to a plan
+/// interview. Kept apart from [`BrowsePathState`] on purpose: that one is a
+/// directory picker welded to project creation, this one selects a file and
+/// carries the interview it must return to.
+pub struct AttachDocState {
+    pub explorer: FileExplorer,
+    /// The interview this picker was opened from, moved in whole so confirm
+    /// and cancel can restore it without a rebuild.
+    pub interview: PlanInterviewState,
+    /// The reason the last selection was rejected, shown in the footer until
+    /// the next keypress. `None` when nothing has been rejected.
+    pub error: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct CreateProjectState {
     pub step: CreateProjectStep,
@@ -5216,6 +2502,17 @@ pub struct CreateFeatureState {
     pub mode_focus: usize,
     pub review: bool,
     pub plan_mode: bool,
+    /// Set alongside `plan_mode` when the Plan field's 3-way cycle
+    /// (`cycle_plan_choice`) lands on Quick Plan rather than full Plan mode.
+    /// Meaningless when `plan_mode` is false. Kept as a second bool rather
+    /// than replacing `plan_mode` with an enum because `plan_mode` is also
+    /// the persisted `Feature`/DB/`FeaturePreset` field — an enum there would
+    /// ripple into schema and automation-API surface this feature doesn't
+    /// need to touch. Not threaded through the `on_worktree_created` hook
+    /// continuation (`app/hooks.rs`) in v1: a feature created through that
+    /// path with Quick Plan chosen falls back to full Plan mode, which is
+    /// safe (still a guided interview) even though it isn't the requested one.
+    pub quick_plan: bool,
     pub create_terminal: bool,
     pub session_name: String,
     pub source_index: usize,
@@ -5278,6 +2575,7 @@ impl CreateFeatureState {
             mode_focus: 0,
             review: false,
             plan_mode: false,
+            quick_plan: false,
             create_terminal: false,
             session_name: "Claude 1".to_string(),
             source_index: 0,
@@ -5306,7 +2604,15 @@ impl CreateFeatureState {
             2 => Some(
                 "High token usage: writes developer notes with every code change for a detailed code review.",
             ),
-            3 => Some("Start in planning mode so the agent discusses the approach before editing."),
+            3 if self.plan_mode && self.quick_plan => Some(
+                "Quick Plan: a dynamically-sized round of clarifying questions before work starts, or none at all for a trivial task.",
+            ),
+            3 if self.plan_mode => {
+                Some("Start in planning mode so the agent discusses the approach before editing.")
+            }
+            3 => Some(
+                "Cycle to Quick Plan or full Plan mode for a guided interview before work starts.",
+            ),
             4 if self.agent == AgentKind::Claude => {
                 Some("Enable browser automation for features that need Chrome.")
             }
@@ -5319,6 +2625,21 @@ impl CreateFeatureState {
             }
             _ => Some("Use the prompt coach to sharpen the feature request before launch."),
         }
+    }
+
+    /// Cycle the Plan field's 3-state choice: None → Quick Plan → Full Plan →
+    /// None (`forward`), or the reverse. `(plan_mode, quick_plan)` encodes the
+    /// three states as `(false, false)`, `(true, true)`, `(true, false)`.
+    pub fn cycle_plan_choice(&mut self, forward: bool) {
+        let next = match (self.plan_mode, self.quick_plan, forward) {
+            (false, _, true) => (true, true),
+            (true, true, true) => (true, false),
+            (true, false, true) => (false, false),
+            (false, _, false) => (true, false),
+            (true, false, false) => (true, true),
+            (true, true, false) => (false, false),
+        };
+        (self.plan_mode, self.quick_plan) = next;
     }
 
     pub fn refresh_prompt_analysis(&mut self) {
@@ -5351,7 +2672,7 @@ impl CreateFeatureState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
     pub project_name: String,
     pub branch: String,
@@ -5360,6 +2681,12 @@ pub struct PreparedFeatureLaunch {
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    /// Route `plan_mode`'s deferred launch through Quick Plan rather than the
+    /// full Plan-mode interview. Meaningless when `plan_mode` is false;
+    /// unread past `App::finish_feature_launch` — see the note on
+    /// `CreateFeatureState::quick_plan`, including the `on_worktree_created`
+    /// hook scope cut.
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
@@ -5372,6 +2699,34 @@ pub struct PreparedFeatureLaunch {
     /// Set when this launch was started from a TODO, so accepting the plan can
     /// link the created feature back to the row it came from.
     pub todo_origin: Option<TodoPlanOrigin>,
+}
+
+/// An accepted plan's exact deferred feature launch.
+///
+/// The resource confirmation owns this after the interview has written the
+/// plan but before the feature exists. Keeping the prepared launch and the
+/// accepted markdown together lets confirmation resume without rebuilding the
+/// wizard state, regenerating the plan, or losing the kickoff prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingPlanLaunch {
+    pub prepared: PreparedFeatureLaunch,
+    pub interview_key: String,
+    pub plan: String,
+}
+
+/// Which interview this [`PlanInterviewState`] is running.
+///
+/// The two share every phase, the round/synthesis machinery, and the Q&A UI
+/// — `kind` only steers which [`crate::prompts::PromptId`] is dispatched and
+/// how the synthesis response is interpreted (a single markdown plan for
+/// `Full`, a three-way outcome for `Quick`). Escalation
+/// (`App::escalate_quick_plan_to_full`) flips a live `Quick` interview to
+/// `Full` in place — nothing about the state is reset, so the brief and any
+/// answers already given carry forward into the full round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanInterviewMode {
+    Full,
+    Quick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5463,15 +2818,37 @@ pub struct PlanInterviewState {
     /// The key this interview's draft and transcript are filed under in the
     /// `plan_interviews` table: the feature's id for an on-demand interview,
     /// or [`crate::plan_interview::pending_interview_key`] while the feature it
-    /// plans does not exist yet.
+    /// plans does not exist yet. Unread for a `Quick` interview: Quick Plan
+    /// skips the `plan_interviews` table entirely (see [`Self::kind`]).
     pub interview_key: String,
+    /// Full Plan-mode interview or Quick Plan. See [`PlanInterviewMode`].
+    pub kind: PlanInterviewMode,
     pub phase: PlanInterviewPhase,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
     pub brief: String,
     pub answers: Vec<Option<String>>,
     pub editor: TextEditor,
-    pub selected_option: usize,
+    /// The highlighted/picked option for the current choice question, or `None`
+    /// when nothing is picked — the state a user is in when they answer purely
+    /// with custom text. Parallel `selected_option`/`editor` are transient
+    /// scratch for the question on screen; the durable record is `answers` (the
+    /// serialized combined string) and `custom_answers` (the raw custom text).
+    pub selected_option: Option<usize>,
+    /// Raw free-text custom answer per question, positionally paired with
+    /// `questions`. Empty for a question with no custom text and for every
+    /// free-text question. Kept alongside `answers` so revisiting a choice
+    /// question restores the radio selection *and* the custom text rather than
+    /// a flat editable string, and persisted so a resumed/re-run interview can
+    /// do the same.
+    pub custom_answers: Vec<String>,
+    /// Whether the inline custom-answer editor (the `editor` buffer, reused for
+    /// a choice question) currently has focus. `e` opens it; committing or
+    /// cancelling returns focus to the option list without submitting.
+    pub custom_answer_focused: bool,
+    /// The custom-answer buffer captured when the editor was opened, restored
+    /// verbatim if the edit is cancelled with `Esc`.
+    pub custom_answer_backup: Option<String>,
     /// Where the accepted plan is written (`<workdir>/AMF_PLAN.md`). Held
     /// separately from `pending_launch` because an on-demand interview has an
     /// existing feature's workdir and no launch at all.
@@ -5541,6 +2918,14 @@ pub struct PlanInterviewState {
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
     pub critique: Option<String>,
+    /// Explicit frontier model chosen for this plan's Expert review.
+    pub expert_model: Option<String>,
+    /// Single-select model picker shown before the Expert pre-call gate.
+    pub expert_model_pick: Option<AiModelPickState>,
+    /// Durable lifecycle state for the explicitly requested Expert review.
+    pub critique_status: Option<String>,
+    /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
+    pub preflight_fingerprint: Option<String>,
     /// Start time and prompt-size estimate for the agent-review loading frame.
     pub critique_started_at: Option<std::time::Instant>,
     pub critique_token_estimate: usize,
@@ -5548,6 +2933,14 @@ pub struct PlanInterviewState {
     pub critique_scroll_offset: usize,
     pub critique_rendered_width: u16,
     pub critique_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Questions extracted from the structured expert preflight response.
+    pub critique_questions: Vec<PlanClarificationQuestion>,
+    /// User answers paired with `critique_questions`; empty means unanswered.
+    pub critique_answers: Vec<String>,
+    pub critique_question_index: usize,
+    pub critique_answering: bool,
+    /// The single clarification follow-up is consumed once it starts.
+    pub critique_followup_used: bool,
     /// Advisory review staged as input for the next synthesis pass by the
     /// review's "revise" action. Consumed once that pass actually starts, so a
     /// revision that cannot run leaves the feedback recoverable.
@@ -5572,6 +2965,10 @@ pub struct PlanInterviewState {
     /// previous one ([`Self::prior_answer_state`]) and
     /// [`Self::restore_prior_answer`] can put it back.
     pub prior_answers: HashMap<String, String>,
+    /// The custom-text half of a re-run's pre-filled choice answers, keyed by
+    /// question id, so [`Self::restore_prior_answer`] can put back both the
+    /// selection and the elaboration the previous interview accepted.
+    pub prior_custom_answers: HashMap<String, String>,
     /// The live session an accepted on-demand plan is being offered to. Only
     /// set in [`PlanInterviewPhase::KickoffHandoff`], which is only reached
     /// after the plan file is already on disk.
@@ -5580,6 +2977,14 @@ pub struct PlanInterviewState {
     /// the plan can record the result on that row — and so the header can say
     /// which TODO is being planned.
     pub todo_origin: Option<TodoPlanOrigin>,
+    /// Reference documents the feature owner attached on the brief step, as
+    /// canonical absolute paths. Empty is the norm; a non-empty list is the
+    /// explicit, opt-in trigger that switches the round / synthesis / critique
+    /// passes from a no-tools run to a read-only one so the interviewer can
+    /// read those documents (and the surrounding codebase). The files are read
+    /// at dispatch time, never here, so an edit between attaching and running
+    /// is picked up. Persisted in the interview draft and accepted record.
+    pub attached_docs: Vec<PathBuf>,
 }
 
 impl PlanInterviewState {
@@ -5593,6 +2998,16 @@ impl PlanInterviewState {
             &feature_name,
         );
         Self::new(feature_name, interview_key, questions, Some(pending_launch))
+    }
+
+    /// The Quick Plan sibling of [`Self::for_feature_creation`]: always an
+    /// empty static question bank (Quick Plan has no built-in question bank;
+    /// every question comes from the dynamically-sized adaptive round) and
+    /// `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_creation_quick(pending_launch: PreparedFeatureLaunch) -> Self {
+        let mut state = Self::for_feature_creation(pending_launch, Vec::new());
+        state.kind = PlanInterviewMode::Quick;
+        state
     }
 
     /// An on-demand interview for a feature that already exists: no launch to
@@ -5609,6 +3024,19 @@ impl PlanInterviewState {
         let mut state = Self::new(feature_name, feature_id, questions, None);
         state.workdir = workdir;
         state.preferred_harness = agent;
+        state
+    }
+
+    /// The Quick Plan sibling of [`Self::for_feature`]: always an empty
+    /// static question bank and `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_quick(
+        feature_name: String,
+        feature_id: String,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) -> Self {
+        let mut state = Self::for_feature(feature_name, feature_id, Vec::new(), workdir, agent);
+        state.kind = PlanInterviewMode::Quick;
         state
     }
 
@@ -5657,13 +3085,17 @@ impl PlanInterviewState {
         Self {
             feature_name,
             interview_key,
+            kind: PlanInterviewMode::Full,
             phase: PlanInterviewPhase::Brief,
             questions,
             question_index: 0,
             brief: String::new(),
             answers: vec![None; answer_count],
             editor: TextEditor::new(String::new()),
-            selected_option: 0,
+            selected_option: None,
+            custom_answers: vec![String::new(); answer_count],
+            custom_answer_focused: false,
+            custom_answer_backup: None,
             workdir,
             pending_launch,
             abort_confirmation: false,
@@ -5689,19 +3121,30 @@ impl PlanInterviewState {
             investigation_started_at: None,
             investigation_token_estimate: 0,
             critique: None,
+            expert_model: None,
+            expert_model_pick: None,
+            critique_status: None,
+            preflight_fingerprint: None,
             critique_started_at: None,
             critique_token_estimate: 0,
             critique_scroll_offset: 0,
             critique_rendered_width: 0,
             critique_rendered_lines: Vec::new(),
+            critique_questions: Vec::new(),
+            critique_answers: Vec::new(),
+            critique_question_index: 0,
+            critique_answering: false,
+            critique_followup_used: false,
             revision_critique: None,
             plan_revision: 0,
             critique_plan_revision: None,
             resume_draft: None,
             prior_brief: None,
             prior_answers: HashMap::new(),
+            prior_custom_answers: HashMap::new(),
             kickoff_handoff: None,
             todo_origin: None,
+            attached_docs: Vec::new(),
         }
     }
 
@@ -5728,6 +3171,33 @@ impl PlanInterviewState {
         }
     }
 
+    /// Validate a candidate reference document and, on success, add it to
+    /// [`Self::attached_docs`], returning its basename for the confirmation
+    /// message. Rejections carry the reason.
+    pub fn attach_doc(
+        &mut self,
+        path: &std::path::Path,
+    ) -> Result<String, crate::plan_interview::AttachError> {
+        let canonical = crate::plan_interview::validate_attachment(path, &self.attached_docs)?;
+        let label = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| canonical.to_string_lossy().into_owned());
+        self.attached_docs.push(canonical);
+        Ok(label)
+    }
+
+    /// Drop the most recently attached reference document, returning its
+    /// basename if there was one to drop.
+    pub fn remove_last_attached_doc(&mut self) -> Option<String> {
+        let path = self.attached_docs.pop()?;
+        Some(
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+        )
+    }
+
     /// Hold a saved draft and ask the user whether to resume it, before any
     /// question is shown. Called on interview entry only, so the answers the
     /// draft would restore cannot overwrite answers given in this session.
@@ -5752,6 +3222,16 @@ impl PlanInterviewState {
 
         self.brief = draft.brief.clone();
         self.adopt_recorded_answers(&draft);
+        // Restore the attached reference documents verbatim. The paths are only
+        // read at headless-dispatch time, where `prepare_attached_docs` drops
+        // and reports any that have since moved — re-checking here would just
+        // duplicate that, and a still-listed missing file is itself a useful
+        // signal on the brief step.
+        self.attached_docs = draft
+            .attached_docs
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
 
         self.ai_rounds_completed = draft.ai_rounds_completed;
         // Rounds only run after an explicit opt-in, so a draft that spent one
@@ -5763,6 +3243,11 @@ impl PlanInterviewState {
         // a second time.
         if let Some(plan) = draft.plan {
             self.synthesized_plan = Some(plan);
+            self.critique = draft.expert_brief;
+            self.expert_model = draft.preflight_model;
+            self.preflight_fingerprint = draft.preflight_fingerprint;
+            self.critique_status = draft.preflight_status;
+            self.critique_token_estimate = draft.preflight_token_estimate;
             self.synthesis_attempted = true;
             self.phase = PlanInterviewPhase::Review;
             return true;
@@ -5796,41 +3281,51 @@ impl PlanInterviewState {
     ///
     /// Matching by id is not enough on its own for a select question: config can
     /// rewrite the same id's options, leaving a stored answer that names a choice
-    /// the question no longer offers. Such an answer is dropped rather than
-    /// pre-filled, because it is unselectable in the UI and would otherwise reach
-    /// the AI rounds and synthesis attached to the current question text.
+    /// the question no longer offers. That part of the answer is dropped rather
+    /// than pre-filled, because it is unselectable in the UI and would otherwise
+    /// reach the AI rounds and synthesis attached to the current question text.
+    /// A choice answer's custom-text half survives an option rewrite; only the
+    /// selection is re-validated.
     fn adopt_recorded_answers(&mut self, record: &PlanInterviewRecord) {
-        self.answers = self
-            .questions
-            .iter()
-            .map(|question| {
-                record
-                    .answer_for(&question.id)
-                    .filter(|answer| question.accepts_answer(answer))
-                    .map(str::to_string)
-            })
-            .collect();
-
+        // Carried AI questions are appended first so the structured pass below
+        // covers them too — the record still holds their options, answer, and
+        // custom text under the same id.
         let known: HashSet<&str> = self.questions.iter().map(|q| q.id.as_str()).collect();
-        let carried: Vec<(PlanQuestion, Option<String>)> = record
+        let carried: Vec<PlanQuestion> = record
             .questions
             .iter()
-            .enumerate()
-            .filter(|(_, question)| {
+            .filter(|question| {
                 matches!(question.source, QuestionSource::Ai { .. })
                     && !known.contains(question.id.as_str())
             })
-            .map(|(index, question)| {
-                (
-                    question.clone(),
-                    record.answers.get(index).cloned().flatten(),
-                )
+            .cloned()
+            .collect();
+        self.questions.extend(carried);
+
+        let adopted: Vec<(Option<String>, String)> = self
+            .questions
+            .iter()
+            .map(|question| {
+                let Some(raw) = record.answer_for(&question.id) else {
+                    return (None, String::new());
+                };
+                match &question.kind {
+                    PlanQuestionKind::FreeText => (Some(raw.to_string()), String::new()),
+                    PlanQuestionKind::Select(options) => {
+                        let stored_custom = record.custom_answer_for(&question.id);
+                        let (indices, custom) = split_choice_answer(raw, stored_custom, options);
+                        let labels: Vec<&str> = indices
+                            .iter()
+                            .filter_map(|&index| options.get(index))
+                            .map(String::as_str)
+                            .collect();
+                        (serialize_choice_answer(&labels, &custom), custom)
+                    }
+                }
             })
             .collect();
-        for (question, answer) in carried {
-            self.questions.push(question);
-            self.answers.push(answer);
-        }
+        self.answers = adopted.iter().map(|(answer, _)| answer.clone()).collect();
+        self.custom_answers = adopted.into_iter().map(|(_, custom)| custom).collect();
     }
 
     /// Adopt the feature's last accepted interview as this run's starting point,
@@ -5862,9 +3357,26 @@ impl PlanInterviewState {
                 answer.clone().map(|answer| (question.id.clone(), answer))
             })
             .collect();
+        // The custom-text half of a pre-filled choice answer, so Ctrl+R can put
+        // back the elaboration as well as the selection.
+        self.prior_custom_answers = self
+            .questions
+            .iter()
+            .zip(self.custom_answers.iter())
+            .filter(|(_, custom)| !custom.trim().is_empty())
+            .map(|(question, custom)| (question.id.clone(), custom.clone()))
+            .collect();
 
         self.brief = self.prior_brief.clone().unwrap_or_default();
         self.editor = TextEditor::new(self.brief.clone());
+        // Carry the previously attached reference documents as this run's
+        // starting set, the same way the brief and answers are pre-filled; the
+        // user can drop any on the brief step before the first pass.
+        self.attached_docs = record
+            .attached_docs
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect();
         self.prior_brief.is_some() || !self.prior_answers.is_empty()
     }
 
@@ -5894,8 +3406,20 @@ impl PlanInterviewState {
             .map(|question| self.prior_answers.get(&question.id).cloned())
             .collect();
         self.answers = baseline;
+        self.custom_answers = self
+            .questions
+            .iter()
+            .map(|question| {
+                self.prior_custom_answers
+                    .get(&question.id)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
         self.question_index = 0;
-        self.selected_option = 0;
+        self.selected_option = None;
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         self.phase = PlanInterviewPhase::Brief;
         self.editor = TextEditor::new(self.brief.clone());
         true
@@ -5904,20 +3428,30 @@ impl PlanInterviewState {
     /// How the step on screen compares with the previously accepted answer for
     /// it, or `None` when there is no previous answer to compare against.
     pub fn prior_answer_state(&self) -> Option<PriorAnswerState> {
-        let (prior, current) = match self.phase {
-            PlanInterviewPhase::Brief => (self.prior_brief.as_deref()?, self.editor.text()),
+        let (prior, current): (String, String) = match self.phase {
+            PlanInterviewPhase::Brief => (
+                self.prior_brief.as_deref()?.to_string(),
+                self.editor.text().to_string(),
+            ),
             PlanInterviewPhase::StaticQuestions => {
                 let question = self.questions.get(self.question_index)?;
-                let prior = self.prior_answers.get(&question.id)?.as_str();
+                let prior = self.prior_answers.get(&question.id)?.clone();
                 match &question.kind {
-                    PlanQuestionKind::FreeText => (prior, self.editor.text()),
-                    PlanQuestionKind::Select(options) => (
-                        prior,
-                        options
-                            .get(self.selected_option)
+                    PlanQuestionKind::FreeText => (prior, self.editor.text().to_string()),
+                    // The whole choice answer — selection plus custom text —
+                    // compared as the one serialized string it is stored as, so
+                    // adding an elaboration to a kept option reads as "changed".
+                    PlanQuestionKind::Select(options) => {
+                        let labels: Vec<&str> = self
+                            .selected_option
+                            .and_then(|index| options.get(index))
                             .map(String::as_str)
-                            .unwrap_or_default(),
-                    ),
+                            .into_iter()
+                            .collect();
+                        let current = serialize_choice_answer(&labels, self.editor.text())
+                            .unwrap_or_default();
+                        (prior, current)
+                    }
                 }
             }
             _ => return None,
@@ -5960,18 +3494,22 @@ impl PlanInterviewState {
                         self.editor = TextEditor::new(prior);
                         true
                     }
-                    // Adoption keeps only answers the question still offers, so
-                    // this normally finds one. The lookup stays defensive: an
-                    // answer with nothing to select is reported as "nothing
+                    // Restore both halves the previous interview accepted: the
+                    // radio selection and the custom-text elaboration. Adoption
+                    // keeps only a selection the question still offers, so an
+                    // answer that survives as neither is reported as "nothing
                     // restored" rather than moving the highlight to option 0.
                     PlanQuestionKind::Select(options) => {
-                        match options.iter().position(|option| *option == prior) {
-                            Some(index) => {
-                                self.selected_option = index;
-                                true
-                            }
-                            None => false,
+                        let prior_custom = self.prior_custom_answers.get(&id).map(String::as_str);
+                        let (indices, custom) = split_choice_answer(&prior, prior_custom, options);
+                        if indices.is_empty() && custom.trim().is_empty() {
+                            return false;
                         }
+                        self.selected_option = indices.first().copied();
+                        self.editor = TextEditor::new(custom);
+                        self.custom_answer_focused = false;
+                        self.custom_answer_backup = None;
+                        true
                     }
                 }
             }
@@ -5992,12 +3530,44 @@ impl PlanInterviewState {
             brief: self.brief.clone(),
             questions: self.questions.clone(),
             answers: self.answers.clone(),
+            // The custom-text half of every choice answer, so a resumed or
+            // re-run interview can restore the selection and the elaboration
+            // together. Blank entries persist as `None`.
+            custom_answers: self
+                .custom_answers
+                .iter()
+                .map(|custom| (!custom.trim().is_empty()).then(|| custom.clone()))
+                .collect(),
             // A draft holds the plan only once one has been generated, so
             // resuming after synthesis does not silently re-spend those tokens.
             plan: self.synthesized_plan.clone(),
             ai_rounds_completed: self.ai_rounds_completed,
+            attached_docs: self
+                .attached_docs
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            expert_brief: self.critique.clone(),
+            preflight_fingerprint: self
+                .synthesized_plan
+                .as_deref()
+                .map(|plan| format!("{:x}", Sha256::digest(plan.as_bytes()))),
+            preflight_status: self.critique_status.clone(),
+            preflight_model: self.expert_model.clone(),
+            preflight_token_estimate: self.critique_token_estimate,
             created_at: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    /// The round cap `continue_plan_interview_after_done` checks
+    /// `ai_rounds_completed` against — [`crate::plan_interview::MAX_QUICK_AI_ROUNDS`]
+    /// while `kind` is `Quick`, [`crate::plan_interview::MAX_AI_ROUNDS`] once
+    /// escalated (or for a `Full` interview from the start).
+    pub fn max_ai_rounds(&self) -> usize {
+        match self.kind {
+            PlanInterviewMode::Quick => crate::plan_interview::MAX_QUICK_AI_ROUNDS,
+            PlanInterviewMode::Full => crate::plan_interview::MAX_AI_ROUNDS,
         }
     }
 
@@ -6172,6 +3742,8 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_status = Some("running".into());
+        self.critique_followup_used = false;
         self.critique_started_at = Some(std::time::Instant::now());
         self.critique_token_estimate = token_estimate;
         self.critique_plan_revision = Some(self.plan_revision);
@@ -6179,8 +3751,13 @@ impl PlanInterviewState {
     }
 
     /// Show a finished advisory review. The plan is deliberately untouched.
-    pub fn apply_critique(&mut self, critique: String) {
+    pub fn apply_critique(&mut self, critique: String, questions: Vec<PlanClarificationQuestion>) {
         self.critique = Some(critique);
+        self.critique_status = Some("completed".into());
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -6193,7 +3770,11 @@ impl PlanInterviewState {
     /// pulling them back into it. Returns false when there is nothing to keep
     /// or the plan moved on while the review was in flight, since the findings
     /// then describe a draft that is gone.
-    pub fn stash_critique(&mut self, critique: String) -> bool {
+    pub fn stash_critique(
+        &mut self,
+        critique: String,
+        questions: Vec<PlanClarificationQuestion>,
+    ) -> bool {
         if self.phase != PlanInterviewPhase::Review
             || self.critique.is_some()
             || self.critique_plan_revision != Some(self.plan_revision)
@@ -6201,6 +3782,10 @@ impl PlanInterviewState {
             return false;
         }
         self.critique = Some(critique);
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -6216,6 +3801,55 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::Critique;
+        true
+    }
+
+    /// Begin collecting answers to the bounded expert clarification set.
+    pub fn begin_critique_answers(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+        {
+            return false;
+        }
+        self.critique_question_index = 0;
+        self.editor = TextEditor::new(self.critique_answers[0].clone());
+        self.critique_answering = true;
+        true
+    }
+
+    /// Save the current clarification answer and advance through the bounded set.
+    pub fn save_critique_answer(&mut self) -> bool {
+        if !self.critique_answering {
+            return false;
+        }
+        self.critique_answers[self.critique_question_index] = self.editor.text().to_string();
+        if self.critique_question_index + 1 >= self.critique_questions.len() {
+            self.critique_answering = false;
+        } else {
+            self.critique_question_index += 1;
+            self.editor =
+                TextEditor::new(self.critique_answers[self.critique_question_index].clone());
+        }
+        true
+    }
+
+    pub fn begin_critique_followup(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+            || !self
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            return false;
+        }
+        self.critique_followup_used = true;
+        self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_started_at = Some(std::time::Instant::now());
+        self.critique_token_estimate = token_estimate;
+        self.critique_plan_revision = Some(self.plan_revision);
         true
     }
 
@@ -6274,6 +3908,15 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.expert_model = None;
+        self.expert_model_pick = None;
+        self.critique_status = None;
+        self.preflight_fingerprint = None;
+        self.critique_questions.clear();
+        self.critique_answers.clear();
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_followup_used = false;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -6353,6 +3996,8 @@ impl PlanInterviewState {
         }
         let first_new_index = self.questions.len();
         self.answers.extend(new_questions.iter().map(|_| None));
+        self.custom_answers
+            .extend(new_questions.iter().map(|_| String::new()));
         self.questions.extend(new_questions);
         self.phase = PlanInterviewPhase::StaticQuestions;
         self.question_index = first_new_index;
@@ -6367,33 +4012,59 @@ impl PlanInterviewState {
         }
     }
 
-    pub fn select_previous_option(&mut self) {
-        let option_count = self
-            .current_question()
-            .and_then(|question| match &question.kind {
-                PlanQuestionKind::Select(options) => Some(options.len()),
-                PlanQuestionKind::FreeText => None,
-            })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = self
-                .selected_option
-                .checked_sub(1)
-                .unwrap_or(option_count - 1);
+    pub fn fail_critique(&mut self) {
+        self.critique_status = Some("failed".into());
+        self.critique_started_at = None;
+        if self.phase == PlanInterviewPhase::CritiqueLoading {
+            self.phase = PlanInterviewPhase::Review;
         }
     }
 
-    pub fn select_next_option(&mut self) {
-        let option_count = self
-            .current_question()
+    fn current_option_count(&self) -> usize {
+        self.current_question()
             .and_then(|question| match &question.kind {
                 PlanQuestionKind::Select(options) => Some(options.len()),
                 PlanQuestionKind::FreeText => None,
             })
-            .unwrap_or(0);
-        if option_count > 0 {
-            self.selected_option = (self.selected_option + 1) % option_count;
+            .unwrap_or(0)
+    }
+
+    /// Move the option highlight up, wrapping. From "nothing picked" this lands
+    /// on the last option — the arrows always settle on a real choice; leaving
+    /// the options untouched is how a user answers with custom text alone.
+    pub fn select_previous_option(&mut self) {
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
         }
+        self.selected_option = Some(match self.selected_option {
+            None | Some(0) => option_count - 1,
+            Some(index) => index - 1,
+        });
+    }
+
+    pub fn select_next_option(&mut self) {
+        let option_count = self.current_option_count();
+        if option_count == 0 {
+            return;
+        }
+        self.selected_option = Some(match self.selected_option {
+            None => 0,
+            Some(index) => (index + 1) % option_count,
+        });
+    }
+
+    /// Return a choice question to the "nothing picked" state. Because the arrow
+    /// keys only ever move between real options, this is the sole way back once
+    /// a pick has been made — and "nothing picked" is a real answer: it is how a
+    /// user submits with custom text alone. Returns `false` when the current
+    /// question is not a choice or nothing was picked.
+    pub fn clear_option_selection(&mut self) -> bool {
+        if self.current_option_count() == 0 || self.selected_option.is_none() {
+            return false;
+        }
+        self.selected_option = None;
+        true
     }
 
     /// Save the current input and move to the next interview step.
@@ -6468,7 +4139,9 @@ impl PlanInterviewState {
                 self.save_current_draft();
                 self.phase = PlanInterviewPhase::Brief;
                 self.editor = TextEditor::new(self.brief.clone());
-                self.selected_option = 0;
+                self.selected_option = None;
+                self.custom_answer_focused = false;
+                self.custom_answer_backup = None;
                 true
             }
             PlanInterviewPhase::StaticQuestions => {
@@ -6572,7 +4245,23 @@ impl PlanInterviewState {
                     Some(text.to_string())
                 }
             }
-            PlanQuestionKind::Select(options) => options.get(self.selected_option).cloned(),
+            // A choice answer is the picked option label(s) and the trimmed
+            // custom text, combined into one plain string. Nothing picked and
+            // blank custom text records as no answer — which the gate below
+            // blocks for a required question, exactly as for free text.
+            PlanQuestionKind::Select(options) => {
+                let custom = self.editor.text().trim().to_string();
+                if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+                    *slot = custom.clone();
+                }
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                serialize_choice_answer(&labels, &custom)
+            }
         };
         if answer.is_none() && !question.optional && !allow_empty_optional {
             return Err(PlanInterviewAdvanceError::AnswerRequired);
@@ -6598,24 +4287,125 @@ impl PlanInterviewState {
         }
     }
 
+    /// Load the answer stored for the question now on screen into the transient
+    /// `selected_option` / `editor` scratch. For a choice question this rebuilds
+    /// the structured control from the serialized string and the stored custom
+    /// text, so revisiting an answered question shows the radio selection and
+    /// the custom-text box — never a flat editable string.
     fn load_current_answer(&mut self) {
         let existing = self
             .answers
             .get(self.question_index)
-            .and_then(|answer| answer.as_deref());
+            .and_then(|answer| answer.clone());
+        let stored_custom = self
+            .custom_answers
+            .get(self.question_index)
+            .cloned()
+            .unwrap_or_default();
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
         match self.questions.get(self.question_index).map(|q| &q.kind) {
             Some(PlanQuestionKind::FreeText) => {
-                self.editor = TextEditor::new(existing.unwrap_or_default().to_string());
-                self.selected_option = 0;
+                self.editor = TextEditor::new(existing.unwrap_or_default());
+                self.selected_option = None;
             }
             Some(PlanQuestionKind::Select(options)) => {
-                self.editor = TextEditor::new(String::new());
-                self.selected_option = existing
-                    .and_then(|answer| options.iter().position(|option| option == answer))
-                    .unwrap_or(0);
+                let stored = (!stored_custom.is_empty()).then_some(stored_custom.as_str());
+                let (indices, custom) = match existing.as_deref() {
+                    Some(combined) => split_choice_answer(combined, stored, options),
+                    None => (Vec::new(), stored_custom.clone()),
+                };
+                self.selected_option = indices.first().copied();
+                self.editor = TextEditor::new(custom);
             }
             None => {}
         }
+    }
+
+    /// Open the inline custom-answer editor for the choice question on screen.
+    /// The current buffer is stashed so `Esc` can restore it; `false` when the
+    /// phase or question is wrong or the editor is already focused.
+    pub fn open_custom_answer_editor(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::StaticQuestions || self.custom_answer_focused {
+            return false;
+        }
+        if !matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        ) {
+            return false;
+        }
+        self.custom_answer_backup = Some(self.editor.text().to_string());
+        self.custom_answer_focused = true;
+        true
+    }
+
+    /// Commit the custom-answer edit: trim the buffer, record it, and return
+    /// focus to the option list without submitting the question. The serialized
+    /// answer is refreshed too, so a draft persisted right after a commit
+    /// round-trips even though the question has not been advanced through.
+    pub fn commit_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let trimmed = self.editor.text().trim().to_string();
+        self.editor = TextEditor::new(trimmed.clone());
+        if let Some(slot) = self.custom_answers.get_mut(self.question_index) {
+            *slot = trimmed.clone();
+        }
+        let recorded = match self.questions.get(self.question_index).map(|q| &q.kind) {
+            Some(PlanQuestionKind::Select(options)) => {
+                let labels: Vec<&str> = self
+                    .selected_option
+                    .and_then(|index| options.get(index))
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                Some(serialize_choice_answer(&labels, &trimmed))
+            }
+            _ => None,
+        };
+        if let Some(answer) = recorded
+            && let Some(slot) = self.answers.get_mut(self.question_index)
+        {
+            *slot = answer;
+        }
+        self.custom_answer_focused = false;
+        self.custom_answer_backup = None;
+    }
+
+    /// Abandon the custom-answer edit, restoring the buffer captured when it was
+    /// opened.
+    pub fn cancel_custom_answer(&mut self) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let restore = self.custom_answer_backup.take().unwrap_or_default();
+        self.editor = TextEditor::new(restore);
+        self.custom_answer_focused = false;
+    }
+
+    /// Forward a key to the focused custom-answer editor, enforcing the
+    /// character cap by reverting any edit that would exceed it (a paste, or a
+    /// keystroke at the limit).
+    pub fn custom_answer_handle_key(&mut self, key: crossterm::event::KeyEvent) {
+        if !self.custom_answer_focused {
+            return;
+        }
+        let before = self.editor.text().to_string();
+        self.editor.handle_key(key);
+        if self.editor.text().chars().count() > CUSTOM_ANSWER_MAX_LEN {
+            self.editor = TextEditor::new(before);
+        }
+    }
+
+    /// Whether the question on screen is a choice question (so the custom-answer
+    /// box is shown and `e` is bound).
+    pub fn current_question_is_choice(&self) -> bool {
+        matches!(
+            self.current_question().map(|q| &q.kind),
+            Some(PlanQuestionKind::Select(_))
+        )
     }
 }
 
@@ -6737,6 +4527,13 @@ pub enum VisibleItem {
 mod tests {
     use super::*;
 
+    fn key_char(c: char) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
     // ── SessionFilter::next ───────────────────────────────────
 
     #[test]
@@ -6766,31 +4563,6 @@ mod tests {
     }
 
     // ── branch_mismatch ───────────────────────────────────
-
-    #[test]
-    fn branch_mismatch_none_when_branches_match() {
-        assert_eq!(branch_mismatch("main", Some("main")), None);
-    }
-
-    #[test]
-    fn branch_mismatch_some_when_branches_differ() {
-        assert_eq!(
-            branch_mismatch("main", Some("other-branch")),
-            Some("other-branch")
-        );
-    }
-
-    #[test]
-    fn branch_mismatch_none_when_pr_head_ref_unknown() {
-        // Pre-existing cache row from before `head_ref` existed.
-        assert_eq!(branch_mismatch("", Some("other-branch")), None);
-    }
-
-    #[test]
-    fn branch_mismatch_none_when_checked_out_branch_unknown() {
-        // Detached HEAD or the `git branch --show-current` lookup failed.
-        assert_eq!(branch_mismatch("main", None), None);
-    }
 
     #[test]
     fn plan_interview_requires_a_brief_before_questions() {
@@ -7115,15 +4887,135 @@ mod tests {
         state.editor = TextEditor::new("A useful feature".into());
         state.advance().unwrap();
 
+        // From "nothing picked" the up-arrow wraps to the last option.
         state.select_previous_option();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.advance().unwrap();
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
 
         assert!(state.back());
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         state.select_next_option();
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, Some(0));
+    }
+
+    #[test]
+    fn plan_interview_clear_option_selection_returns_to_nothing_picked() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // No-op with nothing picked.
+        assert!(!state.clear_option_selection());
+
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+
+        // A stray pick can be undone in place.
+        assert!(state.clear_option_selection());
+        assert_eq!(state.selected_option, None);
+        assert!(!state.clear_option_selection());
+    }
+
+    #[test]
+    fn plan_interview_choice_question_takes_a_custom_answer_with_or_without_a_pick() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Custom text alone answers a required choice question.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('t'));
+        state.custom_answer_handle_key(key_char('u'));
+        state.custom_answer_handle_key(key_char('i'));
+        state.commit_custom_answer();
+        assert!(!state.custom_answer_focused);
+        assert_eq!(state.selected_option, None);
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("tui"));
+
+        // Revisiting re-presents the structured control: no pick, custom text
+        // back in the box.
+        assert!(state.back());
+        assert_eq!(state.selected_option, None);
+        assert_eq!(state.editor.text(), "tui");
+
+        // Pick an option and keep the elaboration: the two combine.
+        state.select_next_option();
+        assert_eq!(state.selected_option, Some(0));
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("Dashboard — tui"));
+
+        // And that round-trips back to selection + custom text.
+        assert!(state.back());
+        assert_eq!(state.selected_option, Some(0));
+        assert_eq!(state.editor.text(), "tui");
+    }
+
+    #[test]
+    fn plan_interview_blank_custom_answer_and_no_pick_stays_unanswered() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        // Nothing picked, custom text blank: a required question blocks submit.
+        assert_eq!(
+            state.advance(),
+            Err(PlanInterviewAdvanceError::AnswerRequired)
+        );
+        assert_eq!(state.answers[0], None);
+
+        // Esc restores the buffer the editor opened with.
+        assert!(state.open_custom_answer_editor());
+        state.custom_answer_handle_key(key_char('x'));
+        state.cancel_custom_answer();
+        assert_eq!(state.editor.text(), "");
+        assert!(!state.custom_answer_focused);
+    }
+
+    #[test]
+    fn plan_interview_custom_answer_enforces_the_length_cap() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where?".into(),
+            kind: PlanQuestionKind::Select(vec!["A".into(), "B".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: true,
+        };
+        let mut state =
+            PlanInterviewState::new("feature".into(), "feat-1".into(), vec![question], None);
+        state.editor = TextEditor::new("brief".into());
+        state.advance().unwrap();
+
+        assert!(state.open_custom_answer_editor());
+        state.editor = TextEditor::new("x".repeat(CUSTOM_ANSWER_MAX_LEN));
+        // One more character is rejected; the buffer is left at the cap.
+        state.custom_answer_handle_key(key_char('y'));
+        assert_eq!(state.editor.text().chars().count(), CUSTOM_ANSWER_MAX_LEN);
     }
 
     /// A record whose select answer names an option the question no longer
@@ -7196,10 +5088,11 @@ mod tests {
         assert!(state.resume_from_draft());
 
         assert_eq!(state.answers[0], None);
-        // The question is unanswered again, so the resume lands on it.
+        // The question is unanswered again, so the resume lands on it with
+        // nothing picked.
         assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
         assert_eq!(state.question_index, 0);
-        assert_eq!(state.selected_option, 0);
+        assert_eq!(state.selected_option, None);
     }
 
     /// A select answer the rewritten options still contain is pre-filled, and on
@@ -7215,7 +5108,7 @@ mod tests {
         assert_eq!(state.answers[0].as_deref(), Some("Session"));
         state.phase = PlanInterviewPhase::StaticQuestions;
         state.load_current_answer();
-        assert_eq!(state.selected_option, 1);
+        assert_eq!(state.selected_option, Some(1));
         assert_eq!(state.prior_answer_state(), Some(PriorAnswerState::Kept));
     }
 
@@ -7241,6 +5134,7 @@ mod tests {
             mode: VibeMode::default(),
             review: false,
             plan_mode: true,
+            quick_plan: false,
             agent: AgentKind::Claude,
             create_terminal: false,
             session_name: "Claude 1".into(),
@@ -7264,8 +5158,15 @@ mod tests {
             brief: "Ship the interview.".into(),
             questions,
             answers,
+            custom_answers: Vec::new(),
             plan: None,
             ai_rounds_completed: 0,
+            attached_docs: Vec::new(),
+            expert_brief: None,
+            preflight_fingerprint: None,
+            preflight_status: None,
+            preflight_model: None,
+            preflight_token_estimate: 0,
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
         }
@@ -7381,6 +5282,7 @@ mod tests {
         let questions = vec![template_question("scope")];
         let mut stored = saved_draft(questions.clone(), vec![Some("Just the TUI.".into())]);
         stored.plan = Some("# Plan: feature\n".into());
+        stored.preflight_model = Some("opus".into());
 
         let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), questions, None);
         state.offer_resume(stored);
@@ -7389,6 +5291,7 @@ mod tests {
 
         assert_eq!(state.phase, PlanInterviewPhase::Review);
         assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: feature\n"));
+        assert_eq!(state.expert_model.as_deref(), Some("opus"));
         // Nothing should re-synthesize a plan the user already has on screen.
         assert!(state.synthesis_attempted);
     }
@@ -7445,5 +5348,104 @@ mod tests {
         assert_eq!(record.answers[0].as_deref(), Some("Just the TUI."));
         assert_eq!(record.answers[1], None);
         assert!(record.plan.is_none());
+    }
+
+    #[test]
+    fn quick_plan_constructors_start_with_no_static_questions_and_the_quick_kind() {
+        let creation = PlanInterviewState::for_feature_creation_quick(prepared_launch(
+            "my-project",
+            "planned-feature",
+        ));
+        assert_eq!(creation.kind, PlanInterviewMode::Quick);
+        assert!(creation.questions.is_empty());
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_QUICK_AI_ROUNDS
+        );
+
+        let on_demand = PlanInterviewState::for_feature_quick(
+            "feature".into(),
+            "feat-1".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            AgentKind::Claude,
+        );
+        assert_eq!(on_demand.kind, PlanInterviewMode::Quick);
+        assert!(on_demand.questions.is_empty());
+    }
+
+    #[test]
+    fn full_plan_constructors_default_to_the_full_kind() {
+        let creation = PlanInterviewState::for_feature_creation(
+            prepared_launch("my-project", "planned-feature"),
+            vec![template_question("scope")],
+        );
+        assert_eq!(creation.kind, PlanInterviewMode::Full);
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_AI_ROUNDS
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_none_quick_full_and_back_going_forward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+        assert_eq!((state.plan_mode, state.quick_plan), (false, false));
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "None -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "Quick Plan -> Full Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Full Plan -> None"
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_the_same_states_in_reverse_going_backward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "None -> Full Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "Full Plan -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Quick Plan -> None"
+        );
     }
 }

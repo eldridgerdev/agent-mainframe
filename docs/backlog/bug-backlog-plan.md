@@ -14,6 +14,51 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~Docs site fails to build: Tera v1 macro syntax under Tera v2~~ (Fixed)
+
+- **Status:** Fixed (2026-09-13)
+- **Reported:** 2026-09-13, found while verifying
+  [Docs site feature coverage](docs-site-coverage-plan.md) Epic 1
+- **Relates to:** `site/templates/components.html`,
+  `site/templates/docs-index.html`, `site/templates/docs-page.html`
+- **Root cause:** `components.html` defined `docs_nav` with Tera v1's
+  `{% macro %}`/`{% endmacro %}`, imported via `{% import "components.html"
+  as components %}` and called as `components::docs_nav(...)` from
+  `docs-index.html`/`docs-page.html`. Zola 0.22+ bundles Tera v2, which
+  removed macros entirely in favor of first-class components — every docs
+  page therefore failed with `error: Unknown tag` at the `import`/`macro`
+  tag. This wasn't sandbox-specific: it reproduced identically against
+  zola v0.23.5, the exact version `.github/workflows/site.yml` installs,
+  so the site's own "Build" CI step was failing on every push to
+  `site/**` on `main` (the separate Cloudflare deploy step is gated on
+  secrets, but the build step itself has no `continue-on-error`).
+- **Fix:** Rewrote `docs_nav` as a Tera v2 `{% component %}`/
+  `{% endcomponent %}` (components are registered globally — no import
+  needed) and updated both call sites to the new
+  `{{<docs_nav pages={section.pages} .../>}}` self-closing syntax.
+  Verified with `zola build` and `zola check` (v0.23.5, matching CI) —
+  all 11 docs pages plus the landing page render, and no broken internal
+  or external links.
+
+### Repro
+
+1. Install zola v0.23.5 (or newer — Tera v2 shipped in Zola 0.22).
+2. From `site/`, run `zola build`.
+
+### Expected
+
+Site builds successfully.
+
+### Actual
+
+```
+ERROR error: Unknown tag
+ --> docs-page.html:2:4
+  |
+2 | {% import "components.html" as components %}
+  |    ^^^^^^
+```
+
 ## ~~PR review summaries render with garbled diff fragments~~ (Fixed)
 
 - **Status:** Fixed (2026-08-12, issue #527)
@@ -113,7 +158,7 @@ The selected pane could open as an empty shell.
 - **Status:** Backlog
 - **Reported:** 2026-07-20
 - **Relates to:** PR Triage fix-prompt assembly
-  (`src/app/pr_review.rs::PrComment::fix_prompt`, `fix_prompt_body`,
+  (`src/app/pr_review/domain.rs::PrComment::fix_prompt`, `fix_prompt_body`,
   `combined_fix_prompt`)
 - **Lead:** The prompt currently gives the agent a `file:line` pointer, the
   review comment, and its GitHub diff hunk, but the agent can still interpret
@@ -218,7 +263,7 @@ composer is open, so it is not shown on return either.
 - **Status:** Backlog
 - **Reported:** 2026-07-20
 - **Relates to:** AI Review posting (`src/app/ai_review.rs::ai_review_post`), PR
-  Triage refresh (`src/app/pr_review.rs::refresh_pr_review`,
+  Triage refresh (`src/app/pr_review/fetch.rs::refresh_pr_review`,
   `start_pr_review_fetch`, `pr_review_cache`)
 - **Root cause (by design, currently):** `ai_review_post` marks the kept
   findings `published` and re-caches the AI Review pane's own state, but it
@@ -518,7 +563,7 @@ state are gone.
 - State is likely mutated in the in-memory `PrReviewState` but **not
   flushed to SQLite before the pane is left** to switch into the fix
   session. The `f`-marks-`Fixing` path is said to persist before leaving;
-  the `m` / `s` / reply paths may only update memory. → `src/app/pr_review.rs`,
+  the `m` / `s` / reply paths may only update memory. → `src/app/pr_review/actions.rs`, `src/app/pr_review/reply.rs`,
   `src/handlers/pr_review.rs`.
 - The return path may **re-fetch without re-overlaying** persisted triage
   — confirm `apply_persisted_triage` runs on the cache-hit, background-fetch,
@@ -672,3 +717,49 @@ image placeholder.
 
 Nothing happens; pasting only works if the composer is bypassed and the
 paste goes directly to Claude Code's own input handling.
+
+## ~~Prompt library entries vanish or don't show recently added prompts~~ (Fixed)
+
+- **Status:** Fixed (2026-09-04)
+- **Reported:** 2026-09-04
+- **Relates to:** prompt library persistence (`src/db/store.rs`,
+  `src/app/prompt_library.rs`)
+- **Root cause:** User templates were persisted as part of `App::save()`'s
+  full-store rewrite (`db::store::do_save`), which does a
+  `DELETE FROM prompt_templates` + full re-`INSERT` from whatever's in that
+  process's in-memory `ProjectStore` on *every* save — status sync, feature
+  start/stop, session changes, etc., not just prompt-library edits.
+  `prompt_templates` is a global table, and it's normal to run several `amf`
+  processes concurrently (one per checkout) against the same
+  `~/.config/amf/amf.db`. Any instance's routine background save would blow
+  away the entire table with its own stale in-memory snapshot, silently
+  erasing templates a sibling instance had added since.
+- **Fix:** Give prompt templates targeted `insert`/`update`/`delete`
+  persistence in a new `src/db/prompt_templates.rs` module, mirroring the
+  pattern already used for TODOs and Learning Mode — both were pulled out of
+  the full-replace `ProjectStore` save path for the same reason. Removed
+  `prompt_templates` from `do_save`'s full-replace block entirely, so a
+  generic `App::save()` can no longer touch it. The prompt library picker now
+  also re-reads templates fresh from the DB on every open (mirroring the
+  existing fresh-read behavior for global config templates), so edits made by
+  a sibling AMF process become visible immediately instead of only after a
+  restart.
+
+### Repro
+
+1. Run two `amf` instances at once (e.g. two terminals, each in a different
+   project checkout) against the same global database.
+2. In instance A, open the prompt library and add or edit a template.
+3. In instance B, trigger any save (e.g. wait for the 5s status sync, or
+   start/stop a feature).
+
+### Expected
+
+Templates added or edited in instance A remain visible in the prompt library
+regardless of what instance B does.
+
+### Actual
+
+Instance B's next save silently overwrote the `prompt_templates` table with
+its own stale snapshot, erasing the most recently added prompt and, over a
+session, many others.

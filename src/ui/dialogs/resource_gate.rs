@@ -27,6 +27,17 @@ pub fn draw_resource_confirm_dialog(
         body.extend(low_memory_lines(&low, theme));
         body.extend(open_editor_lines(&state.open_editors, theme));
     }
+    if matches!(state.pending, PendingStart::PlannedFeature(_)) {
+        body.push(Line::from(""));
+        body.push(Line::from(Span::styled(
+            " The completed plan is saved and will be kept if you cancel.",
+            Style::default().fg(theme.text.to_color()),
+        )));
+        body.push(Line::from(Span::styled(
+            " Continuing will create and start the planned feature anyway.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    }
 
     // Sized to what it actually says: heading, the tripped gate(s), a blank
     // line, the question, and the key hints, inside the border. A fixed
@@ -105,6 +116,9 @@ fn pending_summary(pending: &PendingStart) -> String {
         },
         PendingStart::EnterView { .. } => "Opening a stopped feature".to_string(),
         PendingStart::SwitchViewToFeature { .. } => "Jumping to a stopped feature".to_string(),
+        PendingStart::PlannedFeature(pending) => {
+            format!("Starting planned feature '{}'", pending.prepared.branch)
+        }
     }
 }
 

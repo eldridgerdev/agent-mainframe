@@ -51,6 +51,17 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The final-review destination picker (`t`) and the companion-feature setup
+    // overlay it can open are sub-states of the diff viewer, mirroring PR
+    // Triage's `harness_pick` / `new_feature_setup`. Each captures every key
+    // while open, before any of the viewer's own bindings.
+    if app.review_feature_setup_open() {
+        return crate::handlers::handle_review_feature_setup_key(app, key);
+    }
+    if app.review_destination_pick_open() {
+        return crate::handlers::handle_review_destination_pick_key(app, key);
+    }
+
     // The review key-help overlay is read-only and captures every key while
     // open, so a key pressed to dismiss it can never also act on the review
     // underneath. `?` toggles, matching the dashboard's help overlay.
@@ -174,6 +185,14 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 || state.editing_file_comment
                 || state.editing_suggestion
     );
+
+    // Vim is a session-wide final-review preference, so the same binding works
+    // before an editor opens and while any editor is active. Read-only overlays
+    // above still retain key precedence.
+    if review && key.modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('t') {
+        app.diff_review_toggle_vim();
+        return Ok(());
+    }
 
     // While typing feedback (per-file rejection or general) the keys drive a
     // multi-line `TextEditor`; Enter inserts a newline, so Tab submits.
@@ -630,18 +649,14 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 /// Drive the multi-line feedback editor (per-file rejection or general
 /// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
-/// Ctrl+T toggles vim, and Ctrl+J/K plus PgUp/PgDn scroll the editor.
+/// Ctrl+J/K plus PgUp/PgDn scroll the editor. The session-wide Ctrl+T Vim
+/// toggle is handled by [`handle_diff_viewer_key`] before dispatch reaches
+/// this function.
 fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: bool) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if ctrl && key.code == KeyCode::Char('q') {
         app.diff_review_cancel_feedback();
-        return Ok(());
-    }
-    if ctrl && key.code == KeyCode::Char('t') {
-        if let AppMode::DiffViewer(state) = &mut app.mode {
-            state.feedback_editor.toggle_vim();
-        }
         return Ok(());
     }
     // Ctrl+E cycles the severity of the comment / rejection being composed.
@@ -746,6 +761,10 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     /// Finish a fully-decided review: the first `q` opens the pre-finish
@@ -1324,22 +1343,93 @@ index 1111111..2222222 100644
         assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
+    /// The index of the first `Dedicated(..)` row in the open destination
+    /// picker.
+    fn dedicated_row_index(app: &App) -> usize {
+        match &app.mode {
+            AppMode::DiffViewer(s) => s
+                .destination_pick
+                .as_ref()
+                .expect("picker open")
+                .rows
+                .iter()
+                .position(|r| matches!(r, crate::app::ReviewDestinationRow::Dedicated(_)))
+                .expect("a dedicated row"),
+            _ => panic!("not in review"),
+        }
+    }
+
     #[test]
-    fn t_toggles_fix_target_between_live_and_dedicated() {
+    fn t_opens_the_destination_picker_and_dedicated_sets_the_target() {
         use crate::app::pr_review::FixTarget;
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
 
-        let target = |app: &App| match &app.mode {
-            AppMode::DiffViewer(s) => s.fix_target,
+        // Default target is this feature's live session, picker closed.
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s)
+            if s.fix_target == FixTarget::ExistingLive && s.destination_pick.is_none()));
+
+        // `t` opens the picker rather than toggling in place.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.destination_pick.is_some()));
+
+        // Walk to the dedicated row and choose it.
+        let dedicated = dedicated_row_index(&app);
+        for _ in 0..dedicated {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(s) => {
+                assert_eq!(s.fix_target, FixTarget::DedicatedReview);
+                assert!(
+                    s.review_harness.is_some(),
+                    "dedicated resolves a harness up front"
+                );
+                assert!(s.destination_pick.is_none(), "confirming closes the picker");
+            }
             _ => panic!("not in review"),
-        };
-        // Default is the existing pane; t flips to dedicated and back.
-        assert_eq!(target(&app), FixTarget::ExistingLive);
+        }
+
+        // Re-open: it pre-highlights the dedicated row it now points at. Walk
+        // back up to the first row and pick it → this feature's live session.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
-        assert_eq!(target(&app), FixTarget::DedicatedReview);
+        assert_eq!(
+            match &app.mode {
+                AppMode::DiffViewer(s) => s.destination_pick.as_ref().unwrap().selected,
+                _ => panic!("not in review"),
+            },
+            dedicated,
+            "re-opening pre-highlights the current destination"
+        );
+        for _ in 0..dedicated {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('k'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(s) => {
+                assert_eq!(s.fix_target, FixTarget::ExistingLive);
+                assert!(s.review_harness.is_none());
+            }
+            _ => panic!("not in review"),
+        }
+    }
+
+    #[test]
+    fn destination_picker_cancels_without_changing_the_target() {
+        use crate::app::pr_review::FixTarget;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
-        assert_eq!(target(&app), FixTarget::ExistingLive);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(s) => {
+                assert!(s.destination_pick.is_none());
+                assert_eq!(s.fix_target, FixTarget::ExistingLive);
+            }
+            _ => panic!("not in review"),
+        }
     }
 
     #[test]
@@ -1370,8 +1460,13 @@ index 1111111..2222222 100644
         app.store.projects.push(project);
         app.store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
 
-        // Choose the dedicated target, reject the file, then finish.
+        // Choose the dedicated target via the picker, reject the file, then finish.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        let dedicated = dedicated_row_index(&app);
+        for _ in 0..dedicated {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
         if let AppMode::DiffViewer(s) = &app.mode {
             assert_eq!(s.fix_target, FixTarget::DedicatedReview);
         }
@@ -1434,6 +1529,266 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn review_vim_defaults_off_and_applies_to_every_editor_surface() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if !state.vim_enabled && state.feedback_editor.vim_mode().is_none()
+        ));
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.vim_enabled
+                    && state.feedback_editor.vim_mode()
+                        == Some(crate::editor::VimMode::Normal)
+        ));
+
+        // Rejection, general, and whole-file comment editors all inherit the
+        // same session preference.
+        for open in ['r', 'f', 'm'] {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(open))).unwrap();
+            assert!(matches!(
+                &app.mode,
+                AppMode::DiffViewer(state)
+                    if state.feedback_editor.vim_mode()
+                        == Some(crate::editor::VimMode::Normal)
+            ));
+            handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('q'))).unwrap();
+        }
+
+        // Line comments and suggested replacements use that preference too.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.editing_line_comment
+                    && state.feedback_editor.vim_mode()
+                        == Some(crate::editor::VimMode::Normal)
+        ));
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.editing_suggestion
+                    && state.feedback_editor.vim_mode()
+                        == Some(crate::editor::VimMode::Normal)
+        ));
+    }
+
+    #[test]
+    fn vim_commands_flow_through_comment_and_suggestion_workflows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        // Reuse TextEditor's insert, motion, and delete-operator commands.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        for c in "alpha beta".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('0'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('d'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('w'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // Switch to the suggestion editor without toggling again. It opens in
+        // Normal mode and preserves the already-submitted prose on the span.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('0'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('w'))).unwrap();
+        for c in "replacement".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.vim_enabled);
+                let comment = &state.line_comments["a.rs"][0];
+                assert_eq!(comment.text, "beta");
+                assert_eq!(comment.suggestion.as_deref(), Some("replacement line"));
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn disabling_vim_preserves_text_and_resets_cursor_and_undo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        for c in "draft".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('0'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.feedback_editor.cursor() == 0
+        ));
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.vim_enabled);
+                assert_eq!(state.feedback_editor.text(), "draft");
+                assert_eq!(state.feedback_editor.cursor(), "draft".len());
+                assert!(state.feedback_editor.vim_mode().is_none());
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // Re-enabling creates a fresh Normal editor. `u` cannot reach the Vim
+        // history that existed before Vim was disabled.
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('u'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.feedback_editor.text() == "draft"
+                    && state.feedback_editor.vim_mode()
+                        == Some(crate::editor::VimMode::Normal)
+        ));
+    }
+
+    #[test]
+    fn vim_editor_state_survives_review_focus_updates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        for c in "draft".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('0'))).unwrap();
+
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.selected_file = 1;
+            state.on_file_changed();
+            assert_eq!(state.feedback_editor.text(), "draft");
+            assert_eq!(state.feedback_editor.cursor(), 0);
+            assert_eq!(
+                state.feedback_editor.vim_mode(),
+                Some(crate::editor::VimMode::Normal)
+            );
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('u'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.feedback_editor.text().is_empty()
+        ));
+    }
+
+    #[test]
+    fn vim_boundary_motions_stay_inside_the_editor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.vim_enabled = true;
+            state.feedback_editing = true;
+            state.comment_cursor = Some(7);
+            state.reset_feedback_editor("top\nbottom".to_string());
+        }
+
+        // Move to the first line, then press up again at the boundary. Neither
+        // the line cursor nor selected file may receive the unproductive move.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Home)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Up)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Up)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert_eq!(state.feedback_editor.cursor_row_col().0, 0);
+                assert_eq!(state.comment_cursor, Some(7));
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Down)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Down)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert_eq!(state.feedback_editor.cursor_row_col().0, 1);
+                assert_eq!(state.comment_cursor, Some(7));
+                assert_eq!(state.selected_file, 0);
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn vim_cancel_discards_unsent_comment_and_suggestion() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('x'))).unwrap();
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.line_comments.is_empty()
+        ));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('x'))).unwrap();
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.line_comments.is_empty()
+                    && state.vim_enabled
+                    && state.feedback_editor.text().is_empty()
+        ));
+    }
+
+    #[test]
+    fn closing_and_reopening_review_clears_unsent_editor_state_and_vim() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('t'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        for c in "unsent".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+
+        app.close_diff_viewer();
+        let AppMode::Viewing(view) = &app.mode else {
+            panic!("expected return to viewing mode");
+        };
+        let reopened = DiffViewerState::new(view.clone(), dir.path().to_path_buf());
+        assert!(!reopened.vim_enabled);
+        assert!(reopened.feedback_editor.text().is_empty());
+        assert!(reopened.feedback_editor.vim_mode().is_none());
+        assert_eq!(reopened.feedback_editor.cursor(), 0);
+    }
+
+    #[test]
     fn general_feedback_is_written_even_when_all_approved() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
@@ -1460,6 +1815,336 @@ index 1111111..2222222 100644
         assert!(feedback.contains("## General Feedback"));
         assert!(feedback.contains("tighten error handling"));
         assert!(!feedback.contains("## Files Needing Revision"));
+    }
+
+    #[test]
+    fn destination_picker_lists_other_features_and_routes_to_the_one_picked() {
+        use crate::app::ReviewDestinationRow;
+        use crate::app::pr_review::FixTarget;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        // The reviewed feature ("proj"/"feat") plus a second, unrelated feature.
+        let mut project = Project::new(
+            "proj".into(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(Feature::new(
+            "feat".into(),
+            "feat".into(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        ));
+        let mut other = Feature::new(
+            "other".into(),
+            "other".into(),
+            dir.path().to_path_buf(),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        other.add_session(SessionKind::Claude);
+        let other_id = other.id.clone();
+        project.features.push(other);
+        app.store.projects.push(project);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        let other_row = match &app.mode {
+            AppMode::DiffViewer(s) => s
+                .destination_pick
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .position(|r| matches!(r,
+                    ReviewDestinationRow::ExistingFeature { feature_id, .. } if *feature_id == other_id))
+                .expect("an ExistingFeature row for the other feature"),
+            _ => panic!("not in review"),
+        };
+        for _ in 0..other_row {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(s) => {
+                assert_eq!(s.fix_target, FixTarget::ExistingFeature);
+                assert_eq!(s.fix_target_feature_id.as_deref(), Some(other_id.as_str()));
+                assert!(s.destination_pick.is_none());
+            }
+            _ => panic!("not in review"),
+        }
+    }
+
+    #[test]
+    fn new_feature_row_opens_the_companion_setup_and_esc_closes_it() {
+        use crate::app::ReviewDestinationRow;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        app.store.available_harnesses = vec![AgentKind::Claude];
+        // The companion setup seeds from the reviewed feature's branch, so it
+        // has to resolve from the store by workdir.
+        let mut project = Project::new(
+            "proj".into(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(Feature::new(
+            "feat".into(),
+            "feat".into(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        ));
+        app.store.projects.push(project);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        let new_row = match &app.mode {
+            AppMode::DiffViewer(s) => s
+                .destination_pick
+                .as_ref()
+                .unwrap()
+                .rows
+                .iter()
+                .position(|r| matches!(r, ReviewDestinationRow::NewFeature))
+                .expect("a NewFeature row"),
+            _ => panic!("not in review"),
+        };
+        for _ in 0..new_row {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s)
+            if s.review_feature_setup.is_some() && s.destination_pick.is_none()));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s)
+            if s.review_feature_setup.is_none() && s.destination_pick.is_none()));
+    }
+
+    #[test]
+    fn finishing_with_an_existing_feature_target_prompts_that_features_agent() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // The reviewed feature.
+        let reviewed = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        // A separate feature whose agent session must receive the prompt.
+        let mut other = Feature::new(
+            "other".to_string(),
+            "other".to_string(),
+            dir.path().to_path_buf(),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        other.status = ProjectStatus::Active;
+        let other_session = other.add_session(SessionKind::Claude).clone();
+        let other_tmux = other.tmux_session.clone();
+        let other_window = other_session.tmux_window.clone();
+        let other_id = other.id.clone();
+
+        let mut project = Project::new(
+            "demo".to_string(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(reviewed);
+        project.features.push(other);
+
+        let mut tmux = MockTmuxOps::new();
+        let (ps, pw) = (other_tmux.clone(), other_window.clone());
+        tmux.expect_paste_text()
+            .withf(move |session, window, text| {
+                session == ps && window == pw && text.contains("final-review-feedback.md")
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let (ks, kw) = (other_tmux.clone(), other_window.clone());
+        tmux.expect_send_key_name()
+            .withf(move |session, window, name| session == ks && window == kw && name == "Enter")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+        let mut state = DiffViewerState::new(
+            ViewState::new(
+                "demo".into(),
+                "feature".into(),
+                "amf-feature".into(),
+                "claude".into(),
+                "Claude".into(),
+                SessionKind::Claude,
+                VibeMode::Vibeless,
+                true,
+            ),
+            dir.path().to_path_buf(),
+        );
+        state.review = true;
+        state.fix_target = crate::app::pr_review::FixTarget::ExistingFeature;
+        state.fix_target_feature_id = Some(other_id);
+        state.files = vec![DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        }];
+        app.mode = AppMode::DiffViewer(state);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        finish_review(&mut app);
+
+        assert!(dir.path().join(".claude/final-review-feedback.md").exists());
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        // The .times(1) paste/enter expectations are verified on drop: they
+        // targeted the *other* feature's session, not the reviewed one.
+    }
+
+    #[test]
+    fn finishing_new_feature_with_a_gone_companion_never_touches_the_reviewed_feature() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Only the reviewed feature exists — the companion the picker created
+        // has been deleted (its id no longer resolves).
+        let reviewed = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        let mut project = Project::new(
+            "demo".to_string(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(reviewed);
+
+        // A bare mock: any tmux call (a paste, or spinning up a session) panics.
+        let tmux = MockTmuxOps::new();
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+        let mut state = DiffViewerState::new(
+            ViewState::new(
+                "demo".into(),
+                "feature".into(),
+                "amf-feature".into(),
+                "claude".into(),
+                "Claude".into(),
+                SessionKind::Claude,
+                VibeMode::Vibeless,
+                true,
+            ),
+            dir.path().to_path_buf(),
+        );
+        state.review = true;
+        state.fix_target = crate::app::pr_review::FixTarget::NewFeature;
+        state.fix_target_feature_id = Some("companion-that-was-deleted".to_string());
+        state.review_harness = Some(AgentKind::Claude);
+        state.files = vec![DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        }];
+        app.mode = AppMode::DiffViewer(state);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        finish_review(&mut app);
+
+        // Feedback is still saved and the viewer returns to the feature view…
+        assert!(dir.path().join(".claude/final-review-feedback.md").exists());
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("companion review feature is gone")
+        );
+        // …but no "Final Review" session was created inside the reviewed feature.
+        assert!(
+            app.store.projects[0].features[0]
+                .sessions
+                .iter()
+                .all(|s| s.label != crate::app::review::FINAL_REVIEW_SESSION_LABEL)
+        );
     }
 
     #[test]
@@ -2303,7 +2988,12 @@ index 1111111..2222222 100644
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
 
+        // `O` first raises the pre-call notice; continuing runs the pass and
+        // opens the overview modal.
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('O'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::PromptPrecall(p)
+            if p.prompt_id == crate::prompts::PromptId::ReviewChangesetOverview));
+        app.precall_confirm().unwrap();
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(state.changeset_overview_open),
             _ => panic!("expected diff viewer"),
@@ -2315,6 +3005,23 @@ index 1111111..2222222 100644
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(!state.changeset_overview_open),
             _ => panic!("expected diff viewer, not finished"),
+        }
+    }
+
+    #[test]
+    fn cancelling_the_changeset_overview_pre_call_leaves_the_viewer_clean() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('O'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::PromptPrecall(_)));
+        app.precall_cancel();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.changeset_overview_open, "no half-open modal");
+                assert!(state.changeset_overview_child.is_none());
+            }
+            _ => panic!("expected diff viewer"),
         }
     }
 

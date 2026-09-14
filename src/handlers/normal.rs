@@ -301,6 +301,12 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('T') => {
             app.start_theme_picker();
         }
+        // Land a companion review feature's commits back on its source branch.
+        // A no-op (with a hint) unless the selected feature carries a
+        // `ReviewSource` link.
+        KeyCode::Char('t') => {
+            app.open_review_integrate();
+        }
         KeyCode::Char('p') => {
             app.start_syntax_language_picker();
         }
@@ -321,6 +327,14 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.start_plan_interview_for_selected_feature();
             }
         }
+        KeyCode::Char('Q') => {
+            if !app.resume_paused_plan_interview() {
+                app.start_quick_plan_interview_for_selected_feature();
+            }
+        }
+        KeyCode::Char('E') => {
+            app.open_prompt_overrides(None);
+        }
         KeyCode::Char('f') if crate::app::DASHBOARD_SESSION_FILTER_ENABLED => {
             app.session_filter = app.session_filter.next();
             app.push_toast_info(format!("Filter: {}", app.session_filter.display_name()));
@@ -334,6 +348,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('D') => {
             app.open_debug_log(None);
+        }
+        KeyCode::Char('w') => {
+            app.start_context_settings();
         }
         _ => {}
     }

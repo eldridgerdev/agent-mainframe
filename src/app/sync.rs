@@ -3,7 +3,7 @@ use super::*;
 use crate::context_collectors::{
     ContextCollectionResult, ContextCollectionTarget, ContextCollector, SessionContextCollector,
 };
-use crate::context_tracking::SessionContextState;
+use crate::context_tracking::{ContextThresholds, SessionContextState};
 use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -250,6 +250,7 @@ fn run_jobs(
     mut context_collector: SessionContextCollector,
     jobs: Vec<SessionStatusJob>,
     pricing: &TokenPricingConfig,
+    context_limit_override: Option<u64>,
 ) -> SessionStatusBgResult {
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
@@ -291,7 +292,7 @@ fn run_jobs(
                     model_id: None,
                     runtime_payload: None,
                     fallback_usage: None,
-                    fallback_context_limit: None,
+                    fallback_context_limit: context_limit_override,
                     collected_at: context_checked_at,
                 })
             });
@@ -420,7 +421,7 @@ fn run_jobs(
             model_id: None,
             runtime_payload: None,
             fallback_usage: token_usage.as_ref(),
-            fallback_context_limit: None,
+            fallback_context_limit: context_limit_override,
             collected_at: context_checked_at,
         }));
         reserve_context_result(
@@ -491,6 +492,11 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     app.context_states
         .retain(|session_id, _| live_session_ids.contains(session_id.as_str()));
 
+    let thresholds = ContextThresholds {
+        warning_percent: app.config.context_warning_percent,
+        critical_percent: app.config.context_critical_percent,
+    };
+
     for update in result.updates {
         'outer: for project in &mut app.store.projects {
             for feature in &mut project.features {
@@ -515,12 +521,18 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                         &session.id,
                         update.context_result,
                         update.context_checked_at,
+                        thresholds,
                     );
                     break 'outer;
                 }
             }
         }
     }
+
+    // Hint eligibility follows the normalized current-window snapshots. The
+    // cumulative token usage above remains a separate billing/status value and
+    // must not be used to infer context occupancy.
+    app.context_hint_states.sync_all(&app.context_states);
 
     if result.sources_discovered
         && let Err(err) = app.save()
@@ -544,6 +556,7 @@ fn apply_context_result(
     session_id: &str,
     result: Option<ContextCollectionResult>,
     checked_at: chrono::DateTime<Utc>,
+    thresholds: ContextThresholds,
 ) {
     let Some(result) = result else {
         states.remove(session_id);
@@ -552,7 +565,7 @@ fn apply_context_result(
     let state = states.entry(session_id.to_string()).or_default();
     match result {
         ContextCollectionResult::Collected(sample) => {
-            if state.accept_sample(sample).is_err() {
+            if state.accept_sample(sample, thresholds).is_err() {
                 state.mark_unavailable(checked_at);
             }
         }
@@ -1076,6 +1089,7 @@ impl App {
     pub fn sync_session_status_background(&mut self) {
         let jobs = collect_jobs(&self.store, self.db.as_ref(), &self.context_states);
         let pricing = self.config.token_pricing.clone();
+        let context_limit_override = self.config.context_window_override;
         let tracker = std::mem::take(&mut self.token_tracker);
         let context_collector = std::mem::take(&mut self.context_collector);
 
@@ -1083,7 +1097,13 @@ impl App {
         self.session_status_bg = Some(rx);
 
         std::thread::spawn(move || {
-            let result = run_jobs(tracker, context_collector, jobs, &pricing);
+            let result = run_jobs(
+                tracker,
+                context_collector,
+                jobs,
+                &pricing,
+                context_limit_override,
+            );
             let _ = tx.send(result);
         });
     }
@@ -1171,6 +1191,10 @@ impl App {
                 format!("failed to reconcile TODO agent associations: {e}"),
             );
         }
+
+        // Rebuild active TODO sidebar text here rather than per frame:
+        // each referenced session costs two SQLite queries to resolve.
+        self.refresh_active_todos_sidebar_cache();
     }
 
     #[allow(dead_code)] // exercised only by unit tests
@@ -1186,7 +1210,14 @@ impl App {
         let owned_tracker = std::mem::take(tracker);
         let context_collector = std::mem::take(&mut self.context_collector);
         let pricing = self.config.token_pricing.clone();
-        let result = run_jobs(owned_tracker, context_collector, jobs, &pricing);
+        let context_limit_override = self.config.context_window_override;
+        let result = run_jobs(
+            owned_tracker,
+            context_collector,
+            jobs,
+            &pricing,
+            context_limit_override,
+        );
         apply_bg_result(self, result);
         // Clone rather than `mem::take`: `apply_bg_result` already wrote the
         // updated tracker into `self.token_tracker`, and this caller's
@@ -1570,26 +1601,20 @@ impl App {
 
     pub fn trigger_summary_for_selected(&mut self) -> Result<()> {
         let selected = match &self.selection {
-            Selection::Feature(pi, fi) => {
-                let feature = &self.store.projects[*pi].features[*fi];
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
+                let project = &self.store.projects[*pi];
+                let feature = &project.features[*fi];
                 Some((
                     feature.tmux_session.clone(),
                     feature.workdir.clone(),
                     feature.agent.clone(),
-                ))
-            }
-            Selection::Session(pi, fi, _si) => {
-                let feature = &self.store.projects[*pi].features[*fi];
-                Some((
-                    feature.tmux_session.clone(),
-                    feature.workdir.clone(),
-                    feature.agent.clone(),
+                    project.repo.clone(),
                 ))
             }
             _ => None,
         };
 
-        if let Some((tmux_session, workdir, agent)) = selected {
+        if let Some((tmux_session, workdir, agent, repo)) = selected {
             if self.summary_state.generating.contains(&tmux_session) {
                 self.message = Some("Summary already generating...".into());
                 return Ok(());
@@ -1603,10 +1628,24 @@ impl App {
                 let (tx, rx) = std::sync::mpsc::channel();
                 self.summary_rx = Some(rx);
 
+                let (template, _) = self.resolve_headless_template(
+                    crate::prompts::PromptId::SessionSummary,
+                    &agent,
+                    &repo,
+                    &workdir,
+                );
+                // A one-line summary is a quick call and may be triggered in a
+                // batch, so it announces with a toast rather than a modal.
+                self.announce_headless_run(crate::prompts::PromptId::SessionSummary, &agent);
                 let tmux_session_clone = tmux_session.clone();
                 std::thread::spawn(move || {
-                    let result =
-                        SummaryManager::generate_summary(&tmux_session_clone, &w, &workdir, agent);
+                    let result = SummaryManager::generate_summary(
+                        &tmux_session_clone,
+                        &w,
+                        &workdir,
+                        agent,
+                        &template,
+                    );
                     let _ = tx.send((tmux_session_clone, result));
                 });
             } else {

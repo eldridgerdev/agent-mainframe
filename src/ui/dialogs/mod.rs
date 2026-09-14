@@ -3,21 +3,27 @@ mod batch_creation;
 mod browse;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod debug;
 mod diff;
 mod dormant;
 mod editor_view;
 mod feature;
+mod handoff;
 mod harness;
 mod help;
 mod hooks;
 mod learning;
 mod markdown;
 mod plan_interview;
+mod plan_interview_attach;
 mod pr_review;
+mod precall;
 mod project;
 mod prompt_library;
+mod prompt_overrides;
 mod resource_gate;
+mod review_destination;
 mod review_harness;
 mod search;
 mod session;
@@ -29,6 +35,7 @@ pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
 pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
+pub use context_settings::draw_context_settings_dialog;
 pub use debug::draw_debug_log;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use dormant::draw_dormant_view;
@@ -36,6 +43,7 @@ pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
 };
+pub use handoff::draw_fresh_context_prompt_dialog;
 pub use harness::draw_harness_setup_dialog;
 pub use help::draw_help;
 pub use hooks::{
@@ -45,16 +53,22 @@ pub use hooks::{
 pub use learning::draw_learning_view;
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
 pub use plan_interview::draw_plan_interview_dialog;
+pub use plan_interview_attach::draw_plan_interview_attach_doc_dialog;
 pub use pr_review::{
-    PrReviewUsage, draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
-    draw_review_memory_bootstrap_running, draw_review_memory_compact_review,
-    draw_review_memory_compact_running,
+    PrReviewUsage, draw_pr_investigation_loading, draw_pr_number_prompt, draw_pr_picker,
+    draw_pr_review, draw_pr_review_loading, draw_review_memory_bootstrap_running,
+    draw_review_memory_compact_review, draw_review_memory_compact_running,
 };
+pub use precall::draw_prompt_precall;
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
+pub use prompt_overrides::draw_prompt_overrides;
 pub use resource_gate::draw_resource_confirm_dialog;
+pub use review_destination::{
+    draw_review_destination_pick, draw_review_feature_setup, draw_review_integrate,
+};
 pub use review_harness::draw_review_harness_pick;
 pub use search::draw_search_dialog;
 pub use session::{
@@ -64,6 +78,7 @@ pub use session::{
 pub use theme::draw_theme_picker;
 pub use todos::{
     draw_todo_delete_disposition_dialog, draw_todo_implement_choice_dialog,
-    draw_todo_quick_capture_dialog, draw_todo_spawn_target_dialog, draw_todos_host_reassign_dialog,
-    draw_todos_view,
+    draw_todo_quick_capture_dialog, draw_todo_reference_completion_dialog,
+    draw_todo_spawn_target_dialog, draw_todos_host_reassign_dialog,
+    draw_todos_view_with_visibility,
 };

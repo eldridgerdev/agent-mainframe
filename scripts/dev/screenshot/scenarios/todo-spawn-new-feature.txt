@@ -1,0 +1,82 @@
+# todo-spawn-new-feature: the TODO launch chooser's new middle option.
+#
+# Pressing Enter on an unlinked TODO used to offer two choices: "Start an
+# agent on this TODO" (in the current or a picked existing feature) and
+# "Plan this TODO first". For a project- or global-scoped TODO the first
+# choice could only target an EXISTING feature -- there was no way to
+# spin up a fresh worktree for the item without going through the plan
+# interview.
+#
+# This scenario proves the new middle option, "Start an agent in a new
+# feature": it is present, it carries its own description, and it routes
+# straight to the ordinary create-feature wizard with plan mode OFF --
+# no plan interview.
+#
+#   ./amf-capture.sh --scenario scenarios/todo-spawn-new-feature.txt \
+#       --out-dir <output-dir>
+
+# A throwaway git repo for the demo project, so the "new feature" route
+# (which needs a git repo to make a worktree) is exercised for real.
+run:rm -rf /tmp/amf-shot-todo-spawn-repo && mkdir -p /tmp/amf-shot-todo-spawn-repo && git -C /tmp/amf-shot-todo-spawn-repo init -q && git -C /tmp/amf-shot-todo-spawn-repo -c user.email=a@b.c -c user.name=demo commit -q --allow-empty -m init
+run:printf '{"path":"/tmp/amf-shot-todo-spawn-repo","project_name":"todo-spawn-demo","dry_run":false}' > /tmp/amf-shot-todo-spawn-project.json
+run:printf '{"project_name":"todo-spawn-demo","branch":"demo-feature","agent":"claude","mode":"vibe","review":false,"plan_mode":false,"create_terminal":true,"use_worktree":false,"enable_chrome":false,"hook_choice":null,"dry_run":false}' > /tmp/amf-shot-todo-spawn-feature.json
+run:$AMF_BIN automation create-project --file /tmp/amf-shot-todo-spawn-project.json
+run:$AMF_BIN automation create-feature --file /tmp/amf-shot-todo-spawn-feature.json
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+run:for i in {1..60}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/pane.txt"; grep -q "todo-spawn-demo" "$XDG_STATE_HOME/pane.txt" && break; sleep 0.2; done
+wait:6000
+
+# Select the feature row, open the session picker, and add its native
+# TODOs list (four rows below the Claude session in the isolated fixture).
+key:j
+wait:400
+key:s
+wait:900
+note:The session picker offers a native TODOs list for the selected feature.
+shot:session-picker
+
+key:Down|key:Down|key:Down|key:Down
+wait:300
+key:Enter
+wait:1200
+note:A TODOs session is now attached to the feature.
+shot:todos-session-added
+
+# Open the TODOs editor and add one unstarted item.
+key:Enter
+wait:1200
+key:a
+wait:400
+text:extract the config loader into its own module
+wait:300
+key:Enter
+wait:900
+note:One unstarted TODO with nothing linked to it yet.
+shot:todo-added
+
+# Enter on the unlinked TODO opens the launch chooser.
+key:Enter
+wait:1000
+note:The launch chooser now shows THREE options; the new middle one, "Start an agent in a new feature", creates a fresh branch and worktree with no plan interview, and its detail line spells that out.
+shot:chooser-three-options
+
+# Down onto the new option.
+key:j
+wait:500
+note:"Start an agent in a new feature" is now selected.
+shot:new-feature-option-selected
+
+# Enter routes to the ordinary create-feature wizard -- NOT the plan
+# interview -- pre-filled with a branch name derived from the TODO title
+# and plan mode left off.
+key:Enter
+wait:1500
+note:Confirming opens the standard create-feature wizard on its branch step, pre-seeded with a branch name from the TODO title. Plan mode is off; no plan interview runs.
+shot:create-feature-wizard-opens
+
+# Escape out without creating anything, and clean up the throwaway repo.
+key:Escape
+wait:600
+key:Escape
+wait:600
+run:rm -rf /tmp/amf-shot-todo-spawn-repo /tmp/amf-shot-todo-spawn-project.json /tmp/amf-shot-todo-spawn-feature.json

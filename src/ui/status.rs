@@ -186,7 +186,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::Compose(state) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" send  "),
-            Span::styled("Alt+Enter", key_style()),
+            Span::styled("Shift+Enter", key_style()),
             Span::raw(" newline  "),
             Span::styled("Tab", key_style()),
             Span::raw(" complete  "),
@@ -248,7 +248,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
-        | AppMode::BrowsingPath(_) => Line::from(vec![
+        | AppMode::BrowsingPath(_)
+        | AppMode::PlanInterviewAttachDoc(_) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" confirm  "),
             Span::styled("Esc", key_style()),
@@ -363,6 +364,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::FreshContextPrompt(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" start session  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::TodoImplementChoice(_) => Line::from(vec![
             Span::styled("j/k", key_style()),
             Span::raw(" choose  "),
@@ -417,9 +424,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::Searching(_) => Line::from(vec![
+            Span::styled("↑/↓ or Tab/Shift+Tab", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" jump  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::NotificationPicker(_, _)
         | AppMode::SessionSwitcher(_)
-        | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
         | AppMode::CodexSessionPicker(_)
@@ -599,6 +613,44 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::PromptOverrides(state) => {
+            if state.help_open {
+                Line::from(vec![
+                    Span::styled(" Esc", key_style()),
+                    Span::raw(" close help"),
+                ])
+            } else if state.edit.is_some() {
+                Line::from(vec![
+                    Span::styled(" Ctrl+S", key_style()),
+                    Span::raw(" continue  "),
+                    Span::styled("Ctrl+T", key_style()),
+                    Span::raw(" vim  "),
+                    Span::styled("Ctrl+Q", key_style()),
+                    Span::raw(" cancel"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(" Enter/e", key_style()),
+                    Span::raw(" edit  "),
+                    Span::styled("d", key_style()),
+                    Span::raw(" clear override  "),
+                    Span::styled("?", key_style()),
+                    Span::raw(" help  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" close"),
+                ])
+            }
+        }
+        AppMode::PromptPrecall(_) => Line::from(vec![
+            Span::styled(" v", key_style()),
+            Span::raw(" view prompt  "),
+            Span::styled("e", key_style()),
+            Span::raw(" edit  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" continue  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PromptEditor(_) => Line::from(vec![
             Span::styled(" Tab", key_style()),
             Span::raw(" switch field  "),
@@ -682,6 +734,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::PrInvestigationLoading(_) => Line::from(vec![
+            Span::raw(" Investigating a review comment (read-only)...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::ReviewMemoryBootstrapRunning(_) => Line::from(vec![
             Span::raw(" Bootstrapping review memory (experimental)...  "),
             Span::styled("Esc", key_style()),
@@ -754,10 +811,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("/", key_style()),
                 Span::raw(" search  "),
             ];
-            if !selecting_plan {
-                spans.push(Span::styled("p", key_style()));
-                spans.push(Span::raw(" plan  "));
-            }
+            spans.push(Span::styled("p", key_style()));
+            spans.push(Span::raw(if selecting_plan {
+                " new plan  "
+            } else {
+                " plan  "
+            }));
             spans.push(Span::styled("Enter", key_style()));
             spans.push(Span::raw(if selecting_plan {
                 " select  "
@@ -838,6 +897,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q/Esc", key_style()),
             Span::raw(" skip"),
         ]),
+        AppMode::ReviewIntegrate(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" choose  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" run  "),
+            Span::styled("q/Esc", key_style()),
+            Span::raw(" close"),
+        ]),
         // The plan interview is a full-viewport modal: `draw_plan_interview_dialog`
         // runs after this bar and clears the whole frame, so nothing written
         // here reaches the screen. Its per-phase hints — including which
@@ -870,6 +937,20 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" y", key_style()),
             Span::raw(" start anyway  "),
             Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ConfirmTodoReferenceCompletion(_) => Line::from(vec![
+            Span::styled(" y/Enter", key_style()),
+            Span::raw(" complete TODO  "),
+            Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ContextSettings(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" next field  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" save  "),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
     };
@@ -980,6 +1061,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let status = Paragraph::new(vec![message_line, keybinds]).block(block);
     frame.render_widget(status, area);
+
+    // Feedback needs the full line; usage otherwise paints over its right edge.
+    if app.message.is_some() {
+        return;
+    }
 
     let usage = app.usage.get_data();
     let mut right_spans: Vec<Span> = Vec::new();

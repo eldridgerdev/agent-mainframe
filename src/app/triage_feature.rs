@@ -545,6 +545,7 @@ impl App {
                 selected: 0,
                 error: None,
                 done: None,
+                companion_feature_id: None,
             });
         }
     }
@@ -703,7 +704,7 @@ fn triage_base(workdir: &Path, pr_branch: &str, head_sha: &str) -> Option<String
     }
 }
 
-fn rev_parse(workdir: &Path, rev: &str) -> Option<String> {
+pub(crate) fn rev_parse(workdir: &Path, rev: &str) -> Option<String> {
     let out = Command::new("git")
         .args(["rev-parse", "--verify", "--quiet", rev])
         .current_dir(workdir)
@@ -714,7 +715,7 @@ fn rev_parse(workdir: &Path, rev: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-fn branch_exists(workdir: &Path, branch: &str) -> bool {
+pub(crate) fn branch_exists(workdir: &Path, branch: &str) -> bool {
     if branch.is_empty() {
         return false;
     }
@@ -785,7 +786,11 @@ pub(crate) fn commits_since(workdir: &Path, base: &str, limit: Option<usize>) ->
 /// `git push origin <triage>:<pr-branch>` — a plain fast-forward push. Never
 /// `--force`: if the PR branch moved on independently, that's reported so the
 /// user can rebase deliberately rather than silently losing the other commits.
-fn push_branch(triage_workdir: &Path, triage_branch: &str, pr_branch: &str) -> Result<String> {
+pub(crate) fn push_branch(
+    triage_workdir: &Path,
+    triage_branch: &str,
+    pr_branch: &str,
+) -> Result<String> {
     let out = Command::new("git")
         .args(["push", "origin", &format!("{triage_branch}:{pr_branch}")])
         .current_dir(triage_workdir)
@@ -814,7 +819,7 @@ fn push_branch(triage_workdir: &Path, triage_branch: &str, pr_branch: &str) -> R
 /// Cherry-pick the triage commits into the source worktree. Guarded by a
 /// dirty check at the call site *and* here, and aborts the pick on conflict so
 /// the source worktree is never left mid-cherry-pick.
-fn cherry_pick_range(
+pub(crate) fn cherry_pick_range(
     source_workdir: &Path,
     triage_workdir: &Path,
     base_sha: &str,

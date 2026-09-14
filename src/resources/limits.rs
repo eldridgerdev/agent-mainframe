@@ -255,6 +255,7 @@ mod tests {
             label: id.to_string(),
             tmux_window: window.to_string(),
             claude_session_id: None,
+            todo_reference: None,
             token_usage_source: None,
             token_usage_source_match: None,
             created_at: Utc::now(),
@@ -292,6 +293,7 @@ mod tests {
             nickname: None,
             selected_plan_path: None,
             triage_source: None,
+            review_source: None,
         }
     }
 

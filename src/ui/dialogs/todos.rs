@@ -10,13 +10,44 @@ use super::super::dashboard::centered_rect;
 use crate::app::{
     TodoDeleteDisposition, TodoDeleteDispositionState, TodoEditTarget, TodoEditor,
     TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane,
-    TodoPaneKind, TodoQuickCaptureState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
-    TodosHostReassignState,
+    TodoPaneKind, TodoQuickCaptureState, TodoReferenceCompletionState, TodoScopeMoveState,
+    TodoSpawnTargetState, TodoViewState, TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoStatus};
 use crate::theme::Theme;
 
 const CURSOR: &str = "\u{2588}";
+
+/// Confirm completing the TODO reference attached to the embedded session.
+pub fn draw_todo_reference_completion_dialog(
+    frame: &mut Frame,
+    _state: &TodoReferenceCompletionState,
+    theme: &Theme,
+) {
+    let area = centered_rect(54, 20, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Complete referenced TODO ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Mark this session's referenced TODO complete?"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Enter/y", Style::default().fg(theme.success.to_color())),
+                Span::raw(" confirm  "),
+                Span::styled("Esc/n", Style::default().fg(theme.text_muted.to_color())),
+                Span::raw(" cancel"),
+            ]),
+        ])
+        .wrap(Wrap { trim: true }),
+        inner,
+    );
+}
 
 /// One-line quick-capture dialog overlaid on a session view. Collects a TODO
 /// title to append to the current project's list.
@@ -194,7 +225,14 @@ fn option_line(
 
 /// Full-screen native TODOs overlay: a free-form scratchpad banner on top,
 /// then the project's TODO items.
-pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, nerd_font: bool) {
+pub fn draw_todos_view_with_visibility(
+    frame: &mut Frame,
+    state: &TodoViewState,
+    theme: &Theme,
+    nerd_font: bool,
+    project_visible: bool,
+    global_visible: bool,
+) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
         return;
@@ -215,9 +253,31 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
         ])
         .split(area);
 
-    draw_header(frame, chunks[0], state, theme);
-    draw_panes(frame, chunks[1], state, theme, nerd_font);
-    draw_hint(frame, chunks[2], state, theme);
+    draw_header(
+        frame,
+        chunks[0],
+        state,
+        project_visible,
+        global_visible,
+        theme,
+    );
+    draw_panes(
+        frame,
+        chunks[1],
+        state,
+        project_visible,
+        global_visible,
+        theme,
+        nerd_font,
+    );
+    draw_hint(
+        frame,
+        chunks[2],
+        state,
+        project_visible,
+        global_visible,
+        theme,
+    );
 
     // Overlays on top of the panes, in the same precedence the key handler
     // uses: delete confirmation, the launch step, the scope chooser, then an
@@ -255,14 +315,24 @@ fn pane_capacity(width: u16) -> usize {
 /// pane that owns the cursor would leave the user typing into nothing — and
 /// the worktree pane keeps its slot whenever there is room for a second, since
 /// it is the list this feature's work actually belongs to.
-fn pane_slots(state: &TodoViewState, width: u16) -> Vec<usize> {
-    let visible = state.visible_pane_count();
-    if visible == 0 {
+fn pane_slots(
+    state: &TodoViewState,
+    width: u16,
+    project_visible: bool,
+    global_visible: bool,
+) -> Vec<usize> {
+    let visible = state.visible_pane_indices(project_visible, global_visible);
+    if visible.is_empty() {
         return Vec::new();
     }
-    let slots = pane_capacity(width).min(visible);
+    let slots = pane_capacity(width).min(visible.len());
 
-    let mut chosen = vec![state.focus.min(visible - 1)];
+    let mut chosen = vec![
+        state
+            .focus
+            .filter(|focus| visible.contains(focus))
+            .unwrap_or(visible[0]),
+    ];
     let has_worktree = state
         .panes
         .first()
@@ -270,7 +340,7 @@ fn pane_slots(state: &TodoViewState, width: u16) -> Vec<usize> {
     if has_worktree && chosen.len() < slots && !chosen.contains(&0) {
         chosen.push(0);
     }
-    for i in 0..visible {
+    for i in visible {
         if chosen.len() >= slots {
             break;
         }
@@ -287,13 +357,33 @@ fn draw_panes(
     frame: &mut Frame,
     area: Rect,
     state: &TodoViewState,
+    project_visible: bool,
+    global_visible: bool,
     theme: &Theme,
     nerd_font: bool,
 ) {
-    let slots = pane_slots(state, area.width);
+    let hidden: Vec<&TodoPane> = state
+        .panes
+        .iter()
+        .filter(|pane| !TodoViewState::pane_is_visible(pane, project_visible, global_visible))
+        .collect();
+    let slots = pane_slots(state, area.width, project_visible, global_visible);
+    let mut row_constraints = vec![Constraint::Length(3); hidden.len()];
+    if !slots.is_empty() {
+        row_constraints.push(Constraint::Min(3));
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(row_constraints)
+        .split(area);
+
+    for (row, pane) in rows.iter().zip(hidden.iter()) {
+        draw_hidden_placeholder(frame, *row, pane.kind, theme);
+    }
     if slots.is_empty() {
         return;
     }
+    let actionable_area = rows[hidden.len()];
     let constraints: Vec<Constraint> = slots
         .iter()
         .map(|_| Constraint::Ratio(1, slots.len() as u32))
@@ -301,7 +391,7 @@ fn draw_panes(
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(constraints)
-        .split(area);
+        .split(actionable_area);
 
     for (column, &pane_index) in columns.iter().zip(slots.iter()) {
         if let Some(pane) = state.panes.get(pane_index) {
@@ -309,12 +399,32 @@ fn draw_panes(
                 frame,
                 *column,
                 pane,
-                pane_index == state.focus,
+                state.focus == Some(pane_index),
                 theme,
                 nerd_font,
             );
         }
     }
+}
+
+fn draw_hidden_placeholder(frame: &mut Frame, area: Rect, kind: TodoPaneKind, theme: &Theme) {
+    let key = match kind {
+        TodoPaneKind::Project => 'p',
+        TodoPaneKind::Global => 'g',
+        TodoPaneKind::Worktree => return,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.text_muted.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{} TODOs hidden — {key} to show", kind.label()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        inner,
+    );
 }
 
 /// One scope's pane: a bordered block titled with the scope, its scratchpad
@@ -397,14 +507,19 @@ fn draw_pane(
     draw_list(frame, rows[idx], pane, focused, theme, nerd_font);
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
-    // The panes carry their own counts; the header says where you are and
-    // whether the side panes are showing.
-    let panes_label = if state.visible_pane_count() > 1 {
-        "  \\ hide side panes"
-    } else {
-        "  \\ show project + global"
-    };
+fn draw_header(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TodoViewState,
+    project_visible: bool,
+    global_visible: bool,
+    theme: &Theme,
+) {
+    let panes_label = format!(
+        "  p project:{}  g global:{}",
+        if project_visible { "shown" } else { "hidden" },
+        if global_visible { "shown" } else { "hidden" },
+    );
     let line = Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -608,7 +723,12 @@ fn draw_launch_step(
     step: &TodoLaunchStep,
     theme: &Theme,
 ) {
-    let area = centered_rect(64, 46, frame.area());
+    let pct_y = match step {
+        // Three options, each with a detail line, plus header and footer.
+        TodoLaunchStep::Choice { .. } => 56,
+        TodoLaunchStep::Destination { .. } => 46,
+    };
+    let area = centered_rect(64, pct_y, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = match step {
@@ -915,9 +1035,20 @@ fn todo_line<'a>(
 /// The key hint bar. It names the pane keys only when there is more than one
 /// pane to move between, so a single-pane view does not advertise a `Tab` that
 /// would do nothing.
-fn draw_hint(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme) {
-    let base = "  j/k move  a add  e title  o notes  space state  p prio  J/K reorder  g start/plan  I next  b scratch  M/C move/copy  d del  Esc/q close";
-    let text = if state.visible_pane_count() > 1 {
+fn draw_hint(
+    frame: &mut Frame,
+    area: Rect,
+    state: &TodoViewState,
+    project_visible: bool,
+    global_visible: bool,
+    theme: &Theme,
+) {
+    let base = "  j/k move  a add  e title  o notes  space state  P prio  J/K reorder  Enter start/plan  I next  b scratch  M/C move/copy  d del  p/g scopes  Esc/q close";
+    let text = if state
+        .visible_pane_indices(project_visible, global_visible)
+        .len()
+        > 1
+    {
         format!("  Tab pane{base}")
     } else {
         base.to_string()
@@ -929,19 +1060,15 @@ fn draw_hint(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme
     frame.render_widget(Paragraph::new(hint), area);
 }
 
-/// Title and a multi-line hint for each edit target.
+/// Title and the leading (keymap-independent) part of the hint for each edit
+/// target. `draw_editor` appends the cancel key and vim affordance, which
+/// differ between plain and vim mode.
 fn editor_chrome(target: &TodoEditTarget) -> (&'static str, &'static str) {
     match target {
-        TodoEditTarget::New => (" New TODO ", "Enter: add   Esc: cancel"),
-        TodoEditTarget::Title => (" Edit title ", "Enter: save   Esc: cancel"),
-        TodoEditTarget::Notes => (
-            " Edit notes ",
-            "Enter: save   Alt+Enter: newline   Esc: cancel",
-        ),
-        TodoEditTarget::Scratchpad => (
-            " Scratchpad ",
-            "Enter: save   Alt+Enter: newline   Esc: cancel",
-        ),
+        TodoEditTarget::New => (" New TODO ", "Enter: add"),
+        TodoEditTarget::Title => (" Edit title ", "Enter: save"),
+        TodoEditTarget::Notes => (" Edit notes ", "Enter: save   Shift+Enter: newline"),
+        TodoEditTarget::Scratchpad => (" Scratchpad ", "Enter: save   Shift+Enter: newline"),
     }
 }
 
@@ -957,7 +1084,20 @@ fn draw_editor(frame: &mut Frame, editor: &TodoEditor, theme: &Theme) {
     };
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let (title, hint) = editor_chrome(&editor.target);
+    let (title, base_hint) = editor_chrome(&editor.target);
+    // The cancel key and vim affordance depend on the keymap: plain mode cancels
+    // on Esc, vim mode gives Esc to the editor (Insert→Normal) and cancels on
+    // Ctrl+Q. The mode indicator leads the line so it survives right-truncation
+    // in a modal narrower than the full hint.
+    let hint = match editor.editor.vim_mode() {
+        None => format!("{base_hint}   Esc: cancel   Ctrl+T: vim"),
+        Some(crate::editor::VimMode::Normal) => {
+            format!("NORMAL   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
+        }
+        Some(crate::editor::VimMode::Insert) => {
+            format!("INSERT   {base_hint}   Ctrl+Q: cancel   Ctrl+T: vim off")
+        }
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -1194,4 +1334,117 @@ pub fn draw_todo_delete_disposition_dialog(
     ]));
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn hidden_root_view() -> TodoViewState {
+        let pane = |kind, scope, title: &str| TodoPane {
+            kind,
+            scope,
+            title: title.to_string(),
+            list: None,
+            todos: vec![Todo {
+                id: format!("todo-{title}"),
+                list_id: "list".to_string(),
+                title: format!("secret {title} contents"),
+                body: None,
+                priority: TodoPriority::Med,
+                sort_order: 0,
+                work: crate::db::todos::TodoWorkState::default(),
+                linked_feature_id: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }],
+            selected: 0,
+            scroll_offset: 0,
+        };
+        TodoViewState {
+            pi: 0,
+            fi: 0,
+            project_name: "project".to_string(),
+            feature_name: "root feature".to_string(),
+            panes: vec![
+                pane(
+                    TodoPaneKind::Project,
+                    crate::db::todos::TodoScope::Project {
+                        project_id: "project-id".to_string(),
+                    },
+                    "project",
+                ),
+                pane(
+                    TodoPaneKind::Global,
+                    crate::db::todos::TodoScope::Global,
+                    "global",
+                ),
+            ],
+            focus: None,
+            editor: None,
+            todo_vim_enabled: false,
+            pending_delete: false,
+            launch: None,
+            scope_move: None,
+        }
+    }
+
+    #[test]
+    fn both_hidden_root_scopes_render_placeholders_without_todo_contents() {
+        let state = hidden_root_view();
+        let backend = TestBackend::new(100, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_todos_view_with_visibility(
+                    frame,
+                    &state,
+                    &Theme::default(),
+                    false,
+                    false,
+                    false,
+                )
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Project TODOs hidden — p to show"));
+        assert!(rendered.contains("Global TODOs hidden — g to show"));
+        assert!(!rendered.contains("secret project contents"));
+        assert!(!rendered.contains("secret global contents"));
+    }
+
+    #[test]
+    fn visible_scope_header_and_footer_advertise_the_new_keys() {
+        let mut state = hidden_root_view();
+        state.focus = Some(0);
+        let backend = TestBackend::new(220, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_todos_view_with_visibility(frame, &state, &Theme::default(), false, true, true)
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("p project:shown"));
+        assert!(rendered.contains("g global:shown"));
+        assert!(rendered.contains("P prio"));
+        assert!(rendered.contains("Enter start/plan"));
+        assert!(rendered.contains("p/g scopes"));
+        assert!(!rendered.contains("\\ hide side panes"));
+    }
 }

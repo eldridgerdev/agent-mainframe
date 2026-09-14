@@ -1,0 +1,79 @@
+# plan-interview-attach-doc: proves attaching a reference document to a
+# plan interview, and the read-only switch it triggers.
+#
+# The round / synthesis / critique passes normally run no-tools. Attaching
+# one or more reference docs on the brief step is the explicit, opt-in
+# exception: those passes then run read-only so the interviewer can read
+# the attached docs and the surrounding codebase.
+#
+# Requires --seed (create-project at __REPO_ROOT__) and --seed-feature
+# (create-feature, plan_mode false and use_worktree false, so `P` runs a
+# fresh on-demand interview whose workdir is this checkout).
+#
+# Deliberately aborts before accepting: accepting runs a real headless
+# synthesis call, which costs tokens and is covered by unit tests.
+
+# A distinctively-named markdown file that sorts LAST in the workdir, so
+# `End` in the file browser lands on it deterministically.
+run:printf '# Sidebar preview spec\n\nTruncate the plan preview on word boundaries; scrollback is out of scope.\n' > "$REPO_ROOT/zzz-attach-me.md"
+
+note:The seeded project has one feature and no plan yet.
+shot:dashboard-seeded
+
+# Select the feature row -- the interview plans one feature's workdir.
+key:j
+wait:300
+
+# `P` opens the on-demand interview on the feature brief step.
+key:P
+wait:700
+text:Tighten the sidebar plan preview so it truncates on word boundaries.
+wait:300
+note:The feature brief step. Nothing is attached, so the footer offers "Ctrl+D attach doc" and the passes will run no-tools as before.
+shot:brief-no-attachment
+
+# Ctrl+D opens the reference-document file browser.
+key:C-d
+wait:600
+note:Ctrl+D opens a file browser (AppMode::PlanInterviewAttachDoc). It starts in the feature workdir and its footer explains that attaching a doc grants the interview read-only repository access.
+shot:file-browser-open
+
+# End jumps to the last entry -- the zzz-attach-me.md file created above.
+key:End
+wait:300
+note:The browser highlights zzz-attach-me.md, the reference document to attach.
+shot:file-browser-doc-highlighted
+
+# Enter on a file attaches it and returns to the brief step.
+key:Enter
+wait:500
+note:THE FRAME. The doc is attached: the brief step now shows a "Reference docs - 1/4 - interview runs read-only" panel, and the footer gained "Ctrl+X remove last". This one attachment is what flips the round / synthesis / critique passes to a read-only run.
+shot:brief-with-attachment
+
+# Enter submits the brief; skip through the five built-in questions to
+# reach the optional-AI consent step (skipping spends no tokens).
+key:Enter
+wait:500
+key:C-s
+wait:250
+key:C-s
+wait:250
+key:C-s
+wait:250
+key:C-s
+wait:250
+key:C-s
+wait:500
+note:The optional-AI consent step. With a reference doc attached it adds a line: every paid pass runs read-only and may also read the repository, so a token estimate is a floor.
+shot:consent-notes-read-only
+
+# Abort without accepting (accepting spends tokens). The confirm offers
+# only "leave the plan unchanged" for an on-demand interview.
+key:Escape
+wait:400
+key:y
+wait:600
+note:Aborting is non-destructive: the feature still has no plan.
+shot:dashboard-unchanged
+
+run:rm -f "$REPO_ROOT/zzz-attach-me.md"

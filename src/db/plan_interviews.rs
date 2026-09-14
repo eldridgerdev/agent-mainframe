@@ -18,8 +18,43 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::plan_interview::PlanQuestion;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PreflightEvaluationExport {
+    pub feature_id: String,
+    pub stage: String,
+    pub plan_fingerprint: Option<String>,
+    pub status: Option<String>,
+    pub model: Option<String>,
+    pub token_estimate: usize,
+    pub has_brief: bool,
+}
+
+pub fn export_preflight_evaluation(conn: &Connection, feature_id: &str) -> Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT feature_id, stage, preflight_fingerprint, preflight_status,
+                preflight_model, preflight_token_estimate, expert_brief
+         FROM plan_interviews WHERE feature_id = ?1 ORDER BY stage",
+    )?;
+    let rows = statement.query_map(params![feature_id], |row| {
+        Ok(PreflightEvaluationExport {
+            feature_id: row.get(0)?,
+            stage: row.get(1)?,
+            plan_fingerprint: row.get(2)?,
+            status: row.get(3)?,
+            model: row.get(4)?,
+            token_estimate: row.get::<_, i64>(5)?.max(0) as usize,
+            has_brief: row
+                .get::<_, Option<String>>(6)?
+                .is_some_and(|v| !v.trim().is_empty()),
+        })
+    })?;
+    let exports = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::to_string_pretty(&exports)?)
+}
 
 /// Which of a feature's two possible interview rows a record is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -64,12 +99,29 @@ pub struct PlanInterviewRecord {
     pub brief: String,
     pub questions: Vec<PlanQuestion>,
     pub answers: Vec<Option<String>>,
+    /// The free-text custom answer attached to each choice question, positionally
+    /// paired with `questions` (and `None` for a question with none, including
+    /// every free-text question). Stored apart from `answers` so a resumed or
+    /// re-run interview can restore the radio selection and the elaboration
+    /// together rather than re-presenting a flat string.
+    pub custom_answers: Vec<Option<String>>,
     /// The synthesized plan. `None` for a draft abandoned before synthesis.
     pub plan: Option<String>,
     /// AI-adaptive rounds already spent. Persisted rather than derived from
     /// `questions` because a round that returned nothing usable still counted
     /// against the cap — resuming a draft must not hand back paid rounds.
     pub ai_rounds_completed: usize,
+    /// Absolute paths of the reference documents the feature owner attached to
+    /// this interview. Not per-question, so it stands alone rather than being
+    /// squared up against `questions`. A resumed or re-run interview re-checks
+    /// each path and drops any that no longer exist.
+    pub attached_docs: Vec<String>,
+    pub expert_brief: Option<String>,
+    pub preflight_fingerprint: Option<String>,
+    pub preflight_status: Option<String>,
+    /// Exact model value passed to the selected harness for this review.
+    pub preflight_model: Option<String>,
+    pub preflight_token_estimate: usize,
     /// DB-owned timestamps. Ignored on [`save`], which sets them itself.
     pub created_at: String,
     pub updated_at: String,
@@ -92,6 +144,20 @@ impl PlanInterviewRecord {
             .as_deref()
             .filter(|answer| !answer.trim().is_empty())
     }
+
+    /// The free-text custom answer recorded for `question_id`, matched by the
+    /// same stable-slug lookup as [`Self::answer_for`]. `None` when the question
+    /// was never asked or carried no custom text.
+    pub fn custom_answer_for(&self, question_id: &str) -> Option<&str> {
+        let index = self
+            .questions
+            .iter()
+            .position(|question| question.id == question_id)?;
+        self.custom_answers
+            .get(index)?
+            .as_deref()
+            .filter(|custom| !custom.trim().is_empty())
+    }
 }
 
 /// Load a feature's interview at `stage`, or `None` if it has none.
@@ -107,7 +173,9 @@ pub fn load(
     let row = conn
         .query_row(
             "SELECT feature_name, brief, questions, answers, plan,
-                    ai_rounds_completed, created_at, updated_at
+                    ai_rounds_completed, created_at, updated_at, custom_answers,
+                    attached_docs, expert_brief, preflight_fingerprint,
+                    preflight_status, preflight_model, preflight_token_estimate
              FROM plan_interviews WHERE feature_id = ?1 AND stage = ?2",
             params![feature_id, stage.as_db_str()],
             |row| {
@@ -120,6 +188,13 @@ pub fn load(
                     row.get::<_, i64>(5)?,
                     row.get::<_, String>(6)?,
                     row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, i64>(14)?,
                 ))
             },
         )
@@ -134,6 +209,13 @@ pub fn load(
         ai_rounds_completed,
         created_at,
         updated_at,
+        custom_answers_json,
+        attached_docs_json,
+        expert_brief,
+        preflight_fingerprint,
+        preflight_status,
+        preflight_model,
+        preflight_token_estimate,
     )) = row
     else {
         return Ok(None);
@@ -151,6 +233,18 @@ pub fn load(
     // build, or by a question set that changed underneath a draft, is squared
     // up here rather than at each call site.
     answers.resize(questions.len(), None);
+    // Custom answers gained a column after the table shipped; MIGRATION_030
+    // backfills `'[]'`, and a rebuilt-but-shorter list is squared up the same
+    // way `answers` is.
+    let mut custom_answers: Vec<Option<String>> = serde_json::from_str(&custom_answers_json)
+        .with_context(|| {
+            format!("stored plan-interview custom answers for feature {feature_id} are unreadable")
+        })?;
+    custom_answers.resize(questions.len(), None);
+    // Attached docs gained a column via MIGRATION_035 (backfilled `'[]'`); an
+    // unreadable value is treated as "none attached" rather than failing the
+    // whole draft, since the paths are re-validated on resume anyway.
+    let attached_docs: Vec<String> = serde_json::from_str(&attached_docs_json).unwrap_or_default();
 
     Ok(Some(PlanInterviewRecord {
         feature_id: feature_id.to_string(),
@@ -159,8 +253,15 @@ pub fn load(
         brief,
         questions,
         answers,
+        custom_answers,
         plan,
         ai_rounds_completed: ai_rounds_completed.max(0) as usize,
+        attached_docs,
+        expert_brief,
+        preflight_fingerprint,
+        preflight_status,
+        preflight_model,
+        preflight_token_estimate: preflight_token_estimate.max(0) as usize,
         created_at,
         updated_at,
     }))
@@ -174,17 +275,30 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
     let mut answers = record.answers.clone();
     answers.resize(record.questions.len(), None);
     let answers = serde_json::to_string(&answers)?;
+    let mut custom_answers = record.custom_answers.clone();
+    custom_answers.resize(record.questions.len(), None);
+    let custom_answers = serde_json::to_string(&custom_answers)?;
+    let attached_docs = serde_json::to_string(&record.attached_docs)?;
 
     conn.execute(
         "INSERT INTO plan_interviews
             (feature_id, stage, feature_name, brief, questions, answers, plan,
-             ai_rounds_completed, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'))
+             ai_rounds_completed, created_at, updated_at, custom_answers, attached_docs,
+             expert_brief, preflight_fingerprint, preflight_status,
+             preflight_model, preflight_token_estimate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(feature_id, stage) DO UPDATE SET
             feature_name        = excluded.feature_name,
             brief               = excluded.brief,
             questions           = excluded.questions,
             answers             = excluded.answers,
+            custom_answers      = excluded.custom_answers,
+            attached_docs       = excluded.attached_docs,
+            expert_brief        = excluded.expert_brief,
+            preflight_fingerprint = excluded.preflight_fingerprint,
+            preflight_status    = excluded.preflight_status,
+            preflight_model     = excluded.preflight_model,
+            preflight_token_estimate = excluded.preflight_token_estimate,
             plan                = excluded.plan,
             ai_rounds_completed = excluded.ai_rounds_completed,
             updated_at          = datetime('now')",
@@ -197,6 +311,13 @@ pub fn save(conn: &Connection, record: &PlanInterviewRecord) -> Result<()> {
             answers,
             record.plan,
             record.ai_rounds_completed as i64,
+            custom_answers,
+            attached_docs,
+            record.expert_brief,
+            record.preflight_fingerprint,
+            record.preflight_status,
+            record.preflight_model,
+            record.preflight_token_estimate as i64,
         ],
     )?;
     Ok(())
@@ -345,6 +466,23 @@ mod tests {
         assert_eq!(loaded.ai_rounds_completed, 1);
         assert!(loaded.plan.is_none());
         assert!(!loaded.created_at.is_empty());
+    }
+
+    #[test]
+    fn attached_docs_round_trip_and_carry_to_the_final_row() {
+        let (_tmp, db) = open_temp_db();
+        let mut record = draft("feat-1");
+        record.attached_docs = vec!["/abs/spec.md".into(), "/abs/notes/brief.md".into()];
+        db.save_plan_interview(&record).unwrap();
+
+        let loaded = db.plan_interview_draft("feat-1").unwrap().unwrap();
+        assert_eq!(loaded.attached_docs, record.attached_docs);
+
+        // finalize_draft re-keys and flips the stage without dropping the list.
+        db.finalize_plan_interview_draft("feat-1", "feat-1", "# Plan: guided-plans\n")
+            .unwrap();
+        let final_row = db.plan_interview_final("feat-1").unwrap().unwrap();
+        assert_eq!(final_row.attached_docs, record.attached_docs);
     }
 
     #[test]
@@ -503,5 +641,24 @@ mod tests {
         db.save_store(&store).unwrap();
 
         assert!(db.plan_interview_draft("feat-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn preflight_evaluation_export_preserves_status_and_cost_signals() {
+        let (_tmp, db) = open_temp_db();
+        let mut record = draft("feat-1");
+        record.preflight_fingerprint = Some("abc".into());
+        record.preflight_status = Some("completed".into());
+        record.preflight_model = Some("opus".into());
+        record.preflight_token_estimate = 321;
+        record.expert_brief = Some("## Definition of done\nShip it".into());
+        db.save_plan_interview(&record).unwrap();
+
+        let json = db.export_plan_preflight_evaluation("feat-1").unwrap();
+        let rows: Vec<PreflightEvaluationExport> = serde_json::from_str(&json).unwrap();
+        assert_eq!(rows[0].status.as_deref(), Some("completed"));
+        assert_eq!(rows[0].model.as_deref(), Some("opus"));
+        assert_eq!(rows[0].token_estimate, 321);
+        assert!(rows[0].has_brief);
     }
 }

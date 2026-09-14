@@ -409,7 +409,8 @@ mod tests {
         let parent = app
             .learning_ask("What is this?", LearningQaIntent::Explain, None)
             .unwrap();
-        app.learning_answer_tx
+        app.learning_runs
+            .sender()
             .send(crate::app::learning::LearningAnswer {
                 qa_id: parent.clone(),
                 result: Ok("It is the entry point.".to_string()),
@@ -440,7 +441,8 @@ mod tests {
         let origin = app
             .learning_ask("What is this?", LearningQaIntent::Explain, None)
             .unwrap();
-        app.learning_answer_tx
+        app.learning_runs
+            .sender()
             .send(crate::app::learning::LearningAnswer {
                 qa_id: origin.clone(),
                 result: Ok("It is the entry point.".to_string()),
@@ -475,7 +477,8 @@ mod tests {
         let id = app
             .learning_ask("What does this do?", LearningQaIntent::Explain, None)
             .unwrap();
-        app.learning_answer_tx
+        app.learning_runs
+            .sender()
             .send(crate::app::learning::LearningAnswer {
                 qa_id: id.clone(),
                 result: Ok("It retries forever.".to_string()),
@@ -511,7 +514,8 @@ mod tests {
         let id = app
             .learning_ask("What does this do?", LearningQaIntent::Explain, None)
             .unwrap();
-        app.learning_answer_tx
+        app.learning_runs
+            .sender()
             .send(crate::app::learning::LearningAnswer {
                 qa_id: id,
                 result: Ok("It runs the program.".to_string()),
@@ -599,7 +603,8 @@ mod tests {
         let id = app
             .learning_ask("What does this do?", LearningQaIntent::Explain, None)
             .unwrap();
-        app.learning_answer_tx
+        app.learning_runs
+            .sender()
             .send(crate::app::learning::LearningAnswer {
                 qa_id: id,
                 result: Ok("It is the entry point.".to_string()),

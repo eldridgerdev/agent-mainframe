@@ -172,6 +172,11 @@ impl App {
             mode,
             review,
             plan_mode,
+            // Not threaded through the `on_worktree_created` hook chain (v1
+            // scope cut, see `CreateFeatureState::quick_plan`): a launch
+            // through this path falls back to full Plan mode rather than
+            // Quick Plan when `plan_mode` is set.
+            quick_plan: false,
             agent,
             create_terminal,
             session_name,

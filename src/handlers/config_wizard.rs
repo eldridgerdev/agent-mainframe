@@ -531,7 +531,7 @@ fn handle_active_field_editor(app: &mut App, key: KeyEvent) -> bool {
             state.capturing_key = false;
             state.error = None;
         }
-        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
             if let Some(editor) = &mut state.field_editor {
                 editor.editor.insert_str("\n");
                 editor.sync_scroll_to_cursor = true;

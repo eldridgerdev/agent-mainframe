@@ -1,7 +1,8 @@
 # Feature TODOs
 
-- **Status:** All epics shipped, including Epic 9 (durable not-started /
-  in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
+- **Status:** All epics shipped, including the Epic 8 follow-up for
+  independently showing project and global scopes, Epic 9 (durable not-started
+  / in-progress / completed lifecycle), Epic 8 (scoped lists — worktree /
   project / global), and Epic 7 (plan mode from a TODO). Epics
   2–6 (session kind, native view, editing, spawn agent from a TODO,
   quick-capture + scratchpad, help-overlay wiring, docs) plus Epic 1's
@@ -226,7 +227,7 @@ project/feature is deleted (extend the existing delete paths).
 ### Epic 4 — TODO editing
 
 - [x] Add (`a`/`n`) with inline editor (reuses `TextEditor`); persist.
-- [x] Edit title (`e`) and notes body (`o`); `Alt+Enter` newline,
+- [x] Edit title (`e`) and notes body (`o`); `Shift+Enter` newline,
       `Enter` commit, `Esc` cancel (mirrors compose).
 - [x] Toggle done (`space`/`x`); completed items stay visible
       (strikethrough) and sink below open items, no bulk clear.
@@ -411,17 +412,19 @@ here rather than linked.
       project → global, each owning its list, items, cursor, scroll, and
       scratchpad. Lists are *loaded* on open and created lazily on first
       write, so an untouched scope leaves no row behind.
-- [x] One rule for "visible", used by both the draw
-      (`visible_pane_count`) and the scan (`visible_todo_scopes`): the
-      worktree pane alone until the side panes are revealed, and *all*
-      panes for a feature that has none — closing them there would leave
-      nothing. The reveal is `AppConfig::todo_side_panes`, app-level
-      rather than per-overlay **because the dashboard's `I` runs with no
-      overlay open** and still needs a defined answer.
-- [x] New overlay keys, verified free against the live dispatch before
-      committing to them: `Tab`/`BackTab` cycle focus (and say to press
-      `\` when there is only one pane rather than swallowing the press),
-      `\` toggles the side panes, `M`/`C` move/copy across scopes.
+- [x] One rule for "visible", used by both rendering and view-level actions:
+      the worktree pane is unconditional, while process-lifetime project and
+      global flags independently include or exclude those scopes. Both begin
+      visible on launch and are shared across TODO views without being written
+      to config or SQLite. A repo-root feature may hide both optional scopes;
+      labeled placeholders keep them discoverable while `I`, navigation, and
+      other cross-pane actions see no actionable list.
+- [x] Overlay keys: `Tab`/`BackTab` cycle focus across visible panes, `p`
+      toggles project visibility, `g` toggles global visibility, and `M`/`C`
+      move/copy across visible scopes. Hiding the focused pane advances focus
+      in worktree → project → global order with wraparound. To avoid
+      conflicts, priority is `P`, launching/planning is `Enter`, and the old
+      `\` combined reveal is removed.
       `pane_slots` handles narrow terminals — 3 panes at ≥120 cols, 2 at
       ≥72, 1 below, with the focused pane always drawn and the worktree
       pane keeping its slot whenever there is room for a second.
@@ -474,14 +477,14 @@ of a live `~/.config/amf/amf.db` — same list id, same host feature, all 23
 items intact, `carry_over` preserved, and `PRAGMA foreign_key_check`
 clean afterwards, with `todos` still referencing the rebuilt table.
 
-**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`
-with `scenarios/todo-scopes.txt`, throwaway repo + scratch instance): the
-editor opens on the worktree pane alone, `\` reveals all three, `M` moves
-an item to the global list, `I` takes the worktree item without asking and
-then asks which feature should work the global one, and deleting the
-feature raises the disposition prompt — with cancel leaving the feature,
-its sessions, and its worktree on disk untouched. Also checked at 200 /
-100 / 60 columns for the narrow-terminal fallback.
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway repo + scratch instance): `p` and `g` independently hide their
+scopes, each hidden pane becomes a labeled placeholder without exposing its
+TODO contents, hiding the focused pane advances focus, and restoring a pane
+preserves its items. A repo-root feature can hide both project and global
+scopes at once without leaving an actionable pane. The earlier scoped-list
+flow also verified `M` move behavior, cross-scope `I`, deletion disposition,
+and the 200 / 100 / 60-column fallbacks.
 
 ### Epic 9 — Durable TODO assignment lifecycle
 
@@ -501,6 +504,13 @@ definition of eligible work.
 - [x] Direct TODO launches and accepted TODO-plan launches reserve the item
       before creating an agent, save the new `FeatureSession` id once known,
       and roll back to not started if agent creation or composer seeding fails.
+- [x] Starting the TODO plan workflow marks the originating item in progress
+      as soon as **Plan this TODO first** is confirmed, before the destination
+      picker. The shared idempotent transition preserves the item's scope,
+      order, content, priority, feature link, and any existing session
+      association across worktree, project, and global lists. Cancelling later
+      plan or feature setup leaves it in progress because planning already
+      began; direct agent launch failures keep their existing rollback.
 - [x] An explicit attempt to launch an in-progress TODO is blocked. Dashboard
       and editor `I` selection consider only not-started items, while existing
       priority, scope, and manual-order tie-breaking remain unchanged.
@@ -514,7 +524,95 @@ definition of eligible work.
 three markers and counts rendered together, the launch chooser identified an
 in-progress item, a duplicate launch was blocked with an explanatory message,
 and dashboard `I` opened the TODO-specific composer with the item prompt seeded
-and unsent.
+and unsent. The plan-start transition was separately captured before planning,
+at the destination picker, and after cancelling back to the list in
+`docs/screenshots/todo-assignment-lifecycle/`; the final frame shows `[~]` and
+`1 wip` while preserving the selected row.
+
+### Epic 10 — Active TODO references in agent sidebars
+
+Shipped. TODO-menu-launched agent sessions now retain a stable reference to
+their originating item. The embedded-session sidebar resolves the current
+TODO after scope moves and shows only the viewed session's TODO title and
+open/completed state. Confirmed completion leaves the reference visible;
+starting another TODO in that session replaces it. Deleting a TODO clears its
+session references.
+
+- [x] Persist TODO identity and TODO-menu launch provenance on sessions.
+- [x] Resolve moved TODOs by stable identity and maintain references across
+      move, completion, and deletion paths.
+- [x] Render the hidden-empty Active TODO sidebar section with title,
+      open/completed state, and completion hint.
+- [x] Add confirmation, cancellation, and completion feedback to
+      embedded-session handling and help.
+- [x] Add focused persistence, completion, resolution, deletion, and sidebar
+      rendering coverage.
+
+**Automated validation:** `cargo check`, `cargo clippy -- -D warnings`, and
+the full 2,334-test suite pass. Interactive multi-session spawning and
+completion still benefit from a live manual verification with provider
+credentials.
+
+**Follow-up fix (2026-09-01):** Only the two direct spawn routes
+(`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`) attached the
+session reference; both plan-mode routes — `start_todo_plan_session` (host
+feature) and `link_todo_to_new_feature` (new feature, via
+`resume_accepted_plan_launch`) — recorded only the DB `linked_feature_id`,
+so a TODO started through plan mode showed no "Active TODO" sidebar box and
+`leader z` had nothing to complete. Both now call a shared
+`attach_launched_todo_reference` (set `TodoSessionReference`, save, refresh
+the cache); the new-feature route additionally associates the session on the
+row's work state, matching the non-plan route. Covered by three focused
+tests.
+
+**Follow-up fix (2026-09-01):** The Active TODO header originally hid its
+completion hint below a width threshold, unlike the Prompt and Plan headers.
+It now always shows the compact `Ctrl+Space`, then `z` affordance whenever a
+referenced TODO is available, with a key-dispatch regression test confirming
+that the chord reaches the completion confirmation and persists the result.
+
+### Epic 11 — Spawn a TODO into a new feature without plan mode
+
+Shipped. Epic 7 made a new branch + worktree for a TODO reachable **only**
+through "Plan this TODO first" → "In a new feature", so someone who wanted a
+fresh checkout but not a discovery interview had no route — and for a
+project- or global-scoped TODO the non-plan "Start an agent on this TODO"
+could target only an existing feature (Epic 8's `TodoSpawnTarget` picker).
+
+- [x] `TodoLaunchAction` gains a third variant, `SpawnInNewFeature`, shown in
+      the launch chooser between "Start an agent on this TODO" and "Plan this
+      TODO first". `TodoLaunchStep::Choice` and its cursor/`option_count`
+      derive from `TodoLaunchAction::ALL`, so the extra option needed no
+      handler or draw changes beyond a taller modal.
+- [x] `start_todo_spawn_in_new_feature` shares `start_todo_in_new_feature`
+      with Epic 7's plan route: the create-feature wizard is pre-seeded the
+      same way (branch = shortened title, agent/mode from the resolved host
+      feature, `todo_origin` set), but `plan_mode` stays **off** and the
+      composer seed stashed for the launch is the TODO itself
+      (`todo_spawn_prompt`), not a plan brief. Declines with a reason when
+      the project is not a git repository.
+- [x] `App::pending_todo_spawn_prompt` mirrors `pending_todo_plan_brief` —
+      app-level so it survives the `on_worktree_created` hook detour that
+      rebuilds the launch. Taken unconditionally by
+      `finish_feature_launch_with_resource_approval`, read only when the
+      launch carries a `todo_origin` and is not a plan run.
+- [x] `finish_todo_spawn_in_new_feature` closes the loop once the wizard
+      builds the feature: links the row (`set_todo_linked_feature`), reserves
+      and associates the feature's initial agent session, tags it with a
+      `TodoSessionReference`, marks the TODO in progress, and seeds that
+      session's composer unsent. A launch that never autostarts still gets
+      the feature link so a later `Enter` on the row jumps to it.
+- [x] `CHANGELOG.md`, this doc, and unit coverage for the new chooser option
+      (count, ordering, git-gate refusal, and wizard pre-seed with plan mode
+      off). Adjusted `scenarios/todo-auto-in-progress.txt`, whose chooser
+      navigation assumed "Plan this TODO first" was the second option.
+
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+throwaway git repo + scratch instance, `scenarios/todo-spawn-new-feature.txt`):
+`Enter` on an unlinked TODO shows the three-option chooser with the new
+middle option and its detail line; selecting it opens the ordinary
+create-feature wizard on its branch step with the title pre-filled and
+`Plan: [ ]` unchecked — no plan interview.
 
 ## Open (not built)
 

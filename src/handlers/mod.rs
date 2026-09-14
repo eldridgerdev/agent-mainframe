@@ -3,12 +3,14 @@ mod batch_creation;
 mod browse;
 mod compose;
 mod config_wizard;
+mod context_settings;
 mod dialog;
 mod diff;
-mod diff_review;
+pub(crate) mod diff_review;
 mod dormant;
 mod feature_creation;
 mod fork;
+mod handoff;
 mod harness;
 mod hooks;
 mod input;
@@ -17,8 +19,12 @@ mod mouse;
 mod normal;
 mod picker;
 mod plan_interview;
+mod plan_interview_attach;
 mod pr_review;
+mod precall;
 mod prompt_library;
+mod prompt_overrides;
+mod review_destination;
 mod search;
 mod skill_picker;
 mod todos;
@@ -34,6 +40,7 @@ pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
 pub use config_wizard::handle_config_wizard_key;
+pub use context_settings::handle_context_settings_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -46,6 +53,7 @@ pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
+pub use handoff::handle_fresh_context_prompt_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
@@ -64,20 +72,27 @@ pub use picker::{
     handle_session_picker_key, handle_session_switcher_key, handle_syntax_language_picker_key,
 };
 pub use plan_interview::handle_plan_interview_key;
+pub use plan_interview_attach::handle_plan_interview_attach_doc_key;
 pub use pr_review::{
-    handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
-    handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
+    handle_pr_investigation_loading_key, handle_pr_number_prompt_key, handle_pr_picker_key,
+    handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
     handle_review_memory_compact_review_key, handle_review_memory_compact_running_key,
 };
+pub use precall::handle_prompt_precall_key;
 pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
+};
+pub use prompt_overrides::handle_prompt_overrides_key;
+pub use review_destination::{
+    handle_review_destination_pick_key, handle_review_feature_setup_key,
+    handle_review_integrate_key,
 };
 pub use search::handle_search_key;
 pub use skill_picker::handle_skill_picker_key;
 pub use todos::{
     handle_todo_delete_disposition_key, handle_todo_implement_choice_key,
-    handle_todo_quick_capture_key, handle_todo_spawn_target_key, handle_todos_host_reassign_key,
-    handle_todos_key,
+    handle_todo_quick_capture_key, handle_todo_reference_completion_key,
+    handle_todo_spawn_target_key, handle_todos_host_reassign_key, handle_todos_key,
 };
 pub use view::handle_view_key;
 
@@ -89,12 +104,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::Todos(_) => handle_todos_key(app, key),
         AppMode::Learning(_) => handle_learning_key(app, key),
         AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
+        AppMode::FreshContextPrompt(_) => handle_fresh_context_prompt_key(app, key),
         AppMode::TodosHostReassign(_) => handle_todos_host_reassign_key(app, key.code),
         AppMode::TodoImplementChoice(_) => handle_todo_implement_choice_key(app, key.code),
         AppMode::TodoSpawnTarget(_) => handle_todo_spawn_target_key(app, key.code),
         AppMode::TodoDeleteDisposition(_) => handle_todo_delete_disposition_key(app, key.code),
+        AppMode::ConfirmTodoReferenceCompletion(_) => {
+            handle_todo_reference_completion_key(app, key.code)
+        }
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
+        AppMode::PlanInterviewAttachDoc(_) => handle_plan_interview_attach_doc_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
         AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
@@ -134,6 +154,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::PrPicker(_) => handle_pr_picker_key(app, key),
         AppMode::PrReviewLoading(_) => handle_pr_review_loading_key(app, key),
         AppMode::PrReview(_) => handle_pr_review_key(app, key),
+        AppMode::PrInvestigationLoading(_) => handle_pr_investigation_loading_key(app, key),
         AppMode::ReviewMemoryBootstrapRunning(_) => {
             handle_review_memory_bootstrap_running_key(app, key)
         }
@@ -149,6 +170,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HookPrompt(_) => handle_hook_prompt_key(app, key.code),
         AppMode::LatestPrompt(_) => handle_latest_prompt_key(app, key.code),
         AppMode::PromptLibrary(_) => handle_prompt_library_key(app, key.code),
+        AppMode::PromptOverrides(_) => handle_prompt_overrides_key(app, key, visible_rows),
+        AppMode::PromptPrecall(_) => handle_prompt_precall_key(app, key),
         AppMode::PromptEditor(_) => handle_prompt_editor_key(app, key),
         AppMode::PlaceholderFill(_) => handle_placeholder_fill_key(app, key),
         AppMode::SkillPicker(_) => handle_skill_picker_key(app, key),
@@ -166,5 +189,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
         AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
+        AppMode::ReviewIntegrate(_) => handle_review_integrate_key(app, key.code),
+        AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
     }
 }

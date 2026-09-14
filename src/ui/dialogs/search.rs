@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::SearchState;
@@ -89,7 +89,8 @@ pub fn draw_search_dialog(frame: &mut Frame, state: &SearchState, theme: &Theme)
             .collect();
 
         let list = List::new(visible_matches);
-        frame.render_widget(list, chunks[1]);
+        let mut list_state = ListState::default().with_selected(Some(state.selected_match));
+        frame.render_stateful_widget(list, chunks[1], &mut list_state);
     }
 
     let count_text = if state.matches.is_empty() {
@@ -99,7 +100,7 @@ pub fn draw_search_dialog(frame: &mut Frame, state: &SearchState, theme: &Theme)
     };
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
-            " j/k or \u{2191}/\u{2193}",
+            " \u{2191}/\u{2193} or Tab/Shift+Tab",
             Style::default().fg(theme.warning.to_color()),
         ),
         Span::raw(" navigate  "),

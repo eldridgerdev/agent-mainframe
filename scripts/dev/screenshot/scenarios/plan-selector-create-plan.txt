@@ -1,0 +1,57 @@
+# plan-selector-create-plan: proves the sidebar plan selector's new
+# "create new plan" keybind (`p`), added alongside the on-demand plan
+# interview.
+#
+# Requires --seed with plan-selector-create-plan-project.json and
+# --seed-feature with plan-selector-create-plan-feature.json: a fresh
+# worktree feature (use_worktree: true, plan_mode: false) with no
+# AMF_PLAN.md, but plenty of other tracked Markdown files (README.md,
+# docs/**/*.md, ...) so the plan picker opens instead of showing a
+# "no markdown plan available" toast.
+#
+# Stops at the interview's brief step rather than accepting: accepting
+# writes a real AMF_PLAN.md and (with a live session) offers a kickoff
+# handoff, which is a separate, already-covered flow
+# (plan-interview-on-demand.txt) and not what this scenario is proving.
+
+note:The seeded feature has no AMF_PLAN.md yet, so its row carries no [plan] badge.
+shot:dashboard-seeded
+
+# Reach the feature's session view the same way sidebar-todo-proof.txt
+# does: search for the SESSION row specifically (searching the branch
+# name instead lands the dashboard selection on the Feature row, whose
+# Enter only toggles tree collapse), then Enter twice -- first closes
+# the search and lands the dashboard selection on the session, second
+# actually enters the view.
+key:/|wait:500
+text:Claude 1|wait:500
+key:Enter|wait:750
+key:Enter|wait:1200
+shot:session-view
+
+# Ctrl+Space arms the leader; 'n' is "current plan". Neither AMF_PLAN.md
+# nor a manual selection resolves for this feature, so this opens the
+# picker (AppMode::MarkdownFilePicker, purpose SelectPlan) instead of
+# the Markdown viewer.
+key:C-Space|wait:400
+key:n|wait:800
+
+expect:Select Current Plan
+expect_not:Plan Mode ·
+note:Leader `n` opens the plan picker in "select an existing plan" mode, listing this worktree's other Markdown files -- there is no AMF_PLAN.md to jump straight to.
+shot:plan-picker-opens
+
+# THE FRAME: 'p' inside this picker is new. It used to be a dead key
+# here (it toggles a plan-only filter in the general Markdown browser,
+# but was already a no-op in SelectPlan mode); it now starts the
+# on-demand plan-mode interview for this feature.
+key:p|wait:800
+
+expect:Plan Mode · plan-selector-create-plan-demo
+expect_not:Select Current Plan
+note:Pressing `p` in the plan picker now opens the plan-mode interview for this feature instead of doing nothing, landing on the brief step with the feature's own name in the title.
+shot:interview-opens-from-picker
+
+# Leave without accepting -- see the header note on why.
+key:Escape|wait:400
+key:y|wait:600

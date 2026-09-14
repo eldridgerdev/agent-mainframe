@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.39.0"
+version = "0.42.0"
 edition = "2024"
 description = "Terminal dashboard for running many AI coding agents in parallel — each on its own branch, in its own tmux session"
 license = "MIT"
@@ -8,6 +8,35 @@ repository = "https://github.com/eldridgerdev/agent-mainframe"
 readme = "README.md"
 keywords = ["tui", "tmux", "agents", "claude", "worktree"]
 categories = ["command-line-utilities", "development-tools"]
+homepage = "https://agentmainframe.dev"
+# Keep the packaged .crate under crates.io's 10MB compressed hard cap (an
+# oversized upload gets rejected with a 413 that their CDN mangles into an
+# opaque 503 — see docs/backlog/crate-package-size-plan.md). Everything
+# excluded here is dev tooling / docs with no `include_str!`/`include_bytes!`
+# reference from src/; docs/tsx-syntax-test.tsx and docs/syntax-tests/ are
+# kept because src/highlight and src/ui/dialogs/diff.rs embed them.
+exclude = [
+    ".opencode/settings.json",
+    ".opencode/commands",
+    ".opencode/opencode.json",
+    ".opencode/themes",
+    "/.agents",
+    "/.claude",
+    "/.codex",
+    "/docker",
+    "/examples",
+    "/site",
+    "/docs/automation",
+    "/docs/backlog",
+    "/docs/batched-review.md",
+    "/docs/context-usage-telemetry.md",
+    "/docs/development",
+    "/docs/docker-no-tmux.md",
+    "/docs/final-review-subagent-notes-investigation.md",
+    "/docs/repository-cleanup-audit.md",
+    "/docs/screenshots",
+    "/docs/usability-review.md",
+]
 
 [[bin]]
 name = "amf"
@@ -23,6 +52,7 @@ crossterm = "0.28"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 anyhow = "1"

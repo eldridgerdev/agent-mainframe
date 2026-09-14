@@ -3,9 +3,9 @@ name: amf:screenshot
 description: >
   Capture screenshots (PNG) or a GIF of AMF's own TUI running in an
   isolated, throwaway instance, as visual proof a feature/UI change
-  works, then publish them as a small viewable Artifact gallery page
-  (a terminal often won't render PNGs/GIFs inline, so the raw files
-  alone aren't a usable deliverable). Use only when the user explicitly
+  works, then, when explicitly requested, publish them to a private
+  Cloudflare Pages review gallery. A terminal often will not render
+  PNGs/GIFs inline, so raw files alone are not a usable deliverable. Use only when the user explicitly
   asks for visual proof ("show me a screenshot of X", "prove the
   dashboard renders Y") — not automatically after every UI change.
 allowed-tools: Bash(scripts/dev/screenshot/*) Bash(python3 *) Bash(mkdir *) Bash(cat *) Bash(ls *) Write Read Skill Artifact
@@ -69,11 +69,43 @@ comments ignored):
 - `text:<literal>` — literal typed text (`text:my-feature-name`)
 - `wait:<ms>` — sleep, use after keys that trigger a redraw or async
   work (harness checks, status sync)
+- `note:<text>` — a complete sentence explaining what the immediately following
+  `shot:` proves to a reviewer. This is documentation only — it is never
+  checked against the actual pane, so it does not catch the scenario
+  claiming one thing and showing another.
+- `expect:<text>` — a literal substring that MUST appear in the next
+  `shot:`'s captured pane. Stack several before one `shot:` to require all
+  of them. `expect_not:<text>` is the inverse (must be absent). Either kind
+  fails the whole run immediately — before any further steps — if violated,
+  printing the offending shot and the actual captured pane.
 - `shot:<label>` — capture the pane now, written as
-  `NNN-<label>.ansi`
+  `NNN-<label>.ansi`, then check that shot's pending `expect:`/`expect_not:`
+  assertions before continuing.
 
 Put a `shot:` at every point worth showing (before the change, mid
-interaction, after the change lands) rather than just first/last.
+interaction, after the change lands) rather than just first/last. Put a
+reviewer-facing `note:` immediately before every shot so the published index
+explains the visible state and why it matters — **and pair it with at least
+one `expect:`/`expect_not:`** for any shot whose whole point is proving a
+specific title, label, or state, so that claim is actually machine-checked
+rather than trusted on sight. A shot deliberately checked into
+`scripts/dev/screenshot/scenarios/` with no `expect:`/`expect_not:` at all is
+a scenario nobody has hardened against silently drifting from what it
+claims to show — treat a missing assertion on a "proof" shot as a gap to
+fix, not a style choice. (A purely navigational shot with no specific claim
+— "press Escape, capture the resulting dashboard" — doesn't need one.)
+
+This is not optional ceremony: a scenario that ran without these once
+captured 18 "successful" shots that were all, in fact, the syntax-parser
+picker — because it assumed a seeded project/feature that the actual
+publish invocation never provided, so `key:j`/`key:Q`/typed brief text fell
+through to unrelated dashboard keybindings instead of driving the flow the
+scenario narrated. Nothing in the pipeline caught it before it was
+published to a PR. `expect:`/`expect_not:` on the shots that mattered would
+have failed that run loudly, in CI, before anything got deployed. Author
+every new "proof" shot as if this could happen again, because it already
+did.
+
 Author the file under `scripts/dev/screenshot/scenarios/` if it's
 worth keeping as a reusable example, otherwise a scratch path (e.g.
 your scratchpad dir) is fine for a one-off.
@@ -99,6 +131,11 @@ Relevant flags:
 - `--keep` — preserve the scratch root instead of deleting it on exit
   (useful while iterating on a scenario).
 
+For a screenshot of an already-completed AI Review, use
+`scenarios/ai-review-completed-fixture.txt`. It uses AMF's deterministic
+`seed-ai-review` fixture; CI must never start a live `A` review or depend on a
+logged-in Claude/Codex harness for visual proof.
+
 This produces, per `shot:` step, a numbered `.ansi` dump and a
 plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
 (default `<scratch-root>/shots`).
@@ -120,45 +157,101 @@ renders and assembles the GIF — nothing further to do.
 
 ## Step 4: verify cheaply, then return the result
 
-Verify content against the `.txt` twins, not the images: grep each
-one for the strings the frame should show (a dialog title, the typed
-text, a status line). The `.txt` files are small and escape-free —
-never read the `.ansi` files, whose escape codes waste tokens.
+If the scenario's `expect:`/`expect_not:` assertions are in place (Step 1),
+`amf-capture.sh` has already refused to produce a run where a shot doesn't
+show what it claims — a nonzero exit here means the run is broken, full
+stop; do not render or publish it, go fix the scenario or the feature and
+re-run. A clean exit means every assertion held, but assertions only cover
+what you thought to check, so still spot-check: grep the `.txt` twins for
+anything you didn't assert on but expect to be true, and Read **one or two
+representative PNGs** as images to confirm layout/colors look right — not
+every frame. Never read the `.ansi` files, whose escape codes waste tokens.
 
-Only after the text checks pass, Read **one or two representative
-PNGs** as images to confirm layout/colors look right — not every
-frame.
+If you are looking at a scenario that predates `expect:`/`expect_not:` and
+has none, do not trust it on the strength of its `note:` lines alone —
+`note:` is unverified narration. Either add assertions to it before reusing
+it for a "proof" shot, or verify its `.txt` twins by hand exactly as
+described above before treating the capture as evidence of anything.
 
-## Step 5: publish an Artifact gallery (the deliverable)
+## Step 5: publish the private Cloudflare Pages gallery to the PR
 
-Raw file paths are not the deliverable — most terminal environments
-don't render PNGs/GIFs inline for the user, so finish by publishing a
-small, self-contained HTML page with the shots embedded. Do this every
-time this skill runs, not just when asked.
+The repository's selected publication backend is a Cloudflare Pages preview.
+Publication is a real PR-body write: do it only when the user explicitly asks.
+The branch and scenario must be pushed, the target PR must be open, `gh` must be
+authenticated as `eldridgerdev`, and the deploy step (which runs locally, not in
+CI) needs `CLOUDFLARE_ACCOUNT_ID` set (it is, in the owner's shell) plus
+`wrangler` on `PATH` or `npx` available, and a `CLOUDFLARE_API_TOKEN`
+in the environment.
 
-1. **Load the `artifact-design` skill** before writing the HTML (the
-   `Artifact` tool requires it). Treat this as a utilitarian proof
-   page, not a landing page: a short title naming the feature, one line
-   of context (branch, PR number, what was seeded — whatever grounds
-   the shots), then one `<figure>` per shot in story order, each with a
-   caption that says what's notable in that frame. No hero, no
-   flourish — a plain terminal-window chrome around each image (a
-   title-bar strip is enough) suits the subject better than decoration.
-2. **Base64-encode each PNG/GIF** (`python3 -c "import base64; ..."`),
-   writing the encoded string to a scratch `.b64` file — don't paste it
-   into the HTML through Edit/Write. A multi-shot gallery is tens to
-   hundreds of KB of base64; pushing that through the conversation
-   burns context for no benefit.
-3. **Write the HTML with placeholder tokens** (`IMG_1`, `IMG_2`, …) in
-   the `<img src="data:image/png;base64,IMG_1">` slots (or
-   `image/gif` for a `--gif` run), then substitute the real base64 in
-   directly on disk with a small Python `str.replace` script — the
-   encoded data itself never needs to pass through the model.
-4. **Publish with the `Artifact` tool** (`file_path` pointing at the
-   HTML, a `favicon` emoji fitting the feature, a one-line
-   `description`). If re-running this skill again for the *same*
-   feature/PR in the same conversation, reuse the same `file_path` so
-   republishing updates the existing URL instead of minting a new one.
-5. **Return the artifact URL as the primary deliverable.** Mention the
-   on-disk PNG/GIF paths too (useful if the user wants the raw files),
-   but the URL is what answers "show me."
+**If Step 2's local capture used `--seed`/`--seed-feature`/`--config`, pass
+the identical files here too.** The remote capture workflow this dispatches
+starts from a blank scratch instance same as the local one does — it has no
+memory of what you seeded locally. Forgetting this is exactly how a
+scenario written and verified against seeded state (a project, a feature)
+ran for real against an empty dashboard: every keypress meant for the
+feature-under-test's UI instead fell through to unrelated dashboard-level
+keybindings, and — before `expect:`/`expect_not:` existed to catch it — the
+wrong screenshots got published without anyone noticing until a human
+opened the gallery. `expect:`/`expect_not:` (Step 1) now fails that run
+loudly instead, but passing the right seed files here is still what makes
+the run correct in the first place, not just detectably wrong.
+
+**Do not run `wrangler login` — it does not work well here, and you must not
+mint a token yourself.** The token is a Pages-scoped API token the repository
+owner keeps in `~/.secrets/cf-amf-pages.env`; the `amf-publish-screenshots`
+shell function sources that file and `exec`s `publish-pages.sh`. Use the
+wrapper, or source the file yourself, so the run is non-interactive:
+
+```bash
+amf-publish-screenshots \
+  --pr <number> \
+  --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+  --summary "One sentence explaining the complete flow under review" \
+  --ref <pushed-branch> \
+  --seed scripts/dev/screenshot/scenarios/<seed-project>.json \
+  --seed-feature scripts/dev/screenshot/scenarios/<seed-feature>.json \
+  --strict
+
+# equivalently, from a non-login shell:
+( set -a; . ~/.secrets/cf-amf-pages.env; set +a
+  scripts/dev/screenshot/publish-pages.sh --pr <number> \
+    --scenario scripts/dev/screenshot/scenarios/<scenario>.txt \
+    --summary "..." --ref <pushed-branch> \
+    --seed scripts/dev/screenshot/scenarios/<seed-project>.json \
+    --seed-feature scripts/dev/screenshot/scenarios/<seed-feature>.json \
+    --strict )
+```
+
+Omit `--seed`/`--seed-feature` only when the scenario genuinely needs no
+pre-existing project or feature (a truly empty-dashboard flow). `--config`
+is also forwarded the same way if Step 2 needed it.
+
+If `publish-pages.sh` still reports missing Cloudflare auth after that — the
+secrets file is absent or the token is unset — surface the warning and stop.
+If it reports the capture workflow did not succeed, that is very likely an
+`expect:`/`expect_not:` failure (or a missing seed file) — open the linked
+Actions run's log rather than retrying blind; the failure log names exactly
+which shot and which assertion.
+
+Add `--gif` only when the user asks for animation. The command dispatches the
+isolated **capture-only** workflow on GitHub, then — on this machine —
+downloads that run's rendered frames, builds a script-free CSP-locked gallery,
+deploys it to Cloudflare Pages with `wrangler`, and replaces only the PR
+section delimited by
+`<!-- amf:screenshots:start -->`/`<!-- amf:screenshots:end -->`. The PR link
+opens the Cloudflare Access-protected gallery. Raw ANSI/text captures remain in
+a 14-day internal artifact; no screenshot files are committed.
+The gallery starts with `--summary`, then presents an ordered walkthrough whose
+**What this proves** captions come from the scenario's `note:` entries.
+
+The command prints an actionable `warning:` and exits successfully by default
+when capture, authentication, workflow, artifact, download, gallery-build,
+`wrangler` deploy, or PR-body update fails, so the surrounding PR workflow can
+continue. Use `--strict` when a nonzero exit is required; agents publishing
+proof must use it. The capture workflow permits only the `eldridgerdev` actor
+and serializes dispatches. There is no `screenshot-pages` environment or per-run
+approval any more: the Cloudflare token stays on the local machine and never
+enters CI, and the deploy step only ever handles rendered images, never the
+captured ref's code. The Claude-specific `Artifact` tool may still be used for a
+secondary in-conversation preview, but never put its raw ANSI/text output in the
+PR.

@@ -45,6 +45,20 @@ impl App {
         from_view: Option<ViewState>,
         focus: Option<(&str, PromptSource)>,
     ) {
+        // Always read user templates fresh from the DB, the same reason
+        // global templates are re-read from disk below: this table is
+        // shared with every other AMF process pointed at the same
+        // `amf.db`, so the in-memory `self.store.prompt_templates` this
+        // instance loaded at startup (or last wrote) can be behind a
+        // sibling process's edits. `db::prompt_templates` persists writes
+        // independently of the generic store save, so reading fresh here
+        // is what actually surfaces them without a restart.
+        if let Some(db) = &self.db
+            && let Ok(fresh) = db.load_prompt_templates()
+        {
+            self.store.prompt_templates = fresh;
+        }
+
         let project = self
             .resolve_library_repo(from_view.as_ref())
             .map(|repo| load_project_prompt_templates(&repo))
@@ -445,14 +459,26 @@ impl App {
                             template.tags = tags;
                             template.updated_at = Utc::now();
                         }
+                        // Targeted update, not a full store save: this table is
+                        // shared with every other AMF process, and a generic
+                        // save from a stale in-memory snapshot must not be able
+                        // to clobber it (see `db::prompt_templates`).
+                        if let Some(db) = &self.db
+                            && let Some(template) =
+                                self.store.prompt_templates.iter().find(|t| &t.id == id)
+                        {
+                            db.update_prompt_template(template)?;
+                        }
                     }
                     None => {
                         let mut template = PromptTemplate::new(name, body);
                         template.tags = tags;
+                        if let Some(db) = &self.db {
+                            db.insert_prompt_template(&template)?;
+                        }
                         self.store.prompt_templates.push(template);
                     }
                 }
-                self.save()?;
             }
             PromptSource::Global => {
                 let orig = state
@@ -579,10 +605,12 @@ impl App {
         }
 
         let id = entry.template.id.clone();
+        if let Some(db) = &self.db {
+            db.delete_prompt_template(&id)?;
+        }
         self.store
             .prompt_templates
             .retain(|template| template.id != id);
-        self.save()?;
         self.open_prompt_library(from_view);
         self.push_toast_success("Deleted prompt");
         Ok(())
@@ -610,8 +638,10 @@ impl App {
         template.created_at = now;
         template.updated_at = now;
         let copy_name = template.name.clone();
+        if let Some(db) = &self.db {
+            db.insert_prompt_template(&template)?;
+        }
         self.store.prompt_templates.push(template);
-        self.save()?;
         self.rebuild_prompt_library(from_view, Some((&copy_name, PromptSource::User)));
         self.push_toast_success("Duplicated to your library");
         Ok(())

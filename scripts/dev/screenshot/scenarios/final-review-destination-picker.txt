@@ -1,0 +1,97 @@
+# final-review-destination-picker: proves the final review's `t` key now opens
+# a destination picker instead of the old two-state live/dedicated toggle. The
+# picker offers four places to send a finished review's fixes -- this feature's
+# session, a dedicated review session (per harness), any other existing feature,
+# or a brand-new companion feature -- and picking "New feature..." opens the
+# compact companion-feature setup overlay (own worktree, harness, mode, branch).
+#
+# Self-contained: `run:` steps build a tiny fixture repo with a reviewable diff
+# and register it with the scratch AMF instance, so no --seed is needed.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/final-review-destination-picker.txt \
+#     --out-dir /tmp/amf-review-dest --geometry 120x40
+
+run:set -e; FX="$SHOT_ROOT/fixture"; mkdir -p "$FX/src"; cd "$FX"; git init -q -b main; git config user.email t@example.com; git config user.name Tester; printf 'pub fn login(name: &str) -> bool {\n    !name.is_empty()\n}\n' > src/auth.rs; git add -A; git commit -qm "initial auth"; git checkout -q -b add-login; printf 'pub fn login(name: &str, token: &str) -> bool {\n    validate(name) && verify(token)\n}\n\nfn validate(name: &str) -> bool {\n    !name.is_empty() && name.len() <= 64\n}\n\nfn verify(token: &str) -> bool {\n    token.starts_with("tok_")\n}\n' > src/auth.rs; git add -A; git commit -qm "add token verification"
+run:printf '{"path":"%s/fixture","project_name":"review-demo","dry_run":false}' "$SHOT_ROOT" > "$SHOT_ROOT/project.json"
+run:$AMF_BIN automation create-project --file "$SHOT_ROOT/project.json"
+run:printf '{"project_name":"review-demo","branch":"add-login","use_worktree":false,"agent":"claude","mode":"vibe","review":false,"plan_mode":false,"create_terminal":true,"enable_chrome":false,"hook_choice":null,"dry_run":false}' > "$SHOT_ROOT/feature.json"
+run:$AMF_BIN automation create-feature --file "$SHOT_ROOT/feature.json"
+wait:1500
+# A second feature so the picker has an "another existing feature" row to offer.
+run:printf '{"project_name":"review-demo","branch":"hotfix-typo","use_worktree":true,"agent":"claude","mode":"vibe","review":false,"plan_mode":false,"create_terminal":false,"enable_chrome":false,"hook_choice":null,"dry_run":false}' > "$SHOT_ROOT/feature2.json"
+run:$AMF_BIN automation create-feature --file "$SHOT_ROOT/feature2.json"
+wait:2000
+
+note:The scratch dashboard shows the seeded review-demo project and its add-login feature, which has a real diff against main.
+shot:dashboard
+
+# Onto the add-login feature row, expand it to its sessions, then open the
+# terminal session's view -- Final Review is reachable from any session view.
+key:j
+wait:300
+key:Enter
+wait:500
+key:j
+wait:300
+key:j
+wait:300
+key:Enter
+wait:3000
+
+# Leader (Ctrl+Space) then `f` triggers Final Review; the diff load is async.
+key:C-Space
+wait:400
+text:f
+wait:4000
+# Advance the file cursor to src/auth.rs, the substantive change.
+text:n
+wait:250
+text:n
+wait:250
+text:n
+wait:400
+note:Final Review is open on src/auth.rs; the footer's second row carries the `t target: live` hint that opens the destination choice.
+shot:review-open
+
+# `t` opens the destination picker (previously a silent live<->dedicated toggle).
+text:t
+wait:700
+note:`t` opens a modal picker of every place a finished review's fixes can be dispatched -- this feature's live session, a dedicated review session per harness, each other existing feature (review-demo / hotfix-typo), and "New feature...".
+shot:destination-picker
+
+# Move onto the "New feature..." row (last) and choose it.
+key:j
+wait:200
+key:j
+wait:200
+key:j
+wait:200
+key:Enter
+wait:800
+note:Choosing "New feature..." opens the compact companion-feature setup: preset, harness, vibe mode, review, Chrome, and the branch the companion worktree is cut on -- branched from the feature under review.
+shot:companion-setup
+
+# Esc out of setup, re-open the picker, and pick the dedicated-session row.
+key:Escape
+wait:400
+text:t
+wait:500
+key:j
+wait:250
+key:Enter
+wait:600
+note:Picking the dedicated-session row updates the footer target to "dedicated" and closes the picker, leaving the review itself untouched.
+shot:target-dedicated
+
+# The `?` help overlay documents the new `t` behaviour in its Finishing group.
+text:?
+wait:600
+key:PageDown
+wait:300
+key:PageDown
+wait:300
+note:The review key-help overlay now describes `t` as "choose where fixes go: this feature, a dedicated session, another feature, or a new one".
+shot:help-overlay-finishing
+key:Escape
+wait:300

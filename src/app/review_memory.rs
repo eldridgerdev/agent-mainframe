@@ -435,23 +435,16 @@ pub fn count_findings(contents: &str) -> usize {
 /// the response replaces the doc wholesale — the caller must show it to the
 /// user for explicit approval before writing (Epic E "prevent review-memory
 /// rot").
+/// The full built-in review-memory compaction prompt. Production renders the
+/// resolved template ([`crate::app::pr_review`]'s `run_review_memory_compact`
+/// via `{{doc_contents}}`); kept whole for tests.
+#[allow(dead_code)]
 pub fn compact_prompt(contents: &str) -> String {
-    format!(
-        "You are compacting a team's code-review findings doc so it stays useful \
-         over time instead of drifting and bloating.\n\n\
-         Below is the current contents of the doc. It is Markdown: a top-level \
-         header, `## Category` section headings, and findings as `- ` bullets \
-         underneath. It may also contain hand-written prose paragraphs.\n\n\
-         Rewrite it: merge findings that state the same rule in different words \
-         into one clear bullet, and drop findings that are stale, superseded by a \
-         more general bullet already in the doc, or too specific to a single past \
-         PR to be a durable rule. Keep every section heading that still has \
-         findings under it; drop a heading only if it ends up empty. Preserve the \
-         top-level header and any hand-written prose paragraphs exactly as they \
-         are — do not rewrite or remove them.\n\n\
-         Output ONLY the full replacement document in the same Markdown shape as \
-         the input (header, prose, `## Category` headings, `- ` bullets). No \
-         commentary outside the document itself.\n\n---\n\n{contents}"
+    crate::prompts::render_template(
+        crate::prompts::PromptId::ReviewMemoryCompact
+            .spec()
+            .default_template,
+        &crate::prompts::PromptContext::new().with("doc_contents", contents),
     )
 }
 

@@ -129,20 +129,86 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_028,
         ),
         (
-            "Add remote_devices table for Remote Control companion-app pairing",
+            "Persist TODO-menu launch references on agent sessions",
             MIGRATION_029,
+        ),
+        (
+            "Store per-choice-question custom answers alongside plan-interview answers",
+            MIGRATION_030,
+        ),
+        (
+            "Link a companion review feature back to the feature its final review ran from",
+            MIGRATION_031,
+        ),
+        (
+            "Add batch_id to PR-comment triage rows for combined-batch fix-cost attribution",
+            MIGRATION_032,
+        ),
+        (
+            "Add pr_investigations table for PR Triage's read-only Investigate action",
+            MIGRATION_033,
+        ),
+        (
+            "Add prompt_overrides table for editable feature/global headless prompts",
+            MIGRATION_034,
+        ),
+        (
+            "Add attached_docs column to plan_interviews for attached reference documents",
+            MIGRATION_035,
+        ),
+        (
+            "Persist Expert plan-review briefs and plan fingerprints",
+            MIGRATION_036,
+        ),
+        (
+            "Persist Expert plan-review lifecycle status and estimates",
+            MIGRATION_037,
+        ),
+        (
+            "Persist the explicit model used for an Expert plan review",
+            MIGRATION_038,
+        ),
+        (
+            "Add remote_devices table for Remote Control companion-app pairing",
+            MIGRATION_039,
         ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
         if version < target {
+            // Older migrations include foreign_keys PRAGMAs that cannot run
+            // inside a transaction. New migrations commit schema + version
+            // together; failure rolls back via Transaction::drop.
+            let transaction = if target >= 36 {
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let current: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(version),0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if current >= target {
+                    // Another AMF instance may have completed this migration
+                    // while we waited for the immediate write transaction.
+                    transaction.commit()?;
+                    continue;
+                }
+                Some(transaction)
+            } else {
+                None
+            };
             conn.execute_batch(sql)?;
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at, description)
                  VALUES (?1, datetime('now'), ?2)",
                 rusqlite::params![target, desc],
             )?;
+            if let Some(transaction) = transaction {
+                transaction.commit()?;
+            }
         }
     }
 
@@ -748,6 +814,151 @@ SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
     agent_session_id = CASE WHEN done != 0 THEN spawned_session_id ELSE NULL END;
 ";
 
+/// A TODO reference belongs to an AMF agent session, rather than to the TODO's
+/// lifecycle/work-state link.  Existing sessions predate this explicit launch
+/// provenance and therefore remain unreferenced.
+///
+/// No index on `todo_id`: sessions are always loaded by `feature_id` and the
+/// reverse lookup (clearing references for a deleted TODO) walks the in-memory
+/// store, so an index would be dead weight.
+const MIGRATION_029: &str = "
+ALTER TABLE feature_sessions ADD COLUMN todo_id TEXT;
+ALTER TABLE feature_sessions
+    ADD COLUMN todo_launched_from_menu INTEGER NOT NULL DEFAULT 0;
+";
+
+/// A JSON array, positionally paired with `answers`, holding the free-text
+/// custom answer a user attached to each choice question (`null` for a question
+/// with none, and for every free-text question). Kept apart from `answers` —
+/// which stays the single serialized string every downstream consumer reads —
+/// so a resumed or re-run interview can restore the radio selection and the
+/// elaboration together instead of a flat string. Existing rows backfill to an
+/// empty array, which `load` squares up to the question count.
+const MIGRATION_030: &str = "
+ALTER TABLE plan_interviews ADD COLUMN custom_answers TEXT NOT NULL DEFAULT '[]';
+";
+
+/// The final review's "New feature…" destination creates a companion feature on
+/// its own branch, seeded from the reviewed feature's branch head. Like
+/// `triage_source` (MIGRATION_015) the link back to the source feature is a
+/// whole-read/whole-write JSON blob on a small minority of features, so it's
+/// one nullable column rather than three.
+const MIGRATION_031: &str = "
+ALTER TABLE features ADD COLUMN review_source TEXT;
+";
+
+/// When several PR-triage comments are fixed together in one agent batch, each
+/// resolved comment records the shared batch id so the fix cost can be
+/// attributed to the whole batch, sibling comments can be highlighted, and the
+/// posted GitHub replies can note the combined batch.
+///
+/// `batch_fix_cost` is the preformatted USD figure the batch's single agent run
+/// cost, written once when the first sibling is resolved (the reply-draft that
+/// the live delta is derived from is deleted on post, so the figure has to be
+/// captured durably). Every sibling in the batch reads the same string.
+///
+/// Both columns are nullable with no backfill: pre-existing triage rows stay
+/// `NULL` (not part of any batch), matching the "new batches only" decision. A
+/// plain `ALTER TABLE ADD COLUMN` suffices — `pr_comment_triage` has no
+/// constraint that needs dropping, so no table rebuild (cf.
+/// MIGRATION_014/015/023/029/030).
+const MIGRATION_032: &str = "
+ALTER TABLE pr_comment_triage ADD COLUMN batch_id TEXT;
+ALTER TABLE pr_comment_triage ADD COLUMN batch_fix_cost TEXT;
+";
+
+/// PR Triage's Investigate action: a strictly read-only headless investigation
+/// of one review comment whose answer persists and reopens with the triage
+/// overlay (like Learning Mode Q&A). One row per `(project_id, PR#, comment id)`
+/// — Investigate is single-item and never batched, so no shared id is needed.
+///
+/// Like todo lists and Learning Mode history this data lives *outside* the
+/// `ProjectStore` JSON blob, so `project_id` is plain TEXT with no FK to
+/// `projects` and cleanup on project deletion is explicit
+/// (`delete_pr_investigations_for_project`). The App layer keeps the rows in
+/// memory as the source of truth, so the feature works with no DB at all; these
+/// rows just make it survive a restart.
+///
+/// `head_sha` records the PR head the investigation ran against (staleness
+/// signal, exactly as `pr_comment_triage` uses it — not part of the identity,
+/// so a push doesn't orphan the finding). `answer` is NULL until the run
+/// returns; `follow_ups` is a JSON array of `{question, answer, harness,
+/// created_at}` turns (Learning Mode `F` re-runs with the prior turn as
+/// context). `status` is one of `running` / `complete` / `failed` /
+/// `dismissed`; a row is written `running` *before* the blocking call so a
+/// crash mid-run is visible on reopen rather than a silent gap.
+const MIGRATION_033: &str = "
+CREATE TABLE IF NOT EXISTS pr_investigations (
+    project_id       TEXT NOT NULL,
+    pr_number        INTEGER NOT NULL,
+    comment_id       INTEGER NOT NULL,
+    head_sha         TEXT NOT NULL DEFAULT '',
+    harness          TEXT NOT NULL DEFAULT 'claude',
+    context_snapshot TEXT NOT NULL DEFAULT '',
+    answer           TEXT,
+    follow_ups       TEXT NOT NULL DEFAULT '[]',
+    status           TEXT NOT NULL DEFAULT 'running',
+    error            TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (project_id, pr_number, comment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_investigations_pr
+    ON pr_investigations(project_id, pr_number);
+";
+
+/// Feature- and global-scope overrides of AMF's built-in headless prompt
+/// templates (see `src/db/prompt_overrides.rs` and `src/prompts/`). Project
+/// scope is an `amf.json` `prompt_overrides` map, not a row here.
+///
+/// One row per `(prompt_id, scope, scope_key, harness)`: `scope` is
+/// `feature` or `global`, `scope_key` is the feature's workdir path (`NULL`
+/// for global), and `harness` is `NULL` for a template shared across
+/// harnesses or the harness's lowercase name for a per-harness override. The
+/// uniqueness index folds the two nullable columns through `COALESCE(...,'')`
+/// so "no key" and "shared" each collapse to a single row rather than SQLite
+/// treating every `NULL` as distinct.
+///
+/// No foreign key to `features`: the workdir key outlives any feature row
+/// (cf. `todos`, `pr_terminal_state`), and cleanup is explicit.
+const MIGRATION_034: &str = "
+CREATE TABLE IF NOT EXISTS prompt_overrides (
+    prompt_id   TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    scope_key   TEXT,
+    harness     TEXT,
+    template    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_overrides_identity
+    ON prompt_overrides(prompt_id, scope, COALESCE(scope_key, ''), COALESCE(harness, ''));
+";
+
+/// A JSON array of absolute paths: the reference documents a feature owner
+/// attached to a plan interview so its round / synthesis / critique passes run
+/// read-only and can read them. Not per-question, so it is a single scalar
+/// column rather than something squared up against the answer count. Existing
+/// rows backfill to `'[]'` (no attachments), matching the in-memory default.
+const MIGRATION_035: &str = "
+ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
+";
+
+const MIGRATION_036: &str = "
+ALTER TABLE plan_interviews ADD COLUMN expert_brief TEXT;
+ALTER TABLE plan_interviews ADD COLUMN preflight_fingerprint TEXT;
+";
+
+const MIGRATION_037: &str = "
+ALTER TABLE plan_interviews ADD COLUMN preflight_status TEXT;
+ALTER TABLE plan_interviews ADD COLUMN preflight_token_estimate INTEGER NOT NULL DEFAULT 0;
+";
+
+const MIGRATION_038: &str = "
+ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
+";
+
 /// Paired-device registry for the Remote Control companion app (see
 /// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). Only the
 /// token's hash is stored — the plaintext per-device token lives on the
@@ -755,7 +966,7 @@ SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
 /// `token_hash` is UNIQUE so a lookup by presented token can never
 /// ambiguously match more than one device. No foreign key elsewhere: a
 /// paired device is independent of any one project/feature.
-const MIGRATION_029: &str = "
+const MIGRATION_039: &str = "
 CREATE TABLE IF NOT EXISTS remote_devices (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL DEFAULT '',
@@ -774,15 +985,19 @@ mod tests {
     use rusqlite::{Connection, params};
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
-    /// the todo tables 011 built, and the reply-draft table 013/014 built.
-    /// Fixtures that seed a version this high have to stand up everything later
-    /// migrations alter — 022 alters `pr_comment_reply_drafts` and 023 alters
-    /// `todos`.
+    /// the todo tables 011 built, the triage table 009 built and 010 re-keyed,
+    /// the reply-draft table 013/014 built, and the plan-interviews table 016
+    /// built. Fixtures that seed a version this high have to stand up everything
+    /// later migrations alter — 022 alters `pr_comment_reply_drafts`, 023 alters
+    /// `todos`, 030 alters `plan_interviews`, and 032 alters `pr_comment_triage`.
     fn seed_pre_learning_schema(conn: &Connection) {
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
     }
 
     /// A DB last touched before Learning Mode existed (schema version 18)
@@ -805,7 +1020,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 29);
+        assert_eq!(version, 39);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -900,7 +1115,79 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 39);
+    }
+
+    #[test]
+    fn migration_029_leaves_existing_sessions_without_todo_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        // 030 replays after 029 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage`, so its table (009, re-keyed by 010) is needed too.
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (28, datetime('now'), 'seed');
+             INSERT INTO projects (id, name, repo, created_at)
+                VALUES ('p1', 'project', '/repo', datetime('now'));
+             INSERT INTO features (id, project_id, name, branch, workdir, created_at, last_accessed)
+                VALUES ('f1', 'p1', 'feature', 'main', '/repo', datetime('now'), datetime('now'));
+             INSERT INTO feature_sessions (id, feature_id, kind, created_at)
+                VALUES ('s1', 'f1', 'claude', datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let reference: (Option<String>, i64) = conn
+            .query_row(
+                "SELECT todo_id, todo_launched_from_menu
+                 FROM feature_sessions WHERE id = 's1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(reference, (None, 0));
+    }
+
+    /// Migration 030 adds `custom_answers` to plan-interview rows written before
+    /// it existed. They backfill to `'[]'`, which `db::plan_interviews::load`
+    /// squares up to the question count as "no custom answer anywhere".
+    #[test]
+    fn migration_030_backfills_plan_interviews_with_an_empty_custom_answers_array() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 031 replays after 030 and alters `features`, so the base schema has
+        // to be present even though this test is about `plan_interviews`; 032
+        // alters `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (29, datetime('now'), 'seed');
+             INSERT INTO plan_interviews
+                (feature_id, stage, feature_name, brief, questions, answers,
+                 ai_rounds_completed, created_at, updated_at)
+             VALUES ('f1', 'draft', 'feature', 'brief', '[]', '[]', 0,
+                     datetime('now'), datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let custom_answers: String = conn
+            .query_row(
+                "SELECT custom_answers FROM plan_interviews WHERE feature_id = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom_answers, "[]");
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -912,6 +1199,11 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 023 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -953,6 +1245,11 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 024 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -991,6 +1288,11 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
+        // 030 replays after 028 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
         conn.execute_batch(super::MIGRATION_025).unwrap();
@@ -1111,10 +1413,15 @@ mod tests {
     fn migration_022_leaves_existing_reply_drafts_without_provenance() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
-        // 023 replays after 022 here and alters `todos`, so it has to exist.
+        // 023 replays after 022 here and alters `todos`, so it has to exist;
+        // 030 replays too and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_013).unwrap();
         conn.execute_batch(super::MIGRATION_014).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL, description TEXT NOT NULL);
@@ -1150,7 +1457,65 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 29);
+        assert_eq!(rows, 39);
+    }
+
+    /// `prompt_overrides` stands up on a fresh database and on one seeded at an
+    /// older schema version, and its identity index treats a NULL `scope_key`
+    /// / `harness` as a single value rather than as distinct rows.
+    #[test]
+    fn migration_034_creates_prompt_overrides_on_fresh_and_existing_dbs() {
+        for seed_version in [None, Some(33)] {
+            let conn = Connection::open_in_memory().unwrap();
+            if let Some(version) = seed_version {
+                // A DB really at v33 has every earlier table; stand up the ones
+                // migrations after 034 alter (035 alters `plan_interviews`).
+                conn.execute_batch(super::MIGRATION_001).unwrap();
+                conn.execute_batch(super::MIGRATION_016).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                        applied_at TEXT NOT NULL, description TEXT NOT NULL);",
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO schema_version VALUES (?1, datetime('now'), 'seed')",
+                    params![version],
+                )
+                .unwrap();
+            }
+
+            super::run(&conn).unwrap();
+
+            conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, NULL, 't1',
+                         datetime('now'), datetime('now'));",
+            )
+            .unwrap();
+            // Same identity (NULL key, NULL harness) — the COALESCE index must reject it.
+            let dup = conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, NULL, 't2',
+                         datetime('now'), datetime('now'));",
+            );
+            assert!(dup.is_err(), "duplicate global-shared override was allowed");
+
+            // A per-harness row at the same scope is a distinct identity.
+            conn.execute_batch(
+                "INSERT INTO prompt_overrides
+                    (prompt_id, scope, scope_key, harness, template, created_at, updated_at)
+                 VALUES ('session.summary', 'global', NULL, 'codex', 't3',
+                         datetime('now'), datetime('now'));",
+            )
+            .unwrap();
+
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM prompt_overrides", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 2);
+        }
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1162,6 +1527,11 @@ mod tests {
         conn.execute_batch(super::MIGRATION_001).unwrap();
         conn.execute_batch(super::MIGRATION_011).unwrap();
         conn.execute_batch(super::MIGRATION_015).unwrap();
+        // 030 replays after 027 and alters `plan_interviews`; 032 alters
+        // `pr_comment_triage` (009, re-keyed by 010).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_016).unwrap();
         conn.execute_batch(super::MIGRATION_023).unwrap();
         conn.execute_batch(super::MIGRATION_024).unwrap();
         conn.execute_batch(super::MIGRATION_025).unwrap();
@@ -1198,7 +1568,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 29);
+        assert_eq!(version, 39);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

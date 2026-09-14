@@ -16,3 +16,8 @@ users, not embedded in the binary.
   tmux session to test dashboard detection without a real agent
 - `amf/pr-checks.sh`, `amf/pr-info.sh` — PR context helpers used by
   the `amf:pr-*` Claude Code skills
+
+For focused and full tests, runner prerequisites, dependency audits and debug
+logging, see [development checks](../../docs/development/checks.md).
+Choose feature modules and test suites using the
+[architecture guide](../../docs/development/architecture.md).

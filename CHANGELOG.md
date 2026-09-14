@@ -10,7 +10,572 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Expert plan review is now an explicit frontier-model action.** At the final
+  plan review, press `a` to request an Expert review, select a model from the
+  same verified choices used by AI Review, and verify both harness and model
+  in the pre-call confirmation. AMF never starts or suggests this review
+  automatically, and it does not inherit the ordinary review model. The
+  Expert's implementation brief and optional clarification questions still
+  feed the accepted-plan kickoff for the implementation agent. Codex choices
+  come from the same visible catalog as Codex's own model picker, with a legacy
+  config fallback. A one-time migration records the selected model with the
+  plan-review evaluation data.
+
+### Security
+
+- Updated TLS certificate validation dependencies to address certificate and
+  revocation-list validation vulnerabilities in HTTPS connections. No migration
+  is required.
+
+### Added
+
+- **The plan picker can now create a plan, not just select one.** When a
+  feature has no plan yet, leader `n` in its session opens a picker over the
+  worktree's Markdown files; pressing `p` there now starts the same guided
+  plan-mode interview available elsewhere (e.g. `P` on the dashboard),
+  scoped to that feature. Accepting writes `AMF_PLAN.md` as usual, which is
+  picked up automatically, so a feature with no plan can get one without
+  leaving the picker to hand-write a file first.
+
+- **A new "Quick Plan" mode offers a lighter alternative to the full Plan
+  interview.** Press `Q` on a feature (parallel to `P` for the full interview)
+  to re-run it, or pick it from the feature-creation wizard's Plan field,
+  which is now a 3-way cycle — `None` / `Quick Plan` / `Full Plan` — instead
+  of a checkbox. Quick Plan asks as few clarifying questions as the task
+  needs, including none at all for something already clear, then does one of
+  three things: starts work right away with no plan file, shows a short
+  reviewable plan (the same accept/edit screen full Plan mode uses), or, if
+  the answers turn out to reveal more complexity than expected, escalates
+  into the full Plan-mode interview — with an explicit message explaining why
+  and everything already answered carried forward, so nothing is asked twice.
+
+- **AMF now has a public website** (`site/`, built with the Zola static site
+  generator): a landing page plus a documentation section covering
+  installation, quick start, core concepts, keybindings, Learning Mode,
+  reviewing changes and PR feedback, prompts and TODOs, overriding AI
+  prompts, attention/resource limits, and configuration. This does not
+  change the `amf` binary or any in-app behavior — it is separate,
+  publishable site content with its own build (`zola build`/`zola serve`)
+  and a GitHub Actions workflow that deploys it to Cloudflare Pages on push
+  to `main`. No migration is required.
+
+- **A plan interview can now include reference documents.** On the feature-brief
+  step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
+  to four readable text files from anywhere on disk — a spec, a ticket, design
+  notes. The interview's question, plan-synthesis, and plan-review passes
+  normally run with no file access; attaching at least one document is the
+  explicit opt-in that switches those passes to a read-only run, so the
+  interviewer can read the attached documents *and* the surrounding codebase
+  when shaping questions and the plan. A document outside the feature's
+  workdir is copied into a gitignored `.amf/interview-docs/` scratch folder so
+  the agent can reach it, and that folder is cleared when the interview ends;
+  one that has moved or become unreadable by the time a pass runs is skipped
+  with a notice rather than failing the pass. The optional-AI consent screen
+  says when documents are attached and notes that a token estimate is then only
+  a floor. Attachments are saved with the interview draft, so a resumed or
+  re-run interview keeps them (paths are re-checked when a pass runs). Nothing
+  changes for an interview with no attachments. A one-time schema migration
+  adds an `attached_docs` column to the stored interviews table; existing rows
+  are treated as having no attachments.
+
+- **AMF's AI reviews now split an oversized diff into slices instead of
+  failing or silently truncating it.** When the diff for the `W` AI PR review,
+  or for a final-review AI co-review (`Ctrl+Space`, then `f`, then the
+  co-review key) on a very large file, would exceed the review model's context
+  window, AMF parses the unified diff into per-file sections, packs them into
+  budgeted batches, reviews each batch on its own, splits any single file
+  that is still too big hunk by hunk, and then combines every batch's findings
+  into one review with a synthesis pass. The running screen reports progress
+  ("Reviewing batch 3/12", "Splitting `src/foo.rs` hunk by hunk", "Combining
+  findings"). Coverage stays complete: a hunk that cannot be made to fit even
+  on its own is listed explicitly rather than dropped. The `W` review's
+  summary — in the pane, the post dialog, and any review posted to GitHub —
+  gets a "⚠ Partial coverage" note when the diff had to be split, naming any
+  slice that could not be reviewed and saying if the synthesis pass could not
+  run (the findings are then combined verbatim). Batching only kicks in past
+  the size threshold; ordinary reviews are unchanged. The threshold is a
+  per-harness default (Claude/Codex ~128k tokens, OpenCode/Pi ~96k) and can be
+  overridden globally with `review_prompt_budget_tokens` in
+  `~/.config/amf/config.json`, or per repository with the same key in
+  `amf.json`; `0` disables pre-send splitting and relies only on retrying a
+  smaller prompt after an actual "prompt too long" error. The
+  batch/hunk/synthesis prompts are editable like every other headless prompt
+  (dashboard `E`) — the new ids are `review.batch`, `review.hunk_split`,
+  `review.synthesis`, and `review.findings_summary`. For a very large refactor
+  where per-slice review loses too much cross-file context, reviewing the
+  branch commit by commit (a focused PR per commit, or `git rebase -i` to
+  split one) still gives the best results. No migration is required.
+
+- **The plan interview no longer sends an over-long prompt when the repository
+  context is large.** If an adaptive interview round, the plan synthesis, or
+  the advisory plan review would exceed the model's context window, AMF first
+  drops the repository `README` / `CLAUDE.md` excerpts from that one prompt
+  and retries; the interview dialog's footer says what was trimmed. If it is
+  still too large, the prompt is sent as is with a note that it may not fit.
+  No migration is required.
+
+### Fixed
+
+- Failed AI reviews now retain Claude’s structured error details and show the
+  process exit status, making failures with empty stderr easier to diagnose.
+
+- **AI review in PR Triage no longer fails on very large pull requests.** The
+  `A`/`w`/`O` review passes fetch the PR diff with `gh pr diff`, which pulls it
+  from GitHub's API — and GitHub refuses to render a diff past a size cap
+  ("the diff exceeded the maximum number of lines"), so the review never
+  started. AMF now recognises that specific refusal and falls back to building
+  the same merge-base diff locally with `git`, which has no such limit. The
+  fallback fetches the PR head and base — from whichever repository `gh`
+  resolves the PR against, so fork checkouts and `gh repo set-default` work —
+  into private per-process refs (leaving your working tree, branch, and
+  `origin/*` untouched) and cleans them up afterward, and its `git diff` is
+  pinned to the same flags AMF uses elsewhere so a repo-local `diff.external`
+  or `diff.context` setting can't distort it. If the PR is already merged (so
+  the local diff would come back empty), AMF re-surfaces GitHub's original
+  refusal instead of reviewing nothing. Every
+  other `gh pr diff` failure — no PR, not authenticated, offline — still
+  surfaces as before. A diff that large may still exceed the review model's
+  context window, which is reported separately. No migration is required.
+
+- **The "latest prompt" menu (leader, then `l`) now shows every prompt sent
+  in a Claude session, not just the ones near the end of the most recent
+  resume.** It previously only read the tail of the single most-recently
+  modified session file, so prompts sent before a `/resume` or context
+  compaction — which starts a new session file — could be silently missing
+  from the list. It now scans every session file for the checkout, scoped to
+  the session that window is actually running so a second Claude window
+  sharing the same worktree can't leak its prompts into the list. The
+  cheaper, tail-only read is still used for the sidebar's single latest-
+  prompt preview, which polls far more often and only ever needs the very
+  last one; reading and parsing the full history for the menu now happens
+  off the UI thread. No migration is required.
+
+- **The AI review model picker now offers Codex presets, not just Claude's.**
+  When choosing a model for the `A`/`w`/`O` AI review passes, Codex
+  previously only offered "Default" or a free-typed custom model name. It
+  now also lists preset model choices, drawn from the models your local
+  Codex CLI already knows about, matching the preset list Claude has always
+  had. If Codex hasn't recorded any models yet, the picker falls back to
+  "Default"/"Custom" as before — and now explains why, with a note pointing
+  at `~/.codex/config.toml` so you know how to make presets show up. No
+  migration is required.
+
+- **Multi-line editors now use Shift+Enter for a newline.** TODO notes,
+  Compose, plan interviews, configuration fields, and PR investigation context
+  no longer rely on Alt+Enter, which Windows can intercept. Plain Enter keeps
+  its existing save or send behavior. No migration is required.
+
+- **Prompt library entries no longer disappear when running multiple AMF
+  instances.** Saving in one AMF instance (e.g. another checkout open in a
+  different terminal) could silently erase templates recently added or
+  edited in another — often the most recent one, or several from the same
+  session. Templates are now saved independently of other AMF state, and the
+  prompt library always shows the latest saved templates when opened. No
+  migration is required.
+
+- **The fresh-context sidebar hint no longer shows its `<leader F>` shortcut
+  twice, and the redundant `<leader X>` dismiss binding is gone.** At the
+  warning/critical context band, the sidebar's `Context` section previously
+  advertised the fresh-context action both in its title-top hint and again
+  in an `Action:`/`Dismiss:` line inside the body — with a separate leader
+  command just to dismiss it. The shortcut is now shown once, in the title,
+  matching every other sidebar section's convention, and the hint re-arms on
+  its own at the next context reset or cleared trigger, so there is nothing
+  left to dismiss. No migration is required.
+
+## [v0.42.0] - 2026-09-04
+
+### Fixed
+
+- **PR Triage fix prompts can now be reviewed and redirected without editing.**
+  The injection confirmation dialog now scrolls long prompts with `Ctrl+J/K`
+  or `Page Up/Down` before edit mode is entered. Press `t` to return to the
+  destination picker and choose another live, dedicated, or companion session;
+  any edits already made to the prompt are retained. No migration is required.
+
+- **The Active TODO sidebar now keeps its completion shortcut visible.** When
+  an agent session is associated with a TODO, its `Active TODO` box shows
+  `Ctrl+Space`, then `z` in the header just like the Prompt and Plan boxes
+  show their shortcuts, including in narrow sidebars. No migration is
+  required.
+
+- **Pasting into the native TODO editor now works reliably.** Pasted text is
+  inserted into the active TODO field without submitting the dialog. TODO
+  titles remain single-line, while notes and scratchpads retain pasted line
+  breaks. No migration is required.
+
+### Added
+
+- **PR Triage Investigate now accepts optional context.** Press `e` in the PR
+  Triage pane to attach a free-form note to the next `v` (Investigate) run — a
+  hypothesis the read-only pass verifies against the PR and repository (for
+  example, "I think this is already handled in `foo.rs` — double-check"),
+  framed in the prompt as something to confirm or refute, not to assume. The
+  attached note shows in a banner so it can be reviewed or cleared before
+  dispatch, is consumed by the run it applies to, and is saved into the
+  investigation's recorded prompt. Leaving the box empty runs the
+  investigation exactly as before. No migration is required.
+
+- **Every headless AI prompt AMF sends can now be viewed and overridden.**
+  AMF makes one-shot ("headless") AI calls behind the plan interview, Learning
+  Mode, the final-review diff helpers (walkthrough, AI co-review, changeset
+  overview, diff explanation), the AI PR review, and the review-memory
+  bootstrap/compaction. A new **prompt-override manager** — `E` on the
+  dashboard, or `Ctrl+Space` then `E` from a session — lists all 15 templates
+  with their effective source (built-in / feature / project / global), opens
+  an editor on the effective template, and saves an override at one of three
+  scopes: **feature** (this checkout, in `amf.db`), **global** (all projects,
+  in `amf.db`), or **project** (`amf.json`'s new `prompt_overrides` key,
+  committed with the repo). An override can be shared across harnesses or
+  pinned to one (harness picker in the save flow). Precedence is
+  nearest-scope-wins — feature → project → global → built-in — with a
+  per-harness template beating the shared one within the winning scope. `d`,
+  `d` clears an override. Templates use visible `{{token}}` placeholders that
+  AMF re-fills with live context at run time; there is **no validation** —
+  a dropped or unknown token is saved and rendered verbatim. The editor
+  lists the template items (placeholders) each prompt accepts above the
+  edit box.
+
+- **A pre-call notice now appears before each user-initiated headless AI
+  call.** It names the prompt and target harness and offers `v` (view the
+  exact prompt), `e` (edit its template in the manager), `Enter` (continue),
+  and `Esc` (cancel) — there is no "don't ask again". Continuing after an
+  edit re-resolves the prompt, so a just-saved override applies to that run.
+  Automated calls that run without a person watching — the Learning Mode
+  answer queue and session summaries — announce with a non-blocking toast
+  instead of the modal, so a batch of queued questions never stalls.
+  Migration: `amf.db` gains a `prompt_overrides` table
+  (`MIGRATION_034`), applied automatically on first launch; existing
+  databases are unaffected until an override is saved.
+
+- **PR Triage can investigate a review comment instead of fixing it.** A
+  comment that asks a question rather than requesting a change can be
+  investigated: press `v` to run a strictly read-only headless pass on the
+  selected comment. The investigation gets minimal context — the comment, the
+  PR title and description, and the list of changed files, with no file
+  contents — picks its harness per run, and blocks the overlay until it
+  returns; it inspects the repository but cannot edit files, run commands, or
+  write anything. The answer persists per pull request and reopens in the
+  detail panel with its status, harness, and time. `f` and `B` still fix and
+  batch a comment normally whether or not it carries an investigation — and
+  when it does, the investigation's findings are appended to the fix prompt as
+  a starting point. Press
+  `a` on a finished investigation to act on it: post an editable reply, ask a
+  follow-up (re-runs read-only with the prior answer as context), dismiss it,
+  or keep it as a TODO. Investigate is single-item and never joins a batch fix.
+  This adds a `pr_investigations` table; existing databases upgrade
+  automatically with no change to other data.
+
+- **The native TODO editor can now use Vim keybindings.** Every inline edit
+  in the scoped-TODOs overlay — add, edit title, edit notes, and the
+  scratchpad — takes `Ctrl+T` to toggle the Vim keymap, matching the Compose
+  box and the final-review editors. The choice is remembered for the life of
+  the overlay (a fresh overlay starts with Vim off), a freshly opened Vim
+  editor lands in Normal mode, and `Ctrl+Q` cancels an edit since Vim's `Esc`
+  switches Insert→Normal instead. The hint line under the editor shows the
+  active mode. Requires no migration.
+
+- **A TODO can now start an agent in a brand-new feature without plan
+  mode.** Pressing `Enter` on an unlinked TODO used to offer two choices —
+  "Start an agent on this TODO" (which, for a project- or global-scoped
+  TODO, could only pick an *existing* feature) and "Plan this TODO first".
+  Getting a fresh branch and worktree for a TODO therefore meant sitting
+  through the discovery interview. The chooser now has a third option,
+  "Start an agent in a new feature": it opens the normal create-feature
+  wizard pre-filled with a branch name from the TODO title and plan mode
+  left off, and once the feature exists it links the TODO to it and seeds
+  that feature's agent with the TODO, unsent. It declines with a reason on
+  a project that is not a git repository. Requires no migration.
+
+- **AMF's own AI review (`W`) now adds a compact usage summary to its
+  GitHub review.** The overall PR review records the harness, model, elapsed
+  time, input, output, cached, and total tokens when each is reported, plus an
+  estimated cost using AMF's configured rates. Line comments stay focused on
+  their finding and do not repeat this metadata. Missing metrics and costs are
+  labeled unavailable rather than shown as zero, so partial reports remain
+  trustworthy. Existing cached reviews remain compatible; no migration is
+  required.
+
+### Changed
+
+- **PR Triage now attributes a combined batch fix's cost to every comment it
+  resolved, and marks it as shared.** When you fix several review comments in
+  one `B` batch, the single agent run's cost used to be invisible per issue.
+  Each resolved comment in the batch now discloses the *whole run's* cost —
+  relabelled `Fix cost (est.):` in the reply dialog and in the reply posted to
+  GitHub — followed by `· combined (N)` and, in the posted text, a plain line
+  explaining it was one of N comments handled in a single run and the figure is
+  shared. In the comment list, batched comments carry a `⧉` marker that
+  brightens on the siblings of whichever comment is selected, and `[` / `]`
+  jump between them. The badge and cost appear only on comments that were
+  actually resolved; a batch comment you never replied to shows nothing.
+  AMF's own AI Review (`W`) shows the same `Fix cost (est.): … · combined (N)`
+  on a finding once it has been posted and then fixed in PR Triage as part of
+  a batch, matched back by file and line. Single-comment fixes are unchanged,
+  and triage records written before this release are left as-is.
+
+- **The final review's `t` key now picks where fixes are applied, not just
+  live-vs-dedicated.** It used to flip silently between the feature's own agent
+  session and a fresh dedicated "Final Review" session. `t` now opens a
+  destination picker — modelled on PR Triage's — with four choices: this
+  feature's live session, a dedicated review session on a harness you pick,
+  **another existing feature's** agent session, or **a brand-new companion
+  feature** (its own worktree branched from the feature under review, with its
+  own harness and vibe mode). The companion keeps its fixes isolated; landing
+  them back on the source branch is an explicit step — press `t` on that
+  feature's dashboard row to push or cherry-pick its commits. The footer target
+  label and the review `?` help overlay reflect the new options. Reviews in
+  progress are unaffected; the default target is still this feature's live
+  session.
+
+- **Review Mode agents now append developer notes without reading the notes
+  file back.** A feature with review mode on used to be told to read
+  `.claude/review-notes.md` each batch before appending, so the growing file
+  was pulled into the agent's context over and over. The instruction now says
+  to blind-append and *not* read the file (or its archive) — AMF already keeps
+  only the newest note per changed file after every turn, so the read was
+  redundant. The developer-notes panel in the final-review diff viewer is
+  unchanged, and the `g` on-demand walkthrough still fills in files with no
+  note. Review mode remains Claude-only. No migration is required.
+
+- **Planning a TODO into its own feature no longer proposes a sentence-long
+  branch name.** TODO titles are written as sentences, and the create-feature
+  wizard seeded the branch with the whole thing slugified — which then became
+  the worktree directory name, the tmux session name, and the dashboard row.
+  The seeded name is now shortened to at most 32 characters, cut on a word
+  boundary so it still reads as a name rather than a truncation. It is still
+  only a seed: the wizard opens on the branch field, so a name worth spelling
+  out in full is one keystroke away.
+
+- **The agent sidebar now always shows the viewed session's context usage,
+  not only when it is nearing the limit.** The section (renamed from
+  `Fresh Context` to `Context`) appears for every Claude, Codex, or opencode
+  session that has a reading, in every band — a calm green line like
+  `Ctx 42% · 42,000` while there is headroom, turning amber then red as
+  pressure rises. At the warning or critical threshold the same section still
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
+
+- **Publishing screenshot proof to a PR no longer waits for a manual
+  approval.** The publish flow used to dispatch a two-job workflow whose
+  deploy half sat behind a protected GitHub environment, so every run paused
+  until someone clicked approve. The workflow is now capture-only and the
+  private Cloudflare Pages gallery is deployed from your own machine instead —
+  nothing waits for a reviewer, and the Cloudflare credentials never enter CI.
+  This is contributor tooling for the AMF repository itself and does not affect
+  managed projects.
+
+### Migration
+
+- No migration is required.
+
+- Schema migration 032 adds two nullable columns (`batch_id`,
+  `batch_fix_cost`) to `pr_comment_triage`. It applies automatically on
+  startup; existing triage rows keep both as `NULL` (not part of any batch)
+  and are unaffected. No downgrade step is needed — an older AMF simply
+  ignores the columns.
+
+- Publishing screenshot proof to a PR now deploys from your machine, so it
+  needs a one-time local setup: put a `CLOUDFLARE_API_TOKEN` scoped to
+  Cloudflare Pages · Edit in the environment (the maintainer keeps it in
+  `~/.secrets/cf-amf-pages.env`, sourced by the `amf-publish-screenshots` shell
+  wrapper) and set `CLOUDFLARE_ACCOUNT_ID`. `wrangler login` also works but is
+  unreliable; prefer the token. The `screenshot-pages` GitHub environment is no
+  longer used and can be deleted along with its `CLOUDFLARE_*` secrets.
+
+## [v0.41.0] - 2026-08-27
+
+### Added
+
+- **The embedded session sidebar now shows a Usage box.** Directly under
+  Status, it lists the current harness's account-level rate-limit windows —
+  the same 5h/7d figures the dashboard status bar shows — so you can check
+  your remaining headroom without leaving the session. It appears once the
+  usage numbers are known and is left out for harnesses that don't report
+  usage (OpenCode, Pi).
+
+- **Plan-mode multiple-choice questions now take your own free-text answer.**
+  Every select question in the guided plan interview shows a "Your own answer"
+  box beneath the options. Press `e` to type into it; you can answer purely
+  with your own text, or pick option(s) *and* add elaboration. `Enter` in the
+  box commits it and returns focus to the option list without submitting the
+  question; `Esc` discards the edit; `Enter` on the option list still submits.
+  Press `Backspace` to clear a pick and answer with custom text alone.
+  There is a 500-character limit (multi-line allowed) shown as a `used/500`
+  counter. A question with nothing picked and a blank custom answer stays
+  unanswered, exactly as before. The submitted answer is a single plain
+  string — picked labels, then ` — ` and your text — so the AI rounds and the
+  saved plan treat it like any other answer, and revisiting the question
+  restores the selection and the custom text rather than a flat string. Visual
+  proof regenerable via
+  `scripts/dev/screenshot/scenarios/plan-interview-custom-answer.txt`.
+
+- **TODO-launched agent sessions now keep their own TODO visible in the agent
+  sidebar.** The box shows only that TODO's title and whether it is open or
+  completed, and it remains visible after completion. From the embedded
+  session, press `Ctrl+Space`, then `z` to confirm completion. References
+  follow TODOs when they move between scopes and are removed when an item is
+  deleted. No migration is required; existing sessions simply have no
+  reference until launched from the TODO menu.
+
+- **The agent sidebar now always shows the viewed session's context usage.**
+  A `Context` section appears for every Claude, Codex, or opencode session
+  that has a reading, in every band — a calm green line like
+  `Usage: Ctx 42% · 42,000` while there is headroom, turning amber then red
+  as pressure rises. At the warning or critical threshold the same section
+  adds `Ctrl+Space`, then `F` to open a new session in the same feature with
+  an editable continuation prompt; `Ctrl+Space`, then `X` dismisses that call
+  to action while leaving the reading in place, and it returns after the
+  session clears or resets. Estimated and stale readings stay labeled, while
+  unavailable or reset-pending readings do not invent a percentage. No
+  migration is required.
+
+- **Harness pickers now show how much rate-limit headroom you have left,
+  right where you choose a harness.** When creating a feature (Harness
+  step) or adding a session (`s`), a Claude or Codex option now shows a
+  line underneath it like `5h 62% left · resets in 3h   7d 90% left`, so
+  you can see you're about to run low before you start. It reads the same
+  cached numbers already shown in the dashboard's status bar — no extra
+  waiting, no new login prompts. If nothing is known for a harness (this
+  includes OpenCode and Pi, which don't expose this today), the line is
+  simply left out.
+
+- **Final-review PR-triage comment and suggestion editors can now use Vim
+  mode for the whole review session.** Press `Ctrl+T` to toggle it for every
+  editor; enabling starts in Normal mode, while `Tab` submits and `Ctrl+Q`
+  cancels from either keymap. Vim mode starts off for each new review, so
+  existing plain-editor behavior is unchanged.
+
+- **AMF's own AI review (`W`) now carries model, token, and cost
+  attribution.** After a run completes, the AI Review pane shows a line
+  naming the harness and model that produced the findings plus the run's
+  input/output tokens and estimated cost. The same disclosure is inserted
+  above the `— AI review via AMF` marker on the posted GitHub summary and on
+  every inline comment, so a reader on the PR can tell which model reviewed
+  their code and roughly what it cost. It uses the same configured pricing
+  and rounding as AMF's other usage meters, and matches the disclosure
+  already shown on AI-drafted PR Triage replies. A harness that reports no
+  token usage degrades to model-only attribution rather than showing a
+  fabricated `$0.00`; a review generated before this change keeps the bare
+  marker.
+
+### Fixed
+
+- **A TODO started through plan mode now shows its "Active TODO" box in the
+  agent sidebar.** The two direct spawn routes ("start an agent on this
+  TODO" and "start an agent in a new feature") tagged the launched session
+  with its originating TODO, but the two plan-mode routes — "plan this TODO"
+  in the host feature and in a new feature — only recorded the
+  feature-level link. The planned agent's sidebar therefore never showed
+  which TODO it was working, and `leader z` had nothing to complete.
+  Both plan routes now attach the same session reference, so the sidebar
+  section and its completion hint appear regardless of how the agent was
+  launched. The new-feature plan route also records the session on the
+  TODO's work state, matching the non-plan route.
+
+- Fixed the new usage line above being unreadable when its row was
+  selected in the add-session picker, in themes (including the default)
+  where the selection highlight and the line's muted text color matched.
+  It now switches to the brighter selected-row text color.
+
+### Migration
+
+- Schema migration 030 runs automatically on first launch, adding a
+  `custom_answers` column to the `plan_interviews` table so custom
+  plan-interview answers survive a resumed or re-run interview. Existing
+  rows backfill to "no custom answer"; no user action is required.
+- The Vim toggle is transient and is not persisted.
+
+## [v0.40.0] - 2026-08-26
+
+### Added
+
+- **A new leader command starts a fresh agent session for continuing work
+  without dragging along a long conversation history.** From an agent
+  session, press `Ctrl+Space`, then `Shift+F`. AMF asks what you want the new
+  session to do, then opens a brand-new session in the same feature, using
+  the same agent. Its compose box arrives pre-filled (not sent) with your
+  instruction plus a pointer to the feature's current plan and the files
+  changed on this branch, so it starts oriented without inheriting the old
+  session's accumulated context — review it and send when ready. If the
+  feature has no plan file, that part is left out and AMF says why; on a
+  non-git project, or a branch with nothing changed yet, the changed-files
+  list is simply left out too.
+
+- **You can now customize the context-window size and the warning/critical
+  thresholds behind the `Ctx` indicator, instead of relying on AMF's
+  hardcoded defaults.** Press `w` on the dashboard to open Context Window
+  Settings: set a token count to override the context-window size AMF
+  assumes when a harness doesn't report its own (useful if you're on a
+  larger or smaller context-window plan than AMF's default guess), and set
+  the usage percentages at which the indicator switches to `WARNING` and
+  `CRITICAL` (70% / 85% by default). These are global settings, saved to
+  your AMF config. No migration is required — leaving both blank/default
+  keeps today's behavior exactly as it is.
+
+### Changed
+
+- **Starting a TODO plan now marks the item in progress immediately.** Choosing
+  **Plan this TODO first** changes the TODO from `[ ]` to `[~]` before the plan
+  destination is selected, so the list accurately shows that planning work has
+  begun and `I` will not assign the same item again. Cancelling later plan or
+  feature setup keeps the item in progress; failed direct agent launches still
+  roll back to not started as before.
+
+- **The context-window indicator now shows the raw token count, not just the
+  percentage.** Every session row's `Ctx` indicator — Normal, `WARNING`, and
+  `CRITICAL` alike — now reads its actual token count next to the label
+  (e.g. `Ctx ~91% CRITICAL · 182,000`), so you can judge how large a
+  session's context has actually grown instead of relying on the severity
+  label alone. No config changes or migration required.
+
+- **Raised the fallback context-window size used for Claude Code sessions
+  from 200,000 to 900,000 tokens.** This only affects the `Ctx` percentage
+  when Claude's own status line or transcript doesn't report its context
+  window size directly; AMF's estimate now better matches Sonnet's actual
+  auto-compact window instead of understating it.
+
+- **Project and global TODO lists can now be shown or hidden independently.**
+  Press `p` for the project list and `g` for the global list; hidden scopes stay
+  discoverable through labeled placeholders and are excluded from pane
+  navigation, `I` (implement next), and other cross-pane actions. The worktree
+  list remains visible whenever the feature has one, while repo-root features
+  may hide both optional lists. Visibility is shared by every TODO view for the
+  current AMF run and resets to both lists shown on the next launch.
+- **TODO priority and launch keys moved to make room for the scope toggles.**
+  Press `P` to cycle priority and `Enter` to start or plan the selected TODO.
+  The previous `\` side-pane toggle and `g` launch alias are no longer used in
+  the TODO editor.
+
+### Fixed
+
+- **Deleting a feature or project now clears its remembered PR association.**
+  Reusing the same branch name for later work no longer shows the old feature's
+  merged or closed PR badge. Failed deletions leave the association intact.
+
+- **Accepting a completed plan now asks immediately before starting above the
+  agent concurrency limit.** The completed plan stays available while the
+  Resource Check popup is open: continue to create and start the planned
+  feature with its original kickoff prompt, or cancel back to plan review
+  without creating it. This replaces the detour to the dashboard and the
+  follow-up “Press c to start it” warning.
+
+### Migration
+
+- No migration is required for PR cleanup. Associations are cleared when a
+  feature or project is deleted after upgrading.
+- No migration is required. Existing TODO states and associations are
+  preserved.
+- No data migration is required. TODO contents and pane state are retained when
+  a scope is hidden; only the TODO editor keybindings changed.
+- No migration is required for plan completion confirmations. Existing agent
+  limits and plan-mode features continue to use their current configuration.
 
 ## [v0.39.0] - 2026-08-25
 

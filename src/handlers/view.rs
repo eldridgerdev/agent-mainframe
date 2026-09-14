@@ -422,11 +422,24 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             };
             app.open_prompt_library(Some(view_state));
         }
+        KeyCode::Char('E') => {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_prompt_overrides(Some(view_state));
+        }
         KeyCode::Char('b') => {
             app.toggle_sidebar_in_view();
         }
         KeyCode::Char('v') => {
             app.toggle_expanded_todos_in_view();
+        }
+        KeyCode::Char('z') => {
+            app.request_todo_reference_completion();
         }
         KeyCode::Char('N') => {
             app.open_todo_quick_capture();
@@ -436,6 +449,13 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('n') => {
             app.open_current_plan_from_view()?;
+        }
+        KeyCode::Char('F') => {
+            if app.context_hint_is_visible_in_current_view() {
+                app.open_fresh_context_prompt_from_view_with_context_hint();
+            } else {
+                app.open_fresh_context_prompt_from_view();
+            }
         }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
@@ -477,7 +497,7 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use mockall::Sequence;
-    use tempfile::TempDir;
+    use tempfile::{NamedTempFile, TempDir};
 
     use crate::app::{CommandAction, ViewState, analyze_prompt};
     use crate::project::{
@@ -692,6 +712,37 @@ mod tests {
     }
 
     #[test]
+    fn leader_n_then_p_opens_the_on_demand_plan_interview_for_the_picker_feature() {
+        let repo = init_repo_with_branch_change();
+        let notes = repo.path().join("docs/accepted.md");
+        std::fs::create_dir_all(notes.parent().unwrap()).unwrap();
+        std::fs::write(&notes, "# Accepted\n").unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        let feature_id = app.store.projects[0].features[0].id.clone();
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('n')), 20).unwrap();
+        app.complete_markdown_loading();
+        assert!(matches!(&app.mode, AppMode::MarkdownFilePicker(_)));
+
+        crate::handlers::picker::handle_markdown_file_picker_key(&mut app, key(KeyCode::Char('p')))
+            .unwrap();
+
+        match &app.mode {
+            AppMode::PlanInterview(state) => {
+                assert_eq!(state.interview_key, feature_id);
+                assert_eq!(state.workdir, repo.path());
+                assert!(state.pending_launch.is_none());
+            }
+            _ => panic!("expected the plan interview to open from the plan selector"),
+        }
+        // The new plan hasn't been accepted, so nothing was written yet and
+        // the pre-existing markdown file is untouched.
+        assert!(!repo.path().join("AMF_PLAN.md").exists());
+        assert!(notes.exists());
+    }
+
+    #[test]
     fn leader_n_with_no_markdown_keeps_the_agent_session_active() {
         let repo = init_repo_with_branch_change();
         let mut app = app_for_viewing_repo(repo.path());
@@ -704,6 +755,274 @@ mod tests {
         assert_eq!(
             app.toasts.last().map(|toast| toast.message.as_str()),
             Some("No Markdown plan is available in this worktree")
+        );
+    }
+
+    /// Build a viewing-mode `App` over `repo` with a mocked tmux that accepts
+    /// exactly the calls `commit_fresh_context_prompt` makes when the feature
+    /// is already running: a session-exists check plus one new window for the
+    /// fresh session.
+    fn app_for_fresh_context_test(repo: &Path) -> App {
+        let mut feature = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            repo.to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = ProjectStatus::Active;
+        let session = feature.add_session(SessionKind::Claude).clone();
+
+        let mut project = Project::new(
+            "demo".to_string(),
+            repo.to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(feature);
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        let tmp = NamedTempFile::new().unwrap();
+        app.store_path = tmp.path().to_path_buf();
+        app.mode = AppMode::Viewing(ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            "amf-feature".to_string(),
+            session.tmux_window.clone(),
+            session.label.clone(),
+            SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        ));
+        app
+    }
+
+    fn composed_text(app: &App) -> String {
+        match &app.mode {
+            AppMode::Compose(state) => state.editor.text().to_string(),
+            other => panic!(
+                "expected Compose mode, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    /// Press leader `F`, type `instruction`, then Enter -- the two-step flow
+    /// (prompt for the instruction, then start the session) that replaced a
+    /// single keypress once the fresh-context prompt started asking first.
+    fn open_and_submit_fresh_context_prompt(app: &mut App, instruction: &str) {
+        app.activate_leader();
+        handle_view_key(app, key(KeyCode::Char('F')), 20).unwrap();
+        assert!(
+            matches!(app.mode, AppMode::FreshContextPrompt(_)),
+            "expected the fresh-context prompt to open, got {:?}",
+            std::mem::discriminant(&app.mode)
+        );
+        for c in instruction.chars() {
+            crate::handlers::handle_fresh_context_prompt_key(app, key(KeyCode::Char(c))).unwrap();
+        }
+        crate::handlers::handle_fresh_context_prompt_key(app, key(KeyCode::Enter)).unwrap();
+    }
+
+    #[test]
+    fn leader_shift_f_opens_a_prompt_naming_the_feature() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::FreshContextPrompt(state) => {
+                assert_eq!(state.feature_name, "feature");
+                assert_eq!(state.input, "");
+            }
+            other => panic!(
+                "expected FreshContextPrompt, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn context_hint_prefills_the_same_editable_fresh_context_prompt() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.open_fresh_context_prompt_from_view_with_prefill(
+            "Inspect the persisted work and continue.".into(),
+        );
+
+        match &app.mode {
+            AppMode::FreshContextPrompt(state) => {
+                assert_eq!(
+                    state.source,
+                    crate::app::FreshContextPromptSource::ContextHint
+                );
+                assert_eq!(state.input, "Inspect the persisted work and continue.");
+            }
+            other => panic!(
+                "expected FreshContextPrompt, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn leader_shift_f_esc_cancels_back_to_the_session_view_unchanged() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Char('x')))
+            .unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+
+    #[test]
+    fn leader_shift_f_empty_instruction_is_a_no_op_cancel() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+
+    #[test]
+    fn leader_shift_f_starts_a_fresh_context_session_seeded_with_plan_and_diff() {
+        let repo = init_repo_with_branch_change();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
+
+        let text = composed_text(&app);
+        assert!(text.starts_with("Read AMF_PLAN.md for full context on this feature. "));
+        assert!(text.contains("Changed/new files to look at:"));
+        assert!(text.contains("src.txt"));
+        assert!(text.contains("z_new.txt"));
+        assert!(text.contains("Fix the login bug."));
+        assert!(text.ends_with("Grill me with any questions to clarify before implementing"));
+
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[1].label,
+            "Fresh Context"
+        );
+    }
+
+    #[test]
+    fn context_hint_f_starts_one_fresh_session_with_the_generated_continuation() {
+        let repo = init_repo_with_branch_change();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+        app.store.projects[0].features[0].summary = Some("Finish the sidebar work.".into());
+        app.latest_prompt_cache
+            .insert("amf-feature".into(), "Add the context hint.".into());
+        let original_session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+        let now = chrono::Utc::now();
+        let mut context = crate::context_tracking::SessionContextState::default();
+        context
+            .accept_sample(
+                crate::context_tracking::ContextUsageSample {
+                    used_tokens: 85_000,
+                    context_limit: Some(100_000),
+                    provenance: crate::context_tracking::ContextProvenance::Direct,
+                    sampled_at: now,
+                    checked_at: now,
+                    reset: crate::context_tracking::ContextResetMetadata::default(),
+                },
+                crate::context_tracking::ContextThresholds::default(),
+            )
+            .unwrap();
+        app.context_states
+            .insert(original_session_id.clone(), context);
+        app.context_hint_states.sync_all(&app.context_states);
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('F')), 20).unwrap();
+        assert!(matches!(app.mode, AppMode::FreshContextPrompt(_)));
+        crate::handlers::handle_fresh_context_prompt_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        let text = composed_text(&app);
+        assert!(text.contains("Read AMF_PLAN.md for full context on this feature."));
+        assert!(text.contains("Changed/new files to look at:"));
+        assert!(text.contains("Feature summary: Finish the sidebar work."));
+        assert!(text.contains("Latest known prompt: Add the context hint."));
+        assert!(text.contains("Inspect the current work and continue from persisted artifacts"));
+        assert_eq!(app.store.projects.len(), 1);
+        assert_eq!(app.store.projects[0].features.len(), 1);
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[0].id,
+            original_session_id
+        );
+        assert_eq!(
+            app.store.projects[0].features[0].sessions[1].label,
+            "Fresh Context"
+        );
+    }
+
+    #[test]
+    fn leader_shift_f_omits_the_plan_line_and_warns_when_no_plan_file_exists() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
+
+        let text = composed_text(&app);
+        assert!(!text.contains("Read "));
+        assert!(text.starts_with("Changed/new files to look at:"));
+        assert_eq!(
+            app.toasts
+                .iter()
+                .find(|toast| toast.message.contains("No plan file"))
+                .map(|toast| toast.message.as_str()),
+            Some("No plan file found for this feature -- starting without one")
+        );
+    }
+
+    #[test]
+    fn leader_shift_f_omits_changed_files_for_a_non_git_project() {
+        let repo = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("AMF_PLAN.md"), "# Plan\n").unwrap();
+        let mut app = app_for_fresh_context_test(repo.path());
+
+        open_and_submit_fresh_context_prompt(&mut app, "Fix the login bug.");
+
+        let text = composed_text(&app);
+        assert_eq!(
+            text,
+            "Read AMF_PLAN.md for full context on this feature. Fix the login bug. \
+             Grill me with any questions to clarify before implementing"
         );
     }
 
@@ -1054,6 +1373,24 @@ mod tests {
     }
 
     #[test]
+    fn leader_shift_e_opens_the_prompt_override_manager_from_a_session() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('E')), 20).unwrap();
+
+        assert!(
+            matches!(&app.mode, AppMode::PromptOverrides(state) if state.from_view.is_some()),
+            "leader E opens the manager and remembers the session view"
+        );
+
+        // Esc returns to the session view it was opened from.
+        crate::handlers::handle_key(&mut app, key(KeyCode::Esc), 20).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
     fn leader_l_opens_latest_prompt_dialog_with_saved_prompt() {
         let repo = init_repo_with_branch_change();
         let claude_dir = repo.path().join(".claude");
@@ -1068,6 +1405,12 @@ mod tests {
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('l')), 20).unwrap();
 
+        // The scan runs on a background thread; stay in the view until it
+        // reports back (this is local disk I/O, so it lands almost
+        // immediately in practice).
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        wait_for_latest_prompt_menu(&mut app);
+
         match &app.mode {
             AppMode::LatestPrompt(state) => {
                 assert_eq!(
@@ -1077,6 +1420,20 @@ mod tests {
                 assert_eq!(state.view.session, "amf-feature");
             }
             _ => panic!("expected LatestPrompt mode"),
+        }
+    }
+
+    /// Drive the background "all prompts" scan to completion. It's local
+    /// disk I/O with no external process, so this should resolve on the
+    /// first or second poll; the bound just guards against a hang.
+    fn wait_for_latest_prompt_menu(app: &mut App) {
+        let started_at = std::time::Instant::now();
+        while !app.poll_latest_prompt_menu_bg() {
+            assert!(
+                started_at.elapsed() < std::time::Duration::from_secs(2),
+                "latest-prompt scan never completed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 

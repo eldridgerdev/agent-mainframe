@@ -10,6 +10,7 @@ mod custom_session_icons;
 mod db;
 mod debug;
 mod diff;
+mod diff_split;
 mod editor;
 mod extension;
 mod fswatch;
@@ -26,8 +27,10 @@ mod pi;
 mod plan_interview;
 mod project;
 mod prompt_library;
+mod prompts;
 mod remote_server;
 mod resources;
+mod review_batch;
 mod summary;
 mod theme;
 mod tmux;
@@ -290,6 +293,13 @@ enum AutomationCommands {
         #[arg(long, default_value_t = false)]
         dry_run: bool,
         /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
+    /// Seed deterministic completed AI-review findings for a screenshot fixture
+    SeedAiReview {
+        #[arg(long)]
+        file: Option<PathBuf>,
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
@@ -876,6 +886,19 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             );
             Ok(())
         }
+        AutomationCommands::SeedAiReview { file, timeout_ms } => {
+            let payload = read_json_input(file.as_ref())?;
+            let request: automation::SeedAiReviewRequest =
+                serde_json::from_str(&payload).context("Invalid seed_ai_review JSON payload")?;
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
     }
 }
 
@@ -1263,7 +1286,11 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.pr_review_bg.is_some() && app.poll_pr_review_bg() {
+        if app.pr_review_work.fetch_pending() && app.poll_pr_review_bg() {
+            force_redraw = true;
+        }
+
+        if app.pr_review_work.investigation_pending() && app.poll_pr_investigation_bg() {
             force_redraw = true;
         }
 
@@ -1299,11 +1326,15 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
+        if app.ai_review_run.is_pending() && app.poll_ai_pr_review_bg() {
             force_redraw = true;
         }
 
         if app.ai_review_triage_refresh_bg.is_some() && app.poll_ai_review_triage_refresh_bg() {
+            force_redraw = true;
+        }
+
+        if app.codex_models_cli_bg.is_some() && app.poll_codex_models_cli_bg() {
             force_redraw = true;
         }
 
@@ -1315,6 +1346,10 @@ fn run_loop<B: Backend + io::Write>(
         }
 
         if app.poll_remote_server_bg() {
+            force_redraw = true;
+        }
+
+        if app.latest_prompt_menu_bg.is_some() && app.poll_latest_prompt_menu_bg() {
             force_redraw = true;
         }
 

@@ -1,0 +1,69 @@
+# latest-prompt-menu: visual proof that the "latest prompt" menu (leader,
+# Ctrl+Space then `l`, from an agent session view) now surfaces every prompt
+# sent across the session -- including ones from before a Claude session
+# resume/compaction -- instead of only the tail of the single most-recently
+# modified .jsonl file. Fix: src/app/util.rs read_all_prompts_for_session /
+# read_prompts_from_claude_sessions.
+#
+# Self-contained: `run:` steps seed a project and a Claude feature/session
+# directly in the scratch database (see seed-latest-prompt-session.py),
+# rather than going through `automation create-feature` and a real `claude`
+# process. That matters because the CI capture runner only ever installs
+# Codex (see .github/workflows/amf-screenshot-artifact.yml) -- a scenario
+# that needed a real live Claude session, or that used the `__HARNESS__`
+# substitution AMF's other scenarios rely on, would silently end up as a
+# Codex feature in CI and never exercise the Claude-only code path this fix
+# changes. Seeding the DB directly sidesteps the harness-availability gate
+# entirely and needs no agent binary at all, so this scenario captures the
+# same thing locally and in CI.
+#
+# Run with:
+#   ./amf-capture.sh --scenario scenarios/latest-prompt-menu.txt
+
+run:set -e; WORKDIR="$SHOT_ROOT/latest-prompt-proof"; mkdir -p "$WORKDIR"; printf '{"path":"%s","project_name":"latest-prompt-proof","dry_run":false}' "$WORKDIR" > "$SHOT_ROOT/project.json"; "$AMF_BIN" automation create-project --file "$SHOT_ROOT/project.json"
+
+# Fabricate two Claude session .jsonl files under this workdir's real
+# ~/.claude/projects/<encoded-workdir> directory: an older one (as if left
+# behind before a resume/compaction) and a newer one (as a resume would
+# produce).
+run:WORKDIR="$SHOT_ROOT/latest-prompt-proof"; ENCODED=$(python3 -c "import sys; print(''.join(c if c.isalnum() and ord(c) < 128 else '-' for c in sys.argv[1]))" "$WORKDIR"); PDIR="$HOME/.claude/projects/$ENCODED"; mkdir -p "$PDIR"; python3 "$REPO_ROOT/scripts/dev/screenshot/seed_claude_prompts.py" "$PDIR"; echo "seeded fake claude session history under: $PDIR" >&2
+
+# Insert the feature + Claude session rows directly (no real `claude`
+# process), then create a plain tmux window standing in for its pane.
+run:WORKDIR="$SHOT_ROOT/latest-prompt-proof"; TMUX_SESSION="amf-latest-prompt-proof"; python3 "$REPO_ROOT/scripts/dev/screenshot/seed-latest-prompt-session.py" "$XDG_CONFIG_HOME/amf/amf.db" "$WORKDIR" "$TMUX_SESSION"; if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then tmux new-session -d -s "$TMUX_SESSION" -n claude -c "$WORKDIR"; fi
+
+# Automation and the direct DB seed above both ran after the TUI had
+# already loaded, so restart it against the seeded scratch database before
+# navigating.
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+# respawn-pane is asynchronous; don't send keys until the reloaded TUI shows
+# the seeded project (a fixed delay races on busy runners).
+run:for i in {1..50}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/latest-prompt-pane.txt"; grep -q "latest-prompt-proof" "$XDG_STATE_HOME/latest-prompt-pane.txt" && break; sleep 0.2; done
+wait:2000
+note:Dashboard with the seeded project and its Claude session, before opening it.
+shot:dashboard
+
+# Search reaches the session directly, including while its project tree is
+# collapsed.
+key:/
+wait:500
+text:Claude 1
+wait:500
+key:Enter
+wait:750
+key:Enter
+wait:1000
+note:The feature's session view. No live agent is running -- the fabricated session history below is what the menu will show.
+shot:feature-view
+
+# Ctrl+Space is the leader; `l` opens the latest-prompt menu.
+key:C-Space
+wait:400
+key:l
+wait:500
+note:The "latest prompt" menu after the fix. It lists prompts from BOTH fabricated .jsonl files, including "Add a CLI flag..." from the OLDER, pre-resume session file. Before the fix, only the tail of the single newest .jsonl was read, so that older entry would be missing entirely from this list.
+shot:latest-prompt-menu
+
+key:Escape
+wait:300
+shot:back-in-view

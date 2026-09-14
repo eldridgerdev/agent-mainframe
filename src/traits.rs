@@ -68,6 +68,7 @@ pub trait TmuxOps: Send + Sync {
 /// Abstraction over git worktree operations, enabling mocking in tests.
 #[cfg_attr(test, mockall::automock)]
 pub trait WorktreeOps: Send + Sync {
+    fn remove(&self, repo: &Path, worktree_path: &Path) -> Result<()>;
     fn repo_root(&self, path: &Path) -> Result<PathBuf>;
     fn create(&self, repo: &Path, name: &str, branch: &str) -> Result<PathBuf>;
     fn create_from(

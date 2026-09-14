@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::Command;
 
 use crate::project::VibeMode;
 
@@ -34,6 +35,97 @@ fn configured_model_for(config_path: &Path) -> Option<String> {
         .map(str::trim)
         .filter(|model| !model.is_empty())
         .map(ToOwned::to_owned)
+}
+
+/// Model slugs visible in Codex's own model picker, from sources that are
+/// cheap to read synchronously: the catalog cache first, falling back to the
+/// older availability table for installs that predate the cache. Deliberately
+/// excludes the `codex debug models` CLI probe — that shells out to the
+/// `codex` binary and can block for as long as the process takes to exit (or
+/// hang, on a stuck or network-blocked install), so it must never run on the
+/// TUI's event-loop thread. Callers that want the CLI-sourced catalog spawn
+/// [`spawn_cli_catalog_probe`] on a background thread instead.
+///
+/// No-ops under `cfg!(test)`, like [`ensure_user_config_notify_hook`], so
+/// unit tests never depend on the machine's real `~/.codex/config.toml`.
+pub fn known_models() -> Vec<String> {
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let Some(codex_home) = dirs::home_dir().map(|home| home.join(".codex")) else {
+        return Vec::new();
+    };
+    let cache_path = codex_home.join("models_cache.json");
+    known_models_from_cache(&cache_path)
+        .unwrap_or_else(|| known_models_for(&codex_home.join("config.toml")))
+}
+
+/// Spawn a background thread that asks the installed Codex CLI for its model
+/// catalog and reports the result on the returned channel. This is the only
+/// caller of [`known_models_from_cli`]: it keeps the (potentially slow or
+/// hanging) `Command::output()` call off the TUI's event-loop thread, mirroring
+/// every other headless call in this codebase, which is spawned on a
+/// background thread and polled rather than awaited inline.
+pub fn spawn_cli_catalog_probe() -> std::sync::mpsc::Receiver<Option<Vec<String>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(known_models_from_cli());
+    });
+    rx
+}
+
+/// Read the catalog used by Codex's own model picker. The NUX table in
+/// config.toml only records models that have already been surfaced to a user;
+/// the cache contains the complete visible catalog and is therefore the
+/// correct source for an AMF picker.
+fn known_models_from_cache(cache_path: &Path) -> Option<Vec<String>> {
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(cache_path).ok()?).ok()?;
+    known_models_from_catalog_value(&value)
+}
+
+/// Ask the installed Codex CLI for its catalog when its cache has not been
+/// written yet. This is the same catalog rendered by Codex's model picker and
+/// keeps a fresh AMF install from falling back to `Custom…` only.
+fn known_models_from_cli() -> Option<Vec<String>> {
+    let output = Command::new("codex")
+        .args(["debug", "models"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    known_models_from_catalog_value(&value)
+}
+
+fn known_models_from_catalog_value(value: &serde_json::Value) -> Option<Vec<String>> {
+    let models = value.get("models")?.as_array()?;
+    let mut models: Vec<String> = models
+        .iter()
+        .filter(|model| model.get("visibility").and_then(|v| v.as_str()) == Some("list"))
+        .filter_map(|model| model.get("slug").and_then(|slug| slug.as_str()))
+        .map(str::to_string)
+        .collect();
+    models.sort();
+    models.dedup();
+    Some(models)
+}
+
+fn known_models_for(config_path: &Path) -> Vec<String> {
+    let Some(models) = read_launch_config(config_path).and_then(|table| {
+        table
+            .get("tui")?
+            .as_table()?
+            .get("model_availability_nux")?
+            .as_table()
+            .cloned()
+    }) else {
+        return Vec::new();
+    };
+    let mut models: Vec<String> = models.into_iter().map(|(key, _)| key).collect();
+    models.sort();
+    models
 }
 
 fn launch_override_args_for(
@@ -205,6 +297,55 @@ mod tests {
         assert_eq!(
             super::configured_model_for(&config_path).as_deref(),
             Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn known_models_for_reads_tui_model_availability_nux_table() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "model = \"gpt-5.6-terra\"\n\n[tui.model_availability_nux]\n\"gpt-5.6-sol\" = 4\n\"gpt-5.5\" = 4\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::known_models_for(&config_path),
+            vec!["gpt-5.5".to_string(), "gpt-5.6-sol".to_string()]
+        );
+    }
+
+    #[test]
+    fn known_models_for_is_empty_without_the_nux_table() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "model = \"gpt-5.6-terra\"\n").unwrap();
+
+        assert!(super::known_models_for(&config_path).is_empty());
+    }
+
+    #[test]
+    fn known_models_for_is_empty_when_config_is_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("missing.toml");
+
+        assert!(super::known_models_for(&config_path).is_empty());
+    }
+
+    #[test]
+    fn known_models_from_cache_reads_visible_catalog_slugs() {
+        let dir = TempDir::new().unwrap();
+        let cache_path = dir.path().join("models_cache.json");
+        fs::write(
+            &cache_path,
+            r#"{"models":[{"slug":"gpt-5.6-terra","visibility":"list"},{"slug":"hidden","visibility":"hide"},{"slug":"gpt-5.5","visibility":"list"},{"slug":"gpt-5.5","visibility":"list"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            super::known_models_from_cache(&cache_path),
+            Some(vec!["gpt-5.5".to_string(), "gpt-5.6-terra".to_string()])
         );
     }
 

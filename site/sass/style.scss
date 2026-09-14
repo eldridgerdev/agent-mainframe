@@ -353,6 +353,40 @@ main {
   text-align: center;
 }
 
+.docs-content table {
+  width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+  font-size: 0.95rem;
+}
+
+.docs-content th,
+.docs-content td {
+  padding: 0.55rem 1rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+
+.docs-content thead th {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--accent-dim);
+  white-space: nowrap;
+}
+
+.docs-content tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.docs-content td code {
+  white-space: nowrap;
+}
+
 .docs-index-list {
   padding-left: 1.1rem;
 }
@@ -379,5 +413,11 @@ main {
     display: flex;
     flex-wrap: wrap;
     gap: 0 1.25rem;
+  }
+
+  .docs-content table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
   }
 }

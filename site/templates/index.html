@@ -45,5 +45,9 @@
   </ul>
 </section>
 
-{{ section.content | safe }}
+{% if section.content %}
+<section class="about">
+  {{ section.content | safe }}
+</section>
+{% endif %}
 {% endblock content %}

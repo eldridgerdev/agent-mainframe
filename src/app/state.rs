@@ -3,6 +3,7 @@ pub use crate::app::pr_review::state::*;
 pub use crate::app::review::state::*;
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Child;
@@ -15,8 +16,8 @@ use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
 };
 use crate::plan_interview::{
-    CUSTOM_ANSWER_MAX_LEN, PlanQuestion, PlanQuestionKind, QuestionSource, serialize_choice_answer,
-    split_choice_answer,
+    CUSTOM_ANSWER_MAX_LEN, PlanClarificationQuestion, PlanQuestion, PlanQuestionKind,
+    QuestionSource, serialize_choice_answer, split_choice_answer,
 };
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
@@ -2501,6 +2502,17 @@ pub struct CreateFeatureState {
     pub mode_focus: usize,
     pub review: bool,
     pub plan_mode: bool,
+    /// Set alongside `plan_mode` when the Plan field's 3-way cycle
+    /// (`cycle_plan_choice`) lands on Quick Plan rather than full Plan mode.
+    /// Meaningless when `plan_mode` is false. Kept as a second bool rather
+    /// than replacing `plan_mode` with an enum because `plan_mode` is also
+    /// the persisted `Feature`/DB/`FeaturePreset` field — an enum there would
+    /// ripple into schema and automation-API surface this feature doesn't
+    /// need to touch. Not threaded through the `on_worktree_created` hook
+    /// continuation (`app/hooks.rs`) in v1: a feature created through that
+    /// path with Quick Plan chosen falls back to full Plan mode, which is
+    /// safe (still a guided interview) even though it isn't the requested one.
+    pub quick_plan: bool,
     pub create_terminal: bool,
     pub session_name: String,
     pub source_index: usize,
@@ -2563,6 +2575,7 @@ impl CreateFeatureState {
             mode_focus: 0,
             review: false,
             plan_mode: false,
+            quick_plan: false,
             create_terminal: false,
             session_name: "Claude 1".to_string(),
             source_index: 0,
@@ -2591,7 +2604,15 @@ impl CreateFeatureState {
             2 => Some(
                 "High token usage: writes developer notes with every code change for a detailed code review.",
             ),
-            3 => Some("Start in planning mode so the agent discusses the approach before editing."),
+            3 if self.plan_mode && self.quick_plan => Some(
+                "Quick Plan: a dynamically-sized round of clarifying questions before work starts, or none at all for a trivial task.",
+            ),
+            3 if self.plan_mode => {
+                Some("Start in planning mode so the agent discusses the approach before editing.")
+            }
+            3 => Some(
+                "Cycle to Quick Plan or full Plan mode for a guided interview before work starts.",
+            ),
             4 if self.agent == AgentKind::Claude => {
                 Some("Enable browser automation for features that need Chrome.")
             }
@@ -2604,6 +2625,21 @@ impl CreateFeatureState {
             }
             _ => Some("Use the prompt coach to sharpen the feature request before launch."),
         }
+    }
+
+    /// Cycle the Plan field's 3-state choice: None → Quick Plan → Full Plan →
+    /// None (`forward`), or the reverse. `(plan_mode, quick_plan)` encodes the
+    /// three states as `(false, false)`, `(true, true)`, `(true, false)`.
+    pub fn cycle_plan_choice(&mut self, forward: bool) {
+        let next = match (self.plan_mode, self.quick_plan, forward) {
+            (false, _, true) => (true, true),
+            (true, true, true) => (true, false),
+            (true, false, true) => (false, false),
+            (false, _, false) => (true, false),
+            (true, false, false) => (true, true),
+            (true, true, false) => (false, false),
+        };
+        (self.plan_mode, self.quick_plan) = next;
     }
 
     pub fn refresh_prompt_analysis(&mut self) {
@@ -2645,6 +2681,12 @@ pub struct PreparedFeatureLaunch {
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    /// Route `plan_mode`'s deferred launch through Quick Plan rather than the
+    /// full Plan-mode interview. Meaningless when `plan_mode` is false;
+    /// unread past `App::finish_feature_launch` — see the note on
+    /// `CreateFeatureState::quick_plan`, including the `on_worktree_created`
+    /// hook scope cut.
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
@@ -2670,6 +2712,21 @@ pub struct PendingPlanLaunch {
     pub prepared: PreparedFeatureLaunch,
     pub interview_key: String,
     pub plan: String,
+}
+
+/// Which interview this [`PlanInterviewState`] is running.
+///
+/// The two share every phase, the round/synthesis machinery, and the Q&A UI
+/// — `kind` only steers which [`crate::prompts::PromptId`] is dispatched and
+/// how the synthesis response is interpreted (a single markdown plan for
+/// `Full`, a three-way outcome for `Quick`). Escalation
+/// (`App::escalate_quick_plan_to_full`) flips a live `Quick` interview to
+/// `Full` in place — nothing about the state is reset, so the brief and any
+/// answers already given carry forward into the full round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanInterviewMode {
+    Full,
+    Quick,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2761,8 +2818,11 @@ pub struct PlanInterviewState {
     /// The key this interview's draft and transcript are filed under in the
     /// `plan_interviews` table: the feature's id for an on-demand interview,
     /// or [`crate::plan_interview::pending_interview_key`] while the feature it
-    /// plans does not exist yet.
+    /// plans does not exist yet. Unread for a `Quick` interview: Quick Plan
+    /// skips the `plan_interviews` table entirely (see [`Self::kind`]).
     pub interview_key: String,
+    /// Full Plan-mode interview or Quick Plan. See [`PlanInterviewMode`].
+    pub kind: PlanInterviewMode,
     pub phase: PlanInterviewPhase,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
@@ -2858,6 +2918,14 @@ pub struct PlanInterviewState {
     /// Cleared whenever the plan changes, since the findings describe the
     /// draft they were written against.
     pub critique: Option<String>,
+    /// Explicit frontier model chosen for this plan's Expert review.
+    pub expert_model: Option<String>,
+    /// Single-select model picker shown before the Expert pre-call gate.
+    pub expert_model_pick: Option<AiModelPickState>,
+    /// Durable lifecycle state for the explicitly requested Expert review.
+    pub critique_status: Option<String>,
+    /// SHA-256 fingerprint of the plan the persisted preflight reviewed.
+    pub preflight_fingerprint: Option<String>,
     /// Start time and prompt-size estimate for the agent-review loading frame.
     pub critique_started_at: Option<std::time::Instant>,
     pub critique_token_estimate: usize,
@@ -2865,6 +2933,14 @@ pub struct PlanInterviewState {
     pub critique_scroll_offset: usize,
     pub critique_rendered_width: u16,
     pub critique_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    /// Questions extracted from the structured expert preflight response.
+    pub critique_questions: Vec<PlanClarificationQuestion>,
+    /// User answers paired with `critique_questions`; empty means unanswered.
+    pub critique_answers: Vec<String>,
+    pub critique_question_index: usize,
+    pub critique_answering: bool,
+    /// The single clarification follow-up is consumed once it starts.
+    pub critique_followup_used: bool,
     /// Advisory review staged as input for the next synthesis pass by the
     /// review's "revise" action. Consumed once that pass actually starts, so a
     /// revision that cannot run leaves the feedback recoverable.
@@ -2924,6 +3000,16 @@ impl PlanInterviewState {
         Self::new(feature_name, interview_key, questions, Some(pending_launch))
     }
 
+    /// The Quick Plan sibling of [`Self::for_feature_creation`]: always an
+    /// empty static question bank (Quick Plan has no built-in question bank;
+    /// every question comes from the dynamically-sized adaptive round) and
+    /// `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_creation_quick(pending_launch: PreparedFeatureLaunch) -> Self {
+        let mut state = Self::for_feature_creation(pending_launch, Vec::new());
+        state.kind = PlanInterviewMode::Quick;
+        state
+    }
+
     /// An on-demand interview for a feature that already exists: no launch to
     /// defer, and the plan is written into the workdir the feature is already
     /// checked out in. Keyed by the feature's id, which is where an accepted
@@ -2938,6 +3024,19 @@ impl PlanInterviewState {
         let mut state = Self::new(feature_name, feature_id, questions, None);
         state.workdir = workdir;
         state.preferred_harness = agent;
+        state
+    }
+
+    /// The Quick Plan sibling of [`Self::for_feature`]: always an empty
+    /// static question bank and `kind: PlanInterviewMode::Quick`.
+    pub fn for_feature_quick(
+        feature_name: String,
+        feature_id: String,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) -> Self {
+        let mut state = Self::for_feature(feature_name, feature_id, Vec::new(), workdir, agent);
+        state.kind = PlanInterviewMode::Quick;
         state
     }
 
@@ -2986,6 +3085,7 @@ impl PlanInterviewState {
         Self {
             feature_name,
             interview_key,
+            kind: PlanInterviewMode::Full,
             phase: PlanInterviewPhase::Brief,
             questions,
             question_index: 0,
@@ -3021,11 +3121,20 @@ impl PlanInterviewState {
             investigation_started_at: None,
             investigation_token_estimate: 0,
             critique: None,
+            expert_model: None,
+            expert_model_pick: None,
+            critique_status: None,
+            preflight_fingerprint: None,
             critique_started_at: None,
             critique_token_estimate: 0,
             critique_scroll_offset: 0,
             critique_rendered_width: 0,
             critique_rendered_lines: Vec::new(),
+            critique_questions: Vec::new(),
+            critique_answers: Vec::new(),
+            critique_question_index: 0,
+            critique_answering: false,
+            critique_followup_used: false,
             revision_critique: None,
             plan_revision: 0,
             critique_plan_revision: None,
@@ -3134,6 +3243,11 @@ impl PlanInterviewState {
         // a second time.
         if let Some(plan) = draft.plan {
             self.synthesized_plan = Some(plan);
+            self.critique = draft.expert_brief;
+            self.expert_model = draft.preflight_model;
+            self.preflight_fingerprint = draft.preflight_fingerprint;
+            self.critique_status = draft.preflight_status;
+            self.critique_token_estimate = draft.preflight_token_estimate;
             self.synthesis_attempted = true;
             self.phase = PlanInterviewPhase::Review;
             return true;
@@ -3433,8 +3547,27 @@ impl PlanInterviewState {
                 .iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect(),
+            expert_brief: self.critique.clone(),
+            preflight_fingerprint: self
+                .synthesized_plan
+                .as_deref()
+                .map(|plan| format!("{:x}", Sha256::digest(plan.as_bytes()))),
+            preflight_status: self.critique_status.clone(),
+            preflight_model: self.expert_model.clone(),
+            preflight_token_estimate: self.critique_token_estimate,
             created_at: String::new(),
             updated_at: String::new(),
+        }
+    }
+
+    /// The round cap `continue_plan_interview_after_done` checks
+    /// `ai_rounds_completed` against — [`crate::plan_interview::MAX_QUICK_AI_ROUNDS`]
+    /// while `kind` is `Quick`, [`crate::plan_interview::MAX_AI_ROUNDS`] once
+    /// escalated (or for a `Full` interview from the start).
+    pub fn max_ai_rounds(&self) -> usize {
+        match self.kind {
+            PlanInterviewMode::Quick => crate::plan_interview::MAX_QUICK_AI_ROUNDS,
+            PlanInterviewMode::Full => crate::plan_interview::MAX_AI_ROUNDS,
         }
     }
 
@@ -3609,6 +3742,8 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_status = Some("running".into());
+        self.critique_followup_used = false;
         self.critique_started_at = Some(std::time::Instant::now());
         self.critique_token_estimate = token_estimate;
         self.critique_plan_revision = Some(self.plan_revision);
@@ -3616,8 +3751,13 @@ impl PlanInterviewState {
     }
 
     /// Show a finished advisory review. The plan is deliberately untouched.
-    pub fn apply_critique(&mut self, critique: String) {
+    pub fn apply_critique(&mut self, critique: String, questions: Vec<PlanClarificationQuestion>) {
         self.critique = Some(critique);
+        self.critique_status = Some("completed".into());
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -3630,7 +3770,11 @@ impl PlanInterviewState {
     /// pulling them back into it. Returns false when there is nothing to keep
     /// or the plan moved on while the review was in flight, since the findings
     /// then describe a draft that is gone.
-    pub fn stash_critique(&mut self, critique: String) -> bool {
+    pub fn stash_critique(
+        &mut self,
+        critique: String,
+        questions: Vec<PlanClarificationQuestion>,
+    ) -> bool {
         if self.phase != PlanInterviewPhase::Review
             || self.critique.is_some()
             || self.critique_plan_revision != Some(self.plan_revision)
@@ -3638,6 +3782,10 @@ impl PlanInterviewState {
             return false;
         }
         self.critique = Some(critique);
+        self.critique_answers = vec![String::new(); questions.len()];
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_questions = questions;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -3653,6 +3801,55 @@ impl PlanInterviewState {
             return false;
         }
         self.phase = PlanInterviewPhase::Critique;
+        true
+    }
+
+    /// Begin collecting answers to the bounded expert clarification set.
+    pub fn begin_critique_answers(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+        {
+            return false;
+        }
+        self.critique_question_index = 0;
+        self.editor = TextEditor::new(self.critique_answers[0].clone());
+        self.critique_answering = true;
+        true
+    }
+
+    /// Save the current clarification answer and advance through the bounded set.
+    pub fn save_critique_answer(&mut self) -> bool {
+        if !self.critique_answering {
+            return false;
+        }
+        self.critique_answers[self.critique_question_index] = self.editor.text().to_string();
+        if self.critique_question_index + 1 >= self.critique_questions.len() {
+            self.critique_answering = false;
+        } else {
+            self.critique_question_index += 1;
+            self.editor =
+                TextEditor::new(self.critique_answers[self.critique_question_index].clone());
+        }
+        true
+    }
+
+    pub fn begin_critique_followup(&mut self, token_estimate: usize) -> bool {
+        if self.phase != PlanInterviewPhase::Critique
+            || self.critique_questions.is_empty()
+            || self.critique_followup_used
+            || !self
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            return false;
+        }
+        self.critique_followup_used = true;
+        self.phase = PlanInterviewPhase::CritiqueLoading;
+        self.critique_started_at = Some(std::time::Instant::now());
+        self.critique_token_estimate = token_estimate;
+        self.critique_plan_revision = Some(self.plan_revision);
         true
     }
 
@@ -3711,6 +3908,15 @@ impl PlanInterviewState {
     /// Drop an advisory review that no longer describes the current plan.
     fn clear_critique(&mut self) {
         self.critique = None;
+        self.expert_model = None;
+        self.expert_model_pick = None;
+        self.critique_status = None;
+        self.preflight_fingerprint = None;
+        self.critique_questions.clear();
+        self.critique_answers.clear();
+        self.critique_question_index = 0;
+        self.critique_answering = false;
+        self.critique_followup_used = false;
         self.critique_started_at = None;
         self.critique_scroll_offset = 0;
         self.critique_rendered_width = 0;
@@ -3803,6 +4009,14 @@ impl PlanInterviewState {
             self.questions.get(self.question_index)
         } else {
             None
+        }
+    }
+
+    pub fn fail_critique(&mut self) {
+        self.critique_status = Some("failed".into());
+        self.critique_started_at = None;
+        if self.phase == PlanInterviewPhase::CritiqueLoading {
+            self.phase = PlanInterviewPhase::Review;
         }
     }
 
@@ -4920,6 +5134,7 @@ mod tests {
             mode: VibeMode::default(),
             review: false,
             plan_mode: true,
+            quick_plan: false,
             agent: AgentKind::Claude,
             create_terminal: false,
             session_name: "Claude 1".into(),
@@ -4947,6 +5162,11 @@ mod tests {
             plan: None,
             ai_rounds_completed: 0,
             attached_docs: Vec::new(),
+            expert_brief: None,
+            preflight_fingerprint: None,
+            preflight_status: None,
+            preflight_model: None,
+            preflight_token_estimate: 0,
             created_at: String::new(),
             updated_at: "2026-07-30 12:00:00".into(),
         }
@@ -5062,6 +5282,7 @@ mod tests {
         let questions = vec![template_question("scope")];
         let mut stored = saved_draft(questions.clone(), vec![Some("Just the TUI.".into())]);
         stored.plan = Some("# Plan: feature\n".into());
+        stored.preflight_model = Some("opus".into());
 
         let mut state = PlanInterviewState::new("feature".into(), "feat-1".into(), questions, None);
         state.offer_resume(stored);
@@ -5070,6 +5291,7 @@ mod tests {
 
         assert_eq!(state.phase, PlanInterviewPhase::Review);
         assert_eq!(state.synthesized_plan.as_deref(), Some("# Plan: feature\n"));
+        assert_eq!(state.expert_model.as_deref(), Some("opus"));
         // Nothing should re-synthesize a plan the user already has on screen.
         assert!(state.synthesis_attempted);
     }
@@ -5126,5 +5348,104 @@ mod tests {
         assert_eq!(record.answers[0].as_deref(), Some("Just the TUI."));
         assert_eq!(record.answers[1], None);
         assert!(record.plan.is_none());
+    }
+
+    #[test]
+    fn quick_plan_constructors_start_with_no_static_questions_and_the_quick_kind() {
+        let creation = PlanInterviewState::for_feature_creation_quick(prepared_launch(
+            "my-project",
+            "planned-feature",
+        ));
+        assert_eq!(creation.kind, PlanInterviewMode::Quick);
+        assert!(creation.questions.is_empty());
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_QUICK_AI_ROUNDS
+        );
+
+        let on_demand = PlanInterviewState::for_feature_quick(
+            "feature".into(),
+            "feat-1".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            AgentKind::Claude,
+        );
+        assert_eq!(on_demand.kind, PlanInterviewMode::Quick);
+        assert!(on_demand.questions.is_empty());
+    }
+
+    #[test]
+    fn full_plan_constructors_default_to_the_full_kind() {
+        let creation = PlanInterviewState::for_feature_creation(
+            prepared_launch("my-project", "planned-feature"),
+            vec![template_question("scope")],
+        );
+        assert_eq!(creation.kind, PlanInterviewMode::Full);
+        assert_eq!(
+            creation.max_ai_rounds(),
+            crate::plan_interview::MAX_AI_ROUNDS
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_none_quick_full_and_back_going_forward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+        assert_eq!((state.plan_mode, state.quick_plan), (false, false));
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "None -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "Quick Plan -> Full Plan"
+        );
+
+        state.cycle_plan_choice(true);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Full Plan -> None"
+        );
+    }
+
+    #[test]
+    fn cycle_plan_choice_visits_the_same_states_in_reverse_going_backward() {
+        let mut state = CreateFeatureState::new(
+            "my-project".into(),
+            PathBuf::from("/tmp/does-not-matter"),
+            Vec::new(),
+            true,
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, false),
+            "None -> Full Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (true, true),
+            "Full Plan -> Quick Plan"
+        );
+
+        state.cycle_plan_choice(false);
+        assert_eq!(
+            (state.plan_mode, state.quick_plan),
+            (false, false),
+            "Quick Plan -> None"
+        );
     }
 }

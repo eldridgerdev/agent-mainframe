@@ -6,12 +6,24 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::app::{PlanInterviewPhase, PlanInterviewState, PriorAnswerState};
+use crate::app::{
+    ModelPickRow, PlanInterviewMode, PlanInterviewPhase, PlanInterviewState, PriorAnswerState,
+};
 use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
+
+/// The interview's user-facing name, used everywhere the dialog would
+/// otherwise say "Plan Mode" — Quick Plan and full Plan mode share every
+/// screen, so this is the one place that distinguishes them by label.
+fn interview_kind_label(kind: PlanInterviewMode) -> &'static str {
+    match kind {
+        PlanInterviewMode::Quick => "Quick Plan",
+        PlanInterviewMode::Full => "Plan Mode",
+    }
+}
 
 pub fn draw_plan_interview_dialog(
     frame: &mut Frame,
@@ -47,7 +59,11 @@ pub fn draw_plan_interview_dialog(
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = match state.phase {
-        PlanInterviewPhase::Review => format!(" Plan Review · {} ", state.feature_name),
+        PlanInterviewPhase::Review => format!(
+            " {} Review · {} ",
+            interview_kind_label(state.kind),
+            state.feature_name
+        ),
         PlanInterviewPhase::Editing => format!(" Edit Plan · {} ", state.feature_name),
         PlanInterviewPhase::DirectedFeedback | PlanInterviewPhase::DirectedFeedbackLoading => {
             format!(" Direct Plan Feedback · {} ", state.feature_name)
@@ -58,7 +74,11 @@ pub fn draw_plan_interview_dialog(
         PlanInterviewPhase::Critique | PlanInterviewPhase::CritiqueLoading => {
             format!(" Agent Review · {} ", state.feature_name)
         }
-        _ => format!(" Plan Mode · {} ", state.feature_name),
+        _ => format!(
+            " {} · {} ",
+            interview_kind_label(state.kind),
+            state.feature_name
+        ),
     };
     let block = Block::default()
         .title(title)
@@ -116,6 +136,9 @@ pub fn draw_plan_interview_dialog(
 
     if state.phase == PlanInterviewPhase::Review {
         draw_plan_review(frame, inner, state, message, theme);
+        if state.expert_model_pick.is_some() {
+            draw_expert_model_picker(frame, state, theme);
+        }
         return;
     }
     if state.phase == PlanInterviewPhase::Editing {
@@ -216,6 +239,85 @@ pub fn draw_plan_interview_dialog(
     }
 
     frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
+}
+
+fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme: &Theme) {
+    let Some(pick) = state.expert_model_pick.as_ref() else {
+        return;
+    };
+    let area = super::super::dashboard::centered_rect(58, 46, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(" Choose Expert frontier model ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let harness = interview_engine(state);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Strengthen the plan before implementation.\nHarness: {harness} · select the Expert model."
+        ))
+        .style(Style::default().fg(theme.text.to_color()))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let lines = pick.rows.iter().enumerate().map(|(index, row)| {
+        let selected = index == pick.selected;
+        let style = if selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        let mut label = match row {
+            ModelPickRow::Preset(name) => name.clone(),
+            ModelPickRow::Custom => "Custom…".to_string(),
+            ModelPickRow::Default => "Default".to_string(),
+        };
+        if matches!(row, ModelPickRow::Custom) && !pick.custom_input.is_empty() {
+            label = format!("{label} ({})", pick.custom_input);
+        }
+        Line::from(vec![
+            Span::styled(
+                if selected { "  > " } else { "    " },
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(label, style),
+        ])
+    });
+    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if pick.editing_custom {
+        frame.render_widget(
+            Paragraph::new(format!("  model: {}▏", pick.custom_input))
+                .style(Style::default().fg(theme.text.to_color())),
+            chunks[2],
+        );
+    }
+    let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    let hint = if pick.editing_custom {
+        "  [⏎] use this model   [esc] back to list"
+    } else if custom_selected {
+        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+    } else {
+        "  [j/k] choose   [⏎] continue   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
+        chunks[3],
+    );
 }
 
 /// The dialog's hint row: the interview's message when there is one, otherwise
@@ -339,10 +441,14 @@ fn draw_ai_consent(
 ) {
     let warning = Style::default().fg(theme.warning.to_color());
     let attached = state.attached_docs.len();
+    let max_rounds = state.max_ai_rounds();
+    let ask_line = if state.kind == PlanInterviewMode::Quick {
+        "a  Ask a quick round of questions if any are needed, then decide how to proceed (uses tokens)."
+    } else {
+        "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens)."
+    };
     let mut full = vec![
-        Line::from(
-            "a  Ask AI follow-ups: generate more questions before drafting the plan (uses tokens).",
-        ),
+        Line::from(ask_line),
         Line::from(
             "Ctrl+F  Draft plan now: skip remaining questions and synthesize from saved answers (uses tokens).",
         ),
@@ -352,8 +458,8 @@ fn draw_ai_consent(
         )),
         Line::from(""),
         Line::from(format!(
-            "AI follow-ups may run up to {} rounds using your brief, answers, and bounded repository context.",
-            crate::plan_interview::MAX_AI_ROUNDS
+            "AI follow-ups may run up to {max_rounds} round{} using your brief, answers, and bounded repository context.",
+            if max_rounds == 1 { "" } else { "s" }
         )),
     ];
     if attached > 0 {
@@ -368,13 +474,18 @@ fn draw_ai_consent(
     let lines = if wrapped_height(&full, area.width) <= area.height as usize {
         full
     } else {
+        let compact_ask_line = if state.kind == PlanInterviewMode::Quick {
+            "a  Ask a quick round of questions (uses tokens)"
+        } else {
+            "a  Ask AI follow-ups (uses tokens)"
+        };
         let mut compact = vec![
-            Line::from("a  Ask AI follow-ups (uses tokens)"),
+            Line::from(compact_ask_line),
             Line::from("Ctrl+F  Draft plan now (uses tokens)"),
             Line::from(Span::styled("Enter  Review raw plan (no tokens)", warning)),
             Line::from(format!(
-                "Up to {} AI rounds over your brief and repo context.",
-                crate::plan_interview::MAX_AI_ROUNDS
+                "Up to {max_rounds} AI round{} over your brief and repo context.",
+                if max_rounds == 1 { "" } else { "s" }
             )),
         ];
         if attached > 0 {
@@ -457,7 +568,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
         ),
         PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),
         PlanInterviewPhase::CritiqueLoading | PlanInterviewPhase::Critique => {
-            (total, "Agent review".to_string())
+            (total, "Expert review".to_string())
         }
         PlanInterviewPhase::Review => (total, "Plan review".to_string()),
         PlanInterviewPhase::Editing => (total, "Edit plan".to_string()),
@@ -528,7 +639,7 @@ fn question_prompt(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             ("Synthesizing implementation plan".to_string(), false)
         }
         PlanInterviewPhase::CritiqueLoading => ("Reviewing the draft plan".to_string(), false),
-        PlanInterviewPhase::Critique => ("Agent review of the plan".to_string(), false),
+        PlanInterviewPhase::Critique => ("Expert review of the plan".to_string(), false),
         PlanInterviewPhase::Review => ("Review implementation plan".to_string(), false),
         PlanInterviewPhase::Editing => ("Edit raw markdown".to_string(), false),
         PlanInterviewPhase::DirectedFeedback => {
@@ -906,7 +1017,7 @@ fn draw_plan_review(
         Span::raw(if state.critique.is_some() {
             " show review  "
         } else {
-            " agent review  "
+            " Expert review  "
         }),
         hint("f", theme),
         Span::raw(" direct feedback  "),
@@ -1088,6 +1199,54 @@ fn draw_plan_critique(
     message: Option<&str>,
     theme: &Theme,
 ) {
+    if state.critique_answering {
+        let question = &state.critique_questions[state.critique_question_index];
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Min(4),
+                Constraint::Length(2),
+            ])
+            .split(area);
+        let prompt = Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "Question {} of {}",
+                    state.critique_question_index + 1,
+                    state.critique_questions.len()
+                ),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(question.question.clone()),
+            Line::from(Span::styled(
+                format!("Unblocks: {}", question.unblocks),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ])
+        .wrap(Wrap { trim: false });
+        frame.render_widget(prompt, chunks[0]);
+        draw_editor(
+            frame,
+            chunks[1],
+            state,
+            "Answer the expert's question.",
+            theme,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                hint("Enter", theme),
+                Span::raw(" save  "),
+                hint("Esc", theme),
+                Span::raw(" cancel answers"),
+            ]))
+            .style(Style::default().bg(theme.effective_header_bg())),
+            chunks[2],
+        );
+        return;
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -1097,7 +1256,7 @@ fn draw_plan_critique(
         frame,
         chunks[0],
         content,
-        std::path::Path::new("agent review"),
+        std::path::Path::new("Expert review"),
         &mut state.critique_scroll_offset,
         &mut state.critique_rendered_width,
         &mut state.critique_rendered_lines,
@@ -1130,6 +1289,38 @@ fn draw_plan_critique(
         Span::raw(" scroll  "),
         hint("r", theme),
         Span::raw(" revise plan with this feedback  "),
+        if !state.critique_questions.is_empty() && !state.critique_followup_used {
+            hint("e", theme)
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty() && !state.critique_followup_used {
+            Span::raw(" answer clarification questions  ")
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty()
+            && !state.critique_followup_used
+            && state
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            hint("f", theme)
+        } else {
+            Span::raw("")
+        },
+        if !state.critique_questions.is_empty()
+            && !state.critique_followup_used
+            && state
+                .critique_answers
+                .iter()
+                .any(|answer| !answer.trim().is_empty())
+        {
+            Span::raw(" run one follow-up  ")
+        } else {
+            Span::raw("")
+        },
         hint("Esc", theme),
         Span::raw(" back to plan"),
     ]);

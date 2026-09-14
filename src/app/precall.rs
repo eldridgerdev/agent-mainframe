@@ -28,11 +28,13 @@ use crate::prompts::PromptId;
 /// Which gated headless call a pre-call notice belongs to. One variant per
 /// user-initiated call site; [`App::dispatch_precall`] maps each back to the
 /// method that starts it.
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PrecallAction {
     PlanRound,
     PlanSynthesis,
     PlanCritique,
+    PlanCritiqueFollowup,
     PlanDirectedRevision,
     PlanInvestigation,
     ReviewWalkthrough,
@@ -50,6 +52,7 @@ impl PrecallAction {
             PrecallAction::PlanRound => PromptId::PlanInterviewRound,
             PrecallAction::PlanSynthesis => PromptId::PlanInterviewSynthesis,
             PrecallAction::PlanCritique => PromptId::PlanInterviewCritique,
+            PrecallAction::PlanCritiqueFollowup => PromptId::PlanInterviewCritique,
             PrecallAction::PlanDirectedRevision => PromptId::PlanInterviewDirectedRevision,
             PrecallAction::PlanInvestigation => PromptId::PlanInterviewInvestigation,
             PrecallAction::ReviewWalkthrough => PromptId::ReviewWalkthrough,
@@ -68,6 +71,8 @@ pub struct PendingPrecall {
     pub action: PrecallAction,
     pub prompt_id: PromptId,
     pub harness: AgentKind,
+    /// Explicit model selected for this call. `None` means the harness default.
+    pub model: Option<String>,
     /// The rendered prompt, shown when the user presses `v`.
     pub preview: String,
     /// Whether the prompt preview is currently expanded.
@@ -76,6 +81,11 @@ pub struct PendingPrecall {
     /// The mode the run was initiated from, restored before the run is
     /// re-dispatched (or on cancel).
     pub prior_mode: Box<AppMode>,
+}
+
+#[derive(Default)]
+struct PrecallOptions {
+    model: Option<String>,
 }
 
 impl App {
@@ -89,6 +99,33 @@ impl App {
         harness: &AgentKind,
         rendered_prompt: &str,
     ) -> bool {
+        self.precall_gate_with_options(action, harness, rendered_prompt, PrecallOptions::default())
+    }
+
+    pub(crate) fn precall_gate_with_model(
+        &mut self,
+        action: PrecallAction,
+        harness: &AgentKind,
+        model: Option<&str>,
+        rendered_prompt: &str,
+    ) -> bool {
+        self.precall_gate_with_options(
+            action,
+            harness,
+            rendered_prompt,
+            PrecallOptions {
+                model: model.map(str::to_string),
+            },
+        )
+    }
+
+    fn precall_gate_with_options(
+        &mut self,
+        action: PrecallAction,
+        harness: &AgentKind,
+        rendered_prompt: &str,
+        options: PrecallOptions,
+    ) -> bool {
         if self.precall_cleared == Some(action) {
             self.precall_cleared = None;
             return true;
@@ -98,6 +135,7 @@ impl App {
             action,
             prompt_id: action.prompt_id(),
             harness: harness.clone(),
+            model: options.model,
             preview: rendered_prompt.to_string(),
             viewing: false,
             scroll: 0,
@@ -185,6 +223,7 @@ impl App {
             PrecallAction::PlanRound => self.start_next_plan_interview_ai_round(),
             PrecallAction::PlanSynthesis => self.start_plan_interview_synthesis(),
             PrecallAction::PlanCritique => self.start_plan_interview_critique(),
+            PrecallAction::PlanCritiqueFollowup => self.start_plan_interview_critique_followup(),
             PrecallAction::PlanDirectedRevision => self.start_plan_interview_directed_feedback(),
             PrecallAction::PlanInvestigation => self.start_plan_interview_investigation(),
             PrecallAction::ReviewWalkthrough => {

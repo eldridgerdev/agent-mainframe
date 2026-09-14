@@ -151,6 +151,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
         mode: VibeMode::default(),
         review: false,
         plan_mode: true,
+        quick_plan: false,
         agent: AgentKind::Claude,
         create_terminal: false,
         session_name: "Claude 1".into(),
@@ -718,6 +719,7 @@ fn plan_interview_app_for_agent(
         mode,
         review: false,
         plan_mode: true,
+        quick_plan: false,
         session_name: format!("{} 1", agent.display_name()),
         agent,
         create_terminal: false,
@@ -979,12 +981,14 @@ fn cancelling_over_limit_plan_start_restores_completed_review() {
 
 fn plan_critique_response() -> String {
     "# Plan review: planned-feature\n\n\
-     ## Summary\nReady with caveats.\n\n\
-     ## Gaps\n- No rollback story.\n\n\
-     ## Risks\n- None identified.\n\n\
-     ## Contradictions\n- None identified.\n\n\
-     ## Unclear decisions\n- None identified.\n\n\
-     ## Missing acceptance criteria\n- None identified.\n"
+     ## Objective and non-goals\nBuild the feature without changing unrelated behavior.\n\n\
+     ## Ordered implementation steps\n- Add the core behavior.\n\n\
+     ## Code map\n- src/app/plan_interview.rs.\n\n\
+     ## Invariants and decisions\n- Preserve existing plan decisions.\n\n\
+     ## Validation plan\n- Run focused tests and the full suite.\n\n\
+     ## Risks and stop conditions\n- Stop if the target contract is unclear.\n\n\
+     ## Definition of done\n- Tests pass and acceptance criteria are met.\n\n\
+     ## Clarification questions\nNone.\n"
         .to_string()
 }
 
@@ -999,6 +1003,137 @@ fn begin_plan_critique_for_test(app: &mut App) -> std::sync::mpsc::Sender<anyhow
     let (tx, rx) = std::sync::mpsc::channel();
     app.plan_interview_critique_bg = Some(rx);
     tx
+}
+
+#[test]
+fn expert_review_opens_an_explicit_model_picker_before_any_call_is_staged() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.expert_model.is_none()
+                && state.expert_model_pick.as_ref().is_some_and(|pick| {
+                    pick.selected == 1
+                        && pick.rows == vec![
+                            ModelPickRow::Preset("sonnet".into()),
+                            ModelPickRow::Preset("opus".into()),
+                            ModelPickRow::Preset("haiku".into()),
+                            ModelPickRow::Preset("fable".into()),
+                            ModelPickRow::Custom,
+                        ]
+                })
+    ));
+}
+
+#[test]
+fn expert_review_carries_the_chosen_model_into_the_precall_gate() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    match &app.mode {
+        AppMode::PromptPrecall(pending) => {
+            assert_eq!(
+                pending.action,
+                crate::app::precall::PrecallAction::PlanCritique
+            );
+            assert_eq!(pending.harness, crate::project::AgentKind::Claude);
+            assert_eq!(pending.model.as_deref(), Some("opus"));
+            assert!(matches!(
+                pending.prior_mode.as_ref(),
+                AppMode::PlanInterview(state)
+                    if state.expert_model.as_deref() == Some("opus")
+                        && state.expert_model_pick.is_none()
+            ));
+        }
+        _ => panic!("expected the Expert pre-call confirmation"),
+    }
+}
+
+#[test]
+fn cancelling_the_expert_model_picker_spends_no_tokens() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.phase == PlanInterviewPhase::Review
+                && state.expert_model.is_none()
+                && state.expert_model_pick.is_none()
+    ));
+}
+
+#[test]
+fn configured_expert_model_is_selected_but_still_needs_user_confirmation() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "opus".to_string(),
+    );
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(app.plan_interview_critique_bg.is_none());
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.expert_model.is_none()
+                && state.expert_model_pick.as_ref().is_some_and(|pick| {
+                    pick.selected == 1 && !pick.editing_custom && pick.custom_input.is_empty()
+                })
+    ));
+}
+
+#[test]
+fn custom_expert_model_is_available_without_making_typing_the_default_path() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    app.config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "frontier-model".to_string(),
+    );
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.apply_synthesis(synthesized_plan_response());
+        state.ai_harness = Some(Some(crate::project::AgentKind::Claude));
+    }
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PlanInterview(state)
+            if state.expert_model_pick.as_ref().is_some_and(|pick| {
+                pick.selected == pick.rows.len() - 1
+                    && !pick.editing_custom
+                    && pick.custom_input == "frontier-model"
+            })
+    ));
 }
 
 /// Drop straight into an in-flight directed revision without launching a real
@@ -2230,6 +2365,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
         mode: VibeMode::default(),
         review: false,
         plan_mode: true,
+        quick_plan: false,
         agent: AgentKind::Claude,
         create_terminal: false,
         session_name: "Claude 1".into(),

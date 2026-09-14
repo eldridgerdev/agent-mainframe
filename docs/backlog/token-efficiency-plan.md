@@ -535,9 +535,11 @@ Acceptance criteria:
       are still open.
 - [x] Show the viewed session's context reading in the sidebar in every
       band, and at the warning or critical band add a fresh-context call to
-      action with a dismiss-and-rearm lifecycle (dismiss quiets the action
-      but keeps the reading). Dashboard-wide alerts and broader
-      repeated-alert deduplication remain open.
+      action (`<leader F>`, advertised once in the `Context` section's
+      title) that re-arms on the next context reset or cleared trigger.
+      There is no manual dismiss — a prior dismiss-and-rearm lifecycle was
+      removed as an unneeded extra binding. Dashboard-wide alerts and
+      broader repeated-alert deduplication remain open.
 - [ ] Introduce a capability-driven resume/compact/fresh dialog.
 - [ ] Make normal restart semantics consistent across Claude, Codex,
       and opencode.

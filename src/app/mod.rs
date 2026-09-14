@@ -581,6 +581,8 @@ pub struct AppConfig {
 /// them would just be two knobs for one decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewAction {
+    /// Explicit Expert review of a synthesized implementation plan.
+    PlanPreflight,
     /// On-demand walkthrough for a noteless file (`w` in Final Review).
     Walkthrough,
     /// AI co-reviewer first pass over the current file (`A` in Final Review).
@@ -598,6 +600,7 @@ pub enum ReviewAction {
 impl ReviewAction {
     pub fn config_key(self) -> &'static str {
         match self {
+            ReviewAction::PlanPreflight => "plan_preflight",
             ReviewAction::Walkthrough => "walkthrough",
             ReviewAction::CoReview => "co_review",
             ReviewAction::ChangesetOverview => "changeset_overview",
@@ -739,10 +742,15 @@ impl AppConfig {
     /// entry for [`ReviewAction::config_key`] if set, else the shared
     /// `review_model` default, else `None` (harness default).
     pub fn review_model_for(&self, action: ReviewAction) -> Option<String> {
-        self.review_models
-            .get(action.config_key())
-            .cloned()
-            .or_else(|| self.review_model.clone())
+        let action_model = self.review_models.get(action.config_key()).cloned();
+        if action == ReviewAction::PlanPreflight {
+            // An Expert plan review must never silently inherit an ordinary
+            // review model. The user either names its model at dispatch time
+            // or configures this action explicitly.
+            action_model
+        } else {
+            action_model.or_else(|| self.review_model.clone())
+        }
     }
 
     /// The concurrency cap, or `None` when the check is disabled (`0`).
@@ -993,7 +1001,7 @@ pub struct App {
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
     pub plan_interview_synthesis_bg: Option<Receiver<Result<String>>>,
-    /// Receiver for the optional agent review of a draft plan. Separate again
+    /// Receiver for the optional Expert review of a draft plan. Separate again
     /// so a late review can never be mistaken for a synthesis result and
     /// overwrite the plan it was only meant to comment on.
     pub plan_interview_critique_bg: Option<Receiver<Result<String>>>,
@@ -1049,6 +1057,13 @@ pub struct App {
     pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
     pub ai_review_triage_refresh_pending: Option<AiReviewTriageRefresh>,
+    /// Background `codex debug models` catalog probe
+    /// (`codex_config::spawn_cli_catalog_probe`), kicked off when a Codex
+    /// model picker opens with no preset rows (cache and availability table
+    /// both empty — a fresh install). Polled and, once it resolves, merged
+    /// into whichever model picker is still open; never awaited inline, since
+    /// that would block the event loop on the `codex` CLI.
+    pub codex_models_cli_bg: Option<Receiver<Option<Vec<String>>>>,
     /// Memoized `GhCli::current_user` result for the session, so opening or
     /// refreshing the PR picker doesn't repeat the `gh api user` call every
     /// time. `None` = not yet resolved; `Some(None)` = resolution was
@@ -2453,6 +2468,7 @@ impl App {
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
@@ -2702,6 +2718,7 @@ impl App {
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
+            codex_models_cli_bg: None,
             gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),

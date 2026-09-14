@@ -1290,6 +1290,7 @@ mod tests {
                     mode: VibeMode::default(),
                     review: false,
                     plan_mode: true,
+                    quick_plan: false,
                     agent: AgentKind::Claude,
                     create_terminal: false,
                     session_name: "Claude 1".into(),

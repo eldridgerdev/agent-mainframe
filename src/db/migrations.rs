@@ -156,17 +156,55 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add attached_docs column to plan_interviews for attached reference documents",
             MIGRATION_035,
         ),
+        (
+            "Persist Expert plan-review briefs and plan fingerprints",
+            MIGRATION_036,
+        ),
+        (
+            "Persist Expert plan-review lifecycle status and estimates",
+            MIGRATION_037,
+        ),
+        (
+            "Persist the explicit model used for an Expert plan review",
+            MIGRATION_038,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
         if version < target {
+            // Older migrations include foreign_keys PRAGMAs that cannot run
+            // inside a transaction. New migrations commit schema + version
+            // together; failure rolls back via Transaction::drop.
+            let transaction = if target >= 36 {
+                let transaction = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )?;
+                let current: i64 = transaction.query_row(
+                    "SELECT COALESCE(MAX(version),0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if current >= target {
+                    // Another AMF instance may have completed this migration
+                    // while we waited for the immediate write transaction.
+                    transaction.commit()?;
+                    continue;
+                }
+                Some(transaction)
+            } else {
+                None
+            };
             conn.execute_batch(sql)?;
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at, description)
                  VALUES (?1, datetime('now'), ?2)",
                 rusqlite::params![target, desc],
             )?;
+            if let Some(transaction) = transaction {
+                transaction.commit()?;
+            }
         }
     }
 
@@ -903,6 +941,20 @@ const MIGRATION_035: &str = "
 ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
 ";
 
+const MIGRATION_036: &str = "
+ALTER TABLE plan_interviews ADD COLUMN expert_brief TEXT;
+ALTER TABLE plan_interviews ADD COLUMN preflight_fingerprint TEXT;
+";
+
+const MIGRATION_037: &str = "
+ALTER TABLE plan_interviews ADD COLUMN preflight_status TEXT;
+ALTER TABLE plan_interviews ADD COLUMN preflight_token_estimate INTEGER NOT NULL DEFAULT 0;
+";
+
+const MIGRATION_038: &str = "
+ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -943,7 +995,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 35);
+        assert_eq!(version, 38);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1038,7 +1090,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 35);
+        assert_eq!(version, 38);
     }
 
     #[test]
@@ -1380,7 +1432,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 35);
+        assert_eq!(rows, 38);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1491,7 +1543,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 35);
+        assert_eq!(version, 38);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

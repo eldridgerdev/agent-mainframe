@@ -195,6 +195,23 @@ fn review_model_for_falls_back_to_shared_default_when_unset() {
         config.review_model_for(ReviewAction::ChangesetOverview),
         Some("opus".to_string())
     );
+    assert_eq!(config.review_model_for(ReviewAction::PlanPreflight), None);
+}
+
+#[test]
+fn plan_preflight_model_uses_only_its_explicit_override() {
+    let mut config = AppConfig {
+        review_model: Some("ordinary-review-model".to_string()),
+        ..AppConfig::default()
+    };
+    config.review_models.insert(
+        ReviewAction::PlanPreflight.config_key().to_string(),
+        "frontier-model".to_string(),
+    );
+    assert_eq!(
+        config.review_model_for(ReviewAction::PlanPreflight),
+        Some("frontier-model".to_string())
+    );
 }
 
 #[test]
@@ -1097,6 +1114,7 @@ fn precall_edit_opens_the_manager_focused_and_returns_to_the_notice() {
         action: PrecallAction::ReviewChangesetOverview,
         prompt_id: PromptId::ReviewChangesetOverview,
         harness: AgentKind::Claude,
+        model: None,
         preview: "some rendered prompt".to_string(),
         viewing: false,
         scroll: 0,

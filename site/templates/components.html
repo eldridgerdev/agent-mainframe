@@ -1,4 +1,4 @@
-{% component docs_nav(pages, current_path="") %}
+{% component docs_nav(pages: array, current_path: string = "") %}
 <nav class="docs-nav" aria-label="Documentation">
   <ul>
     {% for p in pages %}

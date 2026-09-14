@@ -133,6 +133,14 @@ percentages overlap and must not be added together.
 
 ## OPT-01: Expert Assist
 
+Feature design: [Expert Assist design and feasibility](expert-assist-design.md).
+The original opt-in prototype is complete but its manual consultation UX was
+closed for reconsideration. A follow-up investigation now recommends a
+policy-controlled plan preflight immediately after plan synthesis and before
+implementation; the prototype's bounded jobs, evidence, and usage foundations
+remain reusable. Real provider conformance and cost/quality trials remain
+pending, and the worked savings below remain hypothetical.
+
 ### Behavior and implementation shape
 
 Maintain separate implementer and expert sessions. An inexpensive model

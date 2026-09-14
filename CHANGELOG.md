@@ -10,6 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **Expert plan review is now an explicit frontier-model action.** At the final
+  plan review, press `a` to request an Expert review, select a model from the
+  same verified choices used by AI Review, and verify both harness and model
+  in the pre-call confirmation. AMF never starts or suggests this review
+  automatically, and it does not inherit the ordinary review model. The
+  Expert's implementation brief and optional clarification questions still
+  feed the accepted-plan kickoff for the implementation agent. Codex choices
+  come from the same visible catalog as Codex's own model picker, with a legacy
+  config fallback. A one-time migration records the selected model with the
+  plan-review evaluation data.
+
 ### Security
 
 - Updated TLS certificate validation dependencies to address certificate and
@@ -17,6 +30,26 @@ are tagged.
   is required.
 
 ### Added
+
+- **The plan picker can now create a plan, not just select one.** When a
+  feature has no plan yet, leader `n` in its session opens a picker over the
+  worktree's Markdown files; pressing `p` there now starts the same guided
+  plan-mode interview available elsewhere (e.g. `P` on the dashboard),
+  scoped to that feature. Accepting writes `AMF_PLAN.md` as usual, which is
+  picked up automatically, so a feature with no plan can get one without
+  leaving the picker to hand-write a file first.
+
+- **A new "Quick Plan" mode offers a lighter alternative to the full Plan
+  interview.** Press `Q` on a feature (parallel to `P` for the full interview)
+  to re-run it, or pick it from the feature-creation wizard's Plan field,
+  which is now a 3-way cycle — `None` / `Quick Plan` / `Full Plan` — instead
+  of a checkbox. Quick Plan asks as few clarifying questions as the task
+  needs, including none at all for something already clear, then does one of
+  three things: starts work right away with no plan file, shows a short
+  reviewable plan (the same accept/edit screen full Plan mode uses), or, if
+  the answers turn out to reveal more complexity than expected, escalates
+  into the full Plan-mode interview — with an explicit message explaining why
+  and everything already answered carried forward, so nothing is asked twice.
 
 - **AMF now has a public website** (`site/`, built with the Zola static site
   generator): a landing page plus a documentation section covering
@@ -141,6 +174,16 @@ are tagged.
   session. Templates are now saved independently of other AMF state, and the
   prompt library always shows the latest saved templates when opened. No
   migration is required.
+
+- **The fresh-context sidebar hint no longer shows its `<leader F>` shortcut
+  twice, and the redundant `<leader X>` dismiss binding is gone.** At the
+  warning/critical context band, the sidebar's `Context` section previously
+  advertised the fresh-context action both in its title-top hint and again
+  in an `Action:`/`Dismiss:` line inside the body — with a separate leader
+  command just to dismiss it. The shortcut is now shown once, in the title,
+  matching every other sidebar section's convention, and the hint re-arms on
+  its own at the next context reset or cleared trigger, so there is nothing
+  left to dismiss. No migration is required.
 
 ## [v0.42.0] - 2026-09-04
 

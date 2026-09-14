@@ -457,9 +457,6 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 app.open_fresh_context_prompt_from_view();
             }
         }
-        KeyCode::Char('X') => {
-            app.dismiss_context_hint_from_view();
-        }
         KeyCode::Char('A') => {
             // Harness setup is an intermediate destination, not the end of
             // the inspection trip. Keep the interview parked so replacing the
@@ -712,6 +709,37 @@ mod tests {
                         crate::app::MarkdownFilePickerPurpose::SelectPlan { .. }
                     )
         ));
+    }
+
+    #[test]
+    fn leader_n_then_p_opens_the_on_demand_plan_interview_for_the_picker_feature() {
+        let repo = init_repo_with_branch_change();
+        let notes = repo.path().join("docs/accepted.md");
+        std::fs::create_dir_all(notes.parent().unwrap()).unwrap();
+        std::fs::write(&notes, "# Accepted\n").unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        let feature_id = app.store.projects[0].features[0].id.clone();
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('n')), 20).unwrap();
+        app.complete_markdown_loading();
+        assert!(matches!(&app.mode, AppMode::MarkdownFilePicker(_)));
+
+        crate::handlers::picker::handle_markdown_file_picker_key(&mut app, key(KeyCode::Char('p')))
+            .unwrap();
+
+        match &app.mode {
+            AppMode::PlanInterview(state) => {
+                assert_eq!(state.interview_key, feature_id);
+                assert_eq!(state.workdir, repo.path());
+                assert!(state.pending_launch.is_none());
+            }
+            _ => panic!("expected the plan interview to open from the plan selector"),
+        }
+        // The new plan hasn't been accepted, so nothing was written yet and
+        // the pre-existing markdown file is untouched.
+        assert!(!repo.path().join("AMF_PLAN.md").exists());
+        assert!(notes.exists());
     }
 
     #[test]

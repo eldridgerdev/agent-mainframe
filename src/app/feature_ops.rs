@@ -221,6 +221,7 @@ impl App {
         let mode = state.mode.clone();
         let review = state.review;
         let plan_mode = state.plan_mode;
+        let quick_plan = state.quick_plan;
         let create_terminal = state.create_terminal;
         let session_name = state.session_name.trim().to_string();
         let use_worktree = state.use_worktree;
@@ -369,6 +370,7 @@ impl App {
             mode,
             review,
             plan_mode,
+            quick_plan,
             agent: state.agent.clone(),
             create_terminal,
             session_name,
@@ -384,6 +386,10 @@ impl App {
     }
 
     pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
+        if prepared.plan_mode && prepared.quick_plan {
+            self.start_quick_plan_interview(prepared);
+            return Ok(());
+        }
         if prepared.plan_mode {
             self.start_plan_interview(prepared);
             return Ok(());

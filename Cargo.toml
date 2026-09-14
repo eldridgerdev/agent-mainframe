@@ -41,6 +41,12 @@ tempfile = "3"
 libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 notify = "8.2.0"
+# Dedicated async runtime for the Remote Control companion-app server
+# (docs/backlog/remote-control-companion-app-plan.md, Epic 1). Runs only on
+# its own thread, started/stopped by an explicit user toggle — the rest of
+# AMF stays synchronous.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+axum = "0.8"
 
 [dev-dependencies]
 mockall = "0.13"

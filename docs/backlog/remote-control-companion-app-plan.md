@@ -1,6 +1,6 @@
 # Remote Control — companion app
 
-- **Status:** Ready
+- **Status:** In progress — Epic 1 (server skeleton) shipped 2026-09-14
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -175,16 +175,30 @@ channel between it and the main event loop. No independent value on its
 own — this is the load-bearing dependency for every other server-side
 epic.
 
-- [ ] Add tokio + axum (or equivalent) dependency.
-- [ ] Dedicated server thread, started/stopped by the on/off toggle.
-- [ ] `mpsc` channel wiring: remote requests marshalled onto the main
+- [x] Add tokio + axum (or equivalent) dependency.
+- [x] Dedicated server thread, started/stopped by the on/off toggle.
+- [x] `mpsc` channel wiring: remote requests marshalled onto the main
       loop, responses/state pushed back the same way.
-- [ ] Toggle surfaced in the dashboard/leader menu (state only — LAN vs.
+- [x] Toggle surfaced in the dashboard/leader menu (state only — LAN vs.
       tunnel indicator comes with the tunnel work in Epic 4/9).
 
-Verification: server starts/stops cleanly with the toggle and doesn't
-block or slow the existing 50ms/250ms poll loop; a test exercises
-start/stop without a real network client.
+**Done (2026-09-14).** `src/remote_server.rs` runs the server on a
+dedicated `amf-remote-server` thread with its own tokio runtime and a
+single `/health` route (real routes land with Epics 4/5/8/9). Shutdown
+is a tokio oneshot signal with graceful `axum::serve` teardown;
+lifecycle is reported back over a plain `std::sync::mpsc` channel
+(`Started`/`Stopped`), matching the existing `ipc.rs` cross-thread
+pattern rather than inventing a new one. `App::remote_server` owns the
+handle, `App::toggle_remote_server` starts/stops it (bound to
+`Ctrl+Space m` on the dashboard — no auto-start, ever), and
+`App::poll_remote_server_bg` drains events every main-loop tick.
+Loopback-only (`127.0.0.1`) until Epic 4 (pairing/auth) lands.
+
+Verification: 4 new tests (start/stop without a client, drop-without-
+explicit-stop joins cleanly and doesn't hang, two servers on
+independent OS-assigned ports, full toggle round-trip through `App`).
+Full suite (2251 tests), `cargo clippy --all-targets -- -D warnings`,
+and `cargo fmt --check` all pass.
 
 ### Epic 2 — Device storage (P0)
 

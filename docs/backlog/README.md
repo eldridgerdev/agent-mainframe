@@ -166,7 +166,9 @@ doc always says exactly what remains.
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.
 - [Remote Control — companion app](remote-control-companion-app-plan.md) —
-  _Ready._ Monitor and, eventually, fully control AMF agent sessions
+  _In progress._ Epic 1 (on-demand tokio/axum server skeleton, toggled
+  from the dashboard leader menu) has shipped. Monitor and, eventually,
+  fully control AMF agent sessions
   (any harness, any feature) from a phone: read-only status/notifications
   first, then answering blocked-agent prompts, then full terminal
   control — over LAN and/or an existing tunnel tool. Client is a Flutter

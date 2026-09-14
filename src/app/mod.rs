@@ -26,6 +26,7 @@ pub(crate) mod pr_review;
 mod project_ops;
 mod prompt_library;
 pub mod remote_control;
+pub(crate) mod remote_server;
 mod rename;
 pub(crate) mod resource_gate;
 pub(crate) mod review;
@@ -1079,6 +1080,14 @@ pub struct App {
     view_display_frozen_until: Option<Instant>,
     pub harness_check_tx: Sender<HarnessCheckResult>,
     harness_check_rx: Receiver<HarnessCheckResult>,
+    /// The Remote Control companion-app server: `Some` exactly while it is
+    /// running, on a dedicated thread with its own tokio runtime. Toggled
+    /// on/off by the user only — never started automatically — per the
+    /// on-demand server-lifecycle decision in
+    /// `docs/backlog/remote-control-companion-app-plan.md`. Drained every
+    /// main-loop tick by `poll_remote_server_bg` like the other `poll_*_bg`
+    /// background jobs.
+    pub remote_server: Option<crate::remote_server::RemoteServerHandle>,
 }
 
 pub(crate) struct HarnessCheckResult {
@@ -2438,6 +2447,7 @@ impl App {
             view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
+            remote_server: None,
         };
 
         match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
@@ -2682,6 +2692,7 @@ impl App {
             view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
+            remote_server: None,
         }
     }
 

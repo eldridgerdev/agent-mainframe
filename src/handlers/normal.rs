@@ -415,6 +415,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => {
             app.refresh_status_and_notifications();
         }
+        KeyCode::Char('m') => {
+            app.toggle_remote_server();
+        }
         _ => {}
     }
 

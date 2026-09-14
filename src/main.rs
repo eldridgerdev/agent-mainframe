@@ -26,6 +26,7 @@ mod pi;
 mod plan_interview;
 mod project;
 mod prompt_library;
+mod remote_server;
 mod resources;
 mod summary;
 mod theme;
@@ -1310,6 +1311,10 @@ fn run_loop<B: Backend + io::Write>(
         // can be in flight at once, so this drains rather than polling a
         // single-shot slot.
         if app.poll_learning_answers_bg() {
+            force_redraw = true;
+        }
+
+        if app.poll_remote_server_bg() {
             force_redraw = true;
         }
 

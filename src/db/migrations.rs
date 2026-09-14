@@ -128,6 +128,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Replace TODO completion flags with a three-state status and agent association",
             MIGRATION_028,
         ),
+        (
+            "Add remote_devices table for Remote Control companion-app pairing",
+            MIGRATION_029,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -744,6 +748,27 @@ SET status = CASE WHEN done != 0 THEN 'completed' ELSE 'not_started' END,
     agent_session_id = CASE WHEN done != 0 THEN spawned_session_id ELSE NULL END;
 ";
 
+/// Paired-device registry for the Remote Control companion app (see
+/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). Only the
+/// token's hash is stored — the plaintext per-device token lives on the
+/// device itself, minted and hashed during the pairing exchange (Epic 4).
+/// `token_hash` is UNIQUE so a lookup by presented token can never
+/// ambiguously match more than one device. No foreign key elsewhere: a
+/// paired device is independent of any one project/feature.
+const MIGRATION_029: &str = "
+CREATE TABLE IF NOT EXISTS remote_devices (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL DEFAULT '',
+    token_hash   TEXT NOT NULL,
+    paired_at    TEXT NOT NULL,
+    last_seen_at TEXT,
+    revoked      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_devices_token_hash
+    ON remote_devices(token_hash);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -780,7 +805,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -875,7 +900,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
     }
 
     /// Migration 023 adds `linked_feature_id` to TODOs written before it
@@ -1125,7 +1150,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 28);
+        assert_eq!(rows, 29);
     }
 
     /// Features written before selected-plan persistence existed acquire a
@@ -1173,7 +1198,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 28);
+        assert_eq!(version, 29);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

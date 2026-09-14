@@ -205,13 +205,27 @@ and `cargo fmt --check` all pass.
 Fully independent of Epic 1 — this is a data-model addition only.
 Safe to build first or in parallel.
 
-- [ ] `remote_devices` migration, following the existing `MIGRATION_0xx`
+- [x] `remote_devices` migration, following the existing `MIGRATION_0xx`
       convention.
-- [ ] `src/db/remote_devices.rs` (or similar): create, lookup by token,
+- [x] `src/db/remote_devices.rs` (or similar): create, lookup by token,
       revoke, update last-seen.
 
-Verification: unit tests for create/lookup/revoke, consistent with the
-`#[cfg(test)]` convention in `app/tests.rs`.
+**Done (2026-09-14).** `MIGRATION_029` adds `remote_devices` (id, name,
+token_hash, paired_at, last_seen_at, revoked) with a UNIQUE index on
+`token_hash`. `src/db/remote_devices.rs` stores only the hashed token —
+minting and hashing a real token is Epic 4's job — and exposes
+create/find-by-id/find-by-token-hash/list-all/touch-last-seen/revoke,
+wrapped as `AmfDb` methods. Marked `#[allow(dead_code)]` until Epic 4
+calls in, matching this codebase's existing convention for infra staged
+ahead of its consuming epic (see `todos`/`learning`/`plan_interviews` in
+`src/db/mod.rs`).
+
+Verification: 7 new unit tests (create/lookup by id/lookup by token
+hash/unknown lookups return `None` not an error/revoke leaves the row
+findable so callers can distinguish unknown-vs-revoked/touch-last-seen/
+list-all/unique-token-hash constraint). Full suite (2258 tests, after
+also bumping 4 migration tests that hardcoded the prior latest-version
+number), clippy, and fmt all pass.
 
 ### Epic 3 — Native app groundwork (P0)
 

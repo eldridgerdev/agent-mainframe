@@ -7,6 +7,7 @@ pub mod plan_interviews;
 pub mod pr_comment_triage;
 mod pr_review_cache;
 mod pr_terminal_state;
+pub mod remote_devices;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -376,6 +377,47 @@ impl AmfDb {
 
     pub fn delete_launched_editors_for_feature(&self, feature_id: &str) -> Result<()> {
         editors::delete_for_feature(&self.conn, feature_id)
+    }
+}
+
+/// Devices paired to the Remote Control companion app (see
+/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). The
+/// pairing flow that mints tokens and the auth path that looks them up are
+/// Epic 4, so nothing calls these yet outside this module's own tests.
+#[allow(dead_code)]
+impl AmfDb {
+    pub fn create_remote_device(
+        &self,
+        name: &str,
+        token_hash: &str,
+    ) -> Result<remote_devices::RemoteDevice> {
+        remote_devices::create(&self.conn, name, token_hash)
+    }
+
+    pub fn find_remote_device_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<remote_devices::RemoteDevice>> {
+        remote_devices::find_by_id(&self.conn, id)
+    }
+
+    pub fn find_remote_device_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<remote_devices::RemoteDevice>> {
+        remote_devices::find_by_token_hash(&self.conn, token_hash)
+    }
+
+    pub fn list_remote_devices(&self) -> Result<Vec<remote_devices::RemoteDevice>> {
+        remote_devices::list_all(&self.conn)
+    }
+
+    pub fn touch_remote_device_last_seen(&self, id: &str) -> Result<()> {
+        remote_devices::touch_last_seen(&self.conn, id)
+    }
+
+    pub fn revoke_remote_device(&self, id: &str) -> Result<()> {
+        remote_devices::revoke(&self.conn, id)
     }
 }
 

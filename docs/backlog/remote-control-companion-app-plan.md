@@ -190,7 +190,7 @@ lifecycle is reported back over a plain `std::sync::mpsc` channel
 (`Started`/`Stopped`), matching the existing `ipc.rs` cross-thread
 pattern rather than inventing a new one. `App::remote_server` owns the
 handle, `App::toggle_remote_server` starts/stops it (bound to
-`Ctrl+Space m` on the dashboard — no auto-start, ever), and
+`Ctrl+Space C` on the dashboard — no auto-start, ever), and
 `App::poll_remote_server_bg` drains events every main-loop tick.
 Loopback-only (`127.0.0.1`) until Epic 4 (pairing/auth) lands.
 

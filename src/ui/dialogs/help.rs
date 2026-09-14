@@ -56,7 +56,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("/", "Search and jump to item"),
         ("Ctrl+Space c", "Config wizard"),
         (
-            "Ctrl+Space m",
+            "Ctrl+Space C",
             "Toggle Remote Control companion-app server (on-demand)",
         ),
         ("?", "Toggle this help"),

@@ -689,4 +689,4 @@ examples, dry runs, and response formats.
 
 ## License
 
-AMF is released under the [MIT License](LICENSE).
+AMF is released under the [European Union Public Licence v1.2](LICENSE).

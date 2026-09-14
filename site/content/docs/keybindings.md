@@ -9,6 +9,11 @@ keys — Learning Mode, PR Triage, TODOs — are documented on their own pages.
 Press `?` at any time on the dashboard, or `Ctrl+Space` then `?` in a session,
 for the complete, current keybinding reference built into that version of AMF.
 
+<figure>
+  <img src="/images/docs/keybindings-help.png" alt="The full keybindings help overlay, listing dashboard actions and their keys">
+  <figcaption><code>?</code> opens the complete keybinding reference for the running version of AMF.</figcaption>
+</figure>
+
 ## Dashboard
 
 | Key | Action |

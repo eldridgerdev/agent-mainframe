@@ -1,6 +1,7 @@
 # Docs site feature coverage
 
-- **Status:** All 7 epics shipped and verified.
+- **Status:** All 7 epics shipped and verified. The Open Questions
+  screenshots follow-up is also done — see "Screenshots pass" below.
 - **Owner:** unassigned
 - **Relates to:** `site/content/docs/*.md` (the Zola docs site), `README.md`
   (source of truth the site was seeded from), `CLAUDE.md` (implementation
@@ -109,10 +110,10 @@ page.
 Verification: `zola build`/`zola check` (v0.23.5) both pass; content was
 derived from the actual formatting/keybinding functions in source rather
 than the doc comments alone, since sidebar text is exactly what a user
-sees. Screenshots already exist at `docs/screenshots/context-hint/`,
+sees. The page now embeds screenshots from `docs/screenshots/context-hint/`,
 `docs/screenshots/sidebar-usage-limit/`, and
-`docs/screenshots/harness-aware-session-summary/` if the page later wants
-images.
+`docs/screenshots/harness-aware-session-summary/` — see the docs-site
+screenshots pass below.
 
 ### Epic 3 — Multi-harness capability matrix (P0)
 
@@ -286,6 +287,32 @@ Verification: `zola build`/`zola check` (v0.23.5) pass — 14 pages, all
 three new headings/anchors render, the exact `combined (3)` string appears
 verbatim in the built HTML.
 
+## Screenshots pass
+
+Closed the "Screenshots" open question below: 16 images now sit across 8
+of the site's 14 docs pages (`quick-start.md`, `core-concepts.md`,
+`attention-and-limits.md`, `learning-mode.md`, `prompts-and-todos.md`,
+`review-and-pr-feedback.md`, `keybindings.md`, `session-tools.md`), each in
+a styled `<figure>`/`<figcaption>` (`.docs-content img/figure/figcaption`
+rules added to `site/sass/style.scss`) under `site/static/images/docs/`.
+
+- [x] Every image is a real capture reused from the existing
+      `docs/screenshots/` corpus (learning-mode, todo-assignment-lifecycle,
+      context-hint, sidebar-usage-limit, harness-aware-session-summary,
+      agent-limits, plan-mode-review-gate, diff-viewer-file-tree,
+      pr-triage-amf-outbound-comments, pending-ai-review-triage) rather
+      than freshly captured — no `amf-screenshot` run was needed.
+- [x] `installation.md`, `harnesses.md`, `configuration.md`,
+      `custom-prompts.md`, `project-config.md`, and `troubleshooting.md`
+      were left without images: they're reference/table/CLI-output pages,
+      and no existing capture fits the config wizard, the prompt-override
+      manager, or `amf doctor` — those would need a fresh `amf-screenshot`
+      run, not a reuse.
+
+Verification: `zola build`/`zola check` (v0.23.6) both pass; the built HTML
+was checked directly for the `<figure>` markup (raw HTML in Markdown
+content passes through unmodified) and the image count per page.
+
 ## Open questions
 
 - **Nothing in this doc has been checked against live sessions.** Every
@@ -298,11 +325,12 @@ verbatim in the built HTML.
   doing before treating this as the last word — especially anything
   UI-layout-dependent that source alone can't show (the harness matrix
   from Epic 3, the bookmark/resume/handoff flows from Epic 5).
-- **Screenshots.** Several of these features already have screenshots under
-  `docs/screenshots/` (context-hint, sidebar-usage-limit,
+- ~~**Screenshots.** Several of these features already have screenshots
+  under `docs/screenshots/` (context-hint, sidebar-usage-limit,
   harness-aware-session-summary, agent-limits). None of the new pages use
   images yet; worth reusing those via the `amf-screenshot` skill's gallery
-  rather than recapturing, where the existing ones are still current.
+  rather than recapturing, where the existing ones are still current.~~
+  Done — see "Screenshots pass" above.
 - **Keeping README and the site in sync going forward.** This audit exists
   because README grew ahead of the site, and by the end of it the site
   covers several things (the harness matrix, the `amf.json` field

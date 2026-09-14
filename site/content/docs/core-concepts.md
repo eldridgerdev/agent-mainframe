@@ -47,3 +47,8 @@ an RFC, prior notes — and `Ctrl+X` drops the last one. Attaching a document
 is also what switches the interview's AI passes from writing blind to
 reading the repository: with nothing attached they run with no tool
 access at all.
+
+<figure>
+  <img src="/images/docs/plan-review-gate.png" alt="Plan mode's review gate showing a synthesized implementation plan as rendered markdown, with scroll, edit, regenerate, accept, and abort actions">
+  <figcaption>The review gate: read the synthesized plan, edit it, or ask the agent to regenerate it before anything is saved or launched.</figcaption>
+</figure>

@@ -1,0 +1,33 @@
+# Codex-specific proof of the Expert model selector and pre-call gate.
+key:A
+wait:800
+shot:codex-harness-setup-before
+key:j
+wait:300
+key:j
+wait:300
+key:Enter
+wait:3000
+shot:codex-harness-setup-after
+key:c
+wait:500
+run:AMF_BIN="$AMF_BIN" "$AMF_BIN" automation create-feature --file scripts/dev/screenshot/scenarios/expert-preflight-codex-seed-feature.json
+wait:500
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:700
+key:j
+wait:300
+key:P
+wait:700
+key:r
+wait:700
+note:The synthesized plan is shown at the review gate before the Codex Expert review is requested.
+shot:codex-plan-review-before-expert
+key:a
+wait:700
+note:The Codex Expert selector shows the visible Codex model catalog, with a frontier model available without typing.
+shot:codex-expert-model-picker
+key:Enter
+wait:700
+note:The pre-call confirmation carries Codex and the selected frontier model forward before any tokens are spent.
+shot:codex-expert-preflight-confirmation

@@ -1,0 +1,21 @@
+# Shows the explicit Expert model gate and pre-call confirmation against a
+# deterministic synthesized plan fixture. No provider call is sent because the
+# scenario stops at the confirmation surface.
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:700
+key:j
+wait:300
+key:P
+wait:700
+key:r
+wait:700
+note:The synthesized plan is shown at the review gate before the Expert review is requested.
+shot:plan-review-before-expert
+key:a
+wait:700
+note:Expert review is a distinct user-triggered step with the harness's verified model choices; no model name must be typed.
+shot:expert-frontier-model-picker
+key:Enter
+wait:700
+note:The Expert pre-call confirmation shows the exact selected harness and frontier model before any tokens are spent.
+shot:expert-preflight-confirmation

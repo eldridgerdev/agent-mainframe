@@ -313,21 +313,34 @@ advisory analysis only: do not rewrite the plan and do not output a replacement 
 Return only markdown, with no preamble and no fenced code block. Use exactly this structure:
 # Plan review: <feature name>
 
-## Summary
-## Gaps
-## Risks
-## Contradictions
-## Unclear decisions
-## Missing acceptance criteria
+## Objective and non-goals
+## Ordered implementation steps
+## Code map
+## Invariants and decisions
+## Validation plan
+## Risks and stop conditions
+## Definition of done
+## Clarification questions
 
 Requirements:
 - {{tool_access_note}}
-- Keep the summary to at most three sentences, stating whether the plan is ready to implement.
-- Name the plan section each finding refers to, and order findings most consequential first.
-- Judge the plan against the interview answers and the supplied repository context, not against generic
-  best practice.
-- Write "None identified." under a heading with no genuine finding. Never pad a section by restating the plan.
-- Flag a decision as unclear only when the plan and interview genuinely disagree or leave it open."#;
+- Write an implementation brief for the cheaper model, not a replacement plan or a speculative patch.
+- Make the ordered steps concrete and dependency-aware. Name relevant files, modules, symbols, and
+  ownership boundaries only when supported by the supplied repository context.
+- State the rationale behind consequential decisions, the invariants that must remain true, and the
+  alternatives that were rejected.
+- Include focused tests, fixtures, commands, failure paths, recovery paths, and observable acceptance
+  checks in the validation plan.
+- List up to three clarification questions. Each question must identify the plan decision it unblocks
+  and the evidence or choice required. Format each as `- Q1: <question> — unblocks: <decision>`.
+  Write "None." when no question is necessary.
+- Use "None identified." under any other heading with no genuine finding. Never pad a section by
+  restating the plan.
+- Spend extra reasoning on ambiguity, sequencing, and implementation risk; do not merely repeat the
+  user's brief or generic best practice.
+- If the review input contains `previous_expert_findings` and `clarification_answers`, resolve those
+  answers into the implementation brief. Do not ask another clarification round; write "None."
+  under Clarification questions."#;
 
 /// Stable instructions for a user-directed revision from the review gate.
 /// Unlike the other interview prompts, this call deliberately has read-only
@@ -1031,6 +1044,46 @@ pub fn build_critique_prompt(
     )
 }
 
+/// Build the single bounded follow-up review after the user answers expert
+/// clarification questions. The original findings and answers stay in the
+/// packet so the expert can resolve the exact ambiguity it raised.
+#[allow(clippy::too_many_arguments)]
+pub fn build_critique_followup_prompt(
+    feature_name: &str,
+    plan: &str,
+    brief: &str,
+    questions: &[PlanQuestion],
+    answers: &[Option<String>],
+    context: &RepositoryContext,
+    attached: &[AttachedDoc],
+    findings: &str,
+    clarification_answers: &[(String, String)],
+) -> String {
+    let input = serde_json::json!({
+        "prompt_version": CRITIQUE_PROMPT_VERSION,
+        "feature_name": feature_name,
+        "draft_plan": plan,
+        "feature_brief": bounded_model_input(brief),
+        "interview_answers": interview_answers(questions, answers),
+        "repository_context": context,
+        "attached_documents": attached_doc_inputs(attached),
+        "previous_expert_findings": findings,
+        "clarification_answers": clarification_answers.iter().map(|(id, answer)| {
+            serde_json::json!({"id": id, "answer": answer})
+        }).collect::<Vec<_>>(),
+    });
+    let rendered = serde_json::to_string_pretty(&input).unwrap_or_else(|_| "{}".into());
+    crate::prompts::render_template(
+        crate::prompts::PromptId::PlanInterviewCritique
+            .spec()
+            .default_template,
+        &interview_input_ctx(rendered).with(
+            "tool_access_note",
+            critique_tool_access_note(!attached.is_empty()),
+        ),
+    )
+}
+
 /// The `{{interview_input}}` JSON for a user-directed plan revision. Run with
 /// read-only repository tools rather than the no-tools interview snapshot.
 pub fn directed_revision_input_json(
@@ -1335,6 +1388,28 @@ pub fn parse_synthesized_plan(response: &str) -> Option<String> {
 /// all) and a rewritten plan, which is caught by the structure the synthesis
 /// contract defines rather than by the wording of the title.
 pub fn parse_plan_critique(response: &str) -> Option<String> {
+    parse_plan_preflight(response).map(|brief| brief.markdown)
+}
+
+/// One bounded clarification request from the expert preflight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanClarificationQuestion {
+    pub id: String,
+    pub question: String,
+    pub unblocks: String,
+}
+
+/// The structured contract returned by the expert plan preflight. The full
+/// markdown remains available for the review pane; questions are extracted so
+/// the UI can collect answers without asking the model to parse its own prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanPreflightResult {
+    pub markdown: String,
+    pub clarification_questions: Vec<PlanClarificationQuestion>,
+}
+
+/// Validate and extract the actionable plan-preflight contract.
+pub fn parse_plan_preflight(response: &str) -> Option<PlanPreflightResult> {
     let critique = strip_markdown_fence(response);
     let title = critique.lines().next()?;
     if !title.starts_with("# ") {
@@ -1346,10 +1421,62 @@ pub fn parse_plan_critique(response: &str) -> Option<String> {
     if title.to_ascii_lowercase().starts_with("# plan:") {
         return None;
     }
-    if !critique.lines().any(|line| line.starts_with("## ")) {
+    const REQUIRED_SECTIONS: [&str; 8] = [
+        "## Objective and non-goals",
+        "## Ordered implementation steps",
+        "## Code map",
+        "## Invariants and decisions",
+        "## Validation plan",
+        "## Risks and stop conditions",
+        "## Definition of done",
+        "## Clarification questions",
+    ];
+    let lower = critique.to_ascii_lowercase();
+    if REQUIRED_SECTIONS
+        .iter()
+        .any(|section| !lower.contains(&section.to_ascii_lowercase()))
+    {
         return None;
     }
-    Some(format!("{critique}\n"))
+
+    let questions = critique
+        .split_once("## Clarification questions")
+        .and_then(|(_, section)| {
+            section
+                .split_once("\n## ")
+                .map(|(body, _)| body)
+                .or(Some(section))
+        })
+        .map(parse_clarification_questions)
+        .unwrap_or_default();
+    if questions.len() > 3 {
+        return None;
+    }
+    Some(PlanPreflightResult {
+        markdown: format!("{critique}\n"),
+        clarification_questions: questions,
+    })
+}
+
+fn parse_clarification_questions(section: &str) -> Vec<PlanClarificationQuestion> {
+    section
+        .lines()
+        .filter_map(|line| {
+            let body = line.trim().strip_prefix("- ")?;
+            let (id, rest) = body.split_once(':')?;
+            let (question, unblocks) = rest.split_once("— unblocks:")?;
+            let question = question.trim();
+            let unblocks = unblocks.trim();
+            if question.is_empty() || unblocks.is_empty() {
+                return None;
+            }
+            Some(PlanClarificationQuestion {
+                id: id.trim().to_string(),
+                question: question.to_string(),
+                unblocks: unblocks.to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Validate the bounded report returned by one isolated investigator.
@@ -2526,13 +2653,38 @@ mod tests {
     #[test]
     fn critique_parser_accepts_the_contract_and_unwraps_a_fenced_reply() {
         let response = "```markdown\n# Plan review: guided-plans\n\n\
-            ## Summary\nReady with caveats.\n\n## Gaps\n- No rollback story.\n```";
+            ## Objective and non-goals\nReady with caveats.\n\n\
+            ## Ordered implementation steps\n- Step one.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Preserve the API.\n\n## Validation plan\n- Run tests.\n\n\
+            ## Risks and stop conditions\n- Stop on ambiguity.\n\n## Definition of done\n- Tests pass.\n\n\
+            ## Clarification questions\nNone.\n```";
 
         let critique = parse_plan_critique(response).unwrap();
 
         assert!(critique.starts_with("# Plan review: guided-plans"));
-        assert!(critique.contains("- No rollback story."));
+        assert!(critique.contains("- Stop on ambiguity."));
         assert!(critique.ends_with('\n'));
+    }
+
+    #[test]
+    fn preflight_parser_extracts_bounded_clarification_questions() {
+        let response = "# Plan review: guided-plans\n\n\
+            ## Objective and non-goals\n- Ship the feature.\n\n\
+            ## Ordered implementation steps\n- Step one.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Preserve the API.\n\n## Validation plan\n- Run tests.\n\n\
+            ## Risks and stop conditions\n- Stop on ambiguity.\n\n## Definition of done\n- Tests pass.\n\n\
+            ## Clarification questions\n- Q1: Which migration path is supported? — unblocks: schema rollout\n";
+
+        let parsed = parse_plan_preflight(response).unwrap();
+        assert_eq!(parsed.clarification_questions.len(), 1);
+        assert_eq!(parsed.clarification_questions[0].id, "Q1");
+        assert_eq!(parsed.clarification_questions[0].unblocks, "schema rollout");
+    }
+
+    #[test]
+    fn preflight_parser_rejects_more_than_three_questions() {
+        let sections = "## Objective and non-goals\n- x\n\n## Ordered implementation steps\n- x\n\n## Code map\n- x\n\n## Invariants and decisions\n- x\n\n## Validation plan\n- x\n\n## Risks and stop conditions\n- x\n\n## Definition of done\n- x\n\n## Clarification questions\n- Q1: a — unblocks: a\n- Q2: b — unblocks: b\n- Q3: c — unblocks: c\n- Q4: d — unblocks: d\n";
+        assert!(parse_plan_preflight(&format!("# Plan review: x\n\n{sections}")).is_none());
     }
 
     #[test]
@@ -2546,7 +2698,13 @@ mod tests {
             "# plan review",
             "# Review of the guided-plans plan",
         ] {
-            let response = format!("{title}\n\n## Summary\nReady with caveats.\n");
+            let response = format!(
+                "{title}\n\n## Objective and non-goals\nReady.\n\n\
+                 ## Ordered implementation steps\n- Step.\n\n## Code map\n- src/lib.rs.\n\n\
+                 ## Invariants and decisions\n- Keep behavior.\n\n## Validation plan\n- Test.\n\n\
+                 ## Risks and stop conditions\n- Stop.\n\n## Definition of done\n- Done.\n\n\
+                 ## Clarification questions\nNone.\n"
+            );
             assert!(
                 parse_plan_critique(&response).is_some(),
                 "rejected a usable review titled {title:?}"
@@ -2554,7 +2712,11 @@ mod tests {
         }
 
         // A bare fence is as common a wrapper as a tagged one.
-        let fenced = "```\n# Plan review: guided-plans\n\n## Summary\nReady.\n```";
+        let fenced = "```\n# Plan review: guided-plans\n\n## Objective and non-goals\nReady.\n\n\
+            ## Ordered implementation steps\n- Step.\n\n## Code map\n- src/lib.rs.\n\n\
+            ## Invariants and decisions\n- Keep behavior.\n\n## Validation plan\n- Test.\n\n\
+            ## Risks and stop conditions\n- Stop.\n\n## Definition of done\n- Done.\n\n\
+            ## Clarification questions\nNone.\n```";
         let critique = parse_plan_critique(fenced).unwrap();
         assert!(critique.starts_with("# Plan review: guided-plans"));
         assert!(!critique.contains("```"));

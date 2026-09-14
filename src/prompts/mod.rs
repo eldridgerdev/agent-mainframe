@@ -223,8 +223,8 @@ static SPECS: [PromptSpec; 21] = [
     },
     PromptSpec {
         id: PromptId::PlanInterviewCritique,
-        title: "Plan interview: draft review",
-        summary: "Advisory review of a draft plan for gaps, risks, and unclear decisions.",
+        title: "Expert plan review",
+        summary: "Frontier-model implementation brief for a draft plan.",
         placeholders: &["tool_access_note", "interview_input"],
         default_template: defaults::PLAN_INTERVIEW_CRITIQUE,
         harness_variants: NO_HARNESS_VARIANTS,

@@ -1,0 +1,19 @@
+# Claude-specific proof of the Expert model selector and pre-call gate.
+run:python3 "$SCRIPT_DIR/seed_plan_draft.py" "$XDG_CONFIG_HOME/amf/amf.db"
+wait:700
+key:j
+wait:300
+key:P
+wait:700
+key:r
+wait:700
+note:The synthesized plan is shown at the review gate before the Claude Expert review is requested.
+shot:claude-plan-review-before-expert
+key:a
+wait:700
+note:The Claude Expert selector shows the verified Claude model choices, with opus highlighted and no model name required.
+shot:claude-expert-model-picker
+key:Enter
+wait:700
+note:The pre-call confirmation carries Claude and opus forward and still waits for explicit confirmation before spending tokens.
+shot:claude-expert-preflight-confirmation

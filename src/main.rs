@@ -1333,6 +1333,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.codex_models_cli_bg.is_some() && app.poll_codex_models_cli_bg() {
+            force_redraw = true;
+        }
+
         // Learning Mode answers arrive one per finished question, and several
         // can be in flight at once, so this drains rather than polling a
         // single-shot slot.

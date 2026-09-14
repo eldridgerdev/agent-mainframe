@@ -77,6 +77,10 @@ notify = "8.2.0"
 # AMF stays synchronous.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 axum = "0.8"
+# Pairing (Epic 4): rendering the pairing QR in the terminal. Token hashing
+# (`src/db/remote_devices.rs` never sees a plaintext token) reuses the `sha2`
+# dependency above.
+qrcode = { version = "0.14", default-features = false }
 
 [dev-dependencies]
 mockall = "0.13"

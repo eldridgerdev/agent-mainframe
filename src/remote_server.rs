@@ -15,15 +15,26 @@
 //! without blocking the UI. `/status` (Epic 5) exposes a read-only
 //! project/feature status snapshot, published by the main loop over a
 //! channel rather than read from `App` by the server thread directly — the
-//! server thread stores only the latest snapshot it was handed. Pairing and
-//! terminal streaming are added as their own epics land on top of this.
+//! server thread stores only the latest snapshot it was handed. `/pair/
+//! exchange` (Epic 4) is the same shape turned around: the server thread
+//! never validates a pairing code or writes a device itself (the pending
+//! code and the SQLite write both live on the main loop, the sole DB
+//! writer per the plan's DB-concurrency decision) — it only forwards the
+//! HTTP request as a `PairingExchangeRequest` and awaits the outcome on a
+//! `oneshot` embedded in the request, so `App::poll_remote_server_bg`
+//! (`src/app/remote_server.rs`) can answer it inline with the rest of its
+//! per-tick work. Terminal streaming is added as its own epic on top of
+//! this.
 
 use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle events emitted by the server thread and drained by
@@ -65,11 +76,49 @@ pub struct RemoteStatusSnapshot {
 
 type SharedStatus = Arc<Mutex<RemoteStatusSnapshot>>;
 
+/// A `POST /pair/exchange` request, forwarded from the HTTP handler to the
+/// main loop. `reply` is a one-shot back-channel — created fresh per
+/// request, not a persistent pipe — so the handler can simply `.await` it
+/// after sending, with a timeout in case the main loop is unreachable.
+pub struct PairingExchangeRequest {
+    pub code: String,
+    pub device_name: String,
+    pub reply: tokio::sync::oneshot::Sender<PairingExchangeOutcome>,
+}
+
+/// The result of validating and (on success) minting a device for a
+/// pairing exchange. Every variant here maps to a distinct HTTP status in
+/// `outcome_to_response` — none of them leak *why* a code is invalid vs.
+/// merely unknown, so a guesser learns nothing beyond "no" and, eventually,
+/// "locked out".
+#[derive(Debug, Clone)]
+pub enum PairingExchangeOutcome {
+    Paired {
+        device_id: String,
+        device_name: String,
+        token: String,
+    },
+    InvalidCode,
+    Expired,
+    LockedOut,
+    /// The device couldn't be persisted (e.g. no database configured) —
+    /// distinct from a bad code so a real phone doesn't retry a correct
+    /// code expecting a different result.
+    InternalError,
+}
+
+const PAIRING_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Owns the remote-control server's thread and lets the main loop request
 /// shutdown without blocking on the async runtime tearing down.
 pub struct RemoteServerHandle {
     pub rx: Receiver<RemoteServerEvent>,
     status_tx: tokio::sync::mpsc::UnboundedSender<RemoteStatusSnapshot>,
+    /// Pairing requests, drained non-blockingly by
+    /// `App::poll_remote_server_bg` via `try_recv_pairing_request`. The
+    /// matching sender lives inside the server thread's axum state — see
+    /// `run_server`.
+    pairing_rx: tokio::sync::mpsc::UnboundedReceiver<PairingExchangeRequest>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     join: Option<std::thread::JoinHandle<()>>,
 }
@@ -91,6 +140,14 @@ impl RemoteServerHandle {
     /// tick will see the `Stopped` event and clear the handle anyway.
     pub fn publish_status(&self, snapshot: RemoteStatusSnapshot) {
         let _ = self.status_tx.send(snapshot);
+    }
+
+    /// Drain one pending pairing exchange request, if any. Non-blocking —
+    /// mirrors `handle.rx.try_iter()` for lifecycle events, so
+    /// `App::poll_remote_server_bg` can drain every request that arrived
+    /// since the last tick without ever waiting on the server thread.
+    pub fn try_recv_pairing_request(&mut self) -> Option<PairingExchangeRequest> {
+        self.pairing_rx.try_recv().ok()
     }
 }
 
@@ -115,6 +172,7 @@ pub fn start(bind_addr: SocketAddr) -> RemoteServerHandle {
     let (event_tx, event_rx) = channel::<RemoteServerEvent>();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<RemoteStatusSnapshot>();
+    let (pairing_tx, pairing_rx) = tokio::sync::mpsc::unbounded_channel::<PairingExchangeRequest>();
 
     let join = std::thread::Builder::new()
         .name("amf-remote-server".into())
@@ -133,16 +191,33 @@ pub fn start(bind_addr: SocketAddr) -> RemoteServerHandle {
                 }
             };
 
-            runtime.block_on(run_server(bind_addr, event_tx, shutdown_rx, status_rx));
+            runtime.block_on(run_server(
+                bind_addr,
+                event_tx,
+                shutdown_rx,
+                status_rx,
+                pairing_tx,
+            ));
         })
         .expect("failed to spawn amf-remote-server thread");
 
     RemoteServerHandle {
         rx: event_rx,
         status_tx,
+        pairing_rx,
         shutdown: Some(shutdown_tx),
         join: Some(join),
     }
+}
+
+/// State shared across axum handlers. `pairing_tx` is `Clone` (an unbounded
+/// `mpsc` sender), so deriving `Clone` here is enough for axum's
+/// `with_state` — no `Arc` wrapper needed beyond the one `status` already
+/// carries.
+#[derive(Clone)]
+struct ServerState {
+    status: SharedStatus,
+    pairing_tx: tokio::sync::mpsc::UnboundedSender<PairingExchangeRequest>,
 }
 
 async fn run_server(
@@ -150,6 +225,7 @@ async fn run_server(
     event_tx: Sender<RemoteServerEvent>,
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     mut status_rx: tokio::sync::mpsc::UnboundedReceiver<RemoteStatusSnapshot>,
+    pairing_tx: tokio::sync::mpsc::UnboundedSender<PairingExchangeRequest>,
 ) {
     let status: SharedStatus = Arc::new(Mutex::new(RemoteStatusSnapshot::default()));
 
@@ -164,10 +240,16 @@ async fn run_server(
         }
     });
 
+    let state = ServerState { status, pairing_tx };
+
     let router = axum::Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
         .route("/status", axum::routing::get(status_handler))
-        .with_state(status);
+        .route(
+            "/pair/exchange",
+            axum::routing::post(pairing_exchange_handler),
+        )
+        .with_state(state);
 
     let listener = match tokio::net::TcpListener::bind(bind_addr).await {
         Ok(l) => l,
@@ -193,8 +275,116 @@ async fn run_server(
     });
 }
 
-async fn status_handler(State(status): State<SharedStatus>) -> Json<RemoteStatusSnapshot> {
-    Json(status.lock().unwrap().clone())
+async fn status_handler(State(state): State<ServerState>) -> Json<RemoteStatusSnapshot> {
+    Json(state.status.lock().unwrap().clone())
+}
+
+#[derive(Debug, Deserialize)]
+struct PairingExchangeBody {
+    code: String,
+    #[serde(default)]
+    device_name: String,
+}
+
+/// Forward a `POST /pair/exchange` request to the main loop and relay its
+/// answer back as the HTTP response. The server thread never itself decides
+/// whether `code` is valid — see the module doc comment.
+async fn pairing_exchange_handler(
+    State(state): State<ServerState>,
+    Json(body): Json<PairingExchangeBody>,
+) -> Response {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let request = PairingExchangeRequest {
+        code: body.code,
+        device_name: body.device_name,
+        reply: reply_tx,
+    };
+
+    if state.pairing_tx.send(request).is_err() {
+        // The main loop's receiver is gone — practically unreachable while
+        // this server thread is itself still running, since both live in
+        // the same `RemoteServerHandle`, but handled rather than panicking.
+        return unavailable_response();
+    }
+
+    match tokio::time::timeout(PAIRING_REPLY_TIMEOUT, reply_rx).await {
+        Ok(Ok(outcome)) => outcome_to_response(outcome),
+        // Either the oneshot sender was dropped without a reply (shouldn't
+        // happen — `App` always replies) or the main loop hasn't polled
+        // this request within the timeout (e.g. AMF is unresponsive).
+        // Either way, the honest answer is "try again", not a 4xx that
+        // implies the code itself was wrong.
+        _ => unavailable_response(),
+    }
+}
+
+fn unavailable_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({"error": "unavailable"})),
+    )
+        .into_response()
+}
+
+fn outcome_to_response(outcome: PairingExchangeOutcome) -> Response {
+    match outcome {
+        PairingExchangeOutcome::Paired {
+            device_id, token, ..
+        } => (
+            StatusCode::OK,
+            Json(serde_json::json!({"device_id": device_id, "token": token})),
+        )
+            .into_response(),
+        PairingExchangeOutcome::InvalidCode => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "invalid_code"})),
+        )
+            .into_response(),
+        PairingExchangeOutcome::Expired => (
+            StatusCode::GONE,
+            Json(serde_json::json!({"error": "expired"})),
+        )
+            .into_response(),
+        PairingExchangeOutcome::LockedOut => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "locked_out"})),
+        )
+            .into_response(),
+        PairingExchangeOutcome::InternalError => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal_error"})),
+        )
+            .into_response(),
+    }
+}
+
+/// Mint a new bearer token for a freshly paired device: 256 bits of
+/// randomness as lowercase hex, built from two v4 UUIDs (already a
+/// dependency, `getrandom`-backed) rather than adding a `rand` crate
+/// solely for this.
+pub fn generate_device_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// Hash a token for storage — `remote_devices` (`src/db/remote_devices.rs`)
+/// only ever holds this, never the plaintext.
+pub fn hash_token(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Generate a one-time pairing code: 6 decimal digits, easy to read off the
+/// screen and type by hand if the QR can't be scanned. Short-lived and
+/// rate-limited (`App::process_pairing_exchange`), so the deliberately
+/// small keyspace is an acceptable trade for readability.
+pub fn generate_pairing_code() -> String {
+    let n = (uuid::Uuid::new_v4().as_u128() % 1_000_000) as u32;
+    format!("{n:06}")
 }
 
 #[cfg(test)]

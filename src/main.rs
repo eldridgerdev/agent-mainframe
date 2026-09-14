@@ -28,6 +28,7 @@ mod plan_interview;
 mod project;
 mod prompt_library;
 mod prompts;
+mod qr;
 mod remote_server;
 mod resources;
 mod review_batch;

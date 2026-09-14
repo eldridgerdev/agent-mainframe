@@ -1929,6 +1929,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_context_settings_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::RemotePairing(state) = &app.mode {
+        super::dialogs::draw_remote_pairing_dialog(frame, state, &app.throbber_state, &app.theme);
+    }
+
     draw_mode_context_bar(frame, &app.mode, &app.theme);
     match &app.mode {
         AppMode::DeletingFeatureInProgress(state) => {

@@ -4,10 +4,13 @@
 //! design this implements.
 
 use std::net::SocketAddr;
+use std::time::{Duration, Instant};
 
-use crate::remote_server::{self, RemoteFeatureStatus, RemoteServerEvent, RemoteStatusSnapshot};
+use crate::remote_server::{
+    self, PairingExchangeOutcome, RemoteFeatureStatus, RemoteServerEvent, RemoteStatusSnapshot,
+};
 
-use super::App;
+use super::{App, AppMode, PairingDialogStatus, RemotePairingState};
 
 /// Default bind address: loopback-only until the pairing/auth epics land,
 /// so the skeleton never exposes anything beyond localhost. Port 0 asks the
@@ -17,6 +20,16 @@ use super::App;
 /// bound to, so there is no reason to also solve "what if the fixed port
 /// is taken" right now.
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:0";
+
+/// How long a freshly generated pairing code stays valid. Short enough that
+/// a code left on screen isn't a standing risk, long enough to actually
+/// scan a QR and complete an exchange.
+const PAIRING_CODE_TTL: Duration = Duration::from_secs(300);
+
+/// Failed exchange attempts against one pairing code before it's locked out
+/// and a fresh one must be generated (`r` in the dialog). Counted per code,
+/// not per device — a new code resets the counter.
+const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
 impl App {
     /// Flip the on/off toggle. Never called automatically — the
@@ -69,6 +82,7 @@ impl App {
                 RemoteServerEvent::Started { addr } => {
                     self.log_info("remote_server", format!("Listening on {addr}"));
                     self.push_toast_info(format!("Remote-control server listening on {addr}"));
+                    self.remote_server_addr = Some(addr);
                 }
                 RemoteServerEvent::Stopped { error } => {
                     match error {
@@ -86,6 +100,14 @@ impl App {
                     // Terminal: the server thread has exited, so there is
                     // nothing left to read from its receiver.
                     self.remote_server = None;
+                    self.remote_server_addr = None;
+                    // An in-progress pairing dialog is now pairing against
+                    // a server that no longer exists — say so rather than
+                    // leaving it silently stuck on "Waiting for phone…".
+                    if let AppMode::RemotePairing(state) = &mut self.mode {
+                        state.status =
+                            PairingDialogStatus::Failed("Remote-control server stopped".into());
+                    }
                 }
             }
         }
@@ -97,7 +119,205 @@ impl App {
             handle.publish_status(self.build_remote_status_snapshot());
         }
 
+        self.drain_pairing_requests() || changed
+    }
+
+    /// Open the pairing dialog with a fresh one-time code, or explain why
+    /// not: the server (Epic 1) must already be running — pairing never
+    /// starts it, per the on-demand server-lifecycle decision.
+    pub fn start_pairing(&mut self) {
+        if self.remote_server.is_none() {
+            self.push_toast_warning("Start the remote-control server first (Ctrl+Space C)");
+            return;
+        }
+        let Some(addr) = self.remote_server_addr else {
+            self.push_toast_warning(
+                "Remote-control server is still starting — try again in a moment",
+            );
+            return;
+        };
+        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr));
+    }
+
+    /// Replace the current code with a fresh one — used both for the `r`
+    /// (regenerate) key and to recover from an expired/locked-out code.
+    /// Does nothing outside the pairing dialog.
+    pub fn regenerate_pairing_code(&mut self) {
+        let Some(addr) = self.remote_server_addr else {
+            self.cancel_pairing();
+            self.push_toast_warning("Remote-control server is no longer running");
+            return;
+        };
+        if matches!(self.mode, AppMode::RemotePairing(_)) {
+            self.mode = AppMode::RemotePairing(self.build_pairing_state(addr));
+        }
+    }
+
+    fn build_pairing_state(&self, addr: SocketAddr) -> RemotePairingState {
+        let code = remote_server::generate_pairing_code();
+        let qr_payload = format!("amf-pair://{addr}?code={code}");
+        let qr_lines = crate::qr::render_qr_lines(&qr_payload).unwrap_or_default();
+        RemotePairingState {
+            code,
+            addr,
+            qr_lines,
+            expires_at: Instant::now() + PAIRING_CODE_TTL,
+            attempts: 0,
+            locked: false,
+            status: PairingDialogStatus::Waiting,
+        }
+    }
+
+    /// Close the pairing dialog. Since `RemotePairingState` *is* the
+    /// pending-pairing state (see its doc comment), dropping it here is
+    /// what invalidates the code — a closed dialog leaves nothing an
+    /// in-flight `/pair/exchange` request can still match.
+    pub fn cancel_pairing(&mut self) {
+        if matches!(self.mode, AppMode::RemotePairing(_)) {
+            self.mode = AppMode::Normal;
+        }
+    }
+
+    /// Drain every pairing exchange request that arrived since the last
+    /// tick, answering each one inline. Returns `true` if any arrived (so
+    /// the caller folds this into its own redraw signal).
+    fn drain_pairing_requests(&mut self) -> bool {
+        let Some(handle) = &mut self.remote_server else {
+            return false;
+        };
+        let mut requests = Vec::new();
+        while let Some(req) = handle.try_recv_pairing_request() {
+            requests.push(req);
+        }
+        let changed = !requests.is_empty();
+        for req in requests {
+            let outcome = self.process_pairing_exchange(&req.code, &req.device_name);
+            self.apply_pairing_outcome(outcome.clone());
+            let _ = req.reply.send(outcome);
+        }
         changed
+    }
+
+    /// Validate `code` against the active `RemotePairing` dialog state and,
+    /// on a match, mint and persist a new device. The only source of truth
+    /// for a valid code is `self.mode` itself — see `RemotePairingState`'s
+    /// doc comment — so a request with no pairing dialog open, or one that
+    /// doesn't match, is indistinguishable from an unknown code to the
+    /// caller (`PairingExchangeOutcome::InvalidCode` either way).
+    fn process_pairing_exchange(
+        &mut self,
+        code: &str,
+        device_name: &str,
+    ) -> PairingExchangeOutcome {
+        let AppMode::RemotePairing(state) = &mut self.mode else {
+            return PairingExchangeOutcome::InvalidCode;
+        };
+        if state.locked {
+            return PairingExchangeOutcome::LockedOut;
+        }
+        if Instant::now() > state.expires_at {
+            return PairingExchangeOutcome::Expired;
+        }
+        if state.code != code {
+            state.attempts += 1;
+            if state.attempts >= MAX_PAIRING_ATTEMPTS {
+                state.locked = true;
+                return PairingExchangeOutcome::LockedOut;
+            }
+            return PairingExchangeOutcome::InvalidCode;
+        }
+
+        let name = {
+            let trimmed = device_name.trim();
+            if trimmed.is_empty() {
+                "New device".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let Some(db) = &self.db else {
+            self.log_error(
+                "remote_server",
+                "pairing: no database configured, cannot persist device".to_string(),
+            );
+            return PairingExchangeOutcome::InternalError;
+        };
+        let token = remote_server::generate_device_token();
+        let hash = remote_server::hash_token(&token);
+        match db.create_remote_device(&name, &hash) {
+            Ok(device) => {
+                // One-time code: lock it out after a single successful
+                // exchange too, not just after failures, so a replayed
+                // request (or an attacker who saw the code) can't mint a
+                // second device before the dialog is closed.
+                if let AppMode::RemotePairing(state) = &mut self.mode {
+                    state.locked = true;
+                }
+                PairingExchangeOutcome::Paired {
+                    device_id: device.id,
+                    device_name: name,
+                    token,
+                }
+            }
+            Err(e) => {
+                self.log_error(
+                    "remote_server",
+                    format!("pairing: failed to persist device: {e}"),
+                );
+                PairingExchangeOutcome::InternalError
+            }
+        }
+    }
+
+    /// Reflect an exchange outcome in the dialog (if still open) and in the
+    /// log/toast trail — mirrors how `poll_remote_server_bg` reports
+    /// lifecycle events above.
+    fn apply_pairing_outcome(&mut self, outcome: PairingExchangeOutcome) {
+        match &outcome {
+            PairingExchangeOutcome::Paired { device_id, .. } => {
+                self.log_info("remote_server", format!("Device paired: {device_id}"));
+                self.push_toast_info("Device paired");
+            }
+            PairingExchangeOutcome::InvalidCode => {
+                self.log_debug("remote_server", "pairing: invalid code".to_string());
+            }
+            PairingExchangeOutcome::Expired => {
+                self.log_debug("remote_server", "pairing: code expired".to_string());
+            }
+            PairingExchangeOutcome::LockedOut => {
+                self.log_warn(
+                    "remote_server",
+                    "pairing: too many failed attempts, code locked".to_string(),
+                );
+            }
+            PairingExchangeOutcome::InternalError => {}
+        }
+
+        if let AppMode::RemotePairing(state) = &mut self.mode {
+            state.status = match outcome {
+                PairingExchangeOutcome::Paired { device_name, .. } => {
+                    PairingDialogStatus::Paired { device_name }
+                }
+                PairingExchangeOutcome::InvalidCode => PairingDialogStatus::Failed(format!(
+                    "Invalid code ({} attempt{} left)",
+                    MAX_PAIRING_ATTEMPTS.saturating_sub(state.attempts),
+                    if MAX_PAIRING_ATTEMPTS.saturating_sub(state.attempts) == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )),
+                PairingExchangeOutcome::Expired => {
+                    PairingDialogStatus::Failed("Code expired — press r for a new one".into())
+                }
+                PairingExchangeOutcome::LockedOut => PairingDialogStatus::Failed(
+                    "Too many failed attempts — press r for a new code".into(),
+                ),
+                PairingExchangeOutcome::InternalError => {
+                    PairingDialogStatus::Failed("Pairing failed — check the debug log (D)".into())
+                }
+            };
+        }
     }
 
     /// Build the read-only status feed served at `/status` (Epic 5): one
@@ -312,6 +532,326 @@ mod tests {
             saw_feature,
             "the server's /status endpoint should eventually reflect App's store"
         );
+
+        app.toggle_remote_server();
+        wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    fn test_app_with_db() -> (tempfile::NamedTempFile, App) {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut app = test_app();
+        app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+        (db_file, app)
+    }
+
+    /// Opens the dialog the way `start_pairing` would, without needing a
+    /// real bound server — `regenerate_pairing_code` also needs
+    /// `remote_server_addr` set, so this sets it to match.
+    fn open_pairing_dialog(app: &mut App) -> String {
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        app.remote_server_addr = Some(addr);
+        app.mode = AppMode::RemotePairing(app.build_pairing_state(addr));
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        state.code.clone()
+    }
+
+    #[test]
+    fn start_pairing_requires_a_running_server() {
+        let mut app = test_app();
+        app.start_pairing();
+        assert!(
+            matches!(app.mode, AppMode::Normal),
+            "no server running, so pairing shouldn't open"
+        );
+    }
+
+    #[test]
+    fn start_pairing_waits_for_the_server_to_finish_binding() {
+        let mut app = test_app();
+        app.toggle_remote_server(); // Some(handle), but Started not drained yet
+        app.start_pairing();
+        assert!(
+            matches!(app.mode, AppMode::Normal),
+            "server handle exists but addr isn't known yet"
+        );
+        app.toggle_remote_server();
+        wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn start_pairing_opens_the_dialog_with_a_six_digit_code_and_a_qr() {
+        let mut app = test_app();
+        app.toggle_remote_server();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.remote_server_addr.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(app.remote_server_addr.is_some());
+
+        app.start_pairing();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected RemotePairing mode");
+        };
+        assert_eq!(state.code.len(), 6);
+        assert!(state.code.chars().all(|c| c.is_ascii_digit()));
+        assert!(!state.qr_lines.is_empty());
+        assert!(matches!(state.status, PairingDialogStatus::Waiting));
+
+        app.toggle_remote_server();
+        wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn cancel_pairing_drops_the_code_so_it_no_longer_validates() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+        app.cancel_pairing();
+        assert!(matches!(app.mode, AppMode::Normal));
+
+        let outcome = app.process_pairing_exchange(&code, "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::InvalidCode));
+    }
+
+    #[test]
+    fn correct_code_pairs_and_persists_a_device() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+
+        let outcome = app.process_pairing_exchange(&code, "Ryan's iPhone");
+        match &outcome {
+            PairingExchangeOutcome::Paired {
+                device_name, token, ..
+            } => {
+                assert_eq!(device_name, "Ryan's iPhone");
+                assert_eq!(token.len(), 64, "two simple-form UUIDs, hex, no dashes");
+            }
+            other => panic!("expected Paired, got {other:?}"),
+        }
+
+        let devices = app.db.as_ref().unwrap().list_remote_devices().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "Ryan's iPhone");
+
+        // `process_pairing_exchange` alone only validates + mints — the
+        // dialog's own status is only updated by `apply_pairing_outcome`,
+        // same as the real `drain_pairing_requests` flow.
+        app.apply_pairing_outcome(outcome);
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("dialog should still be open, now showing success");
+        };
+        assert!(matches!(
+            state.status,
+            PairingDialogStatus::Paired { ref device_name } if device_name == "Ryan's iPhone"
+        ));
+
+        // The code is single-use: a replayed exchange must not mint a
+        // second device even though the dialog is still showing success.
+        let replay = app.process_pairing_exchange(&code, "Attacker");
+        assert!(!matches!(replay, PairingExchangeOutcome::Paired { .. }));
+        assert_eq!(
+            app.db
+                .as_ref()
+                .unwrap()
+                .list_remote_devices()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn blank_device_name_falls_back_to_a_default() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+
+        let outcome = app.process_pairing_exchange(&code, "   ");
+        match outcome {
+            PairingExchangeOutcome::Paired { device_name, .. } => {
+                assert_eq!(device_name, "New device");
+            }
+            other => panic!("expected Paired, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_code_is_rejected_without_consuming_the_real_one() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+
+        let outcome = app.process_pairing_exchange("000000", "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::InvalidCode));
+
+        // The real code still works afterwards — one bad guess doesn't
+        // burn the pairing session, only counts toward the lockout.
+        let outcome = app.process_pairing_exchange(&code, "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::Paired { .. }));
+    }
+
+    #[test]
+    fn repeated_wrong_codes_lock_out_the_pairing_session() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+
+        for attempt in 1..=MAX_PAIRING_ATTEMPTS {
+            let outcome = app.process_pairing_exchange("000000", "phone");
+            if attempt < MAX_PAIRING_ATTEMPTS {
+                assert!(
+                    matches!(outcome, PairingExchangeOutcome::InvalidCode),
+                    "attempt {attempt} should still be a plain rejection"
+                );
+            } else {
+                assert!(
+                    matches!(outcome, PairingExchangeOutcome::LockedOut),
+                    "the attempt that hits the cap should lock out"
+                );
+            }
+        }
+
+        // Locked out even with the correct code now — only a fresh code
+        // (`r` / regenerate_pairing_code) recovers.
+        let outcome = app.process_pairing_exchange(&code, "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::LockedOut));
+    }
+
+    #[test]
+    fn expired_code_is_rejected() {
+        let (_db_file, mut app) = test_app_with_db();
+        let code = open_pairing_dialog(&mut app);
+        let AppMode::RemotePairing(state) = &mut app.mode else {
+            unreachable!()
+        };
+        state.expires_at = Instant::now() - Duration::from_secs(1);
+
+        let outcome = app.process_pairing_exchange(&code, "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::Expired));
+    }
+
+    #[test]
+    fn regenerate_replaces_the_code_and_invalidates_the_old_one() {
+        let (_db_file, mut app) = test_app_with_db();
+        let old_code = open_pairing_dialog(&mut app);
+
+        app.regenerate_pairing_code();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected to still be in the pairing dialog");
+        };
+        let new_code = state.code.clone();
+        assert_ne!(
+            old_code, new_code,
+            "collision is astronomically unlikely across 10^6 codes"
+        );
+
+        assert!(matches!(
+            app.process_pairing_exchange(&old_code, "phone"),
+            PairingExchangeOutcome::InvalidCode
+        ));
+        assert!(matches!(
+            app.process_pairing_exchange(&new_code, "phone"),
+            PairingExchangeOutcome::Paired { .. }
+        ));
+    }
+
+    #[test]
+    fn no_database_configured_fails_the_exchange_without_a_crash() {
+        let mut app = test_app(); // no db attached
+        let code = open_pairing_dialog(&mut app);
+
+        let outcome = app.process_pairing_exchange(&code, "phone");
+        assert!(matches!(outcome, PairingExchangeOutcome::InternalError));
+    }
+
+    #[test]
+    fn server_stopping_marks_an_open_pairing_dialog_as_failed() {
+        let (_db_file, mut app) = test_app_with_db();
+        app.toggle_remote_server();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.remote_server_addr.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.start_pairing();
+        assert!(matches!(app.mode, AppMode::RemotePairing(_)));
+
+        app.toggle_remote_server(); // request stop
+        wait_until_stopped(&mut app, Duration::from_secs(2));
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("dialog should stay open to show the failure");
+        };
+        assert!(matches!(state.status, PairingDialogStatus::Failed(_)));
+    }
+
+    /// End-to-end: a real HTTP client exchanging a real pairing code over
+    /// the real server, with `App::poll_remote_server_bg` as the only thing
+    /// answering it — the same wiring a real phone would go through.
+    #[test]
+    fn pair_exchange_round_trips_over_real_http() {
+        let (_db_file, mut app) = test_app_with_db();
+        app.toggle_remote_server();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.remote_server_addr.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let addr = app.remote_server_addr.expect("server should have started");
+        app.start_pairing();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let code = state.code.clone();
+
+        // A wrong code first, from a client that doesn't know the real one.
+        let bad_url = format!("http://{addr}/pair/exchange");
+        let wrong = std::thread::spawn({
+            let bad_url = bad_url.clone();
+            move || {
+                let body = serde_json::json!({"code": "000000", "device_name": "x"}).to_string();
+                ureq::post(&bad_url)
+                    .content_type("application/json")
+                    .send(body)
+            }
+        });
+        let mut wrong_result = None;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while wrong_result.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(5));
+            if wrong.is_finished() {
+                wrong_result = Some(());
+            }
+        }
+        let wrong_response = wrong.join().unwrap();
+        assert!(matches!(wrong_response, Err(ureq::Error::StatusCode(401))));
+
+        // Now the real code, from a "phone".
+        let good_url = bad_url.clone();
+        let good = std::thread::spawn(move || {
+            let body = serde_json::json!({"code": code, "device_name": "Test Phone"}).to_string();
+            ureq::post(&good_url)
+                .content_type("application/json")
+                .send(body)
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut response = None;
+        while response.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(5));
+            if good.is_finished() {
+                response = Some(());
+            }
+        }
+        let mut ok_response = good.join().unwrap().expect("valid code should pair");
+        let text = ok_response.body_mut().read_to_string().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["token"].as_str().unwrap().len(), 64);
+        assert!(!body["device_id"].as_str().unwrap().is_empty());
+
+        let devices = app.db.as_ref().unwrap().list_remote_devices().unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "Test Phone");
 
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));

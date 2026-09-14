@@ -5,6 +5,7 @@ use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -1793,12 +1794,52 @@ pub enum AppMode {
     Dormant(DormantViewState),
     /// Global context-window/severity settings (`w` on the dashboard).
     ContextSettings(ContextSettingsState),
+    /// Pairing a phone to the Remote Control companion app: a one-time code
+    /// (shown as a QR + digits) that `App::process_pairing_exchange`
+    /// validates against `POST /pair/exchange` requests relayed from the
+    /// server thread (`docs/backlog/remote-control-companion-app-plan.md`,
+    /// Epic 4). This struct *is* the pending-pairing state — there is no
+    /// separate copy on `App`, so closing the dialog (which drops it)
+    /// invalidates the code.
+    RemotePairing(RemotePairingState),
 }
 
 /// The view to return to plus the stable TODO identity to complete.
 pub struct TodoReferenceCompletionState {
     pub view: ViewState,
     pub todo_id: String,
+}
+
+/// UI status for the active `RemotePairing` dialog.
+pub enum PairingDialogStatus {
+    /// No exchange attempt has resolved yet.
+    Waiting,
+    /// A device successfully paired; `Esc`/`Enter` closes the dialog.
+    Paired { device_name: String },
+    /// The most recent attempt failed, or the code expired/locked out —
+    /// human-readable, shown directly, and cleared by `r` regenerating.
+    Failed(String),
+}
+
+pub struct RemotePairingState {
+    /// The current one-time code. Also embedded in `qr_payload`.
+    pub code: String,
+    /// The server's actual bound address, shown alongside the QR — see
+    /// `DEFAULT_BIND_ADDR` in `app/remote_server.rs` for why this is
+    /// loopback-only for now. Also what the QR itself encodes, as
+    /// `amf-pair://<addr>?code=<code>`.
+    pub addr: SocketAddr,
+    /// Pre-rendered half-block QR glyphs (`crate::qr::render_qr_lines`),
+    /// one `String` per row. Empty when encoding failed (shouldn't happen
+    /// for this payload shape) — the dialog falls back to the digits alone.
+    pub qr_lines: Vec<String>,
+    pub expires_at: Instant,
+    /// Failed exchange attempts against `code` so far.
+    pub attempts: u32,
+    /// Set once `attempts` hits the cap — the code is dead even if it
+    /// hasn't expired yet; only `r` (a fresh code) recovers.
+    pub locked: bool,
+    pub status: PairingDialogStatus,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up

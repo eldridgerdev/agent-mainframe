@@ -24,6 +24,7 @@ mod pr_review;
 mod precall;
 mod prompt_library;
 mod prompt_overrides;
+mod remote_pairing;
 mod review_destination;
 mod search;
 mod skill_picker;
@@ -83,6 +84,7 @@ pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
 };
 pub use prompt_overrides::handle_prompt_overrides_key;
+pub use remote_pairing::handle_remote_pairing_key;
 pub use review_destination::{
     handle_review_destination_pick_key, handle_review_feature_setup_key,
     handle_review_integrate_key,
@@ -191,5 +193,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
         AppMode::ReviewIntegrate(_) => handle_review_integrate_key(app, key.code),
         AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
+        AppMode::RemotePairing(_) => handle_remote_pairing_key(app, key),
     }
 }

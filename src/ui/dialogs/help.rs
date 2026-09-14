@@ -66,6 +66,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Ctrl+Space C",
             "Toggle Remote Control companion-app server (on-demand)",
         ),
+        (
+            "Ctrl+Space Q",
+            "Pair a device with the Remote Control companion app",
+        ),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
     ];

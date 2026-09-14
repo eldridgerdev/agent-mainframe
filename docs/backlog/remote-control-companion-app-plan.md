@@ -1,6 +1,6 @@
 # Remote Control — companion app
 
-- **Status:** In progress — Epic 1 (server skeleton) shipped 2026-09-14
+- **Status:** In progress — Epics 1, 2, 5, 4 shipped 2026-09-14
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -192,7 +192,10 @@ pattern rather than inventing a new one. `App::remote_server` owns the
 handle, `App::toggle_remote_server` starts/stops it (bound to
 `Ctrl+Space C` on the dashboard — no auto-start, ever), and
 `App::poll_remote_server_bg` drains events every main-loop tick.
-Loopback-only (`127.0.0.1`) until Epic 4 (pairing/auth) lands.
+Loopback-only (`127.0.0.1`). Correction (2026-09-14, once Epic 4
+landed): auth existing doesn't by itself open up LAN/tunnel exposure —
+the bind address is unchanged by Epic 4; widening it is separate
+follow-up work.
 
 Verification: 4 new tests (start/stop without a client, drop-without-
 explicit-stop joins cleanly and doesn't hang, two servers on
@@ -250,14 +253,56 @@ device via TestFlight/internal testing.
 Needs Epic 1 (server to expose the exchange endpoint) and Epic 2
 (device storage).
 
-- [ ] One-time pairing code generation + QR rendering on desktop.
-- [ ] Code exchange endpoint issuing a per-device token.
-- [ ] Rate-limiting/lockout on repeated failed pairing attempts.
-- [ ] Pairing dialog UI (QR + code + status) on desktop.
+- [x] One-time pairing code generation + QR rendering on desktop.
+- [x] Code exchange endpoint issuing a per-device token.
+- [x] Rate-limiting/lockout on repeated failed pairing attempts.
+- [x] Pairing dialog UI (QR + code + status) on desktop.
 
-Verification: automated tests for token issuance, invalid/expired code
-rejection, and lockout after repeated failures; one manual pass pairing
-a real phone.
+**Done (2026-09-14).** `App::start_pairing` (`Ctrl+Space Q`, dashboard
+leader — `C` was already taken for the toggle; checked both the
+dashboard- and view-leader namespaces before picking `Q`, free in both)
+opens `AppMode::RemotePairing`, whose state *is* the pending pairing —
+there's no separate copy on `App`, so closing the dialog invalidates the
+code by construction rather than by a second cleanup step. The code is a
+6-digit number (`remote_server::generate_pairing_code`, `uuid`-backed —
+no new RNG dependency); the QR encodes `amf-pair://<addr>?code=<code>`
+via a new `src/qr.rs` (the `qrcode` crate, half-block Unicode rendering,
+the same approach sketched for the unrelated session-URL QR in
+`remote-control-qr-overlay-plan.md`, landing here first).
+
+`POST /pair/exchange` (`src/remote_server.rs`) never itself decides
+whether a code is valid: per the plan's DB-concurrency decision the main
+loop is the sole SQLite writer, so the handler only forwards the request
+as a `PairingExchangeRequest` and `.await`s the outcome on a `oneshot`
+embedded in it (a 5s timeout guards against an unresponsive main loop).
+`App::process_pairing_exchange` (`src/app/remote_server.rs`), drained
+every tick by `poll_remote_server_bg` alongside the existing lifecycle
+events, validates against the dialog's own state: wrong code increments
+`attempts` and locks out at `MAX_PAIRING_ATTEMPTS` (5); a *correct* code
+locks the same way immediately after minting a device, making the code
+single-use rather than replayable for as long as the success screen is
+up. Token minting (`generate_device_token`) and hashing
+(`hash_token`, SHA-256) live in `remote_server.rs`, called from the App
+side that owns the DB write — `db/remote_devices.rs`'s Epic 2 comment
+about this being Epic 4's job is now accurate. A stopped server flips an
+open dialog to a "server stopped" failure state instead of leaving it
+stuck on "Waiting for phone…".
+
+Verification: 18 new tests — token issuance and DB persistence, blank
+device-name fallback, wrong-code rejection without burning the real
+code, lockout at the attempt cap (and that lockout also blocks the
+*correct* code), single-use enforcement after success, expiry,
+regenerate replacing the code, no-DB-configured failure, a server-stop
+mid-dialog transition, and a real end-to-end HTTP round trip
+(`ureq` POST against a live `/pair/exchange`, wrong code then right code,
+driven entirely through `App::poll_remote_server_bg` the way a real
+phone's requests would be). Full suite (2276 tests), clippy
+`--all-targets -D warnings`, and `cargo fmt --check` all clean.
+**Not done:** the "one manual pass pairing a real phone" verification
+item — there is no phone client yet (Epic 3/6) and the server is still
+loopback-only (`127.0.0.1`, see Epic 1), so nothing off this machine can
+reach `/pair/exchange` yet regardless. Revisit once Epic 6 (or a LAN/
+tunnel bind) exists to actually try it.
 
 ### Epic 5 — Status/notification relay (P1)
 

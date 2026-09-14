@@ -62,6 +62,7 @@ mod tests;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
@@ -1154,6 +1155,12 @@ pub struct App {
     /// main-loop tick by `poll_remote_server_bg` like the other `poll_*_bg`
     /// background jobs.
     pub remote_server: Option<crate::remote_server::RemoteServerHandle>,
+    /// The server's actual bound address, set on `Started` and cleared on
+    /// `Stopped` (`poll_remote_server_bg`). `None` while the server is
+    /// starting up or not running — `start_pairing` needs this to build the
+    /// pairing QR, since the address isn't known until the OS actually
+    /// binds it (`DEFAULT_BIND_ADDR` asks for any free port).
+    pub remote_server_addr: Option<SocketAddr>,
 }
 
 pub(crate) struct HarnessCheckResult {
@@ -2522,6 +2529,7 @@ impl App {
             harness_check_tx,
             harness_check_rx,
             remote_server: None,
+            remote_server_addr: None,
         };
 
         match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
@@ -2772,6 +2780,7 @@ impl App {
             harness_check_tx,
             harness_check_rx,
             remote_server: None,
+            remote_server_addr: None,
         }
     }
 

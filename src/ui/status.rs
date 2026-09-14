@@ -953,6 +953,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::RemotePairing(state) => {
+            let paired = matches!(state.status, crate::app::PairingDialogStatus::Paired { .. });
+            if paired {
+                Line::from(vec![
+                    Span::styled(" Enter/Esc", key_style()),
+                    Span::raw(" close"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(" r", key_style()),
+                    Span::raw(" new code  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" cancel"),
+                ])
+            }
+        }
     };
 
     let message_line = if let Some(ref msg) = app.message {

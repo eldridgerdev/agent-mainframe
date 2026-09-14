@@ -32,6 +32,25 @@ jobs:
       - name: cargo test
         run: cargo test --locked
 
+  publish-crate:
+    name: Publish to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    # Skipped (not failed) until CARGO_REGISTRY_TOKEN is set on the repo, so
+    # tag pushes keep releasing GitHub binaries while crates.io publishing
+    # is being set up.
+    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
   build:
     name: Build (${{ matrix.target }})
     needs: test

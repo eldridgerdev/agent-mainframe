@@ -40,8 +40,22 @@ Options:
                                        (e.g. text:my feature name)
                           wait:<ms>    sleep this many milliseconds
                           note:<text>  explain what the next shot proves
+                          expect:<text>     require this literal substring
+                                       in the NEXT shot's captured pane
+                                       (checked against the escape-free
+                                       .txt) -- fails the whole run
+                                       immediately, before any further
+                                       shots, if it is missing. Stack
+                                       several expect: lines before one
+                                       shot: to require all of them.
+                          expect_not:<text> require this literal substring
+                                       to be ABSENT from the next shot;
+                                       same all-or-nothing, fail-fast
+                                       behavior as expect:.
                           shot:<label> capture-pane -> NNN-<label>.ansi
-                                       (+ escape-free NNN-<label>.txt)
+                                       (+ escape-free NNN-<label>.txt),
+                                       then checks that shot's pending
+                                       expect:/expect_not: assertions
                           run:<cmd>    eval an arbitrary shell command
                                        (this shell already has AMF_BIN and
                                        the scratch instance's env
@@ -294,6 +308,31 @@ tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
 
 step=0
 shot_note=""
+shot_expectations=()
+shot_negations=()
+# Fails the whole run (nonzero exit, `set -e` propagates it) the moment a
+# shot's content doesn't match what the scenario claimed it would -- e.g. via
+# expect:/expect_not:. A scenario is evidence, not narration: a shot whose
+# content is wrong is worse than no shot at all, because it gets trusted.
+# Never delete an assertion to get a run past this -- either the scenario's
+# assumptions are wrong (a missing --seed/--seed-feature, a stale key
+# sequence after a UI change) or the feature itself is broken; fix whichever
+# it is and re-run.
+fail_expectation() {
+    local kind="$1" label="$2" file="$3" needle="$4" content="$5"
+    echo "" >&2
+    echo "$kind FAILED for shot '$label' (${file##*/}):" >&2
+    echo "  needle: $needle" >&2
+    echo "  --- actual captured pane ---" >&2
+    echo "$content" >&2
+    echo "  ----------------------------" >&2
+    echo "This scenario claims '$label' shows something it doesn't (or shows" >&2
+    echo "something it claims it doesn't). Do not publish this capture. Determine" >&2
+    echo "whether the scenario's assumptions are wrong (missing --seed/--seed-feature," >&2
+    echo "a stale key sequence, wrong step order) or whether the feature itself is" >&2
+    echo "broken, fix the root cause, and re-run the whole scenario from the start." >&2
+    exit 1
+}
 shot() {
     local label="$1"
     step=$((step + 1))
@@ -303,12 +342,32 @@ shot() {
     # Plain-text twin: escape-free, so an agent can grep/read it to verify
     # content far more cheaply than reading the .ansi or the rendered PNG.
     tmux capture-pane -p -t "$SESSION" >"${file%.ansi}.txt"
+
+    local content
+    content="$(cat "${file%.ansi}.txt")"
+    if ((${#shot_expectations[@]} > 0)); then
+        local needle
+        for needle in "${shot_expectations[@]}"; do
+            grep -qF -- "$needle" <<<"$content" \
+                || fail_expectation "EXPECTATION" "$label" "$file" "$needle" "$content"
+        done
+    fi
+    if ((${#shot_negations[@]} > 0)); then
+        local needle
+        for needle in "${shot_negations[@]}"; do
+            grep -qF -- "$needle" <<<"$content" \
+                && fail_expectation "NEGATIVE EXPECTATION" "$label" "$file" "$needle" "$content"
+        done
+    fi
+
     NOTE="$shot_note" CAPTURE_FILE="${file##*/}" python3 - "$OUT_DIR/capture-notes.jsonl" <<'PY'
 import json, os, sys
 with open(sys.argv[1], "a", encoding="utf-8") as out:
     out.write(json.dumps({"file": os.environ["CAPTURE_FILE"], "note": os.environ["NOTE"]}) + "\n")
 PY
     shot_note=""
+    shot_expectations=()
+    shot_negations=()
     echo "shot: $file" >&2
 }
 
@@ -515,6 +574,12 @@ run_scenario() {
                         return 1
                     fi
                     ;;
+                expect:*)
+                    shot_expectations+=("${part#expect:}")
+                    ;;
+                expect_not:*)
+                    shot_negations+=("${part#expect_not:}")
+                    ;;
                 shot:*)
                     shot "${part#shot:}"
                     ;;
@@ -538,6 +603,10 @@ run_scenario() {
             esac
         done
     done <"$file"
+    if ((${#shot_expectations[@]} > 0 || ${#shot_negations[@]} > 0)); then
+        echo "error: scenario ended with an expect:/expect_not: that no later shot: consumed -- a dead assertion proves nothing; add the shot: or remove the expect:" >&2
+        return 1
+    fi
 }
 
 if [[ -n "$SCENARIO" ]]; then

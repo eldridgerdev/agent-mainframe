@@ -564,6 +564,14 @@ pub struct AppConfig {
     /// `context_warning_percent` for the bands to remain meaningful.
     #[serde(default = "default_context_critical_percent")]
     pub context_critical_percent: u8,
+    /// Global fallback for [`crate::extension::ExtensionConfig::review_prompt_budget_tokens`]:
+    /// the estimated prompt-token ceiling above which `W` AI PR review and
+    /// final-review co-review split an oversized diff into slices. `None` uses
+    /// the built-in per-harness default (Claude/Codex 128k, OpenCode/Pi 96k);
+    /// `0` disables pre-send splitting (adaptive halving only). A project's
+    /// `amf.json` `review_prompt_budget_tokens` overrides this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt_budget_tokens: Option<usize>,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -712,6 +720,7 @@ impl Default for AppConfig {
             context_window_override: None,
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
+            review_prompt_budget_tokens: None,
         }
     }
 }
@@ -938,15 +947,7 @@ pub struct App {
     pub active_todos_sidebar_cache: HashMap<String, String>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
-    /// Finished Learning Mode answers, delivered from the per-question
-    /// threads. A persistent channel (rather than one `Option<Receiver>` per
-    /// run) is what lets several questions be in flight at once.
-    pub learning_answer_tx: Sender<learning::LearningAnswer>,
-    pub learning_answer_rx: Receiver<learning::LearningAnswer>,
-    /// `learning_qa` ids this process has a live run for. Only the ids not in
-    /// here are safe to treat as stranded when a session's history is loaded —
-    /// see `App::reconcile_interrupted_qa`.
-    pub learning_runs_in_flight: std::collections::HashSet<String>,
+    pub(crate) learning_runs: learning::runtime::LearningRuns,
     sidebar_load_executor: Option<SidebarLoadExecutor>,
     sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
@@ -985,18 +986,12 @@ pub struct App {
     /// that opens and later closes is re-checked rather than staying stuck on
     /// a stale negative answer.
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
-    /// Receiver for the background PR-comment fetch (see `app::pr_review`).
-    pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    pub(crate) pr_review_work: pr_review::runtime::PrReviewWork,
     /// Receiver for the background "all prompts" scan (leader-key latest-prompt
     /// menu). Reading and parsing every Claude/Codex/opencode transcript file
     /// for a session can be slow, so it runs off the UI thread; see
     /// `app::view::open_latest_prompt_from_view`.
     pub(crate) latest_prompt_menu_bg: Option<Receiver<view::LatestPromptScanResult>>,
-    /// Receiver for the blocking read-only PR-comment investigation (`v` → `f`
-    /// in PR Triage). One at a time; `Some` only while `AppMode::
-    /// PrInvestigationLoading` is showing. See
-    /// `app::pr_review::poll_pr_investigation_bg`.
-    pub pr_investigation_bg: Option<Receiver<pr_review::InvestigationOutcome>>,
     /// Receiver for the background AI-adaptive plan-interview round (a
     /// headless harness call). Carries the round number alongside the
     /// result so a late-arriving response can be matched or discarded. See
@@ -1037,27 +1032,11 @@ pub struct App {
     /// `PrPicker` well before the background pass finishes. Without this, a
     /// `Done` arriving after a cancel would find `self.mode` is no longer
     /// `ReviewMemoryCompactRunning` and has nowhere to land the proposed
-    /// rewrite — mirrors [`Self::ai_review_pending`]. `Some` exactly while
+    /// rewrite — mirrors the pending AI-review run origin. `Some` exactly while
     /// `review_memory_compact_bg` is `Some`; both are cleared together once
     /// `Done` is processed.
     pub review_memory_compact_pending: Option<CompactRunState>,
-    /// Receiver for the background AI review of the current PR's diff (the
-    /// `A` action, AI Review pane). See `app::ai_review::run_ai_pr_review`.
-    pub ai_review_bg: Option<Receiver<ai_review::AiReviewProgress>>,
-    /// Live progress is kept outside `AppMode` so `esc` can leave the running
-    /// screen and `A` can later reconstruct it without resetting its timer or
-    /// losing activity received while the user was elsewhere.
-    pub ai_review_progress: Option<AiReviewRunProgress>,
-    /// The AI Review pane snapshot a background review ([`Self::ai_review_bg`])
-    /// was started against, kept alive independent of `self.mode` — in
-    /// particular across `cancel_ai_pr_review` (`esc`), which restores
-    /// `self.mode` to `AiReview` well before the background pass finishes.
-    /// Without this, `Done` arriving after a cancel finds `self.mode` is no
-    /// longer `AiReviewRunning` and has nowhere to merge the findings.
-    /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
-    /// together once `Done` is processed. See
-    /// `app::ai_review::poll_ai_pr_review_bg`.
-    pub ai_review_pending: Option<AiReviewState>,
+    pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -1073,7 +1052,7 @@ pub struct App {
     pub(crate) ai_review_fix_cost_cache:
         Option<(ai_review::AiReviewFixCostKey, Vec<Option<String>>)>,
     /// Background PR Triage refresh kicked off only after GitHub confirms an
-    /// AI Review post. Separate from `pr_review_bg` so it can update a stashed
+    /// AI Review post. Separate from the PR fetch slot so it can update a stashed
     /// pane without changing the current AI Review mode.
     pub ai_review_triage_refresh_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// PR/workdir identity paired with `ai_review_triage_refresh_bg`.
@@ -1309,7 +1288,7 @@ impl App {
             // The AI review keeps running in the background after `esc`
             // returns here; animate the header's throbber for as long as it
             // is in flight (see `ui::dialogs::draw_ai_review`).
-            AppMode::AiReview(_) => self.ai_review_bg.is_some(),
+            AppMode::AiReview(_) => self.ai_review_run.is_pending(),
             // Full-screen loading/running views: `redraw_signature()` only
             // hashes the mode's discriminant, not its stage, so without this
             // the throbber only advances on the rare frame something else
@@ -2367,7 +2346,6 @@ impl App {
         let store = db.load_store()?;
         setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
         // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
         // Building them synchronously here required reading every Claude JSONL
@@ -2459,9 +2437,7 @@ impl App {
             active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
-            learning_answer_tx,
-            learning_answer_rx,
-            learning_runs_in_flight: std::collections::HashSet::new(),
+            learning_runs: learning::runtime::LearningRuns::default(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
@@ -2476,9 +2452,8 @@ impl App {
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
-            pr_review_bg: None,
+            pr_review_work: pr_review::runtime::PrReviewWork::default(),
             latest_prompt_menu_bg: None,
-            pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
@@ -2488,9 +2463,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
-            ai_review_bg: None,
-            ai_review_progress: None,
-            ai_review_pending: None,
+            ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2635,7 +2608,6 @@ impl App {
         // running them.
         crate::extension::set_test_global_extension_config(Some(ExtensionConfig::default()));
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let (learning_answer_tx, learning_answer_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
@@ -2715,9 +2687,7 @@ impl App {
             active_todos_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
-            learning_answer_tx,
-            learning_answer_rx,
-            learning_runs_in_flight: std::collections::HashSet::new(),
+            learning_runs: learning::runtime::LearningRuns::default(),
             sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
@@ -2732,9 +2702,8 @@ impl App {
             active_prs: HashMap::new(),
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
-            pr_review_bg: None,
+            pr_review_work: pr_review::runtime::PrReviewWork::default(),
             latest_prompt_menu_bg: None,
-            pr_investigation_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
@@ -2744,9 +2713,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
-            ai_review_bg: None,
-            ai_review_progress: None,
-            ai_review_pending: None,
+            ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -3324,6 +3291,18 @@ impl App {
     ) -> String {
         let (text, _source) = self.resolve_headless_template(id, harness, repo, workdir);
         crate::prompts::render_template(&text, ctx)
+    }
+
+    /// The batched-review size budget in estimated prompt tokens for a run of
+    /// `harness` against `repo`: the project's `amf.json`
+    /// `review_prompt_budget_tokens`, else the global
+    /// `AppConfig::review_prompt_budget_tokens`, else the built-in per-harness
+    /// default. A configured `0` is honored (disables pre-send splitting).
+    pub(crate) fn review_prompt_budget(&self, repo: &Path, harness: &AgentKind) -> usize {
+        self.extension_for_repo(repo)
+            .review_prompt_budget_tokens
+            .or(self.config.review_prompt_budget_tokens)
+            .unwrap_or_else(|| crate::headless::default_prompt_budget_tokens(harness))
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {

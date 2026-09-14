@@ -521,7 +521,7 @@ mod tests {
     const PS_SETTLE_TIMEOUT: Duration = Duration::from_secs(10);
     const PS_SETTLE_POLL: Duration = Duration::from_millis(25);
 
-    /// Stand-in for the editor: `sh` under the name `code`, launched with a
+    /// Stand-in for the editor: Bash under the name `code`, launched with a
     /// VS Code-shaped argv, that stays alive like a real window would. Real
     /// VS Code cannot be driven from a test, but the ownership resolution this
     /// exercises is the part that has to be right.
@@ -532,21 +532,27 @@ mod tests {
     /// here fails with `ETXTBSY` ("Text file busy") even though this thread had
     /// already closed its own handle. No amount of waiting fixes that — the
     /// file has to never be writable. A symlink is resolved at exec time to
-    /// `/bin/sh`, which nothing is writing, while `argv[0]` stays this path so
+    /// `/bin/bash`, which nothing is writing, while `argv[0]` stays this path so
     /// the process still reads as `code` to `is_vscode_for_workdir`.
-    fn spawn_fake_vscode_window(dir: &Path, workdir: &Path) -> std::process::Child {
+    fn spawn_fake_vscode_window(
+        dir: &Path,
+        workdir: &Path,
+    ) -> crate::resources::test_support::TestChild {
         let fake = dir.join("code");
-        std::os::unix::fs::symlink("/bin/sh", &fake).expect("link sh as a fake editor");
+        std::os::unix::fs::symlink("/bin/bash", &fake).expect("link bash as a fake editor");
         std::process::Command::new(&fake)
             .args([
                 "-c".as_ref(),
-                "sleep 60".as_ref(),
+                // Bash (including macOS sh) can exec a lone final command,
+                // replacing the editor-shaped argv with `sleep 60`.
+                "sleep 60 & wait".as_ref(),
                 "--new-window".as_ref(),
                 workdir.as_os_str(),
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
+            .map(crate::resources::test_support::TestChild::new)
             .expect("fake code should launch")
     }
 

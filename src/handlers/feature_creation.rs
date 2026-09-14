@@ -211,6 +211,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.agent = preset.agent.clone();
                     state.review = preset.review;
                     state.plan_mode = preset.plan_mode;
+                    state.quick_plan = preset.quick_plan;
                     state.enable_chrome = preset.enable_chrome;
                     state.remote_control = preset.remote_control;
                     if let Some(ref prefix) = preset.branch_prefix
@@ -349,7 +350,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
-                            state.plan_mode = !state.plan_mode;
+                            state.cycle_plan_choice(true);
                         }
                         4 => {
                             if state.agent == AgentKind::Claude {
@@ -396,7 +397,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
-                            state.plan_mode = !state.plan_mode;
+                            state.cycle_plan_choice(false);
                         }
                         4 => {
                             if state.agent == AgentKind::Claude {

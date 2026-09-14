@@ -23,7 +23,43 @@ are tagged.
   config fallback. A one-time migration records the selected model with the
   plan-review evaluation data.
 
+### Security
+
+- Updated TLS certificate validation dependencies to address certificate and
+  revocation-list validation vulnerabilities in HTTPS connections. No migration
+  is required.
+
 ### Added
+
+- **The plan picker can now create a plan, not just select one.** When a
+  feature has no plan yet, leader `n` in its session opens a picker over the
+  worktree's Markdown files; pressing `p` there now starts the same guided
+  plan-mode interview available elsewhere (e.g. `P` on the dashboard),
+  scoped to that feature. Accepting writes `AMF_PLAN.md` as usual, which is
+  picked up automatically, so a feature with no plan can get one without
+  leaving the picker to hand-write a file first.
+
+- **A new "Quick Plan" mode offers a lighter alternative to the full Plan
+  interview.** Press `Q` on a feature (parallel to `P` for the full interview)
+  to re-run it, or pick it from the feature-creation wizard's Plan field,
+  which is now a 3-way cycle — `None` / `Quick Plan` / `Full Plan` — instead
+  of a checkbox. Quick Plan asks as few clarifying questions as the task
+  needs, including none at all for something already clear, then does one of
+  three things: starts work right away with no plan file, shows a short
+  reviewable plan (the same accept/edit screen full Plan mode uses), or, if
+  the answers turn out to reveal more complexity than expected, escalates
+  into the full Plan-mode interview — with an explicit message explaining why
+  and everything already answered carried forward, so nothing is asked twice.
+
+- **AMF now has a public website** (`site/`, built with the Zola static site
+  generator): a landing page plus a documentation section covering
+  installation, quick start, core concepts, keybindings, Learning Mode,
+  reviewing changes and PR feedback, prompts and TODOs, overriding AI
+  prompts, attention/resource limits, and configuration. This does not
+  change the `amf` binary or any in-app behavior — it is separate,
+  publishable site content with its own build (`zola build`/`zola serve`)
+  and a GitHub Actions workflow that deploys it to Cloudflare Pages on push
+  to `main`. No migration is required.
 
 - **A plan interview can now include reference documents.** On the feature-brief
   step, `Ctrl+D` opens a file browser (`Ctrl+X` removes the last one); attach up
@@ -44,7 +80,46 @@ are tagged.
   adds an `attached_docs` column to the stored interviews table; existing rows
   are treated as having no attachments.
 
+- **AMF's AI reviews now split an oversized diff into slices instead of
+  failing or silently truncating it.** When the diff for the `W` AI PR review,
+  or for a final-review AI co-review (`Ctrl+Space`, then `f`, then the
+  co-review key) on a very large file, would exceed the review model's context
+  window, AMF parses the unified diff into per-file sections, packs them into
+  budgeted batches, reviews each batch on its own, splits any single file
+  that is still too big hunk by hunk, and then combines every batch's findings
+  into one review with a synthesis pass. The running screen reports progress
+  ("Reviewing batch 3/12", "Splitting `src/foo.rs` hunk by hunk", "Combining
+  findings"). Coverage stays complete: a hunk that cannot be made to fit even
+  on its own is listed explicitly rather than dropped. The `W` review's
+  summary — in the pane, the post dialog, and any review posted to GitHub —
+  gets a "⚠ Partial coverage" note when the diff had to be split, naming any
+  slice that could not be reviewed and saying if the synthesis pass could not
+  run (the findings are then combined verbatim). Batching only kicks in past
+  the size threshold; ordinary reviews are unchanged. The threshold is a
+  per-harness default (Claude/Codex ~128k tokens, OpenCode/Pi ~96k) and can be
+  overridden globally with `review_prompt_budget_tokens` in
+  `~/.config/amf/config.json`, or per repository with the same key in
+  `amf.json`; `0` disables pre-send splitting and relies only on retrying a
+  smaller prompt after an actual "prompt too long" error. The
+  batch/hunk/synthesis prompts are editable like every other headless prompt
+  (dashboard `E`) — the new ids are `review.batch`, `review.hunk_split`,
+  `review.synthesis`, and `review.findings_summary`. For a very large refactor
+  where per-slice review loses too much cross-file context, reviewing the
+  branch commit by commit (a focused PR per commit, or `git rebase -i` to
+  split one) still gives the best results. No migration is required.
+
+- **The plan interview no longer sends an over-long prompt when the repository
+  context is large.** If an adaptive interview round, the plan synthesis, or
+  the advisory plan review would exceed the model's context window, AMF first
+  drops the repository `README` / `CLAUDE.md` excerpts from that one prompt
+  and retries; the interview dialog's footer says what was trimmed. If it is
+  still too large, the prompt is sent as is with a note that it may not fit.
+  No migration is required.
+
 ### Fixed
+
+- Failed AI reviews now retain Claude’s structured error details and show the
+  process exit status, making failures with empty stderr easier to diagnose.
 
 - **AI review in PR Triage no longer fails on very large pull requests.** The
   `A`/`w`/`O` review passes fetch the PR diff with `gh pr diff`, which pulls it
@@ -99,6 +174,16 @@ are tagged.
   session. Templates are now saved independently of other AMF state, and the
   prompt library always shows the latest saved templates when opened. No
   migration is required.
+
+- **The fresh-context sidebar hint no longer shows its `<leader F>` shortcut
+  twice, and the redundant `<leader X>` dismiss binding is gone.** At the
+  warning/critical context band, the sidebar's `Context` section previously
+  advertised the fresh-context action both in its title-top hint and again
+  in an `Action:`/`Dismiss:` line inside the body — with a separate leader
+  command just to dismiss it. The shortcut is now shown once, in the title,
+  matching every other sidebar section's convention, and the hint re-arms on
+  its own at the next context reset or cleared trigger, so there is nothing
+  left to dismiss. No migration is required.
 
 ## [v0.42.0] - 2026-09-04
 

@@ -2,20 +2,21 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use anyhow::{Context, Result, bail};
 
 use super::pr_review::estimate_tokens;
 use super::{
-    AiModelPickState, App, AppMode, ModelPickRow, PendingPlanLaunch, PlanInterviewPhase,
-    PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch, ReviewAction, Selection,
-    StartIntent, TodoPlanOrigin,
+    AiModelPickState, App, AppMode, ModelPickRow, PendingPlanLaunch, PlanInterviewMode,
+    PlanInterviewPhase, PlanInterviewState, PlanKickoffTarget, PreparedFeatureLaunch,
+    ReviewAction, Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
+use crate::project::AgentKind;
 
 const PLAN_FILE_NAME: &str = "AMF_PLAN.md";
 
@@ -415,6 +416,48 @@ impl App {
             feature.agent.clone(),
         );
 
+        self.start_plan_interview_for_feature_data(repo, feature_name, feature_id, workdir, agent);
+    }
+
+    /// The sidebar plan selector's "create new plan" entry (`p` in the picker
+    /// opened when neither the conventional nor a manually selected plan
+    /// resolves). The on-demand interview keyed off the feature the picker was
+    /// opened for, not the dashboard's current selection — while a session is
+    /// being viewed the two need not match.
+    pub(crate) fn start_plan_interview_for_feature_id(&mut self, feature_id: &str) {
+        if self.resume_paused_plan_interview() {
+            return;
+        }
+
+        let Some((pi, fi)) = self.feature_indices_by_id(feature_id) else {
+            self.message = Some("Feature no longer exists".into());
+            return;
+        };
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        let (repo, feature_name, feature_id, workdir, agent) = (
+            project.repo.clone(),
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            feature.agent.clone(),
+        );
+
+        self.start_plan_interview_for_feature_data(repo, feature_name, feature_id, workdir, agent);
+    }
+
+    /// Shared body of [`Self::start_plan_interview_for_selected_feature`] and
+    /// [`Self::start_plan_interview_for_feature_id`]: build the on-demand
+    /// interview for an existing feature, pre-filling it from any prior
+    /// transcript or saved draft.
+    fn start_plan_interview_for_feature_data(
+        &mut self,
+        repo: PathBuf,
+        feature_name: String,
+        feature_id: String,
+        workdir: PathBuf,
+        agent: AgentKind,
+    ) {
         let questions = self.extension_for_repo(&repo).plan_interview_questions();
         let mut state = PlanInterviewState::for_feature(
             feature_name,
@@ -443,6 +486,52 @@ impl App {
 
         self.mode = AppMode::PlanInterview(state);
         self.message = notice.map(Into::into);
+    }
+
+    /// The Quick Plan sibling of [`Self::start_plan_interview`]: a
+    /// feature-creation launch deferred into the lightweight, dynamically-sized
+    /// interview instead of the full one.
+    ///
+    /// v1 scope cut: unlike `start_plan_interview`, this does not read a saved
+    /// draft or pre-fill a TODO-composed brief — Quick Plan does not persist
+    /// to the `plan_interviews` table at all (see [`PlanInterviewMode::Quick`]
+    /// on [`crate::app::PlanInterviewState::kind`] and the guards in
+    /// `persist_plan_interview_draft`/`finalize_plan_interview_transcript`), so
+    /// there is never a draft to resume. A TODO origin is still carried onto
+    /// the state so an accepted plan links back to the row it came from.
+    pub(crate) fn start_quick_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
+        let todo_origin = prepared.todo_origin.clone();
+        let mut state = PlanInterviewState::for_feature_creation_quick(prepared);
+        state.todo_origin = todo_origin;
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
+    }
+
+    /// The Quick Plan sibling of [`Self::start_plan_interview_for_selected_feature`].
+    /// A parked interview of either kind resumes as normal; otherwise this
+    /// always starts fresh (no draft/transcript prefill — see
+    /// [`Self::start_quick_plan_interview`]'s note).
+    pub(crate) fn start_quick_plan_interview_for_selected_feature(&mut self) {
+        if self.resume_paused_plan_interview() {
+            return;
+        }
+
+        // Quick Plan has no static question bank, so unlike the full-mode
+        // entry point above, the project's repo is never needed here.
+        let Some((_project, feature)) = self.selected_feature() else {
+            self.message = Some("Select a feature to plan".into());
+            return;
+        };
+        let (feature_name, feature_id, workdir, agent) = (
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            feature.agent.clone(),
+        );
+
+        let state = PlanInterviewState::for_feature_quick(feature_name, feature_id, workdir, agent);
+        self.mode = AppMode::PlanInterview(state);
+        self.message = None;
     }
 
     /// Start a TODO's plan interview against the **host feature**, which
@@ -639,7 +728,15 @@ impl App {
     /// brief has nothing worth resuming into.
     pub(crate) fn persist_plan_interview_draft(&mut self) {
         let record = match &self.mode {
-            AppMode::PlanInterview(state) if !state.brief.trim().is_empty() => {
+            // Quick Plan does not use the `plan_interviews` table at all (v1
+            // scope cut — see `PlanInterviewState::kind`'s doc comment): no
+            // draft to resume, so every round/synthesis call site's periodic
+            // save is a safe no-op here rather than needing its own guard.
+            // Once escalated (`kind` flips to `Full`), persistence resumes
+            // normally for the rest of the interview.
+            AppMode::PlanInterview(state)
+                if state.kind == PlanInterviewMode::Full && !state.brief.trim().is_empty() =>
+            {
                 state.to_draft_record()
             }
             _ => return,
@@ -745,7 +842,7 @@ impl App {
                     state.phase == PlanInterviewPhase::Done,
                     state.ai_followups_opted_in
                         && !state.skip_ai_rounds
-                        && state.ai_rounds_completed < plan_interview::MAX_AI_ROUNDS,
+                        && state.ai_rounds_completed < state.max_ai_rounds(),
                     state.ai_followups_opted_in || state.synthesis_requested,
                     state.synthesis_attempted,
                 ),
@@ -780,6 +877,7 @@ impl App {
     /// headless-capable harness is available — AI rounds are best-effort.
     pub(crate) fn start_next_plan_interview_ai_round(&mut self) -> Result<()> {
         let (
+            kind,
             preferred_harness,
             resolved_harness,
             round,
@@ -791,6 +889,7 @@ impl App {
             attached_docs,
         ) = match &self.mode {
             AppMode::PlanInterview(state) => (
+                state.kind,
                 state.preferred_harness.clone(),
                 state.ai_harness.clone(),
                 state.ai_rounds_completed + 1,
@@ -802,6 +901,10 @@ impl App {
                 state.attached_docs.clone(),
             ),
             _ => return Ok(()),
+        };
+        let round_prompt_id = match kind {
+            PlanInterviewMode::Quick => crate::prompts::PromptId::PlanInterviewQuickRound,
+            PlanInterviewMode::Full => crate::prompts::PromptId::PlanInterviewRound,
         };
 
         let harness = match resolved_harness {
@@ -827,29 +930,40 @@ impl App {
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let read_only = !attached.is_empty();
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewRound,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::interviewer_input_json(
-                        &feature_name,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        round,
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    round_prompt_id,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::interviewer_input_json(
+                                &feature_name,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                round,
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::round_synthesis_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "tool_access_note",
-                    plan_interview::round_synthesis_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate(
@@ -897,6 +1011,7 @@ impl App {
     /// as a deterministic fallback.
     pub(crate) fn start_plan_interview_synthesis(&mut self) -> Result<()> {
         let (
+            kind,
             preferred_harness,
             resolved_harness,
             feature_name,
@@ -908,6 +1023,7 @@ impl App {
             attached_docs,
         ) = match &mut self.mode {
             AppMode::PlanInterview(state) => (
+                state.kind,
                 state.preferred_harness.clone(),
                 state.ai_harness.clone(),
                 state.feature_name.clone(),
@@ -922,6 +1038,10 @@ impl App {
                 state.attached_docs.clone(),
             ),
             _ => return Ok(()),
+        };
+        let synthesis_prompt_id = match kind {
+            PlanInterviewMode::Quick => crate::prompts::PromptId::PlanInterviewQuickSynthesis,
+            PlanInterviewMode::Full => crate::prompts::PromptId::PlanInterviewSynthesis,
         };
 
         let harness = match resolved_harness {
@@ -972,33 +1092,46 @@ impl App {
         let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewSynthesis,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::synthesis_input_json(
-                        &feature_name,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        revision_critique.as_deref(),
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    synthesis_prompt_id,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::synthesis_input_json(
+                                &feature_name,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                revision_critique.as_deref(),
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "revision_addendum",
+                            plan_interview::synthesis_revision_addendum(
+                                revision_critique.as_deref(),
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::round_synthesis_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "revision_addendum",
-                    plan_interview::synthesis_revision_addendum(revision_critique.as_deref()),
-                )
-                .with(
-                    "tool_access_note",
-                    plan_interview::round_synthesis_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate(
@@ -1139,29 +1272,40 @@ impl App {
         let read_only = !attached.is_empty();
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let prompt = self.resolve_headless_prompt(
-            crate::prompts::PromptId::PlanInterviewCritique,
-            &harness,
-            &repo,
-            &workdir,
-            &crate::prompts::PromptContext::new()
-                .with(
-                    "interview_input",
-                    plan_interview::critique_input_json(
-                        &feature_name,
-                        &plan,
-                        &brief,
-                        &questions,
-                        &answers,
-                        &context,
-                        &attached,
-                    ),
+        let guarded = plan_interview::guard_context_for_prompt(
+            |ctx| {
+                self.resolve_headless_prompt(
+                    crate::prompts::PromptId::PlanInterviewCritique,
+                    &harness,
+                    &repo,
+                    &workdir,
+                    &crate::prompts::PromptContext::new()
+                        .with(
+                            "interview_input",
+                            plan_interview::critique_input_json(
+                                &feature_name,
+                                &plan,
+                                &brief,
+                                &questions,
+                                &answers,
+                                ctx,
+                                &attached,
+                            ),
+                        )
+                        .with(
+                            "tool_access_note",
+                            plan_interview::critique_tool_access_note(read_only),
+                        ),
                 )
-                .with(
-                    "tool_access_note",
-                    plan_interview::critique_tool_access_note(read_only),
-                ),
+            },
+            &context,
+            self.review_prompt_budget(&repo, &harness),
         );
+        if let Some(notice) = &guarded.notice {
+            self.log_warn("plan_interview", notice.clone());
+            self.message = Some(notice.clone());
+        }
+        let prompt = guarded.prompt;
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate_with_model(
@@ -2130,6 +2274,15 @@ impl App {
             return false;
         }
 
+        let kind = match &self.mode {
+            AppMode::PlanInterview(state) => state.kind,
+            _ => return false,
+        };
+        if kind == PlanInterviewMode::Quick {
+            self.apply_quick_synthesis_result(result);
+            return true;
+        }
+
         let plan = match result {
             Ok(response) => {
                 let plan = plan_interview::parse_synthesized_plan(&response);
@@ -2155,6 +2308,111 @@ impl App {
 
         self.open_plan_interview_review(plan);
         true
+    }
+
+    /// Interpret Quick Plan's 3-way synthesis result: `direct` closes the
+    /// interview with no plan artifact, `plan` opens the ordinary review gate,
+    /// `escalate` hands off into the full Plan-mode round/synthesis flow, and
+    /// a harness failure or unparseable response falls back to the raw Q&A
+    /// plan exactly like a failed full-mode synthesis does.
+    fn apply_quick_synthesis_result(&mut self, result: Result<String, anyhow::Error>) {
+        let response = match result {
+            Ok(response) => response,
+            Err(e) => {
+                self.log_warn(
+                    "plan_interview",
+                    format!("Quick Plan synthesis failed; using raw Q&A plan: {e}"),
+                );
+                self.open_plan_interview_review(None);
+                return;
+            }
+        };
+        match plan_interview::parse_quick_synthesis_outcome(&response) {
+            plan_interview::QuickSynthesisOutcome::Direct { summary } => {
+                self.complete_quick_plan_direct(summary);
+            }
+            plan_interview::QuickSynthesisOutcome::Plan { plan } => {
+                self.open_plan_interview_review(Some(plan));
+            }
+            plan_interview::QuickSynthesisOutcome::Escalate { reason } => {
+                self.escalate_quick_plan_to_full(reason);
+            }
+            plan_interview::QuickSynthesisOutcome::Unparseable => {
+                self.log_warn(
+                    "plan_interview",
+                    format!(
+                        "Quick Plan synthesis returned an unrecognized outcome; using raw Q&A plan: {}",
+                        truncate_for_log(&response)
+                    ),
+                );
+                self.open_plan_interview_review(None);
+            }
+        }
+    }
+
+    /// The `direct` outcome: the task is trivial enough to skip a plan
+    /// artifact entirely. A feature-creation interview launches the deferred
+    /// feature with `plan_mode` cleared, exactly like declining to plan at
+    /// all (`launch_plan_interview_without_plan`); an on-demand interview on
+    /// an existing feature has nothing to launch, so it just closes.
+    fn complete_quick_plan_direct(&mut self, summary: Option<String>) {
+        self.clear_plan_interview_doc_staging();
+        let pending = match &mut self.mode {
+            AppMode::PlanInterview(state) => state.pending_launch.take(),
+            _ => return,
+        };
+        self.mode = AppMode::Normal;
+
+        let note = summary.filter(|s| !s.trim().is_empty());
+        if let Some(mut prepared) = pending {
+            prepared.plan_mode = false;
+            if let Err(e) = self.finish_feature_launch_without_interview(prepared) {
+                self.report_logged_error(
+                    "plan_interview",
+                    format!("Quick Plan: failed to launch the feature: {e}"),
+                );
+                return;
+            }
+            self.message = Some(match note {
+                Some(summary) => format!("Quick Plan: {summary}"),
+                None => "Quick Plan: straightforward — launching without a plan file".into(),
+            });
+        } else {
+            self.message = Some(match note {
+                Some(summary) => format!("Quick Plan: {summary}"),
+                None => "Quick Plan: looks straightforward — no plan needed".into(),
+            });
+        }
+    }
+
+    /// The `escalate` outcome: hand off a live Quick Plan interview into the
+    /// full Plan-mode round/synthesis flow in place. Nothing about the
+    /// interview is reset — the brief and any answers already given carry
+    /// forward into the full round, per the resolved escalation decision in
+    /// `AMF_PLAN.md`. Errors from the continued round/synthesis dispatch are
+    /// reported rather than propagated, matching every other `Done`-phase
+    /// continuation in this module (see `poll_plan_interview_ai_bg`).
+    fn escalate_quick_plan_to_full(&mut self, reason: String) {
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.kind = PlanInterviewMode::Full;
+            state.ai_followups_opted_in = true;
+            state.skip_ai_rounds = false;
+            state.phase = PlanInterviewPhase::Done;
+        } else {
+            return;
+        }
+        let reason = reason.trim();
+        self.message = Some(if reason.is_empty() {
+            "Quick Plan \u{2192} full Plan interview: this needs deeper planning, continuing as a full Plan interview".into()
+        } else {
+            format!("Quick Plan \u{2192} full Plan interview: {reason}")
+        });
+        if let Err(e) = self.continue_plan_interview_after_done() {
+            self.report_logged_error(
+                "plan_interview",
+                format!("Failed to continue plan interview after escalation: {e}"),
+            );
+        }
     }
 
     /// Resolve a synthesis result into the exact markdown shown at the review

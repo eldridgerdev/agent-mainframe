@@ -21,7 +21,7 @@
 //! comment. Reachable from PR Triage (`A`), the dashboard, an agent session
 //! (leader key), and the PR picker.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
@@ -1012,13 +1012,220 @@ fn process_ai_review_output(output: String, diff: &str) -> Result<AiReviewOutcom
     })
 }
 
+/// The batched-review templates resolved alongside `pr_review.ai_review` on
+/// the UI thread, used only when the single-prompt form would overflow.
+pub(crate) struct BatchReviewTemplates {
+    pub batch: String,
+    pub hunk_split: String,
+    pub synthesis: String,
+    pub summary: String,
+    pub budget_tokens: usize,
+}
+
+/// `{{token}}` context for a single `review.batch` slice: the same skill /
+/// memory / annotated-diff context `pr_review.ai_review` uses, plus the slice's
+/// file list.
+fn batch_slice_context(
+    slice_diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+) -> crate::prompts::PromptContext {
+    let file_list = crate::diff::parse_unified_diff(slice_diff)
+        .map(|files| {
+            files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    ai_review_prompt_context(slice_diff, memory, skill).with("file_list", file_list)
+}
+
+/// `{{token}}` context for a single `review.hunk_split` slice: the hunk group's
+/// annotated diff plus the file path and hunk label that name it.
+fn hunk_slice_context(
+    slice_diff: &str,
+    file_path: &str,
+    hunk_label: &str,
+) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("file_path", file_path.to_string())
+        .with("hunk_label", hunk_label.to_string())
+        .with("annotated_diff", annotated_diff_for_ai_review(slice_diff))
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
+}
+
+/// `{{token}}` context for `review.synthesis`.
+fn synthesis_context(batch_findings: &str, uncovered_note: &str) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("batch_findings", batch_findings)
+        .with("uncovered_note", uncovered_note)
+        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
+}
+
+/// `{{token}}` context for `review.findings_summary`.
+fn findings_summary_context(batch_label: &str, findings: &str) -> crate::prompts::PromptContext {
+    crate::prompts::PromptContext::new()
+        .with("batch_label", batch_label)
+        .with("findings", findings)
+        .with(
+            "max_chars",
+            crate::review_batch::FALLBACK_SUMMARY_CHARS.to_string(),
+        )
+}
+
+/// A one-line progress label for the AI-review running screen.
+fn batch_progress_label(progress: &crate::review_batch::BatchProgress) -> String {
+    use crate::review_batch::BatchProgress::*;
+    match progress {
+        Batch {
+            index,
+            total,
+            paths,
+        } => format!("Reviewing batch {index}/{total}: {}", paths.join(", ")),
+        Halving { paths } => format!("Batch too large — splitting: {}", paths.join(", ")),
+        SplittingFile { path } => format!("Splitting {path} hunk by hunk"),
+        Slice { path, label } => format!("Reviewing {path} ({label})"),
+        Synthesizing => "Combining findings".to_string(),
+        Uncovered { path, label } => format!("Could not review {path} ({label})"),
+    }
+}
+
+/// Batched fallback for [`run_ai_pr_review`] when the whole-diff prompt would
+/// overflow: split the diff into budgeted slices, review each (splitting
+/// further on overflow), and synthesize one payload. Returns `None` if the
+/// diff did not parse into file sections, so the caller can still try a single
+/// pass.
+#[allow(clippy::too_many_arguments)]
+fn run_batched_ai_pr_review(
+    harness: &AgentKind,
+    workdir: &Path,
+    diff: &str,
+    memory: &str,
+    skill: Option<&str>,
+    model: Option<&str>,
+    templates: &BatchReviewTemplates,
+    tx: &std::sync::mpsc::Sender<AiReviewProgress>,
+) -> Option<Result<AiReviewOutcome>> {
+    let batch_tpl = templates.batch.clone();
+    let hunk_tpl = templates.hunk_split.clone();
+    let memory_for_batch = memory.to_string();
+    let skill_for_batch = skill.map(str::to_string);
+    let batch_runner = crate::review_batch::HeadlessBatchRunner::new(
+        harness.clone(),
+        workdir.to_path_buf(),
+        model.map(str::to_string),
+        Box::new(move |slice: &str| {
+            crate::prompts::render_template(
+                &batch_tpl,
+                &batch_slice_context(slice, &memory_for_batch, skill_for_batch.as_deref()),
+            )
+        }),
+        Box::new(move |slice: &str, file_path: &str, hunk_label: &str| {
+            crate::prompts::render_template(
+                &hunk_tpl,
+                &hunk_slice_context(slice, file_path, hunk_label),
+            )
+        }),
+    );
+
+    let synth_tpl = templates.synthesis.clone();
+    let summary_tpl = templates.summary.clone();
+    let synth_runner = crate::review_batch::HeadlessSynthesisRunner::new(
+        harness.clone(),
+        workdir.to_path_buf(),
+        model.map(str::to_string),
+        Box::new(move |findings: &str, note: &str| {
+            crate::prompts::render_template(&synth_tpl, &synthesis_context(findings, note))
+        }),
+        Box::new(move |label: &str, findings: &str| {
+            crate::prompts::render_template(
+                &summary_tpl,
+                &findings_summary_context(label, findings),
+            )
+        }),
+    );
+
+    let progress_tx = tx.clone();
+    let mut on_progress = move |progress: crate::review_batch::BatchProgress| {
+        let _ = progress_tx.send(AiReviewProgress::Activity(batch_progress_label(&progress)));
+    };
+
+    let review = crate::review_batch::batched_review(
+        diff,
+        &batch_runner,
+        &synth_runner,
+        templates.budget_tokens,
+        &mut on_progress,
+    );
+
+    if review.text.trim().is_empty() {
+        return None;
+    }
+    if !review.uncovered.is_empty() {
+        let _ = tx.send(AiReviewProgress::Activity(format!(
+            "{} slice(s) too large to review even after splitting",
+            review.uncovered.len()
+        )));
+    }
+
+    let coverage_note = batched_coverage_note(&review);
+    Some(
+        process_ai_review_output(review.text, diff).map(|mut outcome| {
+            if let Some(note) = coverage_note {
+                outcome.summary = Some(match outcome.summary.take() {
+                    Some(summary) => format!("{note}\n\n{summary}"),
+                    None => note,
+                });
+            }
+            outcome
+        }),
+    )
+}
+
+/// A clearly-marked banner describing what a batched review could *not* cover,
+/// prepended to the run's summary so partial coverage rides along into the
+/// pane, the post dialog, and any GitHub review posted from it. `None` when
+/// the batched review reached every slice and synthesis ran normally.
+fn batched_coverage_note(review: &crate::review_batch::SynthesizedReview) -> Option<String> {
+    if review.uncovered.is_empty() && review.synthesis_ran {
+        return None;
+    }
+    let mut note = String::from(
+        "> ⚠ Partial coverage — this diff was too large to review in one pass, so it was split \
+         into slices.",
+    );
+    if !review.synthesis_ran {
+        note.push_str(
+            "\n> The per-slice findings could not be combined by a synthesis pass; they are \
+             listed as produced.",
+        );
+    }
+    if !review.uncovered.is_empty() {
+        note.push_str(&format!(
+            "\n> {} slice(s) could not be reviewed even after splitting:",
+            review.uncovered.len()
+        ));
+        for slice in &review.uncovered {
+            note.push_str(&format!(
+                "\n>   • `{}` {} — {}",
+                slice.path, slice.label, slice.reason
+            ));
+        }
+    }
+    Some(note)
+}
+
 /// Background body of the AI PR review (`A`): assemble the prompt from
 /// `diff` + `memory` (+ optional `skill`), report a token estimate, then make
-/// **one** headless agent pass and parse its response into findings. Runs off
-/// the UI thread; progress and the final result are reported over `tx`.
-/// `model`, when set (`AppConfig::review_model_for(ReviewAction::PrReview)`),
-/// picks the review's model independent of whichever model the feature's
-/// interactive session runs.
+/// a headless agent pass and parse its response into findings — one pass when
+/// the diff fits, otherwise the batched [`run_batched_ai_pr_review`] fallback.
+/// Runs off the UI thread; progress and the final result are reported over
+/// `tx`. `model`, when set
+/// (`AppConfig::review_model_for(ReviewAction::PrReview)`), picks the review's
+/// model independent of whichever model the feature's interactive session
+/// runs.
 #[allow(clippy::too_many_arguments)]
 fn run_ai_pr_review(
     harness: AgentKind,
@@ -1032,6 +1239,9 @@ fn run_ai_pr_review(
     // default or a feature/project/global override). The diff is only fetched
     // here on the worker thread, so the prompt is rendered here.
     template: String,
+    // The `review.batch` / `.synthesis` / `.findings_summary` templates plus
+    // the per-harness size budget, used only if `prompt` would overflow.
+    batch_templates: BatchReviewTemplates,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
 ) {
     let prompt = crate::prompts::render_template(
@@ -1047,6 +1257,38 @@ fn run_ai_pr_review(
     // completed `AiReviewOutcome` carries the model/token/cost attribution,
     // not just the transient running screen.
     let started_at = std::time::Instant::now();
+
+    // Too large for one prompt: fall back to slice-by-slice review + synthesis.
+    // A diff that does not parse into file sections returns `None` here and
+    // drops through to the ordinary single pass. Skipped when the pre-send
+    // size gate is disabled (`review_prompt_budget_tokens: 0`); in that case
+    // an actual "prompt too long" from the single pass below triggers the
+    // same fallback instead.
+    if crate::headless::will_overflow_with_budget(&prompt, batch_templates.budget_tokens)
+        && let Some(result) = run_batched_ai_pr_review(
+            &harness,
+            &workdir,
+            &diff,
+            &memory,
+            skill.as_deref(),
+            model.as_deref(),
+            &batch_templates,
+            &tx,
+        )
+    {
+        let result = result.map(|mut outcome| {
+            outcome.attribution = AiReviewAttribution::from_run(
+                &harness,
+                model.as_deref(),
+                None,
+                &pricing,
+                started_at.elapsed(),
+            );
+            outcome
+        });
+        let _ = tx.send(AiReviewProgress::Done(result));
+        return;
+    }
     let last_usage: std::sync::Arc<std::sync::Mutex<Option<crate::headless::HeadlessUsage>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let usage_sink = std::sync::Arc::clone(&last_usage);
@@ -1086,6 +1328,42 @@ fn run_ai_pr_review(
         );
         outcome
     });
+
+    // The single pass came back "prompt is too long" — reachable when the
+    // pre-send gate is off (`review_prompt_budget_tokens: 0`) or when the byte
+    // estimate was optimistic. Fall back to the same slice-by-slice review +
+    // synthesis the size gate would have run, with its own adaptive halving.
+    let result = match result {
+        Err(err) if crate::headless::as_prompt_too_long(&err).is_some() => {
+            let _ = tx.send(AiReviewProgress::Activity(
+                "Prompt too long — retrying as a batched review".to_string(),
+            ));
+            match run_batched_ai_pr_review(
+                &harness,
+                &workdir,
+                &diff,
+                &memory,
+                skill.as_deref(),
+                model.as_deref(),
+                &batch_templates,
+                &tx,
+            ) {
+                Some(batched) => batched.map(|mut outcome| {
+                    outcome.attribution = AiReviewAttribution::from_run(
+                        &harness,
+                        model.as_deref(),
+                        None,
+                        &pricing,
+                        started_at.elapsed(),
+                    );
+                    outcome
+                }),
+                // Diff did not parse into file sections — nothing to batch.
+                None => Err(err),
+            }
+        }
+        other => other,
+    };
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -1270,7 +1548,7 @@ impl App {
     /// Close the AI Review pane (`esc`/`q`): back to the PR Triage pane it was
     /// opened from, if any, else the dashboard. The background thread, if
     /// running, isn't aborted — [`Self::poll_ai_pr_review_bg`] still surfaces
-    /// the result via [`Self::ai_review_pending`].
+    /// the result via the pending run origin.
     pub fn close_ai_review(&mut self) {
         match self.ai_review_return_to.take() {
             Some(return_to) => self.mode = *return_to,
@@ -1339,8 +1617,8 @@ impl App {
     /// the exact cached terminal result retained by the pane.
     pub(crate) fn ai_review_triage_status(&self, state: &PrReviewState) -> AiReviewTriageStatus {
         let pr = &state.review.pr;
-        let running = self.ai_review_bg.is_some()
-            && self.ai_review_pending.as_ref().is_some_and(|pending| {
+        let running = self.ai_review_run.is_pending()
+            && self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == state.workdir
                     && pending.pr.number == pr.number
                     && pending.pr.head_sha == pr.head_sha
@@ -1579,18 +1857,22 @@ impl App {
     /// full-screen running view. If this pane's review is already running,
     /// reopen its preserved progress view instead of starting another pass.
     pub fn start_ai_pr_review(&mut self) {
-        if self.ai_review_bg.is_some() {
+        if self.ai_review_run.is_pending() {
             let origin = match &self.mode {
                 AppMode::AiReview(state) => state.clone(),
                 _ => return,
             };
-            let same_run = self.ai_review_pending.as_ref().is_some_and(|pending| {
+            let same_run = self.ai_review_run.origin().as_ref().is_some_and(|pending| {
                 pending.workdir == origin.workdir && pending.pr.number == origin.pr.number
-            }) && self.ai_review_progress.is_some();
+            }) && self.ai_review_run.progress().is_some();
             if same_run {
                 self.mode = AppMode::AiReviewRunning(AiReviewRunState {
                     origin,
-                    progress: self.ai_review_progress.clone().expect("checked above"),
+                    progress: self
+                        .ai_review_run
+                        .progress()
+                        .clone()
+                        .expect("checked above"),
                 });
             } else {
                 self.push_toast_warning("Another AI review is already running");
@@ -1713,6 +1995,43 @@ impl App {
             &repo,
             &workdir,
         );
+        // Resolved now (on the UI thread, where `self` lives) so an overriding
+        // batch/synthesis template applies; used only if the diff overflows.
+        let batch_templates = BatchReviewTemplates {
+            batch: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewBatch,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            hunk_split: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewHunkSplit,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            synthesis: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewSynthesis,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            summary: self
+                .resolve_headless_template(
+                    crate::prompts::PromptId::ReviewFindingsSummary,
+                    &harness,
+                    &repo,
+                    &workdir,
+                )
+                .0,
+            budget_tokens: self.review_prompt_budget(&repo, &harness),
+        };
 
         let preview = format!(
             "{template}\n\n[the PR #{number} diff is fetched and spliced into {{{{annotated_diff}}}} when the call runs]"
@@ -1726,8 +2045,7 @@ impl App {
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.ai_review_bg = Some(rx);
-        self.ai_review_pending = Some(origin.clone());
+        self.ai_review_run.begin(rx, origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
             Ok(diff) => run_ai_pr_review(
@@ -1739,6 +2057,7 @@ impl App {
                 model,
                 pricing,
                 template,
+                batch_templates,
                 tx,
             ),
             Err(e) => {
@@ -1752,7 +2071,7 @@ impl App {
             activity: None,
             usage: None,
         };
-        self.ai_review_progress = Some(progress.clone());
+        self.ai_review_run.show_progress(progress.clone());
         self.mode = AppMode::AiReviewRunning(AiReviewRunState { origin, progress });
     }
 
@@ -2017,15 +2336,15 @@ impl App {
     /// — then re-caches and surfaces a toast. Returns `true` when a redraw is
     /// warranted.
     pub fn poll_ai_pr_review_bg(&mut self) -> bool {
-        let Some(rx) = self.ai_review_bg.as_ref() else {
+        if !self.ai_review_run.is_pending() {
             return false;
-        };
+        }
         let mut changed = false;
         let mut large_diff_warning: Option<usize> = None;
         loop {
-            match rx.try_recv() {
+            match self.ai_review_run.poll() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -2037,7 +2356,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.activity = Some(activity.clone());
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -2049,7 +2368,7 @@ impl App {
                     input_tokens,
                     output_tokens,
                 }) => {
-                    if let Some(progress) = &mut self.ai_review_progress {
+                    if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.usage = Some((input_tokens, output_tokens));
                     }
                     if let AppMode::AiReviewRunning(state) = &mut self.mode {
@@ -2058,9 +2377,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Done(result)) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let Some(pending) = self.ai_review_pending.take() else {
+                    let Some(pending) = self.ai_review_run.finish() else {
                         if let Err(e) = result {
                             self.log_error("pr_review", format!("AI review failed: {e}"));
                             self.push_toast_error(format!("AI review failed: {e}"));
@@ -2193,9 +2510,7 @@ impl App {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.ai_review_bg = None;
-                    self.ai_review_progress = None;
-                    let pending = self.ai_review_pending.take();
+                    let pending = self.ai_review_run.finish();
                     let detail = "AI review worker disconnected unexpectedly";
                     let pr_number = pending.as_ref().map(|p| p.pr.number);
                     if let Some(pending) = pending {
@@ -2249,7 +2564,7 @@ impl App {
     /// Cancel the running screen (`esc`/`q`): return to the AI Review pane.
     /// The background thread isn't aborted — if it finishes later,
     /// [`Self::poll_ai_pr_review_bg`] still surfaces the result (via
-    /// [`Self::ai_review_pending`], which survives this).
+    /// the pending run origin, which survives this).
     pub fn cancel_ai_pr_review(&mut self) {
         if let AppMode::AiReviewRunning(state) = &self.mode {
             self.mode = AppMode::AiReview(state.origin.clone());
@@ -2587,9 +2902,10 @@ impl App {
     /// workdir rather than assuming `self.mode` still points at the pane that
     /// kicked it off.
     pub(crate) fn ai_review_running_for_workdir(&self, workdir: &Path) -> bool {
-        self.ai_review_bg.is_some()
+        self.ai_review_run.is_pending()
             && self
-                .ai_review_pending
+                .ai_review_run
+                .origin()
                 .as_ref()
                 .is_some_and(|pending| pending.workdir == workdir)
     }
@@ -2791,6 +3107,34 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
     fn process_ai_review_output_rejects_empty_output() {
         let error = process_ai_review_output(String::new(), "").unwrap_err();
         assert!(error.to_string().contains("missing a non-empty Summary"));
+    }
+
+    #[test]
+    fn batched_coverage_note_is_absent_for_a_complete_batched_review() {
+        let review = crate::review_batch::SynthesizedReview {
+            text: "## Summary\nall good".to_string(),
+            synthesis_ran: true,
+            uncovered: vec![],
+        };
+        assert!(batched_coverage_note(&review).is_none());
+    }
+
+    #[test]
+    fn batched_coverage_note_lists_uncovered_slices_and_a_skipped_synthesis() {
+        let review = crate::review_batch::SynthesizedReview {
+            text: String::new(),
+            synthesis_ran: false,
+            uncovered: vec![crate::review_batch::UncoveredSlice {
+                path: "src/huge.rs".to_string(),
+                label: "hunk 7".to_string(),
+                reason: "exceeds the size budget even as a single hunk".to_string(),
+            }],
+        };
+        let note = batched_coverage_note(&review).expect("note present");
+        assert!(note.starts_with("> ⚠ Partial coverage"));
+        assert!(note.contains("could not be combined by a synthesis pass"));
+        assert!(note.contains("1 slice(s) could not be reviewed"));
+        assert!(note.contains("`src/huge.rs` hunk 7 — exceeds the size budget"));
     }
 
     #[test]

@@ -103,6 +103,11 @@ pub struct FeaturePreset {
     pub agent: AgentKind,
     pub review: bool,
     pub plan_mode: bool,
+    /// Route the preset's `plan_mode` through Quick Plan rather than the full
+    /// Plan-mode interview. `#[serde(default)]` at the struct level means an
+    /// older saved preset with no `quick_plan` key deserializes as `false` —
+    /// unchanged full-Plan-mode (or no-plan) behavior.
+    pub quick_plan: bool,
     pub enable_chrome: bool,
     pub remote_control: bool,
 }
@@ -116,6 +121,7 @@ struct FeaturePresetDe {
     agent: AgentKind,
     review: bool,
     plan_mode: bool,
+    quick_plan: bool,
     enable_chrome: bool,
     remote_control: bool,
 }
@@ -134,6 +140,7 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             agent: preset.agent,
             review: preset.review || legacy_review,
             plan_mode: preset.plan_mode,
+            quick_plan: preset.quick_plan,
             enable_chrome: preset.enable_chrome,
             remote_control: preset.remote_control,
         })
@@ -255,6 +262,16 @@ pub struct ExtensionConfig {
     /// `amf.json` carries, and nothing else.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub prompt_overrides: crate::prompts::project::ProjectPromptOverrides,
+    /// Soft size gate for batched review: the estimated prompt-token ceiling
+    /// above which the `W` AI PR review and final-review co-review split the
+    /// diff into slices instead of sending one prompt. `None` uses the
+    /// built-in per-harness default (`headless::default_prompt_budget_tokens`
+    /// — Claude/Codex 128k, OpenCode/Pi 96k). `0` disables pre-send splitting
+    /// entirely, leaving only the adaptive halving after an actual
+    /// "prompt too long" failure. Project overrides global, like
+    /// `final_review_check_command`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_prompt_budget_tokens: Option<usize>,
 }
 
 impl ExtensionConfig {
@@ -600,6 +617,9 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .or(base.skip_builtin_questions),
         final_review_check_command,
         review_memory_path,
+        review_prompt_budget_tokens: project
+            .review_prompt_budget_tokens
+            .or(base.review_prompt_budget_tokens),
         // Project scope only — never inherited from the global `extension`
         // block (see the field's doc comment).
         prompt_overrides: project.prompt_overrides,
@@ -875,6 +895,33 @@ mod tests {
         assert_eq!(
             merged.review_memory_path.as_deref(),
             Some("notes/review.md")
+        );
+    }
+
+    #[test]
+    fn project_review_prompt_budget_overrides_global_and_falls_back_when_unset() {
+        let global = ExtensionConfig {
+            review_prompt_budget_tokens: Some(64_000),
+            ..Default::default()
+        };
+
+        let overriding = ExtensionConfig {
+            review_prompt_budget_tokens: Some(200_000),
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &overriding);
+        assert_eq!(
+            merge_project_extension_config(&global, tmp.path()).review_prompt_budget_tokens,
+            Some(200_000)
+        );
+
+        let silent = ExtensionConfig::default();
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &silent);
+        assert_eq!(
+            merge_project_extension_config(&global, tmp.path()).review_prompt_budget_tokens,
+            Some(64_000)
         );
     }
 

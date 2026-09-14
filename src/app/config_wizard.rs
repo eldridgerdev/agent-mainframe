@@ -259,6 +259,9 @@ impl App {
                         ),
                         review: *state.field_toggles.first().unwrap_or(&false),
                         plan_mode: *state.field_toggles.get(1).unwrap_or(&false),
+                        // Not editable from this wizard in v1; a preset saved
+                        // here always defers to full Plan mode, never Quick Plan.
+                        quick_plan: false,
                         enable_chrome: *state.field_toggles.get(2).unwrap_or(&false),
                         remote_control: *state.field_toggles.get(3).unwrap_or(&false),
                     };
@@ -494,6 +497,11 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         review_memory_path: loaded
             .as_ref()
             .and_then(|config| config.review_memory_path.clone()),
+        // The wizard doesn't edit the batched-review size budget; carry it
+        // through untouched.
+        review_prompt_budget_tokens: loaded
+            .as_ref()
+            .and_then(|config| config.review_prompt_budget_tokens),
         // The wizard doesn't edit prompt overrides; carry them through.
         prompt_overrides: loaded
             .map(|config| config.prompt_overrides)

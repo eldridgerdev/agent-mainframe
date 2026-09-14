@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Terminal dashboard for AI coding agents</p>
+  <h1>{{ section.extra.headline }}</h1>
+  <p class="subhead">{{ section.extra.subhead }}</p>
+
+  <div class="hero-actions">
+    <a class="button button-primary" href="{{ get_url(path="docs/installation/") }}">Get started</a>
+    <a class="button button-ghost" href="{{ config.extra.github_url }}">View on GitHub</a>
+  </div>
+
+  <pre class="install-snippet"><code>{{ section.extra.install_cmd }}</code></pre>
+
+  {% if section.extra.hero_image %}
+  <img class="hero-image" src="{{ get_url(path=section.extra.hero_image) }}" alt="{{ section.extra.hero_image_alt | default(value='AMF dashboard') }}">
+  {% else %}
+  <div class="hero-image-placeholder">
+    <p>Drop a real dashboard screenshot or GIF at <code>site/static/images/dashboard.png</code>,
+      then set <code>extra.hero_image</code> in <code>content/_index.md</code>.
+      The <code>amf-screenshot</code> skill captures these from a live AMF instance.</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="features">
+  <h2>What AMF does</h2>
+  <div class="feature-grid">
+    {% for feature in section.extra.features %}
+    <article class="feature-card">
+      <h3>{{ feature.title }}</h3>
+      <p>{{ feature.body }}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="agents">
+  <h2>Works with the agent you already use</h2>
+  <ul class="agent-list">
+    {% for agent in section.extra.agents %}
+    <li>{{ agent }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
+{{ section.content | safe }}
+{% endblock content %}

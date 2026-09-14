@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+use crate::db::remote_devices::RemoteDevice;
 use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
@@ -1840,6 +1841,32 @@ pub struct RemotePairingState {
     /// hasn't expired yet; only `r` (a fresh code) recovers.
     pub locked: bool,
     pub status: PairingDialogStatus,
+    /// Which sub-screen of the dialog is showing — the pairing code itself,
+    /// or the paired-devices list (`v`) with per-device revoke. Lives here
+    /// rather than as a separate `AppMode` because it's a view toggle on
+    /// the same dialog, not a new destination — `Esc` from the devices list
+    /// returns to `Pairing`, and only `Esc` from `Pairing` closes the dialog.
+    pub view: PairingDialogView,
+}
+
+/// The `RemotePairing` dialog's current sub-screen.
+pub enum PairingDialogView {
+    Pairing,
+    Devices(RemoteDevicesListState),
+}
+
+/// The paired-devices list shown by pressing `v` in the pairing dialog.
+pub struct RemoteDevicesListState {
+    /// Loaded once on `v` — every paired device, most recently paired
+    /// first (`AmfDb::list_remote_devices`'s own ordering). Revoking
+    /// updates this copy directly rather than reloading, so the cursor
+    /// position is stable across a revoke.
+    pub devices: Vec<RemoteDevice>,
+    pub selected: usize,
+    /// Set by a first `d` press on a revocable row; a second `d` while set
+    /// performs the revoke. Any other key clears it — mirrors the prompt
+    /// overrides manager's `confirm_clear` (`app/prompt_overrides.rs`).
+    pub confirm_revoke: bool,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up

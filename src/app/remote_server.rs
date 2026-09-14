@@ -3,14 +3,19 @@
 //! `docs/backlog/remote-control-companion-app-plan.md` (Epic 1) for the
 //! design this implements.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::remote_server::{
-    self, PairingExchangeOutcome, RemoteFeatureStatus, RemoteServerEvent, RemoteStatusSnapshot,
+    self, AuthorizedDevice, PairingExchangeOutcome, RemoteFeatureStatus, RemoteServerEvent,
+    RemoteStatusSnapshot,
 };
 
-use super::{App, AppMode, PairingDialogStatus, RemotePairingState};
+use super::{
+    App, AppMode, PairingDialogStatus, PairingDialogView, RemoteDevicesListState,
+    RemotePairingState,
+};
 
 /// Default bind address: loopback-only until the pairing/auth epics land,
 /// so the skeleton never exposes anything beyond localhost. Port 0 asks the
@@ -117,9 +122,10 @@ impl App {
         // sees the latest one — see `RemoteServerHandle::publish_status`.
         if let Some(handle) = &self.remote_server {
             handle.publish_status(self.build_remote_status_snapshot());
+            handle.publish_authorized_devices(self.build_authorized_devices());
         }
 
-        self.drain_pairing_requests() || changed
+        self.drain_pairing_requests() || self.drain_device_seen_events() || changed
     }
 
     /// Open the pairing dialog with a fresh one-time code, or explain why
@@ -165,6 +171,7 @@ impl App {
             attempts: 0,
             locked: false,
             status: PairingDialogStatus::Waiting,
+            view: PairingDialogView::Pairing,
         }
     }
 
@@ -176,6 +183,201 @@ impl App {
         if matches!(self.mode, AppMode::RemotePairing(_)) {
             self.mode = AppMode::Normal;
         }
+    }
+
+    /// Switch the open pairing dialog to its paired-devices sub-screen
+    /// (`v`), loading the current list fresh from the database. Does
+    /// nothing outside the dialog, and silently no-ops with no database —
+    /// there is nothing to list.
+    pub fn open_paired_devices_view(&mut self) {
+        if !matches!(self.mode, AppMode::RemotePairing(_)) {
+            return;
+        }
+        let listed = self.db.as_ref().map(|db| db.list_remote_devices());
+        let devices = match listed {
+            Some(Ok(devices)) => devices,
+            Some(Err(e)) => {
+                self.log_error("remote_server", format!("failed to list devices: {e}"));
+                Vec::new()
+            }
+            None => Vec::new(),
+        };
+        if let AppMode::RemotePairing(state) = &mut self.mode {
+            state.view = PairingDialogView::Devices(RemoteDevicesListState {
+                devices,
+                selected: 0,
+                confirm_revoke: false,
+            });
+        }
+    }
+
+    /// Back out of the devices sub-screen to the pairing code — `Esc` here
+    /// returns to `Pairing` rather than closing the dialog; only `Esc` from
+    /// `Pairing` itself does that (`cancel_pairing`).
+    pub fn close_paired_devices_view(&mut self) {
+        if let AppMode::RemotePairing(state) = &mut self.mode {
+            state.view = PairingDialogView::Pairing;
+        }
+    }
+
+    /// Move the devices-list cursor by `delta`, clamped to the list — and
+    /// drop any pending revoke confirmation, same as any other key would
+    /// (see `RemoteDevicesListState::confirm_revoke`'s doc comment).
+    pub fn move_paired_device_selection(&mut self, delta: i32) {
+        let AppMode::RemotePairing(state) = &mut self.mode else {
+            return;
+        };
+        let PairingDialogView::Devices(list) = &mut state.view else {
+            return;
+        };
+        list.confirm_revoke = false;
+        if list.devices.is_empty() {
+            return;
+        }
+        let len = list.devices.len() as i32;
+        let next = (list.selected as i32 + delta).rem_euclid(len);
+        list.selected = next as usize;
+    }
+
+    /// Clear a pending revoke confirmation without moving the cursor — any
+    /// key other than a second `d` does this.
+    pub fn clear_revoke_confirmation(&mut self) {
+        let AppMode::RemotePairing(state) = &mut self.mode else {
+            return;
+        };
+        if let PairingDialogView::Devices(list) = &mut state.view {
+            list.confirm_revoke = false;
+        }
+    }
+
+    /// `d` on the devices list: arms a confirmation on the first press,
+    /// revokes the selected device on the second — mirrors the prompt
+    /// overrides manager's `d`, `d` clear (`app/prompt_overrides.rs`).
+    /// Already-revoked rows and an empty list are no-ops either way.
+    pub fn request_revoke_selected_device(&mut self) {
+        enum Step {
+            None,
+            Arm {
+                device_name: String,
+            },
+            Revoke {
+                device_id: String,
+                device_name: String,
+            },
+        }
+
+        let step = 'step: {
+            let AppMode::RemotePairing(state) = &mut self.mode else {
+                break 'step Step::None;
+            };
+            let PairingDialogView::Devices(list) = &mut state.view else {
+                break 'step Step::None;
+            };
+            let Some(device) = list.devices.get(list.selected) else {
+                break 'step Step::None;
+            };
+            if device.revoked {
+                break 'step Step::None;
+            }
+            if !list.confirm_revoke {
+                list.confirm_revoke = true;
+                break 'step Step::Arm {
+                    device_name: device.name.clone(),
+                };
+            }
+            Step::Revoke {
+                device_id: device.id.clone(),
+                device_name: device.name.clone(),
+            }
+        };
+
+        let (device_id, device_name) = match step {
+            Step::None => return,
+            Step::Arm { device_name } => {
+                self.push_toast_warning(format!("Revoke \"{device_name}\"? Press d again."));
+                return;
+            }
+            Step::Revoke {
+                device_id,
+                device_name,
+            } => (device_id, device_name),
+        };
+
+        let Some(db) = &self.db else { return };
+        match db.revoke_remote_device(&device_id) {
+            Ok(()) => {
+                self.log_info("remote_server", format!("Device revoked: {device_id}"));
+                self.push_toast_info(format!("Revoked \"{device_name}\""));
+                if let AppMode::RemotePairing(state) = &mut self.mode
+                    && let PairingDialogView::Devices(list) = &mut state.view
+                    && let Some(device) = list.devices.get_mut(list.selected)
+                {
+                    device.revoked = true;
+                    list.confirm_revoke = false;
+                }
+            }
+            Err(e) => {
+                self.log_error("remote_server", format!("failed to revoke device: {e}"));
+                self.push_toast_warning("Failed to revoke device — check the debug log (D)");
+            }
+        }
+    }
+
+    /// The device-token authorization table `/status` (and any future
+    /// authenticated route) checks incoming `Authorization: Bearer <token>`
+    /// headers against, published to the server thread every tick like the
+    /// status snapshot. Revoked devices are simply left out, so a revoke
+    /// takes effect on the next tick rather than needing its own teardown
+    /// path — there's no persistent connection yet (that's Epic 6) for a
+    /// revoke to have to tear down.
+    fn build_authorized_devices(&self) -> HashMap<String, AuthorizedDevice> {
+        let Some(db) = &self.db else {
+            return HashMap::new();
+        };
+        let devices = db.list_remote_devices().unwrap_or_default();
+        devices
+            .into_iter()
+            .filter(|d| !d.revoked)
+            .map(|d| {
+                (
+                    d.token_hash,
+                    AuthorizedDevice {
+                        device_id: d.id,
+                        device_name: d.name,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Record a last-seen timestamp for every device that made an
+    /// authenticated request since the last tick. Best-effort: a failed
+    /// write here is logged, not surfaced to the phone, since it already
+    /// got its actual response.
+    fn drain_device_seen_events(&mut self) -> bool {
+        let Some(handle) = &mut self.remote_server else {
+            return false;
+        };
+        let mut seen = Vec::new();
+        while let Some(entry) = handle.try_recv_device_seen() {
+            seen.push(entry);
+        }
+        let changed = !seen.is_empty();
+        let errors: Vec<String> = match &self.db {
+            Some(db) => seen
+                .into_iter()
+                .filter_map(|(id, name)| {
+                    db.touch_remote_device_last_seen(&id)
+                        .err()
+                        .map(|e| format!("failed to record last-seen for {name} ({id}): {e}"))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        for msg in errors {
+            self.log_error("remote_server", msg);
+        }
+        changed
     }
 
     /// Drain every pairing exchange request that arrived since the last
@@ -489,11 +691,22 @@ mod tests {
 
     #[test]
     fn poll_publishes_a_snapshot_while_the_server_is_running() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
         let mut app = App::new_for_test(
             one_feature_store(),
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
+        app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+        // /status is authenticated (Epic "device revoke" auth wiring) — a
+        // paired device is what lets `build_authorized_devices` publish a
+        // non-empty table for this request to pass.
+        let token = "test-token";
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Test Phone", &remote_server::hash_token(token))
+            .unwrap();
 
         app.toggle_remote_server();
         // Read the Started event straight off the handle's receiver rather
@@ -519,7 +732,10 @@ mod tests {
         let mut saw_feature = false;
         while Instant::now() < deadline {
             app.poll_remote_server_bg(); // keeps publishing fresh snapshots
-            if let Ok(resp) = ureq::get(format!("http://{addr}/status")).call() {
+            if let Ok(resp) = ureq::get(format!("http://{addr}/status"))
+                .header("Authorization", format!("Bearer {token}"))
+                .call()
+            {
                 let text = resp.into_body().read_to_string().unwrap_or_default();
                 if text.contains("my-feature") {
                     saw_feature = true;
@@ -855,5 +1071,176 @@ mod tests {
 
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn open_paired_devices_view_loads_the_current_list() {
+        let (_db_file, mut app) = test_app_with_db();
+        open_pairing_dialog(&mut app);
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone B", "hash-b")
+            .unwrap();
+
+        app.open_paired_devices_view();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected the pairing dialog to still be open");
+        };
+        let PairingDialogView::Devices(list) = &state.view else {
+            panic!("expected the devices sub-view");
+        };
+        assert_eq!(list.devices.len(), 2);
+        assert_eq!(list.selected, 0);
+    }
+
+    #[test]
+    fn close_paired_devices_view_returns_to_pairing() {
+        let (_db_file, mut app) = test_app_with_db();
+        open_pairing_dialog(&mut app);
+        app.open_paired_devices_view();
+        app.close_paired_devices_view();
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("dialog should still be open");
+        };
+        assert!(matches!(state.view, PairingDialogView::Pairing));
+    }
+
+    #[test]
+    fn move_paired_device_selection_wraps_and_clears_confirmation() {
+        let (_db_file, mut app) = test_app_with_db();
+        open_pairing_dialog(&mut app);
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone B", "hash-b")
+            .unwrap();
+        app.open_paired_devices_view();
+
+        app.move_paired_device_selection(1);
+        assert_eq!(selected_index(&app), 1);
+        // Wraps around past the end.
+        app.move_paired_device_selection(1);
+        assert_eq!(selected_index(&app), 0);
+        // And past the start going the other way.
+        app.move_paired_device_selection(-1);
+        assert_eq!(selected_index(&app), 1);
+    }
+
+    fn selected_index(app: &App) -> usize {
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected the pairing dialog to be open");
+        };
+        let PairingDialogView::Devices(list) = &state.view else {
+            panic!("expected the devices sub-view");
+        };
+        list.selected
+    }
+
+    #[test]
+    fn revoke_requires_a_second_d_and_then_flips_the_flag() {
+        let (_db_file, mut app) = test_app_with_db();
+        open_pairing_dialog(&mut app);
+        let device = app
+            .db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+        app.open_paired_devices_view();
+
+        // First press only arms the confirmation — nothing revoked yet.
+        app.request_revoke_selected_device();
+        assert!(
+            !app.db
+                .as_ref()
+                .unwrap()
+                .find_remote_device_by_id(&device.id)
+                .unwrap()
+                .unwrap()
+                .revoked
+        );
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let PairingDialogView::Devices(list) = &state.view else {
+            unreachable!()
+        };
+        assert!(list.confirm_revoke);
+
+        // Second press actually revokes, in the DB and in the dialog's own
+        // copy of the row (no reload needed).
+        app.request_revoke_selected_device();
+        assert!(
+            app.db
+                .as_ref()
+                .unwrap()
+                .find_remote_device_by_id(&device.id)
+                .unwrap()
+                .unwrap()
+                .revoked
+        );
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let PairingDialogView::Devices(list) = &state.view else {
+            unreachable!()
+        };
+        assert!(list.devices[0].revoked);
+        assert!(!list.confirm_revoke);
+    }
+
+    #[test]
+    fn any_other_key_clears_a_pending_revoke_confirmation() {
+        let (_db_file, mut app) = test_app_with_db();
+        open_pairing_dialog(&mut app);
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+        app.open_paired_devices_view();
+
+        app.request_revoke_selected_device(); // arms it
+        app.clear_revoke_confirmation();
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let PairingDialogView::Devices(list) = &state.view else {
+            unreachable!()
+        };
+        assert!(!list.confirm_revoke);
+    }
+
+    #[test]
+    fn revoked_devices_are_excluded_from_the_authorized_table() {
+        let (_db_file, app) = test_app_with_db();
+        let device = app
+            .db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+
+        assert_eq!(app.build_authorized_devices().len(), 1);
+
+        app.db
+            .as_ref()
+            .unwrap()
+            .revoke_remote_device(&device.id)
+            .unwrap();
+        assert!(app.build_authorized_devices().is_empty());
     }
 }

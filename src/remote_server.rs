@@ -26,14 +26,16 @@
 //! per-tick work. Terminal streaming is added as its own epic on top of
 //! this.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,19 @@ pub struct RemoteStatusSnapshot {
 }
 
 type SharedStatus = Arc<Mutex<RemoteStatusSnapshot>>;
+
+/// One device authorized to make authenticated requests, keyed by its
+/// token's hash in the table `App` publishes every tick (see
+/// `App::build_authorized_devices`). Revoked devices are simply absent, so
+/// a revoke takes effect on the next tick without the server thread ever
+/// touching the database itself.
+#[derive(Debug, Clone)]
+pub struct AuthorizedDevice {
+    pub device_id: String,
+    pub device_name: String,
+}
+
+type SharedAuthTable = Arc<Mutex<HashMap<String, AuthorizedDevice>>>;
 
 /// A `POST /pair/exchange` request, forwarded from the HTTP handler to the
 /// main loop. `reply` is a one-shot back-channel — created fresh per
@@ -119,6 +134,12 @@ pub struct RemoteServerHandle {
     /// matching sender lives inside the server thread's axum state — see
     /// `run_server`.
     pairing_rx: tokio::sync::mpsc::UnboundedReceiver<PairingExchangeRequest>,
+    /// The current authorized-device table, published every tick — see
+    /// `AuthorizedDevice`.
+    auth_tx: tokio::sync::mpsc::UnboundedSender<HashMap<String, AuthorizedDevice>>,
+    /// One device id per successful authenticated request, for
+    /// `App::drain_device_seen_events` to record a last-seen timestamp for.
+    device_seen_rx: tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     join: Option<std::thread::JoinHandle<()>>,
 }
@@ -149,6 +170,19 @@ impl RemoteServerHandle {
     pub fn try_recv_pairing_request(&mut self) -> Option<PairingExchangeRequest> {
         self.pairing_rx.try_recv().ok()
     }
+
+    /// Push a fresh authorized-device table for `/status` (and any future
+    /// authenticated route) to check bearer tokens against. Same
+    /// best-effort semantics as `publish_status`.
+    pub fn publish_authorized_devices(&self, table: HashMap<String, AuthorizedDevice>) {
+        let _ = self.auth_tx.send(table);
+    }
+
+    /// Drain one device-seen notification, if any — mirrors
+    /// `try_recv_pairing_request`.
+    pub fn try_recv_device_seen(&mut self) -> Option<(String, String)> {
+        self.device_seen_rx.try_recv().ok()
+    }
 }
 
 impl Drop for RemoteServerHandle {
@@ -173,6 +207,10 @@ pub fn start(bind_addr: SocketAddr) -> RemoteServerHandle {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let (status_tx, status_rx) = tokio::sync::mpsc::unbounded_channel::<RemoteStatusSnapshot>();
     let (pairing_tx, pairing_rx) = tokio::sync::mpsc::unbounded_channel::<PairingExchangeRequest>();
+    let (auth_tx, auth_rx) =
+        tokio::sync::mpsc::unbounded_channel::<HashMap<String, AuthorizedDevice>>();
+    let (device_seen_tx, device_seen_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, String)>();
 
     let join = std::thread::Builder::new()
         .name("amf-remote-server".into())
@@ -197,6 +235,8 @@ pub fn start(bind_addr: SocketAddr) -> RemoteServerHandle {
                 shutdown_rx,
                 status_rx,
                 pairing_tx,
+                auth_rx,
+                device_seen_tx,
             ));
         })
         .expect("failed to spawn amf-remote-server thread");
@@ -205,19 +245,29 @@ pub fn start(bind_addr: SocketAddr) -> RemoteServerHandle {
         rx: event_rx,
         status_tx,
         pairing_rx,
+        auth_tx,
+        device_seen_rx,
         shutdown: Some(shutdown_tx),
         join: Some(join),
     }
 }
 
-/// State shared across axum handlers. `pairing_tx` is `Clone` (an unbounded
-/// `mpsc` sender), so deriving `Clone` here is enough for axum's
-/// `with_state` — no `Arc` wrapper needed beyond the one `status` already
-/// carries.
+/// State shared across axum handlers. The `mpsc` senders/handles here are
+/// all `Clone`, so deriving `Clone` on this struct is enough for axum's
+/// `with_state` — no extra `Arc` wrapper needed beyond the ones `status`
+/// and `auth` already carry.
 #[derive(Clone)]
 struct ServerState {
     status: SharedStatus,
     pairing_tx: tokio::sync::mpsc::UnboundedSender<PairingExchangeRequest>,
+    /// The authorized-device table `require_device_auth` checks bearer
+    /// tokens against — kept current by the relay task, same shape as
+    /// `status`.
+    auth: SharedAuthTable,
+    /// Reports the device id behind a successful auth check, so `App` can
+    /// record a last-seen timestamp — the server thread never writes the
+    /// database itself.
+    device_seen_tx: tokio::sync::mpsc::UnboundedSender<(String, String)>,
 }
 
 async fn run_server(
@@ -226,8 +276,11 @@ async fn run_server(
     shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     mut status_rx: tokio::sync::mpsc::UnboundedReceiver<RemoteStatusSnapshot>,
     pairing_tx: tokio::sync::mpsc::UnboundedSender<PairingExchangeRequest>,
+    mut auth_rx: tokio::sync::mpsc::UnboundedReceiver<HashMap<String, AuthorizedDevice>>,
+    device_seen_tx: tokio::sync::mpsc::UnboundedSender<(String, String)>,
 ) {
     let status: SharedStatus = Arc::new(Mutex::new(RemoteStatusSnapshot::default()));
+    let auth: SharedAuthTable = Arc::new(Mutex::new(HashMap::new()));
 
     // Relay task: the only writer to `status`, so the lock is never held
     // across an `.await`. `App` pushes a new snapshot on every main-loop
@@ -240,11 +293,30 @@ async fn run_server(
         }
     });
 
-    let state = ServerState { status, pairing_tx };
+    // Same shape, for the authorized-device table.
+    let auth_for_relay = auth.clone();
+    tokio::spawn(async move {
+        while let Some(table) = auth_rx.recv().await {
+            *auth_for_relay.lock().unwrap() = table;
+        }
+    });
+
+    let state = ServerState {
+        status,
+        pairing_tx,
+        auth,
+        device_seen_tx,
+    };
 
     let router = axum::Router::new()
         .route("/health", axum::routing::get(|| async { "ok" }))
-        .route("/status", axum::routing::get(status_handler))
+        .route(
+            "/status",
+            axum::routing::get(status_handler).route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                require_device_auth,
+            )),
+        )
         .route(
             "/pair/exchange",
             axum::routing::post(pairing_exchange_handler),
@@ -277,6 +349,51 @@ async fn run_server(
 
 async fn status_handler(State(state): State<ServerState>) -> Json<RemoteStatusSnapshot> {
     Json(state.status.lock().unwrap().clone())
+}
+
+/// Gate an authenticated route behind `Authorization: Bearer <token>`,
+/// checked against the table `App` publishes every tick (see
+/// `AuthorizedDevice`). The server thread never touches the database to
+/// answer this — a missing/unknown/revoked token is all indistinguishable
+/// here, which is the point (see `outcome_to_response`'s equivalent note on
+/// pairing codes). On success, reports the device id back to the main loop
+/// so it can record a last-seen timestamp — the server thread itself never
+/// writes the database.
+async fn require_device_auth(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let token = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    let Some(token) = token else {
+        return unauthorized_response();
+    };
+
+    let device = {
+        let table = state.auth.lock().unwrap();
+        table.get(&hash_token(token)).cloned()
+    };
+    let Some(device) = device else {
+        return unauthorized_response();
+    };
+
+    let _ = state
+        .device_seen_tx
+        .send((device.device_id, device.device_name));
+    next.run(request).await
+}
+
+fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({"error": "unauthorized"})),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -478,22 +595,84 @@ mod tests {
         }
     }
 
+    /// Publish a single authorized device and wait (briefly — the relay
+    /// task applies it asynchronously) until a request bearing its token
+    /// actually gets past `require_device_auth`, so callers don't race the
+    /// relay. Returns the plaintext token to send as `Authorization: Bearer
+    /// <token>`.
+    fn publish_one_authorized_device(handle: &RemoteServerHandle, addr: SocketAddr) -> String {
+        let token = "test-device-token".to_string();
+        let mut table = HashMap::new();
+        table.insert(
+            hash_token(&token),
+            AuthorizedDevice {
+                device_id: "dev-1".to_string(),
+                device_name: "Test Phone".to_string(),
+            },
+        );
+        handle.publish_authorized_devices(table);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if let Ok(resp) = ureq::get(format!("http://{addr}/status"))
+                .header("Authorization", format!("Bearer {token}"))
+                .call()
+                && resp.status() == StatusCode::OK
+            {
+                return token;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("authorized device never took effect on /status");
+    }
+
+    #[test]
+    fn status_requires_a_bearer_token() {
+        let handle = start(any_local_addr());
+        let addr = wait_for_started(&handle);
+
+        let resp = ureq::get(format!("http://{addr}/status")).call();
+        assert!(matches!(resp, Err(ureq::Error::StatusCode(401))));
+    }
+
+    #[test]
+    fn status_rejects_an_unknown_or_revoked_token() {
+        let handle = start(any_local_addr());
+        let addr = wait_for_started(&handle);
+        // An authorized table with a *different* device than the one about
+        // to be tried — same effect as an unknown or revoked token, since
+        // `require_device_auth` never distinguishes the two (see its doc
+        // comment).
+        let mut table = HashMap::new();
+        table.insert(
+            hash_token("someone-elses-token"),
+            AuthorizedDevice {
+                device_id: "dev-1".to_string(),
+                device_name: "Other Phone".to_string(),
+            },
+        );
+        handle.publish_authorized_devices(table);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut rejected = None;
+        while std::time::Instant::now() < deadline {
+            let resp = ureq::get(format!("http://{addr}/status"))
+                .header("Authorization", "Bearer not-a-real-token")
+                .call();
+            if let Err(ureq::Error::StatusCode(401)) = resp {
+                rejected = Some(());
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(rejected.is_some(), "an unknown token should be rejected");
+    }
+
     #[test]
     fn status_endpoint_serves_the_last_published_snapshot() {
         let mut handle = start(any_local_addr());
         let addr = wait_for_started(&handle);
-
-        // Before anything is published, /status serves the empty default
-        // rather than erroring — there's just nothing to report yet.
-        let body = ureq::get(format!("http://{addr}/status"))
-            .call()
-            .expect("GET /status should succeed with no snapshot published")
-            .body_mut()
-            .read_to_string()
-            .expect("body should be readable");
-        let empty: RemoteStatusSnapshot =
-            serde_json::from_str(&body).expect("response should be valid JSON");
-        assert!(empty.features.is_empty());
+        let token = publish_one_authorized_device(&handle, addr);
 
         let snapshot = RemoteStatusSnapshot {
             generated_at: "2026-09-14T00:00:00Z".to_string(),
@@ -513,6 +692,7 @@ mod tests {
         let mut fetched = None;
         while std::time::Instant::now() < deadline {
             let text = ureq::get(format!("http://{addr}/status"))
+                .header("Authorization", format!("Bearer {token}"))
                 .call()
                 .unwrap()
                 .body_mut()
@@ -530,5 +710,23 @@ mod tests {
 
         handle.stop();
         let _ = handle.rx.recv_timeout(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_successful_auth_reports_the_device_as_seen() {
+        let mut handle = start(any_local_addr());
+        let addr = wait_for_started(&handle);
+        publish_one_authorized_device(&handle, addr);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut seen = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(entry) = handle.try_recv_device_seen() {
+                seen = Some(entry);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(seen, Some(("dev-1".to_string(), "Test Phone".to_string())));
     }
 }

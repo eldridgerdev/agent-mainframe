@@ -1,6 +1,6 @@
 # Remote Control — companion app
 
-- **Status:** In progress — Epics 1, 2, 5, 4 shipped 2026-09-14
+- **Status:** In progress — Epics 1, 2, 4, 5, 7 shipped 2026-09-14
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -314,9 +314,9 @@ gated behind auth (Epic 4) before being exposed on a real network.
       sourced from the existing `app/notifications.rs` scan.
 - [x] Independent of the remote-control toggle's on/off state, per the
       notification/toggle split in Architecture.
-- [ ] Auth-gated once Epic 4 lands (do not ship unauthenticated on a
-      real network). Still open — mitigated for now by binding
-      loopback-only (`127.0.0.1`, OS-assigned port), not by auth.
+- [x] Auth-gated once Epic 4 lands (do not ship unauthenticated on a
+      real network). Done (2026-09-14) as part of Epic 7 — see that
+      epic for the middleware and its tests.
 
 **Done (2026-09-14), backend half.** `GET /status` on
 `src/remote_server.rs` serves a `RemoteStatusSnapshot` (plain polling,
@@ -357,13 +357,48 @@ notification triggered by a real agent question arrives.
 
 Needs Epic 4 (pairing/token model).
 
-- [ ] Revoke action in the desktop paired-devices list.
-- [ ] Revoke closes any active connection for that device immediately
+- [x] Revoke action in the desktop paired-devices list.
+- [x] Revoke closes any active connection for that device immediately
       (not just on next reconnect).
-- [ ] Revoked token rejected on all subsequent requests.
+- [x] Revoked token rejected on all subsequent requests.
 
-Verification: automated test that a revoked token is rejected; manual
-test that an open connection is torn down on revoke.
+**Done (2026-09-14).** Two halves. First, `/status` actually checks a
+token now: `require_device_auth` (`src/remote_server.rs`) is an axum
+`route_layer` on `/status` that reads `Authorization: Bearer <token>`
+and checks it against an in-memory `HashMap<token_hash,
+AuthorizedDevice>`. That table is published by `App` every tick
+(`App::build_authorized_devices`, alongside the existing status
+snapshot) from `db.list_remote_devices()` with revoked rows filtered
+out — same channel-routed shape as the status feed and pairing
+exchange, so the server thread still never opens its own database
+connection. A hit reports the device id back over a fire-and-forget
+channel so `App::drain_device_seen_events` can record `last_seen_at`
+from the main loop. Missing, unknown, and revoked tokens all produce
+the same 401 (no signal beyond "no", matching the pairing exchange's
+own non-disclosure).
+
+Second, the revoke UI itself: `v` from the pairing dialog
+(`Ctrl+Space Q`) opens a paired-devices list as a sub-screen of that
+same dialog (`RemotePairingState::view: PairingDialogView`) rather than
+a new leader binding or `AppMode` — the list only makes sense in
+relation to an open pairing session, and `Esc` from it returns to the
+pairing screen rather than closing the dialog outright. `j`/`k` move
+the cursor; `d`, `d` revokes the selected device (arm on the first
+press, confirm on the second, any other key clears the arm) — the same
+contract the prompt overrides manager's `d`, `d` clear uses. There is
+no live connection for a revoke to tear down yet (that arrives with
+Epic 9's terminal streaming); "immediately" for now means the very
+next tick's published table excludes the device, which is exactly what
+an unknown token already looks like to `require_device_auth`.
+
+Verification: 3 new server-level tests (`/status` rejects no token and
+an unrecognized one, a valid one passes and reports last-seen) and 6
+new `App`-level tests (open/close the devices view, selection wraps
+and clears a pending confirmation, the arm-then-confirm flow updates
+both the DB row and the dialog's own copy, any other key clears the
+confirmation, a revoked device drops out of the authorized table) —
+all pass; full suite (2662 tests), clippy `--all-targets -D warnings`,
+and `cargo fmt --check` all clean.
 
 ### Epic 8 — Prompt response (P2)
 

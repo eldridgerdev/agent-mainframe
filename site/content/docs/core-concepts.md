@@ -27,7 +27,9 @@ AMF asks you to choose how much autonomy an agent receives for each feature:
 | **SuperVibe** | Skips agent permission prompts. AMF shows a warning before enabling it. |
 
 Codex and Pi do not support AMF's Vibeless edit-review hooks. Pi also does
-not receive AMF permission-mode flags.
+not receive AMF permission-mode flags. See
+[Choosing a Harness](@/docs/harnesses.md) for the full breakdown of what
+else varies by harness.
 
 ## Plan mode
 
@@ -38,3 +40,10 @@ AMF does not save the plan or launch the feature until you accept it. Press
 
 Multiple-choice questions in the interview also take your own answer: press
 `e` to type into the "Your own answer" box under the options.
+
+On the brief step, `Ctrl+D` attaches up to 4 reference documents (any
+readable text file, 512KB each) for the interview to read — a design doc,
+an RFC, prior notes — and `Ctrl+X` drops the last one. Attaching a document
+is also what switches the interview's AI passes from writing blind to
+reading the repository: with nothing attached they run with no tool
+access at all.

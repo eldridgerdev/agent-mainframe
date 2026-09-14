@@ -18,6 +18,9 @@ configuration wizard. It covers the common customizations, including:
 - plan interview questions; and
 - key remapping.
 
+See [Project Config Reference](@/docs/project-config.md) for every key
+`amf.json` can hold and how project settings merge with global ones.
+
 Use `T` on the dashboard to choose an AMF theme. If your terminal does not
 have a Nerd Font, enable ASCII fallbacks:
 

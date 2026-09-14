@@ -1,6 +1,6 @@
 +++
 title = "Prompts and TODOs"
-description = "Reusable prompt templates and scoped TODO lists."
+description = "Reusable prompt templates, task-prompt coaching, and scoped TODO lists."
 weight = 60
 +++
 
@@ -9,6 +9,20 @@ weight = 60
 Press `L` to manage reusable prompt templates, or open them from a session
 with `Ctrl+Space`, then `p`. Templates may include `{% raw %}{{placeholder}}{% endraw %}` fields
 that AMF asks you to fill before injection.
+
+## Get coaching on your task prompt
+
+Turn on **Steering** on the create-feature wizard's Mode step and AMF opens
+a scored prompt editor for the feature's first task prompt instead of a
+blank composer. As you type, AMF checks the prompt against five things a
+well-scoped task prompt usually states — file scope, acceptance criteria,
+invariants, validation commands, and risks — and shows a teaching tip for
+whichever are still missing. `Tab` injects the prompt into the new
+session; `Ctrl+T` toggles Vim editing.
+
+The same editor reopens on a running session with `Ctrl+Space`, then `s`,
+pre-filled with that session's latest prompt — useful for steering an
+agent that's drifted, not just for the first prompt.
 
 ## Scoped TODO lists
 

@@ -63,6 +63,25 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Docs site feature coverage](docs-site-coverage-plan.md) — _All 7 epics
+  shipped._ Audit of `site/content/docs/` against `src/` and `CLAUDE.md`
+  turned up shipped features with no site coverage: two (`amf doctor`, the
+  automation CLI) already documented in README and just missing a site
+  page, plus context-window/usage tracking, a multi-harness capability
+  matrix, the `amf.json` project-config schema, session bookmarks/saved-
+  transcript resume/Fresh Context handoff, Remote Control, task-prompt
+  coaching, plan-interview reference-doc attachment, and combined-batch
+  fix-cost disclosure. Landed as three new pages —
+  [Choosing a Harness](../../site/content/docs/harnesses.md),
+  [Project Config Reference](../../site/content/docs/project-config.md),
+  [More Session Tools](../../site/content/docs/session-tools.md) — plus a
+  `troubleshooting.md` page and new sections in `attention-and-limits.md`,
+  `core-concepts.md`, `prompts-and-todos.md`, `review-and-pr-feedback.md`,
+  and `keybindings.md`, all cross-linked. Verifying Epic 1 turned up and
+  fixed a separate, pre-existing bug that had the whole site failing to
+  build (see [bug backlog](bug-backlog-plan.md)). One follow-up open
+  question: nothing was checked against a live `amf` session across all
+  four harnesses, only against source.
 - [Crate package size](crate-package-size-plan.md) — _Shipped._ The
   published crate was 20MB/703 files (11.1MiB compressed) — over
   crates.io's 10MB compressed cap, which is what turned every publish

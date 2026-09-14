@@ -14,6 +14,51 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~Docs site fails to build: Tera v1 macro syntax under Tera v2~~ (Fixed)
+
+- **Status:** Fixed (2026-09-13)
+- **Reported:** 2026-09-13, found while verifying
+  [Docs site feature coverage](docs-site-coverage-plan.md) Epic 1
+- **Relates to:** `site/templates/components.html`,
+  `site/templates/docs-index.html`, `site/templates/docs-page.html`
+- **Root cause:** `components.html` defined `docs_nav` with Tera v1's
+  `{% macro %}`/`{% endmacro %}`, imported via `{% import "components.html"
+  as components %}` and called as `components::docs_nav(...)` from
+  `docs-index.html`/`docs-page.html`. Zola 0.22+ bundles Tera v2, which
+  removed macros entirely in favor of first-class components — every docs
+  page therefore failed with `error: Unknown tag` at the `import`/`macro`
+  tag. This wasn't sandbox-specific: it reproduced identically against
+  zola v0.23.5, the exact version `.github/workflows/site.yml` installs,
+  so the site's own "Build" CI step was failing on every push to
+  `site/**` on `main` (the separate Cloudflare deploy step is gated on
+  secrets, but the build step itself has no `continue-on-error`).
+- **Fix:** Rewrote `docs_nav` as a Tera v2 `{% component %}`/
+  `{% endcomponent %}` (components are registered globally — no import
+  needed) and updated both call sites to the new
+  `{{<docs_nav pages={section.pages} .../>}}` self-closing syntax.
+  Verified with `zola build` and `zola check` (v0.23.5, matching CI) —
+  all 11 docs pages plus the landing page render, and no broken internal
+  or external links.
+
+### Repro
+
+1. Install zola v0.23.5 (or newer — Tera v2 shipped in Zola 0.22).
+2. From `site/`, run `zola build`.
+
+### Expected
+
+Site builds successfully.
+
+### Actual
+
+```
+ERROR error: Unknown tag
+ --> docs-page.html:2:4
+  |
+2 | {% import "components.html" as components %}
+  |    ^^^^^^
+```
+
 ## ~~PR review summaries render with garbled diff fragments~~ (Fixed)
 
 - **Status:** Fixed (2026-08-12, issue #527)

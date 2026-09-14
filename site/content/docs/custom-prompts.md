@@ -48,6 +48,9 @@ the stable prompt id (shown in the manager):
 ```
 {% endraw %}
 
+See [Project Config Reference](@/docs/project-config.md) for everything
+else `amf.json` can declare.
+
 Before each user-initiated headless call, a **pre-call notice** names the
 prompt and target harness: `v` shows the exact rendered prompt, `e` jumps to
 the manager for that prompt, `Enter` makes the call, `Esc` cancels it.

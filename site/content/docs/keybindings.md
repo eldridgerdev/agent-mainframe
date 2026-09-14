@@ -26,6 +26,7 @@ for the complete, current keybinding reference built into that version of AMF.
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
+| `Z` | Generate a short AI summary of the selected feature's recent activity |
 | `G` | Open GitHub PR triage |
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
@@ -38,6 +39,11 @@ for the complete, current keybinding reference built into that version of AMF.
 
 Search (`/`) accepts every letter, including `j` and `k`. Use arrow keys or
 `Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.
+
+`Ctrl+Space` also opens a leader-command menu from the dashboard, the same
+way it does inside a session (below) — that's where bookmarks and a few
+other extras live; see
+[More Session Tools](@/docs/session-tools.md).
 
 ## Embedded session
 
@@ -53,6 +59,7 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `p` | Open the prompt library |
 | `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
 | `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
+| `Ctrl+Space`, then `g` | Generate a short AI summary of this feature's recent activity |
 | `Ctrl+Space`, then `?` | Show all leader commands |
 
 ## Where the rest live
@@ -63,3 +70,6 @@ Most keys go directly to the active session. These controls belong to AMF:
   PR Triage's investigate/fix/reply keys.
 - [Prompts and TODOs](@/docs/prompts-and-todos.md) — the TODO list's own
   scope-toggle, move/copy, and work-the-queue keys.
+- [More Session Tools](@/docs/session-tools.md) — bookmark slots, resuming
+  a harness's saved transcripts, the fresh-context handoff keys, and
+  Remote Control's status badge and keys.

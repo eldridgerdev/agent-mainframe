@@ -23,7 +23,43 @@ group; `Enter` opens the session, `x` dismisses the row.
 Fidelity depends on the harness. Claude Code and OpenCode report all three
 states. Codex fires one hook when a turn ends and cannot say whether it
 finished or is asking, so its sessions show as **Waiting** either way. Pi
-has no hook mechanism, so its sessions carry no state at all.
+has no hook mechanism, so its sessions carry no state at all. See
+[Choosing a Harness](@/docs/harnesses.md) for how this and other AMF
+features vary across the four harnesses.
+
+## Track context and usage in the sidebar
+
+An embedded session's sidebar carries two more readouts, when a harness
+reports the data:
+
+- **Context** shows the active session's context-window usage, e.g.
+  `Ctx 42% · 12,345` (a `~` prefix marks a reading AMF estimated rather than
+  read directly from the harness). Approaching the limit appends `WARNING`
+  or `CRITICAL`; a reading AMF couldn't refresh appends `STALE` but keeps
+  showing the last real value rather than going blank. In the warning or
+  critical band the section grows two lines: `Action: Fresh context:
+  <leader F>` — opens a new session seeded with the current diff, so you
+  can keep going without the old conversation's history counting against
+  the new session's budget — and `Dismiss: <leader X>` to clear the hint
+  for that reading.
+- **Usage** shows Claude's and Codex's rolling rate-limit windows, one per
+  line, e.g. `5h  62% left · 3h` (percentage remaining, then time to
+  reset once known). OpenCode and Pi have no known usage API, so the
+  section is simply omitted for their sessions.
+
+Context tracking works across all four harnesses; the usage windows are
+Claude- and Codex-only. See [Choosing a Harness](@/docs/harnesses.md) for
+the full breakdown.
+
+## Let AMF summarize a session for you
+
+Press `Z` on the dashboard, or `Ctrl+Space`, then `g` from inside a
+session, to have AMF write a short (60-character) summary of the selected
+feature's recent terminal activity, shown on that feature's dashboard row.
+It's a one-off, on-demand call rather than something that runs
+automatically — press it again any time the row goes stale. Like Learning
+Mode's quick answers, it runs in AMF's restricted, no-tools headless mode,
+so it costs one small call regardless of which harness the feature uses.
 
 ## Keep the machine from filling up
 

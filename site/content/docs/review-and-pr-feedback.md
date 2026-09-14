@@ -26,10 +26,10 @@ Once that PR is merged or closed without merging, the badge switches to
 `[PR #N merged]` / `[PR #N closed]` instead of disappearing.
 
 Select a feature and press `G` to open PR Triage. You can inspect review
-threads, send an individual or batched fix prompt to an agent, reply, and
-mark threads done. Press `W` to have AMF run its own review of the PR diff.
-GitHub actions are presented for confirmation before AMF writes to the pull
-request.
+threads, send an individual fix prompt or, with `B`, a batched one covering
+several comments in a single agent run, reply, and mark threads done.
+Press `W` to have AMF run its own review of the PR diff. GitHub actions are
+presented for confirmation before AMF writes to the pull request.
 
 A comment that asks a question rather than requesting a change can be
 investigated instead of fixed: press `v` to run a strictly read-only headless
@@ -40,7 +40,11 @@ post an editable reply, ask a follow-up, dismiss it, or keep it as a TODO.
 
 An unchanged AI-drafted reply discloses the harness, best-effort model,
 estimated tokens, and estimated cost of the session that wrote it. AMF's own
-AI review (`W`) carries the same attribution.
+AI review (`W`) carries the same attribution. When several comments were
+fixed together in one `B` batch, the shared run's cost is shown in full on
+every comment it resolved, marked `combined` (`combined (3)` for a
+three-comment batch) so it reads as one run's cost rather than one per
+issue.
 
 When a PR diff is too large to review in one prompt, `W` splits it into
 per-file batches, reviews each on its own, and combines the findings with a

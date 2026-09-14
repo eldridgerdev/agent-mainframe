@@ -576,6 +576,17 @@ impl ComposeState {
         placeholder
     }
 
+    /// Number of attachments whose placeholders are still present in the
+    /// editor. Keeping this separate from `images.len()` matters when the
+    /// user deletes an image placeholder before sending the draft.
+    pub fn active_image_count(&self) -> usize {
+        let text = self.editor.text();
+        self.images
+            .iter()
+            .filter(|image| text.contains(&image.placeholder))
+            .count()
+    }
+
     pub fn request_cursor_scroll(&mut self) {
         self.sync_scroll_to_cursor = true;
     }

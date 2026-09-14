@@ -702,6 +702,10 @@ closed or input is sent.
 - **Fix:** Add macOS clipboard helpers using `pbcopy`/`pbpaste` for text and
   `osascript` (via a temp PNG file) for images, wired in ahead of the
   Wayland/X11 fallbacks the same way the WSL helpers are.
+- **Follow-up (2026-09-14):** TIFF-backed macOS screenshots are now detected
+  as images too, and the same representation is used when handing the image
+  back to the agent harness. Deleted image placeholders are excluded from the
+  attachment count and cannot produce an empty submission.
 
 ### Repro
 

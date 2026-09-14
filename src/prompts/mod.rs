@@ -72,13 +72,11 @@ pub enum PromptId {
     ReviewMemoryCompact,
     /// One-line session summary from tmux pane content (`summary.rs`).
     SessionSummary,
-    /// User-requested bounded Expert Assist consultation.
-    ExpertAssistConsult,
 }
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 16] = [
+    pub const ALL: [PromptId; 15] = [
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
         PromptId::PlanInterviewCritique,
@@ -94,7 +92,6 @@ impl PromptId {
         PromptId::ReviewMemoryBootstrap,
         PromptId::ReviewMemoryCompact,
         PromptId::SessionSummary,
-        PromptId::ExpertAssistConsult,
     ];
 
     /// The stable string key. Used verbatim as the SQLite `prompt_id` and the
@@ -116,7 +113,6 @@ impl PromptId {
             PromptId::ReviewMemoryBootstrap => "review_memory.bootstrap",
             PromptId::ReviewMemoryCompact => "review_memory.compact",
             PromptId::SessionSummary => "session.summary",
-            PromptId::ExpertAssistConsult => "expert_assist.consult",
         }
     }
 
@@ -181,7 +177,7 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 16] = [
+static SPECS: [PromptSpec; 15] = [
     PromptSpec {
         id: PromptId::PlanInterviewRound,
         title: "Plan interview: adaptive round",
@@ -317,20 +313,6 @@ static SPECS: [PromptSpec; 16] = [
         summary: "One-line summary of a session's recent tmux output.",
         placeholders: &["harness_name", "max_chars", "recent_lines"],
         default_template: defaults::SESSION_SUMMARY,
-        harness_variants: NO_HARNESS_VARIANTS,
-    },
-    PromptSpec {
-        id: PromptId::ExpertAssistConsult,
-        title: "Expert Assist consultation",
-        summary: "Provides bounded advice or a proposed patch from an explicitly selected expert.",
-        placeholders: &[
-            "question",
-            "acceptance_criteria",
-            "attempted_fixes",
-            "evidence_packet",
-            "effective_access",
-        ],
-        default_template: defaults::EXPERT_ASSIST_CONSULT,
         harness_variants: NO_HARNESS_VARIANTS,
     },
 ];

@@ -1,6 +1,7 @@
 # Remote Control — companion app
 
-- **Status:** In progress — Epics 1, 2, 4, 5, 7 shipped 2026-09-14
+- **Status:** In progress — Epics 1, 2, 4, 5, 7 shipped 2026-09-14; Epic 3
+  (Android-only) scaffold + Phase 1 screens also shipped 2026-09-14
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -235,18 +236,55 @@ number), clippy, and fmt all pass.
 Front-loads the app-store-adjacent lead time the Flutter decision adds
 (account approval, signing, CI) so it isn't discovered as a blocker
 mid-Phase-1. Fully independent of Epics 1–2; can start immediately.
+**Narrowed (2026-09-14) to Android-only for now** — iOS (Apple Developer
+account, TestFlight, code signing) is deliberately deferred, per the user.
 
-- [ ] Flutter project scaffold (iOS + Android targets).
-- [ ] Apple Developer account + Google Play Console account (or confirm
-      existing ones can be used).
-- [ ] Code signing set up for both platforms.
-- [ ] TestFlight / Play Console internal-testing track configured for
-      installing dev builds on a real phone without a store release.
-- [ ] Minimal CI build (or documented local build steps) producing an
-      installable artifact for each platform.
+- [x] Flutter project scaffold (Android target only; iOS deferred).
+- [ ] ~~Apple Developer account~~ — deferred with iOS.
+- [ ] Google Play Console account (or confirm an existing one can be
+      used). Still open — not needed for local `adb install` testing.
+- [ ] Code signing for Android (a release/upload key). Still open — debug
+      builds are unsigned-for-distribution by default and that's all
+      that exists so far.
+- [ ] Play Console internal-testing track configured for installing dev
+      builds on a real phone without a store release. Still open —
+      superseded for now by `adb install` (see `mobile/README.md`).
+- [x] Documented local build steps producing an installable artifact
+      (`mobile/README.md`); CI is still open.
 
-Verification: an empty scaffold app installs on a real iOS and Android
-device via TestFlight/internal testing.
+**Done (2026-09-14), scaffold half.** `mobile/` is a Flutter project
+(`flutter create --platforms=android --org dev.agentmainframe
+--project-name amf_companion mobile`), Android-only. Toolchain (Flutter
+3.47.4 stable + Android SDK platform 36 / build-tools 34 & 36, no
+sudo/snap — extracted from the official tarballs into `~/dev/flutter`
+and `~/dev/android-sdk`, since this dev box has no root access in this
+session) is documented in `mobile/README.md` rather than committed
+(machine-local, like any other SDK install). `flutter build apk --debug`
+produces `mobile/build/app/outputs/flutter-apk/app-debug.apk`; nested
+`mobile/.gitignore` (from the template) keeps `build/`, `.dart_tool/`,
+`.idea/`, and `android/local.properties` out of git the same way the
+main repo's `target/` is already excluded — only source, `pubspec.*`,
+and the Android project skeleton are tracked.
+
+Also built the actual Phase 1 screens on top of the scaffold (a step
+ahead of where this epic's checklist originally stopped, since an empty
+counter-app scaffold wasn't worth committing on its own): pairing
+(`lib/pairing_screen.dart`, manual server-address + code entry —
+`POST /pair/exchange`) and status (`lib/status_screen.dart`, polls
+`GET /status` every 5s with the stored bearer token, clears the
+credential and returns to pairing on a 401). `lib/models.dart` /
+`lib/api_client.dart` mirror `src/remote_server.rs`'s JSON shapes
+directly; `lib/credential_store.dart` persists the one device credential
+via `shared_preferences`. Not built yet: QR-code scanning (manual entry
+only — also the desktop dialog's own fallback) and Firebase push
+(Epic 6's job, and a separate external-service decision).
+
+Verification: `flutter analyze` and `flutter test` (2 new widget tests —
+shows pairing with no stored credential, goes straight to status with
+one) both clean; `flutter build apk --debug` succeeds. **Not done:**
+install on a real device — no phone was connected in this session (the
+server is loopback-only regardless; see `mobile/README.md` for the
+`adb reverse` step needed to test pairing for real once one is).
 
 ### Epic 4 — Pairing flow (P1)
 
@@ -345,13 +383,19 @@ Needs Epic 3 (scaffold) to exist at all; needs Epic 4 for a real pairing
 flow and Epic 5 for real status data, though UI scaffolding for both
 screens can be built against mocked data in parallel with those landing.
 
-- [ ] Pairing/scan screen.
-- [ ] Status/notification list screen (Phase 1 view).
+- [ ] Pairing/scan screen. Partially done under Epic 3 (2026-09-14):
+      manual entry works end-to-end against `/pair/exchange`; QR
+      scanning itself is not built.
+- [ ] Status/notification list screen (Phase 1 view). Also done under
+      Epic 3 (2026-09-14): polls `/status`, shows attention state.
 - [ ] Firebase Cloud Messaging integration for attention push
-      notifications.
+      notifications. Not started — needs a Firebase project decision
+      first (see Risks).
 
 Verification: manual install/pairing on a real phone; confirm a
-notification triggered by a real agent question arrives.
+notification triggered by a real agent question arrives. Neither done
+yet — no phone was connected this session (see Epic 3's verification
+note) and push isn't built.
 
 ### Epic 7 — Device revoke (P1)
 
@@ -488,7 +532,15 @@ connections.
   Developer / Google Play accounts, code signing, TestFlight/Play
   Console internal testing, and store review turnaround for any future
   update. Epic 3 exists specifically to front-load this rather than
-  discover it mid-Phase-1.
+  discover it mid-Phase-1. **Narrowed (2026-09-14):** iOS is deferred
+  entirely for now (per the user), so only the Android half of this
+  (Play Console account, signing, internal-testing track) is still
+  open — see Epic 3.
+- Firebase Cloud Messaging (Epic 6's push notifications) needs a
+  Firebase project created and wired up (a new external-service
+  dependency, `google-services.json` committed or generated per build,
+  a server-side key for AMF to send from) — not yet decided or
+  scoped; needs sign-off before Epic 6's push half starts.
 - The tunnel mechanism is resolved to "integrate with an existing tool"
   (Tailscale, ngrok, or cloudflared), but *which one* to document/support
   first is still open — pick it when Epic 9 (or a LAN/tunnel toggle in

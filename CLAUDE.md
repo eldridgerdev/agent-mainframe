@@ -21,7 +21,7 @@ harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
 
 **Prompt registry** (`src/prompts/`): the single home for every headless
 prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (19 stable ids), `PromptSpec` (title/summary/placeholders/
+`PromptId` (22 stable ids), `PromptSpec` (title/summary/placeholders/
 `default_template`/`harness_variants`), and `resolve_template_layered` /
 `resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
 out of the call sites. `resolve.rs` has `PromptContext` +
@@ -468,11 +468,11 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 19 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 22 stable ids
   (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`, `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
-  `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`,
+  `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`/`.ai_summary`,
   `session.summary`, and the batched-review set
   `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
   holds the built-in text. The 6
@@ -480,7 +480,7 @@ and `AMF_PLAN.md` for the design decisions.
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins them to the
   `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 13 use granular tokens.
+  can't be `concat!`-ed); the other 14 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop

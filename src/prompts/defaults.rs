@@ -428,6 +428,24 @@ Output ONLY the full replacement document in the same Markdown shape as the inpu
 
 {{doc_contents}}"#;
 
+/// `review_memory.ai_summary` — turn one PR review comment into a single
+/// recall-shaped review-memory finding (`app/pr_review/memory.rs`, the "add
+/// to memory" dialog's `s` action). The generated text becomes the entire
+/// memory item — no separate anchor fields are stored alongside it — so the
+/// template carries the file/PR context forward itself rather than relying on
+/// something else to remember it.
+///
+/// Placeholders: `{{finding_context}}`.
+pub const REVIEW_MEMORY_AI_SUMMARY: &str = r#"You are turning one PR review comment into a single durable code-review finding for a team's review-memory doc, so the same underlying issue is caught automatically next time instead of being rediscovered from scratch.
+
+Write ONE finding, as a single line of plain text with no bullet marker, no heading, and no surrounding quotes. It must capture: the underlying issue (not a restatement of the comment's wording), why it matters, where it applies (generalized into a rule, not tied to this one file or PR), and the concrete check a reviewer or agent should run next time. Because this text is the entire memory entry, end it with the file/PR context given below in parentheses so the finding stays traceable to where it came from.
+
+Output ONLY that one line. No commentary, no Markdown formatting, no other lines.
+
+---
+
+{{finding_context}}"#;
+
 // ---------------------------------------------------------------------------
 // Session summary (summary.rs)
 // ---------------------------------------------------------------------------

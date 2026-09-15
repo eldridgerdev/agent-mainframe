@@ -1077,6 +1077,34 @@ first), and the reviewer's output (plus comments triaged in the pane)
       (`MEMORY_CATEGORIES`, `memory_finding_seed`), `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`.
+- [x] **AI-generated summary for "add to memory" (`s`).** From the confirm
+      view, `s` opens a per-use harness picker (skipped when only one harness
+      is installed, mirroring the investigation harness picker rather than
+      Learning Mode's session-persistent one) and runs one restricted
+      no-tools headless pass — `review_memory.ai_summary`, a new entry in the
+      editable-prompts registry — that turns the seeded comment into a short,
+      recall-shaped finding: the underlying issue, why it matters, where it
+      applies, and the check to run next time, carrying the file/PR context
+      forward in its own text since that text becomes the entry's only field
+      (there are no separate anchor columns — a memory item is one Markdown
+      bullet). Generation runs off the UI thread
+      (`App::memory_ai_summary_bg` + `poll_memory_ai_summary_bg`, the same
+      `Option<Receiver<T>>` shape the compact pass uses) and is gated by the
+      ordinary pre-call notice; on success the result overwrites the dialog's
+      existing editable finding text and lands back on that same confirm/edit
+      view for review before `⏎` saves it — there is no separate "Review"
+      state to speak of. A failed or unavailable harness shows an inline
+      error and leaves the raw seed untouched, with a normal save still
+      available; `esc` mid-generation stops *watching* without aborting the
+      background run, and a result that lands after the dialog moved on is
+      dropped with a toast rather than misapplied. Unit-tested (context
+      assembly + oversized-input truncation, prompt rendering, the picker's
+      single-/multi-harness paths, cancel-during-generating, success/failure/
+      stale-result handling, and a persistence round-trip proving the doc
+      gets the AI text rather than the raw seed). →
+      `src/prompts/{mod,defaults}.rs`, `src/app/precall.rs`,
+      `src/app/pr_review/{state,memory}.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/main.rs`.
 - [x] **Perform an AI code review of the PR (local draft → optionally post).**
       `A` in the review pane asks the agent to review the PR **diff**
       (`GhCli::pr_diff` → `gh pr diff <n>`, fetched in Rust) and surface

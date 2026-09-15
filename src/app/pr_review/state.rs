@@ -902,8 +902,37 @@ pub struct MemoryAddState {
     pub editor: TextEditor,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `g` toggle
-    /// scope / `esc` cancel).
+    /// scope / `s` summarize with AI / `esc` cancel).
     pub editing: bool,
+    /// The "summarize with AI" sub-flow (`s`), when active. `None` — the
+    /// steady state — covers both "never started" and "a summary already
+    /// landed": on success [`editor`] is overwritten and this is cleared, so
+    /// the dialog falls straight back to its ordinary review/edit confirm
+    /// view rather than needing a distinct "Review" state of its own.
+    pub ai_summary: Option<MemoryAiSummaryState>,
+}
+
+/// State machine for [`MemoryAddState::ai_summary`]. Mirrors
+/// [`InvestigationHarnessPick`]'s per-run picker (the operator picks a
+/// harness for this one summary, not a session-persistent default) rather
+/// than Learning Mode's picker, which is tied to a multi-question overlay
+/// this dialog doesn't have.
+#[derive(Debug, Clone)]
+pub enum MemoryAiSummaryState {
+    /// Choosing which installed harness runs the summary.
+    PickingHarness(MemoryAiSummaryHarnessPick),
+    /// The headless run is in flight on a background thread.
+    Generating { harness: crate::project::AgentKind },
+    /// The run failed (or the harness came back empty); the raw seed/edited
+    /// text in [`MemoryAddState::editor`] was never touched.
+    Failed(String),
+}
+
+/// Flat single-select harness picker for [`MemoryAiSummaryState::PickingHarness`].
+#[derive(Debug, Clone)]
+pub struct MemoryAiSummaryHarnessPick {
+    pub harnesses: Vec<crate::project::AgentKind>,
+    pub selected: usize,
 }
 
 /// Confirm/edit dialog for a fix prompt: shows the exact text that will be

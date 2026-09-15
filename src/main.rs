@@ -1325,6 +1325,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.memory_ai_summary_bg.is_some() && app.poll_memory_ai_summary_bg() {
+            force_redraw = true;
+        }
+
         if app.ai_review_run.is_pending() && app.poll_ai_pr_review_bg() {
             force_redraw = true;
         }

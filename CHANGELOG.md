@@ -31,6 +31,17 @@ are tagged.
 
 ### Added
 
+- **The "add to memory" dialog (`M` in PR Triage) can now generate a
+  recall-shaped finding with AI instead of the raw comment text.** Press `s`
+  in the confirm view to pick a harness (skipped when only one is installed)
+  and generate a short entry — the underlying issue, why it matters, where it
+  applies, and the check to run next time — with the file/PR context folded
+  in, since that text is the entry's only field. Generation runs in the
+  background without blocking the rest of AMF; the result lands in the same
+  editable confirm view for review before `⏎` saves it, and a failed or
+  unavailable harness falls back to the original raw comment with normal
+  save still available. Nothing is written until you explicitly confirm.
+
 - **The plan picker can now create a plan, not just select one.** When a
   feature has no plan yet, leader `n` in its session opens a picker over the
   worktree's Markdown files; pressing `p` there now starts the same guided

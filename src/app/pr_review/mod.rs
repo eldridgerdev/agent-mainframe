@@ -45,6 +45,7 @@ pub(crate) use investigation::investigation_findings_for_prompt;
 pub(crate) use memory::MEMORY_CATEGORIES;
 pub use memory::{
     BootstrapDepth, BootstrapProgress, BootstrapStage, CompactProgress, CompactStage,
+    MemoryAiSummaryDone,
 };
 
 #[cfg(test)]

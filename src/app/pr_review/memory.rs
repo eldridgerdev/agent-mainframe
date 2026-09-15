@@ -523,7 +523,7 @@ impl App {
             return;
         }
         if harnesses.len() == 1 {
-            self.pr_review_memory_ai_summary_begin(harnesses[0].clone());
+            self.pr_review_start_memory_ai_summary(harnesses[0].clone());
             return;
         }
         let preferred = self
@@ -591,34 +591,26 @@ impl App {
             _ => None,
         };
         if let Some(harness) = harness {
-            self.pr_review_memory_ai_summary_begin(harness);
+            self.pr_review_start_memory_ai_summary(harness);
         }
     }
 
-    /// Record the picked harness as `Generating` and kick off the run.
-    fn pr_review_memory_ai_summary_begin(&mut self, harness: AgentKind) {
-        if let AppMode::PrReview(state) = &mut self.mode
-            && let Some(memory_add) = &mut state.memory_add
-        {
-            memory_add.ai_summary = Some(MemoryAiSummaryState::Generating { harness });
-        }
-        self.pr_review_start_memory_ai_summary();
-    }
-
-    /// Resolve the prompt, gate it (`ReviewMemoryAiSummary`), and spawn the
-    /// background run. Idempotent and argument-free by design: it re-reads
-    /// the harness parked in `Generating` from `self.mode`, so
-    /// [`crate::app::precall::App::dispatch_precall`] can re-invoke it
-    /// verbatim once the pre-call notice is confirmed — exactly like
-    /// [`App::review_memory_compact_confirm_run`].
-    pub(crate) fn pr_review_start_memory_ai_summary(&mut self) {
-        let (workdir, comment_id, harness, comment, pr) = match &self.mode {
+    /// Resolve the prompt and gate it (`ReviewMemoryAiSummary`) before
+    /// touching `ai_summary` at all: `ai_summary` only becomes `Generating`
+    /// *after* the gate clears, so a declined pre-call notice restores the
+    /// dialog exactly as it stood before "summarize with AI" was pressed
+    /// (`None`, or a dismissed `PickingHarness`) instead of stuck on
+    /// "Generating" for a run that never started — the same
+    /// gate-before-mode-change ordering as
+    /// [`App::review_memory_compact_confirm_run`]. `harness` is threaded in
+    /// explicitly rather than read back out of `ai_summary` for this reason;
+    /// on the re-run through `precall_confirm`,
+    /// [`crate::app::precall::App::dispatch_precall`] supplies it from the
+    /// stashed [`crate::app::precall::PendingPrecall::harness`].
+    pub(crate) fn pr_review_start_memory_ai_summary(&mut self, harness: AgentKind) {
+        let (workdir, comment_id, comment, pr) = match &self.mode {
             AppMode::PrReview(state) => {
                 let Some(memory_add) = &state.memory_add else {
-                    return;
-                };
-                let Some(MemoryAiSummaryState::Generating { harness }) = &memory_add.ai_summary
-                else {
                     return;
                 };
                 let Some(comment) = state
@@ -632,7 +624,6 @@ impl App {
                 (
                     state.workdir.clone(),
                     memory_add.comment_id,
-                    harness.clone(),
                     comment.clone(),
                     state.review.pr.clone(),
                 )
@@ -655,6 +646,14 @@ impl App {
             &prompt,
         ) {
             return;
+        }
+
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = Some(MemoryAiSummaryState::Generating {
+                harness: harness.clone(),
+            });
         }
 
         let (tx, rx) = std::sync::mpsc::channel();

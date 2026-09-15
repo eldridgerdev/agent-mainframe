@@ -4940,18 +4940,15 @@ fn pr_review_memory_ai_summary_single_harness_skips_picker_and_gates_the_run() {
             assert_eq!(pending.harness, AgentKind::Claude);
             match pending.prior_mode.as_ref() {
                 AppMode::PrReview(state) => {
-                    let ai_summary = state
-                        .memory_add
-                        .as_ref()
-                        .unwrap()
-                        .ai_summary
-                        .as_ref()
-                        .unwrap();
-                    assert!(matches!(
-                        ai_summary,
-                        crate::app::MemoryAiSummaryState::Generating { harness }
-                            if *harness == AgentKind::Claude
-                    ));
+                    // `ai_summary` is not switched to `Generating` until the
+                    // gate clears, so the stashed mode still shows the
+                    // untouched confirm view — a cancel must not leave the
+                    // dialog stuck on "Generating" for a run that never
+                    // started.
+                    assert!(
+                        state.memory_add.as_ref().unwrap().ai_summary.is_none(),
+                        "prior mode should not show Generating before the gate clears"
+                    );
                 }
                 other => panic!(
                     "expected the stashed mode to be PrReview, got {:?}",
@@ -4964,6 +4961,54 @@ fn pr_review_memory_ai_summary_single_harness_skips_picker_and_gates_the_run() {
             std::mem::discriminant(other)
         ),
     }
+}
+
+#[test]
+fn pr_review_memory_ai_summary_cancel_precall_leaves_dialog_untouched_and_confirm_still_generates()
+{
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|p| Ok(p.to_path_buf()));
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![AgentKind::Claude],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    app.pr_review_open_memory_ai_summary_pick();
+    assert!(matches!(app.mode, AppMode::PromptPrecall(_)));
+
+    app.precall_cancel();
+
+    // Cancelling the notice must not leave the dialog stuck showing
+    // "Generating" for a run that was never spawned.
+    assert!(!app.pr_review_memory_ai_summary_generating());
+    assert!(app.memory_ai_summary_bg.is_none());
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.memory_add.as_ref().unwrap().ai_summary.is_none())
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+
+    // Pressing "summarize with AI" again still gates and, on confirm,
+    // actually starts generating this time.
+    app.pr_review_open_memory_ai_summary_pick();
+    assert!(matches!(app.mode, AppMode::PromptPrecall(_)));
+    app.precall_confirm().unwrap();
+    assert!(app.pr_review_memory_ai_summary_generating());
+    assert!(app.memory_ai_summary_bg.is_some());
 }
 
 #[test]

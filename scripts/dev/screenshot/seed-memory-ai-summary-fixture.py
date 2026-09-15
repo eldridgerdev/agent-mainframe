@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Inject a PR-Triage "add to memory" fixture into a scratch AMF DB.
 
-Usage: seed-memory-ai-summary-fixture.py <db_path> <repo_root> <pr_number>
+Usage: seed-memory-ai-summary-fixture.py <db_path> <repo_root> [pr_number]
 
-Fully offline for the comment content — no model call. One real read-only
-`gh pr view <pr_number> --json headRefOid` call resolves the head SHA so the
-seeded `pr_review_cache` row is a cache hit the moment PR Triage opens that
-PR: the current branch need not have its own PR, because the scenario reaches
-the PR through the picker (`G` -> pick -> Enter), and
-`GhCli::fetch_pr_by_number` returns exactly this SHA.
+Fully offline — no model, no network. Uses `git rev-parse HEAD` in <repo_root>
+for the PR head SHA so the seeded `pr_review_cache` row is a cache hit the
+moment PR Triage resolves that branch's PR: the pane then shows a
+hand-written review comment with no live comment fetch.
+
+`pr_number` defaults to the PR opened from this feature's own branch (the one
+this fixture lives in); `G` resolves straight to it, exactly like
+`seed-investigation-fixture.py`'s approach. Pass an explicit number only if
+this branch's real PR number differs from the default.
 
 Also seeds `store_meta.available_harnesses` with two harnesses so the
 memory-add dialog's `s` action (summarize with AI) opens its per-use
@@ -28,17 +31,16 @@ from datetime import datetime, timezone
 
 db_path = sys.argv[1]
 repo_root = sys.argv[2]
-pr_number = int(sys.argv[3])
+pr_number = int(sys.argv[3]) if len(sys.argv) > 3 else 636
 
 OWNER, REPO = "eldridgerdev", "agent-mainframe"
 COMMENT_ID = 700201
 
 head_sha = subprocess.run(
-    ["gh", "pr", "view", str(pr_number), "--json", "headRefOid", "-q", ".headRefOid"],
+    ["git", "-C", repo_root, "rev-parse", "HEAD"],
     check=True,
     capture_output=True,
     text=True,
-    cwd=repo_root,
 ).stdout.strip()
 
 iso = datetime.now(timezone.utc).isoformat()

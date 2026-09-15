@@ -17,10 +17,10 @@ const FIX_PAGE_STEP: isize = 10;
 /// strictly read-only investigation of the selected comment, `space` mark /
 /// `B` inject one combined prompt for all marked comments, `R` opens the
 /// reply-kind picker (Done / not-needed), `M` add to memory, `m` opens the
-/// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `i`
-/// install syntax highlighting for the selected comment's file, `A` opens the
-/// dedicated AI Review pane for this PR (its own workflow — see
-/// `crate::app::ai_review`).
+/// "Mark" picker (Done (local) / Skip (local) / Resolve on GitHub), `c`
+/// compact the review-memory doc, `i` install syntax highlighting for the
+/// selected comment's file, `A` opens the dedicated AI Review pane for this
+/// PR (its own workflow — see `crate::app::ai_review`).
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The per-run investigation harness picker, when open, captures all keys.
     if app.pr_review_investigation_harness_picking() {
@@ -95,6 +95,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('R') => app.pr_review_open_reply_pick(),
         KeyCode::Char('M') => app.pr_review_open_memory_add(),
         KeyCode::Char('m') => app.pr_review_open_mark_pick(),
+        KeyCode::Char('c') => app.open_review_memory_compact_confirm(),
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
@@ -247,12 +248,11 @@ fn handle_mark_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// `esc` close.
 pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The lookback-bootstrap depth picker, when open, captures all keys.
+    // (The compact confirm overlay is its own top-level `AppMode` — reachable
+    // from more than just the picker — and dispatched straight from
+    // `handlers::handle_key`, so there's no analogous check here.)
     if app.review_memory_bootstrap_picking() {
         return handle_bootstrap_pick_key(app, key);
-    }
-    // The compact confirm overlay, when open, captures all keys.
-    if app.review_memory_compact_confirming() {
-        return handle_compact_confirm_key(app, key);
     }
 
     match key.code {
@@ -287,9 +287,9 @@ fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 /// Key handling for the review-memory compact confirm overlay: `⏎` run, `g`
 /// toggles which doc gets compacted (this repo's / cross-project — the same
-/// gesture the bootstrap picker and `M` use), `esc`/`q` cancel back to the PR
-/// picker.
-fn handle_compact_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
+/// gesture the bootstrap picker and `M` use), `esc`/`q` cancel back to
+/// whichever screen opened it.
+pub fn handle_compact_confirm_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.review_memory_compact_confirm_cancel(),
         KeyCode::Char('g') => app.review_memory_compact_toggle_scope(),

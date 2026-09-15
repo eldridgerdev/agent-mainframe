@@ -49,9 +49,6 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
-    /// When `Some`, the review-memory compact confirm overlay (`c`) is open
-    /// over the picker.
-    pub compact_confirm: Option<CompactConfirmState>,
     /// The logged-in `gh` user's login, when resolvable — used to highlight
     /// the user's own PRs in the row rendering. `None` if unresolved/failed.
     pub current_user: Option<String>,
@@ -100,12 +97,49 @@ pub struct CompactConfirmState {
     pub scope: crate::app::review_memory::MemoryScope,
 }
 
-/// Full-screen progress view for the review-memory compact pass's background
-/// read + rewrite, entered once the confirm overlay is accepted.
-#[derive(Debug, Clone)]
+/// Cross-context overlay for `open_review_memory_compact_confirm` (`c` in the
+/// PR picker, PR Triage, and the dashboard leader key): unlike the
+/// PR-picker-only bootstrap picker, this can be opened from several
+/// different screens, so it stashes `prior_mode` and restores it verbatim on
+/// cancel — the same idiom [`crate::app::precall::PendingPrecall`] and
+/// [`TodoImplementChoiceState`] use for overlays reachable from more than one
+/// place. Rendered as a modal over the dashboard tree regardless of where it
+/// was opened from (see [`crate::app::precall`]'s doc comment for why that's
+/// fine — nothing behind it needs to stay legible).
+pub struct ReviewMemoryCompactConfirmState {
+    /// Working directory of the repo whose review-memory doc this targets.
+    pub workdir: PathBuf,
+    pub confirm: CompactConfirmState,
+    /// The mode to return to on cancel. Boxed and undecorated (no
+    /// `Debug`/`Clone`) because `AppMode` itself isn't clonable.
+    pub prior_mode: Box<crate::app::AppMode>,
+}
+
+/// Small, cloneable view of the compact run's progress, shown by the
+/// full-screen running dialog. Deliberately holds nothing from
+/// [`CompactRunState`] beyond what rendering needs (not `origin` or `path`)
+/// so `AppMode::ReviewMemoryCompactRunning` stays clonable even though the
+/// run's actual restore target isn't — see [`App::review_memory_compact_pending`]
+/// for where `origin`/`path` live instead.
+///
+/// [`App::review_memory_compact_pending`]: crate::app::App::review_memory_compact_pending
+#[derive(Debug, Clone, Copy)]
+pub struct CompactRunView {
+    pub scope: crate::app::review_memory::MemoryScope,
+    pub stage: crate::app::pr_review::CompactStage,
+}
+
+/// The review-memory compact pass's background read + rewrite: the mode to
+/// restore on completion/cancel plus the resolved doc path and scope, kept in
+/// [`App::review_memory_compact_pending`] independent of `self.mode` (see that
+/// field's doc comment) rather than inside [`AppMode::ReviewMemoryCompactRunning`]
+/// itself, since `origin` makes this unclonable and the running screen only
+/// ever needs the smaller [`CompactRunView`] to draw itself.
+///
+/// [`App::review_memory_compact_pending`]: crate::app::App::review_memory_compact_pending
 pub struct CompactRunState {
-    /// The PR picker to return to on completion or cancel.
-    pub origin: PrPickerState,
+    /// The mode to return to on completion or cancel.
+    pub origin: Box<crate::app::AppMode>,
     /// Resolved path of the review-memory doc being compacted, carried
     /// through from confirm so the poll's success path doesn't need to
     /// re-resolve it (a second `repo_root` lookup) once the background
@@ -115,7 +149,6 @@ pub struct CompactRunState {
     /// running screen can name it (the path alone doesn't read as
     /// project-vs-global at a glance).
     pub scope: crate::app::review_memory::MemoryScope,
-    pub stage: crate::app::pr_review::CompactStage,
 }
 
 /// Full-screen review of the compact pass's proposed replacement doc, entered
@@ -125,10 +158,9 @@ pub struct CompactRunState {
 /// as every other write in this pane.
 ///
 /// [`append_finding`]: crate::app::review_memory::append_finding
-#[derive(Debug, Clone)]
 pub struct CompactReviewState {
-    /// The PR picker to return to on write or discard.
-    pub origin: PrPickerState,
+    /// The mode to return to on write or discard.
+    pub origin: Box<crate::app::AppMode>,
     /// Resolved path of the review-memory doc this will write to.
     pub path: PathBuf,
     /// Which doc is being rewritten, so the success toast names it.

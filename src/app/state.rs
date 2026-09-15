@@ -1733,9 +1733,16 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Confirming the review-memory compact pass (`c` in the PR picker, PR
+    /// Triage, or the dashboard leader key) before spending an agent pass on
+    /// it. Reachable from several screens, so it stashes `prior_mode` — see
+    /// [`ReviewMemoryCompactConfirmState`].
+    ReviewMemoryCompactConfirm(Box<ReviewMemoryCompactConfirmState>),
     /// Running the review-memory compact pass off the UI thread ("prevent
     /// review-memory rot"); shows a loading frame with the current stage.
-    ReviewMemoryCompactRunning(CompactRunState),
+    /// The mode to restore lives in [`App::review_memory_compact_pending`]
+    /// rather than here — see [`CompactRunView`].
+    ReviewMemoryCompactRunning(CompactRunView),
     /// Reviewing the compact pass's proposed replacement doc before it's
     /// written — full-screen, editable, nothing written until confirmed.
     ReviewMemoryCompactReview(CompactReviewState),

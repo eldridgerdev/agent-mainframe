@@ -1913,6 +1913,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_prompt_precall(frame, pending, &app.theme);
     }
 
+    if let AppMode::ReviewMemoryCompactConfirm(state) = &app.mode {
+        let repo = app.repo_for_project_path(&state.workdir);
+        let memory_paths = app.review_memory_paths(&repo);
+        super::dialogs::draw_compact_confirm(
+            frame,
+            &state.confirm,
+            memory_paths.for_scope(state.confirm.scope),
+            &app.theme,
+        );
+    }
+
     if let AppMode::PlaceholderFill(state) = &app.mode {
         super::dialogs::draw_placeholder_fill(frame, state, &app.theme);
     }

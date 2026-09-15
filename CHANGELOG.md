@@ -118,6 +118,12 @@ are tagged.
 
 ### Fixed
 
+- **Composer screenshot attachments now track the content still present in the
+  draft.** Removing an `[Image N]` placeholder no longer leaves a phantom
+  attachment in the image count or allows an empty prompt to be submitted.
+  macOS screenshots exposed by the clipboard as TIFF are also detected and
+  preserved as images. No migration is required.
+
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.
 

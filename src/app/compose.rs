@@ -500,7 +500,11 @@ impl App {
         };
 
         let text = state.editor.text().trim().to_string();
-        if text.is_empty() && state.images.is_empty() {
+        let parts = split_compose_parts(&text, &state.images);
+        let has_image_part = parts
+            .iter()
+            .any(|part| matches!(part, ComposePart::Image(_)));
+        if text.is_empty() && !has_image_part {
             self.mode = AppMode::Compose(state);
             self.message = Some("Nothing to send".into());
             return Ok(());
@@ -516,10 +520,6 @@ impl App {
         // seconds. Keep the composer on screen while that work runs so its
         // existing `[Pasting...]` indicator remains visible instead of
         // making AMF look frozen.
-        let parts = split_compose_parts(&text, &state.images);
-        let has_image_part = parts
-            .iter()
-            .any(|part| matches!(part, ComposePart::Image(_)));
         if !state.is_slash_command() && crate::app::util::is_wsl() && has_image_part {
             if !text.is_empty() {
                 self.persist_startup_prompt(&state.workdir, &text);

@@ -66,7 +66,7 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
     let input_y = (area.y + area.height).saturating_sub(box_height);
     let input_area = Rect::new(x, input_y, width, box_height);
 
-    let images_suffix = match state.images.len() {
+    let images_suffix = match state.active_image_count() {
         0 => String::new(),
         1 => " (1 image)".to_string(),
         n => format!(" ({n} images)"),

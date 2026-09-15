@@ -416,6 +416,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('c') => {
             app.start_config_wizard();
         }
+        KeyCode::Char('m') => {
+            app.open_review_memory_compact_confirm();
+        }
         KeyCode::Char('h') => {
             app.open_bookmark_picker(None);
         }

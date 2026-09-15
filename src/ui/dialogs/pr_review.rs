@@ -19,7 +19,7 @@ use crate::{
     },
     app::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
-        CompactRunState, InvestigationAction, InvestigationActionPick, InvestigationFollowUpDraft,
+        CompactRunView, InvestigationAction, InvestigationActionPick, InvestigationFollowUpDraft,
         InvestigationHarnessPick, MarkPickState, PrInvestigationLoadState, PrNumberPromptState,
         PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
     },
@@ -175,9 +175,6 @@ pub fn draw_pr_picker(
     if let Some(pick) = &state.bootstrap_pick {
         draw_bootstrap_pick(frame, pick, memory_paths.for_scope(pick.scope), theme);
     }
-    if let Some(confirm) = &state.compact_confirm {
-        draw_compact_confirm(frame, confirm, memory_paths.for_scope(confirm.scope), theme);
-    }
 }
 
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR
@@ -270,10 +267,13 @@ fn draw_bootstrap_pick(
     );
 }
 
-/// Confirm overlay for the review-memory compact pass (`c` in the PR picker):
-/// shows how many findings are in the doc today before spending an agent pass
-/// to merge near-duplicates and prune stale ones.
-fn draw_compact_confirm(
+/// Confirm overlay for the review-memory compact pass (`c` in the PR picker,
+/// PR Triage, or the dashboard leader key): shows how many findings are in
+/// the doc today before spending an agent pass to merge near-duplicates and
+/// prune stale ones. Drawn as a modal over whatever's behind it, since it's
+/// reachable from several different screens (see
+/// [`crate::app::ReviewMemoryCompactConfirmState`]).
+pub fn draw_compact_confirm(
     frame: &mut Frame,
     confirm: &CompactConfirmState,
     memory_path: &Path,
@@ -402,7 +402,7 @@ pub fn draw_review_memory_bootstrap_running(
 /// read + rewrite. Mirrors [`draw_review_memory_bootstrap_running`].
 pub fn draw_review_memory_compact_running(
     frame: &mut Frame,
-    state: &CompactRunState,
+    state: &CompactRunView,
     throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {

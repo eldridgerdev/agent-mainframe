@@ -12,6 +12,12 @@ are tagged.
 
 ### Changed
 
+- **Compacting review memory (`c`) is no longer limited to the PR picker.**
+  The same confirm-and-run flow that prunes/merges near-duplicate findings
+  now also works from PR Triage and the dashboard (leader key
+  `Ctrl+Space m`), restoring you to whichever screen you opened it from on
+  cancel or when the pass finishes.
+
 - **Expert plan review is now an explicit frontier-model action.** At the final
   plan review, press `a` to request an Expert review, select a model from the
   same verified choices used by AI Review, and verify both harness and model

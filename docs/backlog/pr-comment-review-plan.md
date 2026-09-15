@@ -2844,6 +2844,40 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 
       **Shipped, 2026-09-02.**
 
+- [x] **Make `c` (compact review memory) reachable from PR Triage and the
+      dashboard, not just the PR picker.** The compact confirm/run/review
+      flow was hard-wired to `AppMode::PrPicker` (`origin: PrPickerState`,
+      always restored via `AppMode::PrPicker(...)`), so it could only be
+      opened from the picker even though the doc it prunes is written to
+      from PR Triage (`M`) and read by AI Review regardless of which screen
+      is open. Promoted the confirm step to its own top-level
+      `AppMode::ReviewMemoryCompactConfirm`, which stashes whichever mode it
+      was opened from as `prior_mode: Box<AppMode>` and restores it verbatim
+      on cancel — the same idiom `PromptPrecall`/`TodoImplementChoiceState`
+      already use for overlays reachable from more than one place — and is
+      drawn as a modal over the dashboard tree regardless of origin. Since
+      `AppMode` isn't `Clone`, `CompactRunState`/`CompactReviewState`'s
+      `origin` became `Box<AppMode>` (move-only), which also meant splitting
+      out a small `CompactRunView { scope, stage }` for what the running
+      screen renders, keeping the unclonable `origin`/`path` in
+      `App::review_memory_compact_pending` only. `c` now works identically
+      in the PR picker, PR Triage, and — via the dashboard leader key
+      (`Ctrl+Space m`, since leader `c` is already the config wizard) —
+      the dashboard itself, each restoring to wherever it was opened from on
+      cancel/finish. Unit-tested (open from all three origins, cancel
+      restores each origin, toggle/confirm/poll/cancel-then-late-result
+      paths); full suite green (2639 tests), `cargo clippy --all-targets`
+      and `cargo fmt` clean. →
+      `src/app/pr_review/state.rs`, `src/app/pr_review/memory.rs`,
+      `src/app/pr_review/fetch.rs`, `src/app/state.rs`,
+      `src/handlers/mod.rs`, `src/handlers/normal.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dashboard.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dialogs/help.rs`, `src/ui/status.rs`, `src/app/tests/pr_triage.rs`,
+      `src/app/tests/support.rs`, `CHANGELOG.md`.
+
+      **Shipped, 2026-09-15.**
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

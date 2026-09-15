@@ -76,6 +76,10 @@ pub enum PromptId {
     ReviewMemoryBootstrap,
     /// Review-memory compaction (`app/pr_review.rs`, Claude).
     ReviewMemoryCompact,
+    /// Review-memory AI summary: turns one PR review comment into a
+    /// recall-shaped finding (`app/pr_review/memory.rs`, the "add to memory"
+    /// dialog's `s` action, user-picked harness, restricted no-tools mode).
+    ReviewMemoryAiSummary,
     /// One-line session summary from tmux pane content (`summary.rs`).
     SessionSummary,
     /// Batched review: one bounded slice of an oversized diff
@@ -91,7 +95,7 @@ pub enum PromptId {
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 21] = [
+    pub const ALL: [PromptId; 22] = [
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
         PromptId::PlanInterviewCritique,
@@ -108,6 +112,7 @@ impl PromptId {
         PromptId::PrReviewAiReview,
         PromptId::ReviewMemoryBootstrap,
         PromptId::ReviewMemoryCompact,
+        PromptId::ReviewMemoryAiSummary,
         PromptId::SessionSummary,
         PromptId::ReviewBatch,
         PromptId::ReviewHunkSplit,
@@ -135,6 +140,7 @@ impl PromptId {
             PromptId::PrReviewAiReview => "pr_review.ai_review",
             PromptId::ReviewMemoryBootstrap => "review_memory.bootstrap",
             PromptId::ReviewMemoryCompact => "review_memory.compact",
+            PromptId::ReviewMemoryAiSummary => "review_memory.ai_summary",
             PromptId::SessionSummary => "session.summary",
             PromptId::ReviewBatch => "review.batch",
             PromptId::ReviewHunkSplit => "review.hunk_split",
@@ -204,7 +210,7 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 21] = [
+static SPECS: [PromptSpec; 22] = [
     PromptSpec {
         id: PromptId::PlanInterviewRound,
         title: "Plan interview: adaptive round",
@@ -348,6 +354,14 @@ static SPECS: [PromptSpec; 21] = [
         summary: "Merges near-duplicate findings and prunes the review-memory doc.",
         placeholders: &["doc_contents"],
         default_template: defaults::REVIEW_MEMORY_COMPACT,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewMemoryAiSummary,
+        title: "Review memory: AI summary",
+        summary: "Turns one PR review comment into a recall-shaped review-memory finding.",
+        placeholders: &["finding_context"],
+        default_template: defaults::REVIEW_MEMORY_AI_SUMMARY,
         harness_variants: NO_HARNESS_VARIANTS,
     },
     PromptSpec {

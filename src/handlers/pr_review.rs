@@ -375,11 +375,32 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
 
 /// Key handling while the "add to memory" dialog is open.
 ///
-/// Confirm view: `⏎` appends, `e` edits, `Tab` cycles the category, `g`
+/// Confirm view: `⏎` appends, `e` edits, `s` summarizes the finding with AI
+/// (opens the per-use harness picker below), `Tab` cycles the category, `g`
 /// toggles the destination doc (this repo's / cross-project), `esc`/`q`
 /// cancels. Edit mode: keystrokes flow to the finding editor; `esc` returns to
 /// the confirm view.
 fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
+    // The per-use AI-summary harness picker (`s`), when open, captures all keys.
+    if app.pr_review_memory_ai_summary_picking() {
+        return handle_memory_ai_summary_pick_key(app, key);
+    }
+    // While a summary is generating, only stop-watching is meaningful — the
+    // background thread itself is left running (see
+    // `App::pr_review_cancel_watching_memory_ai_summary`).
+    if app.pr_review_memory_ai_summary_generating() {
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            app.pr_review_cancel_watching_memory_ai_summary();
+        }
+        return Ok(());
+    }
+    // A failed run's inline error is dismissed by the next keypress, which
+    // then falls through to act on the dialog as normal (so e.g. pressing `s`
+    // again immediately retries, and `esc` both dismisses and cancels).
+    if app.pr_review_memory_ai_summary_error().is_some() {
+        app.pr_review_dismiss_memory_ai_summary_error();
+    }
+
     if editing {
         match key.code {
             KeyCode::Esc => app.pr_review_memory_add_stop_edit(),
@@ -391,9 +412,24 @@ fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<
     match key.code {
         KeyCode::Enter => app.pr_review_append_memory()?,
         KeyCode::Char('e') => app.pr_review_memory_add_edit(),
+        KeyCode::Char('s') => app.pr_review_open_memory_ai_summary_pick(),
         KeyCode::Tab => app.pr_review_cycle_memory_category(),
         KeyCode::Char('g') => app.pr_review_toggle_memory_scope(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_memory_add(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the memory-add dialog's per-use "summarize with AI"
+/// harness picker is open: `j/k` (or arrows) move, `⏎` confirms (starts the
+/// run), `esc`/`q` cancels back to the ordinary confirm view.
+fn handle_memory_ai_summary_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_memory_ai_summary_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_memory_ai_summary_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_memory_ai_summary_pick_move(-1),
+        KeyCode::Enter => app.pr_review_memory_ai_summary_pick_confirm(),
         _ => {}
     }
     Ok(())

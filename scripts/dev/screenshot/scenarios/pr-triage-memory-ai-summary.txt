@@ -1,0 +1,76 @@
+# PR Triage — "add to memory" dialog's new "summarize with AI" action.
+#
+# Offline for the comment content: seeds a demo project + feature and a
+# pr_review_cache row keyed to a real open PR's real head SHA, plus two
+# available harnesses (so the per-use picker actually has a choice to show).
+# The current branch has no PR of its own, so `G` falls to the PR picker;
+# entering the PR number (`#`) resolves it (one read-only `gh pr view`) and
+# hits the seeded cache row — no live comment fetch, no model call. The
+# scenario drives the harness picker and the pre-call notice, then cancels out
+# of both rather than confirming — no headless agent is ever spawned.
+#
+# Run with:
+#   scripts/dev/screenshot/amf-capture.sh \
+#     --scenario scripts/dev/screenshot/scenarios/pr-triage-memory-ai-summary.txt \
+#     --out-dir <dir>
+
+run:printf '{"path":"%s","project_name":"memory-ai-summary-demo","dry_run":false}\n' "$REPO_ROOT" > "$XDG_STATE_HOME/memo-project.json"
+run:$AMF_BIN automation create-project --file "$XDG_STATE_HOME/memo-project.json"
+wait:900
+# `gh` in a `run:` step needs the real config dir pointed at explicitly — the
+# driver only pins GH_CONFIG_DIR for the tmux instance, not this shell.
+run:GH_CONFIG_DIR="${GH_CONFIG_DIR:-$HOME/.config/gh}" python3 scripts/dev/screenshot/seed-memory-ai-summary-fixture.py "$XDG_CONFIG_HOME/amf/amf.db" "$REPO_ROOT" 434
+wait:400
+
+# Automation ran against the already-loaded TUI; restart it so the seeded
+# project, feature, cache row, and available-harnesses list are read from the
+# scratch DB.
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+run:for i in {1..60}; do tmux capture-pane -p -t "$SESSION" > "$XDG_STATE_HOME/memo-pane.txt"; grep -q "memory-ai-summary-demo" "$XDG_STATE_HOME/memo-pane.txt" && break; sleep 0.2; done
+wait:6000
+
+# Expand the demo project, land on its feature. The current branch has no PR
+# of its own, so `G` opens the PR picker; `#` then the number resolves PR #434
+# by number, hitting the seeded cache row.
+key:l|wait:400
+key:j|wait:400
+key:G|wait:4000
+key:#|wait:400
+text:434|wait:200
+key:Enter|wait:4000
+expect:memory.rs
+note:PR Triage open on the seeded PR (reached by number through the picker, since this branch has no PR of its own), with the review comment about the serial `gh` fetch loop selected. `M` opens the "add to memory" dialog on this comment.
+shot:triage-pane
+
+key:M|wait:400
+expect:summarize with AI
+note:The "add to memory" dialog's confirm view, seeded from the comment's own text plus a `(file:line)` hint. The hint bar now has two rows: `[s] summarize with AI` alongside the pre-existing `[e] edit` / `[Tab] category` / `[g] project/global` / `[esc] cancel`.
+shot:memory-add-dialog
+
+key:s|wait:400
+expect:Summarize with
+expect:Claude
+expect:Codex
+note:`s` opens the per-use harness picker (seeded with two available harnesses here) — the operator picks which installed harness generates this one summary, the same per-run pattern the investigation harness picker uses elsewhere in this pane. Nothing has run yet.
+shot:harness-picker
+
+key:Enter|wait:400
+expect:review_memory.ai_summary
+note:Confirming the picker resolves the `review_memory.ai_summary` prompt and gates it behind the same pre-call notice every user-initiated headless call in AMF shows before it spends any tokens. The scenario cancels here (`esc`) rather than continuing, so no agent is actually spawned.
+shot:precall-notice
+
+key:Escape|wait:400
+expect:summarizing with
+expect:stop watching
+note:Cancelling the pre-call notice restores the memory-add dialog exactly where it left off — mid-"Generating" state, since the run would already be in flight at this point in the real flow. The status line and the collapsed one-line hint bar (`[esc] stop watching`, since the background run is not blocking the rest of AMF) are what a real generation looks like while it's in progress.
+shot:memory-add-generating
+
+key:Escape|wait:400
+expect:summarize with AI
+expect_not:summarizing with
+note:`esc` while generating only stops *watching* — back on the ordinary confirm view with the original raw comment text untouched (the fallback the plan requires on cancel/failure), full two-row hint bar restored.
+shot:memory-add-back-to-normal
+
+key:Escape|wait:400
+note:`esc` from the confirm view closes the dialog entirely and returns to PR Triage with nothing appended to the review-memory doc.
+shot:triage-pane-after-cancel

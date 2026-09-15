@@ -4905,6 +4905,317 @@ fn pr_review_memory_add_defaults_to_project_scope_and_toggles() {
 }
 
 #[test]
+fn pr_review_memory_ai_summary_single_harness_skips_picker_and_gates_the_run() {
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|p| Ok(p.to_path_buf()));
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![AgentKind::Claude],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    app.pr_review_open_memory_ai_summary_pick();
+
+    assert!(
+        !app.pr_review_memory_ai_summary_picking(),
+        "exactly one harness auto-launches, no picker"
+    );
+    match &app.mode {
+        AppMode::PromptPrecall(pending) => {
+            assert_eq!(
+                pending.prompt_id,
+                crate::prompts::PromptId::ReviewMemoryAiSummary
+            );
+            assert_eq!(pending.harness, AgentKind::Claude);
+            match pending.prior_mode.as_ref() {
+                AppMode::PrReview(state) => {
+                    let ai_summary = state
+                        .memory_add
+                        .as_ref()
+                        .unwrap()
+                        .ai_summary
+                        .as_ref()
+                        .unwrap();
+                    assert!(matches!(
+                        ai_summary,
+                        crate::app::MemoryAiSummaryState::Generating { harness }
+                            if *harness == AgentKind::Claude
+                    ));
+                }
+                other => panic!(
+                    "expected the stashed mode to be PrReview, got {:?}",
+                    std::mem::discriminant(other)
+                ),
+            }
+        }
+        other => panic!(
+            "expected PromptPrecall, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+#[test]
+fn pr_review_memory_ai_summary_pick_multiple_harnesses_move_cancel_and_confirm() {
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|p| Ok(p.to_path_buf()));
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![AgentKind::Claude, AgentKind::Codex],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    app.pr_review_open_memory_ai_summary_pick();
+    assert!(app.pr_review_memory_ai_summary_picking());
+
+    // Cancelling the picker starts nothing and returns to the ordinary
+    // confirm view.
+    app.pr_review_memory_ai_summary_pick_move(1);
+    app.pr_review_memory_ai_summary_pick_cancel();
+    assert!(!app.pr_review_memory_ai_summary_picking());
+    assert!(!app.pr_review_memory_ai_summary_generating());
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+
+    // Re-open, move to the second harness, confirm: gates on that harness.
+    app.pr_review_open_memory_ai_summary_pick();
+    app.pr_review_memory_ai_summary_pick_move(1);
+    app.pr_review_memory_ai_summary_pick_confirm();
+    match &app.mode {
+        AppMode::PromptPrecall(pending) => assert_eq!(pending.harness, AgentKind::Codex),
+        other => panic!(
+            "expected PromptPrecall, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+#[test]
+fn pr_review_cancel_watching_memory_ai_summary_leaves_raw_text_and_clears_state() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    let raw = memory_add_editor_text(&app);
+
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().ai_summary =
+            Some(crate::app::MemoryAiSummaryState::Generating {
+                harness: AgentKind::Claude,
+            });
+    }
+    assert!(app.pr_review_memory_ai_summary_generating());
+
+    app.pr_review_cancel_watching_memory_ai_summary();
+
+    assert!(!app.pr_review_memory_ai_summary_generating());
+    assert_eq!(
+        memory_add_editor_text(&app),
+        raw,
+        "cancelling never touches the raw/edited text"
+    );
+    assert_eq!(
+        app.pr_review_memory_add_view(),
+        Some(false),
+        "the dialog stays open, nothing was persisted"
+    );
+}
+
+#[test]
+fn poll_memory_ai_summary_bg_success_overwrites_editor_and_lands_on_review() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().ai_summary =
+            Some(crate::app::MemoryAiSummaryState::Generating {
+                harness: AgentKind::Claude,
+            });
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.memory_ai_summary_bg = Some(rx);
+    tx.send(crate::app::pr_review::MemoryAiSummaryDone {
+        comment_id: 1,
+        result: Ok("Guard shared state before mutation (src/file1.rs:1).".to_string()),
+    })
+    .unwrap();
+
+    assert!(app.poll_memory_ai_summary_bg());
+    assert!(app.memory_ai_summary_bg.is_none());
+    assert_eq!(
+        memory_add_editor_text(&app),
+        "Guard shared state before mutation (src/file1.rs:1)."
+    );
+    assert_eq!(
+        app.pr_review_memory_add_view(),
+        Some(false),
+        "success lands back on the ordinary review/edit confirm view"
+    );
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.memory_add.as_ref().unwrap().ai_summary.is_none())
+        }
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn poll_memory_ai_summary_bg_failure_shows_inline_error_and_keeps_raw_text() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    let raw = memory_add_editor_text(&app);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().ai_summary =
+            Some(crate::app::MemoryAiSummaryState::Generating {
+                harness: AgentKind::Claude,
+            });
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.memory_ai_summary_bg = Some(rx);
+    tx.send(crate::app::pr_review::MemoryAiSummaryDone {
+        comment_id: 1,
+        result: Err("harness not installed".to_string()),
+    })
+    .unwrap();
+
+    assert!(app.poll_memory_ai_summary_bg());
+    assert_eq!(
+        memory_add_editor_text(&app),
+        raw,
+        "a failed run never touches the raw/edited text"
+    );
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(matches!(
+            &state.memory_add.as_ref().unwrap().ai_summary,
+            Some(crate::app::MemoryAiSummaryState::Failed(m)) if m == "harness not installed"
+        )),
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn pr_review_dismiss_memory_ai_summary_error_returns_to_idle_with_raw_text() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    let raw = memory_add_editor_text(&app);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().ai_summary =
+            Some(crate::app::MemoryAiSummaryState::Failed("boom".to_string()));
+    }
+    assert_eq!(
+        app.pr_review_memory_ai_summary_error(),
+        Some("boom".to_string())
+    );
+
+    app.pr_review_dismiss_memory_ai_summary_error();
+
+    assert_eq!(app.pr_review_memory_ai_summary_error(), None);
+    assert_eq!(memory_add_editor_text(&app), raw);
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+}
+
+#[test]
+fn poll_memory_ai_summary_bg_drops_a_stale_result_when_no_longer_watching() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    let raw = memory_add_editor_text(&app);
+    // The dialog never entered `Generating` (or already stopped watching) —
+    // there is nowhere live to land this result.
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.memory_ai_summary_bg = Some(rx);
+    tx.send(crate::app::pr_review::MemoryAiSummaryDone {
+        comment_id: 1,
+        result: Ok("Some AI text".to_string()),
+    })
+    .unwrap();
+
+    assert!(app.poll_memory_ai_summary_bg());
+    assert_eq!(
+        memory_add_editor_text(&app),
+        raw,
+        "a result with nowhere live to land it must not be applied"
+    );
+}
+
+#[test]
+fn pr_review_append_memory_after_ai_summary_persists_the_generated_text_not_the_raw_seed() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    let raw = memory_add_editor_text(&app);
+
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().ai_summary =
+            Some(crate::app::MemoryAiSummaryState::Generating {
+                harness: AgentKind::Claude,
+            });
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.memory_ai_summary_bg = Some(rx);
+    tx.send(crate::app::pr_review::MemoryAiSummaryDone {
+        comment_id: 1,
+        result: Ok("Never mutate shared state without the lock (src/file1.rs:1).".to_string()),
+    })
+    .unwrap();
+    assert!(app.poll_memory_ai_summary_bg());
+
+    app.pr_review_append_memory().unwrap();
+
+    let contents = std::fs::read_to_string(repo.join(".amf").join("review-memory.md")).unwrap();
+    assert!(contents.contains("- Never mutate shared state without the lock (src/file1.rs:1)."));
+    assert!(
+        !contents.contains(&raw),
+        "the raw seed must not survive once the AI summary was confirmed"
+    );
+}
+
+#[test]
 fn pr_review_append_memory_global_scope_writes_the_cross_project_doc() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");

@@ -44,6 +44,7 @@ pub enum PrecallAction {
     PrReviewAiReview,
     ReviewMemoryBootstrap,
     ReviewMemoryCompact,
+    ReviewMemoryAiSummary,
 }
 
 impl PrecallAction {
@@ -62,6 +63,7 @@ impl PrecallAction {
             PrecallAction::PrReviewAiReview => PromptId::PrReviewAiReview,
             PrecallAction::ReviewMemoryBootstrap => PromptId::ReviewMemoryBootstrap,
             PrecallAction::ReviewMemoryCompact => PromptId::ReviewMemoryCompact,
+            PrecallAction::ReviewMemoryAiSummary => PromptId::ReviewMemoryAiSummary,
         }
     }
 }
@@ -252,6 +254,10 @@ impl App {
             }
             PrecallAction::ReviewMemoryCompact => {
                 self.review_memory_compact_confirm_run();
+                Ok(())
+            }
+            PrecallAction::ReviewMemoryAiSummary => {
+                self.pr_review_start_memory_ai_summary();
                 Ok(())
             }
         }

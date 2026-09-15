@@ -1103,6 +1103,13 @@ pub fn draw_pr_review(
             memory_paths.map(|paths| paths.for_scope(memory_add.scope)),
             theme,
         );
+        // The per-use "summarize with AI" harness picker (`s`) stacks on top
+        // of the memory-add dialog while it's open, same as the investigation
+        // harness picker stacks on top of the pane.
+        if let Some(crate::app::MemoryAiSummaryState::PickingHarness(pick)) = &memory_add.ai_summary
+        {
+            draw_memory_ai_summary_pick(frame, pick, theme);
+        }
     }
 }
 
@@ -1219,12 +1226,45 @@ fn draw_memory_add_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The AI-summary status/error takes the destination-doc line's spot when
+    // there's something to say; otherwise that line just names the doc.
+    let status_line = match &memory_add.ai_summary {
+        Some(crate::app::MemoryAiSummaryState::Generating { harness }) => {
+            Some(Line::from(Span::styled(
+                format!("⏳ summarizing with {}…", harness.display_name()),
+                Style::default().fg(theme.warning.to_color()),
+            )))
+        }
+        Some(crate::app::MemoryAiSummaryState::Failed(message)) => Some(Line::from(Span::styled(
+            format!("⚠ AI summary failed: {message}"),
+            Style::default().fg(theme.danger.to_color()),
+        ))),
+        Some(crate::app::MemoryAiSummaryState::PickingHarness(_)) | None => None,
+    };
+
+    // The full confirm-view hint set is two rows wide (the "summarize with
+    // AI" addition no longer fits one line alongside the rest); editing and
+    // generating each collapse back to one.
+    let hints: Vec<&str> = if memory_add.editing {
+        vec!["[esc] done editing"]
+    } else if matches!(
+        memory_add.ai_summary,
+        Some(crate::app::MemoryAiSummaryState::Generating { .. })
+    ) {
+        vec!["[esc] stop watching (keeps generating in the background)"]
+    } else {
+        vec![
+            "[⏎] add   [e] edit   [s] summarize with AI",
+            "[Tab] category   [g] project/global   [esc] cancel",
+        ]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),    // finding text
-            Constraint::Length(1), // destination doc
-            Constraint::Length(1), // key hints
+            Constraint::Min(1),                     // finding text
+            Constraint::Length(1),                  // destination doc / AI-summary status
+            Constraint::Length(hints.len() as u16), // key hints
         ])
         .split(inner);
 
@@ -1235,9 +1275,11 @@ fn draw_memory_add_dialog(
         chunks[0],
     );
 
-    // The title names the scope; this names the exact file, so "global" is
-    // never a guess about where the finding actually went.
-    if let Some(memory_path) = memory_path {
+    if let Some(status_line) = status_line {
+        frame.render_widget(Paragraph::new(status_line), chunks[1]);
+    } else if let Some(memory_path) = memory_path {
+        // The title names the scope; this names the exact file, so "global" is
+        // never a guess about where the finding actually went.
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 format!("→ {}", memory_path.display()),
@@ -1247,14 +1289,79 @@ fn draw_memory_add_dialog(
         );
     }
 
-    let hints = if memory_add.editing {
-        "[esc] done editing"
-    } else {
-        "[⏎] add   [e] edit   [Tab] category   [g] project/global   [esc] cancel"
-    };
+    let hint_lines: Vec<Line> = hints
+        .into_iter()
+        .map(|h| {
+            Line::from(Span::styled(
+                h,
+                Style::default().fg(theme.primary.to_color()),
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(hint_lines), chunks[2]);
+}
+
+/// The memory-add dialog's per-use "summarize with AI" harness picker (`s`),
+/// stacked on top of the dialog. Mirrors [`draw_investigation_harness_pick`].
+fn draw_memory_ai_summary_pick(
+    frame: &mut Frame,
+    pick: &crate::app::MemoryAiSummaryHarnessPick,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(56, 40, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Summarize with ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // header
+            Constraint::Min(1),    // harness list
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            hints,
+            "  Generate the finding text with:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, harness) in pick.harnesses.iter().enumerate() {
+        let is_selected = i == pick.selected;
+        let marker = if is_selected { ">" } else { " " };
+        let name_style = if is_selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {marker} "),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(harness.display_name().to_string(), name_style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] start   [j/k] move   [esc] cancel",
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[2],
@@ -3312,6 +3419,7 @@ mod tests {
             scope,
             editor: crate::editor::TextEditor::new("Guard shared state".to_string()),
             editing: false,
+            ai_summary: None,
         };
         let paths = crate::app::review_memory::ReviewMemoryPaths {
             project: std::path::PathBuf::from("/repo/.amf/review-memory.md"),

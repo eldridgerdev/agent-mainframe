@@ -56,6 +56,9 @@ Options:
                                        (+ escape-free NNN-<label>.txt),
                                        then checks that shot's pending
                                        expect:/expect_not: assertions
+                          shim:<command>:<file>
+                                       install a scenario-relative executable
+                                       in the isolated PATH before TUI startup
                           run:<cmd>    eval an arbitrary shell command
                                        (this shell already has AMF_BIN and
                                        the scratch instance's env
@@ -284,6 +287,48 @@ trap cleanup EXIT
 # on the real config while AMF's own config/state stay isolated, the same
 # way HOME is left alone below for `claude` auth / git identity.
 REAL_GH_CONFIG_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+REAL_GH_BIN="$(command -v gh || true)"
+
+# Give scenarios an isolated command-shim directory without changing the
+# operator's PATH. Commands not replaced there continue to resolve through the
+# inherited PATH.
+SCREENSHOT_BIN_DIR="$SHOT_ROOT/bin"
+mkdir -p "$SCREENSHOT_BIN_DIR"
+SCREENSHOT_PATH="$SCREENSHOT_BIN_DIR:$PATH"
+
+install_scenario_shims() {
+    [[ -n "$SCENARIO" ]] || return 0
+    local scenario_dir
+    scenario_dir="$(cd "$(dirname "$SCENARIO")" && pwd)"
+    local line part spec command_name source_file
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        local IFS_SAVE="$IFS"
+        IFS='|'
+        read -ra parts <<<"$line"
+        IFS="$IFS_SAVE"
+        for part in "${parts[@]}"; do
+            [[ "$part" == shim:* ]] || continue
+            spec="${part#shim:}"
+            command_name="${spec%%:*}"
+            source_file="${spec#*:}"
+            if [[ "$source_file" == "$spec" || ! "$command_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+                echo "error: invalid scenario shim '$part'" >&2
+                exit 1
+            fi
+            [[ "$source_file" == /* ]] || source_file="$scenario_dir/$source_file"
+            if [[ ! -f "$source_file" ]]; then
+                echo "error: scenario shim not found: $source_file" >&2
+                exit 1
+            fi
+            cp "$source_file" "$SCREENSHOT_BIN_DIR/$command_name"
+            chmod +x "$SCREENSHOT_BIN_DIR/$command_name"
+            echo "shim: $command_name -> $source_file" >&2
+        done
+    done <"$SCENARIO"
+}
+
+install_scenario_shims
 
 export XDG_CONFIG_HOME="$CONFIG_DIR"
 export XDG_STATE_HOME="$STATE_DIR"
@@ -292,6 +337,12 @@ export XDG_STATE_HOME="$STATE_DIR"
 
 echo "scratch root: $SHOT_ROOT" >&2
 echo "tmux session: $SESSION ($GEOMETRY)" >&2
+
+# tmux runs the pane command through the user's shell, whose startup files may
+# rebuild PATH after the session environment is applied. Pin the isolated PATH
+# on the final exec so pre-launch scenario shims remain first in command lookup.
+printf -v AMF_LAUNCH_COMMAND 'exec env PATH=%q AMF_SCREENSHOT_REAL_GH=%q %q' \
+    "$SCREENSHOT_PATH" "$REAL_GH_BIN" "$AMF_BIN"
 
 # `-e` is required, not just `export`: when a tmux server is already
 # running (e.g. the user's own amf-* sessions), `new-session` attaches
@@ -304,7 +355,9 @@ tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
     -e "XDG_CONFIG_HOME=$CONFIG_DIR" \
     -e "XDG_STATE_HOME=$STATE_DIR" \
     -e "GH_CONFIG_DIR=$REAL_GH_CONFIG_DIR" \
-    "$AMF_BIN"
+    -e "AMF_SCREENSHOT_REAL_GH=$REAL_GH_BIN" \
+    -e "PATH=$SCREENSHOT_PATH" \
+    "$AMF_LAUNCH_COMMAND"
 
 step=0
 shot_note=""
@@ -594,6 +647,10 @@ run_scenario() {
                     local cmd="${part#run:}"
                     echo "run: $cmd" >&2
                     eval "$cmd"
+                    ;;
+                shim:*)
+                    # Installed before the TUI starts so its PATH resolves the
+                    # deterministic command from the first process launch.
                     ;;
                 "")
                     ;;

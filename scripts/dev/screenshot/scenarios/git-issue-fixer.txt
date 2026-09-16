@@ -1,8 +1,9 @@
 # git-issue-fixer: demonstrates the read-only issue browser and cancellable
-# feature setup flow against this repository's current open GitHub issues.
+# feature setup flow against a deterministic GitHub issue response.
 # Requires --seed git-issue-fixer-seed-project.json. The scenario never
 # confirms feature creation, so it does not post to GitHub.
 
+shim:gh:git-issue-fixer-gh-fixture.sh
 wait:1000
 note:The isolated dashboard starts with the seeded GitHub project selected and no feature created.
 expect:issue-fixer-demo
@@ -20,10 +21,11 @@ key:Escape
 wait:200
 key:g
 wait:8000
-note:The issue browser resolves the selected project's canonical GitHub repository and displays its current open issues with paging and refresh controls.
+note:The issue browser resolves the selected project's canonical GitHub repository and displays open issues with paging and refresh controls.
 expect:GitHub issues · github.com/eldridgerdev/agent-mainframe
-expect:issue(s) · page 1
+expect:2 issue(s) · page 1
 expect:#635
+expect:#634 Stop sessions without deleting them [bug]
 expect:h/← previous
 shot:open-issue-browser
 
@@ -34,6 +36,7 @@ expect:Fix issue #635 · issue-fixer-demo · github.com/eldridgerdev/agent-mainf
 expect:Feature name
 expect:Fix GitHub issue #635 in repository github.com/eldridgerdev/agent-mainframe.
 expect:Issue number: #635
+expect:Labels: documentation
 shot:issue-feature-setup
 
 key:Escape

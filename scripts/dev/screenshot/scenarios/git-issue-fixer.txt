@@ -19,7 +19,7 @@ shot:dashboard-issue-help
 key:Escape
 wait:200
 key:g
-wait:2500
+wait:8000
 note:The issue browser resolves the selected project's canonical GitHub repository and displays its current open issues with paging and refresh controls.
 expect:GitHub issues · github.com/eldridgerdev/agent-mainframe
 expect:issue(s) · page 1

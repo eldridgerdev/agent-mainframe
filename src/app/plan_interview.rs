@@ -364,6 +364,7 @@ impl App {
     }
 
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
+        let startup_brief = prepared.startup_prompt.clone();
         let questions = self
             .store
             .find_project(&prepared.project_name)
@@ -374,6 +375,9 @@ impl App {
             .unwrap_or_else(crate::plan_interview::builtin_questions);
         let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation(prepared, questions);
+        if let Some(brief) = startup_brief {
+            state.editor = crate::editor::TextEditor::new(brief);
+        }
 
         // A launch started from a TODO opens on the brief that TODO composed,
         // editable like any other. The stash is taken either way, so a brief
@@ -500,8 +504,12 @@ impl App {
     /// there is never a draft to resume. A TODO origin is still carried onto
     /// the state so an accepted plan links back to the row it came from.
     pub(crate) fn start_quick_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
+        let startup_brief = prepared.startup_prompt.clone();
         let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation_quick(prepared);
+        if let Some(brief) = startup_brief {
+            state.editor = crate::editor::TextEditor::new(brief);
+        }
         state.todo_origin = todo_origin;
         self.mode = AppMode::PlanInterview(state);
         self.message = None;
@@ -2562,10 +2570,19 @@ impl App {
         } = pending;
         let project_name = prepared.project_name.clone();
         let branch = prepared.branch.clone();
+        let feature_name = prepared
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| branch.clone());
         let todo_origin = prepared.todo_origin.clone();
 
         self.finish_feature_launch_resource_approved(prepared)?;
-        self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+        self.finalize_plan_interview_transcript(
+            &interview_key,
+            &project_name,
+            &feature_name,
+            &plan,
+        );
 
         // The feature exists only now, so this is the first moment the TODO can
         // be pointed at it. The row itself stays open: the plan is the start of
@@ -3095,6 +3112,7 @@ impl App {
             self.message = Some("Plan interview cancelled".into());
             return Ok(());
         };
+        let feature_name = prepared.feature_name.as_deref().unwrap_or(&prepared.branch);
 
         if let Some(pi) = self
             .store
@@ -3103,7 +3121,7 @@ impl App {
             .position(|project| project.name == prepared.project_name)
         {
             self.store.projects[pi].features.retain(|feature| {
-                !(feature.name == prepared.branch && feature.pending_worktree_script)
+                !(feature.name == feature_name && feature.pending_worktree_script)
             });
             self.selection = Selection::Project(pi);
             self.save()?;

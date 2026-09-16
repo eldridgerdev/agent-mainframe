@@ -1,0 +1,56 @@
+# git-issue-fixer: demonstrates the read-only issue browser and cancellable
+# feature setup flow against a deterministic GitHub issue response.
+# Requires --seed git-issue-fixer-seed-project.json. The scenario never
+# confirms feature creation, so it does not post to GitHub.
+
+shim:gh:git-issue-fixer-gh-fixture.sh
+wait:1000
+note:The isolated dashboard starts with the seeded GitHub project selected and no feature created.
+expect:issue-fixer-demo
+expect_not:GitHub issues · github.com/eldridgerdev/agent-mainframe
+shot:dashboard-project
+
+key:?
+wait:300
+note:The dashboard help documents g as the shortcut for browsing GitHub issues on the selected project.
+expect:Browse GitHub issues for the selected project
+expect:g
+shot:dashboard-issue-help
+
+key:Escape
+wait:200
+key:g
+wait:8000
+note:The issue browser resolves the selected project's canonical GitHub repository and displays open issues with paging and refresh controls.
+expect:GitHub issues · github.com/eldridgerdev/agent-mainframe
+expect:2 issue(s) · page 1
+expect:#635
+expect:#634 Stop sessions without deleting them [bug]
+expect:h/← previous
+shot:open-issue-browser
+
+key:Enter
+wait:400
+note:Selecting an issue opens the review dialog with editable feature settings and a generated prompt containing canonical issue metadata.
+expect:Fix issue #635 · issue-fixer-demo · github.com/eldridgerdev/agent-mainframe
+expect:Feature name
+expect:Fix GitHub issue #635 in repository github.com/eldridgerdev/agent-mainframe.
+expect:Issue number: #635
+expect:Labels: documentation
+shot:issue-feature-setup
+
+key:Escape
+wait:300
+note:Cancelling setup returns to the same issue list through the non-committing path.
+expect:GitHub issues · github.com/eldridgerdev/agent-mainframe
+expect:#635
+expect_not:Fix issue #635
+shot:setup-cancelled
+
+key:Escape
+wait:300
+note:Closing the browser returns to the unchanged project dashboard with no feature added.
+expect:issue-fixer-demo
+expect:(press n to add a feature)
+expect_not:GitHub issues · github.com/eldridgerdev/agent-mainframe
+shot:dashboard-after-cancel

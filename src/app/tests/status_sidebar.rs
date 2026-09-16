@@ -1222,6 +1222,7 @@ fn store_with_single_agent_session(
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1376,6 +1377,7 @@ fn sync_session_status_shows_agent_token_usage() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1730,6 +1732,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1864,6 +1867,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1978,6 +1982,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -2075,6 +2080,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),

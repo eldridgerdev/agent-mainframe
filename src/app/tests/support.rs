@@ -39,6 +39,7 @@ pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -88,6 +89,7 @@ pub(super) fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectSt
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -162,6 +164,7 @@ pub(super) fn store_with_worktree_agent(
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -232,6 +235,7 @@ pub(super) fn store_with_custom_session(
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -300,6 +304,7 @@ pub(super) fn store_with_codex_session(
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),

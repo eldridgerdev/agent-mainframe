@@ -17,6 +17,35 @@ fn pr_review_selected(app: &App) -> usize {
 }
 
 #[test]
+fn github_repository_resolution_uses_the_selected_project_repo() {
+    let repo = TempDir::new().unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:Acme/Widget.git"])
+            .current_dir(repo.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let repository = app.github_repository_for_project(0).unwrap();
+    assert_eq!(repository.canonical(), "github.com/acme/widget");
+}
+
+#[test]
 fn pr_review_navigation_clamps_at_both_ends() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 3);

@@ -209,7 +209,7 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
 /// created_at, last_accessed, ready, triage_source, selected_plan_path,
-/// review_source.
+/// review_source, issue_source.
 type FeatureRow = (
     String,
     String,
@@ -233,6 +233,7 @@ type FeatureRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -241,7 +242,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
                 created_at, last_accessed, ready, triage_source,
-                selected_plan_path, review_source
+                selected_plan_path, review_source, issue_source
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -271,6 +272,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(19)?,
                 row.get(20)?,
                 row.get(21)?,
+                row.get(22)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -299,6 +301,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         triage_source_json,
         selected_plan_path,
         review_source_json,
+        issue_source_json,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -335,6 +338,9 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             // Same degradation rule as `triage_source`: a malformed blob reads
             // as "not a companion review feature" rather than failing the load.
             review_source: review_source_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
+            issue_source: issue_source_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
         });
@@ -467,9 +473,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
                     created_at, last_accessed, ready, sort_order, triage_source,
-                    selected_plan_path, review_source
+                    selected_plan_path, review_source, issue_source
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25
                 )",
                 params![
                     feature.id,
@@ -503,6 +509,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .map(|path| path.to_string_lossy()),
                     feature
                         .review_source
+                        .as_ref()
+                        .and_then(|link| serde_json::to_string(link).ok()),
+                    feature
+                        .issue_source
                         .as_ref()
                         .and_then(|link| serde_json::to_string(link).ok()),
                 ],
@@ -677,6 +687,13 @@ mod tests {
                 target_branch: "feature/my-feature".to_string(),
                 base_sha: "def456".to_string(),
             }),
+            issue_source: Some(crate::project::IssueSource {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widget".to_string(),
+                number: 73,
+                comment_status: crate::project::IssueCommentStatus::Posted,
+            }),
         };
 
         let project = Project {
@@ -734,6 +751,17 @@ mod tests {
                 base_sha: "def456".to_string(),
             }),
             "the companion review feature's source link must survive a save/load round trip"
+        );
+        assert_eq!(
+            lf.issue_source,
+            Some(crate::project::IssueSource {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widget".to_string(),
+                number: 73,
+                comment_status: crate::project::IssueCommentStatus::Posted,
+            }),
+            "the source issue link must survive without disturbing other associations"
         );
 
         assert_eq!(lf.sessions.len(), 1);
@@ -848,6 +876,7 @@ mod tests {
                     selected_plan_path: None,
                     triage_source: None,
                     review_source: None,
+                    issue_source: None,
                 },
                 Feature {
                     id: "feat-skip".to_string(),
@@ -875,6 +904,7 @@ mod tests {
                     selected_plan_path: None,
                     triage_source: None,
                     review_source: None,
+                    issue_source: None,
                 },
             ],
             created_at: Utc::now(),

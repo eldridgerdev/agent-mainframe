@@ -16,9 +16,12 @@ mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
+pub(crate) mod feature_setup;
 pub(crate) mod fix_cost;
+pub(crate) mod github_workflow;
 mod handoff;
 mod hooks;
+pub(crate) mod issue_fixer;
 pub(crate) mod learning;
 mod navigation;
 mod notifications;
@@ -96,6 +99,8 @@ pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
 pub(crate) use diff::context_level_label;
+pub use feature_setup::{FeatureSetupRow, FeatureSetupState};
+pub use issue_fixer::{IssueBrowserState, IssueBrowserStatus};
 pub(crate) use resource_gate::{StartIntent, Started};
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
@@ -987,6 +992,9 @@ pub struct App {
     /// a stale negative answer.
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     pub(crate) pr_review_work: pr_review::runtime::PrReviewWork,
+    /// Background GitHub issue-page request and its cancellation boundary.
+    pub(crate) issue_work: issue_fixer::IssueWork,
+    pub(crate) issue_comment_work: issue_fixer::IssueCommentWork,
     /// Receiver for the background "all prompts" scan (leader-key latest-prompt
     /// menu). Reading and parsing every Claude/Codex/opencode transcript file
     /// for a session can be slow, so it runs off the UI thread; see
@@ -2456,6 +2464,8 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            issue_work: issue_fixer::IssueWork::default(),
+            issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,
@@ -2579,6 +2589,7 @@ impl App {
             }
         }
         crate::highlight::reload_runtime_state();
+        app.queue_recoverable_issue_comments();
 
         Ok(app)
     }
@@ -2707,6 +2718,8 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            issue_work: issue_fixer::IssueWork::default(),
+            issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
             plan_interview_synthesis_bg: None,

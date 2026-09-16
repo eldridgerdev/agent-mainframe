@@ -1,8 +1,14 @@
 use crate::editor::TextEditor;
-use crate::project::{AgentKind, VibeMode};
+use crate::project::AgentKind;
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Compatibility names retained for PR Triage callers while the compact
+/// setup state is owned by the shared feature-setup boundary.
+pub(crate) use crate::app::feature_setup::{
+    FeatureSetupRow as TriageSetupRow, FeatureSetupState as TriageFeatureSetupState,
+};
 
 /// Transient state while a PR's comments are being fetched off the UI thread.
 #[derive(Debug, Clone)]
@@ -623,115 +629,6 @@ pub struct HarnessPickState {
     /// its second step accepting an optional session name. An empty name means
     /// the backwards-compatible `PR Triage` label.
     pub session_name: Option<String>,
-}
-
-/// One editable row of the compact triage-feature setup overlay
-/// ([`TriageFeatureSetupState`]). Deliberately much smaller than the full
-/// feature-creation wizard: only the settings that change how the *triage*
-/// agent behaves, plus the branch it lands on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriageSetupRow {
-    /// Apply a configured feature preset (or "Manual", which changes nothing).
-    Preset,
-    /// Which agent harness the triage feature runs.
-    Harness,
-    /// Vibe mode — the setting the whole feature exists for: triaging review
-    /// comments in, say, Vibeless while the source feature runs SuperVibe.
-    Mode,
-    /// Review mode (developer notes on every change).
-    Review,
-    /// Chrome/browser automation.
-    Chrome,
-    /// The companion branch name. Pre-filled and editable.
-    Branch,
-}
-
-impl TriageSetupRow {
-    pub const ALL: [TriageSetupRow; 6] = [
-        TriageSetupRow::Preset,
-        TriageSetupRow::Harness,
-        TriageSetupRow::Mode,
-        TriageSetupRow::Review,
-        TriageSetupRow::Chrome,
-        TriageSetupRow::Branch,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TriageSetupRow::Preset => "Preset",
-            TriageSetupRow::Harness => "Harness",
-            TriageSetupRow::Mode => "Vibe mode",
-            TriageSetupRow::Review => "Review mode",
-            TriageSetupRow::Chrome => "Chrome",
-            TriageSetupRow::Branch => "Branch",
-        }
-    }
-}
-
-/// The compact feature-creation flow shown when the user picks `New feature…`
-/// as the fix target: a single settings list (no multi-step wizard) that
-/// creates an isolated, worktree-backed companion feature for this PR's
-/// triage work.
-///
-/// Plan mode is deliberately absent — it defers the launch into a planning
-/// interview, which makes no sense for a feature whose whole job is to apply
-/// review comments that already say what to do.
-#[derive(Debug, Clone)]
-pub struct TriageFeatureSetupState {
-    /// Presets available for this repo. Index 0 of the *choice* is "Manual"
-    /// (no preset); `presets[i - 1]` for any higher index.
-    pub presets: Vec<crate::extension::FeaturePreset>,
-    pub preset_index: usize,
-    /// Harnesses allowed for this repo.
-    pub agents: Vec<AgentKind>,
-    pub agent_index: usize,
-    pub mode: VibeMode,
-    pub review: bool,
-    pub enable_chrome: bool,
-    /// Companion branch name — deliberately *not* the PR's branch, which git
-    /// can't check out in a second worktree.
-    pub branch: String,
-    /// Focused row.
-    pub row: usize,
-    /// Inline validation/creation error (e.g. a duplicate feature name), shown
-    /// in the overlay so the user can correct it without losing the pane.
-    pub error: Option<String>,
-    /// True when the combined-batch flow (`B`) opened this, so the
-    /// continuation after creation reopens the batch dialog rather than the
-    /// single-comment one — mirroring `PrReviewState::pending_batch`.
-    pub pending_batch: bool,
-}
-
-impl TriageFeatureSetupState {
-    /// The chosen preset, or `None` for "Manual".
-    pub fn selected_preset(&self) -> Option<&crate::extension::FeaturePreset> {
-        self.preset_index
-            .checked_sub(1)
-            .and_then(|i| self.presets.get(i))
-    }
-
-    /// Display text for the preset row.
-    pub fn preset_label(&self) -> String {
-        match self.selected_preset() {
-            Some(preset) => preset.name.clone(),
-            None => "Manual".to_string(),
-        }
-    }
-
-    /// The focused row, or `Branch` if `row` somehow ran past the list.
-    pub fn focused_row(&self) -> TriageSetupRow {
-        TriageSetupRow::ALL
-            .get(self.row)
-            .copied()
-            .unwrap_or(TriageSetupRow::Branch)
-    }
-
-    pub fn agent(&self) -> AgentKind {
-        self.agents
-            .get(self.agent_index)
-            .cloned()
-            .unwrap_or_default()
-    }
 }
 
 /// How the companion triage feature's commits get back onto the PR.

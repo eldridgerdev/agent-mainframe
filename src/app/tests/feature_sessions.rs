@@ -528,6 +528,8 @@ fn app_in_creating_feature_mode(
         project_name: project_name.to_string(),
         project_repo,
         todo_origin: None,
+        issue_source: None,
+        feature_name: None,
         branch: branch.to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -986,6 +988,8 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         project_name: "my-project".to_string(),
         project_repo: repo.path().to_path_buf(),
         todo_origin: None,
+        issue_source: None,
+        feature_name: None,
         branch: "coached".to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -1020,6 +1024,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
 
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".to_string(),
+        feature_name: None,
         branch: "coached".to_string(),
         workdir: workdir.clone(),
         is_worktree: true,
@@ -1036,6 +1041,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
 
@@ -1096,6 +1102,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let store = ProjectStore {
         version: 4,
@@ -1274,6 +1281,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
 
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".to_string(),
+        feature_name: None,
         branch: "diffy".to_string(),
         workdir: workdir.clone(),
         is_worktree: true,
@@ -1290,6 +1298,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
 
@@ -1340,6 +1349,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
 
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".to_string(),
+        feature_name: None,
         branch: "diffy-opencode".to_string(),
         workdir: workdir.clone(),
         is_worktree: true,
@@ -1356,6 +1366,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
 
@@ -1694,6 +1705,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -1811,6 +1823,8 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         project_name: "automation-project".to_string(),
         project_repo: repo.path().to_path_buf(),
         todo_origin: None,
+        issue_source: None,
+        feature_name: None,
         branch: "feature-1".to_string(),
         branch_error: None,
         allowed_agents: AgentKind::ALL.to_vec(),
@@ -2198,6 +2212,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -2569,6 +2584,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),

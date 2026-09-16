@@ -1900,55 +1900,7 @@ fn draw_triage_feature_setup(
         chunks[0],
     );
 
-    let value_for = |row: TriageSetupRow| -> String {
-        match row {
-            TriageSetupRow::Preset => setup.preset_label(),
-            TriageSetupRow::Harness => setup.agent().display_name().to_string(),
-            TriageSetupRow::Mode => format!(
-                "{} — {}",
-                setup.mode.display_name(),
-                setup.mode.description()
-            ),
-            TriageSetupRow::Review => if setup.review { "on" } else { "off" }.to_string(),
-            TriageSetupRow::Chrome => if setup.enable_chrome { "on" } else { "off" }.to_string(),
-            TriageSetupRow::Branch => setup.branch.clone(),
-        }
-    };
-
-    let lines: Vec<Line> = TriageSetupRow::ALL
-        .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            let is_selected = i == setup.row;
-            let marker = if is_selected { ">" } else { " " };
-            let value_style = if is_selected {
-                Style::default()
-                    .fg(theme.text.to_color())
-                    .bg(theme.effective_selection_bg())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text.to_color())
-            };
-            let mut value = value_for(*row);
-            // A visible caret makes the branch row read as a text field rather
-            // than one more cyclable value.
-            if is_selected && *row == TriageSetupRow::Branch {
-                value.push('▏');
-            }
-            Line::from(vec![
-                Span::styled(
-                    format!("  {marker} "),
-                    Style::default().fg(theme.warning.to_color()),
-                ),
-                Span::styled(
-                    format!("{:<13}", row.label()),
-                    Style::default().fg(theme.text_muted.to_color()),
-                ),
-                Span::styled(value, value_style),
-            ])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines), chunks[1]);
+    super::feature_setup::draw_rows(frame, chunks[1], setup, theme);
 
     if let Some(error) = &setup.error {
         frame.render_widget(

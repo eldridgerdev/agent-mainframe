@@ -416,6 +416,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(theme.text_muted.to_color()),
                         ));
                     }
+                    if let Some(source) = feature.issue_source.as_ref() {
+                        line_spans.push(Span::styled(
+                            format!(" [{}#{}]", source.canonical_repository(), source.number),
+                            Style::default().fg(theme.info.to_color()),
+                        ));
+                    }
                     if let Some(pr) = app.active_pr_for_feature(&feature.id) {
                         // A background AI Review outlives the pane it was
                         // started from, so mirror the in-session PR badge's
@@ -867,6 +873,15 @@ mod tests {
         active_pr: Option<crate::app::ActivePrStatus>,
         configure: impl FnOnce(&mut App),
     ) -> String {
+        render_feature_row_configured_at_width(sessions, active_pr, 140, configure)
+    }
+
+    fn render_feature_row_configured_at_width(
+        sessions: Vec<FeatureSession>,
+        active_pr: Option<crate::app::ActivePrStatus>,
+        width: u16,
+        configure: impl FnOnce(&mut App),
+    ) -> String {
         let now = Utc::now();
         let feature = Feature {
             id: "feat-1".to_string(),
@@ -894,6 +909,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let store = ProjectStore {
             version: 5,
@@ -923,7 +939,7 @@ mod tests {
         }
         configure(&mut app);
 
-        let backend = TestBackend::new(140, 8);
+        let backend = TestBackend::new(width, 8);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| super::draw(frame, &mut app, frame.area()))
@@ -996,6 +1012,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let store = ProjectStore {
             version: 5,
@@ -1179,6 +1196,25 @@ mod tests {
 
         assert!(rendered.contains("usage-feat"));
         assert!(!rendered.contains("[usage "));
+        assert!(!rendered.contains("github.com/"));
+    }
+
+    #[test]
+    fn feature_row_shows_issue_source_and_remains_safe_when_narrow() {
+        let configure = |app: &mut App| {
+            app.store.projects[0].features[0].issue_source = Some(crate::project::IssueSource {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widget".to_string(),
+                number: 42,
+                comment_status: crate::project::IssueCommentStatus::Posted,
+            });
+        };
+        let rendered = render_feature_row_configured_at_width(vec![], None, 140, configure);
+        assert!(rendered.contains("[github.com/acme/widget#42]"));
+
+        let narrow = render_feature_row_configured_at_width(vec![], None, 24, configure);
+        assert!(narrow.contains("usage-feat"));
     }
 
     #[test]
@@ -1284,6 +1320,7 @@ mod tests {
             app.paused_plan_interview = Some(crate::app::PlanInterviewState::for_feature_creation(
                 crate::app::PreparedFeatureLaunch {
                     project_name: "usage-project".into(),
+                    feature_name: None,
                     branch: "planned-feature".into(),
                     workdir: PathBuf::from("/tmp/planned-feature"),
                     is_worktree: true,
@@ -1300,6 +1337,7 @@ mod tests {
                     hook_succeeded: None,
                     startup_prompt: None,
                     todo_origin: None,
+                    issue_source: None,
                 },
                 Vec::new(),
             ));

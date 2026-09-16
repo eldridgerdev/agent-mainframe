@@ -77,6 +77,7 @@ pub(crate) struct AgentSidebarData {
     /// session, so the header affordance is shown only when this is true.
     pub active_todo_affordance: bool,
     pub summary_text: String,
+    pub issue_source_text: Option<String>,
     pub pr_triage_text: Option<String>,
     pub plan_text: String,
     pub context_snapshot: Option<SessionContextSnapshot>,
@@ -600,6 +601,7 @@ fn draw_agent_sidebar(
         active_todos_text: None,
         active_todo_affordance: false,
         summary_text: String::new(),
+        issue_source_text: None,
         pr_triage_text: None,
         plan_text: String::new(),
         context_snapshot: None,
@@ -729,6 +731,23 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
             "Plan",
             data.plan_text.clone(),
             Constraint::Length(sidebar_section_height(&data.plan_text, section_width, 1, 2)),
+        ));
+    }
+
+    if let Some(issue_source_text) = data
+        .issue_source_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        sections.push(SidebarSection::new(
+            "Issue",
+            issue_source_text.to_string(),
+            Constraint::Length(sidebar_section_height(
+                issue_source_text,
+                section_width,
+                3,
+                5,
+            )),
         ));
     }
 
@@ -1530,6 +1549,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1540,6 +1560,15 @@ mod tests {
                 .iter()
                 .all(|section| section.title != "Active TODO")
         );
+
+        data.issue_source_text =
+            Some("Repository: github.com/acme/widget\nIssue: #42\nComment: Posted".to_string());
+        let issue = sidebar_sections(&data, 10)
+            .into_iter()
+            .find(|section| section.title == "Issue")
+            .expect("linked issues render even in a narrow sidebar");
+        assert!(issue.body.contains("github.com/acme/widget"));
+        assert!(issue.body.contains("Issue: #42"));
 
         data.active_todos_text = Some("Ship it\nState: completed".to_string());
         let active = sidebar_sections(&data, 30)
@@ -1562,6 +1591,7 @@ mod tests {
             active_todos_text: Some(format!("{}\nState: open", "word ".repeat(60).trim())),
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1644,6 +1674,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1672,6 +1703,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: AMF_PLAN.md".into(),
             context_snapshot: None,
@@ -1703,6 +1735,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: Some("1 open PR".into()),
             plan_text: "Current: AMF_PLAN.md".into(),
             context_snapshot: None,
@@ -1737,6 +1770,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1763,6 +1797,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: docs/accepted.md".into(),
             context_snapshot: None,
@@ -1791,6 +1826,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1831,6 +1867,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1870,6 +1907,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1896,6 +1934,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1932,6 +1971,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1984,6 +2024,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2034,6 +2075,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
             plan_text: String::new(),
             context_snapshot: None,
@@ -2084,6 +2126,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2130,6 +2173,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2178,6 +2222,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2306,6 +2351,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2357,6 +2403,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2412,6 +2459,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Small summary.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2460,6 +2508,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2508,6 +2557,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2556,6 +2606,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,

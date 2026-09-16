@@ -130,6 +130,20 @@ fn pr_triage_sidebar_text(app: &App, feature: &Feature) -> Option<String> {
     Some(format!("PR: #{} {}", pr.number, pr.state.label()))
 }
 
+fn issue_source_sidebar_text(feature: &Feature) -> Option<String> {
+    let source = feature.issue_source.as_ref()?;
+    let comment = match &source.comment_status {
+        crate::project::IssueCommentStatus::Pending => "Pending",
+        crate::project::IssueCommentStatus::Posted => "Posted",
+        crate::project::IssueCommentStatus::Failed(_) => "Failed",
+    };
+    Some(format!(
+        "Repository: {}\nIssue: #{}\nComment: {comment}",
+        source.canonical_repository(),
+        source.number
+    ))
+}
+
 /// Reads the sidebar's plan status line from the background-loaded cache
 /// (`App::sidebar_effective_plan_cache`) rather than resolving it here.
 /// Resolution touches the filesystem (`is_file`, and `canonicalize` for a
@@ -333,6 +347,7 @@ fn build_opencode_sidebar_data(
         active_todos_text,
         active_todo_affordance,
         summary_text,
+        issue_source_text: issue_source_sidebar_text(feature),
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
         context_snapshot,
@@ -388,6 +403,7 @@ fn build_claude_sidebar_data(
         active_todos_text,
         active_todo_affordance,
         summary_text,
+        issue_source_text: issue_source_sidebar_text(feature),
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
         context_snapshot,
@@ -452,6 +468,7 @@ fn build_codex_sidebar_data(
         active_todos_text,
         active_todo_affordance,
         summary_text,
+        issue_source_text: issue_source_sidebar_text(feature),
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
         context_snapshot,
@@ -498,6 +515,7 @@ fn build_pi_sidebar_data(
         active_todos_text,
         active_todo_affordance,
         summary_text,
+        issue_source_text: issue_source_sidebar_text(feature),
         pr_triage_text: pr_triage_sidebar_text(app, feature),
         plan_text: plan_sidebar_text(app, feature),
         context_snapshot,
@@ -1182,6 +1200,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Block::default().style(Style::default().bg(app.theme.effective_bg())),
         frame.area(),
     );
+
+    match &app.mode {
+        AppMode::IssueBrowser(state) => {
+            super::dialogs::draw_issue_browser(frame, state, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme);
+            return;
+        }
+        AppMode::IssueSetup(state) => {
+            super::dialogs::draw_issue_setup(frame, state, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme);
+            return;
+        }
+        AppMode::IssueDuplicateWarning(state) => {
+            super::dialogs::draw_issue_duplicate_warning(frame, state, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme);
+            return;
+        }
+        _ => {}
+    }
 
     // The PR-review family of full-screen modes (loading/picker/pane/running
     // views) each `return` before reaching the shared `draw_toasts` call near
@@ -2250,6 +2287,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         App::new_for_test(
             ProjectStore {
@@ -2531,6 +2569,28 @@ mod tests {
     }
 
     #[test]
+    fn issue_source_is_included_in_agent_sidebar_data() {
+        let mut app = sidebar_usage_app(SessionKind::Codex);
+        app.store.projects[0].features[0].issue_source = Some(crate::project::IssueSource {
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repository: "widget".to_string(),
+            number: 42,
+            comment_status: crate::project::IssueCommentStatus::Posted,
+        });
+
+        let sidebar = build_agent_sidebar_data(
+            &app,
+            &sidebar_usage_view(SessionKind::Codex, "agent-1", "Agent 1"),
+        )
+        .unwrap();
+        assert_eq!(
+            sidebar.issue_source_text.as_deref(),
+            Some("Repository: github.com/acme/widget\nIssue: #42\nComment: Posted")
+        );
+    }
+
+    #[test]
     fn plan_sidebar_label_reflects_the_background_loaded_effective_plan() {
         // The effective plan is resolved off the render thread by the
         // sidebar-load pipeline (see `App::sidebar_effective_plan_cache`),
@@ -2590,6 +2650,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         feature.add_session_named(SessionKind::Claude, "Claude 1".to_string());
         let project = Project {
@@ -2625,6 +2686,26 @@ mod tests {
         );
 
         assert!(pr_triage_sidebar_text(&app, &feature).is_none());
+    }
+
+    #[test]
+    fn issue_sidebar_text_shows_canonical_repository_and_number_only_when_linked() {
+        let (_, mut feature) = store_with_claude_feature();
+        assert!(issue_source_sidebar_text(&feature).is_none());
+
+        feature.issue_source = Some(crate::project::IssueSource {
+            host: "github.example.com".to_string(),
+            owner: "acme".to_string(),
+            repository: "widget".to_string(),
+            number: 42,
+            comment_status: crate::project::IssueCommentStatus::Failed(
+                "request timed out".to_string(),
+            ),
+        });
+        assert_eq!(
+            issue_source_sidebar_text(&feature).as_deref(),
+            Some("Repository: github.example.com/acme/widget\nIssue: #42\nComment: Failed")
+        );
     }
 
     #[test]
@@ -3181,6 +3262,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3289,6 +3371,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3400,6 +3483,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3511,6 +3595,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let project = Project {
             id: "proj-1".into(),
@@ -3607,6 +3692,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         };
         let project = Project {
             id: "proj-1".into(),

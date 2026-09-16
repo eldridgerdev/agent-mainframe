@@ -6,7 +6,7 @@ use crate::app::{
     App, AppMode, PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState,
 };
 use crate::github::{
-    GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
+    GhCli, GithubTransport, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
 };
 use anyhow::Result;
 use chrono::Local;
@@ -460,7 +460,7 @@ impl App {
     /// list` fails outright, falls back to the manual number prompt so the user
     /// is never stuck. Zero agent tokens.
     pub fn open_pr_picker(&mut self, workdir: PathBuf, seed_number: Option<u32>) {
-        match GhCli::list_prs(&workdir, false) {
+        match GithubTransport::list_prs(&GhCli, &workdir, false) {
             Ok(entries) => {
                 let selected = seed_number
                     .and_then(|n| entries.iter().position(|e| e.number == n))
@@ -492,7 +492,7 @@ impl App {
         if let Some(cached) = &self.gh_current_user {
             return cached.clone();
         }
-        let resolved = match GhCli::current_user(workdir) {
+        let resolved = match GithubTransport::current_user(&GhCli, workdir) {
             Ok(login) => Some(login),
             Err(e) => {
                 self.log_warn("pr_review", format!("could not resolve gh user: {e}"));
@@ -542,7 +542,7 @@ impl App {
             ),
             _ => return,
         };
-        match GhCli::list_prs(&workdir, include_closed) {
+        match GithubTransport::list_prs(&GhCli, &workdir, include_closed) {
             Ok(entries) => {
                 let selected = current
                     .and_then(|n| entries.iter().position(|e| e.number == n))

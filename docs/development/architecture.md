@@ -103,12 +103,18 @@ PR triage/investigations/terminal state and PR/AI review caches. DB code knows
 project/domain types and uses WorktreeManager to resolve legacy stores.
 
 `src/traits.rs` provides mockable TmuxOps and WorktreeOps, implemented by
-`tmux.rs` and `worktree.rs`. GitHub calls live in `github.rs`; headless execution
-in `headless.rs`; harness integration supports Claude Code, Codex, OpenCode and
-Pi. IPC, filesystem watching, tmux observation, editors and resource inspection
-have dedicated modules. Injection is partial: App workflows still call concrete
-managers and filesystem APIs. Preserve those boundaries and process lifetimes;
-introduce an adapter only where it establishes a concrete dependency boundary.
+`tmux.rs` and `worktree.rs`. GitHub calls live in `github.rs`; its
+`GithubTransport` trait is the shared boundary for GitHub-backed workflows,
+with `GhCli` as the production adapter. PR Triage keeps its existing CLI
+behavior while issue workflows can reuse authentication, repository-context,
+and list transport. Compact companion-feature setup state and row rendering
+live in `app/feature_setup.rs` and `ui/dialogs/feature_setup.rs`, shared by PR
+Triage and Final Review. Headless execution is in `headless.rs`; harness
+integration supports Claude Code, Codex, OpenCode and Pi. IPC, filesystem
+watching, tmux observation, editors and resource inspection have dedicated
+modules. Injection is partial: App workflows still call concrete managers and
+filesystem APIs. Preserve those boundaries and process lifetimes; introduce an
+adapter only where it establishes a concrete dependency boundary.
 
 ## Tests
 

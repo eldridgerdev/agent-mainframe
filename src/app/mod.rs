@@ -1044,6 +1044,9 @@ pub struct App {
     /// `review_memory_compact_bg` is `Some`; both are cleared together once
     /// `Done` is processed.
     pub review_memory_compact_pending: Option<CompactRunState>,
+    /// Receiver for the background "summarize with AI" run started from the
+    /// memory-add dialog (`s`). See `app::pr_review::pr_review_start_memory_ai_summary`.
+    pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
@@ -2473,6 +2476,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
+            memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
@@ -2726,6 +2730,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
+            memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,

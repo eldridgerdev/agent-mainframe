@@ -1,12 +1,14 @@
-use super::{estimate_tokens, strip_bot_boilerplate};
+use super::{PrComment, estimate_tokens, strip_bot_boilerplate};
 use crate::app::review_memory;
 use crate::app::review_memory::MemoryScope;
 use crate::app::{
     AgentKind, App, AppMode, BootstrapPickState, BootstrapRunState, CompactConfirmState,
-    CompactReviewState, CompactRunState, MemoryAddState, ReviewAction,
+    CompactReviewState, CompactRunState, CompactRunView, MemoryAddState,
+    MemoryAiSummaryHarnessPick, MemoryAiSummaryState, ReviewAction,
+    ReviewMemoryCompactConfirmState,
 };
 use crate::editor::TextEditor;
-use crate::github::{GhCli, PrListEntry, Review, ReviewComment};
+use crate::github::{GhCli, PrListEntry, PrRef, Review, ReviewComment};
 use crate::headless::HeadlessRunner;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -25,6 +27,59 @@ pub(crate) const MEMORY_CATEGORIES: &[&str] = &[
     "API design",
     "Style",
 ];
+
+/// Ceiling on how much of a comment's text or diff hunk goes into the
+/// `review_memory.ai_summary` prompt. Generous enough for a normal review
+/// comment, bounded so a pasted log dump or giant hunk can't blow the prompt.
+const AI_SUMMARY_MAX_CHARS: usize = 4000;
+
+/// Truncate `s` to `max` characters, appending an explicit `[truncated]`
+/// marker (on its own line) when cut, so an oversized comment or diff hunk
+/// can't silently blow the `review_memory.ai_summary` prompt budget.
+fn truncate_for_prompt(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max).collect();
+    format!("{}\n[truncated]", kept.trim_end())
+}
+
+/// Assemble the `{{finding_context}}` value for `review_memory.ai_summary`:
+/// the comment's bot-stripped text, its file/line hint, the bounded diff hunk
+/// when there is one, and the PR this came from. Carries the same anchoring
+/// information [`PrComment::memory_finding_seed`] appends inline, since the
+/// generated summary becomes the entire stored memory item — the plan's "hard
+/// requirement on the template" decision.
+pub(super) fn ai_summary_context(comment: &PrComment, pr: &PrRef) -> String {
+    let body = truncate_for_prompt(comment.agent_text().trim(), AI_SUMMARY_MAX_CHARS);
+    let file_hint = match &comment.path {
+        Some(path) if !comment.file_level => match comment.line {
+            Some(line) => format!("{path}:{line}"),
+            None => path.clone(),
+        },
+        Some(path) => path.clone(),
+        None => "(general — no file)".to_string(),
+    };
+    let mut out = format!("File: {file_hint}\n\nComment:\n{body}");
+    if let Some(hunk) = comment.prompt_hunk() {
+        out.push_str(&format!(
+            "\n\nDiff hunk:\n{}",
+            truncate_for_prompt(&hunk, AI_SUMMARY_MAX_CHARS)
+        ));
+    }
+    out.push_str(&format!("\n\nPull request: #{} ({})", pr.number, pr.url));
+    out
+}
+
+/// A finished (or failed) `review_memory.ai_summary` run, delivered back to
+/// the UI thread. Carries the seed comment id so a result that arrives after
+/// the dialog moved on — closed, or reopened on a different comment — is
+/// recognized as stale rather than misapplied; see
+/// [`App::poll_memory_ai_summary_bg`].
+pub struct MemoryAiSummaryDone {
+    pub comment_id: u64,
+    pub result: Result<String, String>,
+}
 
 /// Practical ceiling for the "All" lookback depth. Not truly unbounded — a
 /// repo's full closed-PR history could be thousands deep, and both the `gh`
@@ -376,6 +431,7 @@ impl App {
                 scope: MemoryScope::Project,
                 editor: TextEditor::new(seed),
                 editing: false,
+                ai_summary: None,
             });
         }
     }
@@ -440,6 +496,288 @@ impl App {
         match &self.mode {
             AppMode::PrReview(state) => state.memory_add.as_ref().map(|m| m.editing),
             _ => None,
+        }
+    }
+
+    /// Open the per-use harness picker for "summarize with AI" (`s` in the
+    /// memory-add dialog's confirm view), or skip straight to generating when
+    /// only one harness is installed. Mirrors
+    /// [`App::pr_review_start_investigation`]'s per-run picker rather than
+    /// Learning Mode's session-persistent one — the harness picked here
+    /// applies to this one summary only.
+    pub fn pr_review_open_memory_ai_summary_pick(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrReview(state) => match &state.memory_add {
+                Some(memory_add) if !memory_add.editing => state.workdir.clone(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let mut harnesses = self.allowed_agents_for_project_path(&workdir);
+        if harnesses.is_empty() {
+            harnesses = self.store.available_harnesses.clone();
+        }
+        if harnesses.is_empty() {
+            self.push_toast_error(
+                "No agent harness available to summarize with — check `amf doctor`",
+            );
+            return;
+        }
+        if harnesses.len() == 1 {
+            self.pr_review_start_memory_ai_summary(harnesses[0].clone());
+            return;
+        }
+        let preferred = self
+            .feature_indices_for_workdir(&workdir)
+            .map(|(pi, _)| self.store.projects[pi].preferred_agent.clone());
+        let selected = preferred
+            .and_then(|p| harnesses.iter().position(|h| *h == p))
+            .unwrap_or(0);
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = Some(MemoryAiSummaryState::PickingHarness(
+                MemoryAiSummaryHarnessPick {
+                    harnesses,
+                    selected,
+                },
+            ));
+        }
+    }
+
+    pub fn pr_review_memory_ai_summary_picking(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state)
+                if matches!(
+                    state.memory_add.as_ref().and_then(|m| m.ai_summary.as_ref()),
+                    Some(MemoryAiSummaryState::PickingHarness(_))
+                )
+        )
+    }
+
+    pub fn pr_review_memory_ai_summary_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+            && let Some(MemoryAiSummaryState::PickingHarness(pick)) = &mut memory_add.ai_summary
+        {
+            let len = pick.harnesses.len();
+            if len == 0 {
+                return;
+            }
+            pick.selected = (pick.selected as isize + delta).rem_euclid(len as isize) as usize;
+        }
+    }
+
+    pub fn pr_review_memory_ai_summary_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = None;
+        }
+    }
+
+    pub fn pr_review_memory_ai_summary_pick_confirm(&mut self) {
+        let harness = match &self.mode {
+            AppMode::PrReview(state) => match state
+                .memory_add
+                .as_ref()
+                .and_then(|m| m.ai_summary.as_ref())
+            {
+                Some(MemoryAiSummaryState::PickingHarness(pick)) => {
+                    pick.harnesses.get(pick.selected).cloned()
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(harness) = harness {
+            self.pr_review_start_memory_ai_summary(harness);
+        }
+    }
+
+    /// Resolve the prompt and gate it (`ReviewMemoryAiSummary`) before
+    /// touching `ai_summary` at all: `ai_summary` only becomes `Generating`
+    /// *after* the gate clears, so a declined pre-call notice restores the
+    /// dialog exactly as it stood before "summarize with AI" was pressed
+    /// (`None`, or a dismissed `PickingHarness`) instead of stuck on
+    /// "Generating" for a run that never started — the same
+    /// gate-before-mode-change ordering as
+    /// [`App::review_memory_compact_confirm_run`]. `harness` is threaded in
+    /// explicitly rather than read back out of `ai_summary` for this reason;
+    /// on the re-run through `precall_confirm`,
+    /// [`crate::app::precall::App::dispatch_precall`] supplies it from the
+    /// stashed [`crate::app::precall::PendingPrecall::harness`].
+    pub(crate) fn pr_review_start_memory_ai_summary(&mut self, harness: AgentKind) {
+        let (workdir, comment_id, comment, pr) = match &self.mode {
+            AppMode::PrReview(state) => {
+                let Some(memory_add) = &state.memory_add else {
+                    return;
+                };
+                let Some(comment) = state
+                    .review
+                    .comments
+                    .iter()
+                    .find(|c| c.id == memory_add.comment_id)
+                else {
+                    return;
+                };
+                (
+                    state.workdir.clone(),
+                    memory_add.comment_id,
+                    comment.clone(),
+                    state.review.pr.clone(),
+                )
+            }
+            _ => return,
+        };
+
+        let repo = self.repo_for_project_path(&workdir);
+        let context = ai_summary_context(&comment, &pr);
+        let prompt = self.resolve_headless_prompt(
+            crate::prompts::PromptId::ReviewMemoryAiSummary,
+            &harness,
+            &repo,
+            &workdir,
+            &crate::prompts::PromptContext::new().with("finding_context", context),
+        );
+        if !self.precall_gate(
+            crate::app::precall::PrecallAction::ReviewMemoryAiSummary,
+            &harness,
+            &prompt,
+        ) {
+            return;
+        }
+
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = Some(MemoryAiSummaryState::Generating {
+                harness: harness.clone(),
+            });
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.memory_ai_summary_bg = Some(rx);
+        let thread_workdir = workdir.clone();
+        std::thread::spawn(move || {
+            let result = HeadlessRunner::run(&harness, &thread_workdir, &prompt, None, true)
+                .map(|text| text.trim().to_string())
+                .map_err(|e| e.to_string());
+            let _ = tx.send(MemoryAiSummaryDone { comment_id, result });
+        });
+    }
+
+    /// Stop watching a generating run (`esc`/`q`): the memory-add dialog
+    /// returns to its ordinary confirm view with the raw text untouched. The
+    /// background thread is not aborted — if it lands later,
+    /// [`App::poll_memory_ai_summary_bg`] finds `ai_summary` no longer
+    /// `Generating` for this comment and drops the result with a toast,
+    /// mirroring [`App::cancel_review_memory_compact`].
+    pub fn pr_review_cancel_watching_memory_ai_summary(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = None;
+        }
+    }
+
+    /// Whether the memory-add dialog is waiting on a run (drives the
+    /// "Generating…" indicator and swallows other keys).
+    pub fn pr_review_memory_ai_summary_generating(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state)
+                if matches!(
+                    state.memory_add.as_ref().and_then(|m| m.ai_summary.as_ref()),
+                    Some(MemoryAiSummaryState::Generating { .. })
+                )
+        )
+    }
+
+    /// The in-dialog error message, when the last run failed.
+    pub fn pr_review_memory_ai_summary_error(&self) -> Option<String> {
+        match &self.mode {
+            AppMode::PrReview(state) => match state.memory_add.as_ref()?.ai_summary.as_ref()? {
+                MemoryAiSummaryState::Failed(message) => Some(message.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Dismiss the inline failure banner, returning to the ordinary confirm
+    /// view with the raw/edited text (never touched by a failed run) intact.
+    pub fn pr_review_dismiss_memory_ai_summary_error(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.ai_summary = None;
+        }
+    }
+
+    /// Drain a finished `review_memory.ai_summary` run. Applied only when the
+    /// dialog is still open on the same comment and still watching
+    /// (`Generating`) — otherwise (closed, moved to a different comment, or
+    /// the user stopped watching) the result is dropped with a toast, the
+    /// same rule [`App::poll_review_memory_compact_bg`] uses for "nowhere
+    /// live to land it." On success the finding editor is overwritten and the
+    /// dialog falls back to its ordinary review/edit confirm view — nothing
+    /// is persisted until the user explicitly confirms the append.
+    pub fn poll_memory_ai_summary_bg(&mut self) -> bool {
+        let Some(rx) = self.memory_ai_summary_bg.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(done) => {
+                self.memory_ai_summary_bg = None;
+                let still_watching = matches!(
+                    &self.mode,
+                    AppMode::PrReview(state)
+                        if state.memory_add.as_ref().is_some_and(|m| {
+                            m.comment_id == done.comment_id
+                                && matches!(m.ai_summary, Some(MemoryAiSummaryState::Generating { .. }))
+                        })
+                );
+                match done.result {
+                    Ok(text) => {
+                        if still_watching {
+                            if let AppMode::PrReview(state) = &mut self.mode
+                                && let Some(memory_add) = &mut state.memory_add
+                            {
+                                memory_add.editor = TextEditor::new(text);
+                                memory_add.editing = false;
+                                memory_add.ai_summary = None;
+                            }
+                            self.push_toast_success("AI summary ready — review before saving");
+                        } else {
+                            self.push_toast_info(
+                                "AI summary finished after you navigated away — it was not applied",
+                            );
+                        }
+                    }
+                    Err(message) => {
+                        if still_watching {
+                            if let AppMode::PrReview(state) = &mut self.mode
+                                && let Some(memory_add) = &mut state.memory_add
+                            {
+                                memory_add.ai_summary = Some(MemoryAiSummaryState::Failed(message));
+                            }
+                        } else {
+                            self.log_error(
+                                "pr_review",
+                                format!("memory AI summary failed: {message}"),
+                            );
+                        }
+                    }
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.memory_ai_summary_bg = None;
+                false
+            }
         }
     }
 
@@ -717,16 +1055,30 @@ impl App {
         }
     }
 
-    /// Open the review-memory compact confirm overlay (`c` in the PR picker):
-    /// a synchronous local file read to show how many findings are currently
-    /// in the doc before spending an agent pass on them (Epic E "prevent
-    /// review-memory rot"). A no-op with a message only when *both* docs are
-    /// missing or empty — there's nothing to compact anywhere. When just one
-    /// has findings the overlay opens on that one, so an empty project doc
-    /// doesn't block reaching a grown global one.
+    /// Open the review-memory compact confirm overlay (`c` in the PR picker,
+    /// PR Triage, or the dashboard leader key): a synchronous local file read
+    /// to show how many findings are currently in the doc before spending an
+    /// agent pass on them (Epic E "prevent review-memory rot"). A no-op with
+    /// a message only when *both* docs are missing or empty — there's
+    /// nothing to compact anywhere. When just one has findings the overlay
+    /// opens on that one, so an empty project doc doesn't block reaching a
+    /// grown global one.
+    ///
+    /// Reachable from several screens (unlike the PR-picker-only bootstrap),
+    /// so the workdir resolution branches per origin and the overlay stashes
+    /// `self.mode` as `prior_mode` to restore verbatim on cancel.
     pub fn open_review_memory_compact_confirm(&mut self) {
         let workdir = match &self.mode {
             AppMode::PrPicker(state) => state.workdir.clone(),
+            AppMode::PrReview(state) => state.workdir.clone(),
+            AppMode::Normal => match self.selected_feature() {
+                Some((_project, feature)) => feature.workdir.clone(),
+                None => {
+                    self.message =
+                        Some("Select a feature to compact its review memory".to_string());
+                    return;
+                }
+            },
             _ => return,
         };
         let repo = self.repo_for_project_path(&workdir);
@@ -741,12 +1093,16 @@ impl App {
             self.message = Some("Review memory is empty — nothing to compact".into());
             return;
         };
-        if let AppMode::PrPicker(state) = &mut self.mode {
-            state.compact_confirm = Some(CompactConfirmState {
-                existing_findings,
-                scope,
-            });
-        }
+        let prior_mode = Box::new(std::mem::replace(&mut self.mode, AppMode::Normal));
+        self.mode =
+            AppMode::ReviewMemoryCompactConfirm(Box::new(ReviewMemoryCompactConfirmState {
+                workdir,
+                confirm: CompactConfirmState {
+                    existing_findings,
+                    scope,
+                },
+                prior_mode,
+            }));
     }
 
     /// Toggle which doc the compact pass rewrites: this repo's committed doc,
@@ -755,28 +1111,33 @@ impl App {
     /// doc the user just toggled away from.
     pub fn review_memory_compact_toggle_scope(&mut self) {
         let workdir = match &self.mode {
-            AppMode::PrPicker(state) if state.compact_confirm.is_some() => state.workdir.clone(),
+            AppMode::ReviewMemoryCompactConfirm(state) => state.workdir.clone(),
             _ => return,
         };
         let repo = self.repo_for_project_path(&workdir);
         let paths = self.review_memory_paths(&repo);
-        if let AppMode::PrPicker(state) = &mut self.mode
-            && let Some(confirm) = &mut state.compact_confirm
-        {
-            confirm.scope = confirm.scope.toggled();
-            confirm.existing_findings = count_findings_at(paths.for_scope(confirm.scope));
+        if let AppMode::ReviewMemoryCompactConfirm(state) = &mut self.mode {
+            state.confirm.scope = state.confirm.scope.toggled();
+            state.confirm.existing_findings =
+                count_findings_at(paths.for_scope(state.confirm.scope));
         }
     }
 
-    /// Whether the compact confirm overlay is currently open over the picker.
+    /// Whether the compact confirm overlay is currently open.
     pub fn review_memory_compact_confirming(&self) -> bool {
-        matches!(&self.mode, AppMode::PrPicker(state) if state.compact_confirm.is_some())
+        matches!(&self.mode, AppMode::ReviewMemoryCompactConfirm(_))
     }
 
-    /// Close the overlay without running anything, staying on the PR picker.
+    /// Close the overlay without running anything, restoring whichever
+    /// screen it was opened from.
     pub fn review_memory_compact_confirm_cancel(&mut self) {
-        if let AppMode::PrPicker(state) = &mut self.mode {
-            state.compact_confirm = None;
+        if let AppMode::ReviewMemoryCompactConfirm(_) = &self.mode {
+            let AppMode::ReviewMemoryCompactConfirm(state) =
+                std::mem::replace(&mut self.mode, AppMode::Normal)
+            else {
+                unreachable!("just matched ReviewMemoryCompactConfirm above")
+            };
+            self.mode = *state.prior_mode;
         }
     }
 
@@ -785,17 +1146,19 @@ impl App {
     /// (with a message, staying on the overlay) when the selected doc is
     /// empty — reachable by toggling `g` onto a doc that has no findings, and
     /// not worth an agent pass.
+    ///
+    /// `self.mode` is deliberately left untouched until after `precall_gate`
+    /// clears: a declined pre-call notice restores this exact overlay
+    /// (`prior_mode` and all) rather than stranding the user between the
+    /// overlay and the running screen — same ordering as
+    /// [`App::pr_review_start_memory_ai_summary`].
     pub fn review_memory_compact_confirm_run(&mut self) {
-        let (workdir, scope, empty, mut origin) = match &self.mode {
-            AppMode::PrPicker(state) => match &state.compact_confirm {
-                Some(confirm) => (
-                    state.workdir.clone(),
-                    confirm.scope,
-                    confirm.existing_findings == 0,
-                    state.clone(),
-                ),
-                None => return,
-            },
+        let (workdir, scope, empty) = match &self.mode {
+            AppMode::ReviewMemoryCompactConfirm(state) => (
+                state.workdir.clone(),
+                state.confirm.scope,
+                state.confirm.existing_findings == 0,
+            ),
             _ => return,
         };
         if empty {
@@ -805,7 +1168,6 @@ impl App {
             ));
             return;
         }
-        origin.compact_confirm = None;
 
         let repo = self.repo_for_project_path(&workdir);
         let memory_path = self
@@ -835,6 +1197,20 @@ impl App {
         ) {
             return;
         }
+
+        // The gate cleared: take ownership of the confirm overlay to recover
+        // `prior_mode`, the screen to return to on cancel/finish. `self.mode`
+        // is guaranteed to still be `ReviewMemoryCompactConfirm` here — either
+        // this is the first pass through (never touched above) or this is the
+        // re-dispatch from `precall_confirm`, which restores exactly that
+        // mode before re-invoking this function.
+        let AppMode::ReviewMemoryCompactConfirm(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return;
+        };
+        let prior_mode = state.prior_mode;
+
         let (tx, rx) = std::sync::mpsc::channel();
         self.review_memory_compact_bg = Some(rx);
         let thread_workdir = workdir.clone();
@@ -843,14 +1219,15 @@ impl App {
             run_review_memory_compact(thread_workdir, thread_memory_path, model, template, tx);
         });
 
-        let run_state = CompactRunState {
-            origin,
+        self.review_memory_compact_pending = Some(CompactRunState {
+            origin: prior_mode,
             path: memory_path,
             scope,
+        });
+        self.mode = AppMode::ReviewMemoryCompactRunning(CompactRunView {
+            scope,
             stage: CompactStage::ReadingDoc,
-        };
-        self.review_memory_compact_pending = Some(run_state.clone());
-        self.mode = AppMode::ReviewMemoryCompactRunning(run_state);
+        });
     }
 
     /// Poll the background compact pass. `Compacting` updates the running
@@ -868,8 +1245,8 @@ impl App {
         loop {
             match rx.try_recv() {
                 Ok(CompactProgress::Compacting { token_estimate }) => {
-                    if let AppMode::ReviewMemoryCompactRunning(state) = &mut self.mode {
-                        state.stage = CompactStage::Compacting { token_estimate };
+                    if let AppMode::ReviewMemoryCompactRunning(view) = &mut self.mode {
+                        view.stage = CompactStage::Compacting { token_estimate };
                     }
                     changed = true;
                 }
@@ -883,13 +1260,13 @@ impl App {
                         break;
                     };
                     // Only auto-open the review dialog (or bounce a `None`/error
-                    // back to the picker) if the user is still on the running
-                    // screen. If they cancelled (`esc`) to the picker — or
-                    // navigated anywhere else — nothing was written (unlike the
-                    // bootstrap, which writes as it goes), so there's nowhere
-                    // live to land a full-screen editable proposal without
-                    // yanking the user out of whatever they're doing now; just
-                    // surface that it finished.
+                    // back to the origin) if the user is still on the running
+                    // screen. If they cancelled (`esc`) — or navigated anywhere
+                    // else — nothing was written (unlike the bootstrap, which
+                    // writes as it goes), so there's nowhere live to land a
+                    // full-screen editable proposal without yanking the user
+                    // out of whatever they're doing now; just surface that it
+                    // finished.
                     let still_watching =
                         matches!(&self.mode, AppMode::ReviewMemoryCompactRunning(_));
                     match result {
@@ -924,15 +1301,20 @@ impl App {
                                 pending.scope.label()
                             ));
                             if still_watching {
-                                self.mode = AppMode::PrPicker(pending.origin);
+                                self.mode = *pending.origin;
                             }
                         }
                         Err(e) => {
                             if still_watching {
-                                let mut origin = pending.origin;
-                                origin.error = Some(e.to_string());
+                                // Preserve the nice inline-error-in-picker UX
+                                // when that's where this run came from; other
+                                // origins fall back to the toast alone.
+                                let mut origin = *pending.origin;
+                                if let AppMode::PrPicker(picker) = &mut origin {
+                                    picker.error = Some(e.to_string());
+                                }
                                 self.show_error(e);
-                                self.mode = AppMode::PrPicker(origin);
+                                self.mode = origin;
                             } else {
                                 self.show_error(e);
                             }
@@ -944,9 +1326,10 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.review_memory_compact_bg = None;
-                    self.review_memory_compact_pending = None;
-                    if let AppMode::ReviewMemoryCompactRunning(state) = &self.mode {
-                        self.mode = AppMode::PrPicker(state.origin.clone());
+                    if let Some(pending) = self.review_memory_compact_pending.take()
+                        && matches!(self.mode, AppMode::ReviewMemoryCompactRunning(_))
+                    {
+                        self.mode = *pending.origin;
                         self.message = Some("Compact failed unexpectedly".to_string());
                         changed = true;
                     }
@@ -957,14 +1340,24 @@ impl App {
         changed
     }
 
-    /// Cancel the running screen (`esc`/`q`): return to the PR picker. The
-    /// background thread isn't aborted — if it finishes later,
-    /// [`App::poll_review_memory_compact_bg`] still notices (it doesn't
-    /// auto-open the review dialog once the user isn't watching the running
-    /// screen anymore, since nothing was written to land it against).
+    /// Cancel the running screen (`esc`/`q`): return to wherever the run was
+    /// started from. The background thread isn't aborted — if it finishes
+    /// later, [`App::poll_review_memory_compact_bg`] still notices (it
+    /// doesn't auto-open the review dialog once the user isn't watching the
+    /// running screen anymore, since nothing was written to land it
+    /// against).
+    ///
+    /// `origin` is swapped out of `review_memory_compact_pending` for a
+    /// harmless placeholder rather than taken outright: the pending state
+    /// must stay `Some` so a `Done` arriving after this cancel still passes
+    /// [`App::poll_review_memory_compact_bg`]'s "invariant" guard and can
+    /// still label the `Ok(None)`/error outcomes — it just never reads the
+    /// placeholder origin, since `still_watching` is false from here on.
     pub fn cancel_review_memory_compact(&mut self) {
-        if let AppMode::ReviewMemoryCompactRunning(state) = &self.mode {
-            self.mode = AppMode::PrPicker(state.origin.clone());
+        if matches!(self.mode, AppMode::ReviewMemoryCompactRunning(_))
+            && let Some(pending) = &mut self.review_memory_compact_pending
+        {
+            self.mode = *std::mem::replace(&mut pending.origin, Box::new(AppMode::Normal));
         }
     }
 
@@ -1062,8 +1455,12 @@ impl App {
             Ok(()) => {
                 let (original, proposed) = (state.original_findings, state.proposed_findings);
                 let scope = state.scope;
-                let origin = state.origin.clone();
-                self.mode = AppMode::PrPicker(origin);
+                let AppMode::ReviewMemoryCompactReview(state) =
+                    std::mem::replace(&mut self.mode, AppMode::Normal)
+                else {
+                    unreachable!("just matched ReviewMemoryCompactReview above")
+                };
+                self.mode = *state.origin;
                 let carried_note = match restored {
                     0 => String::new(),
                     1 => " · kept 1 finding added elsewhere".to_string(),
@@ -1081,11 +1478,16 @@ impl App {
         Ok(())
     }
 
-    /// Discard the proposed replacement without writing, returning to the PR
-    /// picker.
+    /// Discard the proposed replacement without writing, returning to
+    /// wherever the compact pass was started from.
     pub fn pr_review_compact_discard(&mut self) {
-        if let AppMode::ReviewMemoryCompactReview(state) = &self.mode {
-            self.mode = AppMode::PrPicker(state.origin.clone());
+        if let AppMode::ReviewMemoryCompactReview(_) = &self.mode {
+            let AppMode::ReviewMemoryCompactReview(state) =
+                std::mem::replace(&mut self.mode, AppMode::Normal)
+            else {
+                unreachable!("just matched ReviewMemoryCompactReview above")
+            };
+            self.mode = *state.origin;
         }
     }
 }

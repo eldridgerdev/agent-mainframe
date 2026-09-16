@@ -7,7 +7,7 @@ use super::investigation::{
     InvestigationChangedFile, InvestigationFollowUp, InvestigationPromptContext,
     build_investigation_prompt, investigation_failure_message, upsert_investigation_in_memory,
 };
-use super::memory::{bootstrap_pr_text, bootstrap_prompt};
+use super::memory::{ai_summary_context, bootstrap_pr_text, bootstrap_prompt};
 use super::reply::{
     commit_after_fix_request, commit_for_done_reply, commit_touching_file, commit_touching_line,
 };
@@ -1367,6 +1367,62 @@ fn bootstrap_pr_text_strips_bot_boilerplate_and_skips_empty() {
     ];
     let text = bootstrap_pr_text(&comments, &[]);
     assert_eq!(text, "- (a.rs) Real point.");
+}
+
+fn sample_pr_ref(number: u32) -> PrRef {
+    PrRef {
+        number,
+        head_sha: "sha".to_string(),
+        url: format!("https://github.com/o/r/pull/{number}"),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    }
+}
+
+#[test]
+fn ai_summary_context_carries_file_hunk_and_pr_context() {
+    let comment = PrComment {
+        diff_hunk: Some("@@ -1,3 +1,3 @@\n-old\n+new\n".to_string()),
+        body: "Guard this behind the lock.".to_string(),
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(42));
+    assert!(context.contains("File: src/lib.rs:10"));
+    assert!(context.contains("Comment:\nGuard this behind the lock."));
+    assert!(context.contains("Diff hunk:\n@@ -1,3 +1,3 @@"));
+    assert!(context.contains("Pull request: #42 (https://github.com/o/r/pull/42)"));
+}
+
+#[test]
+fn ai_summary_context_file_level_comment_has_no_line_number() {
+    let comment = PrComment {
+        file_level: true,
+        line: None,
+        diff_hunk: None,
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(1));
+    assert!(context.starts_with("File: src/lib.rs\n"));
+    assert!(!context.contains("Diff hunk:"));
+}
+
+#[test]
+fn ai_summary_context_truncates_an_oversized_comment_with_an_explicit_marker() {
+    let comment = PrComment {
+        body: "x".repeat(10_000),
+        diff_hunk: None,
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(1));
+    assert!(
+        context.contains("[truncated]"),
+        "an oversized comment must carry an explicit truncation marker"
+    );
+    assert!(
+        context.len() < 10_500,
+        "the full 10k-char comment must not be forwarded verbatim"
+    );
 }
 
 #[test]

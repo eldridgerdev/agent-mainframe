@@ -12,6 +12,12 @@ are tagged.
 
 ### Changed
 
+- **Compacting review memory (`c`) is no longer limited to the PR picker.**
+  The same confirm-and-run flow that prunes/merges near-duplicate findings
+  now also works from PR Triage and the dashboard (leader key
+  `Ctrl+Space m`), restoring you to whichever screen you opened it from on
+  cancel or when the pass finishes.
+
 - **Expert plan review is now an explicit frontier-model action.** At the final
   plan review, press `a` to request an Expert review, select a model from the
   same verified choices used by AI Review, and verify both harness and model
@@ -30,6 +36,17 @@ are tagged.
   is required.
 
 ### Added
+
+- **The "add to memory" dialog (`M` in PR Triage) can now generate a
+  recall-shaped finding with AI instead of the raw comment text.** Press `s`
+  in the confirm view to pick a harness (skipped when only one is installed)
+  and generate a short entry — the underlying issue, why it matters, where it
+  applies, and the check to run next time — with the file/PR context folded
+  in, since that text is the entry's only field. Generation runs in the
+  background without blocking the rest of AMF; the result lands in the same
+  editable confirm view for review before `⏎` saves it, and a failed or
+  unavailable harness falls back to the original raw comment with normal
+  save still available. Nothing is written until you explicitly confirm.
 
 - **GitHub issues can now become tracked AMF features.** Select a project on
   the dashboard and press `g` to browse its open issues, refresh or page

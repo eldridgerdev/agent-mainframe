@@ -78,9 +78,10 @@ pub use picker::{
 pub use plan_interview::handle_plan_interview_key;
 pub use plan_interview_attach::handle_plan_interview_attach_doc_key;
 pub use pr_review::{
-    handle_pr_investigation_loading_key, handle_pr_number_prompt_key, handle_pr_picker_key,
-    handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
-    handle_review_memory_compact_review_key, handle_review_memory_compact_running_key,
+    handle_compact_confirm_key, handle_pr_investigation_loading_key, handle_pr_number_prompt_key,
+    handle_pr_picker_key, handle_pr_review_key, handle_pr_review_loading_key,
+    handle_review_memory_bootstrap_running_key, handle_review_memory_compact_review_key,
+    handle_review_memory_compact_running_key,
 };
 pub use precall::handle_prompt_precall_key;
 pub use prompt_library::{
@@ -165,6 +166,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ReviewMemoryBootstrapRunning(_) => {
             handle_review_memory_bootstrap_running_key(app, key)
         }
+        AppMode::ReviewMemoryCompactConfirm(_) => handle_compact_confirm_key(app, key),
         AppMode::ReviewMemoryCompactRunning(_) => {
             handle_review_memory_compact_running_key(app, key)
         }

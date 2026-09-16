@@ -460,13 +460,19 @@ impl App {
                     .map(|fi| (pi, fi))
             });
 
-        if let Some((pi, fi)) = existing_pending {
-            if let Some(feature) = self
+        // Captured explicitly rather than re-derived as "the last feature in
+        // the project" below: the `existing_pending` branch can update a
+        // feature anywhere in the vector, not only the last one, and another
+        // feature may be appended to the project between here and any later
+        // lookup.
+        let target_feature_id = if let Some((pi, fi)) = existing_pending {
+            let feature = self
                 .store
                 .projects
                 .get_mut(pi)
-                .and_then(|project| project.features.get_mut(fi))
-            {
+                .and_then(|project| project.features.get_mut(fi));
+            let target_feature_id = feature.as_ref().map(|feature| feature.id.clone());
+            if let Some(feature) = feature {
                 feature.workdir = prepared.workdir.clone();
                 feature.is_worktree = prepared.is_worktree;
                 feature.mode = prepared.mode.clone();
@@ -478,6 +484,7 @@ impl App {
                 feature.issue_source = prepared.issue_source.clone();
                 feature.pending_worktree_script = false;
             }
+            target_feature_id
         } else {
             let feature = Feature::new_for_project(
                 &prepared.project_name,
@@ -500,8 +507,10 @@ impl App {
                 prepared.create_terminal,
                 Some(prepared.session_name.clone()),
             );
+            let target_feature_id = feature.id.clone();
             self.store.add_feature(&prepared.project_name, feature);
-        }
+            Some(target_feature_id)
+        };
 
         if let Err(error) = self.save() {
             self.store = store_before_write;
@@ -527,13 +536,19 @@ impl App {
                 ),
             );
         }
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == prepared.project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
+        if let Some((pi, fi)) = target_feature_id.as_deref().and_then(|id| {
+            self.store
+                .projects
+                .iter()
+                .position(|p| p.name == prepared.project_name)
+                .and_then(|pi| {
+                    self.store.projects[pi]
+                        .features
+                        .iter()
+                        .position(|f| f.id == id)
+                        .map(|fi| (pi, fi))
+                })
+        }) {
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
             self.queue_issue_comment_for_feature(pi, fi);
@@ -541,18 +556,25 @@ impl App {
 
         self.mode = AppMode::Normal;
 
+        let mut startup_prompt_persisted = false;
         if let Some(prompt) = prepared.startup_prompt.as_deref() {
-            self.persist_startup_prompt(&prepared.workdir, prompt);
+            startup_prompt_persisted = self.persist_startup_prompt(&prepared.workdir, prompt);
         }
 
         let mut started = false;
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == prepared.project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
+        if let Some((pi, fi)) = target_feature_id.as_deref().and_then(|id| {
+            self.store
+                .projects
+                .iter()
+                .position(|p| p.name == prepared.project_name)
+                .and_then(|pi| {
+                    self.store.projects[pi]
+                        .features
+                        .iter()
+                        .position(|f| f.id == id)
+                        .map(|fi| (pi, fi))
+                })
+        }) {
             // Ordinary automation and creation paths cannot be parked mid-flow,
             // so they leave the feature stopped and explain how to start it.
             // An accepted plan can preserve its state in the resource dialog;
@@ -595,8 +617,9 @@ impl App {
                             Ok(()) => return Ok(()),
                             Err(error) => {
                                 let notice = format!(
-                                    "Feature '{}' started, but its prompt was not opened; it was saved to .claude/latest-prompt.txt: {error}",
-                                    feature_name
+                                    "Feature '{}' started, but its prompt was not opened; {}: {error}",
+                                    feature_name,
+                                    Self::startup_prompt_fallback_note(startup_prompt_persisted)
                                 );
                                 self.log_warn("feature_create", notice.clone());
                                 self.push_toast_warning(notice);
@@ -605,8 +628,9 @@ impl App {
                         },
                         Err(error) => {
                             let notice = format!(
-                                "Feature '{}' started, but its prompt was not opened; it was saved to .claude/latest-prompt.txt: {error}",
-                                feature_name
+                                "Feature '{}' started, but its prompt was not opened; {}: {error}",
+                                feature_name,
+                                Self::startup_prompt_fallback_note(startup_prompt_persisted)
                             );
                             self.log_warn("feature_create", notice.clone());
                             self.push_toast_warning(notice);
@@ -629,21 +653,7 @@ impl App {
                 .as_ref()
                 .filter(|_| !prepared.plan_mode)
             {
-                // Locate the just-created feature the same way the started
-                // branch does — by project position, then the last feature —
-                // rather than by `name == branch`, which are distinct fields
-                // that diverge under slugify or a user-edited name.
-                let feature_id = self
-                    .store
-                    .projects
-                    .iter()
-                    .position(|p| p.name == prepared.project_name)
-                    .and_then(|pi| {
-                        let fi = self.store.projects[pi].features.len().saturating_sub(1);
-                        self.store.projects[pi].features.get(fi)
-                    })
-                    .map(|f| f.id.clone());
-                match feature_id {
+                match target_feature_id.clone() {
                     Some(feature_id) => {
                         if let Some(db) = self.db.as_ref()
                             && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
@@ -738,6 +748,14 @@ impl App {
             return false;
         }
         true
+    }
+
+    fn startup_prompt_fallback_note(persisted: bool) -> &'static str {
+        if persisted {
+            "it was saved to .claude/latest-prompt.txt"
+        } else {
+            "it could not be saved to .claude/latest-prompt.txt either; the prompt has been lost"
+        }
     }
 
     pub fn open_startup_steering_prompt(&mut self, pi: usize, fi: usize) -> Result<()> {

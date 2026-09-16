@@ -677,8 +677,12 @@ impl GhCli {
             "repos/{}/{}/issues?state=open&sort=updated&direction=desc&page={page}&per_page={per_page}",
             repository.owner, repository.name
         );
-        let output = Command::new("gh")
-            .args(["api", &endpoint])
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", &endpoint]);
+        if repository.host != "github.com" {
+            cmd.args(["--hostname", &repository.host]);
+        }
+        let output = cmd
             .current_dir(workdir)
             .output()
             .context("Failed to run `gh api` while loading GitHub issues.")?;

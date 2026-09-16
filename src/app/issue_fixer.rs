@@ -1661,6 +1661,144 @@ mod tests {
     }
 
     #[test]
+    fn finalizing_a_pending_issue_feature_comments_on_it_not_on_a_later_feature() {
+        let repo = tempfile::tempdir().unwrap();
+        let project = crate::project::Project {
+            id: "project-1".to_string(),
+            name: "widget".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: Vec::new(),
+            created_at: Utc::now(),
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        };
+        let store = crate::project::ProjectStore {
+            version: crate::project::CURRENT_PROJECT_STORE_VERSION,
+            projects: vec![project],
+            session_bookmarks: Vec::new(),
+            available_harnesses: vec![AgentKind::Claude],
+            prompt_templates: Vec::new(),
+            extra: std::collections::HashMap::new(),
+        };
+        // Forces `check_start_preconditions` down its `NeedsConfirm` path (via
+        // the memory half of the gate, independent of any harness session
+        // count) so `autostart_allowed` returns false and the launch never
+        // reaches `ensure_feature_running` — this test is only about which
+        // feature the comment gets queued against, not about starting agents.
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_list_panes().return_const(Vec::new());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(tmux),
+            Box::new(crate::traits::MockWorktreeOps::new()),
+        );
+        app.config.low_memory_warn_mb = u64::MAX;
+        app.mode = crate::app::AppMode::Normal;
+
+        // The issue-fixer feature was queued first, as a pending-worktree-script
+        // row awaiting its hook...
+        let mut pending = crate::project::Feature::new(
+            "fix-issue-42".to_string(),
+            "issue/42".to_string(),
+            repo.path().join("fix-issue-42"),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        pending.pending_worktree_script = true;
+        let pending_id = pending.id.clone();
+        app.store.projects[0].features.push(pending);
+
+        // ...but another, unrelated feature was created and appended after it
+        // before this launch was finalized. Locating "the last feature in the
+        // project" here would find this one instead of the pending row.
+        let mut other = crate::project::Feature::new(
+            "unrelated".to_string(),
+            "unrelated".to_string(),
+            repo.path().join("unrelated"),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        other.issue_source = Some(crate::project::IssueSource {
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repository: "widget".to_string(),
+            number: 99,
+            comment_status: crate::project::IssueCommentStatus::Pending,
+        });
+        app.store.projects[0].features.push(other);
+
+        let prepared = crate::app::PreparedFeatureLaunch {
+            project_name: "widget".to_string(),
+            feature_name: Some("fix-issue-42".to_string()),
+            branch: "issue/42".to_string(),
+            workdir: repo.path().join("fix-issue-42"),
+            is_worktree: true,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            quick_plan: false,
+            agent: AgentKind::Claude,
+            create_terminal: false,
+            session_name: "Claude 1".to_string(),
+            enable_chrome: false,
+            remote_control: false,
+            steering_enabled: false,
+            hook_succeeded: None,
+            startup_prompt: None,
+            todo_origin: None,
+            issue_source: Some(issue_source(crate::project::IssueCommentStatus::Pending)),
+        };
+
+        app.finish_feature_launch_without_interview(prepared)
+            .unwrap();
+
+        assert_eq!(app.store.projects[0].features.len(), 2);
+        assert_eq!(app.store.projects[0].features[0].id, pending_id);
+        assert!(matches!(
+            app.selection,
+            crate::app::Selection::Feature(0, 0)
+        ));
+
+        // This goes through the real `gh` transport (network/auth calls),
+        // unlike the other tests here that inject a `FakeTransport`, so it is
+        // given much more patience than `wait_for_comment_result`'s default.
+        let mut result = None;
+        for _ in 0..2000 {
+            if let Some(r) = app.issue_comment_work.poll().into_iter().next() {
+                result = Some(r);
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let result = result.expect("comment worker did not finish");
+        assert_eq!(
+            result.feature_id, pending_id,
+            "the comment must be queued for the feature the issue was created for, not whatever feature happens to be last in the project"
+        );
+        assert_eq!(result.source.number, 42);
+
+        // The unrelated feature's own issue association is untouched.
+        assert_eq!(
+            app.store.projects[0].features[1]
+                .issue_source
+                .as_ref()
+                .map(|source| source.number),
+            Some(99)
+        );
+    }
+
+    #[test]
     fn cancelling_issue_setup_has_no_creation_or_comment_side_effects() {
         let repo = tempfile::tempdir().unwrap();
         let before = std::fs::read_dir(repo.path()).unwrap().count();

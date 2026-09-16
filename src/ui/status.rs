@@ -167,6 +167,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 spans.extend(vec![
                     Span::styled(" n", key_style()),
                     Span::raw(" feature  "),
+                    Span::styled("g", key_style()),
+                    Span::raw(" issues  "),
                     Span::styled("N", key_style()),
                     Span::raw(" project  "),
                     Span::styled("Enter", key_style()),
@@ -952,6 +954,30 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" save  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
+        ]),
+        AppMode::IssueBrowser(_) => Line::from(vec![
+            Span::styled(" h/l", key_style()),
+            Span::raw(" page  "),
+            Span::styled("r", key_style()),
+            Span::raw(" refresh  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::IssueSetup(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("h/l", key_style()),
+            Span::raw(" change  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" create  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::IssueDuplicateWarning(_) => Line::from(vec![
+            Span::styled("Enter/y", key_style()),
+            Span::raw(" create another  "),
+            Span::styled("Esc/n", key_style()),
+            Span::raw(" return"),
         ]),
     };
 

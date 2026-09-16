@@ -1723,6 +1723,14 @@ pub enum AppMode {
     PrNumberPrompt(PrNumberPromptState),
     /// Choosing a PR from a list (or falling through to the number prompt).
     PrPicker(PrPickerState),
+    /// Browse open issues for the selected project's canonical GitHub repo.
+    #[allow(dead_code)] // Constructed by the issue-fixer dashboard entrypoint.
+    IssueBrowser(crate::app::issue_fixer::IssueBrowserState),
+    /// Configure the feature and editable prompt for the selected issue.
+    IssueSetup(crate::app::issue_fixer::IssueSetupState),
+    /// An existing feature already records the same canonical issue. The
+    /// carried setup preserves all edits if the user cancels the override.
+    IssueDuplicateWarning(crate::app::issue_fixer::IssueDuplicateWarningState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen PR Triage pane.
@@ -2235,23 +2243,31 @@ pub struct ResourceConfirmState {
     pub plan_interview: Option<PlanInterviewState>,
 }
 
+// Hook continuations exist one at a time and are moved directly into the
+// worker. Keeping the launch fields flat makes the recovery path explicit;
+// boxing selected fields solely to equalize enum variants would obscure it.
+#[allow(clippy::large_enum_variant)]
 pub enum HookNext {
     WorktreeCreated {
         project_name: String,
+        feature_name: Option<String>,
         branch: String,
         mode: VibeMode,
         review: bool,
         plan_mode: bool,
+        quick_plan: bool,
         agent: AgentKind,
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        startup_prompt: Option<String>,
         /// Carried across the hook detour, which rebuilds the launch from
         /// scratch and would otherwise drop the TODO link on any project with
         /// an `on_worktree_created` hook.
         todo_origin: Option<TodoPlanOrigin>,
+        issue_source: Option<crate::project::IssueSource>,
     },
     StartFeature {
         pi: usize,
@@ -2276,17 +2292,22 @@ pub struct RunningHookState {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub feature_name: Option<String>,
     pub todo_origin: Option<TodoPlanOrigin>,
+    /// Source issue supplied by the issue-fixer workflow.
+    pub issue_source: Option<crate::project::IssueSource>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
     pub remote_control: bool,
     pub steering_enabled: bool,
+    pub startup_prompt: Option<String>,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -2356,17 +2377,21 @@ pub struct BackgroundHook {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub feature_name: Option<String>,
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
     pub remote_control: bool,
     pub steering_enabled: bool,
+    pub startup_prompt: Option<String>,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -2379,17 +2404,21 @@ impl BackgroundHook {
             script: state.script,
             workdir: state.workdir,
             project_name: state.project_name,
+            feature_name: state.feature_name,
             todo_origin: state.todo_origin,
+            issue_source: state.issue_source,
             branch: state.branch,
             mode: state.mode,
             review: state.review,
             plan_mode: state.plan_mode,
+            quick_plan: state.quick_plan,
             agent: state.agent,
             create_terminal: state.create_terminal,
             session_name: state.session_name,
             enable_chrome: state.enable_chrome,
             remote_control: state.remote_control,
             steering_enabled: state.steering_enabled,
+            startup_prompt: state.startup_prompt,
             child: state.child,
             output: state.output,
             success: state.success,
@@ -2490,6 +2519,10 @@ pub struct CreateFeatureState {
     /// `App`) so cancelling the wizard drops it — a stale origin would attach
     /// the next unrelated feature to the wrong TODO.
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
+    /// Optional display name supplied by a workflow with separate feature and
+    /// branch fields. Ordinary feature creation keeps this unset.
+    pub feature_name: Option<String>,
     pub branch: String,
     pub branch_error: Option<String>,
     pub allowed_agents: Vec<AgentKind>,
@@ -2563,6 +2596,8 @@ impl CreateFeatureState {
             project_name,
             project_repo,
             todo_origin: None,
+            issue_source: None,
+            feature_name: None,
             branch,
             branch_error: None,
             allowed_agents: AgentKind::ALL.to_vec(),
@@ -2675,6 +2710,9 @@ impl CreateFeatureState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
     pub project_name: String,
+    /// Separate display/persisted feature name for workflows whose branch is
+    /// user-editable. Ordinary creation leaves this `None` and uses `branch`.
+    pub feature_name: Option<String>,
     pub branch: String,
     pub workdir: PathBuf,
     pub is_worktree: bool,
@@ -2699,6 +2737,7 @@ pub struct PreparedFeatureLaunch {
     /// Set when this launch was started from a TODO, so accepting the plan can
     /// link the created feature back to the row it came from.
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
 }
 
 /// An accepted plan's exact deferred feature launch.
@@ -2992,7 +3031,10 @@ impl PlanInterviewState {
         pending_launch: PreparedFeatureLaunch,
         questions: Vec<PlanQuestion>,
     ) -> Self {
-        let feature_name = pending_launch.branch.clone();
+        let feature_name = pending_launch
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| pending_launch.branch.clone());
         let interview_key = crate::plan_interview::pending_interview_key(
             &pending_launch.project_name,
             &feature_name,
@@ -5128,6 +5170,7 @@ mod tests {
     fn prepared_launch(project_name: &str, branch: &str) -> PreparedFeatureLaunch {
         PreparedFeatureLaunch {
             project_name: project_name.into(),
+            feature_name: None,
             branch: branch.into(),
             workdir: PathBuf::from("/tmp/does-not-matter"),
             is_worktree: false,
@@ -5144,6 +5187,7 @@ mod tests {
             hook_succeeded: None,
             startup_prompt: None,
             todo_origin: None,
+            issue_source: None,
         }
     }
 

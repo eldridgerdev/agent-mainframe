@@ -1289,6 +1289,14 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.issue_work.pending() && app.poll_issue_browser_bg() {
+            force_redraw = true;
+        }
+
+        if app.issue_comment_work.pending() && app.poll_issue_comment_bg() {
+            force_redraw = true;
+        }
+
         if app.pr_review_work.investigation_pending() && app.poll_pr_investigation_bg() {
             force_redraw = true;
         }

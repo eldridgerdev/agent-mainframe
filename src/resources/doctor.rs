@@ -581,6 +581,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         }
     }
 

@@ -43,6 +43,7 @@ fn store_with_agents(agents: &[AgentKind]) -> ProjectStore {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         })
         .collect();
 

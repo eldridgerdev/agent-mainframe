@@ -46,6 +46,7 @@ impl App {
     fn upsert_pending_worktree_feature(
         &mut self,
         project_name: &str,
+        feature_name: Option<&str>,
         branch: &str,
         workdir: &Path,
         mode: &VibeMode,
@@ -66,17 +67,18 @@ impl App {
         let fi = {
             let project = self.store.projects.get_mut(pi)?;
             project.collapsed = false;
+            let feature_name = feature_name.unwrap_or(branch);
 
             let fi = if let Some(fi) = project
                 .features
                 .iter()
-                .position(|feature| feature.name == branch)
+                .position(|feature| feature.name == feature_name)
             {
                 fi
             } else {
                 let mut feature = Feature::new_for_project(
                     project_name,
-                    branch.to_string(),
+                    feature_name.to_string(),
                     branch.to_string(),
                     workdir.to_path_buf(),
                     true,
@@ -124,21 +126,26 @@ impl App {
         &mut self,
         workdir: PathBuf,
         project_name: String,
+        feature_name: Option<String>,
         todo_origin: Option<TodoPlanOrigin>,
+        issue_source: Option<crate::project::IssueSource>,
         branch: String,
         mode: VibeMode,
         review: bool,
         plan_mode: bool,
+        quick_plan: bool,
         agent: AgentKind,
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        startup_prompt: Option<String>,
         focus_feature: bool,
     ) -> Result<()> {
         let Some((pi, fi)) = self.upsert_pending_worktree_feature(
             &project_name,
+            feature_name.as_deref(),
             &branch,
             &workdir,
             &mode,
@@ -166,17 +173,14 @@ impl App {
 
         let prepared = PreparedFeatureLaunch {
             project_name,
+            feature_name,
             branch,
             workdir,
             is_worktree,
             mode,
             review,
             plan_mode,
-            // Not threaded through the `on_worktree_created` hook chain (v1
-            // scope cut, see `CreateFeatureState::quick_plan`): a launch
-            // through this path falls back to full Plan mode rather than
-            // Quick Plan when `plan_mode` is set.
-            quick_plan: false,
+            quick_plan,
             agent,
             create_terminal,
             session_name,
@@ -184,8 +188,9 @@ impl App {
             remote_control,
             steering_enabled,
             hook_succeeded: None,
-            startup_prompt: None,
+            startup_prompt,
             todo_origin,
+            issue_source,
         };
 
         self.finish_feature_launch(prepared)
@@ -323,33 +328,41 @@ impl App {
         match state.next {
             HookNext::WorktreeCreated {
                 project_name,
+                feature_name,
                 branch,
                 mode,
                 review,
                 plan_mode,
+                quick_plan,
                 agent,
                 create_terminal,
                 session_name,
                 enable_chrome,
                 remote_control,
                 steering_enabled,
+                startup_prompt,
                 todo_origin,
+                issue_source,
             } => {
                 self.start_worktree_hook(
                     &state.script,
                     state.workdir,
                     project_name,
+                    feature_name,
                     branch,
                     mode,
                     review,
                     plan_mode,
+                    quick_plan,
                     agent,
                     create_terminal,
                     session_name,
                     enable_chrome,
                     remote_control,
                     steering_enabled,
+                    startup_prompt,
                     todo_origin,
+                    issue_source,
                     Some(choice),
                 );
             }
@@ -372,17 +385,21 @@ impl App {
         script: &str,
         workdir: PathBuf,
         project_name: String,
+        feature_name: Option<String>,
         branch: String,
         mode: VibeMode,
         review: bool,
         plan_mode: bool,
+        quick_plan: bool,
         agent: AgentKind,
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        startup_prompt: Option<String>,
         todo_origin: Option<TodoPlanOrigin>,
+        issue_source: Option<crate::project::IssueSource>,
         choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
@@ -405,6 +422,7 @@ impl App {
 
         if let Some((pi, fi)) = self.upsert_pending_worktree_feature(
             &project_name,
+            feature_name.as_deref(),
             &branch,
             &workdir,
             &mode,
@@ -452,17 +470,21 @@ impl App {
             script: script.to_string(),
             workdir,
             project_name,
+            feature_name,
             todo_origin,
+            issue_source,
             branch,
             mode,
             review,
             plan_mode,
+            quick_plan,
             agent,
             create_terminal,
             session_name,
             enable_chrome,
             remote_control,
             steering_enabled,
+            startup_prompt,
             child,
             output: String::new(),
             success: None,
@@ -511,34 +533,42 @@ impl App {
         let (
             workdir,
             project_name,
+            feature_name,
             todo_origin,
+            issue_source,
             branch,
             mode,
             review,
             plan_mode,
+            quick_plan,
             agent,
             create_terminal,
             session_name,
             enable_chrome,
             remote_control,
             steering_enabled,
+            startup_prompt,
             success,
         ) = {
             match &self.mode {
                 AppMode::RunningHook(s) => (
                     s.workdir.clone(),
                     s.project_name.clone(),
+                    s.feature_name.clone(),
                     s.todo_origin.clone(),
+                    s.issue_source.clone(),
                     s.branch.clone(),
                     s.mode.clone(),
                     s.review,
                     s.plan_mode,
+                    s.quick_plan,
                     s.agent.clone(),
                     s.create_terminal,
                     s.session_name.clone(),
                     s.enable_chrome,
                     s.remote_control,
                     s.steering_enabled,
+                    s.startup_prompt.clone(),
                     s.success,
                 ),
                 _ => return Ok(()),
@@ -549,17 +579,21 @@ impl App {
         self.finalize_worktree_hook_feature(
             workdir,
             project_name.clone(),
+            feature_name,
             todo_origin,
+            issue_source,
             branch.clone(),
             mode,
             review,
             plan_mode,
+            quick_plan,
             agent,
             create_terminal,
             session_name,
             enable_chrome,
             remote_control,
             steering_enabled,
+            startup_prompt,
             true,
         )?;
 
@@ -635,17 +669,21 @@ impl App {
                 if let Err(err) = self.finalize_worktree_hook_feature(
                     hook.workdir.clone(),
                     hook.project_name.clone(),
+                    hook.feature_name.clone(),
                     hook.todo_origin.clone(),
+                    hook.issue_source.clone(),
                     hook.branch.clone(),
                     hook.mode.clone(),
                     hook.review,
                     hook.plan_mode,
+                    hook.quick_plan,
                     hook.agent.clone(),
                     hook.create_terminal,
                     hook.session_name.clone(),
                     hook.enable_chrome,
                     hook.remote_control,
                     hook.steering_enabled,
+                    hook.startup_prompt.clone(),
                     false,
                 ) {
                     self.report_logged_error(

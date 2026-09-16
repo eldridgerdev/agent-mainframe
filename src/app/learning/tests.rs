@@ -58,6 +58,7 @@ fn store_at(workdir: &Path, is_git: bool) -> ProjectStore {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     ProjectStore {
         version: 2,

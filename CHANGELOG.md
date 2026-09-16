@@ -31,6 +31,17 @@ are tagged.
 
 ### Added
 
+- **GitHub issues can now become tracked AMF features.** Select a project on
+  the dashboard and press `g` to browse its open issues, refresh or page
+  through the list, then review the feature name, branch, harness settings,
+  planning mode, and generated issue prompt before creating anything. AMF
+  warns when the same canonical repository issue is already linked, records
+  the source issue on the feature row and session sidebar, and posts an
+  identifying GitHub comment only after local creation succeeds. Failed or
+  interrupted comments keep the feature and reconcile safely on restart
+  before retrying. Existing features remain unlinked; the one-time database
+  migration is automatic, so no migration action is required.
+
 - **The plan picker can now create a plan, not just select one.** When a
   feature has no plan yet, leader `n` in its session opens a picker over the
   worktree's Markdown files; pressing `p` there now starts the same guided

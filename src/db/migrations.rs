@@ -168,6 +168,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist the explicit model used for an Expert plan review",
             MIGRATION_038,
         ),
+        (
+            "Link issue-fixer features to their canonical GitHub issue",
+            MIGRATION_039,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -955,9 +959,54 @@ const MIGRATION_038: &str = "
 ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
 ";
 
+const MIGRATION_039: &str = "
+ALTER TABLE features ADD COLUMN issue_source TEXT;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
+
+    #[test]
+    fn migration_039_preserves_features_and_defaults_issue_source_to_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+             );
+             INSERT INTO schema_version VALUES (38, datetime('now'), 'seed');
+             INSERT INTO projects (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features (
+                id, project_id, name, branch, workdir, status,
+                created_at, last_accessed
+             ) VALUES (
+                'feat-1', 'proj-1', 'existing', 'existing', '/tmp/project',
+                'stopped', datetime('now'), datetime('now')
+             );",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, issue_source FROM features WHERE id = 'feat-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("existing".to_string(), None));
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 39);
+    }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
     /// the todo tables 011 built, the triage table 009 built and 010 re-keyed,
@@ -995,7 +1044,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1090,7 +1139,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
     }
 
     #[test]
@@ -1432,7 +1481,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 38);
+        assert_eq!(rows, 39);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1543,7 +1592,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 38);
+        assert_eq!(version, 39);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

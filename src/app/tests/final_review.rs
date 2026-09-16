@@ -87,6 +87,7 @@ fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
         selected_plan_path: None,
         triage_source: None,
         review_source: None,
+        issue_source: None,
     };
     let project = Project {
         id: "proj-1".to_string(),

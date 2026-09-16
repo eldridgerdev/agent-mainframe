@@ -14,6 +14,7 @@ mod handoff;
 mod harness;
 mod hooks;
 mod input;
+mod issue_fixer;
 mod learning;
 mod mouse;
 mod normal;
@@ -57,6 +58,9 @@ pub use handoff::handle_fresh_context_prompt_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
+pub use issue_fixer::{
+    handle_issue_browser_key, handle_issue_duplicate_warning_key, handle_issue_setup_key,
+};
 pub use learning::handle_learning_key;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
@@ -152,6 +156,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key),
         AppMode::PrNumberPrompt(_) => handle_pr_number_prompt_key(app, key),
         AppMode::PrPicker(_) => handle_pr_picker_key(app, key),
+        AppMode::IssueBrowser(_) => handle_issue_browser_key(app, key),
+        AppMode::IssueSetup(_) => handle_issue_setup_key(app, key),
+        AppMode::IssueDuplicateWarning(_) => handle_issue_duplicate_warning_key(app, key),
         AppMode::PrReviewLoading(_) => handle_pr_review_loading_key(app, key),
         AppMode::PrReview(_) => handle_pr_review_key(app, key),
         AppMode::PrInvestigationLoading(_) => handle_pr_investigation_loading_key(app, key),

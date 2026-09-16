@@ -1,5 +1,57 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+
+/// A stable fingerprint of a migration's own SQL, stored alongside its
+/// `schema_version` row so a later run can tell whether the migration
+/// recorded at that version's slot is the one this build expects there.
+fn hash_migration_sql(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.as_bytes()))
+}
+
+/// `amf.db` is a single database shared by every AMF checkout on the
+/// machine, keyed only by position in `migrations`. A dev/pre-release build
+/// (a WIP branch, a beta) can apply a migration under a version number that
+/// a later release reassigns to a different migration — the version counter
+/// alone can't tell the two apart, so without this check the mismatched
+/// migration silently never runs and the app fails later with a confusing
+/// "no such column" deep in an unrelated query. Comparing hashes (not
+/// descriptions) avoids false positives from historical migrations whose
+/// description text was reworded after the fact without changing their SQL.
+fn check_for_migration_drift(conn: &Connection, migrations: &[(&str, &str)]) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT version, description, sql_hash FROM schema_version ORDER BY version")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (version, recorded_desc, recorded_hash) = row?;
+        let Some(recorded_hash) = recorded_hash else {
+            // Recorded before this check existed: no fingerprint to compare.
+            continue;
+        };
+        let Some((expected_desc, expected_sql)) = migrations.get((version - 1) as usize) else {
+            // This build doesn't even know about a migration this high — a
+            // downgrade, not the drift this check is for.
+            continue;
+        };
+        if recorded_hash != hash_migration_sql(expected_sql) {
+            bail!(
+                "Database schema drift detected at schema_version {version}: this database \
+                 recorded \"{recorded_desc}\" there, but this build of AMF expects \"{expected_desc}\" \
+                 in that slot. This usually means a pre-release or development build of AMF ran a \
+                 different migration under the same version number before a release renumbered it. \
+                 Refusing to start rather than run against a mismatched schema. Back up \
+                 ~/.config/amf/amf.db and reconcile schema_version by hand, or ask for help."
+            );
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn run(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -9,6 +61,21 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             description TEXT NOT NULL
         );",
     )?;
+
+    // Bootstrap out-of-band, like the table above, so the column exists
+    // before any migration row is ever inserted and this never has to
+    // compete with the numbered migrations for a version slot.
+    let has_sql_hash: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('schema_version') WHERE name = 'sql_hash'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_sql_hash {
+        conn.execute_batch("ALTER TABLE schema_version ADD COLUMN sql_hash TEXT;")?;
+    }
 
     let version: i64 = conn
         .query_row(
@@ -174,6 +241,8 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
         ),
     ];
 
+    check_for_migration_drift(conn, migrations)?;
+
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
         if version < target {
@@ -202,9 +271,9 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             };
             conn.execute_batch(sql)?;
             conn.execute(
-                "INSERT INTO schema_version (version, applied_at, description)
-                 VALUES (?1, datetime('now'), ?2)",
-                rusqlite::params![target, desc],
+                "INSERT INTO schema_version (version, applied_at, description, sql_hash)
+                 VALUES (?1, datetime('now'), ?2, ?3)",
+                rusqlite::params![target, desc, hash_migration_sql(sql)],
             )?;
             if let Some(transaction) = transaction {
                 transaction.commit()?;
@@ -1482,6 +1551,60 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 39);
+    }
+
+    /// `amf.db` is shared by every checkout on the machine, keyed only by
+    /// position in the migrations list. A dev/pre-release build can apply a
+    /// *different* migration under a version number a later release reuses
+    /// (this happened for real: a WIP "remote_devices" migration recorded
+    /// itself as version 39, then main's own, unrelated version 39 —
+    /// `issue_source` — silently never ran because the counter already read
+    /// 39). This must fail loudly at startup instead of surfacing later as a
+    /// confusing "no such column" deep in an unrelated query.
+    #[test]
+    fn refuses_to_start_when_a_version_slot_was_recorded_for_a_different_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL,
+                sql_hash TEXT
+             );
+             INSERT INTO schema_version (version, applied_at, description, sql_hash)
+             VALUES (39, datetime('now'), 'Add remote_devices table', 'not-the-real-hash');",
+        )
+        .unwrap();
+
+        let err = super::run(&conn).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("schema drift") && message.contains("39"),
+            "expected a drift error naming version 39, got: {message}"
+        );
+    }
+
+    /// A database from before this check existed has no `sql_hash` for its
+    /// historical rows, and some of those rows' *description* text has
+    /// genuinely been reworded over time without changing the migration's
+    /// SQL. Neither should trip the drift check — only a hash mismatch
+    /// should.
+    #[test]
+    fn a_missing_sql_hash_is_not_treated_as_drift() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+             );
+             INSERT INTO schema_version VALUES
+                (1, datetime('now'), 'a totally different label than migrations.rs uses today');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an

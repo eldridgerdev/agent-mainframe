@@ -2244,6 +2244,10 @@ pub enum PendingStart {
         kind: SessionKind,
         label: Option<String>,
     },
+    /// Recreating one session's tmux window (`c` on a session whose window
+    /// was stopped individually with `x`) while the rest of its feature
+    /// stays up.
+    RestartSessionWindow { pi: usize, fi: usize, si: usize },
     /// Opening a stopped feature or session from the dashboard (`Enter`).
     /// Replayed against the current selection, which the dialog leaves alone.
     EnterView { auto_compose: bool },

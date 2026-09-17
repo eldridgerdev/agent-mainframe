@@ -2426,6 +2426,241 @@ fn stop_feature_transitions_idle_to_stopped() {
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
+// ── stop_session (issue #634: `x` on a session must stop, not delete) ──
+
+#[test]
+fn stop_session_on_a_feature_s_only_session_delegates_to_stop_feature() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_kill_session()
+        .withf(|s| s == "amf-my-feat")
+        .times(1)
+        .returning(|_| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Idle);
+    store.projects[0].features[0].sessions = vec![make_session("Claude 1", None)];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    app.stop_session().unwrap();
+
+    // Stopping the only session is a feature-level stop: it goes through
+    // `stop_feature`'s full path, not a bespoke one.
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+}
+
+#[test]
+fn stop_session_kills_only_that_window_and_keeps_the_record() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "Claude-1")
+        .returning(|_, _| true);
+    tmux.expect_kill_window()
+        .withf(|s, w| s == "amf-my-feat" && w == "Claude-1")
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    app.stop_session().unwrap();
+
+    // The other session, and this one's own record, are untouched — only
+    // its tmux window died.
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].label,
+        "Claude-1"
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Active
+    );
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("Stopped"),
+        "got: {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn stop_session_failed_kill_window_preserves_record() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
+    tmux.expect_kill_window()
+        .times(1)
+        .returning(|_, _| Err(anyhow::anyhow!("tmux unavailable")));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+
+    let error = app.stop_session().unwrap_err();
+
+    assert!(error.to_string().contains("Session retained"));
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+}
+
+// ── restart_stopped_session_window ──────────────────────────────
+
+#[test]
+fn restart_stopped_session_window_recreates_a_dead_window() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "Claude-2")
+        .returning(|_, _| false);
+    tmux.expect_create_window()
+        .withf(|s, w, _| s == "amf-my-feat" && w == "Claude-2")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|s, w, _, resume, _| s == "amf-my-feat" && w == "Claude-2" && resume.is_none())
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let restarted = app.restart_stopped_session_window(0, 0, 1).unwrap();
+
+    assert!(restarted);
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("Restarted"),
+        "got: {:?}",
+        app.message
+    );
+    // The record itself never changes shape across a stop/restart cycle.
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+}
+
+#[test]
+fn restart_stopped_session_window_resumes_the_claude_session() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "Claude-2")
+        .returning(|_, _| false);
+    tmux.expect_create_window()
+        .withf(|s, w, _| s == "amf-my-feat" && w == "Claude-2")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|s, w, _, resume, _| {
+            s == "amf-my-feat" && w == "Claude-2" && resume.as_deref() == Some("prior-session-id")
+        })
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let mut second = make_session("Claude-2", None);
+    second.claude_session_id = Some("prior-session-id".to_string());
+    store.projects[0].features[0].sessions = vec![make_session("Claude-1", None), second];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let restarted = app.restart_stopped_session_window(0, 0, 1).unwrap();
+
+    assert!(restarted);
+}
+
+#[test]
+fn restart_stopped_session_window_is_a_no_op_when_window_is_already_up() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
+    // No create_window / launch_claude expectations: calling either would
+    // panic under mockall, proving neither runs.
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let restarted = app.restart_stopped_session_window(0, 0, 1).unwrap();
+
+    assert!(!restarted);
+}
+
+#[test]
+fn start_feature_on_a_running_feature_restarts_an_individually_stopped_session() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "Claude-2")
+        .returning(|_, _| false);
+    tmux.expect_create_window().returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.start_feature().unwrap();
+
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("Restarted"),
+        "got: {:?}",
+        app.message
+    );
+    // The feature was never marked Stopped by an individual session's `x`,
+    // so `start_feature` must not have taken the whole-feature launch path.
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Active
+    );
+}
+
+#[test]
+fn start_feature_on_a_running_feature_with_a_live_session_still_errors() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists().returning(|_, _| true);
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].sessions = vec![
+        make_session("Claude-1", None),
+        make_session("Claude-2", None),
+    ];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.start_feature().unwrap();
+
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("already running"),
+        "got: {:?}",
+        app.message
+    );
+}
+
 #[test]
 fn complete_deleting_feature_clears_sidebar_caches() {
     let repo = TempDir::new().unwrap();

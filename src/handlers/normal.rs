@@ -100,7 +100,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
         KeyCode::Char('x') => match &app.selection {
             Selection::Session(_, _, _) => {
-                app.remove_session()?;
+                app.stop_session()?;
             }
             Selection::Feature(_, _) => {
                 app.stop_feature()?;

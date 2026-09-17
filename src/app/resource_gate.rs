@@ -370,6 +370,9 @@ impl App {
                 }
                 added
             }
+            PendingStart::RestartSessionWindow { pi, fi, si } => self
+                .restart_stopped_session_window_unchecked(pi, fi, si)
+                .map(|_| ()),
             // Both replay their operation from the top with the gate already
             // satisfied, rather than re-entering the asking variant and
             // parking the user in the same dialog they just answered.

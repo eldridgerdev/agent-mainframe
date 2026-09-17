@@ -1,0 +1,95 @@
+# session-restore-scope: reproduction setup for GitHub issue #633
+# (restoring a picked session for one named session in a feature was
+# overwriting and relaunching every session of that harness kind in the
+# feature with the same id). Shows the feature ending up with two
+# independent sessions of the same harness and the saved-session picker
+# entry point opened from just one of them, scoped by the currently
+# selected session row.
+#
+# Harness-agnostic on purpose: --seed-feature's "agent": "__HARNESS__" and
+# this file's assertions avoid hardcoding "Claude" because which harness a
+# scratch instance ends up with is environment-dependent (Claude locally,
+# Codex on the CI runner that publishes this gallery -- see
+# amf-capture.sh's own comment on CAPTURE_HARNESS_SLUG). The fix applies
+# identically to all three saved-session pickers (Claude, Codex, Opencode),
+# so a capture against whichever harness is actually available is equally
+# valid proof.
+#
+# This is a UI-only capture: no real agent process is launched.
+#   - --config session-restore-scope-config.json sets an unreachable
+#     low_memory_warn_mb so the pre-start resource gate trips on the very
+#     first automation-seeded feature, which `create_feature_from_request`
+#     treats as "create but leave stopped" -- the same skip-with-warning
+#     path agent-limits.txt exercises deliberately. Without this,
+#     --seed-feature autostarts the first agent for real.
+#   - The 's' add-session picker is never driven, because adding a session
+#     to a feature that is not yet running brings its tmux session up and
+#     launches the real harness for the session just added. Instead, a run:
+#     step clones the seeded feature's sole session directly as a row in
+#     the scratch instance's own amf.db (feature_sessions table -- AMF
+#     persists to SQLite, not a JSON file), using $CAPTURE_HARNESS_SLUG to
+#     match whichever harness got seeded, then restarts the isolated pane
+#     so AMF reloads it from disk -- the same "seed on disk, then respawn"
+#     trick other scenarios use to pick up automation-written state.
+#
+# The fix itself (which session's stored resume id gets overwritten on a
+# real restore) is not something the TUI displays for a human to compare on
+# screen -- AMF never shows a session's raw resume id. That correctness is
+# proven by the automated regression test added alongside the fix
+# (restore_claude_session_only_affects_the_targeted_session in
+# src/app/tests/feature_sessions.rs), not by this screenshot. This capture
+# only proves the reproduction shape from the issue is real, and that the
+# picker's entry point is scoped to whichever session row is selected.
+#
+# The seeded project points at the checked-out repository itself
+# (__REPO_ROOT__, use_worktree: false), which on a normal CI runner or a
+# fresh local checkout has no prior real harness history -- the picker
+# opened below is expected to report none. Local-environment quirk: if you
+# run this scenario locally from inside a checkout an agent session is
+# actually, currently live in, the picker may instead show that session's
+# own real history; that is specific to running it live inside itself, not
+# a scenario bug (the same class of quirk quick-plan-mode.txt documents for
+# worktree availability). Validate a change to this scenario locally against
+# a disposable scratch checkout instead, the way that scenario's comment
+# recommends.
+#
+# Requires:
+#   --config session-restore-scope-config.json
+#   --seed session-restore-scope-project.json
+#   --seed-feature session-restore-scope-feature.json
+
+note:The seeded feature is created but deliberately left stopped (the resource gate's skip-with-warning path, forced by the config's unreachable memory floor) -- no real agent process starts during seeding. It starts with exactly one session, shown by the "[1]" badge on the still-collapsed feature row.
+expect:restore-me
+expect:[1]
+shot:feature-before-second-session
+
+run:sqlite3 "$XDG_CONFIG_HOME/amf/amf.db" "INSERT INTO feature_sessions (id, feature_id, kind, label, tmux_window, claude_session_id, token_usage_source, token_usage_source_match, created_at, command, on_stop, pre_check, sort_order, todo_id, todo_launched_from_menu) SELECT lower(hex(randomblob(16))), feature_id, kind, '${CAPTURE_HARNESS_SLUG^} 2', '${CAPTURE_HARNESS_SLUG}-2', claude_session_id, token_usage_source, token_usage_source_match, created_at, command, on_stop, pre_check, sort_order + 1, todo_id, todo_launched_from_menu FROM feature_sessions WHERE kind = '$CAPTURE_HARNESS_SLUG' LIMIT 1;"
+wait:300
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_BIN"
+wait:1500
+
+key:j
+wait:300
+note:After the pane reloads the store from disk, the feature's badge reads "[2]" -- a second session of the same harness now exists in the same feature, reproducing the exact starting shape from issue #633 (two same-harness sessions, distinct tmux windows, in one feature). Still collapsed, so the individual session rows are not shown yet.
+expect:restore-me
+expect:[2]
+shot:feature-now-has-two-sessions
+
+key:Enter
+wait:300
+note:Expanding the feature row reveals both same-harness sessions as independent rows, "<Harness> 1" and "<Harness> 2" -- the tree connectors below mark exactly two child rows.
+expect:├─ *
+expect:└─ *
+shot:two-sessions-of-same-harness
+
+key:j
+wait:200
+note:The cursor now sits on the first session specifically, not the second -- this is the session a restore must be scoped to. Before the fix, confirming a picked session from here would also overwrite and relaunch the second session with the same id.
+expect:restore-me
+shot:first-session-selected
+
+key:S
+wait:400
+note:"S" opens the saved-transcript picker for whichever session is selected -- here, the first one. A fresh checkout has no real harness history for itself yet, so AMF reports that plainly rather than showing an empty picker. The id-scoping fix downstream of this entry point (only the targeted session's stored id changes on a real restore, not every session sharing its harness) is verified by the regression test, not visible here as a raw id AMF never renders on screen.
+expect:sessions for this worktree
+shot:saved-session-picker-entry

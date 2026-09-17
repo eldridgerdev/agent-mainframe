@@ -10,7 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Doc/marketing site moved off `*.pages.dev` to `agentmainframe.dev`.** The
+  shared `pages.dev` subdomain is blocked by some corporate web filters; the
+  site now has its own custom domain, with the old `*.pages.dev` URL and
+  `www.agentmainframe.dev` redirecting to it. No change to the site's build
+  pipeline or deploy target.
 
 ## [v0.43.0] - 2026-09-17
 

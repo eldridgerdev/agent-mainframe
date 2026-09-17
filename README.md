@@ -1,7 +1,7 @@
 
 # Agent Mainframe (AMF)
 
-**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
+**Docs and more:** [agentmainframe.dev](https://agentmainframe.dev)
 
 Run multiple AI coding agents in parallel—each on its own branch and in its
 own terminal—without losing track of them.

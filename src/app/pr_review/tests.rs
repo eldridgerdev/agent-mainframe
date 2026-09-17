@@ -584,6 +584,82 @@ fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     assert!(!prompt.contains("fn "));
 }
 
+#[test]
+fn combined_fix_prompt_warns_when_a_later_comment_shares_an_earlier_files_path() {
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.path = Some("src/a.rs".into());
+    a.line = Some(10);
+    let mut b = inline_comment("Rename this field.", false);
+    b.path = Some("src/a.rs".into());
+    b.line = Some(30);
+    let mut c = inline_comment("Different file entirely.", false);
+    c.path = Some("src/b.rs".into());
+    c.line = Some(5);
+
+    let prompt = combined_fix_prompt(&[&a, &b, &c]);
+
+    // The first entry on src/a.rs carries no warning...
+    let comment_1 = prompt.split("Comment 2:").next().unwrap();
+    assert!(!comment_1.contains("already addressed"));
+    // ...but the second entry on the same file does.
+    let comment_2 = prompt
+        .split("Comment 2:")
+        .nth(1)
+        .unwrap()
+        .split("Comment 3:")
+        .next()
+        .unwrap();
+    assert!(comment_2.contains("already addressed earlier in this triage session"));
+    // A later comment on a distinct file is unaffected.
+    let comment_3 = prompt.split("Comment 3:").nth(1).unwrap();
+    assert!(!comment_3.contains("already addressed"));
+}
+
+#[test]
+fn file_already_touched_detects_a_sibling_fix_in_flight_or_done() {
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.id = 1;
+    a.path = Some("src/a.rs".into());
+    let mut b = inline_comment("Also touches this file.", false);
+    b.id = 2;
+    b.path = Some("src/a.rs".into());
+    let mut c = inline_comment("A different file.", false);
+    c.id = 3;
+    c.path = Some("src/b.rs".into());
+
+    // Nothing else in flight yet.
+    assert!(!file_already_touched(
+        &b,
+        &[a.clone(), b.clone(), c.clone()]
+    ));
+
+    // A sibling on the same file that's mid-fix counts...
+    a.triage = TriageState::Fixing;
+    assert!(file_already_touched(&b, &[a.clone(), b.clone(), c.clone()]));
+
+    // ...and so does one already marked done.
+    a.triage = TriageState::Done;
+    assert!(file_already_touched(&b, &[a.clone(), b.clone(), c.clone()]));
+
+    // A sibling on a different file never counts, regardless of state.
+    c.triage = TriageState::Fixing;
+    assert!(!file_already_touched(&c, &[a, b, c.clone()]));
+}
+
+#[test]
+fn fix_prompt_with_note_appends_staleness_warning_only_when_asked() {
+    let c = inline_comment("Guard this behind the lock.", false);
+
+    let plain = c.fix_prompt_with_note(false);
+    assert_eq!(plain, c.fix_prompt());
+    assert!(!plain.contains("already addressed"));
+
+    let noted = c.fix_prompt_with_note(true);
+    assert!(noted.starts_with(&plain));
+    assert!(noted.contains("already addressed earlier in this triage session"));
+    assert!(noted.contains("re-read the file before editing"));
+}
+
 fn changed_files() -> Vec<InvestigationChangedFile> {
     vec![
         InvestigationChangedFile {

@@ -146,6 +146,15 @@ are tagged.
 
 ### Fixed
 
+- **PR Triage fix prompts now warn when a file has already been touched
+  earlier in the same triage session.** Each fix prompt carries GitHub's
+  diff hunk and line number for the comment, but those reflect the file as
+  it stood when the PR was fetched. If you already fixed (or are mid-fix on)
+  another comment on the same file — whether from an earlier single fix or
+  an earlier entry in a combined batch (`B`) — the next comment's prompt on
+  that file now says so explicitly, so the agent re-reads the file instead of
+  trusting a hunk that fix may have already moved.
+
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.
 

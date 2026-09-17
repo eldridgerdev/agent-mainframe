@@ -190,6 +190,18 @@ The selected pane could open as an empty shell.
    is being cut from the tail of an older cached hunk rather than the freshly
    fetched comment hunk.
 
+**Partial mitigation landed:** one concrete freshness gap from point 4 —
+a comment's `diff_hunk` is always the original GitHub-fetched snapshot, so a
+comment on a file another comment already fixed earlier in the same triage
+session (a prior single `f` now `Fixing`/`Done`, or an earlier entry in the
+same `B` batch) was shown with no indication its hunk may already be stale.
+`PrComment::fix_prompt_with_note` / `combined_fix_prompt`
+(`src/app/pr_review/domain.rs`) now detect that case via
+`file_already_touched` and append an explicit note telling the agent to
+re-read the file before trusting the hunk. This does not touch points 1–3
+(hunk windowing, `line`/`original_line` precedence, or a consistency check
+against the hunk header) — those remain open.
+
 ### Repro
 
 1. Open PR Triage and select an inline review comment.

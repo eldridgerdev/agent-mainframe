@@ -1185,7 +1185,7 @@ pub fn copy_image_to_clipboard(data: &[u8], mime: &str) -> anyhow::Result<()> {
     if is_wsl() && copy_image_to_clipboard_wsl(data).is_ok() {
         return Ok(());
     }
-    if cfg!(target_os = "macos") && copy_image_to_clipboard_macos(data).is_ok() {
+    if cfg!(target_os = "macos") && copy_image_to_clipboard_macos(data, mime).is_ok() {
         return Ok(());
     }
     if let Ok(mut child) = std::process::Command::new("wl-copy")
@@ -1300,14 +1300,15 @@ fn read_clipboard_macos() -> Option<ClipboardContent> {
         .ok()?;
     if info.status.success() {
         let info = String::from_utf8_lossy(&info.stdout);
-        if info.contains("PNGf") || info.contains("TIFF") || info.contains("public.png") {
+        if let Some((apple_class, mime)) = macos_clipboard_image_type(&info) {
             let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
             let script = format!(
                 "set theFile to open for access POSIX file \"{path}\" with write permission\n\
                  set eof of theFile to 0\n\
-                 write (the clipboard as «class PNGf») to theFile\n\
+                 write (the clipboard as «class {apple_class}») to theFile\n\
                  close access theFile",
-                path = tmp.display()
+                path = tmp.display(),
+                apple_class = apple_class,
             );
             let result = std::process::Command::new("osascript")
                 .arg("-e")
@@ -1319,7 +1320,7 @@ fn read_clipboard_macos() -> Option<ClipboardContent> {
                     .ok()
                     .map(|data| ClipboardContent::Image {
                         data,
-                        mime: "image/png".to_string(),
+                        mime: mime.to_string(),
                     })
             } else {
                 None
@@ -1340,14 +1341,30 @@ fn read_clipboard_macos() -> Option<ClipboardContent> {
     None
 }
 
+/// Return the first image representation that AppleScript can read from the
+/// macOS clipboard. Screenshots are commonly exposed as TIFF rather than
+/// PNG, so the clipboard's advertised type must drive both the AppleScript
+/// coercion and the MIME type we retain for the harness.
+fn macos_clipboard_image_type(info: &str) -> Option<(&'static str, &'static str)> {
+    if info.contains("PNGf") || info.contains("public.png") {
+        Some(("PNGf", "image/png"))
+    } else if info.contains("TIFF") || info.contains("public.tiff") {
+        Some(("TIFF", "image/tiff"))
+    } else {
+        None
+    }
+}
+
 /// Place image bytes on the macOS clipboard via `osascript`, so the
 /// harness's own Ctrl+V image paste can ingest them.
-fn copy_image_to_clipboard_macos(data: &[u8]) -> anyhow::Result<()> {
+fn copy_image_to_clipboard_macos(data: &[u8], mime: &str) -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
     std::fs::write(&tmp, data)?;
+    let apple_class = if mime == "image/tiff" { "TIFF" } else { "PNGf" };
     let script = format!(
-        "set the clipboard to (read (POSIX file \"{path}\") as «class PNGf»)",
-        path = tmp.display()
+        "set the clipboard to (read (POSIX file \"{path}\") as «class {apple_class}»)",
+        path = tmp.display(),
+        apple_class = apple_class,
     );
     let status = std::process::Command::new("osascript")
         .arg("-e")
@@ -1408,6 +1425,19 @@ fn copy_image_to_clipboard_wsl(data: &[u8]) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn macos_clipboard_image_type_prefers_png_and_supports_tiff() {
+        assert_eq!(
+            macos_clipboard_image_type("«class TIFF»: 123\n«class PNGf»: 456"),
+            Some(("PNGf", "image/png"))
+        );
+        assert_eq!(
+            macos_clipboard_image_type("«class TIFF»: 123"),
+            Some(("TIFF", "image/tiff"))
+        );
+        assert_eq!(macos_clipboard_image_type("«class utf8»: 12"), None);
+    }
 
     /// Round-trips an image and text through the real Windows clipboard.
     /// Only meaningful under WSL; a no-op elsewhere so CI stays green.

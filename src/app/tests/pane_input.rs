@@ -612,6 +612,54 @@ fn compose_add_image_numbers_placeholders() {
 }
 
 #[test]
+fn compose_counts_only_image_placeholders_still_in_the_editor() {
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        String::new(),
+        Vec::new(),
+    );
+
+    let first = state.add_image(vec![0], "image/png".to_string());
+    let second = state.add_image(vec![1], "image/png".to_string());
+    state.editor.insert_str(&first);
+    assert_eq!(state.active_image_count(), 1);
+
+    state.editor.insert_str(&second);
+    assert_eq!(state.active_image_count(), 2);
+
+    state.editor.clear();
+    assert_eq!(state.active_image_count(), 0);
+}
+
+#[test]
+fn compose_with_deleted_image_placeholder_is_still_empty() {
+    let repo = TempDir::new().unwrap();
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        String::new(),
+        Vec::new(),
+    );
+    let placeholder = state.add_image(vec![0], "image/png".to_string());
+    state.editor.insert_str(&placeholder);
+    state.editor.clear();
+    app.mode = AppMode::Compose(state);
+
+    app.submit_compose().unwrap();
+
+    assert!(matches!(&app.mode, AppMode::Compose(state) if state.active_image_count() == 0));
+    assert_eq!(app.message.as_deref(), Some("Nothing to send"));
+}
+
+#[test]
 fn compose_slash_detection_rules() {
     let state = ComposeState::new(
         compose_test_view(),

@@ -1264,6 +1264,8 @@ impl App {
             &mode,
             &session_id,
             extra_args,
+            // Brand-new session: nothing to resume yet.
+            None,
         );
         if let Err(e) = launched {
             // Best-effort: whether the window exists depends on which step
@@ -1297,6 +1299,11 @@ impl App {
     /// Create the tmux window for a new agent session and launch its harness in
     /// it. Split out so the caller can undo the session record as one unit when
     /// any step of it fails.
+    ///
+    /// `claude_resume_id` is the prior `claude_session_id` to resume, when the
+    /// launch is recreating an existing Claude session's window rather than
+    /// starting a brand-new one (mirrors `feature_ops.rs`'s whole-feature
+    /// restart, which resumes from `session.claude_session_id`).
     #[allow(clippy::too_many_arguments)]
     fn launch_agent_session_window(
         &self,
@@ -1307,12 +1314,18 @@ impl App {
         mode: &VibeMode,
         session_id: &str,
         extra_args: Vec<String>,
+        claude_resume_id: Option<String>,
     ) -> Result<()> {
         self.tmux.create_window(tmux_session, window, workdir)?;
         match agent {
             AgentKind::Claude => {
-                self.tmux
-                    .launch_claude(tmux_session, window, session_id, None, extra_args)?;
+                self.tmux.launch_claude(
+                    tmux_session,
+                    window,
+                    session_id,
+                    claude_resume_id,
+                    extra_args,
+                )?;
             }
             AgentKind::Opencode => {
                 self.tmux
@@ -1537,12 +1550,60 @@ impl App {
     /// sessions' windows — kept running. This is the multi-session
     /// counterpart to restarting a fully-stopped feature with `c`.
     ///
-    /// Returns `true` when it actually recreated the window; `false` when
-    /// there was nothing to do here: the window is already up, the session
-    /// kind has no tmux window at all, or the feature's own tmux session is
-    /// down (in which case the ordinary whole-feature restart applies
-    /// instead).
+    /// Recreating an agent-harness window spends the machine's agent budget
+    /// exactly like any other launch primitive, so this goes through the
+    /// resource gate before calling the unchecked worker below. A tripped
+    /// gate parks the restart in `AppMode::ConfirmResourceStart`, replayed by
+    /// `confirm_pending_start()` via `PendingStart::RestartSessionWindow`.
+    ///
+    /// Returns `true` when it actually recreated the window, or parked it on
+    /// the resource-gate confirmation; `false` when there was nothing to do
+    /// here: the window is already up, the session kind has no tmux window
+    /// at all, or the feature's own tmux session is down (in which case the
+    /// ordinary whole-feature restart applies instead).
     pub(crate) fn restart_stopped_session_window(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<bool> {
+        if self.restart_stopped_session_window_would_start_agent(pi, fi, si)
+            && self.gate_start(PendingStart::RestartSessionWindow { pi, fi, si })
+        {
+            return Ok(true);
+        }
+
+        self.restart_stopped_session_window_unchecked(pi, fi, si)
+    }
+
+    /// Whether recreating `(pi, fi, si)`'s window would spawn an agent
+    /// harness process — the condition the resource gate cares about, mirrored
+    /// from the early-outs in `restart_stopped_session_window_unchecked`
+    /// below.
+    fn restart_stopped_session_window_would_start_agent(
+        &self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> bool {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return false;
+        };
+        if !self.tmux.session_exists(&feature.tmux_session) {
+            return false;
+        }
+        let Some(session) = feature.sessions.get(si) else {
+            return false;
+        };
+        session.kind.is_agent_harness()
+            && !self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+    }
+
+    /// The restart worker: recreates the window unconditionally, assuming the
+    /// resource gate has already been checked (or does not apply).
+    pub(crate) fn restart_stopped_session_window_unchecked(
         &mut self,
         pi: usize,
         fi: usize,
@@ -1603,6 +1664,11 @@ impl App {
                 &mode,
                 &session.id,
                 extra_args,
+                // Recreating an existing session's window: pick up where its
+                // prior Claude conversation left off, same as the
+                // whole-feature restart in `feature_ops.rs`. A no-op for the
+                // other harnesses, which ignore this argument.
+                session.claude_session_id.clone(),
             )?;
         } else {
             self.tmux

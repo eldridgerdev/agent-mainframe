@@ -2432,6 +2432,35 @@ fn restart_stopped_session_window_recreates_a_dead_window() {
 }
 
 #[test]
+fn restart_stopped_session_window_resumes_the_claude_session() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "Claude-2")
+        .returning(|_, _| false);
+    tmux.expect_create_window()
+        .withf(|s, w, _| s == "amf-my-feat" && w == "Claude-2")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|s, w, _, resume, _| {
+            s == "amf-my-feat" && w == "Claude-2" && resume.as_deref() == Some("prior-session-id")
+        })
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let mut second = make_session("Claude-2", None);
+    second.claude_session_id = Some("prior-session-id".to_string());
+    store.projects[0].features[0].sessions = vec![make_session("Claude-1", None), second];
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let restarted = app.restart_stopped_session_window(0, 0, 1).unwrap();
+
+    assert!(restarted);
+}
+
+#[test]
 fn restart_stopped_session_window_is_a_no_op_when_window_is_already_up() {
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);

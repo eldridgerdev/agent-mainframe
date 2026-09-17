@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.43.0] - 2026-09-17
+
 ### Changed
 
 - **Compacting review memory (`c`) is no longer limited to the PR picker.**

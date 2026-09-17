@@ -799,10 +799,26 @@ impl PrComment {
     /// free: GitHub returns it per inline comment, so including it costs no
     /// extra fetch.
     pub fn fix_prompt(&self) -> String {
-        format!(
+        self.fix_prompt_with_note(false)
+    }
+
+    /// Like [`fix_prompt`], but when `file_already_touched` is true — another
+    /// comment on the same file was already fixed (or is currently being
+    /// fixed) elsewhere in this triage session — appends [`STALE_HUNK_NOTE`].
+    /// GitHub's `diff_hunk` reflects the file as it stood when the PR was
+    /// fetched; an earlier fix in the same file can already have moved lines
+    /// or content the hunk above still shows unchanged.
+    ///
+    /// [`fix_prompt`]: Self::fix_prompt
+    pub fn fix_prompt_with_note(&self, file_already_touched: bool) -> String {
+        let mut out = format!(
             "Address this PR review comment.\n{}",
             self.fix_prompt_body()
-        )
+        );
+        if file_already_touched {
+            out.push_str(STALE_HUNK_NOTE);
+        }
+        out
     }
 
     /// The per-comment context block shared by the single-comment [`fix_prompt`]
@@ -919,6 +935,32 @@ impl PrComment {
 pub fn reply_posted_via_amf(reply: &PrComment) -> bool {
     let body = reply.body.trim_end();
     body.ends_with(AMF_ATTRIBUTION_FOOTER) || body.ends_with(AI_ATTRIBUTION_FOOTER)
+}
+
+/// Appended to a fix prompt when another comment on the same file was already
+/// addressed earlier in this triage session (a prior single fix now `Fixing`
+/// or `Done`, or an earlier entry in the same combined batch). GitHub's
+/// `diff_hunk` and `line` are fixed at fetch time; an earlier fix already
+/// applied to the file can shift or rewrite the exact lines a later comment's
+/// hunk still shows unchanged.
+pub(super) const STALE_HUNK_NOTE: &str = "\n(Note: another comment on this file was already \
+addressed earlier in this triage session. The file:line pointer and diff hunk above are from \
+the original PR diff and may no longer match the file's current content — re-read the file \
+before editing.)";
+
+/// Whether another comment in `all` targets the same file as `target` and has
+/// already been fixed (`Done`) or is currently being fixed (`Fixing`) — the
+/// signal that `target`'s own `diff_hunk` may already be stale relative to
+/// the file on disk. `all` is scanned by id so `target` never matches itself.
+pub(super) fn file_already_touched(target: &PrComment, all: &[PrComment]) -> bool {
+    let Some(path) = target.path.as_deref() else {
+        return false;
+    };
+    all.iter().any(|c| {
+        c.id != target.id
+            && c.path.as_deref() == Some(path)
+            && matches!(c.triage, TriageState::Fixing | TriageState::Done)
+    })
 }
 
 /// Where a reply is delivered on GitHub.
@@ -1050,17 +1092,41 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// principle #3): the preamble and any repeated file context are paid once
 /// across the whole set instead of once per comment. Injected once into the
 /// dedicated triage session so the agent works the list autonomously.
-pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
+///
+/// `all` is the review's full comment list (`state.review.comments`), passed
+/// through to [`file_already_touched`] for each entry — the same check
+/// [`PrComment::fix_prompt_with_note`] runs for a single fix. Without it, a
+/// batch entry whose file was already fixed (or is `Fixing`) by a comment
+/// *outside* this batch — an earlier single fix, or an earlier combined batch
+/// — would carry no staleness note just because it happens to be the first
+/// occurrence of that path within *this* call's slice.
+pub fn combined_fix_prompt(comments: &[&PrComment], all: &[PrComment]) -> String {
     let mut out = String::from(
         "Address these PR review comments. Work through each one in order; \
          open the referenced files yourself as needed.\n",
     );
+    // Track paths already emitted so a later comment on a file an earlier
+    // entry already covers gets the same staleness warning a repeat single
+    // fix does — the agent works the list in order, so by the time it reaches
+    // entry N it may already have edited a file entry N-1 (or earlier) named.
+    // This catches batch-local duplicates that `file_already_touched` can't:
+    // two untriaged comments on the same file, both still in this same batch,
+    // neither yet `Fixing`/`Done`.
+    let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, comment) in comments.iter().enumerate() {
         out.push_str(&format!(
-            "\nComment {}:\n{}\n",
+            "\nComment {}:\n{}",
             i + 1,
             comment.fix_prompt_body()
         ));
+        let already_seen_in_batch = comment
+            .path
+            .as_deref()
+            .is_some_and(|path| !seen_paths.insert(path));
+        if already_seen_in_batch || file_already_touched(comment, all) {
+            out.push_str(STALE_HUNK_NOTE);
+        }
+        out.push('\n');
     }
     out.trim_end().to_string()
 }

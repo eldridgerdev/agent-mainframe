@@ -1,8 +1,8 @@
 use super::{
     BATCH_COMBINED_COMMENT_WARN, BATCH_COMBINED_TOKEN_WARN, FixTarget, FixTargetPickRow, PrComment,
     ReplyDraftRequest, TRIAGE_SESSION_LABEL, TriageState, combined_fix_prompt, estimate_tokens,
-    investigation_findings_for_prompt, new_fix_confirm, pr_triage_session_index,
-    pr_triage_session_index_named_for_harness, with_reply_draft_handoff,
+    file_already_touched, investigation_findings_for_prompt, new_fix_confirm,
+    pr_triage_session_index, pr_triage_session_index_named_for_harness, with_reply_draft_handoff,
 };
 use crate::app::StartIntent;
 use crate::app::{App, AppMode, Feature, HarnessPickState, PrReviewReturn, Selection, SessionKind};
@@ -90,7 +90,8 @@ impl App {
             return;
         }
         let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
-        let mut base = comment.fix_prompt();
+        let touched = file_already_touched(comment, &state.review.comments);
+        let mut base = comment.fix_prompt_with_note(touched);
         // If a read-only investigation of this comment already finished, hand
         // its findings to the fixing agent as a starting point.
         if let Some(findings) = state
@@ -172,7 +173,7 @@ impl App {
                         .copied()
                         .map(|id| ReplyDraftRequest::new(id, &state.review.pr.head_sha))
                         .collect();
-                    let mut base = combined_fix_prompt(&selected);
+                    let mut base = combined_fix_prompt(&selected, &state.review.comments);
                     // Append the findings of any completed investigation, tagged
                     // with the comment number they belong to.
                     let appendix: String = selected
@@ -607,7 +608,8 @@ impl App {
                         None => match state.selected_comment() {
                             Some(c) => {
                                 let request = ReplyDraftRequest::new(c.id, &head_sha);
-                                let mut base = c.fix_prompt();
+                                let touched = file_already_touched(c, &state.review.comments);
+                                let mut base = c.fix_prompt_with_note(touched);
                                 if let Some(findings) = state
                                     .investigations
                                     .iter()

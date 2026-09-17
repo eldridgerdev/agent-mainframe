@@ -31,7 +31,7 @@ pub(crate) use domain::pr_triage_session_index_named;
 pub(crate) use domain::window_parsed_hunk;
 use domain::{
     BATCH_COMBINED_COMMENT_WARN, BATCH_COMBINED_TOKEN_WARN, SNIPPET_LEN, append_reply_attribution,
-    pr_triage_session_index_named_for_harness,
+    file_already_touched, pr_triage_session_index_named_for_harness,
 };
 pub use domain::{
     CommentKind, FixTarget, FixTargetPickRow, MarkAction, PrComment, PrInvestigationStatus,

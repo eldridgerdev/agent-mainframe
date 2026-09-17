@@ -9,9 +9,12 @@
 # Offline for the comment content: seeds a demo project + feature and a
 # pr_review_cache row keyed to PR #434's real head SHA (its actual content is
 # irrelevant — only its number/head SHA are borrowed as a stable cache key,
-# same trick pr-triage-investigate*.txt use). The current branch has no PR of
-# its own, so `G` falls to the PR picker; the manual `#` prompt resolves #434
-# by number (one read-only `gh pr view`) and hits the seeded cache row — no
+# same trick pr-triage-investigate*.txt use). `G`/`g`/`#` reach the manual
+# PR-number prompt regardless of whether the current branch auto-resolves to
+# its own PR (`g` opens the picker from a live PR Triage view) or falls
+# straight to the picker (no PR yet, where `g`/`#` both open the same
+# prompt) — see the step comments below. Typing 434 there resolves it by
+# number (one read-only `gh pr view`) and hits the seeded cache row — no
 # live comment fetch, no model call. The scenario opens the fix-confirm
 # dialog to inspect the assembled prompt but always cancels (`Esc`) rather
 # than injecting, so no agent session is ever spawned.
@@ -39,10 +42,16 @@ wait:6000
 key:l|wait:400
 key:j|wait:400
 
-# `G` -> the current branch has no PR, so the PR picker opens.
+# `G` resolves the current branch's own PR if one exists, otherwise falls to
+# the picker — either way, `g` then reaches the manual number prompt: from a
+# live PR Triage view it opens the picker (whose own `g`/`#` both open the
+# prompt), and from the picker it opens the prompt directly. So this sequence
+# lands on the prompt regardless of which path `G` took, and the following
+# `#` is a harmless no-op if the prompt is already open (non-digits are
+# ignored). Typing 434 there opens the exact seeded PR regardless of how many
+# open PRs the real repo currently has (and in whatever order).
 key:G|wait:4000
-# `#` -> manual PR-number prompt, so the exact seeded PR is opened regardless
-# of how many open PRs the real repo currently has (and in whatever order).
+key:g|wait:800
 key:#|wait:400
 text:434|wait:200
 key:Enter|wait:4000

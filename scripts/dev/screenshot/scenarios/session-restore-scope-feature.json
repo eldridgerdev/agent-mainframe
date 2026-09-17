@@ -1,7 +1,7 @@
 {
   "project_name": "session-restore-scope-demo",
   "branch": "restore-me",
-  "agent": "claude",
+  "agent": "__HARNESS__",
   "mode": "vibe",
   "review": false,
   "plan_mode": false,

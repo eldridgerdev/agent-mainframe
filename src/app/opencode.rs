@@ -44,6 +44,8 @@ impl App {
             }
         };
 
+        let target_session_id = self.opencode_session_picker_target(&self.selection);
+
         let sessions = match fetch_opencode_sessions(&workdir) {
             Ok(s) => s,
             Err(e) => {
@@ -61,7 +63,31 @@ impl App {
             sessions,
             selected: 0,
             workdir,
+            target_session_id,
         });
+    }
+
+    /// Resolves which `FeatureSession` an opencode-session restore should
+    /// target: the exact session the picker was opened from, or — when
+    /// opened from the feature row rather than a session row — the
+    /// feature's first opencode-kind session (falling back to its first
+    /// session of any kind).
+    fn opencode_session_picker_target(&self, selection: &Selection) -> Option<String> {
+        let (pi, fi, si) = match selection {
+            Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
+            Selection::Feature(pi, fi) => (*pi, *fi, None),
+            _ => return None,
+        };
+        let feature = self.store.projects.get(pi)?.features.get(fi)?;
+        if let Some(si) = si {
+            return feature.sessions.get(si).map(|s| s.id.clone());
+        }
+        feature
+            .sessions
+            .iter()
+            .find(|s| s.kind == SessionKind::Opencode)
+            .or_else(|| feature.sessions.first())
+            .map(|s| s.id.clone())
     }
 
     pub fn cancel_opencode_session_picker(&mut self) {
@@ -86,25 +112,38 @@ impl App {
         });
 
         if feature_running {
-            let workdir = match &self.mode {
-                AppMode::OpencodeSessionPicker(state) => state.workdir.clone(),
+            let (workdir, target_session_id) = match &self.mode {
+                AppMode::OpencodeSessionPicker(state) => {
+                    (state.workdir.clone(), state.target_session_id.clone())
+                }
                 _ => return,
             };
             self.mode = AppMode::ConfirmingOpencodeSession {
                 session_id,
                 workdir,
+                target_session_id,
             };
         } else {
+            let target_session_id = match &self.mode {
+                AppMode::OpencodeSessionPicker(state) => state.target_session_id.clone(),
+                _ => return,
+            };
             self.mode = AppMode::Normal;
-            if let Err(e) = self.restart_feature_with_opencode_session(&session_id) {
+            if let Err(e) = self
+                .restart_feature_with_opencode_session(&session_id, target_session_id.as_deref())
+            {
                 self.message = Some(format!("Error: {}", e));
             }
         }
     }
 
     pub fn cancel_opencode_session_confirm(&mut self) {
-        let workdir = match &self.mode {
-            AppMode::ConfirmingOpencodeSession { workdir, .. } => workdir.clone(),
+        let (workdir, target_session_id) = match &self.mode {
+            AppMode::ConfirmingOpencodeSession {
+                workdir,
+                target_session_id,
+                ..
+            } => (workdir.clone(), target_session_id.clone()),
             _ => return,
         };
 
@@ -112,20 +151,29 @@ impl App {
             sessions: fetch_opencode_sessions(&workdir).unwrap_or_default(),
             selected: 0,
             workdir,
+            target_session_id,
         });
     }
 
     pub fn confirm_and_start_opencode(&mut self) -> Result<()> {
-        let session_id = match &self.mode {
-            AppMode::ConfirmingOpencodeSession { session_id, .. } => session_id.clone(),
+        let (session_id, target_session_id) = match &self.mode {
+            AppMode::ConfirmingOpencodeSession {
+                session_id,
+                target_session_id,
+                ..
+            } => (session_id.clone(), target_session_id.clone()),
             _ => return Ok(()),
         };
 
         self.mode = AppMode::Normal;
-        self.restart_feature_with_opencode_session(&session_id)
+        self.restart_feature_with_opencode_session(&session_id, target_session_id.as_deref())
     }
 
-    fn restart_feature_with_opencode_session(&mut self, opencode_session_id: &str) -> Result<()> {
+    fn restart_feature_with_opencode_session(
+        &mut self,
+        opencode_session_id: &str,
+        target_session_id: Option<&str>,
+    ) -> Result<()> {
         let (pi, fi) = match self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
             _ => return Ok(()),
@@ -147,7 +195,12 @@ impl App {
             self.tmux.kill_session(&tmux_session)?;
         }
 
-        self.ensure_feature_running_with_opencode_session(pi, fi, opencode_session_id)?;
+        self.ensure_feature_running_with_opencode_session(
+            pi,
+            fi,
+            opencode_session_id,
+            target_session_id,
+        )?;
 
         let (
             project_name,
@@ -161,10 +214,14 @@ impl App {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
 
-            let si = feature
-                .sessions
-                .iter()
-                .position(|s| s.kind == SessionKind::Opencode)
+            let si = target_session_id
+                .and_then(|id| feature.sessions.iter().position(|s| s.id == id))
+                .or_else(|| {
+                    feature
+                        .sessions
+                        .iter()
+                        .position(|s| s.kind == SessionKind::Opencode)
+                })
                 .unwrap_or(0);
 
             let session = &feature.sessions[si];
@@ -210,6 +267,7 @@ impl App {
         pi: usize,
         fi: usize,
         opencode_session_id: &str,
+        target_session_id: Option<&str>,
     ) -> Result<()> {
         // Same launch this feature's own start would do, reached from the
         // saved-transcript picker: gate it too. The picked session id lives in
@@ -286,16 +344,24 @@ impl App {
         for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Opencode => {
-                    session.set_token_usage_source_exact(TokenUsageSource {
-                        provider: TokenUsageProvider::Opencode,
-                        id: opencode_session_id.to_string(),
-                    });
-                    self.tmux.launch_opencode_with_session(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                        &session.id,
-                        Some(opencode_session_id.to_string()),
-                    )?;
+                    if target_session_id.is_none_or(|id| id == session.id) {
+                        session.set_token_usage_source_exact(TokenUsageSource {
+                            provider: TokenUsageProvider::Opencode,
+                            id: opencode_session_id.to_string(),
+                        });
+                        self.tmux.launch_opencode_with_session(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &session.id,
+                            Some(opencode_session_id.to_string()),
+                        )?;
+                    } else {
+                        self.tmux.launch_opencode(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &session.id,
+                        )?;
+                    }
                 }
                 SessionKind::Claude => {
                     let use_rc = feature.remote_control && rc_allowed;

@@ -1177,6 +1177,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
     app.viewport_total_rows = 41;
     app.mode = AppMode::ConfirmingClaudeSession {
         session_id: "claude-session-123".to_string(),
+        target_session_id: None,
         workdir,
     };
 
@@ -1191,6 +1192,126 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
     }
     assert_eq!(app.message.as_deref(), Some("Restored claude session"));
     assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+}
+
+/// Regression test for issue #633: restoring a historical claude session for
+/// one named session in a feature must not overwrite or resume any other
+/// claude-kind session sharing that feature.
+#[test]
+fn restore_claude_session_only_affects_the_targeted_session() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("restore-me");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let now = Utc::now();
+    let mut feature = Feature {
+        id: "feat-1".to_string(),
+        name: "restore-me".to_string(),
+        branch: "restore-me".to_string(),
+        workdir: workdir.clone(),
+        is_worktree: true,
+        tmux_session: "amf-restore-me".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Stopped,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+        selected_plan_path: None,
+        triage_source: None,
+        review_source: None,
+        issue_source: None,
+    };
+    feature
+        .add_session_named(SessionKind::Claude, "Claude 1".to_string())
+        .claude_session_id = Some("claude-1-old".to_string());
+    feature
+        .add_session_named(SessionKind::Claude, "Claude 2".to_string())
+        .claude_session_id = Some("claude-2-old".to_string());
+    let claude_1_id = feature.sessions[0].id.clone();
+    let claude_2_id = feature.sessions[1].id.clone();
+
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(2)
+        .withf(
+            move |_session, window, _feature_session_id, resume_id, _extra_args| match window {
+                "claude" => resume_id.as_deref() == Some("picked-session-999"),
+                "claude-2" => resume_id.as_deref() == Some("claude-2-old"),
+                other => panic!("unexpected window {other}"),
+            },
+        )
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Session(0, 0, 0);
+    app.mode = AppMode::ConfirmingClaudeSession {
+        session_id: "picked-session-999".to_string(),
+        target_session_id: Some(claude_1_id.clone()),
+        workdir,
+    };
+
+    app.confirm_and_start_claude().unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    let claude_1 = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == claude_1_id)
+        .unwrap();
+    let claude_2 = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == claude_2_id)
+        .unwrap();
+    assert_eq!(
+        claude_1.claude_session_id.as_deref(),
+        Some("picked-session-999")
+    );
+    assert_eq!(claude_2.claude_session_id.as_deref(), Some("claude-2-old"));
 }
 
 #[test]

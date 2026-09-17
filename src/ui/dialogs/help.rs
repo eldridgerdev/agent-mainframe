@@ -49,7 +49,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Companion review feature: land its commits on the source branch",
         ),
         ("c", "Start feature (create tmux)"),
-        ("x", "Stop feature / remove session"),
+        ("x", "Stop feature / session"),
         ("r", "Rename session/feature"),
         ("R", "Refresh statuses"),
         ("V", "Check pending diff review"),

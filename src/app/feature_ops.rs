@@ -1190,6 +1190,16 @@ impl App {
             .map(|f| f.status.clone());
 
         if status != Some(ProjectStatus::Stopped) {
+            // The feature is up, but the selected *session* may have been
+            // stopped individually (`x` on a session that wasn't the
+            // feature's only one) — that session's window can still be
+            // brought back on its own.
+            if let Selection::Session(pi, fi, si) = self.selection
+                && self.restart_stopped_session_window(pi, fi, si)?
+            {
+                return Ok(());
+            }
+
             if let Some(name) = self
                 .store
                 .projects

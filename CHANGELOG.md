@@ -146,6 +146,13 @@ are tagged.
 
 ### Fixed
 
+- **`x` on a session now stops it instead of deleting it.** Pressing `x` on
+  an individual session (not a whole feature) previously removed it from the
+  list entirely — the same destructive action as `d`, with no way to just
+  stop one. `x` now kills the session's tmux window and keeps it in the
+  list, restartable with `c`; `d` remains the only way to delete a session
+  for good. No migration is required.
+
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.
 

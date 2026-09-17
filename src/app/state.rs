@@ -339,6 +339,13 @@ pub struct OpencodeSessionPickerState {
     pub sessions: Vec<OpencodeSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first opencode-kind session) — the *only* session a restore may
+    /// overwrite. Every other opencode session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +353,13 @@ pub struct ClaudeSessionPickerState {
     pub sessions: Vec<super::claude_sessions::ClaudeSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first claude-kind session) — the *only* session a restore may
+    /// overwrite. Every other claude session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -353,6 +367,13 @@ pub struct CodexSessionPickerState {
     pub sessions: Vec<super::codex_sessions::CodexSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first codex-kind session) — the *only* session a restore may
+    /// overwrite. Every other codex session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1703,16 +1724,19 @@ pub enum AppMode {
     ConfirmingOpencodeSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     ClaudeSessionPicker(ClaudeSessionPickerState),
     ConfirmingClaudeSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     CodexSessionPicker(CodexSessionPickerState),
     ConfirmingCodexSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     StoppedSessionDialog(StoppedSessionDialogState),
     BookmarkPicker(BookmarkPickerState),
@@ -2220,6 +2244,10 @@ pub enum PendingStart {
         kind: SessionKind,
         label: Option<String>,
     },
+    /// Recreating one session's tmux window (`c` on a session whose window
+    /// was stopped individually with `x`) while the rest of its feature
+    /// stays up.
+    RestartSessionWindow { pi: usize, fi: usize, si: usize },
     /// Opening a stopped feature or session from the dashboard (`Enter`).
     /// Replayed against the current selection, which the dialog leaves alone.
     EnterView { auto_compose: bool },

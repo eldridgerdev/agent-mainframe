@@ -318,6 +318,93 @@ fn entering_a_stopped_feature_asks_first() {
     );
 }
 
+/// `x` then `c` on one session of an otherwise-running feature restarts just
+/// that session's window via `restart_stopped_session_window`. Recreating an
+/// agent-harness window spawns a process exactly like any other launch
+/// primitive, so it must not bypass the gate.
+#[test]
+fn restarting_a_stopped_session_window_past_the_limit_asks_first() {
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "claude-2")
+        .return_const(false);
+    // No create_window / launch_claude expectations: calling either would
+    // panic under mockall, proving the restart stayed parked.
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    // Window names follow `Feature::next_window_name`'s convention
+    // ("claude", "claude-2", ...) so the first session's window matches
+    // `expect_one_live_harness`'s live pane and is counted by the census.
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Primary Claude".into());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Second Claude".into());
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.start_feature().unwrap();
+
+    match &app.mode {
+        AppMode::ConfirmResourceStart(state) => assert_eq!(
+            state.pending,
+            PendingStart::RestartSessionWindow {
+                pi: 0,
+                fi: 0,
+                si: 1,
+            }
+        ),
+        other => panic!(
+            "expected a resource confirm, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+/// Confirming the parked restart replays it via
+/// `restart_stopped_session_window_unchecked`, which actually recreates the
+/// window.
+#[test]
+fn confirming_a_parked_session_restart_recreates_the_window() {
+    let mut tmux = MockTmuxOps::new();
+    let _pane = expect_one_live_harness(&mut tmux);
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_window_exists()
+        .withf(|_, w| w == "claude-2")
+        .return_const(false);
+    tmux.expect_create_window()
+        .withf(|s, w, _| s == "amf-my-feat" && w == "claude-2")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|s, w, _, _, _| s == "amf-my-feat" && w == "claude-2")
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Primary Claude".into());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Second Claude".into());
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.config.max_concurrent_agents = 1;
+    app.config.low_memory_warn_mb = 0;
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.start_feature().unwrap();
+    assert!(matches!(app.mode, AppMode::ConfirmResourceStart(_)));
+
+    app.confirm_pending_start().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("Restarted"),
+        "got: {:?}",
+        app.message
+    );
+}
+
 #[test]
 fn entering_a_running_feature_never_asks() {
     // The harness is already up and already counted: re-entering its view must

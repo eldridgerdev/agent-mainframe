@@ -12,6 +12,16 @@ are tagged.
 
 ### Changed
 
+- **Doc/marketing site moved off `*.pages.dev` to `agentmainframe.dev`.** The
+  shared `pages.dev` subdomain is blocked by some corporate web filters; the
+  site now has its own custom domain, with the old `*.pages.dev` URL and
+  `www.agentmainframe.dev` redirecting to it. No change to the site's build
+  pipeline or deploy target.
+
+## [v0.43.0] - 2026-09-17
+
+### Changed
+
 - **Compacting review memory (`c`) is no longer limited to the PR picker.**
   The same confirm-and-run flow that prunes/merges near-duplicate findings
   now also works from PR Triage and the dashboard (leader key
@@ -154,6 +164,25 @@ are tagged.
   an earlier entry in a combined batch (`B`) — the next comment's prompt on
   that file now says so explicitly, so the agent re-reads the file instead of
   trusting a hunk that fix may have already moved.
+
+- **`x` on a session now stops it instead of deleting it.** Pressing `x` on
+  an individual session (not a whole feature) previously removed it from the
+  list entirely — the same destructive action as `d`, with no way to just
+  stop one. `x` now kills the session's tmux window and keeps it in the
+  list, restartable with `c`; `d` remains the only way to delete a session
+  for good. Restarting a stopped session with `c` now goes through the same
+  resource-limit gate as every other agent launch, and a restarted Claude
+  session resumes its prior conversation instead of starting fresh. No
+  migration is required.
+
+- **Restoring a saved session now only affects the session you picked it
+  for.** When a feature has more than one session for the same harness (e.g.
+  "Claude 1" and "Claude 2"), the saved-transcript picker (`S`) previously
+  applied the picked historical session to *every* session of that harness
+  in the feature, silently pointing them all at the same transcript. It now
+  restores only the session the picker was opened from; other sessions of
+  the same harness keep their own history untouched. No migration is
+  required.
 
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.

@@ -173,7 +173,7 @@ impl App {
                         .copied()
                         .map(|id| ReplyDraftRequest::new(id, &state.review.pr.head_sha))
                         .collect();
-                    let mut base = combined_fix_prompt(&selected);
+                    let mut base = combined_fix_prompt(&selected, &state.review.comments);
                     // Append the findings of any completed investigation, tagged
                     // with the comment number they belong to.
                     let appendix: String = selected

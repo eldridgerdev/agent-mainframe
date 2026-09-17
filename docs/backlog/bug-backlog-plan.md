@@ -196,9 +196,14 @@ comment on a file another comment already fixed earlier in the same triage
 session (a prior single `f` now `Fixing`/`Done`, or an earlier entry in the
 same `B` batch) was shown with no indication its hunk may already be stale.
 `PrComment::fix_prompt_with_note` / `combined_fix_prompt`
-(`src/app/pr_review/domain.rs`) now detect that case via
-`file_already_touched` and append an explicit note telling the agent to
-re-read the file before trusting the hunk. This does not touch points 1–3
+(`src/app/pr_review/domain.rs`) now detect that case and append an explicit
+note telling the agent to re-read the file before trusting the hunk.
+`fix_prompt_with_note` calls `file_already_touched` directly, scanning the
+whole review's comment list for a sibling already `Fixing`/`Done`;
+`combined_fix_prompt` now consults that same wider list (not just its own
+batch slice) in addition to tracking paths already emitted earlier in the
+same batch, so it catches a file touched by an earlier single fix or an
+earlier batch entry either way. This does not touch points 1–3
 (hunk windowing, `line`/`original_line` precedence, or a consistency check
 against the hunk header) — those remain open.
 

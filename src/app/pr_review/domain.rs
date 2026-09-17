@@ -1092,7 +1092,15 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// principle #3): the preamble and any repeated file context are paid once
 /// across the whole set instead of once per comment. Injected once into the
 /// dedicated triage session so the agent works the list autonomously.
-pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
+///
+/// `all` is the review's full comment list (`state.review.comments`), passed
+/// through to [`file_already_touched`] for each entry — the same check
+/// [`PrComment::fix_prompt_with_note`] runs for a single fix. Without it, a
+/// batch entry whose file was already fixed (or is `Fixing`) by a comment
+/// *outside* this batch — an earlier single fix, or an earlier combined batch
+/// — would carry no staleness note just because it happens to be the first
+/// occurrence of that path within *this* call's slice.
+pub fn combined_fix_prompt(comments: &[&PrComment], all: &[PrComment]) -> String {
     let mut out = String::from(
         "Address these PR review comments. Work through each one in order; \
          open the referenced files yourself as needed.\n",
@@ -1101,6 +1109,9 @@ pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
     // entry already covers gets the same staleness warning a repeat single
     // fix does — the agent works the list in order, so by the time it reaches
     // entry N it may already have edited a file entry N-1 (or earlier) named.
+    // This catches batch-local duplicates that `file_already_touched` can't:
+    // two untriaged comments on the same file, both still in this same batch,
+    // neither yet `Fixing`/`Done`.
     let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, comment) in comments.iter().enumerate() {
         out.push_str(&format!(
@@ -1108,11 +1119,11 @@ pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
             i + 1,
             comment.fix_prompt_body()
         ));
-        let already_seen = comment
+        let already_seen_in_batch = comment
             .path
             .as_deref()
             .is_some_and(|path| !seen_paths.insert(path));
-        if already_seen {
+        if already_seen_in_batch || file_already_touched(comment, all) {
             out.push_str(STALE_HUNK_NOTE);
         }
         out.push('\n');

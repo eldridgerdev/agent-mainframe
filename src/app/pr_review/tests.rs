@@ -538,7 +538,10 @@ fn combined_fix_prompt_drops_whole_file_hunks() {
     file_level.line = None;
     file_level.diff_hunk = Some("@@ -1,400 +1,420 @@\n+ enormous".into());
 
-    let prompt = combined_fix_prompt(&[&ordinary, &file_level]);
+    let prompt = combined_fix_prompt(
+        &[&ordinary, &file_level],
+        &[ordinary.clone(), file_level.clone()],
+    );
 
     // The line-anchored comment keeps its (small) hunk...
     assert!(prompt.contains("+ self.sync();"));
@@ -565,7 +568,7 @@ fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     b.path = Some("src/b.rs".into());
     b.line = Some(20);
 
-    let prompt = combined_fix_prompt(&[&a, &b]);
+    let prompt = combined_fix_prompt(&[&a, &b], &[a.clone(), b.clone()]);
 
     // One shared preamble, not repeated per comment.
     assert!(prompt.starts_with("Address these PR review comments."));
@@ -596,7 +599,7 @@ fn combined_fix_prompt_warns_when_a_later_comment_shares_an_earlier_files_path()
     c.path = Some("src/b.rs".into());
     c.line = Some(5);
 
-    let prompt = combined_fix_prompt(&[&a, &b, &c]);
+    let prompt = combined_fix_prompt(&[&a, &b, &c], &[a.clone(), b.clone(), c.clone()]);
 
     // The first entry on src/a.rs carries no warning...
     let comment_1 = prompt.split("Comment 2:").next().unwrap();
@@ -613,6 +616,34 @@ fn combined_fix_prompt_warns_when_a_later_comment_shares_an_earlier_files_path()
     // A later comment on a distinct file is unaffected.
     let comment_3 = prompt.split("Comment 3:").nth(1).unwrap();
     assert!(!comment_3.contains("already addressed"));
+}
+
+#[test]
+fn combined_fix_prompt_warns_when_a_batch_entry_shares_a_file_with_an_in_flight_fix() {
+    // Comment A on src/x.rs was already fixed via a single `f` (now
+    // `Fixing`). B and C are still untriaged and get combined-fixed together;
+    // B is the *first* occurrence of "src/x.rs" within this batch slice, so
+    // the intra-batch `seen_paths` tracking alone would miss it — the
+    // staleness has to come from consulting the wider comment list, exactly
+    // like `file_already_touched` does for a single fix.
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.id = 1;
+    a.path = Some("src/x.rs".into());
+    a.triage = TriageState::Fixing;
+    let mut b = inline_comment("Rename this field.", false);
+    b.id = 2;
+    b.path = Some("src/x.rs".into());
+    let mut c = inline_comment("Different file entirely.", false);
+    c.id = 3;
+    c.path = Some("src/y.rs".into());
+
+    let all = [a.clone(), b.clone(), c.clone()];
+    let prompt = combined_fix_prompt(&[&b, &c], &all);
+
+    let comment_1 = prompt.split("Comment 2:").next().unwrap();
+    assert!(comment_1.contains("already addressed earlier in this triage session"));
+    let comment_2 = prompt.split("Comment 2:").nth(1).unwrap();
+    assert!(!comment_2.contains("already addressed"));
 }
 
 #[test]

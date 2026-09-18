@@ -667,10 +667,12 @@ fn inject_latest_prompt_pastes_into_running_session() {
             VibeMode::Vibeless,
             false,
         ),
-        prompts: vec![crate::app::util::PromptEntry {
-            text: "Resume from the latest saved prompt.".to_string(),
-            timestamp: None,
-        }],
+        prompts: vec![crate::app::LatestPromptItem::Sent(
+            crate::app::util::PromptEntry {
+                text: "Resume from the latest saved prompt.".to_string(),
+                timestamp: None,
+            },
+        )],
         selected: 0,
     });
 

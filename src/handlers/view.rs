@@ -1386,13 +1386,65 @@ mod tests {
         match &app.mode {
             AppMode::LatestPrompt(state) => {
                 assert_eq!(
-                    state.prompts.first().map(|entry| entry.text.as_str()),
+                    state.prompts.first().map(|entry| entry.text()),
                     Some("Resume the current task from the saved prompt.")
                 );
                 assert_eq!(state.view.session, "amf-feature");
             }
             _ => panic!("expected LatestPrompt mode"),
         }
+    }
+
+    #[test]
+    fn leader_l_leads_with_an_unsent_prompt_stashed_for_this_workdir() {
+        let repo = init_repo_with_branch_change();
+        let db_file = TempDir::new().unwrap().path().join("amf.db");
+        let db = crate::db::AmfDb::open(&db_file).unwrap();
+        db.insert_unsent_prompt(
+            "unsent-1",
+            repo.path(),
+            "TODO: Fix the login bug",
+            "Fix the auth flow.",
+            &chrono::Utc::now(),
+        )
+        .unwrap();
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let mut app = app_for_viewing_repo_with_tmux(repo.path(), Box::new(tmux));
+        app.db = Some(db);
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('l')), 20).unwrap();
+        wait_for_latest_prompt_menu(&mut app);
+
+        let AppMode::LatestPrompt(state) = &app.mode else {
+            panic!("expected LatestPrompt mode");
+        };
+        assert!(matches!(
+            state.prompts.first(),
+            Some(crate::app::LatestPromptItem::Unsent(_))
+        ));
+        assert_eq!(
+            state.prompts.first().map(|e| e.text()),
+            Some("Fix the auth flow.")
+        );
+
+        // Injecting it delivers the prompt and clears it from the queue — a
+        // second scan should not offer it again.
+        app.inject_latest_prompt().unwrap();
+        let db = app.db.as_ref().unwrap();
+        assert!(
+            db.load_unsent_prompts_for_workdir(repo.path())
+                .unwrap()
+                .is_empty(),
+            "delivered unsent prompt should be cleared"
+        );
     }
 
     /// Drive the background "all prompts" scan to completion. It's local
@@ -1800,6 +1852,10 @@ mod tests {
     }
 
     fn app_for_viewing_repo(repo: &Path) -> App {
+        app_for_viewing_repo_with_tmux(repo, Box::new(MockTmuxOps::new()))
+    }
+
+    fn app_for_viewing_repo_with_tmux(repo: &Path, tmux: Box<dyn crate::traits::TmuxOps>) -> App {
         let mut feature = Feature::new(
             "feature".to_string(),
             "feature".to_string(),
@@ -1832,11 +1888,7 @@ mod tests {
             extra: HashMap::new(),
         };
 
-        let mut app = App::new_for_test(
-            store,
-            Box::new(MockTmuxOps::new()),
-            Box::new(MockWorktreeOps::new()),
-        );
+        let mut app = App::new_for_test(store, tmux, Box::new(MockWorktreeOps::new()));
         app.mode = AppMode::Viewing(ViewState::new(
             "demo".to_string(),
             "feature".to_string(),

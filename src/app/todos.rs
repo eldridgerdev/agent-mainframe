@@ -14,6 +14,7 @@
 use anyhow::Result;
 use uuid::Uuid;
 
+use crate::app::prompt_library::LostPromptContext;
 use crate::app::{
     App, AppMode, Selection, StartIntent, TodoDeleteDisposition, TodoImplementChoice,
     TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane, TodoPaneKind,
@@ -1602,7 +1603,23 @@ impl App {
                         if reserved_here {
                             self.todos_rollback_launch_best_effort(&todo.id);
                         }
-                        self.push_toast_error(format!("Failed to launch agent: {e}"));
+                        let workdir = self
+                            .store
+                            .projects
+                            .get(pi)
+                            .and_then(|p| p.features.get(fi))
+                            .map(|f| f.workdir.clone());
+                        match workdir {
+                            Some(workdir) => self.stash_lost_prompt(
+                                LostPromptContext {
+                                    label: format!("TODO: {}", todo.title),
+                                    workdir,
+                                },
+                                prompt,
+                                format!("Failed to launch agent: {e}"),
+                            ),
+                            None => self.push_toast_error(format!("Failed to launch agent: {e}")),
+                        }
                         return Ok(());
                     }
                 }
@@ -1664,12 +1681,32 @@ impl App {
         // Switch into the session view and seed the composer (editable). The
         // seed is not submitted, so the user reviews it before sending.
         self.selection = Selection::Session(pi, fi, si);
+        // Cloned up front: `prompt` moves into the closure below, but a
+        // failure there still needs the text to stash rather than lose it.
+        let prompt_for_recovery = prompt.clone();
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
         {
             if reserved_here {
                 self.todos_rollback_launch_best_effort(&todo.id);
+            }
+            let workdir = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.workdir.clone());
+            if let Some(workdir) = workdir {
+                self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt_for_recovery,
+                    format!("Started the agent, but couldn't open its session: {e}"),
+                );
+                return Ok(());
             }
             return Err(e);
         }
@@ -1741,7 +1778,23 @@ impl App {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             self.mode = AppMode::Normal;
-            self.push_toast_error("The new feature has no agent session to seed");
+            let workdir = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.workdir.clone());
+            match workdir {
+                Some(workdir) => self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt,
+                    "The new feature has no agent session to seed",
+                ),
+                None => self.push_toast_error("The new feature has no agent session to seed"),
+            }
             return Ok(());
         };
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
@@ -1775,6 +1828,9 @@ impl App {
         }
 
         self.selection = Selection::Session(pi, fi, si);
+        // Cloned up front: `prompt` moves into the closure below, but a
+        // failure there still needs the text to stash rather than lose it.
+        let prompt_for_recovery = prompt.clone();
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
@@ -1783,6 +1839,23 @@ impl App {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             self.mode = AppMode::Normal;
+            let workdir = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.workdir.clone());
+            if let Some(workdir) = workdir {
+                self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt_for_recovery,
+                    format!("Started the agent, but couldn't open its session: {e}"),
+                );
+                return Ok(());
+            }
             return Err(e);
         }
         self.push_toast_info(format!(

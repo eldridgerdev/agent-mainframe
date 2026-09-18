@@ -156,6 +156,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add attached_docs column to plan_interviews for attached reference documents",
             MIGRATION_035,
         ),
+        (
+            "Add unsent_prompts table for prompts a failed launch couldn't deliver",
+            MIGRATION_036,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -901,6 +905,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_prompt_overrides_identity
 /// rows backfill to `'[]'` (no attachments), matching the in-memory default.
 const MIGRATION_035: &str = "
 ALTER TABLE plan_interviews ADD COLUMN attached_docs TEXT NOT NULL DEFAULT '[]';
+";
+
+/// A prompt AMF computed to seed a session's composer, but couldn't deliver
+/// because the launch that would have carried it failed (e.g. the agent limit
+/// or a harness spawn error). Scoped by `workdir` rather than a feature id so
+/// it survives feature recreation and is found by the same lookup the
+/// `Latest Prompt` recall (`leader l`) already does for that checkout — a
+/// stashed prompt shows up there once a session exists to view it, and is
+/// also saved into the `prompt_templates` library immediately so it is never
+/// only reachable through a feature that may never start.
+const MIGRATION_036: &str = "
+CREATE TABLE IF NOT EXISTS unsent_prompts (
+    id         TEXT PRIMARY KEY,
+    workdir    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_unsent_prompts_workdir ON unsent_prompts(workdir);
 ";
 
 #[cfg(test)]

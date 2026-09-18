@@ -699,10 +699,39 @@ impl ComposeState {
     }
 }
 
+/// One row in the `Latest Prompt` recall list: either a prompt actually sent
+/// to the harness (scanned from its transcript) or one AMF computed to seed a
+/// session but couldn't deliver, stashed by
+/// [`crate::app::App::stash_lost_prompt`] when the launch that would have
+/// carried it failed. Kept as a separate variant rather than folded into
+/// [`crate::app::util::PromptEntry`] so an unsent row can carry *why* it's
+/// here and be cleared from `unsent_prompts` once picked, without touching
+/// the transcript-scan path at all.
+#[derive(Clone)]
+pub enum LatestPromptItem {
+    Sent(crate::app::util::PromptEntry),
+    Unsent(crate::db::unsent_prompts::UnsentPrompt),
+}
+
+impl LatestPromptItem {
+    pub fn text(&self) -> &str {
+        match self {
+            LatestPromptItem::Sent(entry) => &entry.text,
+            LatestPromptItem::Unsent(prompt) => &prompt.body,
+        }
+    }
+
+    pub fn is_unsent(&self) -> bool {
+        matches!(self, LatestPromptItem::Unsent(_))
+    }
+}
+
 #[derive(Clone)]
 pub struct LatestPromptState {
     pub view: ViewState,
-    pub prompts: Vec<crate::app::util::PromptEntry>,
+    /// Unsent entries for this checkout are prepended ahead of the scanned
+    /// transcript history — see `App::poll_latest_prompt_menu_bg`.
+    pub prompts: Vec<LatestPromptItem>,
     pub selected: usize,
 }
 

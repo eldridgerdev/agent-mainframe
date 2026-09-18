@@ -842,6 +842,72 @@ impl App {
         }
         self.selected_feature().map(|(_, f)| f.workdir.clone())
     }
+
+    // ── Lost prompts ────────────────────────────────────────────
+
+    /// A prompt was computed to seed a session's composer, but the launch
+    /// that would have carried it failed — the session/feature it targeted
+    /// never came up. Rather than let the caller simply discard it, stash it
+    /// two ways: as a real, editable `User` prompt-library entry (tagged
+    /// `"unsent"`, findable via `leader P` even if that feature never
+    /// starts), and — since `workdir` is known — as a row `Latest Prompt`
+    /// recall (`leader l`) will surface once a session exists there to view
+    /// it from.
+    ///
+    /// Deliberately generic: any launch primitive that seeds a composer can
+    /// call this from its failure arm instead of the prompt just vanishing.
+    /// `reason` is the human-readable cause (e.g. the launch error), folded
+    /// into the toast so the user knows both what failed and where the
+    /// prompt went.
+    pub(crate) fn stash_lost_prompt(
+        &mut self,
+        ctx: LostPromptContext,
+        body: String,
+        reason: impl Into<String>,
+    ) {
+        let body = body.trim().to_string();
+        let reason = reason.into();
+        if body.is_empty() {
+            self.push_toast_error(reason);
+            return;
+        }
+
+        let name = format!("Unsent: {}", ctx.label);
+        let mut template = PromptTemplate::new(name.clone(), body.clone());
+        template.tags = vec!["unsent".to_string()];
+        if let Some(db) = &self.db
+            && let Err(e) = db.insert_prompt_template(&template)
+        {
+            self.log_warn(
+                "prompt-library",
+                format!("couldn't persist unsent prompt: {e}"),
+            );
+        }
+        self.store.prompt_templates.push(template);
+
+        if let Some(db) = &self.db {
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = Utc::now();
+            if let Err(e) = db.insert_unsent_prompt(&id, &ctx.workdir, &ctx.label, &body, &now) {
+                self.log_warn(
+                    "prompt-library",
+                    format!("couldn't stash unsent prompt for recall: {e}"),
+                );
+            }
+        }
+
+        self.push_toast_warning(format!(
+            "{reason} — saved the prompt to your library as \"{name}\" (leader P to send it, or leader l once this feature is running)"
+        ));
+    }
+}
+
+/// Where a prompt was headed when its delivery failed — used only to label
+/// the copy [`App::stash_lost_prompt`] saves. `workdir` is the checkout the
+/// prompt was meant to seed a session in.
+pub(crate) struct LostPromptContext {
+    pub label: String,
+    pub workdir: PathBuf,
 }
 
 /// Read the `prompt_templates` declared in the project config (`amf.json`,
@@ -1903,5 +1969,80 @@ mod tests {
         // Cancelling drops back to the editor without inserting anything.
         app.cancel_skill_picker();
         assert!(matches!(app.mode, AppMode::PromptEditor(_)));
+    }
+
+    // ── Lost prompts ────────────────────────────────────────────
+
+    #[test]
+    fn stash_lost_prompt_saves_a_tagged_user_template_and_toasts_the_reason() {
+        use crate::app::App;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        app.stash_lost_prompt(
+            LostPromptContext {
+                label: "TODO: Fix the login bug".to_string(),
+                workdir: repo.path().join("worktrees/feat-a"),
+            },
+            "  Fix the auth flow.  ".to_string(),
+            "Failed to launch agent: agent limit reached",
+        );
+
+        assert_eq!(app.store.prompt_templates.len(), 1);
+        let template = &app.store.prompt_templates[0];
+        assert_eq!(template.name, "Unsent: TODO: Fix the login bug");
+        // Trimmed before storing, so the recovered draft has no stray
+        // leading/trailing whitespace to clean up before sending.
+        assert_eq!(template.body, "Fix the auth flow.");
+        assert_eq!(template.tags, vec!["unsent".to_string()]);
+
+        let message = app
+            .toasts
+            .iter()
+            .map(|t| t.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(message.contains("Failed to launch agent: agent limit reached"));
+        assert!(message.contains("Unsent: TODO: Fix the login bug"));
+    }
+
+    #[test]
+    fn stash_lost_prompt_with_empty_body_just_reports_the_failure() {
+        use crate::app::App;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        app.stash_lost_prompt(
+            LostPromptContext {
+                label: "TODO: Fix the login bug".to_string(),
+                workdir: repo.path().join("worktrees/feat-a"),
+            },
+            "   ".to_string(),
+            "The new feature has no agent session to seed",
+        );
+
+        // Nothing to recover — no template is worth saving for a blank seed.
+        assert!(app.store.prompt_templates.is_empty());
+        let message = app
+            .toasts
+            .iter()
+            .map(|t| t.message.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(message.contains("The new feature has no agent session to seed"));
     }
 }

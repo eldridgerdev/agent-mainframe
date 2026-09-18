@@ -614,6 +614,47 @@ middle option and its detail line; selecting it opens the ordinary
 create-feature wizard on its branch step with the title pre-filled and
 `Plan: [ ]` unchecked — no plan interview.
 
+### Epic 12 — Recover the seed prompt when a TODO-spawn launch fails
+
+Shipped. Every TODO-spawn path (Epics 5, 8, 11) computes the seed prompt
+before the launch, then hands it to `open_compose_seeded` once a session
+exists — but every one of those paths also had a failure arm (session
+creation errors, "no agent session to seed", a compose-seed failure) that
+just toasted the error and dropped the prompt on the floor. Hitting the
+agent limit while spawning from a TODO meant retyping the whole prompt by
+hand after starting the session manually. Fixed generically, not just for
+TODOs, since any future launch-and-seed flow can hit the same failure shape.
+
+- [x] `App::stash_lost_prompt` (`src/app/prompt_library.rs`) is the one
+      recovery path every failure arm now calls instead of discarding the
+      prompt: it saves a `User` template tagged `"unsent"` (name `"Unsent:
+      <label>"`) into the Prompt Library — durable even if the target
+      feature never starts — and, when a `workdir` is known, a row in the
+      new `unsent_prompts` table (`MIGRATION_036`) keyed by that workdir.
+- [x] `LatestPromptItem` (`src/app/state.rs`) replaces the bare
+      `PromptEntry` in `Latest Prompt` recall (`leader l`) state, wrapping
+      either a real sent prompt (scanned from the harness transcript) or an
+      `Unsent` row. Unsent entries lead the list, badged `[unsent · <label>]`
+      in the warning color; picking one to inject delivers it and clears the
+      row so a re-scan doesn't re-offer already-sent work.
+- [x] Wired into `spawn_todo_agent` and `finish_todo_spawn_in_new_feature`
+      (`src/app/todos.rs`): the session-creation failure, the "new feature
+      has no agent session to seed" case, and the compose-seed failure all
+      route the already-computed prompt through `stash_lost_prompt` with a
+      reason describing what failed, instead of a bare error toast.
+- [x] `CHANGELOG.md`, this doc, and unit coverage: DB round-trip/scoping for
+      `unsent_prompts`, `stash_lost_prompt`'s tagging and empty-body guard,
+      the TODO-spawn failure path end-to-end, and an integration test
+      confirming a stashed prompt leads `leader l`'s list and clears on
+      injection.
+
+**Verified by running the app** (`scripts/dev/screenshot/amf-capture.sh`,
+scratch instance, `scenarios/unsent-prompt-recovery.txt`, DB-seeded so it
+needs no real harness or a real launch failure to demonstrate): `leader l`
+on a session view leads with `[unsent · TODO: Fix the login bug]` and the
+full prompt in the detail pane; `leader p` shows the same prompt durably
+saved as `Unsent: TODO: Fix the login bug [User]`, tagged `#unsent`.
+
 ## Open (not built)
 
 - **Cancelling after the worktree exists** leaves an orphan checkout with

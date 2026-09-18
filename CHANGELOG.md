@@ -18,6 +18,16 @@ are tagged.
 
 ### Added
 
+- **A prompt that fails to reach an agent is no longer lost.** If AMF has a
+  prompt ready to send — for example, starting an agent from a TODO — but the
+  launch itself fails (hitting your agent limit, a harness spawn error), that
+  prompt now gets saved instead of discarded: it's added to your Prompt
+  Library as an editable "Unsent: ..." template (`leader P`, or `L` on the
+  dashboard) so it's never tied to a feature that may never start, and it
+  also leads the Latest Prompt list (`leader l`) for that checkout, marked
+  `[unsent]`, once a session exists there to send it from. No migration is
+  required.
+
 - **AMF now has a public website** (`site/`, built with the Zola static site
   generator): a landing page plus a documentation section covering
   installation, quick start, core concepts, keybindings, Learning Mode,

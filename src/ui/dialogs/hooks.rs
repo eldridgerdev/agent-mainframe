@@ -657,15 +657,20 @@ pub fn draw_latest_prompt_dialog(
         .enumerate()
         .skip(scroll_offset)
         .take(visible_count)
-        .map(|(i, entry)| {
-            let ts_str = entry
-                .timestamp
-                .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-                .map(|dt: DateTime<Utc>| {
-                    let local: DateTime<Local> = dt.into();
-                    local.format("%b %d %H:%M").to_string()
-                })
-                .unwrap_or_else(|| "???".to_string());
+        .map(|(i, item)| {
+            let ts_str = match item {
+                crate::app::LatestPromptItem::Sent(entry) => entry
+                    .timestamp
+                    .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+                    .map(|dt: DateTime<Utc>| {
+                        let local: DateTime<Local> = dt.into();
+                        local.format("%b %d %H:%M").to_string()
+                    })
+                    .unwrap_or_else(|| "???".to_string()),
+                crate::app::LatestPromptItem::Unsent(prompt) => {
+                    format!("unsent \u{00b7} {}", prompt.label)
+                }
+            };
 
             let is_selected = i == state.selected;
             let prefix = if is_selected { "> " } else { "  " };
@@ -673,8 +678,8 @@ pub fn draw_latest_prompt_dialog(
             let fixed_width = prefix.len() + ts_bracket.len();
             let avail = list_width.saturating_sub(fixed_width);
 
-            let first_line = entry
-                .text
+            let first_line = item
+                .text()
                 .lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("")
@@ -689,7 +694,11 @@ pub fn draw_latest_prompt_dialog(
             } else {
                 Style::default().fg(theme.text_muted.to_color())
             };
-            let ts_style = Style::default().fg(theme.info.to_color());
+            let ts_style = if item.is_unsent() {
+                Style::default().fg(theme.warning.to_color())
+            } else {
+                Style::default().fg(theme.info.to_color())
+            };
             let text_style = if is_selected {
                 Style::default()
                     .fg(theme.primary.to_color())
@@ -721,7 +730,7 @@ pub fn draw_latest_prompt_dialog(
     let detail_text = state
         .prompts
         .get(state.selected)
-        .map(|e| e.text.as_str())
+        .map(|e| e.text())
         .unwrap_or("");
     let detail = Paragraph::new(detail_text)
         .wrap(Wrap { trim: false })

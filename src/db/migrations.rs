@@ -239,6 +239,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Link issue-fixer features to their canonical GitHub issue",
             MIGRATION_039,
         ),
+        (
+            "Add unsent_prompts table for prompts a failed launch couldn't deliver",
+            MIGRATION_040,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1030,6 +1034,25 @@ ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
 
 const MIGRATION_039: &str = "
 ALTER TABLE features ADD COLUMN issue_source TEXT;
+";
+
+/// A prompt AMF computed to seed a session's composer, but couldn't deliver
+/// because the launch that would have carried it failed (e.g. the agent limit
+/// or a harness spawn error). Scoped by `workdir` rather than a feature id so
+/// it survives feature recreation and is found by the same lookup the
+/// `Latest Prompt` recall (`leader l`) already does for that checkout — a
+/// stashed prompt shows up there once a session exists to view it, and is
+/// also saved into the `prompt_templates` library immediately so it is never
+/// only reachable through a feature that may never start.
+const MIGRATION_040: &str = "
+CREATE TABLE IF NOT EXISTS unsent_prompts (
+    id         TEXT PRIMARY KEY,
+    workdir    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_unsent_prompts_workdir ON unsent_prompts(workdir);
 ";
 
 #[cfg(test)]

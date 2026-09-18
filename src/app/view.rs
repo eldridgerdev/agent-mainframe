@@ -335,8 +335,20 @@ impl App {
                             && current.window == result.view.window
                 );
                 if still_here {
+                    // Unsent entries lead the list — a prompt AMF failed to
+                    // deliver is the thing most worth acting on, ahead of
+                    // history that already reached the agent.
+                    let unsent = self
+                        .feature_workdir_for_view(&result.view)
+                        .zip(self.db.as_ref())
+                        .and_then(|(workdir, db)| db.load_unsent_prompts_for_workdir(&workdir).ok())
+                        .unwrap_or_default();
+                    let mut prompts: Vec<LatestPromptItem> =
+                        unsent.into_iter().map(LatestPromptItem::Unsent).collect();
+                    prompts.extend(result.prompts.into_iter().map(LatestPromptItem::Sent));
+
                     self.mode = AppMode::LatestPrompt(LatestPromptState {
-                        prompts: result.prompts,
+                        prompts,
                         selected: 0,
                         view: result.view,
                     });
@@ -464,11 +476,17 @@ impl App {
             }
         };
 
-        let prompt = state
-            .prompts
-            .get(state.selected)
-            .map(|e| e.text.trim().to_string())
+        let selected = state.prompts.get(state.selected);
+        let prompt = selected
+            .map(|e| e.text().trim().to_string())
             .filter(|p| !p.is_empty());
+        // Consumed once it's actually delivered: this row exists only to
+        // recover a prompt that never reached a session, and it has now
+        // reached one — leaving it would re-offer already-sent work.
+        let consumed_unsent_id = match selected {
+            Some(LatestPromptItem::Unsent(u)) => Some(u.id.clone()),
+            _ => None,
+        };
 
         let Some(prompt) = prompt else {
             self.mode = AppMode::LatestPrompt(state);
@@ -480,6 +498,16 @@ impl App {
             .paste_text(&state.view.session, &state.view.window, &prompt)?;
         self.tmux
             .send_key_name(&state.view.session, &state.view.window, "Enter")?;
+
+        if let Some(id) = consumed_unsent_id
+            && let Some(db) = &self.db
+            && let Err(e) = db.delete_unsent_prompt(&id)
+        {
+            self.log_warn(
+                "latest_prompt",
+                format!("couldn't clear delivered unsent prompt: {e}"),
+            );
+        }
 
         self.mode = AppMode::Viewing(state.view);
         self.message = Some("Injected prompt".into());
@@ -501,7 +529,7 @@ impl App {
         let text = state
             .prompts
             .get(state.selected)
-            .map(|e| e.text.trim().to_string())
+            .map(|e| e.text().trim().to_string())
             .filter(|p| !p.is_empty());
 
         let Some(text) = text else {
@@ -529,7 +557,7 @@ impl App {
             AppMode::LatestPrompt(state) => state
                 .prompts
                 .get(state.selected)
-                .map(|e| e.text.clone())
+                .map(|e| e.text().to_string())
                 .filter(|t| !t.trim().is_empty()),
             _ => return Ok(()),
         };

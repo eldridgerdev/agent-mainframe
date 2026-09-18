@@ -3169,3 +3169,56 @@ fn disposition_cancel_leaves_the_feature_and_its_todos_intact() {
     assert!(db.todo_list_by_id(&list_id).unwrap().is_some());
     assert_eq!(db.todos(&list_id).unwrap().len(), 2);
 }
+
+// ----- Unsent prompt recovery on a failed TODO spawn -----------------------
+
+/// A TODO spawn whose harness launch fails must not just toast the error away
+/// — the prompt it would have seeded is saved into the User prompt library
+/// (tagged "unsent") so it is not lost, and the TODO's reservation is rolled
+/// back so `implement next` will offer it again.
+#[test]
+fn failed_todo_spawn_stashes_the_seed_prompt_instead_of_losing_it() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).returning(|_| true);
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Err(anyhow::anyhow!("agent limit reached")));
+    tmux.expect_kill_window().times(1).returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    let todo = sample_todo("Fix the login bug", false);
+
+    app.spawn_todo_agent(0, 0, &todo, false).unwrap();
+
+    // The TODO's reservation is rolled back — the failed launch never
+    // actually started work on it.
+    assert!(matches!(
+        app.store.projects[0].features[0].sessions.len(),
+        0
+    ));
+
+    let unsent = app
+        .store
+        .prompt_templates
+        .iter()
+        .find(|t| t.tags.iter().any(|tag| tag == "unsent"))
+        .expect("failed launch should stash an unsent prompt template");
+    assert_eq!(unsent.name, "Unsent: TODO: Fix the login bug");
+    assert!(!unsent.body.trim().is_empty());
+
+    let message = app
+        .toasts
+        .iter()
+        .map(|t| t.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        message.contains("saved the prompt to your library"),
+        "expected a toast pointing at the saved prompt, got: {message}"
+    );
+}

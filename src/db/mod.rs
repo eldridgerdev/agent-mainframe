@@ -14,8 +14,10 @@ mod session_status;
 pub mod store;
 pub mod todos;
 mod token_cache;
+pub mod unsent_prompts;
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -139,6 +141,28 @@ impl AmfDb {
 
     pub fn delete_prompt_template(&self, id: &str) -> Result<()> {
         prompt_templates::delete(&self.conn, id)
+    }
+
+    pub fn load_unsent_prompts_for_workdir(
+        &self,
+        workdir: &Path,
+    ) -> Result<Vec<unsent_prompts::UnsentPrompt>> {
+        unsent_prompts::load_for_workdir(&self.conn, workdir)
+    }
+
+    pub fn insert_unsent_prompt(
+        &self,
+        id: &str,
+        workdir: &Path,
+        label: &str,
+        body: &str,
+        created_at: &DateTime<Utc>,
+    ) -> Result<()> {
+        unsent_prompts::insert(&self.conn, id, workdir, label, body, created_at)
+    }
+
+    pub fn delete_unsent_prompt(&self, id: &str) -> Result<()> {
+        unsent_prompts::delete(&self.conn, id)
     }
 
     pub fn load_token_cache(&self) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {

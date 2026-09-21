@@ -122,6 +122,16 @@ impl App {
         })
     }
 
+    /// `(pi, fi)`'s checkout path, for stashing a prompt under
+    /// [`LostPromptContext`] when a TODO-triggered launch fails.
+    pub(crate) fn feature_workdir(&self, pi: usize, fi: usize) -> Option<std::path::PathBuf> {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.workdir.clone())
+    }
+
     /// The scope a write from `(pi, fi)` lands in when no pane says otherwise:
     /// the feature's worktree list, or the project's list at the repo root.
     ///
@@ -1603,13 +1613,7 @@ impl App {
                         if reserved_here {
                             self.todos_rollback_launch_best_effort(&todo.id);
                         }
-                        let workdir = self
-                            .store
-                            .projects
-                            .get(pi)
-                            .and_then(|p| p.features.get(fi))
-                            .map(|f| f.workdir.clone());
-                        match workdir {
+                        match self.feature_workdir(pi, fi) {
                             Some(workdir) => self.stash_lost_prompt(
                                 LostPromptContext {
                                     label: format!("TODO: {}", todo.title),
@@ -1691,13 +1695,7 @@ impl App {
             if reserved_here {
                 self.todos_rollback_launch_best_effort(&todo.id);
             }
-            let workdir = self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .map(|f| f.workdir.clone());
-            if let Some(workdir) = workdir {
+            if let Some(workdir) = self.feature_workdir(pi, fi) {
                 self.stash_lost_prompt(
                     LostPromptContext {
                         label: format!("TODO: {}", todo.title),
@@ -1778,13 +1776,7 @@ impl App {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             self.mode = AppMode::Normal;
-            let workdir = self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .map(|f| f.workdir.clone());
-            match workdir {
+            match self.feature_workdir(pi, fi) {
                 Some(workdir) => self.stash_lost_prompt(
                     LostPromptContext {
                         label: format!("TODO: {}", todo.title),
@@ -1839,13 +1831,7 @@ impl App {
                 self.todos_rollback_launch_best_effort(&origin.todo_id);
             }
             self.mode = AppMode::Normal;
-            let workdir = self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .map(|f| f.workdir.clone());
-            if let Some(workdir) = workdir {
+            if let Some(workdir) = self.feature_workdir(pi, fi) {
                 self.stash_lost_prompt(
                     LostPromptContext {
                         label: format!("TODO: {}", todo.title),

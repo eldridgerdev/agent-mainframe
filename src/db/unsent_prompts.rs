@@ -70,6 +70,17 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Drops every row filed under `workdir`, so a deleted feature's stashed
+/// prompts cannot resurface under an unrelated later feature that reuses the
+/// same checkout path.
+pub fn delete_for_workdir(conn: &Connection, workdir: &Path) -> Result<()> {
+    conn.execute(
+        "DELETE FROM unsent_prompts WHERE workdir = ?1",
+        params![workdir.to_string_lossy()],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +156,32 @@ mod tests {
         let loaded = db.load_unsent_prompts_for_workdir(workdir).unwrap();
         assert_eq!(loaded[0].id, "earlier");
         assert_eq!(loaded[1].id, "later");
+    }
+
+    #[test]
+    fn delete_for_workdir_removes_only_that_workdirs_rows() {
+        let (_tmp, db) = open_temp_db();
+        let now = Utc::now();
+        db.insert_unsent_prompt("p1", Path::new("/repo/a"), "A", "body a", &now)
+            .unwrap();
+        db.insert_unsent_prompt("p2", Path::new("/repo/a"), "A2", "body a2", &now)
+            .unwrap();
+        db.insert_unsent_prompt("p3", Path::new("/repo/b"), "B", "body b", &now)
+            .unwrap();
+
+        db.delete_unsent_prompts_for_workdir(Path::new("/repo/a"))
+            .unwrap();
+
+        assert!(
+            db.load_unsent_prompts_for_workdir(Path::new("/repo/a"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.load_unsent_prompts_for_workdir(Path::new("/repo/b"))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

@@ -165,6 +165,10 @@ impl AmfDb {
         unsent_prompts::delete(&self.conn, id)
     }
 
+    pub fn delete_unsent_prompts_for_workdir(&self, workdir: &Path) -> Result<()> {
+        unsent_prompts::delete_for_workdir(&self.conn, workdir)
+    }
+
     pub fn load_token_cache(&self) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
         token_cache::load(&self.conn)
     }

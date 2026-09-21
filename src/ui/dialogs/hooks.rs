@@ -13,6 +13,11 @@ use crate::theme::Theme;
 use super::super::dashboard::centered_rect;
 use super::diff::{PatchPanelOptions, draw_patch_panel};
 
+/// Cap on the TODO title shown in an unsent-prompt row's badge, so the badge
+/// stays close in width to the sent rows' fixed timestamp and always leaves
+/// room for a preview of the prompt text.
+const UNSENT_LABEL_MAX_CHARS: usize = 24;
+
 fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
     state.diff_file.as_ref().is_some_and(|file| {
         matches!(
@@ -668,7 +673,12 @@ pub fn draw_latest_prompt_dialog(
                     })
                     .unwrap_or_else(|| "???".to_string()),
                 crate::app::LatestPromptItem::Unsent(prompt) => {
-                    format!("unsent \u{00b7} {}", prompt.label)
+                    // Capped so a long TODO title can't consume the whole
+                    // badge and crowd out the preview text below.
+                    format!(
+                        "unsent \u{00b7} {}",
+                        truncate_str(&prompt.label, UNSENT_LABEL_MAX_CHARS)
+                    )
                 }
             };
 

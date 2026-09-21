@@ -2896,6 +2896,86 @@ fn delete_project_clears_terminal_pr_associations_for_all_features() {
     assert!(!cached.contains_key(&(repo.path().to_string_lossy().to_string(), branch)));
 }
 
+#[test]
+fn complete_deleting_feature_deletes_unsent_prompts_for_its_workdir() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    store.projects[0].features[0].is_worktree = true;
+    let workdir = repo.path().join(".worktrees/my-feat");
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .insert_unsent_prompt("p1", &workdir, "TODO: Fix it", "body", &Utc::now())
+        .unwrap();
+
+    app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        tmux_session: "amf-my-feat".to_string(),
+        is_worktree: true,
+        repo: repo.path().to_path_buf(),
+        workdir: workdir.clone(),
+        stage: DeleteStage::Completed,
+        child: None,
+        output: String::new(),
+        output_rx: None,
+        error: None,
+    });
+
+    app.complete_deleting_feature().unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_unsent_prompts_for_workdir(&workdir)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn delete_project_deletes_unsent_prompts_for_every_features_workdir() {
+    let repo = TempDir::new().unwrap();
+    let store_file = NamedTempFile::new().unwrap();
+    let db_file = NamedTempFile::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let workdir = store.projects[0].features[0].workdir.clone();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_kill_session().returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = store_file.path().to_path_buf();
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .insert_unsent_prompt("p1", &workdir, "TODO: Fix it", "body", &Utc::now())
+        .unwrap();
+    app.mode = AppMode::DeletingProject("my-project".to_string());
+
+    app.delete_project().unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_unsent_prompts_for_workdir(&workdir)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 fn store_with_single_claude_session() -> ProjectStore {
     let now = Utc::now();
     let session = FeatureSession {

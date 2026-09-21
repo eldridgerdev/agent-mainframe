@@ -28,6 +28,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::app::pr_review::PrComment;
 use crate::editor::TextEditor;
 use crate::github::{GhCli, PrRef, PrResolution, PrReviewComment as GhPrReviewComment};
 use crate::headless::HeadlessRunner;
@@ -341,6 +342,17 @@ pub struct AiReviewFinding {
     /// itself (that reconciliation machinery was most of the friction the
     /// module doc above describes).
     pub published: bool,
+}
+
+/// Why a finding can't be handed to PR Triage for fixing, if it can't.
+fn fix_ineligible_reason(finding: &AiReviewFinding) -> Option<&'static str> {
+    if finding.published {
+        Some("Already posted to GitHub — fix it from PR Triage (r to refresh)")
+    } else if finding.skipped {
+        Some("Skipped finding — press s to unskip it before fixing")
+    } else {
+        None
+    }
 }
 
 /// Cache key for [`App::ai_review_finding_fix_costs`]. The per-frame result
@@ -1472,6 +1484,7 @@ impl App {
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
+            marked: Default::default(),
         });
     }
 
@@ -1706,6 +1719,105 @@ impl App {
         }
     }
 
+    /// Toggle whether the selected finding is marked for a combined fix
+    /// (`space`). Posted and skipped findings can't be marked.
+    pub fn ai_review_toggle_mark(&mut self) {
+        let AppMode::AiReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(finding) = state.findings.get(state.selected) else {
+            self.message = Some("No finding selected".into());
+            return;
+        };
+        if let Some(why) = fix_ineligible_reason(finding) {
+            self.message = Some(why.into());
+            return;
+        }
+        let selected = state.selected;
+        if !state.marked.remove(&selected) {
+            state.marked.insert(selected);
+        }
+        self.message = Some(format!("{} marked for a combined fix", state.marked.len()));
+    }
+
+    /// `f`: fix the selected finding without posting it to GitHub. Hands it to
+    /// PR Triage as a local comment, where the usual target picker and prompt
+    /// confirmation apply.
+    pub fn ai_review_fix_selected(&mut self) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let Some(finding) = state.findings.get(state.selected) else {
+            self.message = Some("No finding selected".into());
+            return;
+        };
+        if let Some(why) = fix_ineligible_reason(finding) {
+            self.message = Some(why.into());
+            return;
+        }
+        let selected = state.selected;
+        self.ai_review_send_to_triage(vec![selected], false);
+    }
+
+    /// `B`: fix every marked finding in one combined prompt, without posting.
+    pub fn ai_review_fix_marked(&mut self) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let mut indices: Vec<usize> = state
+            .marked
+            .iter()
+            .copied()
+            .filter(|i| {
+                state
+                    .findings
+                    .get(*i)
+                    .is_some_and(|f| fix_ineligible_reason(f).is_none())
+            })
+            .collect();
+        if indices.is_empty() {
+            self.message = Some("No findings marked — press space to mark".into());
+            return;
+        }
+        indices.sort_unstable();
+        self.ai_review_send_to_triage(indices, true);
+    }
+
+    /// Leave AI Review for PR Triage on the same PR — restoring the pane it was
+    /// opened from when there is one, opening it otherwise — and queue the given
+    /// findings there as local comments.
+    fn ai_review_send_to_triage(&mut self, indices: Vec<usize>, batch: bool) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let comments: Vec<PrComment> = indices
+            .iter()
+            .filter_map(|i| state.findings.get(*i))
+            .map(PrComment::from_ai_finding)
+            .collect();
+        let workdir = state.workdir.clone();
+        let pr = state.pr.clone();
+        self.pr_review_pending_local = Some(crate::app::pr_review::PendingLocalFindings {
+            pr_number: pr.number,
+            comments,
+            batch,
+        });
+        match self.ai_review_return_to.take() {
+            Some(return_to)
+                if matches!(
+                    &*return_to,
+                    AppMode::PrReview(s)
+                        if s.review.pr.number == pr.number
+                            && s.review.pr.head_sha == pr.head_sha
+                ) =>
+            {
+                self.mode = *return_to;
+            }
+            _ => self.enter_pr_review(workdir, pr),
+        }
+        self.apply_pending_local_findings();
+    }
+
     pub fn ai_review_toggle_skip(&mut self) {
         if let AppMode::AiReview(state) = &mut self.mode
             && let Some(finding) = state.findings.get_mut(state.selected)
@@ -1724,9 +1836,10 @@ impl App {
     /// combined batch. Indexed 1:1 with `state.findings`; all-`None` without a
     /// DB or a cached review to match findings against.
     ///
-    /// The AI Review pane has no fix action of its own — a finding's fix cost
-    /// only exists once it has been posted, picked up in PR Triage as an
-    /// ordinary comment, and fixed there. This is the read-back of that.
+    /// A finding's fix cost only exists once it has been posted, picked up in
+    /// PR Triage as an ordinary comment, and fixed there (fixing an unposted
+    /// finding via `f`/`B` hands it to PR Triage as a local comment that this
+    /// correlation does not see). This is the read-back of the posted case.
     ///
     /// Called once per render tick from `ui::dashboard::draw`, so the actual
     /// work (a triage DB load, a full `serde_json` parse of the cached PR
@@ -2450,6 +2563,7 @@ impl App {
                             base.summary = outcome.summary;
                             base.attribution = Some(outcome.attribution);
                             base.selected = 0;
+                            base.marked.clear();
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
                                 ran_at: Local::now(),

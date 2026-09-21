@@ -34,10 +34,10 @@ use domain::{
     file_already_touched, pr_triage_session_index_named_for_harness,
 };
 pub use domain::{
-    CommentKind, FixTarget, FixTargetPickRow, MarkAction, PrComment, PrInvestigationStatus,
-    PrInvestigationTurn, PrReview, PrSortMode, ReplyDraftProvenance, ReplyDraftRequest,
-    ReplyGenerationMetadata, ReplyKind, ReplyTarget, TriageState, combined_fix_prompt,
-    estimate_tokens, reply_effective_agent_drafted,
+    CommentKind, FixTarget, FixTargetPickRow, MarkAction, PendingLocalFindings, PrComment,
+    PrInvestigationStatus, PrInvestigationTurn, PrReview, PrSortMode, ReplyDraftProvenance,
+    ReplyDraftRequest, ReplyGenerationMetadata, ReplyKind, ReplyTarget, TriageState,
+    combined_fix_prompt, estimate_tokens, reply_effective_agent_drafted,
 };
 pub use fetch::{fetch_and_normalize, strip_bot_boilerplate};
 pub use investigation::InvestigationOutcome;

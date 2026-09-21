@@ -1027,6 +1027,10 @@ pub struct App {
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
     pub pr_review_return: Option<PrReviewReturn>,
+    /// AI review findings handed to PR Triage for fixing that haven't been
+    /// installed yet (PR Triage may still be loading). See
+    /// [`App::apply_pending_local_findings`].
+    pub(crate) pr_review_pending_local: Option<pr_review::PendingLocalFindings>,
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
@@ -2473,6 +2477,7 @@ impl App {
             plan_interview_directed_feedback_bg: None,
             plan_interview_investigation_bg: None,
             pr_review_return: None,
+            pr_review_pending_local: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
@@ -2727,6 +2732,7 @@ impl App {
             plan_interview_directed_feedback_bg: None,
             plan_interview_investigation_bg: None,
             pr_review_return: None,
+            pr_review_pending_local: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,

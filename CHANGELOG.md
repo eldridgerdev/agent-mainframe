@@ -10,6 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Fix AI review findings without posting them to GitHub.** The AI Review
+  screen now has `f` (fix the selected finding), `space` (mark findings) and
+  `B` (fix all marked findings in one combined prompt). They take you to PR
+  Triage's usual fix dialog, with the finding added as a local comment, so you
+  choose the target agent and review the prompt as before. Nothing is posted,
+  and the prompt leaves out the "draft a reviewer reply" instruction because
+  there is no GitHub comment to answer. Posted or skipped findings can't be
+  fixed this way, and replying to a local finding says to post it first. These
+  local comments aren't kept when PR Triage is refreshed or reopened; the
+  finding itself stays on the AI Review screen.
+
 ### Changed
 
 - **Doc/marketing site moved off `*.pages.dev` to `agentmainframe.dev`.** The

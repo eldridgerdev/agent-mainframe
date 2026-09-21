@@ -10,6 +10,41 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 impl App {
+    /// Install AI review findings queued in `pr_review_pending_local` into the
+    /// open PR Triage pane as local comments, then open the fix dialog for
+    /// them (`f` for one finding, the combined-batch dialog for several).
+    /// A no-op unless PR Triage is open on the same PR — while it is still
+    /// loading the queue is kept, and the load's completion calls this again.
+    pub(crate) fn apply_pending_local_findings(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        if !matches!(&self.pr_review_pending_local, Some(p) if p.pr_number == state.review.pr.number)
+        {
+            return;
+        }
+        let Some(pending) = self.pr_review_pending_local.take() else {
+            return;
+        };
+        let mut ids = Vec::new();
+        for comment in pending.comments {
+            ids.push(comment.id);
+            if !state.review.comments.iter().any(|c| c.id == comment.id) {
+                state.review.comments.push(comment);
+            }
+        }
+        state.detail_scroll = 0;
+        if pending.batch {
+            state.marked = ids.iter().copied().collect();
+            self.pr_review_open_batch_confirm();
+        } else if let Some(first) = ids.first().copied() {
+            if let Some(at) = state.review.comments.iter().position(|c| c.id == first) {
+                state.selected = at;
+            }
+            self.pr_review_open_fix_confirm();
+        }
+    }
+
     /// Set `fix_target`, marking the fix-target picker resolved for the rest
     /// of this pane visit, and snapshot the newly-targeted session's current
     /// usage as a baseline if it doesn't already have one — so the "this

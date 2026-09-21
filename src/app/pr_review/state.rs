@@ -286,6 +286,9 @@ pub struct AiReviewState {
     pub finding_editor: Option<TextEditor>,
     /// When `Some`, the post-to-GitHub confirm dialog is open (`W`).
     pub post_confirm: Option<AiReviewPostConfirmState>,
+    /// Indices into `findings` marked for a combined fix (`space`, then `B`).
+    /// Cleared when a new run replaces the findings.
+    pub marked: std::collections::HashSet<usize>,
 }
 
 /// State for the full-screen PR Triage pane.

@@ -716,7 +716,84 @@ pub(super) const WHOLE_FILE_HUNK_LINES: usize = 150;
 /// the referenced code hard to spot and wastes prompt context.
 pub(super) const COMMENT_HUNK_CONTEXT_LINES: usize = 3;
 
+/// AI review findings waiting to be installed into PR Triage as local comments
+/// ([`PrComment::from_ai_finding`]) so the fix flow can run on them.
+#[derive(Debug, Clone)]
+pub struct PendingLocalFindings {
+    pub pr_number: u32,
+    pub comments: Vec<PrComment>,
+    /// `true` opens the combined-batch dialog over all of `comments`; `false`
+    /// opens the single-fix dialog for the first one.
+    pub batch: bool,
+}
+
+/// Bit set in the id of a [`PrComment`] built from an unposted AI review
+/// finding ([`PrComment::from_ai_finding`]). GitHub ids are far below 2^62 and
+/// the value still fits the `i64` SQLite stores, so a local id never collides
+/// with a fetched one.
+const LOCAL_FINDING_ID_BIT: u64 = 1 << 62;
+
+/// Whether `id` belongs to a local, unposted AI finding rather than a real
+/// GitHub comment.
+pub fn is_local_finding_id(id: u64) -> bool {
+    id & LOCAL_FINDING_ID_BIT != 0
+}
+
 impl PrComment {
+    /// Whether this comment is an AI review finding that only exists locally —
+    /// there is no GitHub comment to reply to, resolve, or refresh.
+    pub fn is_local_finding(&self) -> bool {
+        is_local_finding_id(self.id)
+    }
+
+    /// Wrap an unposted AI review finding as a triage comment so PR Triage's
+    /// fix / batch-fix flow can run on it without posting it to GitHub first.
+    /// The id is derived from the finding's anchor and text, so handing the same
+    /// finding over twice yields the same comment.
+    pub fn from_ai_finding(finding: &crate::app::ai_review::AiReviewFinding) -> Self {
+        use sha2::{Digest, Sha256};
+        let side = finding.side.map(|side| match side {
+            crate::diff::DiffSide::Old => "LEFT".to_string(),
+            crate::diff::DiffSide::New => "RIGHT".to_string(),
+        });
+        let mut hasher = Sha256::new();
+        hasher.update(finding.path.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update(finding.line.unwrap_or(0).to_le_bytes());
+        hasher.update(side.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update(finding.body.as_bytes());
+        let digest = hasher.finalize();
+        let hash = u64::from_le_bytes(digest[..8].try_into().expect("8 bytes"));
+        let anchored = finding.path.is_some();
+        Self {
+            id: (hash & (LOCAL_FINDING_ID_BIT - 1)) | LOCAL_FINDING_ID_BIT,
+            kind: if anchored {
+                CommentKind::Inline
+            } else {
+                CommentKind::Conversation
+            },
+            author: "AI review (not posted)".to_string(),
+            is_bot: false,
+            path: finding.path.clone(),
+            line: finding.line,
+            side,
+            outdated: false,
+            file_level: anchored && finding.line.is_none(),
+            diff_hunk: finding.diff_hunk.clone(),
+            body: finding.body.clone(),
+            snippet: super::fetch::make_snippet(&finding.body, false),
+            in_reply_to: None,
+            thread_id: None,
+            is_resolved: false,
+            triage: TriageState::Untriaged,
+            local_note: None,
+            batch_id: None,
+            github_id: None,
+            github_review_id: None,
+        }
+    }
+
     /// The diff hunk worth showing and injecting, or `None` when it should be
     /// replaced by a bare `File:` reference — for a file-level comment (whose
     /// hunk is the entire file diff) or an oversized hunk.

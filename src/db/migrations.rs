@@ -1097,7 +1097,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1136,7 +1136,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1231,7 +1231,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     #[test]
@@ -1573,7 +1573,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 39);
+        assert_eq!(rows, 40);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1738,7 +1738,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

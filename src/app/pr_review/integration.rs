@@ -35,7 +35,7 @@ impl App {
         }
         state.detail_scroll = 0;
         if pending.batch {
-            state.marked = ids.iter().copied().collect();
+            state.marked.extend(ids.iter().copied());
             self.pr_review_open_batch_confirm();
         } else if let Some(first) = ids.first().copied() {
             if let Some(at) = state.review.comments.iter().position(|c| c.id == first) {

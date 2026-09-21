@@ -331,6 +331,7 @@ impl App {
             // A companion triage feature created on an earlier visit is reused
             // for every fix in this PR — adopt it now so `f` doesn't re-ask.
             self.adopt_existing_triage_feature();
+            self.apply_pending_local_findings();
             return;
         }
         self.start_pr_review_fetch(workdir, pr);
@@ -419,6 +420,17 @@ impl App {
     /// Persist a freshly-fetched review under its `PR# + head SHA` key so the
     /// next open is a cache hit. A write failure is non-fatal (logged, not shown).
     pub(crate) fn cache_pr_review(&mut self, review: &PrReview) {
+        // Local (unposted) AI findings are not GitHub truth; keep them out of
+        // the cache so a later cache-hit open shows only real comments.
+        let filtered;
+        let review = if review.comments.iter().any(PrComment::is_local_finding) {
+            let mut copy = review.clone();
+            copy.comments.retain(|c| !c.is_local_finding());
+            filtered = copy;
+            &filtered
+        } else {
+            review
+        };
         let result = match self.db.as_ref() {
             Some(db) => db.save_pr_review_cache(review),
             None => return,
@@ -753,6 +765,7 @@ impl App {
                             investigation_context: Default::default(),
                         });
                         self.adopt_existing_triage_feature();
+                        self.apply_pending_local_findings();
                     }
                     Err(e) => {
                         self.mode = AppMode::Normal;

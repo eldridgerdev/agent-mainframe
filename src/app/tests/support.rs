@@ -494,6 +494,7 @@ pub(super) fn sample_ai_review_state(
         model_pick: None,
         finding_editor: None,
         post_confirm: None,
+        marked: Default::default(),
     }
 }
 

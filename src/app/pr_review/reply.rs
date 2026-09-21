@@ -167,7 +167,10 @@ impl App {
                 })
                 .ok()
         });
-        for request in requests {
+        for request in requests
+            .iter()
+            .filter(|r| !super::domain::is_local_finding_id(r.comment_id))
+        {
             let result = match self.db.as_ref() {
                 Some(db) => db.begin_pr_comment_reply_draft(
                     pr_number,
@@ -251,6 +254,13 @@ impl App {
                     && state.fix_confirm.is_none()
                     && state.reply_kind_pick.is_none() =>
             {
+                if state
+                    .selected_comment()
+                    .is_some_and(PrComment::is_local_finding)
+                {
+                    self.message = Some("This AI finding is not posted to GitHub — there is nothing to reply to (post it with W in AI Review first)".to_string());
+                    return;
+                }
                 state.selected_comment().map(PrComment::is_actionable)
             }
             _ => return,
@@ -371,6 +381,10 @@ impl App {
             self.message = Some("No comment selected".into());
             return;
         };
+        if comment.is_local_finding() {
+            self.message = Some("This AI finding is not posted to GitHub — there is nothing to reply to (post it with W in AI Review first)".to_string());
+            return;
+        }
         if !comment.is_actionable() {
             self.message = Some("AMF follow-up replies are shown for context only".to_string());
             return;

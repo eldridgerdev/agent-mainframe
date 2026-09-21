@@ -2803,6 +2803,7 @@ mod tests {
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
+            marked: Default::default(),
         };
         let (_tx, rx) = std::sync::mpsc::channel();
         app.ai_review_run.set_receiver_for_test(Some(rx));
@@ -2968,6 +2969,7 @@ mod tests {
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,
+                marked: Default::default(),
             }));
 
         let backend = TestBackend::new(140, 30);

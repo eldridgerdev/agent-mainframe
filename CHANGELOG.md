@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.44.0] - 2026-09-21
+
 ### Added
 
 - **Fix AI review findings without posting them to GitHub.** The AI Review
@@ -22,6 +24,13 @@ are tagged.
   fixed this way, and replying to a local finding says to post it first. These
   local comments aren't kept when PR Triage is refreshed or reopened; the
   finding itself stays on the AI Review screen.
+
+### Fixed
+
+- **PR Triage fix prompts now warn when a file was already touched this
+  session**, and check the whole comment list when several comments are fixed
+  in one combined prompt, so you are less likely to send an agent after a
+  hunk that has already changed.
 
 ### Changed
 

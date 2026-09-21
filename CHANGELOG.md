@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Headless AI call confirmations no longer repeat their key hints.** View,
+  edit, continue, and cancel actions now appear once in the colored footer,
+  leaving the prompt details easier to scan. No migration is required.
+
 ## [v0.44.0] - 2026-09-21
 
 ### Added

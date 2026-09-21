@@ -21,6 +21,8 @@ wait:700
 expect:Choose Expert frontier model
 note:Expert review is a distinct user-triggered step with the harness's verified model choices; no model name must be typed.
 shot:expert-frontier-model-picker
+key:k
+wait:300
 key:Enter
 wait:700
 expect:AMF is about to make a headless AI call.

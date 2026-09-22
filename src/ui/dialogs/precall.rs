@@ -124,10 +124,6 @@ pub fn draw_prompt_precall(frame: &mut Frame, pending: &PendingPrecall, theme: &
                 Style::default().fg(theme.text.to_color()),
             ),
         ]),
-        Line::raw(""),
-        Line::from(muted("   v  view the exact prompt")),
-        Line::from(muted("   e  edit its template (override manager)")),
-        Line::from(muted("   Enter  make the call    Esc  cancel it")),
     ];
     frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), chunks[0]);
 

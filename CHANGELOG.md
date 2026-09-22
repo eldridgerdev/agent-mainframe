@@ -15,6 +15,15 @@ are tagged.
 - **Headless AI call confirmations no longer repeat their key hints.** View,
   edit, continue, and cancel actions now appear once in the colored footer,
   leaving the prompt details easier to scan. No migration is required.
+- Starting a feature or adding an agent session no longer opens another
+  feature's tmux session when their names overlap. Saved features that share
+  an older tmux name receive distinct sessions while keeping their saved
+  session names and IDs.
+
+### Migration
+
+- No manual migration is required. AMF separates affected saved features
+  when they are next started.
 
 ## [v0.44.0] - 2026-09-21
 

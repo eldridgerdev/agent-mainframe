@@ -1460,8 +1460,11 @@ impl TmuxManager {
 
     /// Check if a tmux session exists
     pub fn session_exists(session: &str) -> bool {
+        // tmux accepts an unqualified target as a unique prefix. That can
+        // make a stopped feature appear to own another feature's session.
+        let exact_target = format!("={session}");
         Self::command()
-            .args(["has-session", "-t", session])
+            .args(["has-session", "-t", &exact_target])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)

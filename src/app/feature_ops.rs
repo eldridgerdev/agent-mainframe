@@ -43,6 +43,11 @@ impl App {
         if !self.feature_tmux_session_is_shared(pi, fi) {
             return Ok(());
         }
+        // A genuinely running feature is never the one that gets moved: only a
+        // session absent from tmux is safe to rename out from under a collision.
+        if self.tmux.session_exists(&current) {
+            return Ok(());
+        }
 
         let base = format!("{current}-{feature_id}");
         let mut replacement = base.clone();

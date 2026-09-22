@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.44.1] - 2026-09-22
+
 ### Fixed
 
 - **Headless AI call confirmations no longer repeat their key hints.** View,

@@ -354,6 +354,8 @@ impl App {
             anyhow::bail!("feature cannot start while its worktree script is still running");
         }
 
+        self.disambiguate_feature_tmux_session(pi, fi)?;
+
         let tmux_session = self
             .store
             .projects
@@ -738,7 +740,10 @@ impl App {
                 .projects
                 .get(pi)
                 .and_then(|project| project.features.get(fi))
-                .is_some_and(|feature| !self.tmux.session_exists(&feature.tmux_session))
+                .is_some_and(|feature| {
+                    self.feature_tmux_session_is_shared(pi, fi)
+                        || !self.tmux.session_exists(&feature.tmux_session)
+                })
     }
 
     /// Add a session that has already cleared the resource gate (or never

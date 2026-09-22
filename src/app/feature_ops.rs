@@ -14,6 +14,60 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
 impl App {
+    pub(crate) fn feature_tmux_session_is_shared(&self, pi: usize, fi: usize) -> bool {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return false;
+        };
+        self.store
+            .projects
+            .iter()
+            .flat_map(|p| &p.features)
+            .any(|other| other.id != feature.id && other.tmux_session == feature.tmux_session)
+    }
+
+    /// A legacy feature may still have a name such as `amf-main`, shared with
+    /// another project. Never treat that other feature's tmux session as ours.
+    pub(crate) fn disambiguate_feature_tmux_session(&mut self, pi: usize, fi: usize) -> Result<()> {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return Ok(());
+        };
+        let current = feature.tmux_session.clone();
+        let feature_id = feature.id.clone();
+        let used = |name: &str| {
+            self.store
+                .projects
+                .iter()
+                .flat_map(|p| &p.features)
+                .any(|f| f.id != feature_id && f.tmux_session == name)
+        };
+        if !self.feature_tmux_session_is_shared(pi, fi) {
+            return Ok(());
+        }
+        // A genuinely running feature is never the one that gets moved: only a
+        // session absent from tmux is safe to rename out from under a collision.
+        if self.tmux.session_exists(&current) {
+            return Ok(());
+        }
+
+        let base = format!("{current}-{feature_id}");
+        let mut replacement = base.clone();
+        let mut suffix = 2;
+        while used(&replacement) || self.tmux.session_exists(&replacement) {
+            replacement = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        self.store.projects[pi].features[fi].tmux_session = replacement.clone();
+        if let Err(error) = self.save() {
+            self.store.projects[pi].features[fi].tmux_session = current;
+            return Err(error);
+        }
+        self.log_warn(
+            "tmux",
+            format!("Assigned distinct tmux session {replacement} to feature {feature_id}"),
+        );
+        Ok(())
+    }
+
     /// Whether Remote Control may be enabled for a launch given the current
     /// config and environment (z.ai / third-party provider, Claude Code
     /// version). Mirrors the wizard's availability check so a feature flagged
@@ -901,6 +955,7 @@ impl App {
         created_session: Option<&mut bool>,
         intent: StartIntent,
     ) -> Result<Started> {
+        self.disambiguate_feature_tmux_session(pi, fi)?;
         // Ask before any of the setup below runs, and only when this call will
         // really start something: an already-running session means the harness
         // is already counted, and re-entering its feature must not prompt.

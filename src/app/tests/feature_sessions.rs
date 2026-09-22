@@ -698,6 +698,61 @@ fn feature_tmux_session_names_are_scoped_by_project() {
 }
 
 #[test]
+fn duplicate_legacy_tmux_name_is_reassigned_without_changing_session_identity() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    let mut second = store.projects[0].features[0].clone();
+    second.id = "other-feature".to_string();
+    second.name = "main".to_string();
+    second.tmux_session = store.projects[0].features[0].tmux_session.clone();
+    second.sessions.clear();
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Claude 1".into());
+    second.add_session_named(SessionKind::Claude, "Claude 1".into());
+    store.projects[0].features.push(second);
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let first_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    let second_id = app.store.projects[0].features[1].sessions[0].id.clone();
+
+    app.disambiguate_feature_tmux_session(0, 1).unwrap();
+
+    let features = &app.store.projects[0].features;
+    assert_eq!(features[0].tmux_session, "amf-my-feat");
+    assert_ne!(features[1].tmux_session, features[0].tmux_session);
+    assert_eq!(features[0].sessions[0].id, first_id);
+    assert_eq!(features[1].sessions[0].id, second_id);
+    assert_eq!(features[0].sessions[0].label, "Claude 1");
+    assert_eq!(features[1].sessions[0].label, "Claude 1");
+}
+
+#[test]
+fn duplicate_legacy_tmux_name_does_not_rename_the_genuinely_running_feature() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let running_session = store.projects[0].features[0].tmux_session.clone();
+    let mut stopped_duplicate = store.projects[0].features[0].clone();
+    stopped_duplicate.id = "other-feature".to_string();
+    stopped_duplicate.name = "main".to_string();
+    stopped_duplicate.status = ProjectStatus::Stopped;
+    store.projects[0].features.push(stopped_duplicate);
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(move |name| name == running_session)
+        .return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    // The running feature (index 0) is the one entering the launch path, and
+    // its own session genuinely exists in tmux: it must be left alone rather
+    // than renamed out from under the live session.
+    app.disambiguate_feature_tmux_session(0, 0).unwrap();
+
+    let features = &app.store.projects[0].features;
+    assert_eq!(features[0].tmux_session, "amf-my-feat");
+    assert_eq!(features[1].tmux_session, "amf-my-feat");
+}
+
+#[test]
 fn feature_worktree_names_are_scoped_by_project() {
     assert_eq!(worktree_name("Project One", "tt"), "project-one-tt");
     assert_eq!(worktree_name("Project Two", "tt"), "project-two-tt");

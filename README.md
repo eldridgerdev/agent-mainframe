@@ -104,9 +104,20 @@ amf
 
 This source installation requires Rust, a C compiler, and `tmux`.
 
+If you don't already have Rust and Cargo installed, install them with
+[rustup](https://rustup.rs):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Restart your shell (or run `source "$HOME/.cargo/env"`) so `cargo` is on your
+`PATH`, then re-run the `cargo install` command above.
+
 ### Build from source
 
-Building uses the current stable Rust toolchain, a C compiler, and `tmux`:
+Building uses the current stable Rust toolchain, a C compiler, and `tmux`.
+See "Install from crates.io" above for installing Rust via rustup if needed.
 
 ```bash
 git clone https://github.com/eldridgerdev/agent-mainframe

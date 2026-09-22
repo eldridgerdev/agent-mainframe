@@ -13,6 +13,11 @@ use crate::theme::Theme;
 use super::super::dashboard::centered_rect;
 use super::diff::{PatchPanelOptions, draw_patch_panel};
 
+/// Cap on the TODO title shown in an unsent-prompt row's badge, so the badge
+/// stays close in width to the sent rows' fixed timestamp and always leaves
+/// room for a preview of the prompt text.
+const UNSENT_LABEL_MAX_CHARS: usize = 24;
+
 fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
     state.diff_file.as_ref().is_some_and(|file| {
         matches!(
@@ -657,15 +662,25 @@ pub fn draw_latest_prompt_dialog(
         .enumerate()
         .skip(scroll_offset)
         .take(visible_count)
-        .map(|(i, entry)| {
-            let ts_str = entry
-                .timestamp
-                .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
-                .map(|dt: DateTime<Utc>| {
-                    let local: DateTime<Local> = dt.into();
-                    local.format("%b %d %H:%M").to_string()
-                })
-                .unwrap_or_else(|| "???".to_string());
+        .map(|(i, item)| {
+            let ts_str = match item {
+                crate::app::LatestPromptItem::Sent(entry) => entry
+                    .timestamp
+                    .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+                    .map(|dt: DateTime<Utc>| {
+                        let local: DateTime<Local> = dt.into();
+                        local.format("%b %d %H:%M").to_string()
+                    })
+                    .unwrap_or_else(|| "???".to_string()),
+                crate::app::LatestPromptItem::Unsent(prompt) => {
+                    // Capped so a long TODO title can't consume the whole
+                    // badge and crowd out the preview text below.
+                    format!(
+                        "unsent \u{00b7} {}",
+                        truncate_str(&prompt.label, UNSENT_LABEL_MAX_CHARS)
+                    )
+                }
+            };
 
             let is_selected = i == state.selected;
             let prefix = if is_selected { "> " } else { "  " };
@@ -673,8 +688,8 @@ pub fn draw_latest_prompt_dialog(
             let fixed_width = prefix.len() + ts_bracket.len();
             let avail = list_width.saturating_sub(fixed_width);
 
-            let first_line = entry
-                .text
+            let first_line = item
+                .text()
                 .lines()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("")
@@ -689,7 +704,11 @@ pub fn draw_latest_prompt_dialog(
             } else {
                 Style::default().fg(theme.text_muted.to_color())
             };
-            let ts_style = Style::default().fg(theme.info.to_color());
+            let ts_style = if item.is_unsent() {
+                Style::default().fg(theme.warning.to_color())
+            } else {
+                Style::default().fg(theme.info.to_color())
+            };
             let text_style = if is_selected {
                 Style::default()
                     .fg(theme.primary.to_color())
@@ -721,7 +740,7 @@ pub fn draw_latest_prompt_dialog(
     let detail_text = state
         .prompts
         .get(state.selected)
-        .map(|e| e.text.as_str())
+        .map(|e| e.text())
         .unwrap_or("");
     let detail = Paragraph::new(detail_text)
         .wrap(Wrap { trim: false })

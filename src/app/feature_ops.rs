@@ -1573,6 +1573,7 @@ impl App {
             feature_name,
             tmux_session,
             repo,
+            workdir,
             feature_identity,
             had_error,
             error_msg,
@@ -1583,6 +1584,7 @@ impl App {
                     s.feature_name.clone(),
                     s.tmux_session.clone(),
                     s.repo.clone(),
+                    s.workdir.clone(),
                     self.store
                         .find_project(&s.project_name)
                         .and_then(|project| {
@@ -1624,6 +1626,12 @@ impl App {
                 let _ = db.delete_feature_statuses(feature_id);
                 let _ = db.delete_launched_editors_for_feature(feature_id);
             }
+        }
+        // Keyed by workdir, not feature id, since that is how a stashed
+        // prompt is filed and recalled; unconditional so it fires whether or
+        // not the feature had a live worktree todo list to dispose of.
+        if let Some(db) = self.db.as_ref() {
+            let _ = db.delete_unsent_prompts_for_workdir(&workdir);
         }
         if let Some((feature_id, branch)) = feature_identity.as_ref() {
             self.clear_pr_association_for_deleted_feature(feature_id, &repo, branch);

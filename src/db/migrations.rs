@@ -239,6 +239,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Link issue-fixer features to their canonical GitHub issue",
             MIGRATION_039,
         ),
+        (
+            "Add unsent_prompts table for prompts a failed launch couldn't deliver",
+            MIGRATION_040,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1032,6 +1036,25 @@ const MIGRATION_039: &str = "
 ALTER TABLE features ADD COLUMN issue_source TEXT;
 ";
 
+/// A prompt AMF computed to seed a session's composer, but couldn't deliver
+/// because the launch that would have carried it failed (e.g. the agent limit
+/// or a harness spawn error). Scoped by `workdir` rather than a feature id so
+/// it survives feature recreation and is found by the same lookup the
+/// `Latest Prompt` recall (`leader l`) already does for that checkout — a
+/// stashed prompt shows up there once a session exists to view it, and is
+/// also saved into the `prompt_templates` library immediately so it is never
+/// only reachable through a feature that may never start.
+const MIGRATION_040: &str = "
+CREATE TABLE IF NOT EXISTS unsent_prompts (
+    id         TEXT PRIMARY KEY,
+    workdir    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_unsent_prompts_workdir ON unsent_prompts(workdir);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1074,7 +1097,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1113,7 +1136,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1208,7 +1231,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     #[test]
@@ -1550,7 +1573,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 39);
+        assert_eq!(rows, 40);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1715,7 +1738,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

@@ -299,7 +299,7 @@ option, and answers are pitched at a first-time reader by default. See
   non-blocking and several may be in flight: a persistent `mpsc` channel
   owned by `LearningRuns` plus a thread per run, drained by
   `poll_learning_answers_bg()` next to the other `poll_*_bg` calls in
-  `main.rs`. An answer that lands after the overlay closed is still
+  `src/cli.rs`. An answer that lands after the overlay closed is still
   persisted (`finish_learning_qa_in_db`), and a row left `running` by a
   previous process is failed on load by `reconcile_interrupted_qa`
   rather than reloading as "thinking…" forever.

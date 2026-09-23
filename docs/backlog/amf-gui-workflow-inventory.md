@@ -23,7 +23,8 @@ Keep them current as the staged GUI scope grows.
 The Linux development build and automated suites pass, and the GUI has been
 run under WSL2/WSLg during development, which is where attaching a terminal
 from a desktop launch (no terminal on stdin) was fixed. Native macOS runtime
-checks and packaging for every platform remain release work. The TUI remains
+checks remain release work. Releases publish Linux x86_64 `.deb` and AppImage
+builds; macOS packaging and signing are still open. The TUI remains
 the complete interface for workflows marked Planned.
 
 ## Method

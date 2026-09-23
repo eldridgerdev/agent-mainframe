@@ -3,6 +3,22 @@
 This is the Tauri desktop interface for AMF. The `amf` terminal interface
 remains available and uses the same project database and tmux sessions.
 
+## Install a release build
+
+Each AMF release on GitHub includes Linux x86_64 GUI builds next to the `amf`
+downloads. They carry the same version number as `amf`.
+
+- **Debian/Ubuntu:** download `amf-gui-x86_64-unknown-linux-gnu.deb` and
+  install it with `sudo apt install ./amf-gui-x86_64-unknown-linux-gnu.deb`,
+  which also installs `tmux`. Launch it from your applications menu or run
+  `amf-gui`.
+- **Other distributions:** download `amf-gui-x86_64-unknown-linux-gnu.AppImage`,
+  run `chmod +x` on it, and run it. Install `tmux` yourself.
+
+Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
+be on `PATH`. On Windows, install the Linux build inside WSL2 and it opens
+through WSLg. macOS builds are not published yet; build from source instead.
+
 ## Run from source
 
 Install the current stable Rust toolchain, Node.js 22.12 or later, a C compiler,
@@ -50,6 +66,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Installers, signing, macOS Finder launch environment, and independently
-versioned release updates remain packaging work. The repository's existing
-release workflow publishes the TUI only.
+The release workflow (`.github/workflows/release.yml`) builds the Linux `.deb`
+and AppImage from each version tag. If the GUI build fails, the `amf` release
+is still published. macOS builds, code signing, the macOS Finder launch
+environment and in-app updates remain packaging work.

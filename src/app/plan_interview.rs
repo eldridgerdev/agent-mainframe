@@ -14,6 +14,7 @@ use super::{
     Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
+use crate::db::todos::Todo;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 use crate::project::AgentKind;
@@ -558,6 +559,20 @@ impl App {
         let fi =
             self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
 
+        self.start_todo_plan_in_host_feature_explicit(origin, &todo, pi, fi, scratchpad.as_deref())
+    }
+
+    /// Explicit-target counterpart used by the GUI. Both interfaces enter
+    /// the same interview state and therefore share draft, accept and cancel
+    /// behavior after the target has been resolved.
+    pub(crate) fn start_todo_plan_in_host_feature_explicit(
+        &mut self,
+        origin: TodoPlanOrigin,
+        todo: &Todo,
+        pi: usize,
+        fi: usize,
+        scratchpad: Option<&str>,
+    ) -> Result<()> {
         let Some((repo, feature_name, workdir, agent)) =
             self.store.projects.get(pi).and_then(|project| {
                 project.features.get(fi).map(|feature| {
@@ -574,8 +589,8 @@ impl App {
             return Ok(());
         };
 
-        let provenance = self.todo_provenance(pi, fi, &todo);
-        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+        let provenance = self.todo_provenance(pi, fi, todo);
+        let brief = Self::compose_plan_brief(todo, scratchpad, &provenance);
 
         let questions = self.extension_for_repo(&repo).plan_interview_questions();
         let mut state =
@@ -2452,6 +2467,16 @@ impl App {
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
+        self.complete_plan_interview_with_resource_approval(false)
+    }
+
+    /// GUI-approved counterpart. The GUI presents its resource notice before
+    /// entering this method, so the TUI's `AppMode` confirmation is skipped
+    /// only for that explicitly approved request.
+    pub(crate) fn complete_plan_interview_with_resource_approval(
+        &mut self,
+        resource_approved: bool,
+    ) -> Result<()> {
         let (workdir, plan, interview_key, todo_origin, expert_brief) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.workdir.clone(),
@@ -2513,7 +2538,7 @@ impl App {
             // A completed interview has all the state needed to pause safely,
             // so use the same interactive resource gate as manual starts. The
             // dialog retains this PlanInterview mode for cancellation.
-            if self.gate_plan_launch(pending.clone()) {
+            if !resource_approved && self.gate_plan_launch(pending.clone()) {
                 return Ok(());
             }
 
@@ -2661,7 +2686,9 @@ impl App {
             return;
         };
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+        if !self.attach_launched_todo_reference(&session_id, &origin.todo_id) {
+            return;
+        }
 
         // The row is already in progress (plan mode marked it when it began);
         // this only records which session is doing the work, matching the
@@ -2718,17 +2745,17 @@ impl App {
         let label = Self::todo_session_label(&origin.todo_title);
         // Warn rather than park: the confirmation dialog is an `AppMode`, and
         // the interview it would replace has already been consumed here.
-        let si = match self.create_agent_session_labeled(
+        let session_id = match self.create_agent_session_labeled_identified(
             pi,
             fi,
             &label,
             Some(agent),
             StartIntent::Warn("the agent for this TODO's plan"),
         ) {
-            Ok(si) => si,
+            Ok((_, session_id, _)) => session_id,
             Err(e) => {
                 if rollback_on_failure {
-                    self.todos_rollback_launch_best_effort(&origin.todo_id);
+                    self.todos_rollback_launch_best_effort(&origin.todo_id, None);
                 }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
                 self.message = Some(format!("Plan written to {}", plan_path.display()));
@@ -2736,30 +2763,45 @@ impl App {
             }
         };
 
-        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-
         // Tie the session to its TODO so the embedded sidebar renders the
         // "Active TODO" section, matching the non-plan spawn routes
         // (`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`). Without
         // this the plan-launched agent has no visible link back to its item.
-        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+        // By id: either save above may have reloaded the store under a
+        // conflict, which re-points any index held from before it.
+        if !self.attach_launched_todo_reference(&session_id, &origin.todo_id) {
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, None);
+            }
+            self.push_toast_error("Plan saved, but the agent's session vanished as it was created");
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        }
 
         if planned_todo.is_some()
             && let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id))
         {
             if rollback_on_failure {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             return Err(e);
         }
 
+        let Some((pi, fi, si)) = self.session_indices_by_id(&session_id) else {
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
+            }
+            self.push_toast_error("Plan saved, but the agent's session vanished as it was created");
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        };
         self.selection = Selection::Session(pi, fi, si);
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
         {
             if rollback_on_failure {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             return Err(e);
         }

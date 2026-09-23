@@ -1204,6 +1204,24 @@ impl App {
         harness: Option<AgentKind>,
         intent: StartIntent,
     ) -> Result<usize> {
+        self.create_agent_session_labeled_identified(pi, fi, label, harness, intent)
+            .map(|(index, _, _)| index)
+    }
+
+    /// The same launch as `create_agent_session_labeled`, with stable session
+    /// and window identities for adapters that must associate the result with
+    /// another persisted record (such as a GUI TODO launch). A save conflict
+    /// reloads the store, which can move the feature itself, so a caller
+    /// that keeps going after this returns should re-resolve `(pi, fi, si)`
+    /// from the session id rather than trust the `pi`/`fi` it passed in.
+    pub(crate) fn create_agent_session_labeled_identified(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: &str,
+        harness: Option<AgentKind>,
+        intent: StartIntent,
+    ) -> Result<(usize, String, String)> {
         // This always launches a harness, so the gate runs unconditionally --
         // once, here, covering both the new session and any of the feature's
         // own agents that come up with it.
@@ -1250,7 +1268,9 @@ impl App {
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
 
+        let feature_id = feature.id.clone();
         let session = feature.add_session_named(kind.clone(), label.to_string());
+        let session_record = session.clone();
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();
         feature.collapsed = false;
@@ -1287,18 +1307,47 @@ impl App {
             return Err(e);
         }
 
-        // The session is up by now, so a failed save is not worth tearing a
-        // live agent back down for — and returning an error here would tell
-        // the caller nothing was started while a harness is running. It is
-        // logged and the in-memory store keeps the session; the next save
-        // writes it out.
-        if let Err(e) = self.save() {
-            self.log_warn(
+        // The session is up by now. A save that conflicts with another
+        // process's write re-adds this record to the refreshed store rather
+        // than dropping it, which would leave a live harness with no row
+        // behind it. Only when the feature itself is gone (or writers keep
+        // winning) is the window torn down and the start reported failed.
+        let outcome = self.save_reapplying(|store| {
+            let Some((pi, fi)) = store.locate_feature_by_id(None, &feature_id) else {
+                return false;
+            };
+            let feature = &mut store.projects[pi].features[fi];
+            if !feature.sessions.iter().any(|s| s.id == session_record.id) {
+                feature.sessions.push(session_record.clone());
+            }
+            feature.collapsed = false;
+            true
+        });
+        match outcome {
+            Ok(ReapplyOutcome::Saved) => {}
+            Ok(lost @ (ReapplyOutcome::TargetGone | ReapplyOutcome::Conflict)) => {
+                let _ = self.tmux.kill_window(&tmux_session, &window);
+                anyhow::bail!(if lost == ReapplyOutcome::TargetGone {
+                    "the feature was removed elsewhere while its agent started; the new window was closed"
+                } else {
+                    crate::app::SAVE_CONFLICT_MESSAGE
+                });
+            }
+            // A failed DB write (not a conflict) is not worth tearing a live
+            // agent back down for, and returning an error here would tell the
+            // caller nothing was started while a harness is running. It is
+            // logged and the in-memory store keeps the session; the next save
+            // writes it out.
+            Err(e) => self.log_warn(
                 "session",
                 format!("started '{label}' but couldn't save the store: {e}"),
-            );
+            ),
         }
-        Ok(si)
+        // A reload re-pointed indices; resolve this session's own.
+        let si = self
+            .session_indices_by_id(&session_id)
+            .map_or(si, |(_, _, si)| si);
+        Ok((si, session_id, window))
     }
 
     /// Create the tmux window for a new agent session and launch its harness in

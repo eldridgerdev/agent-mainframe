@@ -1,19 +1,25 @@
-//! Shared library behind the `amf` binary (`src/main.rs` -> `cli::run`).
+//! Shared library behind AMF's front ends: the `amf` TUI binary
+//! (`src/main.rs` -> `cli::run`) and the desktop GUI.
 //!
-//! The crate is split into a library and a thin binary so another front end
-//! (the planned desktop GUI) can link AMF's workspace, session, and TODO
-//! logic directly. Only `cli` is `pub` today. Everything else stays a plain
-//! `mod`, which keeps it fully visible within this crate without changing
-//! its *effective* visibility from what it was as part of the `amf` binary:
-//! widening a module to `pub mod` pulls its whole public surface into
+//! Only `cli` and the modules the GUI calls are `pub`: `automation` and
+//! `project` for request/response types, and the `gui_*` contract modules,
+//! which wrap the same `App` operations the TUI uses. Everything else stays a
+//! plain `mod`, which keeps it fully visible within this crate without
+//! changing its *effective* visibility from what it was as part of the `amf`
+//! binary: widening a module to `pub mod` pulls its whole public surface into
 //! clippy's API-hygiene lints (`should_implement_trait` and friends) even
 //! where nothing outside the crate calls it yet. Widen deliberately, module
 //! by module, as a consumer needs it.
 
+pub mod automation;
 pub mod cli;
+pub mod gui_contract;
+pub mod gui_plans;
+pub mod gui_terminal;
+pub mod gui_todos;
+pub mod project;
 
 mod app;
-mod automation;
 mod claude;
 mod codex;
 mod codex_config;
@@ -39,7 +45,6 @@ mod markdown;
 mod perf;
 mod pi;
 mod plan_interview;
-mod project;
 mod prompt_library;
 mod prompts;
 mod resources;

@@ -85,7 +85,10 @@ fn agents_running(count: usize) -> String {
 
 /// One phrase naming whichever half of the gate tripped, for the warnings that
 /// have no dialog to lay it out in.
-fn describe_tripped(over_limit: Option<OverLimit>, low_memory: Option<LowMemory>) -> String {
+pub(crate) fn describe_tripped(
+    over_limit: Option<OverLimit>,
+    low_memory: Option<LowMemory>,
+) -> String {
     match (over_limit, low_memory) {
         (Some(over), Some(low)) => format!(
             "{} already running (limit {}) and only {} MiB free",

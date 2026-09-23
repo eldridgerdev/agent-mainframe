@@ -27,6 +27,38 @@ pub struct TmuxManager;
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Strip a tmux control-mode line's trailing CR/LF and the `-CC` PTY
+/// wrapper's DCS framing (`\eP1000p` ... `\e\`) some tmux versions add
+/// around each line when the client is attached to a real PTY (see
+/// `TmuxManager::spawn_control_mode_view_client`). Shared by the TUI's
+/// control-mode view worker and the GUI terminal transport -- both read
+/// lines off the same kind of client and need the same framing removed
+/// before matching on `%`-prefixed notifications.
+pub(crate) fn sanitize_tmux_control_line(line: &str) -> &str {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let line = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+    line.strip_suffix("\u{1b}\\").unwrap_or(line)
+}
+
+/// Extract `(pane_id, payload)` from a control-mode `%output`/`%extended-output`
+/// notification line, or `None` for any other line. The payload is the
+/// notification's own escaped text -- both consumers of this (the TUI's
+/// control-mode worker and the GUI terminal transport) use it purely as a
+/// dirty-signal for the pane named by `pane_id`, then re-fetch real content
+/// via `capture_pane_ansi`/`capture_pane_for_replay` rather than decoding
+/// this payload directly; see the inline comment on the control stream in
+/// `App::run_control_mode_view_worker` (`src/app/mod.rs`) for why.
+pub(crate) fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = line.strip_prefix("%output ") {
+        return rest.split_once(' ');
+    }
+
+    let rest = line.strip_prefix("%extended-output ")?;
+    let (metadata, payload) = rest.split_once(" : ")?;
+    let pane_id = metadata.split_whitespace().next()?;
+    Some((pane_id, payload))
+}
+
 pub struct SpawnedTmuxCommand {
     pub child: Child,
     pub output_rx: Receiver<String>,
@@ -1051,12 +1083,13 @@ impl TmuxManager {
         };
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
 
-        unsafe {
-            if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == -1 {
-                return Err(std::io::Error::last_os_error())
-                    .context("Failed to read terminal attributes for tmux PTY");
-            }
-            libc::cfmakeraw(&mut termios);
+        // The TUI always runs on a terminal and seeds the PTY from stdin's
+        // attributes. The GUI usually has no terminal on stdin (a desktop
+        // launch, or stdin piped by `npm`/`cargo`), where `tcgetattr` fails
+        // with ENOTTY; it gets the PTY's own defaults, made raw below.
+        let from_stdin = unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0;
+        if from_stdin {
+            unsafe { libc::cfmakeraw(&mut termios) };
         }
 
         #[cfg(target_os = "macos")]
@@ -1065,7 +1098,11 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &mut termios,
+                if from_stdin {
+                    &mut termios
+                } else {
+                    std::ptr::null_mut()
+                },
                 &mut winsize,
             )
         };
@@ -1075,7 +1112,11 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &termios,
+                if from_stdin {
+                    &termios
+                } else {
+                    std::ptr::null()
+                },
                 &winsize,
             )
         };
@@ -1086,6 +1127,22 @@ impl TmuxManager {
 
         let master = unsafe { File::from_raw_fd(master) };
         let slave = unsafe { File::from_raw_fd(slave) };
+
+        if !from_stdin {
+            let fd = slave.as_raw_fd();
+            unsafe {
+                if libc::tcgetattr(fd, &mut termios) == -1 {
+                    return Err(std::io::Error::last_os_error())
+                        .context("Failed to read terminal attributes for tmux PTY");
+                }
+                libc::cfmakeraw(&mut termios);
+                if libc::tcsetattr(fd, libc::TCSANOW, &termios) == -1 {
+                    return Err(std::io::Error::last_os_error())
+                        .context("Failed to set terminal attributes for tmux PTY");
+                }
+            }
+        }
+
         Ok((master, slave))
     }
 
@@ -1846,6 +1903,31 @@ impl TmuxManager {
         };
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Full pane content plus cursor position, encoded as one string ready
+    /// to feed to any terminal emulator (vt100 for the TUI, xterm.js for the
+    /// GUI) immediately after a full reset. `capture-pane` output alone
+    /// carries no cursor-position information, so `cursor_position`'s
+    /// reported column/row is appended as an explicit CUP escape, clamped to
+    /// the given dimensions exactly as the TUI's own `position_parser_cursor`
+    /// does. See `crate::ui::pane::normalize_captured_pane` for why the
+    /// newline handling matters.
+    ///
+    /// Deliberately separate from the TUI's `reseed_control_view_parser`
+    /// (`src/app/mod.rs`) rather than a shared refactor of it: that function
+    /// sits on a timing-sensitive, already-tuned rendering hot path, and this
+    /// GUI-only helper duplicating its ~4 lines of glue is a smaller risk
+    /// than touching it.
+    pub fn capture_pane_for_replay(session: &str, window: &str, cols: u16, rows: u16) -> String {
+        let captured = Self::capture_pane_ansi(session, window).unwrap_or_default();
+        let mut normalized = crate::ui::pane::normalize_captured_pane(&captured);
+        if let Ok((x, y)) = Self::cursor_position(session, window) {
+            let row = y.min(rows.saturating_sub(1)).saturating_add(1);
+            let col = x.min(cols.saturating_sub(1)).saturating_add(1);
+            normalized.push_str(&format!("\x1b[{row};{col}H"));
+        }
+        normalized
     }
 
     /// Capture pane content with ANSI sequences, including scrollback history

@@ -209,7 +209,7 @@ pub fn attention_badge_text(attention_count: usize) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // exercised only by unit tests
-pub fn draw(
+pub(crate) fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,

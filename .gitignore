@@ -40,3 +40,10 @@ docker/*
 .dockerignore
 docs/docker-screenshots.md
 AMF_PLAN.md
+
+# GUI shell (Tauri + frontend) build/dependency output — see AMF_PLAN.md's
+# package-layout decision. `/target` above already covers gui/src-tauri's
+# Cargo output since it's a workspace member.
+gui/node_modules/
+gui/dist/
+gui/src-tauri/gen/

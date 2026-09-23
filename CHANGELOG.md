@@ -10,6 +10,26 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **A desktop GUI preview (`gui/`), built from source.** It shares `amf.db`
+  and the tmux sessions with the terminal interface, so you can switch
+  between the two or run both at once. A sidebar lists your projects and
+  their features, with running features first. Each feature page has live
+  terminal tabs for its agent sessions, a TODOs tab, and Start, Stop and Plan
+  buttons. Global, project and worktree TODO lists support adding, reordering,
+  moving and copying items. Starting a TODO asks where and how to run it: in
+  an existing or new worktree feature, starting the agent now or planning
+  first. The agent's prompt opens as an editable draft under the terminal and
+  is only sent when you choose. Full and Quick Plan interviews run in a window
+  you can minimize while you keep working. AMF's resource warnings ask for
+  approval before starting another agent, as they do in the TUI. The terminal
+  bundles fallback fonts so Nerd Font status lines and agent tool output
+  render the same on every machine. See `gui/README.md` to run it, and
+  `docs/backlog/amf-gui-workflow-inventory.md` for which workflows are
+  available so far; everything else still needs `amf`. Releases still ship
+  only the terminal interface. No migration is required.
+
 ## [v0.44.1] - 2026-09-22
 
 ### Fixed

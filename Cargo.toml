@@ -1,3 +1,10 @@
+[workspace]
+members = ["gui/src-tauri"]
+# The workspace root is this package itself (the common root-crate-as-member
+# layout) rather than a virtual manifest, so `amf`'s existing Cargo.toml
+# location and publishing behavior are unchanged. No `resolver` override: the
+# workspace inherits the root package's edition-2024 default (resolver "3").
+
 [package]
 name = "agent-mainframe"
 version = "0.44.1"
@@ -36,6 +43,7 @@ exclude = [
     "/docs/repository-cleanup-audit.md",
     "/docs/screenshots",
     "/docs/usability-review.md",
+    "/gui",
 ]
 
 [lib]

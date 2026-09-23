@@ -29,3 +29,22 @@ visible on PR and scheduled runs, revisit on the next dependency update, and
 track separate fixes rather than bundling unrelated upgrades into this refactor.
 See [checks.md](checks.md) for audit commands and exception policy. Hosted CI
 validation is still pending publication of this branch.
+
+## GUI workspace extension (2026-09-23)
+
+Adding the Tauri GUI expanded `Cargo.lock` to 567 crates. A fresh local
+`cargo-audit 0.22.2` scan initially found
+[RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285) in
+rustls 0.23.37. A targeted lockfile update to rustls 0.23.45 (and its
+compatible rustls-webpki 0.103.15) cleared the blocking finding. The scan
+now exits 0 with 12 visible nonfatal warnings: the five above and these seven
+introduced by the GUI dependency graph:
+
+| Locked dependency | Advisory / warning | Dependency path and follow-up |
+| --- | --- | --- |
+| proc-macro-error 1.0.4 | [RUSTSEC-2024-0370](https://rustsec.org/advisories/RUSTSEC-2024-0370), unmaintained | Tauri's GTK macro crates; build-time dependency, follow upstream GTK bindings |
+| unic-char-property, unic-char-range, unic-common, unic-ucd-ident, unic-ucd-version 0.9.0 | [RUSTSEC-2025-0081](https://rustsec.org/advisories/RUSTSEC-2025-0081), [RUSTSEC-2025-0075](https://rustsec.org/advisories/RUSTSEC-2025-0075), [RUSTSEC-2025-0080](https://rustsec.org/advisories/RUSTSEC-2025-0080), [RUSTSEC-2025-0100](https://rustsec.org/advisories/RUSTSEC-2025-0100), [RUSTSEC-2025-0098](https://rustsec.org/advisories/RUSTSEC-2025-0098), unmaintained | Tauri → tauri-utils → urlpattern; monitor upstream replacement |
+| glib 0.18.5 | [RUSTSEC-2024-0429](https://rustsec.org/advisories/RUSTSEC-2024-0429), unsound iterator | Tauri's Linux GTK/WebKit runtime; no direct GUI use of `VariantStrIter` found, but transitive exposure is not ruled out; follow upstream bindings |
+
+No warning is ignored. This table records the local dependency paths and
+keeps the existing maintainer follow-up policy above.

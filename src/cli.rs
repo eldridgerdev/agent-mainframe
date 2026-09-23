@@ -986,7 +986,7 @@ impl LoopDeadlines {
 
 /// Hand the terminal to `$VISUAL`/`$EDITOR` for one file, then take it back.
 ///
-/// The teardown/restore pair mirrors `main()`'s setup exactly, so the editor
+/// The teardown/restore pair mirrors `run()`'s setup exactly, so the editor
 /// runs on a terminal in the state it would have had if AMF were never
 /// started. Failures are reported through `app.message` rather than bubbling
 /// up: a missing editor should not end the session — but the screen is always
@@ -1069,7 +1069,7 @@ fn run_pending_editor<B: Backend + io::Write>(
 }
 
 // The `io::Write` bound is what lets `run_pending_editor` drive the terminal's
-// alternate screen / raw mode through the backend, the same way `main` does.
+// alternate screen / raw mode through the backend, the same way `run` does.
 fn run_loop<B: Backend + io::Write>(
     terminal: &mut Terminal<B>,
     app: &mut App,

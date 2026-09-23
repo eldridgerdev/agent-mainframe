@@ -40,7 +40,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config git tmux bash coreutils procps
+          sudo apt-get install -y build-essential pkg-config git tmux bash coreutils procps \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev
 
       - name: Install macOS test prerequisites
         if: runner.os == 'macOS'
@@ -81,6 +83,12 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install GUI build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@v4
         with:
@@ -93,10 +101,39 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo clippy
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo fmt
         run: cargo fmt --check
+
+  gui-frontend:
+    name: GUI frontend
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend interaction tests
+        run: npm test
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Audit frontend dependencies
+        run: npm audit
 
   audit:
     name: Dependency audit

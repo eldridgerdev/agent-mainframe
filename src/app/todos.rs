@@ -2036,8 +2036,10 @@ impl App {
         if !work.reserve_launch() {
             return Ok(false);
         }
-        if let Some(db) = &self.db {
-            db.set_todo_work_state(&todo.id, &work)?;
+        if let Some(db) = &self.db
+            && !db.reserve_todo_agent_launch(&todo.id)?
+        {
+            return Ok(false);
         }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in &mut state.panes {
@@ -2062,10 +2064,7 @@ impl App {
     pub(crate) fn todos_prepare_planned_launch(&mut self, todo: &Todo) -> Result<Option<bool>> {
         match todo.work.status {
             TodoStatus::InProgress => Ok(Some(false)),
-            TodoStatus::NotStarted => {
-                self.todos_reserve_launch(todo)?;
-                Ok(Some(true))
-            }
+            TodoStatus::NotStarted => Ok(self.todos_reserve_launch(todo)?.then_some(true)),
             TodoStatus::Completed => Ok(None),
         }
     }
@@ -2074,8 +2073,12 @@ impl App {
     pub(crate) fn todos_rollback_launch(&mut self, todo_id: &str) -> Result<()> {
         let mut work = TodoWorkState::default();
         work.rollback_launch();
-        if let Some(db) = &self.db {
-            db.set_todo_work_state(todo_id, &work)?;
+        let rolled_back = match &self.db {
+            Some(db) => db.rollback_reserved_todo_agent_launch(todo_id)?,
+            None => true,
+        };
+        if !rolled_back {
+            return Ok(());
         }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in &mut state.panes {

@@ -115,8 +115,40 @@ impl AmfDb {
         store::load(&self.conn)
     }
 
+    /// The `store_meta` version currently on disk, with no store data. Used
+    /// to establish a baseline after an unconditional [`Self::save_store`]
+    /// (see `App::save`'s `store_version: None` branch) without a second
+    /// full load.
+    pub fn current_store_version(&self) -> Result<u64> {
+        store::current_version(&self.conn)
+    }
+
+    /// [`Self::load_store`] plus the store version it was read at. Use this
+    /// (not `load_store`) for a load that will later save through
+    /// [`Self::save_store_checked`] — see `store::load_versioned`.
+    pub fn load_store_versioned(&self) -> Result<(crate::project::ProjectStore, u64)> {
+        store::load_versioned(&self.conn)
+    }
+
+    /// Unconditional full-replace save, for the one-time seed/merge at
+    /// [`Self::open_or_seed`] time — nothing else holds a loaded version to
+    /// race against yet. Application code saving a live, previously-loaded
+    /// store must use [`Self::save_store_checked`] instead so a concurrent
+    /// writer (the GUI, the TUI, or another AMF process) is detected rather
+    /// than silently overwritten; see `store::save`'s doc comment.
     pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<()> {
         store::save(&self.conn, store)
+    }
+
+    /// Cross-process-safe save: succeeds only if nothing has saved since
+    /// `expected_version` (from [`Self::load_store_versioned`], or a
+    /// previous save's returned version) was read. See `store::save_checked`.
+    pub fn save_store_checked(
+        &self,
+        store: &crate::project::ProjectStore,
+        expected_version: u64,
+    ) -> Result<store::SaveOutcome> {
+        store::save_checked(&self.conn, store, expected_version)
     }
 
     /// Fresh from disk, not the in-memory `ProjectStore` snapshot — see
@@ -584,8 +616,28 @@ impl AmfDb {
         todos::agent_session_associations(&self.conn)
     }
 
+    pub fn clear_missing_todo_agent_sessions(&self) -> Result<usize> {
+        todos::clear_missing_agent_sessions(&self.conn)
+    }
+
     pub fn set_todo_work_state(&self, todo_id: &str, work: &todos::TodoWorkState) -> Result<()> {
         todos::set_work_state(&self.conn, todo_id, work)
+    }
+
+    pub fn reserve_todo_agent_launch(&self, todo_id: &str) -> Result<bool> {
+        todos::reserve_agent_launch(&self.conn, todo_id)
+    }
+
+    pub fn associate_reserved_todo_agent_session(
+        &self,
+        todo_id: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        todos::associate_reserved_agent_session(&self.conn, todo_id, session_id)
+    }
+
+    pub fn rollback_reserved_todo_agent_launch(&self, todo_id: &str) -> Result<bool> {
+        todos::rollback_reserved_agent_launch(&self.conn, todo_id)
     }
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {

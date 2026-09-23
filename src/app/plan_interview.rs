@@ -14,6 +14,7 @@ use super::{
     Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
+use crate::db::todos::Todo;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 use crate::project::AgentKind;
@@ -558,6 +559,20 @@ impl App {
         let fi =
             self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
 
+        self.start_todo_plan_in_host_feature_explicit(origin, &todo, pi, fi, scratchpad.as_deref())
+    }
+
+    /// Explicit-target counterpart used by the GUI. Both interfaces enter
+    /// the same interview state and therefore share draft, accept and cancel
+    /// behavior after the target has been resolved.
+    pub(crate) fn start_todo_plan_in_host_feature_explicit(
+        &mut self,
+        origin: TodoPlanOrigin,
+        todo: &Todo,
+        pi: usize,
+        fi: usize,
+        scratchpad: Option<&str>,
+    ) -> Result<()> {
         let Some((repo, feature_name, workdir, agent)) =
             self.store.projects.get(pi).and_then(|project| {
                 project.features.get(fi).map(|feature| {
@@ -574,8 +589,8 @@ impl App {
             return Ok(());
         };
 
-        let provenance = self.todo_provenance(pi, fi, &todo);
-        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+        let provenance = self.todo_provenance(pi, fi, todo);
+        let brief = Self::compose_plan_brief(todo, scratchpad, &provenance);
 
         let questions = self.extension_for_repo(&repo).plan_interview_questions();
         let mut state =
@@ -2452,6 +2467,16 @@ impl App {
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
+        self.complete_plan_interview_with_resource_approval(false)
+    }
+
+    /// GUI-approved counterpart. The GUI presents its resource notice before
+    /// entering this method, so the TUI's `AppMode` confirmation is skipped
+    /// only for that explicitly approved request.
+    pub(crate) fn complete_plan_interview_with_resource_approval(
+        &mut self,
+        resource_approved: bool,
+    ) -> Result<()> {
         let (workdir, plan, interview_key, todo_origin, expert_brief) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.workdir.clone(),
@@ -2513,7 +2538,7 @@ impl App {
             // A completed interview has all the state needed to pause safely,
             // so use the same interactive resource gate as manual starts. The
             // dialog retains this PlanInterview mode for cancellation.
-            if self.gate_plan_launch(pending.clone()) {
+            if !resource_approved && self.gate_plan_launch(pending.clone()) {
                 return Ok(());
             }
 

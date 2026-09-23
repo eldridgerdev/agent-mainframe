@@ -1204,6 +1204,22 @@ impl App {
         harness: Option<AgentKind>,
         intent: StartIntent,
     ) -> Result<usize> {
+        self.create_agent_session_labeled_identified(pi, fi, label, harness, intent)
+            .map(|(index, _, _)| index)
+    }
+
+    /// The same launch as `create_agent_session_labeled`, with stable session
+    /// and window identities for adapters that must associate the result with
+    /// another persisted record (such as a GUI TODO launch). The identities
+    /// survive a save conflict even if its in-memory index does not.
+    pub(crate) fn create_agent_session_labeled_identified(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: &str,
+        harness: Option<AgentKind>,
+        intent: StartIntent,
+    ) -> Result<(usize, String, String)> {
         // This always launches a harness, so the gate runs unconditionally --
         // once, here, covering both the new session and any of the feature's
         // own agents that come up with it.
@@ -1298,7 +1314,7 @@ impl App {
                 format!("started '{label}' but couldn't save the store: {e}"),
             );
         }
-        Ok(si)
+        Ok((si, session_id, window))
     }
 
     /// Create the tmux window for a new agent session and launch its harness in

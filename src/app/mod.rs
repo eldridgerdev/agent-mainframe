@@ -158,6 +158,14 @@ pub const GH_GRAPHQL_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// cuts it tenfold and is still far inside a PR badge's useful freshness.
 pub const ACTIVE_PR_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
+/// `App::save`'s message on a detected cross-process conflict (`AMF_PLAN.md`
+/// Task 5). A shared constant, not a literal repeated at each call site, so
+/// `gui_contract::GuiError`'s `From<anyhow::Error>` impl can classify this
+/// specific failure as `GuiErrorKind::Conflict` by exact match without the
+/// two texts silently drifting apart.
+pub(crate) const SAVE_CONFLICT_MESSAGE: &str = "Workspace changed elsewhere (another AMF window or process) before this save landed. Your \
+     change was not saved; the view has been refreshed with the current state -- please retry.";
+
 /// Cached dashboard metadata for an open pull request associated with a
 /// feature's branch. The branch and head SHA travel with the badge so a
 /// background result can never be applied after the feature changes branches.
@@ -212,22 +220,7 @@ pub struct ViewSnapshot {
     pub pipe_read_duration: Option<Duration>,
 }
 
-fn sanitize_tmux_control_line(line: &str) -> &str {
-    let line = line.trim_end_matches(['\r', '\n']);
-    let line = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
-    line.strip_suffix("\u{1b}\\").unwrap_or(line)
-}
-
-fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = line.strip_prefix("%output ") {
-        return rest.split_once(' ');
-    }
-
-    let rest = line.strip_prefix("%extended-output ")?;
-    let (metadata, payload) = rest.split_once(" : ")?;
-    let pane_id = metadata.split_whitespace().next()?;
-    Some((pane_id, payload))
-}
+use crate::tmux::{parse_tmux_output_notification, sanitize_tmux_control_line};
 
 fn parser_cursor(parser: &vt100::Parser) -> Option<(u16, u16)> {
     let (row, col) = parser.screen().cursor_position();
@@ -854,6 +847,12 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub db: Option<crate::db::AmfDb>,
+    /// The `store_meta` version `store` was loaded at, when `db` is `Some`.
+    /// `save` uses this for a version-checked (cross-process-safe) write and
+    /// updates it after every save/reload — see `AMF_PLAN.md` Task 5 and
+    /// `db::store::save_checked`. `None` when there is no DB (tests, or the
+    /// JSON-file fallback), where there is nothing else to race against.
+    pub(crate) store_version: Option<u64>,
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
@@ -963,7 +962,7 @@ pub struct App {
     /// Transient context-hint dismissal state keyed by AMF session ID.
     pub(crate) context_hint_states: context_hints::ContextHintStates,
     pub context_collector: SessionContextCollector,
-    pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
+    pub(crate) session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
     /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
     /// worker behind `active_pr_bg`.
@@ -1158,7 +1157,7 @@ pub struct App {
     /// frame after the pane is back to full height is revealed — so a
     /// clean pane shows no wobble and a corrupted one just resolves.
     view_display_frozen_until: Option<Instant>,
-    pub harness_check_tx: Sender<HarnessCheckResult>,
+    pub(crate) harness_check_tx: Sender<HarnessCheckResult>,
     harness_check_rx: Receiver<HarnessCheckResult>,
 }
 
@@ -2358,7 +2357,7 @@ impl App {
     pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
-        let store = db.load_store()?;
+        let (store, store_version) = db.load_store_versioned()?;
         setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
@@ -2403,6 +2402,7 @@ impl App {
             store,
             store_path,
             db: Some(db),
+            store_version: Some(store_version),
             precall_cleared: None,
             precall_return: None,
             config,
@@ -2651,6 +2651,7 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
+            store_version: None,
             precall_cleared: None,
             precall_return: None,
             config: AppConfig {
@@ -3511,15 +3512,61 @@ impl App {
         Ok(())
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Persists `self.store`, reporting whether it actually saved or hit a
+    /// concurrent-writer conflict, without turning a conflict into an `Err`
+    /// -- see `save`, which wraps this for TUI call sites that just want to
+    /// bail with a message, and `gui_contract::GuiHandle`, which wraps it to
+    /// report `GuiErrorKind::Conflict` instead of a bare internal error.
+    ///
+    /// Cross-process-safe when backed by a real DB (`AMF_PLAN.md` Task 5):
+    /// the save only applies if nothing else -- the GUI, another AMF
+    /// process, or a stale reload -- has saved since this `App` last loaded
+    /// or saved successfully. On a detected conflict the in-memory store is
+    /// refreshed from disk before returning, so the caller's next action
+    /// sees current state instead of repeating the same conflict; the change
+    /// that triggered this save is discarded, not merged, which is the
+    /// honest outcome for a full-replace store with no per-field merge logic
+    /// (see `db::store::save`'s doc comment).
+    pub(crate) fn save_reporting_conflict(&mut self) -> Result<bool> {
         if let Some(db) = &self.db {
-            return db.save_store(&self.store);
+            let Some(expected) = self.store_version else {
+                // No known baseline -- either genuinely the first save this
+                // process has made, or (several tests' pattern) a DB attached
+                // to an `App` built via `new_for_test` after the fact, with
+                // no `load_store_versioned` call to establish one. Either
+                // way there is nothing yet to conflict *with*: save
+                // unconditionally once and adopt whatever version results,
+                // so every save after this one is protected.
+                db.save_store(&self.store)?;
+                self.store_version = Some(db.current_store_version()?);
+                return Ok(true);
+            };
+            return match db.save_store_checked(&self.store, expected)? {
+                crate::db::store::SaveOutcome::Saved { new_version } => {
+                    self.store_version = Some(new_version);
+                    Ok(true)
+                }
+                crate::db::store::SaveOutcome::Conflict { current_version } => {
+                    self.store = db.load_store()?;
+                    self.store_version = Some(current_version);
+                    Ok(false)
+                }
+            };
         }
-        // Fallback for tests: write JSON to store_path if set.
+        // Fallback for tests: write JSON to store_path if set. No other
+        // writer exists in this path, so there is nothing to race against.
         if !self.store_path.as_os_str().is_empty() {
-            return self.store.save(&self.store_path);
+            self.store.save(&self.store_path)?;
         }
-        Ok(())
+        Ok(true)
+    }
+
+    pub fn save(&mut self) -> Result<()> {
+        if self.save_reporting_conflict()? {
+            Ok(())
+        } else {
+            anyhow::bail!(SAVE_CONFLICT_MESSAGE)
+        }
     }
 
     pub fn start_theme_picker(&mut self) {

@@ -18,9 +18,10 @@
 //! TODOs plan, Epics 2–6), so the API is allowed to be unused for now.
 #![allow(dead_code)]
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 /// Persisted lifecycle state of a [`Todo`].
@@ -149,7 +150,8 @@ impl TodoWorkState {
 }
 
 /// Priority of a [`Todo`], persisted as a short token (`high`/`med`/`low`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TodoPriority {
     High,
     Med,
@@ -189,7 +191,8 @@ impl TodoPriority {
 ///
 /// The variants are ordered the way ties between them resolve — narrowest
 /// first — and [`Self::rank`] is that order made explicit for sorting.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TodoScope {
     /// One list per checkout. Keyed by **workdir path** rather than feature id
     /// so the list belongs to the working tree the TODOs were written about,
@@ -259,7 +262,7 @@ impl TodoScope {
 }
 
 /// A TODO list within one [`TodoScope`], hosted by one feature.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoList {
     pub id: String,
     /// What this list is a list *for*. Carries the project id and workdir, so
@@ -276,7 +279,7 @@ pub struct TodoList {
 }
 
 /// A single TODO item belonging to a [`TodoList`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Todo {
     pub id: String,
     pub list_id: String,
@@ -652,6 +655,43 @@ pub fn set_work_state(conn: &Connection, todo_id: &str, work: &TodoWorkState) ->
     Ok(())
 }
 
+/// Reserve a TODO for a new agent in one conditional SQL statement. Two AMF
+/// processes reading the same not-started row cannot both claim it.
+pub fn reserve_agent_launch(conn: &Connection, todo_id: &str) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE todos SET status = 'in_progress', agent_session_id = NULL,
+                          updated_at = datetime('now')
+         WHERE id = ?1 AND status = 'not_started'",
+        params![todo_id],
+    )? == 1)
+}
+
+/// Associate the session produced for a reservation, only while the TODO is
+/// still in progress and unassociated. A manual status change while the
+/// harness starts prevents a late result from attaching to a different state.
+pub fn associate_reserved_agent_session(
+    conn: &Connection,
+    todo_id: &str,
+    session_id: &str,
+) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE todos SET agent_session_id = ?2, updated_at = datetime('now')
+         WHERE id = ?1 AND status = 'in_progress' AND agent_session_id IS NULL",
+        params![todo_id, session_id],
+    )? == 1)
+}
+
+/// Undo a failed launch only if no session has been associated since the
+/// reservation. This leaves a later user edit or another process's link alone.
+pub fn rollback_reserved_agent_launch(conn: &Connection, todo_id: &str) -> Result<bool> {
+    Ok(conn.execute(
+        "UPDATE todos SET status = 'not_started', agent_session_id = NULL,
+                          updated_at = datetime('now')
+         WHERE id = ?1 AND status = 'in_progress' AND agent_session_id IS NULL",
+        params![todo_id],
+    )? == 1)
+}
+
 /// Drop a TODO's link to the session spawned for it, when that session is gone.
 pub fn clear_agent_session(conn: &Connection, todo_id: &str) -> Result<()> {
     conn.execute(
@@ -672,6 +712,22 @@ pub fn agent_session_associations(conn: &Connection) -> Result<Vec<(String, Stri
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Heal links to sessions removed by another interface or by a prior crash.
+/// The status stays in progress: missing session metadata does not mean the
+/// underlying work was never started. The persisted session table, not one
+/// process's in-memory ProjectStore, is authoritative across GUI/TUI use.
+pub fn clear_missing_agent_sessions(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE todos SET agent_session_id = NULL, updated_at = datetime('now')
+         WHERE agent_session_id IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM feature_sessions
+               WHERE feature_sessions.id = todos.agent_session_id
+           )",
+        [],
+    )?)
 }
 
 /// Drop one TODO's link to the feature planned for it, when that feature is
@@ -805,14 +861,51 @@ pub fn copy_todo(conn: &Connection, todo_id: &str, target_list_id: &str) -> Resu
 }
 
 /// Persist a manual ordering: `ordered_ids` are written back as `sort_order`
-/// 0, 1, 2, … in the given sequence.
+/// 0, 1, 2, … in the given sequence. The full list is checked and written
+/// inside one transaction, so a stale or mixed-scope order cannot partially
+/// renumber rows when another AMF process is editing TODOs at the same time.
 pub fn reorder_todos(conn: &Connection, ordered_ids: &[String]) -> Result<()> {
+    if ordered_ids.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let mut seen = HashSet::new();
+    let mut list_id: Option<String> = None;
+    for id in ordered_ids {
+        if !seen.insert(id) {
+            bail!("TODO order contains duplicate id '{id}'");
+        }
+        let found: Option<String> = tx
+            .query_row(
+                "SELECT list_id FROM todos WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(found) = found else {
+            bail!("TODO '{id}' no longer exists; refresh the list and retry");
+        };
+        if list_id.as_deref().is_some_and(|previous| previous != found) {
+            bail!("TODO order contains items from different lists");
+        }
+        list_id = Some(found);
+    }
+    let list_id = list_id.expect("nonempty order has a list id");
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM todos WHERE list_id = ?1",
+        params![list_id],
+        |row| row.get(0),
+    )?;
+    if count != ordered_ids.len() as i64 {
+        bail!("TODO list changed elsewhere; refresh the list and retry");
+    }
     for (idx, id) in ordered_ids.iter().enumerate() {
-        conn.execute(
+        tx.execute(
             "UPDATE todos SET sort_order = ?2, updated_at = datetime('now') WHERE id = ?1",
             params![id, idx as i64],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1244,6 +1337,100 @@ mod tests {
             .map(|t| t.title)
             .collect();
         assert_eq!(order, vec!["c", "a", "b"]);
+    }
+
+    #[test]
+    fn stale_or_mixed_list_reorder_leaves_both_lists_unchanged() {
+        let (_tmp, db) = open_temp_db();
+        let first = db.create_todo_list(&project("proj-1"), None).unwrap();
+        let second = db.create_todo_list(&project("proj-2"), None).unwrap();
+        let a = db
+            .add_todo(&first.id, "a", None, TodoPriority::Med)
+            .unwrap();
+        let b = db
+            .add_todo(&first.id, "b", None, TodoPriority::Med)
+            .unwrap();
+        let c = db
+            .add_todo(&second.id, "c", None, TodoPriority::Med)
+            .unwrap();
+
+        assert!(db.reorder_todos(&[b.id.clone(), c.id.clone()]).is_err());
+        assert!(db.reorder_todos(std::slice::from_ref(&b.id)).is_err());
+        assert!(db.reorder_todos(&[b.id.clone(), "deleted".into()]).is_err());
+        assert_eq!(
+            db.todos(&first.id)
+                .unwrap()
+                .into_iter()
+                .map(|todo| todo.id)
+                .collect::<Vec<_>>(),
+            vec![a.id, b.id]
+        );
+        assert_eq!(db.todos(&second.id).unwrap()[0].id, c.id);
+    }
+
+    #[test]
+    fn missing_session_reconciliation_keeps_in_progress_status() {
+        let (_tmp, db) = open_temp_db();
+        let list = db.create_todo_list(&project("proj-1"), None).unwrap();
+        let todo = db
+            .add_todo(&list.id, "work", None, TodoPriority::Med)
+            .unwrap();
+        db.set_todo_work_state(
+            &todo.id,
+            &TodoWorkState {
+                status: TodoStatus::InProgress,
+                agent_session_id: Some("removed-session".into()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(db.clear_missing_todo_agent_sessions().unwrap(), 1);
+        assert_eq!(db.clear_missing_todo_agent_sessions().unwrap(), 0);
+        let reloaded = db.find_todo_by_id(&todo.id).unwrap().unwrap();
+        assert_eq!(reloaded.work.status, TodoStatus::InProgress);
+        assert_eq!(reloaded.work.agent_session_id, None);
+    }
+
+    #[test]
+    fn launch_reservation_and_association_reject_stale_results() {
+        let (_tmp, db) = open_temp_db();
+        let list = db.create_todo_list(&project("proj-1"), None).unwrap();
+        let todo = db
+            .add_todo(&list.id, "work", None, TodoPriority::Med)
+            .unwrap();
+
+        assert!(db.reserve_todo_agent_launch(&todo.id).unwrap());
+        assert!(!db.reserve_todo_agent_launch(&todo.id).unwrap());
+        assert!(db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        assert!(db.reserve_todo_agent_launch(&todo.id).unwrap());
+        db.set_todo_work_state(
+            &todo.id,
+            &TodoWorkState {
+                status: TodoStatus::Completed,
+                agent_session_id: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            !db.associate_reserved_todo_agent_session(&todo.id, "late-session")
+                .unwrap()
+        );
+        assert!(!db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        assert_eq!(
+            db.find_todo_by_id(&todo.id).unwrap().unwrap().work.status,
+            TodoStatus::Completed
+        );
+
+        db.set_todo_work_state(&todo.id, &TodoWorkState::default())
+            .unwrap();
+        assert!(db.reserve_todo_agent_launch(&todo.id).unwrap());
+        assert!(
+            db.associate_reserved_todo_agent_session(&todo.id, "session-1")
+                .unwrap()
+        );
+        assert!(!db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        let linked = db.find_todo_by_id(&todo.id).unwrap().unwrap();
+        assert_eq!(linked.work.agent_session_id.as_deref(), Some("session-1"));
     }
 
     #[test]

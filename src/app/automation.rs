@@ -128,6 +128,7 @@ impl App {
                 project_path,
                 is_git,
                 message,
+                None,
             ));
         }
 
@@ -137,6 +138,7 @@ impl App {
             is_git,
             preferred_agent,
         );
+        let project_id = project.id.clone();
         self.store.add_project(project);
         self.save()?;
 
@@ -146,6 +148,7 @@ impl App {
             project_path,
             is_git,
             message,
+            Some(project_id),
         ))
     }
 
@@ -255,6 +258,7 @@ impl App {
                 hook_succeeded,
                 hook_prompt.clone(),
                 message,
+                None,
             ));
         }
 
@@ -348,6 +352,10 @@ impl App {
                 )
             })?;
         let fi = self.store.projects[pi].features.len().saturating_sub(1);
+        let ids = (
+            self.store.projects[pi].id.clone(),
+            self.store.projects[pi].features[fi].id.clone(),
+        );
         self.store.projects[pi].collapsed = project_collapsed;
         // No caller to answer a confirmation dialog here, so a tripped gate
         // creates the feature and leaves it stopped; `started: false` in the
@@ -384,6 +392,7 @@ impl App {
             hook_succeeded,
             hook_prompt,
             message,
+            Some(ids),
         ))
     }
 

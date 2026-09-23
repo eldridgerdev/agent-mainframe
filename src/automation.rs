@@ -200,6 +200,11 @@ pub struct CreateProjectResponse {
     pub project_path: PathBuf,
     pub is_git: bool,
     pub message: String,
+    /// The created project's stable id, so a caller can address it by id
+    /// from here on instead of re-deriving a name lookup. `None` for a
+    /// `dry_run` response, since no project (and so no id) was created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 impl CreateProjectResponse {
@@ -208,6 +213,7 @@ impl CreateProjectResponse {
         project_path: PathBuf,
         is_git: bool,
         message: String,
+        project_id: Option<String>,
     ) -> Self {
         Self {
             msg_type: AUTOMATION_RESULT_TYPE,
@@ -219,6 +225,7 @@ impl CreateProjectResponse {
             project_path,
             is_git,
             message,
+            project_id,
         }
     }
 }
@@ -248,6 +255,12 @@ pub struct CreateFeatureResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_hook_prompt: Option<AutomationHookPrompt>,
     pub message: String,
+    /// The created feature's (and its project's) stable id. `None` for a
+    /// `dry_run` response, since no feature was created.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feature_id: Option<String>,
 }
 
 impl CreateFeatureResponse {
@@ -262,7 +275,12 @@ impl CreateFeatureResponse {
         worktree_hook_succeeded: Option<bool>,
         worktree_hook_prompt: Option<AutomationHookPrompt>,
         message: String,
+        ids: Option<(String, String)>,
     ) -> Self {
+        let (project_id, feature_id) = match ids {
+            Some((p, f)) => (Some(p), Some(f)),
+            None => (None, None),
+        };
         Self {
             msg_type: AUTOMATION_RESULT_TYPE,
             action: CREATE_FEATURE_ACTION,
@@ -278,6 +296,8 @@ impl CreateFeatureResponse {
             worktree_hook_succeeded,
             worktree_hook_prompt,
             message,
+            project_id,
+            feature_id,
         }
     }
 }

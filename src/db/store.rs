@@ -205,6 +205,27 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
     })
 }
 
+/// [`load`] plus the `store_version` it was read at, as one consistent
+/// snapshot: reading them as two separate statements without a shared
+/// transaction could interleave with a concurrent [`save_checked`] and pair
+/// this load's data with a version that does not actually describe it.
+/// Every application-level load that will later save through
+/// [`save_checked`] needs this, not [`load`] plus a separate
+/// [`current_version`] call.
+pub fn load_versioned(conn: &Connection) -> Result<(ProjectStore, u64)> {
+    conn.execute_batch("BEGIN DEFERRED;")?;
+    let result = (|| -> Result<(ProjectStore, u64)> {
+        let store = load(conn)?;
+        let version = current_version(conn)?;
+        Ok((store, version))
+    })();
+    // Read-only transaction: nothing to keep even on success, just release
+    // the snapshot. Roll back either way rather than distinguish the
+    // success path, since there is no write to preserve.
+    let _ = conn.execute_batch("ROLLBACK;");
+    result
+}
+
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
@@ -395,12 +416,96 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
 
 // ── save ─────────────────────────────────────────────────────
 
+/// The full-replace save's cross-process safety net (`AMF_PLAN.md` Task 5,
+/// "Establish cross-process coordination"). `save` below deletes and
+/// reinserts every row on every call: two processes (the TUI and the GUI,
+/// or two AMF instances) each holding their own in-memory `ProjectStore`
+/// would otherwise silently clobber each other's concurrent writes — the
+/// second save wins in full, discarding whatever the first one added, with
+/// no error and no trace. `store_meta`'s `store_version` key turns that into
+/// a detectable optimistic-concurrency conflict: every save increments it,
+/// and `save_checked` refuses to proceed when the caller's expected version
+/// doesn't match what's actually on disk.
+pub(super) fn current_version(conn: &Connection) -> Result<u64> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM store_meta WHERE key = 'store_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Outcome of a version-checked save. `Conflict` carries the version that
+/// was actually on disk so the caller can decide how far it drifted (today,
+/// every caller just reloads and reports rather than inspecting this, but a
+/// large gap is a stronger signal than a one-behind race).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Saved { new_version: u64 },
+    Conflict { current_version: u64 },
+}
+
+/// Save without a version check: only for call sites with no concurrent
+/// writer to race against by construction (seeding/merging a legacy store at
+/// `AmfDb::open_or_seed` time, before anything holds a loaded version to
+/// check against). Ordinary application saves must go through
+/// [`save_checked`] instead — see its doc comment.
 pub fn save(conn: &Connection, store: &ProjectStore) -> Result<()> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
     match do_save(conn, store) {
         Ok(()) => {
+            let next = current_version(conn)?.wrapping_add(1);
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
+                params![next.to_string()],
+            )?;
             conn.execute_batch("COMMIT;")?;
             Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
+}
+
+/// Save `store`, but only if the on-disk version still matches
+/// `expected_version` — i.e. nothing else has saved since the caller last
+/// loaded. `BEGIN IMMEDIATE` takes SQLite's write lock before the version
+/// check runs, so the check-then-write is atomic against another process
+/// doing the same thing concurrently, not just against interleaving within
+/// one process.
+pub fn save_checked(
+    conn: &Connection,
+    store: &ProjectStore,
+    expected_version: u64,
+) -> Result<SaveOutcome> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    let on_disk = match current_version(conn) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e);
+        }
+    };
+    if on_disk != expected_version {
+        conn.execute_batch("ROLLBACK;")?;
+        return Ok(SaveOutcome::Conflict {
+            current_version: on_disk,
+        });
+    }
+    match do_save(conn, store) {
+        Ok(()) => {
+            let next = on_disk.wrapping_add(1);
+            conn.execute(
+                "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
+                params![next.to_string()],
+            )?;
+            conn.execute_batch("COMMIT;")?;
+            Ok(SaveOutcome::Saved { new_version: next })
         }
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK;");
@@ -917,5 +1022,94 @@ mod tests {
 
         assert_eq!(loaded.projects[0].features.len(), 1);
         assert_eq!(loaded.projects[0].features[0].name, "keep");
+    }
+
+    // ── cross-process coordination (AMF_PLAN.md Task 5) ─────────────
+
+    #[test]
+    fn fresh_database_has_version_zero() {
+        let (_tmp, db) = open_temp_db();
+        assert_eq!(current_version(&db.conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn save_checked_succeeds_and_advances_the_version_when_expectation_matches() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+
+        let outcome = save_checked(&db.conn, &store, 0).unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Saved { new_version: 1 });
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn save_checked_reports_a_conflict_without_writing_when_expectation_is_stale() {
+        let (_tmp, db) = open_temp_db();
+        let mut store = empty_store();
+        store.projects.push(Project {
+            id: "proj-first".to_string(),
+            name: "first-writer".to_string(),
+            repo: PathBuf::from("/tmp/first"),
+            collapsed: false,
+            features: Vec::new(),
+            created_at: Utc::now(),
+            preferred_agent: crate::project::AgentKind::Claude,
+            is_git: true,
+        });
+        // A first writer's save, establishing version 1.
+        save_checked(&db.conn, &store, 0).unwrap();
+
+        // A second writer, still expecting version 0 (as if it had loaded
+        // before the first writer's save landed), tries to save something
+        // else entirely.
+        let mut stale_store = empty_store();
+        stale_store.projects.push(Project {
+            id: "proj-second".to_string(),
+            name: "second-writer".to_string(),
+            repo: PathBuf::from("/tmp/second"),
+            collapsed: false,
+            features: Vec::new(),
+            created_at: Utc::now(),
+            preferred_agent: crate::project::AgentKind::Claude,
+            is_git: true,
+        });
+        let outcome = save_checked(&db.conn, &stale_store, 0).unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Conflict { current_version: 1 });
+        // The rejected save must not have touched the table: the first
+        // writer's data is exactly what full-replace `save` would otherwise
+        // have silently discarded.
+        let loaded = load(&db.conn).unwrap();
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].name, "first-writer");
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn load_versioned_pairs_the_store_with_the_version_it_was_read_at() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+        save_checked(&db.conn, &store, 0).unwrap();
+        save_checked(&db.conn, &store, 1).unwrap();
+
+        let (_loaded, version) = load_versioned(&db.conn).unwrap();
+
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn unconditional_save_also_advances_the_version() {
+        // `save` (no expected-version check) is still the seed/merge path's
+        // save at `AmfDb::open_or_seed` time; it must keep incrementing the
+        // same counter `save_checked` reads; otherwise the very first
+        // application-level save after a fresh seed would see a version
+        // that does not match what is actually on disk.
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+
+        save(&db.conn, &store).unwrap();
+
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
     }
 }

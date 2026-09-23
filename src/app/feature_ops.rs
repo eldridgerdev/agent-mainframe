@@ -287,6 +287,9 @@ impl App {
         let issue_source = state.issue_source.clone();
         let startup_prompt =
             (!state.task_prompt.trim().is_empty()).then(|| state.task_prompt.clone());
+        // Extracted (not read via `state` below) so the borrow of `self.mode`
+        // ends here: `self.save()` further down now takes `&mut self`.
+        let agent = state.agent.clone();
 
         if feature_name.as_deref().unwrap_or(&branch).trim().is_empty() {
             self.set_create_feature_branch_error("Feature name cannot be empty");
@@ -296,14 +299,14 @@ impl App {
             self.message = Some("Error: Session name cannot be empty".into());
             return Ok(());
         }
-        if !self.allows_agent_for_repo(&project_repo, &state.agent) {
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
             self.message = Some(format!(
                 "Error: Harness '{}' is not allowed for this workspace",
-                state.agent.display_name()
+                agent.display_name()
             ));
             return Ok(());
         }
-        if let Err(err) = self.ensure_agent_mode_supported(&state.agent, &mode) {
+        if let Err(err) = self.ensure_agent_mode_supported(&agent, &mode) {
             self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
@@ -387,7 +390,7 @@ impl App {
                             review,
                             plan_mode,
                             quick_plan,
-                            agent: state.agent.clone(),
+                            agent: agent.clone(),
                             create_terminal,
                             enable_chrome,
                             remote_control,
@@ -409,7 +412,7 @@ impl App {
                         review,
                         plan_mode,
                         quick_plan,
-                        state.agent.clone(),
+                        agent.clone(),
                         create_terminal,
                         session_name,
                         enable_chrome,
@@ -439,7 +442,7 @@ impl App {
             review,
             plan_mode,
             quick_plan,
-            agent: state.agent.clone(),
+            agent: agent.clone(),
             create_terminal,
             session_name,
             enable_chrome,

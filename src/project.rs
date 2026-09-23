@@ -1338,6 +1338,30 @@ impl ProjectStore {
         self.projects.iter_mut().find(|p| p.name == name)
     }
 
+    /// Resolve a feature's stable id to its current `(project_index,
+    /// feature_index)` pair. Feature ids are UUIDs generated at creation
+    /// time (see `Feature::new_for_project`), so a bare `feature_id` lookup
+    /// is unambiguous; `project_id` is still checked when given so a caller
+    /// addressing the wrong project gets `None` (a stale/mismatched
+    /// reference) rather than silently acting on an unrelated project's
+    /// feature.
+    pub fn locate_feature_by_id(
+        &self,
+        project_id: Option<&str>,
+        feature_id: &str,
+    ) -> Option<(usize, usize)> {
+        self.projects.iter().enumerate().find_map(|(pi, project)| {
+            if project_id.is_some_and(|id| id != project.id) {
+                return None;
+            }
+            project
+                .features
+                .iter()
+                .position(|f| f.id == feature_id)
+                .map(|fi| (pi, fi))
+        })
+    }
+
     pub fn add_feature(&mut self, project_name: &str, feature: Feature) -> bool {
         if let Some(project) = self.find_project_mut(project_name) {
             project.features.push(feature);

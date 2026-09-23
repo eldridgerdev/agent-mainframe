@@ -144,14 +144,29 @@ jobs:
           if-no-files-found: error
 
   build-gui:
-    name: Build GUI (x86_64-unknown-linux-gnu)
+    name: Build GUI (${{ matrix.target }})
     needs: test
     # 22.04 rather than latest: an AppImage only runs on systems whose glibc
     # is at least as new as the one it was built against, so the oldest
     # supported runner reaches the most distros. The .deb targets the same
     # systems. Linux x86_64 also covers Windows through WSL2/WSLg; macOS is
     # left out until its runtime and signing have been checked.
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One architecture failing shouldn't cancel the other's bundles.
+      fail-fast: false
+      matrix:
+        include:
+          # Tauri names bundles with Debian's arch for the .deb and
+          # linuxdeploy's for the AppImage; they differ on aarch64.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            deb_arch: amd64
+            appimage_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            deb_arch: arm64
+            appimage_arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -179,9 +194,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: gui-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: gui-${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            gui-${{ runner.os }}-cargo-
+            gui-${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Install frontend dependencies
         working-directory: gui
@@ -201,15 +216,15 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          cp target/release/bundle/deb/*_"${version}"_amd64.deb \
-            dist/amf-gui-x86_64-unknown-linux-gnu.deb
-          cp target/release/bundle/appimage/*_"${version}"_amd64.AppImage \
-            dist/amf-gui-x86_64-unknown-linux-gnu.AppImage
+          cp target/release/bundle/deb/*_"${version}"_${{ matrix.deb_arch }}.deb \
+            dist/amf-gui-${{ matrix.target }}.deb
+          cp target/release/bundle/appimage/*_"${version}"_${{ matrix.appimage_arch }}.AppImage \
+            dist/amf-gui-${{ matrix.target }}.AppImage
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: amf-gui-x86_64-unknown-linux-gnu
+          name: amf-gui-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
 

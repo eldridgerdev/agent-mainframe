@@ -28,9 +28,10 @@ are tagged.
   render the same on every machine. See `gui/README.md` to run it, and
   `docs/backlog/amf-gui-workflow-inventory.md` for which workflows are
   available so far; everything else still needs `amf`. Releases now include
-  Linux x86_64 GUI downloads alongside `amf`: a `.deb`
-  (`amf-gui-x86_64-unknown-linux-gnu.deb`, which pulls in `tmux`) and an
-  AppImage. They also run on Windows under WSL2 with WSLg. The GUI still
+  GUI downloads for x86_64 and aarch64 Linux alongside `amf`: a `.deb`
+  (for example `amf-gui-x86_64-unknown-linux-gnu.deb`, which pulls in `tmux`)
+  and an AppImage for each. The x86_64 builds also run on Windows under WSL2
+  with WSLg. The GUI still
   needs `tmux` and your agent CLIs on `PATH`, and macOS builds are not
   published yet. No migration is required.
 

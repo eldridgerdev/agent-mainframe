@@ -5,18 +5,20 @@ remains available and uses the same project database and tmux sessions.
 
 ## Install a release build
 
-Each AMF release on GitHub includes Linux x86_64 GUI builds next to the `amf`
-downloads. They carry the same version number as `amf`.
+Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux
+next to the `amf` downloads. They carry the same version number as `amf`.
+Pick the file for your machine's architecture: `x86_64-unknown-linux-gnu`
+for Intel and AMD, `aarch64-unknown-linux-gnu` for ARM64.
 
-- **Debian/Ubuntu:** download `amf-gui-x86_64-unknown-linux-gnu.deb` and
-  install it with `sudo apt install ./amf-gui-x86_64-unknown-linux-gnu.deb`,
-  which also installs `tmux`. Launch it from your applications menu or run
-  `amf-gui`.
-- **Other distributions:** download `amf-gui-x86_64-unknown-linux-gnu.AppImage`,
-  run `chmod +x` on it, and run it. Install `tmux` yourself.
+- **Debian/Ubuntu:** download the `.deb`, for example
+  `amf-gui-x86_64-unknown-linux-gnu.deb`, and install it with
+  `sudo apt install ./amf-gui-x86_64-unknown-linux-gnu.deb`, which also
+  installs `tmux`. Launch it from your applications menu or run `amf-gui`.
+- **Other distributions:** download the `.AppImage` for your architecture, run
+  `chmod +x` on it, and run it. Install `tmux` yourself.
 
 Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
-be on `PATH`. On Windows, install the Linux build inside WSL2 and it opens
+be on `PATH`. On Windows, install the x86_64 Linux build inside WSL2 and it opens
 through WSLg. macOS builds are not published yet; build from source instead.
 
 ## Run from source
@@ -66,7 +68,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The release workflow (`.github/workflows/release.yml`) builds the Linux `.deb`
-and AppImage from each version tag. If the GUI build fails, the `amf` release
+The release workflow (`.github/workflows/release.yml`) builds the `.deb` and
+AppImage for x86_64 and aarch64 Linux from each version tag. If the GUI build fails, the `amf` release
 is still published. macOS builds, code signing, the macOS Finder launch
 environment and in-app updates remain packaging work.

@@ -281,8 +281,10 @@ mod tests {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                // `null_mut` for both: macOS declares these `*mut`, Linux
+                // `*const`, and `*mut` coerces to `*const` but not back.
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             );
             assert_eq!(ok, 0, "failed to open a pty for the test process's stdin");
             assert_ne!(

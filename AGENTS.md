@@ -30,7 +30,7 @@ Codex, OpenCode and Pi sessions in tmux. Source installations need `tmux` on PAT
 install the harnesses you intend to use. Tests mock paid harness execution.
 
 Use [the architecture guide](docs/development/architecture.md) to choose a module.
-`main.rs` owns startup, event deadlines and polling; `handlers/` dispatches input;
+`cli.rs` owns startup, event deadlines and polling; `handlers/` dispatches input;
 `ui/` renders; `app/` orchestrates feature workflows; `db/` owns persistence.
 PR Triage, Final Review and Learning each have a directory with owned state.
 Central AppMode remains the routing boundary. Feature test suites live under

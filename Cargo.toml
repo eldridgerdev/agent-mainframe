@@ -38,6 +38,10 @@ exclude = [
     "/docs/usability-review.md",
 ]
 
+[lib]
+name = "agent_mainframe"
+path = "src/lib.rs"
+
 [[bin]]
 name = "amf"
 path = "src/main.rs"

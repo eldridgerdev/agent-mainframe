@@ -18,7 +18,8 @@ App feature methods -> project/domain data + feature state
 workers -> channels/mailbox -> feature poll/apply methods -> AppMode/display state
 ```
 
-`src/main.rs` owns CLI dispatch, terminal setup/teardown and `run_loop`. The loop
+`src/main.rs` is a thin binary that calls `agent_mainframe::cli::run`;
+`src/cli.rs` owns CLI dispatch, terminal setup/teardown and `run_loop`. The loop
 reads terminal/IPC events, polls workers, reconciles session state, schedules
 pane refreshes and redraws. It uses deadlines and mode-dependent work; Viewing
 and Compose both keep the pane live. Active PR sweeps have their own cadence.

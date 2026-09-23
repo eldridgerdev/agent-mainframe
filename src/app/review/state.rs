@@ -188,7 +188,7 @@ pub struct LineComment {
     pub draft: bool,
     /// A suggested replacement for the commented line/span (GitHub-style
     /// "suggestion"). `None` for a plain comment. Rendered as a fenced
-    /// ```suggestion block in the feedback file and PR review, and fed to the
+    /// `suggestion` block in the feedback file and PR review, and fed to the
     /// agent as a verbatim patch. Defaulted so older progress files load.
     #[serde(default)]
     pub suggestion: Option<String>,

@@ -1096,6 +1096,12 @@ fn run_loop<B: Backend + io::Write>(
     let mut startup_claude_hooks_pending = true;
     let mut startup_opencode_plugins_pending = true;
     let mut startup_sidebar_warm_pending = true;
+    // Another process (the desktop GUI, a second TUI, `amf` automation) can
+    // commit to the shared store at any time. Picking that up here keeps the
+    // next local save from conflicting on it; a one-row `store_meta` read is
+    // cheap, but there is no reason to issue it every frame either.
+    const STORE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+    let mut last_store_refresh_check = Instant::now();
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
     const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
     // Thinking sync is event-driven via the filesystem watcher; this
@@ -1322,6 +1328,19 @@ fn run_loop<B: Backend + io::Write>(
 
         if app.latest_prompt_menu_bg.is_some() && app.poll_latest_prompt_menu_bg() {
             force_redraw = true;
+        }
+
+        if last_store_refresh_check.elapsed() >= STORE_REFRESH_INTERVAL {
+            last_store_refresh_check = Instant::now();
+            match app.refresh_store_if_changed_elsewhere() {
+                Ok(true) => force_redraw = true,
+                Ok(false) => {}
+                // Logged, not shown: a transient read failure retries in a
+                // second, and the save path still detects the conflict.
+                Err(e) => {
+                    app.log_warn("store", format!("couldn't check for external changes: {e}"))
+                }
+            }
         }
 
         // Apply the one-shot VS Code availability check when it resolves.

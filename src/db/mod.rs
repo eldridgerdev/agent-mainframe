@@ -115,10 +115,9 @@ impl AmfDb {
         store::load(&self.conn)
     }
 
-    /// The `store_meta` version currently on disk, with no store data. Used
-    /// to establish a baseline after an unconditional [`Self::save_store`]
-    /// (see `App::save`'s `store_version: None` branch) without a second
-    /// full load.
+    /// The `store_meta` version currently on disk, with no store data: a
+    /// cheap "has anyone written since?" probe before paying for a full
+    /// [`Self::load_store_versioned`].
     pub fn current_store_version(&self) -> Result<u64> {
         store::current_version(&self.conn)
     }
@@ -136,7 +135,11 @@ impl AmfDb {
     /// store must use [`Self::save_store_checked`] instead so a concurrent
     /// writer (the GUI, the TUI, or another AMF process) is detected rather
     /// than silently overwritten; see `store::save`'s doc comment.
-    pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<()> {
+    ///
+    /// Returns the version this save committed, read inside the same write
+    /// transaction, so it is the version of *this* data and not of a write
+    /// that landed after it.
+    pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<u64> {
         store::save(&self.conn, store)
     }
 
@@ -636,8 +639,12 @@ impl AmfDb {
         todos::associate_reserved_agent_session(&self.conn, todo_id, session_id)
     }
 
-    pub fn rollback_reserved_todo_agent_launch(&self, todo_id: &str) -> Result<bool> {
-        todos::rollback_reserved_agent_launch(&self.conn, todo_id)
+    pub fn rollback_reserved_todo_agent_launch(
+        &self,
+        todo_id: &str,
+        launched_session: Option<&str>,
+    ) -> Result<bool> {
+        todos::rollback_reserved_agent_launch(&self.conn, todo_id, launched_session)
     }
 
     pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {

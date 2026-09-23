@@ -77,8 +77,10 @@ impl From<anyhow::Error> for GuiError {
         // (`AMF_PLAN.md` Task 5) can surface through either of them, not
         // just through `start_feature`/`stop_feature`'s own direct saves.
         // Exact-matching `App::SAVE_CONFLICT_MESSAGE` (one shared constant,
-        // not a duplicated literal) reclassifies that one specific failure
-        // as `Conflict` instead of `Internal`.
+        // not a duplicated literal) anywhere in the error's cause chain
+        // reclassifies that one specific failure as `Conflict` instead of
+        // `Internal` -- the chain, not just the outermost message, so a
+        // caller adding `.context(...)` on the way up does not hide it.
         //
         // Every other `bail!` in those two calls -- validation failures
         // ("Project name cannot be empty") and name/branch conflicts
@@ -86,7 +88,10 @@ impl From<anyhow::Error> for GuiError {
         // the App side to match against, so distinguishing them here would
         // mean parsing message text; they all land as `Internal` until
         // those calls grow typed errors of their own.
-        if err.to_string() == crate::app::SAVE_CONFLICT_MESSAGE {
+        if err
+            .chain()
+            .any(|cause| cause.to_string() == crate::app::SAVE_CONFLICT_MESSAGE)
+        {
             return Self::conflict(err.to_string());
         }
         Self {
@@ -469,7 +474,9 @@ impl GuiHandle {
         let (_index, session_id, window) = match created {
             Ok(created) => created,
             Err(err) => {
-                let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+                let _ = self
+                    .db()?
+                    .rollback_reserved_todo_agent_launch(todo_id, None);
                 return Err(GuiError::from(err));
             }
         };
@@ -643,7 +650,9 @@ impl GuiHandle {
         let created = match created {
             Ok(created) => created,
             Err(err) => {
-                let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+                let _ = self
+                    .db()?
+                    .rollback_reserved_todo_agent_launch(todo_id, None);
                 return Err(GuiError::from(err));
             }
         };
@@ -662,7 +671,9 @@ impl GuiHandle {
                     .require_start_approval("Starting the new feature's agent")
                     .is_err()
             {
-                let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+                let _ = self
+                    .db()?
+                    .rollback_reserved_todo_agent_launch(todo_id, None);
                 return Err(GuiError::conflict(
                     "Feature was created, but the resource limit changed before its agent could start. Refresh and start the feature after approving the warning.",
                 ));
@@ -671,11 +682,15 @@ impl GuiHandle {
                 .app
                 .ensure_feature_running(pi, fi, StartIntent::Approved)
             {
-                let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+                let _ = self
+                    .db()?
+                    .rollback_reserved_todo_agent_launch(todo_id, None);
                 return Err(GuiError::from(err));
             }
             if !self.app.save_reporting_conflict()? {
-                let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+                let _ = self
+                    .db()?
+                    .rollback_reserved_todo_agent_launch(todo_id, None);
                 return Err(GuiError::conflict(
                     "Feature was created, but the workspace changed before its agent start was saved; refresh",
                 ));
@@ -685,7 +700,9 @@ impl GuiHandle {
             .app
             .finish_todo_spawn_in_new_feature(&origin, pi, fi, prompt)
         {
-            let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+            let _ = self
+                .db()?
+                .rollback_reserved_todo_agent_launch(todo_id, None);
             return Err(GuiError::from(err));
         }
         let session_id = self
@@ -694,7 +711,9 @@ impl GuiHandle {
             .map_err(GuiError::from)?
             .and_then(|todo| todo.work.agent_session_id);
         let Some(session_id) = session_id else {
-            let _ = self.db()?.rollback_reserved_todo_agent_launch(todo_id);
+            let _ = self
+                .db()?
+                .rollback_reserved_todo_agent_launch(todo_id, None);
             return Err(GuiError::conflict(
                 "Feature was created, but the TODO agent could not be linked; refresh",
             ));
@@ -740,7 +759,7 @@ impl GuiHandle {
             }
         }
         if let Some(db) = &self.app.db {
-            let _ = db.rollback_reserved_todo_agent_launch(todo_id);
+            let _ = db.rollback_reserved_todo_agent_launch(todo_id, None);
         }
     }
 
@@ -805,6 +824,22 @@ mod tests {
 
     const PROJECT_ID: &str = "proj-1";
     const FEATURE_ID: &str = "feat-1";
+
+    #[test]
+    fn a_save_conflict_is_classified_even_under_added_context() {
+        let bare = anyhow::anyhow!(crate::app::SAVE_CONFLICT_MESSAGE);
+        assert_eq!(GuiError::from(bare).kind, GuiErrorKind::Conflict);
+
+        let wrapped = anyhow::anyhow!(crate::app::SAVE_CONFLICT_MESSAGE)
+            .context("feature was not saved")
+            .context("creating 'new-work'");
+        let error = GuiError::from(wrapped);
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert_eq!(error.message, "creating 'new-work'");
+
+        let other = anyhow::anyhow!("disk full").context("feature was not saved");
+        assert_eq!(GuiError::from(other).kind, GuiErrorKind::Internal);
+    }
 
     fn store_with_one_feature(status: ProjectStatus) -> ProjectStore {
         let mut feature = Feature::new_for_project(

@@ -255,8 +255,10 @@ pub fn begin(gui: &mut GuiHandle, target: &FeatureTarget, quick: bool) -> GuiRes
 }
 
 /// Enter the existing feature-creation wizard's deferred launch path with
-/// explicit GUI form values. Hooks that need a wizard detour are rejected
-/// before a worktree is created until that detour has a GUI adapter.
+/// explicit GUI form values. A worktree hook that prompts for a choice is
+/// rejected before a worktree is created until that prompt has a GUI adapter;
+/// a plain hook runs to completion here (see `finish_worktree_hook`), the
+/// same rule `GuiHandle::create_feature` applies.
 pub fn begin_feature_creation(
     gui: &mut GuiHandle,
     request: &CreateFeatureRequest,
@@ -292,6 +294,8 @@ fn begin_feature_creation_core(
         && crate::extension::merge_project_extension_config(&app.config.extension, &project.repo)
             .lifecycle_hooks
             .on_worktree_created
+            .as_ref()
+            .and_then(|hook| hook.prompt())
             .is_some()
     {
         return Err(GuiError::conflict(
@@ -326,7 +330,10 @@ fn begin_feature_creation_core(
         state.todo_origin = Some(origin);
         app.pending_todo_plan_brief = Some(seed);
     }
-    if let Err(error) = app.create_feature() {
+    if let Err(error) = app
+        .create_feature()
+        .and_then(|()| finish_worktree_hook(app))
+    {
         app.pending_todo_plan_brief = None;
         if !matches!(&app.mode, AppMode::PlanInterview(_)) {
             app.mode = AppMode::Normal;
@@ -347,6 +354,26 @@ fn begin_feature_creation_core(
         return Err(GuiError::conflict(message));
     }
     Ok(status_of(app))
+}
+
+/// Run a plain `on_worktree_created` hook that `create_feature` just started
+/// to completion, then take the wizard's own continuation into the plan
+/// interview. The wizard starts the hook in `AppMode::RunningHook`, which the
+/// TUI's event loop polls and the user dismisses; the GUI has neither, so the
+/// hook is waited on here -- blocking, as `GuiHandle::create_feature`'s
+/// automation path already runs the same hook synchronously. A no-op in any
+/// other mode.
+fn finish_worktree_hook(app: &mut App) -> anyhow::Result<()> {
+    loop {
+        app.poll_running_hook()?;
+        match &app.mode {
+            AppMode::RunningHook(state) if state.child.is_some() => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            AppMode::RunningHook(_) => return app.complete_running_hook(),
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// Route a TODO through the same deferred new-feature launch as the TUI.
@@ -821,11 +848,11 @@ pub fn act(
                     .and_then(|todo| todo.work.agent_session_id);
                 if completed.is_err() {
                     if associated.is_none() {
-                        let _ = db.rollback_reserved_todo_agent_launch(todo_id);
+                        let _ = db.rollback_reserved_todo_agent_launch(todo_id, None);
                     }
                 } else {
                     let Some(session_id) = associated else {
-                        let _ = db.rollback_reserved_todo_agent_launch(todo_id);
+                        let _ = db.rollback_reserved_todo_agent_launch(todo_id, None);
                         return Err(GuiError {
                             kind: GuiErrorKind::Internal,
                             message: "Plan saved, but its TODO agent did not start".into(),
@@ -1278,6 +1305,107 @@ mod tests {
             assert!(gui.app_for_plan().store.projects[0].features.is_empty());
             assert!(!dir.path().join("AMF_PLAN.md").exists());
         }
+    }
+
+    fn worktree_plan_request() -> CreateFeatureRequest {
+        CreateFeatureRequest {
+            project_name: "demo".into(),
+            branch: "planned-work".into(),
+            agent: AgentKind::default(),
+            mode: VibeMode::default(),
+            review: false,
+            plan_mode: true,
+            create_terminal: false,
+            use_worktree: Some(true),
+            enable_chrome: false,
+            hook_choice: None,
+            dry_run: false,
+        }
+    }
+
+    fn git_project_store(repo: &Path) -> ProjectStore {
+        let mut project = Project::new(
+            "demo".into(),
+            repo.to_path_buf(),
+            true,
+            AgentKind::default(),
+        );
+        project.id = "project-1".into();
+        let mut store = ProjectStore::empty();
+        store.projects.push(project);
+        store
+    }
+
+    /// A worktree hook that asks nothing runs to completion inside the call,
+    /// as it does for the GUI's unplanned `create_feature`, and the wizard's
+    /// own continuation then opens the interview.
+    #[test]
+    fn a_plain_worktree_hook_runs_and_the_planned_creation_continues() {
+        use crate::extension::{ExtensionConfig, HookConfig, LifecycleHooks};
+
+        let dir = tempfile::tempdir().unwrap();
+        let worktree_dir = dir.path().join("wt");
+        std::fs::create_dir_all(&worktree_dir).unwrap();
+        let mut worktree = MockWorktreeOps::new();
+        let created = worktree_dir.clone();
+        worktree
+            .expect_create()
+            .times(1)
+            .returning(move |_, _, _| Ok(created.clone()));
+        let mut app = App::new_for_test(
+            git_project_store(dir.path()),
+            Box::new(MockTmuxOps::new()),
+            Box::new(worktree),
+        );
+        app.config.extension = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::Script("echo ok > hook-ran".into())),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut gui = GuiHandle::from_app(app);
+
+        let view = begin_feature_creation(&mut gui, &worktree_plan_request(), false)
+            .unwrap()
+            .active
+            .expect("the interview opens once the hook has finished");
+
+        assert_eq!(view.kind, "full");
+        assert!(worktree_dir.join("hook-ran").exists());
+        assert!(matches!(gui.app_for_plan().mode, AppMode::PlanInterview(_)));
+    }
+
+    #[test]
+    fn a_prompting_worktree_hook_is_still_rejected_before_a_worktree_exists() {
+        use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+
+        let dir = tempfile::tempdir().unwrap();
+        // No `create` expectation: creating a worktree would fail the test.
+        let mut app = App::new_for_test(
+            git_project_store(dir.path()),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.config.extension = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::WithPrompt {
+                    script: "setup.sh".into(),
+                    prompt: HookPrompt {
+                        title: "Choose stack".into(),
+                        options: vec!["rust".into()],
+                    },
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut gui = GuiHandle::from_app(app);
+
+        let error = begin_feature_creation(&mut gui, &worktree_plan_request(), false).unwrap_err();
+
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert!(error.message.contains("TUI creation wizard"));
     }
 
     #[test]

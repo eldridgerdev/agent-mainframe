@@ -2088,11 +2088,11 @@ fn starting_a_host_feature_plan_session_attaches_the_active_todo_sidebar_referen
     assert!(cached.contains("plan then build"));
 }
 
-/// `attach_launched_todo_reference` is the shared write behind both plan
-/// routes: set the provenance, persist, refresh the cache — and no-op cleanly
-/// if the session index has gone stale.
+/// `attach_launched_todo_reference` is the shared write behind every TODO
+/// launch route: set the provenance, persist, refresh the cache — and report
+/// `false`, without a panic, when the session is not in the store.
 #[test]
-fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index() {
+fn attach_launched_todo_reference_records_provenance_and_reports_a_missing_session() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),
         Box::new(MockTmuxOps::new()),
@@ -2113,7 +2113,7 @@ fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index(
         .unwrap();
     app.db = Some(db);
 
-    app.attach_launched_todo_reference(0, 0, 0, &todo.id);
+    assert!(app.attach_launched_todo_reference(&session_id, &todo.id));
 
     assert!(
         app.store.projects[0].features[0].sessions[0]
@@ -2127,8 +2127,8 @@ fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index(
             .is_some_and(|c| c.contains("attach me"))
     );
 
-    // An out-of-range session index is a no-op, not a panic.
-    app.attach_launched_todo_reference(0, 0, 9, &todo.id);
+    // A session that is not in the store is reported, not a panic.
+    assert!(!app.attach_launched_todo_reference("no-such-session", &todo.id));
 }
 
 #[test]
@@ -2190,7 +2190,7 @@ fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation
 
     // Agent-creation failure path.
     assert!(app.todos_reserve_launch(&todo).unwrap());
-    app.todos_rollback_launch(&todo.id).unwrap();
+    app.todos_rollback_launch(&todo.id, None).unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(
@@ -2209,7 +2209,8 @@ fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation
     assert!(app.todos_reserve_launch(&current).unwrap());
     app.todos_mark_in_progress(&todo.id, Some("session-created"))
         .unwrap();
-    app.todos_rollback_launch(&todo.id).unwrap();
+    app.todos_rollback_launch(&todo.id, Some("session-created"))
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(

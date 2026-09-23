@@ -681,14 +681,22 @@ pub fn associate_reserved_agent_session(
     )? == 1)
 }
 
-/// Undo a failed launch only if no session has been associated since the
-/// reservation. This leaves a later user edit or another process's link alone.
-pub fn rollback_reserved_agent_launch(conn: &Connection, todo_id: &str) -> Result<bool> {
+/// Undo a failed launch only if the TODO is still in the state this launch
+/// left it in: reserved with no session, or linked to `launched_session` --
+/// the launch's own session, when it failed after associating it (e.g. the
+/// prompt could not be delivered). A later user edit or a link to any other
+/// session is left alone.
+pub fn rollback_reserved_agent_launch(
+    conn: &Connection,
+    todo_id: &str,
+    launched_session: Option<&str>,
+) -> Result<bool> {
     Ok(conn.execute(
         "UPDATE todos SET status = 'not_started', agent_session_id = NULL,
                           updated_at = datetime('now')
-         WHERE id = ?1 AND status = 'in_progress' AND agent_session_id IS NULL",
-        params![todo_id],
+         WHERE id = ?1 AND status = 'in_progress'
+           AND (agent_session_id IS NULL OR agent_session_id = ?2)",
+        params![todo_id, launched_session],
     )? == 1)
 }
 
@@ -1401,7 +1409,10 @@ mod tests {
 
         assert!(db.reserve_todo_agent_launch(&todo.id).unwrap());
         assert!(!db.reserve_todo_agent_launch(&todo.id).unwrap());
-        assert!(db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        assert!(
+            db.rollback_reserved_todo_agent_launch(&todo.id, None)
+                .unwrap()
+        );
         assert!(db.reserve_todo_agent_launch(&todo.id).unwrap());
         db.set_todo_work_state(
             &todo.id,
@@ -1415,7 +1426,10 @@ mod tests {
             !db.associate_reserved_todo_agent_session(&todo.id, "late-session")
                 .unwrap()
         );
-        assert!(!db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        assert!(
+            !db.rollback_reserved_todo_agent_launch(&todo.id, None)
+                .unwrap()
+        );
         assert_eq!(
             db.find_todo_by_id(&todo.id).unwrap().unwrap().work.status,
             TodoStatus::Completed
@@ -1428,9 +1442,26 @@ mod tests {
             db.associate_reserved_todo_agent_session(&todo.id, "session-1")
                 .unwrap()
         );
-        assert!(!db.rollback_reserved_todo_agent_launch(&todo.id).unwrap());
+        assert!(
+            !db.rollback_reserved_todo_agent_launch(&todo.id, None)
+                .unwrap()
+        );
+        // Nor by a launch that owns some other session.
+        assert!(
+            !db.rollback_reserved_todo_agent_launch(&todo.id, Some("session-2"))
+                .unwrap()
+        );
         let linked = db.find_todo_by_id(&todo.id).unwrap().unwrap();
         assert_eq!(linked.work.agent_session_id.as_deref(), Some("session-1"));
+
+        // The launch that linked session-1 and then failed to deliver its
+        // prompt does get to undo its own reservation, link included.
+        assert!(
+            db.rollback_reserved_todo_agent_launch(&todo.id, Some("session-1"))
+                .unwrap()
+        );
+        let rolled_back = db.find_todo_by_id(&todo.id).unwrap().unwrap();
+        assert_eq!(rolled_back.work, TodoWorkState::default());
     }
 
     #[test]

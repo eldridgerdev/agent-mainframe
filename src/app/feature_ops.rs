@@ -522,6 +522,21 @@ impl App {
         // feature anywhere in the vector, not only the last one, and another
         // feature may be appended to the project between here and any later
         // lookup.
+        let finish_pending = |feature: &mut Feature| {
+            feature.workdir = prepared.workdir.clone();
+            feature.is_worktree = prepared.is_worktree;
+            feature.mode = prepared.mode.clone();
+            feature.review = prepared.review;
+            feature.plan_mode = prepared.plan_mode;
+            feature.agent = prepared.agent.clone();
+            feature.enable_chrome = prepared.enable_chrome;
+            feature.remote_control = prepared.remote_control;
+            feature.issue_source = prepared.issue_source.clone();
+            feature.pending_worktree_script = false;
+        };
+        // What to re-apply if the save below conflicts with another process:
+        // the finishing touches to the pending row, or the whole new row.
+        let mut new_feature: Option<Feature> = None;
         let target_feature_id = if let Some((pi, fi)) = existing_pending {
             let feature = self
                 .store
@@ -530,16 +545,7 @@ impl App {
                 .and_then(|project| project.features.get_mut(fi));
             let target_feature_id = feature.as_ref().map(|feature| feature.id.clone());
             if let Some(feature) = feature {
-                feature.workdir = prepared.workdir.clone();
-                feature.is_worktree = prepared.is_worktree;
-                feature.mode = prepared.mode.clone();
-                feature.review = prepared.review;
-                feature.plan_mode = prepared.plan_mode;
-                feature.agent = prepared.agent.clone();
-                feature.enable_chrome = prepared.enable_chrome;
-                feature.remote_control = prepared.remote_control;
-                feature.issue_source = prepared.issue_source.clone();
-                feature.pending_worktree_script = false;
+                finish_pending(feature);
             }
             target_feature_id
         } else {
@@ -549,10 +555,10 @@ impl App {
                 prepared.branch.clone(),
                 prepared.workdir.clone(),
                 prepared.is_worktree,
-                prepared.mode,
+                prepared.mode.clone(),
                 prepared.review,
                 prepared.plan_mode,
-                prepared.agent,
+                prepared.agent.clone(),
                 prepared.enable_chrome,
                 prepared.remote_control,
             );
@@ -565,15 +571,54 @@ impl App {
                 Some(prepared.session_name.clone()),
             );
             let target_feature_id = feature.id.clone();
+            new_feature = Some(feature.clone());
             self.store.add_feature(&prepared.project_name, feature);
             Some(target_feature_id)
         };
 
-        if let Err(error) = self.save() {
-            self.store = store_before_write;
-            anyhow::bail!(
-                "feature was not saved; retry creation (any created worktree was kept): {error}"
-            );
+        // A conflict reloads the store from disk; re-apply this creation to
+        // it by id instead of losing the row while its worktree stays behind.
+        let saved = self.save_reapplying(|store| {
+            let Some(id) = target_feature_id.as_deref() else {
+                return true;
+            };
+            let Some(project) = store.find_project_mut(&prepared.project_name) else {
+                return false;
+            };
+            if let Some(feature) = project.features.iter_mut().find(|f| f.id == id) {
+                if new_feature.is_none() {
+                    finish_pending(feature);
+                }
+                return true;
+            }
+            match &new_feature {
+                Some(feature) => {
+                    project.features.push(feature.clone());
+                    true
+                }
+                // The pending row was removed elsewhere.
+                None => false,
+            }
+        });
+        match saved {
+            Ok(ReapplyOutcome::Saved) => {}
+            // The store now holds the other writer's state, without this row;
+            // restoring the pre-write snapshot would put a stale store back
+            // under the new version and clobber that writer on the next save.
+            Ok(ReapplyOutcome::TargetGone) => anyhow::bail!(
+                "feature was not saved: its project or pending row was removed elsewhere (any created worktree was kept)"
+            ),
+            Ok(ReapplyOutcome::Conflict) => {
+                return Err(anyhow::anyhow!(SAVE_CONFLICT_MESSAGE).context(
+                    "feature was not saved: another AMF process kept changing the workspace; retry creation (any created worktree was kept)",
+                ));
+            }
+            Err(error) => {
+                self.store = store_before_write;
+                anyhow::bail!(
+                    "feature was not saved; retry creation (any created worktree was kept): {error}"
+                );
+            }
         }
         if let Some(feature) = self
             .store

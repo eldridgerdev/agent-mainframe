@@ -453,23 +453,39 @@ pub enum SaveOutcome {
 /// `AmfDb::open_or_seed` time, before anything holds a loaded version to
 /// check against). Ordinary application saves must go through
 /// [`save_checked`] instead — see its doc comment.
-pub fn save(conn: &Connection, store: &ProjectStore) -> Result<()> {
+pub fn save(conn: &Connection, store: &ProjectStore) -> Result<u64> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
-    match do_save(conn, store) {
-        Ok(()) => {
-            let next = current_version(conn)?.wrapping_add(1);
-            conn.execute(
-                "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
-                params![next.to_string()],
-            )?;
-            conn.execute_batch("COMMIT;")?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(e)
-        }
+    in_write_transaction(conn, || {
+        let next = current_version(conn)?.wrapping_add(1);
+        do_save(conn, store)?;
+        write_version(conn, next)?;
+        Ok(next)
+    })
+}
+
+/// Run `body` inside the write transaction the caller has just opened with
+/// `BEGIN IMMEDIATE`, committing on success and rolling back on *any* error
+/// -- including a failed `COMMIT` itself. Every early `?` between `BEGIN` and
+/// `COMMIT` has to go through here: returning without a `ROLLBACK` leaves the
+/// connection inside the transaction, holding SQLite's write lock, so every
+/// later `BEGIN` on it fails and other processes block until it is dropped.
+fn in_write_transaction<T>(conn: &Connection, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    let result = body().and_then(|value| {
+        conn.execute_batch("COMMIT;")?;
+        Ok(value)
+    });
+    if result.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK;");
     }
+    result
+}
+
+fn write_version(conn: &Connection, version: u64) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
+        params![version.to_string()],
+    )?;
+    Ok(())
 }
 
 /// Save `store`, but only if the on-disk version still matches
@@ -484,34 +500,20 @@ pub fn save_checked(
     expected_version: u64,
 ) -> Result<SaveOutcome> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
-    let on_disk = match current_version(conn) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e);
+    in_write_transaction(conn, || {
+        let on_disk = current_version(conn)?;
+        if on_disk != expected_version {
+            // Nothing written; `in_write_transaction` commits an empty
+            // transaction, which releases the lock just like a rollback.
+            return Ok(SaveOutcome::Conflict {
+                current_version: on_disk,
+            });
         }
-    };
-    if on_disk != expected_version {
-        conn.execute_batch("ROLLBACK;")?;
-        return Ok(SaveOutcome::Conflict {
-            current_version: on_disk,
-        });
-    }
-    match do_save(conn, store) {
-        Ok(()) => {
-            let next = on_disk.wrapping_add(1);
-            conn.execute(
-                "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
-                params![next.to_string()],
-            )?;
-            conn.execute_batch("COMMIT;")?;
-            Ok(SaveOutcome::Saved { new_version: next })
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(e)
-        }
-    }
+        let next = on_disk.wrapping_add(1);
+        do_save(conn, store)?;
+        write_version(conn, next)?;
+        Ok(SaveOutcome::Saved { new_version: next })
+    })
 }
 
 fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
@@ -1108,8 +1110,35 @@ mod tests {
         let (_tmp, db) = open_temp_db();
         let store = empty_store();
 
-        save(&db.conn, &store).unwrap();
+        assert_eq!(save(&db.conn, &store).unwrap(), 1);
 
         assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    /// A failure between `BEGIN IMMEDIATE` and `COMMIT` must not strand the
+    /// connection inside the transaction: that would hold the write lock
+    /// against every other process and make this connection's next `BEGIN`
+    /// fail with "cannot start a transaction within a transaction".
+    #[test]
+    fn a_failed_save_leaves_no_open_transaction_behind() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+        // `store_meta` is read and written after `BEGIN`; removing it makes
+        // both saves fail mid-transaction.
+        db.conn.execute_batch("DROP TABLE store_meta;").unwrap();
+
+        assert!(save_checked(&db.conn, &store, 0).is_err());
+        assert!(db.conn.is_autocommit());
+        assert!(save(&db.conn, &store).is_err());
+        assert!(db.conn.is_autocommit());
+
+        // And the connection is still usable for a new write transaction.
+        db.conn
+            .execute_batch("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        assert_eq!(
+            save_checked(&db.conn, &store, 0).unwrap(),
+            SaveOutcome::Saved { new_version: 1 }
+        );
     }
 }

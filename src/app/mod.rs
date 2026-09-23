@@ -166,6 +166,25 @@ pub const ACTIVE_PR_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub(crate) const SAVE_CONFLICT_MESSAGE: &str = "Workspace changed elsewhere (another AMF window or process) before this save landed. Your \
      change was not saved; the view has been refreshed with the current state -- please retry.";
 
+/// How many times `App::save_reapplying` re-applies a change after a
+/// conflict before giving up. Each conflict means another process committed
+/// in the moment between this one's reload and its save; two in a row is
+/// already unusual, so this only bounds a pathological writer.
+const SAVE_REAPPLY_ATTEMPTS: usize = 3;
+
+/// Result of `App::save_reapplying`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReapplyOutcome {
+    /// The change is on disk.
+    Saved,
+    /// The row the change applies to was removed by another writer; the
+    /// store is that writer's, without the change.
+    TargetGone,
+    /// Other writers kept landing first; the store is the latest on disk,
+    /// without the change.
+    Conflict,
+}
+
 /// Cached dashboard metadata for an open pull request associated with a
 /// feature's branch. The branch and head SHA travel with the badge so a
 /// background result can never be applied after the feature changes branches.
@@ -3515,18 +3534,23 @@ impl App {
     /// Persists `self.store`, reporting whether it actually saved or hit a
     /// concurrent-writer conflict, without turning a conflict into an `Err`
     /// -- see `save`, which wraps this for TUI call sites that just want to
-    /// bail with a message, and `gui_contract::GuiHandle`, which wraps it to
-    /// report `GuiErrorKind::Conflict` instead of a bare internal error.
+    /// bail with a message, `save_reapplying` for call sites whose change can
+    /// be re-applied onto the refreshed store, and `gui_contract::GuiHandle`,
+    /// which wraps it to report `GuiErrorKind::Conflict` instead of a bare
+    /// internal error.
     ///
     /// Cross-process-safe when backed by a real DB (`AMF_PLAN.md` Task 5):
     /// the save only applies if nothing else -- the GUI, another AMF
     /// process, or a stale reload -- has saved since this `App` last loaded
     /// or saved successfully. On a detected conflict the in-memory store is
-    /// refreshed from disk before returning, so the caller's next action
-    /// sees current state instead of repeating the same conflict; the change
-    /// that triggered this save is discarded, not merged, which is the
-    /// honest outcome for a full-replace store with no per-field merge logic
-    /// (see `db::store::save`'s doc comment).
+    /// refreshed from disk (see `adopt_store_from_disk`) before returning, so
+    /// the caller's next action sees current state instead of repeating the
+    /// same conflict; the change that triggered this save is discarded, not
+    /// merged, which is the honest outcome for a full-replace store with no
+    /// per-field merge logic (see `db::store::save`'s doc comment).
+    ///
+    /// Any `(pi, fi, si)` the caller held from before the call may be stale
+    /// after `Ok(false)`; re-resolve by stable id before indexing again.
     pub(crate) fn save_reporting_conflict(&mut self) -> Result<bool> {
         if let Some(db) = &self.db {
             let Some(expected) = self.store_version else {
@@ -3535,10 +3559,11 @@ impl App {
                 // to an `App` built via `new_for_test` after the fact, with
                 // no `load_store_versioned` call to establish one. Either
                 // way there is nothing yet to conflict *with*: save
-                // unconditionally once and adopt whatever version results,
-                // so every save after this one is protected.
-                db.save_store(&self.store)?;
-                self.store_version = Some(db.current_store_version()?);
+                // unconditionally once and adopt the version that save
+                // committed (read inside its own transaction, so it cannot
+                // be a later writer's), so every save after this one is
+                // protected.
+                self.store_version = Some(db.save_store(&self.store)?);
                 return Ok(true);
             };
             return match db.save_store_checked(&self.store, expected)? {
@@ -3546,9 +3571,13 @@ impl App {
                     self.store_version = Some(new_version);
                     Ok(true)
                 }
-                crate::db::store::SaveOutcome::Conflict { current_version } => {
-                    self.store = db.load_store()?;
-                    self.store_version = Some(current_version);
+                crate::db::store::SaveOutcome::Conflict { .. } => {
+                    // One snapshot, not `load_store` plus the version the
+                    // rejected save saw: a write landing between the two
+                    // would pair this data with an older version and make
+                    // the next save conflict for no reason.
+                    let (store, version) = db.load_store_versioned()?;
+                    self.adopt_store_from_disk(store, version);
                     Ok(false)
                 }
             };
@@ -3559,6 +3588,117 @@ impl App {
             self.store.save(&self.store_path)?;
         }
         Ok(true)
+    }
+
+    /// Save, and on a cross-process conflict re-apply this caller's change
+    /// onto the refreshed store and try again, instead of discarding it.
+    ///
+    /// For changes that can be described by stable id -- "append this
+    /// session to feature X", "tag session Y with TODO Z" -- and that follow
+    /// a side effect (a tmux window, a worktree) which would otherwise be
+    /// left running with no store record. `reapply` runs against the store
+    /// just reloaded from disk; it returns `false`, without mutating, when
+    /// its target no longer exists there, which ends the attempt with
+    /// [`ReapplyOutcome::TargetGone`] so the caller can undo its side effect.
+    ///
+    /// After anything but `Saved` the store holds the other writer's state
+    /// without this change. An `Err` (a failed DB write, not a conflict)
+    /// leaves the unsaved change in memory, as `save` does.
+    pub(crate) fn save_reapplying(
+        &mut self,
+        mut reapply: impl FnMut(&mut ProjectStore) -> bool,
+    ) -> Result<ReapplyOutcome> {
+        let mut attempts = 0;
+        loop {
+            if self.save_reporting_conflict()? {
+                return Ok(ReapplyOutcome::Saved);
+            }
+            attempts += 1;
+            if attempts >= SAVE_REAPPLY_ATTEMPTS {
+                return Ok(ReapplyOutcome::Conflict);
+            }
+            if !reapply(&mut self.store) {
+                return Ok(ReapplyOutcome::TargetGone);
+            }
+        }
+    }
+
+    /// Adopt a newer store written by another process (the GUI, another
+    /// TUI, or `amf` automation) if one has landed since this `App` last
+    /// loaded or saved. Called from the TUI's event loop so the next save
+    /// starts from current state instead of conflicting on it.
+    ///
+    /// Only in modes whose state refers to the store by name or id -- the
+    /// dashboard and the session view -- because other modes can hold
+    /// `(pi, fi)` indices a reload would silently re-point. Anywhere else
+    /// the check waits for the next call.
+    pub fn refresh_store_if_changed_elsewhere(&mut self) -> Result<bool> {
+        if !matches!(self.mode, AppMode::Normal | AppMode::Viewing(_)) {
+            return Ok(false);
+        }
+        let Some(db) = &self.db else {
+            return Ok(false);
+        };
+        let Some(known) = self.store_version else {
+            return Ok(false);
+        };
+        if db.current_store_version()? == known {
+            return Ok(false);
+        }
+        let (store, version) = db.load_store_versioned()?;
+        self.adopt_store_from_disk(store, version);
+        Ok(true)
+    }
+
+    /// Replace the in-memory store with one just loaded from disk, keeping
+    /// the dashboard selection on the same project/feature/session by id --
+    /// an index into the old store can name a different row, or none, in
+    /// the new one. A selection whose row is gone falls back to its nearest
+    /// surviving ancestor, then to the first project.
+    pub(crate) fn adopt_store_from_disk(&mut self, store: ProjectStore, version: u64) {
+        let ids = self.selection_ids();
+        self.store = store;
+        self.store_version = Some(version);
+        self.selection = self.selection_for_ids(ids);
+    }
+
+    fn selection_ids(&self) -> (Option<String>, Option<String>, Option<String>) {
+        let (pi, fi, si) = match self.selection {
+            Selection::Project(pi) => (pi, None, None),
+            Selection::Feature(pi, fi) => (pi, Some(fi), None),
+            Selection::Session(pi, fi, si) => (pi, Some(fi), Some(si)),
+        };
+        let project = self.store.projects.get(pi);
+        let feature = fi.and_then(|fi| project.and_then(|p| p.features.get(fi)));
+        let session = si.and_then(|si| feature.and_then(|f| f.sessions.get(si)));
+        (
+            project.map(|p| p.id.clone()),
+            feature.map(|f| f.id.clone()),
+            session.map(|s| s.id.clone()),
+        )
+    }
+
+    fn selection_for_ids(
+        &self,
+        (project_id, feature_id, session_id): (Option<String>, Option<String>, Option<String>),
+    ) -> Selection {
+        if let Some((pi, fi, si)) = session_id
+            .as_deref()
+            .and_then(|id| self.session_indices_by_id(id))
+        {
+            return Selection::Session(pi, fi, si);
+        }
+        if let Some((pi, fi)) = feature_id
+            .as_deref()
+            .and_then(|id| self.feature_indices_by_id(id))
+        {
+            return Selection::Feature(pi, fi);
+        }
+        let pi = project_id
+            .as_deref()
+            .and_then(|id| self.store.projects.iter().position(|p| p.id == id))
+            .unwrap_or(0);
+        Selection::Project(pi)
     }
 
     pub fn save(&mut self) -> Result<()> {

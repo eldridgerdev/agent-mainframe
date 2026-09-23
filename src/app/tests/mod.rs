@@ -13,5 +13,6 @@ mod prompts_configuration;
 mod resources;
 mod startup_navigation;
 mod status_sidebar;
+mod store_sync;
 mod support;
 mod todos;

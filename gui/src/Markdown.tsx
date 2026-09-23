@@ -23,7 +23,9 @@ function inline(text: string): ReactNode[] {
 }
 
 export default function Markdown({ source }: { source: string }) {
-  const lines = source.split("\n");
+  // CRLF (Windows files, some model output) would leave a trailing `\r` that
+  // defeats the heading regex below.
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks: ReactNode[] = [];
   let i = 0;
   while (i < lines.length) {
@@ -59,7 +61,9 @@ export default function Markdown({ source }: { source: string }) {
       i += 1;
       continue;
     }
-    const paragraph: string[] = [];
+    // The first line is always taken, so a line no branch above recognises
+    // (whatever its shape) still advances `i` rather than looping forever.
+    const paragraph: string[] = [lines[i++]];
     while (
       i < lines.length && lines[i].trim()
       && !/^(#{1,4}\s|\s*([-*]|\d+\.)\s|\s*```)/.test(lines[i])

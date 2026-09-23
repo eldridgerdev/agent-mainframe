@@ -34,7 +34,51 @@ struct AppState(Mutex<GuiHandle>);
 /// rather than accumulating a second one; dropping the replaced
 /// `TerminalHandle` detaches it exactly the same way an explicit
 /// `detach_terminal` would.
-struct TerminalState(Mutex<HashMap<String, TerminalHandle>>);
+struct TerminalState(Mutex<Attachments<TerminalHandle>>);
+
+/// The key alone can't say *which* attachment a detach means: a pane that
+/// unmounts while its `attach_terminal` is still in flight detaches after a
+/// newer pane for the same session has already attached, and removing by key
+/// would take the newer pane's handle. Each attachment therefore also gets a
+/// generation, and a detach only removes the entry it created. Generic so the
+/// bookkeeping is testable without a real tmux pane.
+struct Attachments<T> {
+    next_generation: u64,
+    entries: HashMap<String, (u64, T)>,
+}
+
+impl<T> Attachments<T> {
+    fn new() -> Self {
+        Self {
+            next_generation: 0,
+            entries: HashMap::new(),
+        }
+    }
+
+    /// Returns the new entry's generation and whatever it replaced, which the
+    /// caller drops outside the lock.
+    fn insert(&mut self, key: String, value: T) -> (u64, Option<T>) {
+        self.next_generation += 1;
+        let generation = self.next_generation;
+        let previous = self.entries.insert(key, (generation, value));
+        (generation, previous.map(|(_, value)| value))
+    }
+
+    fn get(&self, key: &str) -> Option<&T> {
+        self.entries.get(key).map(|(_, value)| value)
+    }
+
+    /// Removes `key` only while it still holds `generation`; a stale detach
+    /// is a no-op.
+    fn remove(&mut self, key: &str, generation: u64) -> Option<T> {
+        match self.entries.get(key) {
+            Some((current, _)) if *current == generation => {
+                self.entries.remove(key).map(|(_, value)| value)
+            }
+            _ => None,
+        }
+    }
+}
 
 fn terminal_key(target: &SessionTarget) -> String {
     format!("{}:{}", target.feature_id, target.session_id)
@@ -164,6 +208,9 @@ fn stop_feature(
 #[derive(Serialize)]
 struct AttachTerminalResponse {
     key: String,
+    /// Passed back to `detach_terminal` so it removes this attachment and
+    /// never a newer one for the same session.
+    generation: u64,
     initial: String,
 }
 
@@ -210,14 +257,18 @@ fn attach_terminal(
     // Dropped outside the lock (after replacing the map entry) so a wedged
     // old attachment's bounded-but-real teardown wait (see
     // `TerminalHandle`'s `Drop`) never happens while holding this mutex.
-    let previous = terminals
+    let (generation, previous) = terminals
         .0
         .lock()
         .expect("terminal registry mutex poisoned")
         .insert(key.clone(), handle);
     drop(previous);
 
-    Ok(AttachTerminalResponse { key, initial })
+    Ok(AttachTerminalResponse {
+        key,
+        generation,
+        initial,
+    })
 }
 
 #[tauri::command]
@@ -272,14 +323,16 @@ fn resize_terminal(
 /// itself closes (switching sessions, say). Removing it from the map drops
 /// it, which is exactly what closing the whole GUI relies on to detach every
 /// live attachment without killing their underlying tmux sessions -- see
-/// `TerminalHandle`'s own doc comment.
+/// `TerminalHandle`'s own doc comment. `generation` is the one
+/// `attach_terminal` returned; a detach for a superseded attachment leaves
+/// the current one in place (see [`Attachments`]).
 #[tauri::command]
-fn detach_terminal(terminals: State<TerminalState>, key: String) {
+fn detach_terminal(terminals: State<TerminalState>, key: String, generation: u64) {
     let removed = terminals
         .0
         .lock()
         .expect("terminal registry mutex poisoned")
-        .remove(&key);
+        .remove(&key, generation);
     drop(removed);
 }
 
@@ -479,7 +532,7 @@ fn main() {
             let db_path = agent_mainframe::project::db_path();
             let gui = GuiHandle::new(db_path)?;
             app.manage(AppState(Mutex::new(gui)));
-            app.manage(TerminalState(Mutex::new(HashMap::new())));
+            app.manage(TerminalState(Mutex::new(Attachments::new())));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -513,4 +566,24 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Attachments;
+
+    #[test]
+    fn a_stale_detach_leaves_the_newer_attachment_in_place() {
+        let mut attachments = Attachments::new();
+        let (old, _) = attachments.insert("f:s".to_string(), "old");
+        let (new, replaced) = attachments.insert("f:s".to_string(), "new");
+        assert_eq!(replaced, Some("old"));
+        assert_ne!(old, new);
+
+        assert_eq!(attachments.remove("f:s", old), None);
+        assert_eq!(attachments.get("f:s"), Some(&"new"));
+
+        assert_eq!(attachments.remove("f:s", new), Some("new"));
+        assert_eq!(attachments.get("f:s"), None);
+    }
 }

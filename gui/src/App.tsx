@@ -57,6 +57,11 @@ import {
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
+// A session a launch just created can take a snapshot or two to appear. Only
+// that launch's session is shown ahead of the snapshot, and only for this
+// long, so a session removed elsewhere (killed from the TUI, say) can't leave
+// a phantom tab that keeps trying to attach.
+const PENDING_SESSION_GRACE_MS = 10_000;
 
 type View =
   | { kind: "todos" }
@@ -100,6 +105,7 @@ export default function App() {
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
+  const [pendingSessionByFeature, setPendingSessionByFeature] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sendingPrompt, setSendingPrompt] = useState(false);
   const [planMinimized, setPlanMinimized] = useState(false);
@@ -178,6 +184,20 @@ export default function App() {
     }
   }, [workspace.data, view, selectedProject, selectedFeature, projects]);
 
+  // A launched session that has reached the snapshot no longer needs the
+  // grace period: from here on it is shown only while the snapshot has it.
+  useEffect(() => {
+    setPendingSessionByFeature((current) => {
+      const arrived = Object.entries(current).filter(([featureId, sessionId]) =>
+        projects.some((project) => project.features.some((feature) =>
+          feature.id === featureId && feature.sessions.some((session) => session.id === sessionId))));
+      if (arrived.length === 0) return current;
+      const next = { ...current };
+      for (const [featureId] of arrived) delete next[featureId];
+      return next;
+    });
+  }, [projects]);
+
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
@@ -237,6 +257,13 @@ export default function App() {
   function openSession(target: SessionTarget, draftPrompt?: string) {
     setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
     setTabByFeature((current) => ({ ...current, [target.feature_id]: target.session_id }));
+    setPendingSessionByFeature((current) => ({ ...current, [target.feature_id]: target.session_id }));
+    window.setTimeout(() => setPendingSessionByFeature((current) => {
+      if (current[target.feature_id] !== target.session_id) return current;
+      const next = { ...current };
+      delete next[target.feature_id];
+      return next;
+    }), PENDING_SESSION_GRACE_MS);
     if (draftPrompt !== undefined) setDraft({ key: sessionKey(target), text: draftPrompt });
   }
 
@@ -547,6 +574,7 @@ export default function App() {
             harnessName={harnessName}
             modeName={modeName}
             tab={tabByFeature[selectedFeature.id]}
+            pendingSessionId={pendingSessionByFeature[selectedFeature.id]}
             onTab={(tab) => setTabByFeature((current) => ({ ...current, [selectedFeature.id]: tab }))}
             onBack={() => setView({ kind: "project", projectId: selectedProject.id })}
             onPlan={(quick) => void beginPlan(
@@ -894,6 +922,7 @@ function FeatureView({
   harnessName,
   modeName,
   tab,
+  pendingSessionId,
   onTab,
   onBack,
   onPlan,
@@ -913,6 +942,8 @@ function FeatureView({
   harnessName: (slug: AgentSlug) => string;
   modeName: (slug: ModeSlug) => string;
   tab: string | undefined;
+  /** A session this page just launched that the snapshot may not have yet. */
+  pendingSessionId: string | undefined;
   onTab: (tab: string) => void;
   onBack: () => void;
   onPlan: (quick: boolean) => void;
@@ -924,10 +955,15 @@ function FeatureView({
   todoPanel: ReactNode;
 }) {
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
-  const activeTab = tab ?? sessions[0]?.id ?? TODOS_TAB;
-  // A session just created by a launch may not be in the snapshot yet; keep
-  // its tab visible so the handoff lands somewhere.
-  const pendingSession = activeTab !== TODOS_TAB && !sessions.some((session) => session.id === activeTab);
+  const known = (id: string | undefined) =>
+    id === TODOS_TAB || sessions.some((session) => session.id === id);
+  // A remembered tab whose session is gone falls back to the first one,
+  // unless it is the session a launch just created and the snapshot hasn't
+  // caught up yet -- keep that tab so the handoff lands somewhere.
+  const pendingSession = tab !== undefined && !known(tab) && tab === pendingSessionId;
+  const activeTab = tab !== undefined && (known(tab) || pendingSession)
+    ? tab
+    : sessions[0]?.id ?? TODOS_TAB;
   const isStopped = feature.status === "stopped";
   const target: SessionTarget | null = activeTab === TODOS_TAB ? null : {
     project_id: project.id,

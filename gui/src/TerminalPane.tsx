@@ -70,6 +70,9 @@ interface SessionTarget {
 
 interface AttachTerminalResponse {
   key: string;
+  // Identifies this attachment among any others for the same session, so
+  // our detach can never remove a newer pane's handle.
+  generation: number;
   initial: string;
 }
 
@@ -110,6 +113,7 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
       if (!disposed) term.refresh(0, term.rows - 1);
     });
     let attached = false;
+    let generation: number | null = null;
     let unlisten: (() => void) | undefined;
     let newestBeforeInitial: string | null = null;
 
@@ -137,9 +141,10 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
           size: { cols: term.cols, rows: term.rows },
         });
         if (disposed) {
-          await invoke("detach_terminal", { key: response.key });
+          await invoke("detach_terminal", { key: response.key, generation: response.generation });
           return;
         }
+        generation = response.generation;
         renderReplay(response.initial);
         if (newestBeforeInitial !== null) renderReplay(newestBeforeInitial);
         newestBeforeInitial = null;
@@ -185,7 +190,7 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
       onResize.dispose();
       unlisten?.();
       unlisten = undefined;
-      if (attached) void invoke("detach_terminal", { key }).catch(() => {});
+      if (attached) void invoke("detach_terminal", { key, generation }).catch(() => {});
       term.dispose();
     };
   }, [target.project_id, target.feature_id, target.session_id]);

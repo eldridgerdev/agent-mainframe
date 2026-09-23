@@ -47,7 +47,7 @@ npm run build
 cd ..
 cargo test --workspace --locked
 cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Installers, signing, macOS Finder launch environment, and independently

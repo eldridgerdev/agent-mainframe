@@ -136,7 +136,7 @@ Before a milestone is marked complete, run and pass, unmodified from
 cargo build --locked
 cargo test --workspace --locked
 cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Additionally:

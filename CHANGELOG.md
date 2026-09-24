@@ -12,7 +12,7 @@ are tagged.
 
 ### Added
 
-- **A desktop GUI preview (`gui/`), built from source.** It shares `amf.db`
+- **A desktop GUI preview (`gui/`).** It shares `amf.db`
   and the tmux sessions with the terminal interface, so you can switch
   between the two or run both at once. A sidebar lists your projects and
   their features, with running features first. Each feature page has live
@@ -27,8 +27,13 @@ are tagged.
   bundles fallback fonts so Nerd Font status lines and agent tool output
   render the same on every machine. See `gui/README.md` to run it, and
   `docs/backlog/amf-gui-workflow-inventory.md` for which workflows are
-  available so far; everything else still needs `amf`. Releases still ship
-  only the terminal interface. No migration is required.
+  available so far; everything else still needs `amf`. Releases now include
+  GUI downloads for x86_64 and aarch64 Linux alongside `amf`: a `.deb`
+  (for example `amf-gui-x86_64-unknown-linux-gnu.deb`, which pulls in `tmux`)
+  and an AppImage for each. The x86_64 builds also run on Windows under WSL2
+  with WSLg. The GUI still
+  needs `tmux` and your agent CLIs on `PATH`, and macOS builds are not
+  published yet. No migration is required.
 
 ## [v0.44.1] - 2026-09-22
 

@@ -143,9 +143,97 @@ jobs:
           path: dist/amf-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
+  build-gui:
+    name: Build GUI (${{ matrix.target }})
+    needs: test
+    # 22.04 rather than latest: an AppImage only runs on systems whose glibc
+    # is at least as new as the one it was built against, so the oldest
+    # supported runner reaches the most distros. The .deb targets the same
+    # systems. Linux x86_64 also covers Windows through WSL2/WSLg; macOS is
+    # left out until its runtime and signing have been checked.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One architecture failing shouldn't cancel the other's bundles.
+      fail-fast: false
+      matrix:
+        include:
+          # Tauri names bundles with Debian's arch for the .deb and
+          # linuxdeploy's for the AppImage; they differ on aarch64.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            deb_arch: amd64
+            appimage_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            deb_arch: arm64
+            appimage_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GUI build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config file patchelf \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
+            libxdo-dev libssl-dev
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gui-${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            gui-${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Install frontend dependencies
+        working-directory: gui
+        run: npm ci
+
+      # The GUI's own manifest version is not bumped by release.sh; stamp the
+      # bundles with the tag's version so both interfaces carry one number.
+      - name: Build .deb and AppImage
+        working-directory: gui
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          rm -rf ../target/release/bundle
+          npm run tauri -- build --ci --bundles deb,appimage \
+            --config "{\"version\":\"$version\"}"
+
+      - name: Collect bundles
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp target/release/bundle/deb/*_"${version}"_${{ matrix.deb_arch }}.deb \
+            dist/amf-gui-${{ matrix.target }}.deb
+          cp target/release/bundle/appimage/*_"${version}"_${{ matrix.appimage_arch }}.AppImage \
+            dist/amf-gui-${{ matrix.target }}.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: amf-gui-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: Publish Release
-    needs: build
+    needs: [build, build-gui]
+    # The GUI is a preview: publish the TUI release even if its bundle
+    # failed. The failed job stays visible on the workflow run.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

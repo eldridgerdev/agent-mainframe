@@ -30,10 +30,13 @@ are tagged.
   available so far; everything else still needs `amf`. Releases now include
   GUI downloads for x86_64 and aarch64 Linux alongside `amf`: a `.deb`
   (for example `amf-gui-x86_64-unknown-linux-gnu.deb`, which pulls in `tmux`)
-  and an AppImage for each. The x86_64 builds also run on Windows under WSL2
-  with WSLg. The GUI still
-  needs `tmux` and your agent CLIs on `PATH`, and macOS builds are not
-  published yet. No migration is required.
+  and an AppImage for each, plus `amf-gui-aarch64-apple-darwin.dmg` for Apple
+  Silicon Macs. The x86_64 Linux builds also run on Windows under WSL2 with
+  WSLg. The Mac app isn't signed with an Apple Developer ID yet, so approve it
+  once under System Settings → Privacy & Security the first time you open it.
+  Opened from Finder or the Dock, it picks up `PATH` from your login shell, so
+  a `tmux` and agent CLIs that work in Terminal work in the app. The GUI still
+  needs `tmux` and your agent CLIs installed. No migration is required.
 
 ## [v0.44.1] - 2026-09-22
 

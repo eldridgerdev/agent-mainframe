@@ -146,11 +146,10 @@ jobs:
   build-gui:
     name: Build GUI (${{ matrix.target }})
     needs: test
-    # 22.04 rather than latest: an AppImage only runs on systems whose glibc
-    # is at least as new as the one it was built against, so the oldest
-    # supported runner reaches the most distros. The .deb targets the same
-    # systems. Linux x86_64 also covers Windows through WSL2/WSLg; macOS is
-    # left out until its runtime and signing have been checked.
+    # Linux runs on 22.04 rather than latest: an AppImage only runs on systems
+    # whose glibc is at least as new as the one it was built against, so the
+    # oldest supported runner reaches the most distros. The .deb targets the
+    # same systems. Linux x86_64 also covers Windows through WSL2/WSLg.
     runs-on: ${{ matrix.runner }}
     strategy:
       # One architecture failing shouldn't cancel the other's bundles.
@@ -161,12 +160,19 @@ jobs:
           # linuxdeploy's for the AppImage; they differ on aarch64.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+            bundles: deb,appimage
             deb_arch: amd64
             appimage_arch: amd64
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+            bundles: deb,appimage
             deb_arch: arm64
             appimage_arch: aarch64
+          # Apple Silicon only, matching the amf macOS build.
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            bundles: app,dmg
+            dmg_arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -174,6 +180,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install GUI build prerequisites
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config file patchelf \
@@ -204,15 +211,24 @@ jobs:
 
       # The GUI's own manifest version is not bumped by release.sh; stamp the
       # bundles with the tag's version so both interfaces carry one number.
-      - name: Build .deb and AppImage
+      # macOS builds are ad-hoc signed ("-"): Apple Silicon refuses to open an
+      # unsigned bundle at all ("damaged"), while an ad-hoc one opens after
+      # the user approves it once. There is no Developer ID or notarization
+      # yet; without APPLE_* credentials the bundler skips notarizing.
+      - name: Build bundles
         working-directory: gui
         run: |
           version="${GITHUB_REF_NAME#v}"
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            config="{\"version\":\"$version\",\"bundle\":{\"macOS\":{\"signingIdentity\":\"-\"}}}"
+          else
+            config="{\"version\":\"$version\"}"
+          fi
           rm -rf ../target/release/bundle
-          npm run tauri -- build --ci --bundles deb,appimage \
-            --config "{\"version\":\"$version\"}"
+          npm run tauri -- build --ci --bundles ${{ matrix.bundles }} --config "$config"
 
-      - name: Collect bundles
+      - name: Collect Linux bundles
+        if: runner.os == 'Linux'
         run: |
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
@@ -220,6 +236,14 @@ jobs:
             dist/amf-gui-${{ matrix.target }}.deb
           cp target/release/bundle/appimage/*_"${version}"_${{ matrix.appimage_arch }}.AppImage \
             dist/amf-gui-${{ matrix.target }}.AppImage
+
+      - name: Collect macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp target/release/bundle/dmg/*_"${version}"_${{ matrix.dmg_arch }}.dmg \
+            dist/amf-gui-${{ matrix.target }}.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

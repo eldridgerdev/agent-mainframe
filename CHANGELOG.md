@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.46.0] - 2026-09-24
+
 ### Added
 
 - **Plan interviews can read linked tickets from Asana, Linear, Jira, and
@@ -19,6 +21,16 @@ are tagged.
   servers can be supplied as a config file. A brief that links a ticket then
   has it fetched instead of pasted in. Works when the interview runs on
   Claude; see "Issue trackers in plan interviews" in the README for examples.
+  The interview can still only read: it can't edit files or run commands, and
+  it won't load the repository's own Claude settings, hooks, MCP servers,
+  `CLAUDE.md`, skills, or subagents. If the setting has a mistake, the
+  interview runs without the tools and tells you why, once.
+
+### Migration
+
+- No migration is required. Ticket lookup is off until you add
+  `plan_interview_mcp` to your global config. It can't be set in a
+  project's `amf.json`, because MCP servers run programs.
 
 ## [v0.45.0] - 2026-09-24
 

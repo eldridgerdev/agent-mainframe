@@ -5,8 +5,8 @@ remains available and uses the same project database and tmux sessions.
 
 ## Install a release build
 
-Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux
-next to the `amf` downloads. They carry the same version number as `amf`.
+Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux,
+and for Apple Silicon Macs, next to the `amf` downloads. They carry the same version number as `amf`.
 Pick the file for your machine's architecture: `x86_64-unknown-linux-gnu`
 for Intel and AMD, `aarch64-unknown-linux-gnu` for ARM64.
 
@@ -18,8 +18,35 @@ for Intel and AMD, `aarch64-unknown-linux-gnu` for ARM64.
   `chmod +x` on it, and run it. Install `tmux` yourself.
 
 Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
-be on `PATH`. On Windows, follow [Windows (WSL2)](#windows-wsl2) below.
-macOS builds are not published yet; build from source instead.
+be on `PATH`. For a Mac, follow [macOS](#macos) below; on Windows, follow
+[Windows (WSL2)](#windows-wsl2).
+
+## macOS
+
+Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs
+(M1 and later). There is no Intel Mac build; build from source on an Intel Mac.
+
+1. **Install `tmux`,** for example with `brew install tmux`, and install the
+   agent CLIs you use.
+2. **Open the `.dmg` and drag AMF GUI into Applications.**
+3. **Approve it the first time.** The app is not signed with an Apple
+   Developer ID yet, so macOS blocks the first launch with a warning that it
+   can't verify the app. Close the warning, open **System Settings → Privacy &
+   Security**, scroll down and click **Open Anyway** next to AMF GUI, then
+   confirm. macOS remembers this, so later launches open normally.
+
+   From a terminal, this does the same:
+
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/AMF GUI.app"
+   ```
+
+Apps opened from Finder, the Dock or Spotlight don't inherit your shell's
+`PATH`, so at startup the GUI asks your login shell (`$SHELL`, usually zsh)
+for its `PATH`. As long as `tmux` and your agent CLIs work in a new terminal
+window, the GUI will find them. If your shell's startup files take longer than
+three seconds, the GUI gives up and keeps the system `PATH`; launch it from a
+terminal with `open -a "AMF GUI"` instead.
 
 ## Windows (WSL2)
 
@@ -120,6 +147,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 The release workflow (`.github/workflows/release.yml`) builds the `.deb` and
-AppImage for x86_64 and aarch64 Linux from each version tag. If the GUI build fails, the `amf` release
-is still published. macOS builds, code signing, the macOS Finder launch
-environment and in-app updates remain packaging work.
+AppImage for x86_64 and aarch64 Linux and the `.dmg` for Apple Silicon from
+each version tag. If a GUI build fails, the `amf` release is still published.
+The macOS build is ad-hoc signed, not signed with a Developer ID or notarized.
+Developer ID signing, notarization, Intel Mac builds and in-app updates remain
+packaging work.

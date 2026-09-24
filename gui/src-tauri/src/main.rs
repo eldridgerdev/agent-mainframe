@@ -9,6 +9,8 @@
 // navigation/forms consuming these commands in `gui/src`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod login_path;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -527,6 +529,11 @@ fn plan_act(
 }
 
 fn main() {
+    if cfg!(target_os = "macos") {
+        // SAFETY: first statement of `main`, before Tauri or anything else
+        // starts a thread.
+        unsafe { login_path::adopt_login_shell_path() };
+    }
     tauri::Builder::default()
         .setup(|app| {
             let db_path = agent_mainframe::project::db_path();

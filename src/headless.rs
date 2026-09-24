@@ -5,6 +5,7 @@ use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
 use crate::project::AgentKind;
 use crate::resources::limits::HeadlessLease;
+use serde::{Deserialize, Serialize};
 
 /// How long an abandoned run gets to exit on `SIGTERM` before it is killed.
 /// Spent on a background thread, never on the UI thread.
@@ -437,6 +438,35 @@ impl HeadlessRunner {
         run_command(harness, &spec, workdir, prompt, model)
     }
 
+    /// [`Self::run_read_only`], plus the user's MCP tools when `mcp` is set
+    /// and the harness is Claude — the only harness with an isolation mode
+    /// that can still load MCP servers and claude.ai connectors (see
+    /// [`claude_mcp_read_only_args`]). Any other harness, or `None`, is plain
+    /// `run_read_only`.
+    pub fn run_read_only_with_mcp(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+        mcp: Option<&HeadlessMcp>,
+    ) -> Result<String> {
+        let Some(mcp) = mcp.filter(|_| *harness == AgentKind::Claude) else {
+            return Self::run_read_only(harness, workdir, prompt, model);
+        };
+        let spec = HeadlessCommand {
+            binary: crate::claude::ClaudeLauncher::resolve_binary(),
+            args: vec![],
+            trailing: vec![],
+            envs: vec![CLAUDE_MCP_BLOCKING_ENV],
+        };
+        let extra = claude_mcp_read_only_args(mcp);
+        debug_assert!(
+            claude_mcp_args_are_read_only(&extra),
+            "MCP headless command is not read-only: {extra:?}"
+        );
+        run_command_with_args(harness, &spec, &extra, workdir, prompt, model)
+    }
+
     /// The **strictly read-only** entry the PR-triage "Investigate" flow uses
     /// (`AMF_PLAN.md`). A named seam over [`read_only_command_for`] so the
     /// read-only contract is greppable and cannot be swapped for a
@@ -658,7 +688,19 @@ fn supports_model_flag(harness: &AgentKind) -> bool {
 /// [`supports_model_flag`] holds), then `spec.trailing` — e.g. Codex's `-`
 /// stdin marker must stay last.
 fn assemble_args(harness: &AgentKind, spec: &HeadlessCommand, model: Option<&str>) -> Vec<String> {
+    assemble_args_with(harness, spec, &[], model)
+}
+
+/// [`assemble_args`] with runtime-built `extra` args (e.g. a user's MCP
+/// config path) placed after `spec.args` and before `--model`/`trailing`.
+fn assemble_args_with(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    extra: &[String],
+    model: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = spec.args.iter().map(|arg| arg.to_string()).collect();
+    args.extend(extra.iter().cloned());
     if let Some(model) = model
         && supports_model_flag(harness)
     {
@@ -676,11 +718,22 @@ fn run_command(
     prompt: &str,
     model: Option<&str>,
 ) -> Result<String> {
+    run_command_with_args(harness, spec, &[], workdir, prompt, model)
+}
+
+fn run_command_with_args(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    extra: &[String],
+    workdir: &Path,
+    prompt: &str,
+    model: Option<&str>,
+) -> Result<String> {
     // Held for the whole run so the concurrency gate sees headless work.
     // Taken here rather than at each call site: every path out of this
     // function — spawn failure, `?`, cancellation, panic — releases it.
     let _lease = crate::resources::limits::HeadlessLease::acquire();
-    let args = assemble_args(harness, spec, model);
+    let args = assemble_args_with(harness, spec, extra, model);
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
@@ -1385,6 +1438,172 @@ fn headless_command_is_read_only(harness: &AgentKind, cmd: &HeadlessCommand) -> 
                 && cmd.args.contains(&"--no-approve")
         }
     }
+}
+
+/// MCP tools a read-only Claude pass may call, as written in the **global**
+/// AMF config (`plan_interview_mcp`). Never read from a repository's
+/// `amf.json`: an MCP config names programs to execute, which is exactly
+/// what the headless isolation flags exist to keep a repository from
+/// supplying.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeadlessMcpConfig {
+    /// Optional absolute (or `~/`-relative) path to an MCP servers JSON file,
+    /// in the `{"mcpServers": {...}}` shape Claude Code's `.mcp.json` uses.
+    /// Not needed for claude.ai connectors or servers added with
+    /// `claude mcp add`, which load on their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<String>,
+    /// Exact MCP tool names the pass may call, e.g.
+    /// `mcp__claude_ai_Asana__get_task`. Wildcards are rejected so a
+    /// server's write tools can only be reached by naming them.
+    pub allowed_tools: Vec<String>,
+}
+
+/// A [`HeadlessMcpConfig`] that passed [`HeadlessMcpConfig::validate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadlessMcp {
+    pub config: Option<std::path::PathBuf>,
+    pub allowed_tools: Vec<String>,
+}
+
+impl HeadlessMcpConfig {
+    /// Check every tool name and resolve the optional config path. The path
+    /// must be absolute after `~/` expansion — a relative one would resolve
+    /// against the feature workdir, i.e. a file the repository controls.
+    pub fn validate(&self) -> std::result::Result<HeadlessMcp, String> {
+        if self.allowed_tools.is_empty() {
+            return Err("plan_interview_mcp.allowed_tools is empty".into());
+        }
+        if let Some(bad) = self
+            .allowed_tools
+            .iter()
+            .find(|tool| !is_exact_mcp_tool_name(tool))
+        {
+            return Err(format!(
+                "plan_interview_mcp.allowed_tools entry {bad:?} is not an exact MCP tool name \
+                 (expected mcp__<server>__<tool>, no wildcards)"
+            ));
+        }
+        let config = match self.config.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(raw) => {
+                let path = match raw.strip_prefix("~/") {
+                    Some(rest) => dirs::home_dir()
+                        .ok_or("cannot expand ~ in plan_interview_mcp.config")?
+                        .join(rest),
+                    None => std::path::PathBuf::from(raw),
+                };
+                if !path.is_absolute() {
+                    return Err(format!(
+                        "plan_interview_mcp.config must be an absolute path, got {raw}"
+                    ));
+                }
+                if !path.is_file() {
+                    return Err(format!(
+                        "MCP config {} is not a readable file",
+                        path.display()
+                    ));
+                }
+                Some(path)
+            }
+        };
+        Ok(HeadlessMcp {
+            config,
+            allowed_tools: self.allowed_tools.clone(),
+        })
+    }
+}
+
+/// `mcp__<server>__<tool>` with only `[A-Za-z0-9_-]` — no `*`, commas,
+/// spaces, or parenthesised rule syntax that could widen the allow list.
+fn is_exact_mcp_tool_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return false;
+    };
+    let Some((server, tool)) = rest.split_once("__") else {
+        return false;
+    };
+    !server.is_empty()
+        && !tool.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Makes a `-p` run wait for claude.ai connectors before its first turn.
+/// Without it Claude Code connects them "fully async (nonblocking)" and a
+/// headless run races them — measured against 2.1.282, roughly half of runs
+/// started with no connector tools at all; with it, every run had them.
+/// Undocumented upstream, so re-verify on a Claude Code upgrade.
+const CLAUDE_MCP_BLOCKING_ENV: (&str, &str) = ("MCP_CONNECTION_NONBLOCKING", "false");
+
+/// Claude's read-only command with the user's MCP tools available.
+///
+/// `--safe-mode` cannot be used here: verified against Claude Code 2.1.282,
+/// it drops *every* MCP server, including claude.ai connectors and one
+/// passed via `--mcp-config`. `--strict-mcp-config` is out too, because it
+/// also drops claude.ai connectors. The isolation is rebuilt from
+/// `--setting-sources ""` instead, verified against a repository carrying a
+/// `PreToolUse`/`SessionStart` hook and its own `.mcp.json`: it ignores
+/// user/project/local settings files, so no repository hook, permission
+/// allow-rule, or `.mcp.json` approval loads, and the repository's server
+/// never starts. Also verified on 2.1.282, against a control run without the
+/// flag that loaded all three: the repository's `CLAUDE.md`, `.claude/skills/`,
+/// and `.claude/agents/` do not load either. What still reaches the model is
+/// repository text *as data* — files it opens with `Read`, and the prompt's
+/// own `repository_context` excerpt — never as instructions. `--tools` caps the built-in tools to read-only ones but
+/// does **not** gate MCP tools — every connected tool is visible — so
+/// `dontAsk` plus the exact `--allowedTools` list is what keeps unlisted MCP
+/// tools from running.
+fn claude_mcp_read_only_args(mcp: &HeadlessMcp) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-p",
+        "--output-format",
+        "text",
+        "--setting-sources",
+        "",
+        "--tools",
+        "Read,Glob,Grep",
+        "--permission-mode",
+        "dontAsk",
+        "--no-session-persistence",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    if let Some(config) = &mcp.config {
+        args.push("--mcp-config".into());
+        args.push(config.to_string_lossy().into_owned());
+    }
+    // One comma-joined value: the flag is variadic, and a single token keeps
+    // it from swallowing whatever argument follows.
+    args.push("--allowedTools".into());
+    args.push(mcp.allowed_tools.join(","));
+    args
+}
+
+/// The positive read-only check for [`claude_mcp_read_only_args`], mirroring
+/// [`headless_command_is_read_only`]'s Claude arm with `--setting-sources ""`
+/// standing in for `--safe-mode`.
+fn claude_mcp_args_are_read_only(args: &[String]) -> bool {
+    let value_after = |flag: &str| -> Option<&str> {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1))
+            .map(String::as_str)
+    };
+    let has = |flag: &str| args.iter().any(|a| a == flag);
+    value_after("--setting-sources") == Some("")
+        && value_after("--tools").is_some_and(|tools| {
+            tools
+                .split(',')
+                .all(|t| ["Read", "Glob", "Grep"].contains(&t))
+        })
+        && value_after("--permission-mode") == Some("dontAsk")
+        && value_after("--allowedTools")
+            .is_some_and(|tools| tools.split(',').all(is_exact_mcp_tool_name))
+        && !has("--dangerously-skip-permissions")
 }
 
 fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
@@ -2380,5 +2599,168 @@ mod tests {
     fn a_plain_failure_is_not_seen_as_prompt_too_long() {
         let err = anyhow::anyhow!("Codex headless command failed: 401 Unauthorized");
         assert!(as_prompt_too_long(&err).is_none());
+    }
+
+    fn mcp_config(config: &str, tools: &[&str]) -> HeadlessMcpConfig {
+        HeadlessMcpConfig {
+            config: Some(config.to_string()),
+            allowed_tools: tools.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn mcp_config_accepts_an_absolute_file_and_exact_tool_names() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_string_lossy().into_owned();
+        let mcp = mcp_config(&path, &["mcp__asana__asana_get_task", "mcp__my-srv__get"])
+            .validate()
+            .unwrap();
+        assert_eq!(mcp.config.as_deref(), Some(file.path()));
+        assert_eq!(mcp.allowed_tools.len(), 2);
+    }
+
+    #[test]
+    fn mcp_config_file_is_optional_for_connector_tools() {
+        let tools = vec!["mcp__claude_ai_Asana__get_task".to_string()];
+        for config in [None, Some(String::new())] {
+            let mcp = HeadlessMcpConfig {
+                config,
+                allowed_tools: tools.clone(),
+            }
+            .validate()
+            .unwrap();
+            assert_eq!(mcp.config, None);
+            assert_eq!(mcp.allowed_tools, tools);
+        }
+    }
+
+    #[test]
+    fn mcp_config_rejects_what_would_widen_or_relocate_the_boundary() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_string_lossy().into_owned();
+        let ok_tool = ["mcp__asana__asana_get_task"];
+        // Relative paths resolve against the (repo-controlled) workdir.
+        assert!(mcp_config(".mcp.json", &ok_tool).validate().is_err());
+        assert!(
+            mcp_config("/definitely/not/here.json", &ok_tool)
+                .validate()
+                .is_err()
+        );
+        assert!(mcp_config(&path, &[]).validate().is_err());
+        for bad in [
+            "mcp__asana__*",
+            "mcp__asana",
+            "mcp____tool",
+            "Bash",
+            "mcp__a__b,Bash",
+            "mcp__a__b Bash",
+            "mcp__a__b(x)",
+        ] {
+            assert!(
+                mcp_config(&path, &[bad]).validate().is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_config_expands_a_home_relative_path() {
+        let err = mcp_config("~/amf-test-no-such-mcp.json", &["mcp__a__b"])
+            .validate()
+            .unwrap_err();
+        let home = dirs::home_dir().unwrap();
+        assert!(
+            err.contains(&home.join("amf-test-no-such-mcp.json").display().to_string()),
+            "{err}"
+        );
+    }
+
+    fn sample_mcp() -> HeadlessMcp {
+        HeadlessMcp {
+            config: Some(std::path::PathBuf::from("/home/me/.config/amf/mcp.json")),
+            allowed_tools: vec![
+                "mcp__claude_ai_Asana__get_task".into(),
+                "mcp__asana__asana_get_stories_for_task".into(),
+            ],
+        }
+    }
+
+    #[test]
+    fn claude_mcp_command_is_read_only_and_isolated_from_repo_config() {
+        let args = claude_mcp_read_only_args(&sample_mcp());
+        assert!(claude_mcp_args_are_read_only(&args), "{args:?}");
+        let value_after = |flag: &str| {
+            let i = args.iter().position(|a| a == flag).unwrap();
+            args[i + 1].clone()
+        };
+        assert_eq!(value_after("--mcp-config"), "/home/me/.config/amf/mcp.json");
+        assert_eq!(
+            value_after("--allowedTools"),
+            "mcp__claude_ai_Asana__get_task,mcp__asana__asana_get_stories_for_task"
+        );
+        // Both would silently drop claude.ai connectors.
+        assert!(!args.iter().any(|a| a == "--safe-mode"));
+        assert!(!args.iter().any(|a| a == "--strict-mcp-config"));
+
+        let connectors_only = claude_mcp_read_only_args(&HeadlessMcp {
+            config: None,
+            ..sample_mcp()
+        });
+        assert!(claude_mcp_args_are_read_only(&connectors_only));
+        assert!(!connectors_only.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
+    fn claude_mcp_read_only_check_rejects_loosened_commands() {
+        let base = claude_mcp_read_only_args(&sample_mcp());
+        let set = |flag: &str, value: &str| {
+            let mut args = base.clone();
+            let i = args.iter().position(|a| a == flag).unwrap();
+            args[i + 1] = value.to_string();
+            args
+        };
+        let without = |flag: &str| {
+            let mut args = base.clone();
+            args.retain(|a| a != flag);
+            args
+        };
+        assert!(!claude_mcp_args_are_read_only(&set(
+            "--setting-sources",
+            "project"
+        )));
+        assert!(!claude_mcp_args_are_read_only(&without(
+            "--setting-sources"
+        )));
+        assert!(!claude_mcp_args_are_read_only(&set("--tools", "Read,Bash")));
+        assert!(!claude_mcp_args_are_read_only(&set(
+            "--permission-mode",
+            "bypassPermissions"
+        )));
+        assert!(!claude_mcp_args_are_read_only(&set(
+            "--allowedTools",
+            "mcp__asana__*"
+        )));
+        let mut skip = base.clone();
+        skip.push("--dangerously-skip-permissions".into());
+        assert!(!claude_mcp_args_are_read_only(&skip));
+    }
+
+    #[test]
+    fn extra_args_land_before_the_model_and_trailing_args() {
+        let spec = HeadlessCommand {
+            binary: "codex".into(),
+            args: vec!["exec"],
+            trailing: vec!["-"],
+            envs: vec![],
+        };
+        assert_eq!(
+            assemble_args_with(
+                &AgentKind::Codex,
+                &spec,
+                &["--extra".to_string()],
+                Some("m")
+            ),
+            ["exec", "--extra", "--model", "m", "-"]
+        );
     }
 }

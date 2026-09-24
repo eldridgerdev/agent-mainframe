@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Plan interviews can read linked tickets from Asana, Linear, Jira, and
+  other trackers.** List the exact read-only MCP tools the interview may
+  call in `plan_interview_mcp` in `~/.config/amf/config.json`. claude.ai
+  connectors and servers added with `claude mcp add` work as-is, and other
+  servers can be supplied as a config file. A brief that links a ticket then
+  has it fetched instead of pasted in. Works when the interview runs on
+  Claude; see "Issue trackers in plan interviews" in the README for examples.
+
 ## [v0.45.0] - 2026-09-24
 
 ### Added

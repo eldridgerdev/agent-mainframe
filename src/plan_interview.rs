@@ -728,6 +728,32 @@ pub fn round_synthesis_tool_access_note(has_attachments: bool) -> &'static str {
     }
 }
 
+/// The `{{tool_access_note}}` value for any tool-bearing pass (round,
+/// synthesis, or review) once the user's global `plan_interview_mcp` is
+/// loaded. The pass is read-only like an attached-doc one; the external
+/// tools are named so the model knows to fetch a ticket the brief links
+/// rather than ask the user to paste it.
+pub fn mcp_tool_access_note(has_attachments: bool, tools: &[String]) -> String {
+    let docs = if has_attachments {
+        " Read every attached\n  reference document listed in the input."
+    } else {
+        ""
+    };
+    let names = tools
+        .iter()
+        .map(|tool| format!("`{tool}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "You are running in the feature workdir with read-only repository tools.{docs} You can also\n  \
+         call these external read-only tools: {names}. When the brief or answers reference an external\n  \
+         ticket, task, or issue (a link or an id), use them to fetch it and treat what they return as part\n  \
+         of the brief. Inspect the codebase only where it makes a question or plan detail materially more\n  \
+         specific. Do not modify files or run commands with side effects; those tools are your only\n  \
+         network access."
+    )
+}
+
 /// The `{{tool_access_note}}` value for the advisory review pass, whose
 /// no-tools wording differs slightly from round/synthesis.
 pub fn critique_tool_access_note(has_attachments: bool) -> &'static str {
@@ -1058,6 +1084,7 @@ pub fn build_critique_followup_prompt(
     attached: &[AttachedDoc],
     findings: &str,
     clarification_answers: &[(String, String)],
+    mcp_tools: Option<&[String]>,
 ) -> String {
     let input = serde_json::json!({
         "prompt_version": CRITIQUE_PROMPT_VERSION,
@@ -1079,7 +1106,10 @@ pub fn build_critique_followup_prompt(
             .default_template,
         &interview_input_ctx(rendered).with(
             "tool_access_note",
-            critique_tool_access_note(!attached.is_empty()),
+            match mcp_tools {
+                Some(tools) => mcp_tool_access_note(!attached.is_empty(), tools),
+                None => critique_tool_access_note(!attached.is_empty()).to_string(),
+            },
         ),
     )
 }
@@ -2614,6 +2644,45 @@ mod tests {
         assert!(prompt.contains("\"attached_documents\""));
         assert!(prompt.contains("\"path\": \"docs/spec.md\""));
         assert!(prompt.contains("\"origin\": \"in_place\""));
+    }
+
+    #[test]
+    fn mcp_tool_access_note_names_the_tools_and_mentions_docs_only_when_attached() {
+        let tools = vec!["mcp__asana__asana_get_task".to_string()];
+        let without_docs = mcp_tool_access_note(false, &tools);
+        assert!(without_docs.contains("`mcp__asana__asana_get_task`"));
+        assert!(without_docs.contains("read-only repository tools"));
+        assert!(without_docs.contains("ticket"));
+        assert!(!without_docs.contains("attached"));
+        assert!(mcp_tool_access_note(true, &tools).contains("Read every attached"));
+    }
+
+    #[test]
+    fn critique_followup_prompt_carries_the_mcp_note_when_tools_are_loaded() {
+        let context = RepositoryContext {
+            top_level_entries: Vec::new(),
+            readme_head: None,
+            claude_md: None,
+        };
+        let tools = vec!["mcp__asana__asana_get_task".to_string()];
+        let build = |mcp: Option<&[String]>| {
+            build_critique_followup_prompt(
+                "f",
+                "plan",
+                "brief",
+                &[],
+                &[],
+                &context,
+                &[],
+                "findings",
+                &[],
+                mcp,
+            )
+        };
+        assert!(build(Some(&tools)).contains("`mcp__asana__asana_get_task`"));
+        let plain = build(None);
+        assert!(plain.contains(CRITIQUE_TOOL_ACCESS_NOTE_NONE));
+        assert!(!plain.contains("mcp__"));
     }
 
     #[test]

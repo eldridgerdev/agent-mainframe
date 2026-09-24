@@ -589,6 +589,12 @@ pub struct AppConfig {
     /// `amf.json` `review_prompt_budget_tokens` overrides this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_prompt_budget_tokens: Option<usize>,
+    /// MCP servers (e.g. an issue tracker) the plan interview's Claude
+    /// passes may consult, read-only. Global scope only, deliberately: an MCP
+    /// config names programs to run, so a repository's `amf.json` must not be
+    /// able to supply one. See [`crate::headless::HeadlessMcpConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_interview_mcp: Option<crate::headless::HeadlessMcpConfig>,
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -738,6 +744,7 @@ impl Default for AppConfig {
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
             review_prompt_budget_tokens: None,
+            plan_interview_mcp: None,
         }
     }
 }
@@ -3347,6 +3354,36 @@ impl App {
             .review_prompt_budget_tokens
             .or(self.config.review_prompt_budget_tokens)
             .unwrap_or_else(|| crate::headless::default_prompt_budget_tokens(harness))
+    }
+
+    /// The validated `plan_interview_mcp` for a pass run by `harness`, or
+    /// `None` when it is unset, the harness is not Claude (the only one whose
+    /// isolation mode can load an explicit MCP config), or the config is
+    /// invalid — which is logged and surfaced, never fatal: the pass runs
+    /// exactly as it would without MCP.
+    pub(crate) fn plan_interview_mcp(
+        &mut self,
+        harness: &AgentKind,
+    ) -> Option<crate::headless::HeadlessMcp> {
+        let config = self.config.plan_interview_mcp.as_ref()?;
+        if *harness != AgentKind::Claude {
+            self.log_info(
+                "plan_interview",
+                format!(
+                    "plan_interview_mcp ignored: {} passes cannot load MCP servers",
+                    harness.display_name()
+                ),
+            );
+            return None;
+        }
+        match config.validate() {
+            Ok(mcp) => Some(mcp),
+            Err(reason) => {
+                self.log_warn("plan_interview", reason.clone());
+                self.message = Some(format!("MCP not loaded for plan interview: {reason}"));
+                None
+            }
+        }
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {

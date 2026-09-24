@@ -48,6 +48,10 @@ is also what switches the interview's AI passes from writing blind to
 reading the repository: with nothing attached they run with no tool
 access at all.
 
+To let the interview read a ticket the brief links to (Asana, Linear, Jira,
+and so on), configure an MCP server for it. See
+[Issue trackers in plan interviews](@/docs/configuration.md#issue-trackers-in-plan-interviews).
+
 <figure>
   <img src="/images/docs/plan-review-gate.png" alt="Plan mode's review gate showing a synthesized implementation plan as rendered markdown, with scroll, edit, regenerate, accept, and abort actions">
   <figcaption>The review gate: read the synthesized plan, edit it, or ask the agent to regenerate it before anything is saved or launched.</figcaption>

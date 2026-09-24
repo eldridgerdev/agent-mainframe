@@ -1156,3 +1156,25 @@ fn automated_headless_runs_announce_with_a_toast_not_a_modal() {
         "expected an announcing toast"
     );
 }
+
+#[test]
+fn plan_interview_mcp_parses_from_the_global_config() {
+    let config: AppConfig = serde_json::from_str(
+        r#"{"plan_interview_mcp": {"allowed_tools": ["mcp__claude_ai_Asana__get_task"]}}"#,
+    )
+    .unwrap();
+    let mcp = config.plan_interview_mcp.unwrap();
+    assert_eq!(mcp.config, None);
+    assert_eq!(mcp.allowed_tools, ["mcp__claude_ai_Asana__get_task"]);
+
+    let with_file: AppConfig = serde_json::from_str(
+        r#"{"plan_interview_mcp": {"config": "~/.config/amf/mcp.json",
+            "allowed_tools": ["mcp__asana__get_task"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        with_file.plan_interview_mcp.unwrap().config.as_deref(),
+        Some("~/.config/amf/mcp.json")
+    );
+    assert!(AppConfig::default().plan_interview_mcp.is_none());
+}

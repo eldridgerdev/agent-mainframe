@@ -208,6 +208,9 @@ your own text alone or add it alongside a picked option; `Enter` in the box
 returns to the options without submitting, and `Enter` on the option list
 submits.
 
+To let the interview read a ticket the brief links to (Asana, Linear, Jira,
+and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-interviews).
+
 ## Essential controls
 
 ### Dashboard
@@ -659,6 +662,96 @@ back to plain idle and the session leaves the `i` list. `0` keeps states up
 until the agent produces output again. Ageing out does not stop or change the
 session, and a waiting session still counts toward `max_concurrent_agents` and
 still qualifies as dormant.
+
+### Issue trackers in plan interviews
+
+Plan interviews can read tickets from an issue tracker such as Asana, Linear,
+or Jira through the same MCP tools Claude Code uses. When the brief links a
+ticket, the interview fetches it and treats its contents as part of the
+brief, so you don't have to paste it in. This works only when the interview
+runs on Claude. Other harnesses ignore the setting and log that they did.
+
+This is a **global-only** setting in `~/.config/amf/config.json`. A
+repository's `amf.json` can't turn it on, because MCP servers run programs.
+
+**claude.ai connectors** (tools named `mcp__claude_ai_<Name>__…`) and
+servers you added with `claude mcp add` load automatically. You only list
+the tools the interview may call:
+
+```json
+{
+  "plan_interview_mcp": {
+    "allowed_tools": [
+      "mcp__claude_ai_Asana__get_task",
+      "mcp__claude_ai_Asana2__get_task"
+    ]
+  }
+}
+```
+
+`allowed_tools` takes **exact** tool names in the form
+`mcp__<server>__<tool>`. Wildcards such as `mcp__claude_ai_Asana__*` are
+rejected, because most tracker tools can also create and edit tickets. List
+only tools that read. The interview sees every connected tool, but anything
+not on this list is denied.
+
+The tool names above are placeholders. To print the real ones, run this
+command, which makes one small model call:
+
+```sh
+echo hi | MCP_CONNECTION_NONBLOCKING=false claude -p --output-format stream-json \
+  --verbose --setting-sources "" --tools Read --model haiku \
+  | grep -o '"mcp__claude_ai_Asana[^"]*"' | sort -u
+```
+
+If you have more than one connector for the same tracker (for example two
+Asana workspaces, `Asana` and `Asana2`), allow the read tools from each one
+so tickets from either workspace can be read.
+
+**A server that isn't in Claude Code yet** can be supplied as a file with
+`config`, which takes an absolute or `~/` path to a file in the
+`{"mcpServers": {...}}` format of `.mcp.json`:
+
+```json
+{
+  "plan_interview_mcp": {
+    "config": "~/.config/amf/plan-mcp.json",
+    "allowed_tools": ["mcp__linear__get_issue"]
+  }
+}
+```
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "<the server's MCP URL>"
+    }
+  }
+}
+```
+
+The server key (`linear` here) is the middle part of each tool name.
+
+With this configured, the adaptive rounds, the synthesis pass, the Expert
+plan review, and its follow-up run with read-only repository tools plus the
+listed MCP tools. Directed revisions and isolated investigations don't use
+them. The interview still can't edit files or run shell commands, and the
+repository's own Claude settings, hooks, and `.mcp.json` servers are not
+loaded. AMF passes `--setting-sources ""` for that, plus
+`MCP_CONNECTION_NONBLOCKING=false` so a run waits for claude.ai connectors
+instead of sometimes starting without them. If a tool name or the config
+file is invalid, the interview runs without MCP and shows why.
+
+To test a setup outside AMF, this runs the same command the interview uses:
+
+```sh
+MCP_CONNECTION_NONBLOCKING=false claude -p --setting-sources "" \
+  --tools Read,Glob,Grep --permission-mode dontAsk \
+  --allowedTools mcp__claude_ai_Asana__get_task \
+  "Fetch Asana task 1201234567890 and summarize it"
+```
 
 ### Built-in customization skills
 

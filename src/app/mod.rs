@@ -1030,6 +1030,10 @@ pub struct App {
     /// result so a late-arriving response can be matched or discarded. See
     /// `app::plan_interview::poll_plan_interview_ai_bg`.
     pub plan_interview_ai_bg: Option<Receiver<(usize, Result<String>)>>,
+    /// The `plan_interview_mcp` validation error last reported, so an invalid
+    /// config warns once rather than on every pass and every precall replay.
+    /// Cleared when the config validates, so breaking it again warns again.
+    pub(crate) plan_interview_mcp_warned: Option<String>,
     /// Receiver for the final plan-synthesis headless call. Kept separate
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
@@ -2498,6 +2502,7 @@ impl App {
             issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
+            plan_interview_mcp_warned: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
@@ -2754,6 +2759,7 @@ impl App {
             issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
+            plan_interview_mcp_warned: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
@@ -3377,10 +3383,16 @@ impl App {
             return None;
         }
         match config.validate() {
-            Ok(mcp) => Some(mcp),
+            Ok(mcp) => {
+                self.plan_interview_mcp_warned = None;
+                Some(mcp)
+            }
             Err(reason) => {
-                self.log_warn("plan_interview", reason.clone());
-                self.message = Some(format!("MCP not loaded for plan interview: {reason}"));
+                if self.plan_interview_mcp_warned.as_ref() != Some(&reason) {
+                    self.log_warn("plan_interview", reason.clone());
+                    self.message = Some(format!("MCP not loaded for plan interview: {reason}"));
+                    self.plan_interview_mcp_warned = Some(reason);
+                }
                 None
             }
         }

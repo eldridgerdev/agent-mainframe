@@ -1178,3 +1178,46 @@ fn plan_interview_mcp_parses_from_the_global_config() {
     );
     assert!(AppConfig::default().plan_interview_mcp.is_none());
 }
+
+#[test]
+fn an_invalid_plan_interview_mcp_config_warns_once_until_it_changes() {
+    let mut app = context_settings_test_app();
+    app.config.plan_interview_mcp = Some(crate::headless::HeadlessMcpConfig {
+        config: None,
+        allowed_tools: vec!["mcp__asana__*".into()],
+    });
+
+    assert!(app.plan_interview_mcp(&AgentKind::Claude).is_none());
+    assert!(
+        app.message
+            .take()
+            .is_some_and(|m| m.contains("MCP not loaded"))
+    );
+    // Every later pass, and a precall replay of the same pass, stays quiet.
+    assert!(app.plan_interview_mcp(&AgentKind::Claude).is_none());
+    assert!(app.message.is_none());
+
+    // A different mistake is news.
+    app.config
+        .plan_interview_mcp
+        .as_mut()
+        .unwrap()
+        .allowed_tools = Vec::new();
+    assert!(app.plan_interview_mcp(&AgentKind::Claude).is_none());
+    assert!(app.message.take().is_some_and(|m| m.contains("empty")));
+
+    // Fixing it and breaking it the same way again warns again.
+    app.config
+        .plan_interview_mcp
+        .as_mut()
+        .unwrap()
+        .allowed_tools = vec!["mcp__asana__get_task".into()];
+    assert!(app.plan_interview_mcp(&AgentKind::Claude).is_some());
+    app.config
+        .plan_interview_mcp
+        .as_mut()
+        .unwrap()
+        .allowed_tools = Vec::new();
+    assert!(app.plan_interview_mcp(&AgentKind::Claude).is_none());
+    assert!(app.message.is_some());
+}

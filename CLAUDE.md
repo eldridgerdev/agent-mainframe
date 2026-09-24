@@ -384,13 +384,15 @@ explicit, opt-in exception: those passes then run through
   requires exact `mcp__<server>__<tool>` names (no wildcards) and, when
   `config` is set, an absolute (`~/`-expanded) file. `App::plan_interview_mcp`
   resolves it per pass, returning `None` for non-Claude harnesses and for an
-  invalid config (logged + toast, never fatal).
+  invalid config (logged + toast once per distinct error, never fatal).
 - **Command:** `HeadlessRunner::run_read_only_with_mcp` →
   `claude_mcp_read_only_args`. Verified against Claude Code 2.1.282: neither
   `--safe-mode` nor `--strict-mcp-config` can be used, since both drop
   claude.ai connectors (the common case — e.g. `mcp__claude_ai_Asana__*`).
-  Isolation is `--setting-sources ""` (verified: a repo hook and repo
-  `.mcp.json` do not load). `--tools` does not gate MCP tools, so `dontAsk` +
+  Isolation is `--setting-sources ""` (verified: a repo hook, repo
+  `.mcp.json`, `CLAUDE.md`, `.claude/skills/`, and `.claude/agents/` do not
+  load; repo files still reach the model as data via `Read` and the prompt's
+  `repository_context`). `--tools` does not gate MCP tools, so `dontAsk` +
   the exact `--allowedTools` list is what denies unlisted ones.
   `claude_mcp_args_are_read_only` is the positive check.
 - **`MCP_CONNECTION_NONBLOCKING=false`** (`CLAUDE_MCP_BLOCKING_ENV`) makes the

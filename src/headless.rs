@@ -1548,7 +1548,11 @@ const CLAUDE_MCP_BLOCKING_ENV: (&str, &str) = ("MCP_CONNECTION_NONBLOCKING", "fa
 /// `PreToolUse`/`SessionStart` hook and its own `.mcp.json`: it ignores
 /// user/project/local settings files, so no repository hook, permission
 /// allow-rule, or `.mcp.json` approval loads, and the repository's server
-/// never starts. `--tools` caps the built-in tools to read-only ones but
+/// never starts. Also verified on 2.1.282, against a control run without the
+/// flag that loaded all three: the repository's `CLAUDE.md`, `.claude/skills/`,
+/// and `.claude/agents/` do not load either. What still reaches the model is
+/// repository text *as data* — files it opens with `Read`, and the prompt's
+/// own `repository_context` excerpt — never as instructions. `--tools` caps the built-in tools to read-only ones but
 /// does **not** gate MCP tools — every connected tool is visible — so
 /// `dontAsk` plus the exact `--allowedTools` list is what keeps unlisted MCP
 /// tools from running.

@@ -40,6 +40,14 @@ fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
     )
 }
 
+/// What [`App::plan_pass_tool_access`] resolved for one pass.
+struct PassToolAccess {
+    mcp: Option<crate::headless::HeadlessMcp>,
+    read_only: bool,
+    note: String,
+    log_suffix: String,
+}
+
 impl App {
     /// Open the explicit model picker that gates every Expert plan review.
     pub(crate) fn open_plan_expert_model_picker(&mut self) {
@@ -786,6 +794,30 @@ impl App {
         }
     }
 
+    /// Tool access for one round, synthesis, review, or review follow-up
+    /// pass: the loaded MCP tools, whether the pass runs read-only (attached
+    /// docs or MCP), and its `{{tool_access_note}}`. Shared so the four passes
+    /// cannot drift apart; `without_mcp` is the pass's own no-MCP note.
+    fn plan_pass_tool_access(
+        &mut self,
+        harness: &AgentKind,
+        attached: &[plan_interview::AttachedDoc],
+        without_mcp: fn(bool) -> &'static str,
+    ) -> PassToolAccess {
+        let mcp = self.plan_interview_mcp(harness);
+        let has_docs = !attached.is_empty();
+        PassToolAccess {
+            read_only: has_docs || mcp.is_some(),
+            note: plan_interview::pass_tool_access_note(
+                has_docs,
+                mcp.as_ref().map(|mcp| mcp.allowed_tools.as_slice()),
+                without_mcp,
+            ),
+            log_suffix: plan_interview::pass_tool_access_log_suffix(attached.len(), mcp.is_some()),
+            mcp,
+        }
+    }
+
     /// Surface reference documents that could not be prepared for a headless
     /// pass — moved, deleted, or turned unreadable since they were attached.
     /// Never fatal: the pass proceeds with whatever prepared.
@@ -952,14 +984,16 @@ impl App {
         self.note_dropped_attachments(&dropped);
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let mcp = self.plan_interview_mcp(&harness);
-        let read_only = !attached.is_empty() || mcp.is_some();
-        let tool_note = match &mcp {
-            Some(mcp) => {
-                plan_interview::mcp_tool_access_note(!attached.is_empty(), &mcp.allowed_tools)
-            }
-            None => plan_interview::round_synthesis_tool_access_note(read_only).to_string(),
-        };
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::round_synthesis_tool_access_note,
+        );
         let guarded = plan_interview::guard_context_for_prompt(
             |ctx| {
                 self.resolve_headless_prompt(
@@ -1006,15 +1040,7 @@ impl App {
             format!(
                 "starting AI round {round} with {} (~{token_estimate} tokens{})",
                 harness.display_name(),
-                if read_only {
-                    format!(
-                        ", read-only for {} attached doc(s){}",
-                        attached.len(),
-                        if mcp.is_some() { " + MCP" } else { "" }
-                    )
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -1126,14 +1152,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
-        let mcp = self.plan_interview_mcp(&harness);
-        let read_only = !attached.is_empty() || mcp.is_some();
-        let tool_note = match &mcp {
-            Some(mcp) => {
-                plan_interview::mcp_tool_access_note(!attached.is_empty(), &mcp.allowed_tools)
-            }
-            None => plan_interview::round_synthesis_tool_access_note(read_only).to_string(),
-        };
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::round_synthesis_tool_access_note,
+        );
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let guarded = plan_interview::guard_context_for_prompt(
@@ -1198,15 +1226,7 @@ impl App {
                     "synthesis"
                 },
                 harness.display_name(),
-                if read_only {
-                    format!(
-                        ", read-only for {} attached doc(s){}",
-                        attached.len(),
-                        if mcp.is_some() { " + MCP" } else { "" }
-                    )
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -1320,14 +1340,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
-        let mcp = self.plan_interview_mcp(&harness);
-        let read_only = !attached.is_empty() || mcp.is_some();
-        let tool_note = match &mcp {
-            Some(mcp) => {
-                plan_interview::mcp_tool_access_note(!attached.is_empty(), &mcp.allowed_tools)
-            }
-            None => plan_interview::critique_tool_access_note(read_only).to_string(),
-        };
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::critique_tool_access_note,
+        );
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let guarded = plan_interview::guard_context_for_prompt(
@@ -1388,15 +1410,7 @@ impl App {
                 "starting Expert plan review with {} model {} (~{token_estimate} tokens{})",
                 harness.display_name(),
                 model,
-                if read_only {
-                    format!(
-                        ", read-only for {} attached doc(s){}",
-                        attached.len(),
-                        if mcp.is_some() { " + MCP" } else { "" }
-                    )
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -1486,7 +1500,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
-        let mcp = self.plan_interview_mcp(&harness);
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            ..
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::critique_tool_access_note,
+        );
         let prompt = plan_interview::build_critique_followup_prompt(
             &feature_name,
             &plan,
@@ -1497,7 +1520,7 @@ impl App {
             &attached,
             &findings,
             &clarification_answers,
-            mcp.as_ref().map(|mcp| mcp.allowed_tools.as_slice()),
+            tool_note,
         );
         let token_estimate = estimate_tokens(&prompt);
         if !self.precall_gate_with_model(
@@ -1516,9 +1539,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
-            let result = if attached.is_empty() && mcp.is_none() {
-                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
-            } else {
+            let result = if read_only {
                 HeadlessRunner::run_read_only_with_mcp(
                     &harness,
                     &workdir,
@@ -1526,6 +1547,8 @@ impl App {
                     Some(&model),
                     mcp.as_ref(),
                 )
+            } else {
+                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
             };
             let _ = tx.send(result);
         });

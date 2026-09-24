@@ -764,6 +764,34 @@ pub fn critique_tool_access_note(has_attachments: bool) -> &'static str {
     }
 }
 
+/// The `{{tool_access_note}}` for one tool-bearing pass: the MCP wording
+/// when the user's tools are loaded, otherwise the pass's own no-MCP note
+/// (`round_synthesis_tool_access_note` or `critique_tool_access_note`). The
+/// one place round, synthesis, review, and review follow-up choose, so the
+/// four cannot drift apart.
+pub fn pass_tool_access_note(
+    has_attachments: bool,
+    mcp_tools: Option<&[String]>,
+    without_mcp: fn(bool) -> &'static str,
+) -> String {
+    match mcp_tools {
+        Some(tools) => mcp_tool_access_note(has_attachments, tools),
+        None => without_mcp(has_attachments).to_string(),
+    }
+}
+
+/// The log-line suffix naming the tools a pass runs with; empty for a
+/// no-tools pass. An MCP-only pass says so rather than reporting zero
+/// attached docs, which would read as docs expected and dropped.
+pub fn pass_tool_access_log_suffix(attached: usize, has_mcp: bool) -> String {
+    let mcp = if has_mcp { " + MCP" } else { "" };
+    match attached {
+        0 if has_mcp => ", read-only + MCP".into(),
+        0 => String::new(),
+        n => format!(", read-only for {n} attached doc(s){mcp}"),
+    }
+}
+
 /// One question paired with the answer it collected, including questions the
 /// user skipped (`answer: null`). Used where the *asked set* is the signal:
 /// the interviewer must not re-ask what was deliberately passed over, and the
@@ -1084,7 +1112,7 @@ pub fn build_critique_followup_prompt(
     attached: &[AttachedDoc],
     findings: &str,
     clarification_answers: &[(String, String)],
-    mcp_tools: Option<&[String]>,
+    tool_access_note: String,
 ) -> String {
     let input = serde_json::json!({
         "prompt_version": CRITIQUE_PROMPT_VERSION,
@@ -1104,13 +1132,7 @@ pub fn build_critique_followup_prompt(
         crate::prompts::PromptId::PlanInterviewCritique
             .spec()
             .default_template,
-        &interview_input_ctx(rendered).with(
-            "tool_access_note",
-            match mcp_tools {
-                Some(tools) => mcp_tool_access_note(!attached.is_empty(), tools),
-                None => critique_tool_access_note(!attached.is_empty()).to_string(),
-            },
-        ),
+        &interview_input_ctx(rendered).with("tool_access_note", tool_access_note),
     )
 }
 
@@ -2658,6 +2680,20 @@ mod tests {
     }
 
     #[test]
+    fn pass_tool_access_log_suffix_does_not_report_zero_docs_for_mcp_only() {
+        assert_eq!(pass_tool_access_log_suffix(0, false), "");
+        assert_eq!(pass_tool_access_log_suffix(0, true), ", read-only + MCP");
+        assert_eq!(
+            pass_tool_access_log_suffix(2, false),
+            ", read-only for 2 attached doc(s)"
+        );
+        assert_eq!(
+            pass_tool_access_log_suffix(1, true),
+            ", read-only for 1 attached doc(s) + MCP"
+        );
+    }
+
+    #[test]
     fn critique_followup_prompt_carries_the_mcp_note_when_tools_are_loaded() {
         let context = RepositoryContext {
             top_level_entries: Vec::new(),
@@ -2666,6 +2702,7 @@ mod tests {
         };
         let tools = vec!["mcp__asana__asana_get_task".to_string()];
         let build = |mcp: Option<&[String]>| {
+            let note = pass_tool_access_note(false, mcp, critique_tool_access_note);
             build_critique_followup_prompt(
                 "f",
                 "plan",
@@ -2676,7 +2713,7 @@ mod tests {
                 &[],
                 "findings",
                 &[],
-                mcp,
+                note,
             )
         };
         assert!(build(Some(&tools)).contains("`mcp__asana__asana_get_task`"));

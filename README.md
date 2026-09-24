@@ -738,19 +738,25 @@ With this configured, the adaptive rounds, the synthesis pass, the Expert
 plan review, and its follow-up run with read-only repository tools plus the
 listed MCP tools. Directed revisions and isolated investigations don't use
 them. The interview still can't edit files or run shell commands, and the
-repository's own Claude settings, hooks, and `.mcp.json` servers are not
-loaded. AMF passes `--setting-sources ""` for that, plus
+repository's own Claude settings, hooks, `.mcp.json` servers, `CLAUDE.md`,
+skills, and subagents are not loaded (the interview can still read those
+files, like any other file in the repository). AMF passes `--setting-sources ""` for that, plus
 `MCP_CONNECTION_NONBLOCKING=false` so a run waits for claude.ai connectors
 instead of sometimes starting without them. If a tool name or the config
 file is invalid, the interview runs without MCP and shows why.
 
-To test a setup outside AMF, this runs the same command the interview uses:
+To test a setup outside AMF, run the same command the interview uses from
+the feature's directory. Like AMF, it sends the prompt on stdin: a prompt
+argument after `--allowedTools` can be read as another tool name. Add
+`--mcp-config <path>` before `--allowedTools` if you set `config`, and
+separate several tools with commas.
 
 ```sh
-MCP_CONNECTION_NONBLOCKING=false claude -p --setting-sources "" \
-  --tools Read,Glob,Grep --permission-mode dontAsk \
-  --allowedTools mcp__claude_ai_Asana__get_task \
-  "Fetch Asana task 1201234567890 and summarize it"
+echo "Fetch Asana task 1201234567890 and summarize it" |
+  MCP_CONNECTION_NONBLOCKING=false claude -p --output-format text \
+    --setting-sources "" --tools Read,Glob,Grep \
+    --permission-mode dontAsk --no-session-persistence \
+    --allowedTools mcp__claude_ai_Asana__get_task
 ```
 
 ### Built-in customization skills

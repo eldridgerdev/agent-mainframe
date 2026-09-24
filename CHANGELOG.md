@@ -10,33 +10,51 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.45.0] - 2026-09-24
+
 ### Added
 
-- **A desktop GUI preview (`gui/`).** It shares `amf.db`
-  and the tmux sessions with the terminal interface, so you can switch
-  between the two or run both at once. A sidebar lists your projects and
-  their features, with running features first. Each feature page has live
-  terminal tabs for its agent sessions, a TODOs tab, and Start, Stop and Plan
-  buttons. Global, project and worktree TODO lists support adding, reordering,
-  moving and copying items. Starting a TODO asks where and how to run it: in
-  an existing or new worktree feature, starting the agent now or planning
-  first. The agent's prompt opens as an editable draft under the terminal and
-  is only sent when you choose. Full and Quick Plan interviews run in a window
-  you can minimize while you keep working. AMF's resource warnings ask for
-  approval before starting another agent, as they do in the TUI. The terminal
-  bundles fallback fonts so Nerd Font status lines and agent tool output
-  render the same on every machine. See `gui/README.md` to run it, and
-  `docs/backlog/amf-gui-workflow-inventory.md` for which workflows are
-  available so far; everything else still needs `amf`. Releases now include
-  GUI downloads for x86_64 and aarch64 Linux alongside `amf`: a `.deb`
-  (for example `amf-gui-x86_64-unknown-linux-gnu.deb`, which pulls in `tmux`)
-  and an AppImage for each, plus `amf-gui-aarch64-apple-darwin.dmg` for Apple
-  Silicon Macs. The x86_64 Linux builds also run on Windows under WSL2 with
-  WSLg. The Mac app isn't signed with an Apple Developer ID yet, so approve it
-  once under System Settings → Privacy & Security the first time you open it.
-  Opened from Finder or the Dock, it picks up `PATH` from your login shell, so
-  a `tmux` and agent CLIs that work in Terminal work in the app. The GUI still
-  needs `tmux` and your agent CLIs installed. No migration is required.
+- **AMF now has a desktop app (preview) alongside `amf`.** It uses the same
+  projects, features and agent sessions as the terminal interface, so you can
+  switch between the two or run both at once. What you can do in it today:
+  - Browse your projects and features in a sidebar, with running features
+    listed first, and start or stop a feature with one click.
+  - Work in live terminal tabs, one per agent session.
+  - Keep global, project and worktree TODO lists: add, reorder, move and copy
+    items, and start a TODO in an existing feature or a new worktree, either
+    right away or after planning it. The agent's prompt opens as an editable
+    draft and is only sent when you say so.
+  - Run Full and Quick Plan interviews in a window you can minimize while the
+    agent works.
+  - Approve over-limit agent starts, as the TUI asks you to.
+
+  Everything else, including Learning Mode, PR triage and reviews, still
+  needs `amf`. See `gui/README.md` for the full list and for install steps.
+- **Every release now includes desktop app downloads** next to `amf`:
+  - **Linux (x86_64 and ARM64):** a `.deb` that also installs `tmux`, and an
+    AppImage for other distributions.
+  - **Windows:** install the x86_64 Linux build inside WSL2; it opens as a
+    normal window through WSLg. There is no native Windows build.
+  - **Apple Silicon Macs:** a `.dmg`. Opened from Finder or the Dock, the app
+    uses the same `PATH` as your terminal, so the `tmux` and agent CLIs you
+    already use are found.
+
+### Fixed
+
+- **Running AMF in more than one place no longer loses changes.** Two `amf`
+  windows, or `amf` and the desktop app, used to be able to overwrite each
+  other's projects and features without warning. AMF now picks up changes
+  made elsewhere about once a second, and if a save still collides it keeps
+  the other change, refreshes your view, and asks you to retry.
+
+### Migration
+
+- No migration is required. The desktop app is optional, and `amf` works as
+  before.
+- The desktop app needs `tmux` and your agent CLIs installed. On a Mac, the
+  app isn't signed with an Apple Developer ID yet: the first time you open
+  it, approve it under **System Settings → Privacy & Security → Open
+  Anyway**.
 
 ## [v0.44.1] - 2026-09-22
 

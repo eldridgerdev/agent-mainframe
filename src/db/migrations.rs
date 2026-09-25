@@ -243,6 +243,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add unsent_prompts table for prompts a failed launch couldn't deliver",
             MIGRATION_040,
         ),
+        (
+            "Add pr_review_drafts table for manual PR review drafts",
+            MIGRATION_041,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1055,6 +1059,35 @@ CREATE TABLE IF NOT EXISTS unsent_prompts (
 CREATE INDEX IF NOT EXISTS idx_unsent_prompts_workdir ON unsent_prompts(workdir);
 ";
 
+/// Drafts of manual PR reviews ("Review a PR"), one per pull request. Kept
+/// here rather than beside the checkout like a feature's final review
+/// (`.claude/final-review-progress.json`), because a PR review must never
+/// write into the checkout it runs git in.
+///
+/// - `repo_key` is the base repository as `host/owner/name`.
+/// - `base_oid` / `head_oid` / `merge_base_oid` record the revision the draft
+///   was last saved at. When the PR has since moved, reopening compares
+///   against these.
+/// - `progress` is the final review's own `ReviewProgress` JSON (verdicts,
+///   line/file comments, general feedback, position), so both kinds of review
+///   share one draft format.
+/// - `file_fingerprints` maps each path to its diff fingerprint at `head_oid`,
+///   for flagging the files a PR update changed.
+const MIGRATION_041: &str = "
+CREATE TABLE IF NOT EXISTS pr_review_drafts (
+    repo_key          TEXT    NOT NULL,
+    pr_number         INTEGER NOT NULL,
+    base_oid          TEXT    NOT NULL,
+    head_oid          TEXT    NOT NULL,
+    merge_base_oid    TEXT    NOT NULL,
+    status            TEXT    NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
+    progress          TEXT    NOT NULL,
+    file_fingerprints TEXT    NOT NULL DEFAULT '{}',
+    updated_at        TEXT    NOT NULL,
+    PRIMARY KEY (repo_key, pr_number)
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1097,7 +1130,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 41);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1136,7 +1169,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 40);
+        assert_eq!(version, 41);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1231,7 +1264,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 41);
     }
 
     #[test]
@@ -1563,6 +1596,60 @@ mod tests {
         assert_eq!(provenance, None);
     }
 
+    /// An existing v40 database, holding data, gains `pr_review_drafts`
+    /// without losing anything. (v40 is produced by running every migration
+    /// and then peeling off exactly what 041 adds.)
+    #[test]
+    fn migration_041_adds_pr_review_drafts_to_an_existing_v40_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE pr_review_drafts;
+             DELETE FROM schema_version WHERE version = 41;
+             INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
+             VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM unsent_prompts WHERE id = 'p1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(body, "kept across the migration");
+        conn.execute(
+            "INSERT INTO pr_review_drafts
+                (repo_key, pr_number, base_oid, head_oid, merge_base_oid, progress, updated_at)
+             VALUES ('github.com/a/b', 1, 'b', 'h', 'm', '{}', 'now')",
+            [],
+        )
+        .unwrap();
+        let (status, fingerprints): (String, String) = conn
+            .query_row(
+                "SELECT status, file_fingerprints FROM pr_review_drafts",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), fingerprints.as_str()), ("draft", "{}"));
+        // One draft per PR: the same key again is a conflict, not a second row.
+        assert!(
+            conn.execute(
+                "INSERT INTO pr_review_drafts
+                    (repo_key, pr_number, base_oid, head_oid, merge_base_oid, progress, updated_at)
+                 VALUES ('github.com/a/b', 1, 'b', 'h2', 'm', '{}', 'now')",
+                [],
+            )
+            .is_err()
+        );
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 41);
+    }
+
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
     /// an older AMF and back doesn't duplicate or drop anything.
     #[test]
@@ -1573,7 +1660,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 40);
+        assert_eq!(rows, 41);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1738,7 +1825,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 41);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

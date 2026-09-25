@@ -1305,6 +1305,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
+    if let AppMode::PrReviewList(state) = &app.mode {
+        super::dialogs::draw_pr_review_list(frame, state, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
     if let AppMode::ReviewMemoryBootstrapRunning(state) = &app.mode {
         super::dialogs::draw_review_memory_bootstrap_running(
             frame,

@@ -92,14 +92,18 @@ impl App {
     }
 
     pub fn close_diff_viewer(&mut self) {
-        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
-            AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) => state.from_view,
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) => state,
             other => {
                 self.mode = other;
                 return;
             }
         };
-        self.mode = AppMode::Viewing(view);
+        if state.return_to.is_some() {
+            self.exit_pr_review(state);
+            return;
+        }
+        self.mode = AppMode::Viewing(state.from_view);
     }
 
     pub fn refresh_diff_viewer(&mut self) {
@@ -141,6 +145,17 @@ impl App {
                 &commit.hash,
                 state.ignore_whitespace,
             ),
+            DiffScope::PullRequest(target) => crate::diff::load_range_snapshot(
+                &state.workdir,
+                &target.merge_base_oid,
+                &target.pr.head_oid,
+                state.ignore_whitespace,
+            )
+            .map(|mut snapshot| {
+                snapshot.branch = target.pr.branch_label();
+                snapshot.base_ref = target.pr.base_ref.clone();
+                snapshot
+            }),
         };
         match snapshot {
             Ok(snapshot) => {
@@ -154,7 +169,9 @@ impl App {
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
                 state.reapply_context_expansion();
-                if state.review {
+                // A PR review's workdir is just where git runs: its notes,
+                // progress and history in `.claude/` belong to a feature.
+                if state.review && !state.is_pr_review() {
                     state.review_notes = crate::app::review::load_review_notes(&state.workdir);
                 }
             }
@@ -169,8 +186,14 @@ impl App {
             }
         }
         let was_review = state.review;
+        let was_pr_review = state.is_pr_review();
         self.mode = AppMode::DiffViewer(state);
-        if was_review {
+        if was_pr_review {
+            // The saved draft comes from the database (nothing is read from
+            // the checkout); comments then re-anchor against this diff, which
+            // is also what carries them across a refresh (`r`).
+            self.resume_pr_review();
+        } else if was_review {
             self.restore_review_progress();
             // The diff may have moved underneath existing comments (a refresh
             // after the agent edited code, or a base-ref change) — re-locate
@@ -188,6 +211,9 @@ impl App {
     /// Open the base-ref prompt, pre-filling it with the active override (or the
     /// currently resolved base) so the reviewer can edit rather than retype.
     pub fn diff_viewer_start_base_ref_edit(&mut self) {
+        if self.refuse_in_pr_review("a PR review is pinned to the PR's own merge-base") {
+            return;
+        }
         if let AppMode::DiffViewer(state) = &mut self.mode
             && matches!(&state.scope, DiffScope::CurrentChanges)
         {

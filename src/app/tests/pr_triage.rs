@@ -7570,3 +7570,1773 @@ fn a_local_finding_cannot_be_replied_to_on_github() {
     assert!(state.reply_kind_pick.is_none());
     assert!(app.message.as_deref().unwrap().contains("not posted"));
 }
+
+// ── PR picker Review tab ────────────────────────────────────────────────────
+
+fn reviewable(number: u32, title: &str) -> crate::github::ReviewablePr {
+    crate::github::ReviewablePr {
+        number,
+        title: title.to_string(),
+        author: "alice".to_string(),
+        is_draft: false,
+        updated_at: String::new(),
+        base_ref: "main".to_string(),
+        base_oid: "base".to_string(),
+        head_ref: "topic".to_string(),
+        head_oid: "head".to_string(),
+        is_cross_repository: false,
+        head_owner: "acme".to_string(),
+    }
+}
+
+use crate::app::pr_review::runtime::ReviewListLoaded;
+
+/// The draft key the test loaders report, and the test opener pins.
+const TEST_REPO_KEY: &str = "github.com/acme/widgets";
+
+fn two_open_prs(_: &std::path::Path, _: bool) -> ReviewListLoaded {
+    ReviewListLoaded {
+        prs: Ok(vec![reviewable(7, "first"), reviewable(9, "second")]),
+        current_user: Some("me".to_string()),
+        repo_key: Some(TEST_REPO_KEY.to_string()),
+    }
+}
+
+fn gh_not_signed_in(_: &std::path::Path, _: bool) -> ReviewListLoaded {
+    ReviewListLoaded {
+        prs: Err(anyhow::anyhow!(
+            "`gh pr list` failed: To get started with GitHub CLI, please run:  gh auth login"
+        )),
+        current_user: None,
+        repo_key: None,
+    }
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    crate::handlers::handle_key(app, KeyEvent::from(code), 40).unwrap();
+}
+
+/// Poll until the Review tab's worker result has been applied.
+fn settle_review_list(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.pr_review_work.review_list_pending() {
+        app.poll_pr_review_list_bg();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "review list never loaded"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn review_list(app: &App) -> &PrReviewListState {
+    match &app.mode {
+        AppMode::PrReviewList(state) => state,
+        _ => panic!("not on the Review tab"),
+    }
+}
+
+#[test]
+fn tab_switches_from_triage_to_review_and_back_restoring_the_triage_picker() {
+    let mut app = pr_review_test_app();
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    enter_pr_picker_for_test(&mut app);
+    if let AppMode::PrPicker(picker) = &mut app.mode {
+        picker.include_closed = true;
+    }
+
+    press(&mut app, KeyCode::Tab);
+    // The load is off-thread: the tab opens on "Loading", never blocking.
+    assert_eq!(review_list(&app).load, PrReviewListLoad::Loading);
+    assert!(review_list(&app).triage.is_some());
+    settle_review_list(&mut app);
+    match &review_list(&app).load {
+        PrReviewListLoad::Loaded(prs) => {
+            assert_eq!(prs.iter().map(|p| p.number).collect::<Vec<_>>(), [7, 9]);
+        }
+        other => panic!("expected a loaded list, got {other:?}"),
+    }
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(review_list(&app).selected, 1);
+
+    press(&mut app, KeyCode::BackTab);
+    match &app.mode {
+        AppMode::PrPicker(picker) => {
+            assert!(picker.include_closed, "triage state came back verbatim");
+            assert_eq!(
+                picker.workdir,
+                std::path::PathBuf::from("/tmp/test-workdir")
+            );
+        }
+        _ => panic!("Tab should return to the Triage tab"),
+    }
+}
+
+#[test]
+fn review_list_load_failure_then_retry_then_success() {
+    let mut app = pr_review_test_app();
+    app.pr_review_work
+        .set_review_list_loader_for_test(gh_not_signed_in);
+    enter_pr_picker_for_test(&mut app);
+    press(&mut app, KeyCode::Tab);
+    settle_review_list(&mut app);
+    match &review_list(&app).load {
+        PrReviewListLoad::Failed(err) => {
+            assert_eq!(err.kind, PrReviewListErrorKind::Auth);
+            assert!(err.hint().contains("gh auth login"));
+        }
+        other => panic!("expected a failed load, got {other:?}"),
+    }
+    // A failed list must not cache "no gh user": the lookup never ran.
+    assert_eq!(app.gh_current_user, None);
+
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    press(&mut app, KeyCode::Char('r'));
+    assert_eq!(review_list(&app).load, PrReviewListLoad::Loading);
+    settle_review_list(&mut app);
+    assert!(matches!(
+        &review_list(&app).load,
+        PrReviewListLoad::Loaded(prs) if prs.len() == 2
+    ));
+    assert_eq!(review_list(&app).current_user.as_deref(), Some("me"));
+}
+
+#[test]
+fn a_review_list_result_after_the_tab_closed_is_dropped() {
+    let mut app = pr_review_test_app();
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    enter_pr_picker_for_test(&mut app);
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(!app.pr_review_work.review_list_pending());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!app.poll_pr_review_list_bg());
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn a_retry_supersedes_the_load_in_flight() {
+    let mut app = pr_review_test_app();
+    app.pr_review_work
+        .set_review_list_loader_for_test(gh_not_signed_in);
+    enter_pr_picker_for_test(&mut app);
+    press(&mut app, KeyCode::Tab);
+    let first = review_list(&app).request_id;
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    press(&mut app, KeyCode::Char('r'));
+    assert_ne!(review_list(&app).request_id, first);
+    settle_review_list(&mut app);
+    // Only the retry's result lands, however the two threads were ordered.
+    assert!(matches!(
+        &review_list(&app).load,
+        PrReviewListLoad::Loaded(_)
+    ));
+}
+
+#[test]
+fn dashboard_g_on_a_project_row_opens_the_review_tab_without_a_feature() {
+    let mut app = App::new_for_test(
+        store_with_feature(crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    app.selection = Selection::Project(0);
+
+    app.open_pr_review();
+
+    let state = review_list(&app);
+    assert_eq!(state.workdir, app.store.projects[0].repo);
+    assert!(state.triage.is_none());
+    settle_review_list(&mut app);
+    assert!(matches!(
+        &review_list(&app).load,
+        PrReviewListLoad::Loaded(_)
+    ));
+}
+
+#[test]
+fn review_list_errors_are_classified_by_what_the_user_can_do() {
+    let classify = |s: &str| PrReviewListError::classify(s.to_string()).kind;
+    assert_eq!(
+        classify("Failed to run `gh`."),
+        PrReviewListErrorKind::GhMissing
+    );
+    assert_eq!(
+        classify("gh: HTTP 401: Bad credentials"),
+        PrReviewListErrorKind::Auth
+    );
+    assert_eq!(
+        classify("`gh pr list` failed: error connecting to api.github.com"),
+        PrReviewListErrorKind::Other
+    );
+}
+
+// ── Opening a PR for review from the Review tab ─────────────────────────────
+
+fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// A repo whose `teammate-pr` branch stands in for PR #9, checked out on an
+/// unrelated feature branch with a dirty tracked file and an untracked one.
+fn repo_with_teammate_pr() -> TempDir {
+    let repo = TempDir::new().unwrap();
+    let dir = repo.path();
+    git_out(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_out(dir, &["config", "user.name", "AMF Test"]);
+    git_out(dir, &["config", "user.email", "amf@example.com"]);
+    std::fs::write(dir.join("shared.rs"), "fn shared() {}\n").unwrap();
+    git_out(dir, &["add", "shared.rs"]);
+    git_out(dir, &["commit", "--quiet", "-m", "initial"]);
+    git_out(dir, &["checkout", "--quiet", "-b", "teammate-pr"]);
+    std::fs::write(dir.join("pr_only.rs"), "fn pr() {}\n").unwrap();
+    git_out(dir, &["add", "pr_only.rs"]);
+    git_out(dir, &["commit", "--quiet", "-m", "pr change"]);
+    git_out(dir, &["checkout", "--quiet", "main"]);
+    git_out(dir, &["checkout", "--quiet", "-b", "my-feature"]);
+    std::fs::write(dir.join("shared.rs"), "local dirt\n").unwrap();
+    std::fs::write(dir.join("untracked.rs"), "stray\n").unwrap();
+    repo
+}
+
+/// Stands in for fetching PR #9: pins the repo's own branches and, like the
+/// real fetch, leaves a private review ref behind for close to remove.
+fn open_teammate_pr(
+    workdir: &std::path::Path,
+    pr: &crate::github::ReviewablePr,
+) -> anyhow::Result<PrDiffTarget> {
+    let head = git_out(workdir, &["rev-parse", "teammate-pr"]);
+    let base = git_out(workdir, &["rev-parse", "main"]);
+    let merge_base = git_out(workdir, &["merge-base", &base, &head]);
+    git_out(workdir, &["update-ref", "refs/amf/review/9/head", &head]);
+    let mut pinned = pr.clone();
+    pinned.head_oid = head;
+    pinned.base_oid = base;
+    Ok(PrDiffTarget {
+        repo: TEST_REPO_KEY.to_string(),
+        pr: pinned,
+        merge_base_oid: merge_base,
+    })
+}
+
+/// [`two_open_prs`], but PR #9's row reports `teammate-pr`'s real head, as
+/// `gh` would once the author pushes, so the list can tell a moved PR apart.
+fn two_open_prs_at_real_heads(workdir: &std::path::Path, closed: bool) -> ReviewListLoaded {
+    let mut loaded = two_open_prs(workdir, closed);
+    if let Ok(prs) = &mut loaded.prs {
+        for pr in prs.iter_mut().filter(|pr| pr.number == 9) {
+            pr.head_oid = git_out(workdir, &["rev-parse", "teammate-pr"]);
+        }
+    }
+    loaded
+}
+
+fn refuse_to_open(
+    _: &std::path::Path,
+    _: &crate::github::ReviewablePr,
+) -> anyhow::Result<PrDiffTarget> {
+    Err(anyhow::anyhow!(
+        "`git fetch` for PR #9 failed: network down"
+    ))
+}
+
+fn settle_review_open(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.pr_review_work.review_open_pending() {
+        app.poll_pr_review_open_bg();
+        assert!(std::time::Instant::now() < deadline, "PR never opened");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// An app on the Review tab of `repo`'s project, loaded with PRs #7 and #9
+/// and the cursor on #9. The tmux mock has no expectations: any tmux call
+/// (a window, a session) fails the test.
+fn review_tab_on(repo: &std::path::Path) -> App {
+    let mut app = App::new_for_test(
+        store_with_repo(repo.to_path_buf(), crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    app.selection = Selection::Project(0);
+    app.open_pr_review();
+    settle_review_list(&mut app);
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(review_list(&app).selected, 1);
+    app
+}
+
+fn viewer(app: &App) -> &DiffViewerState {
+    match &app.mode {
+        AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) => state,
+        _ => panic!("not in the diff viewer"),
+    }
+}
+
+#[test]
+fn enter_opens_the_pr_in_the_review_viewer_and_esc_returns_to_the_same_row() {
+    let repo = repo_with_teammate_pr();
+    let dir = repo.path();
+    let mut app = review_tab_on(dir);
+    app.pr_review_work
+        .set_review_opener_for_test(open_teammate_pr);
+    let features_before = app.store.projects[0].features.len();
+
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        review_list(&app).opening.as_ref().map(|o| o.number),
+        Some(9)
+    );
+    settle_review_open(&mut app);
+    assert!(matches!(app.mode, AppMode::DiffViewerLoading(_)));
+    app.complete_diff_viewer_loading();
+
+    let state = viewer(&app);
+    assert!(state.review && state.is_pr_review());
+    let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["pr_only.rs"],
+        "only the PR's files, none of the feature's"
+    );
+    // No feature, session, or tmux window came into being.
+    assert_eq!(app.store.projects[0].features.len(), features_before);
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .all(|f| f.sessions.is_empty())
+    );
+
+    press(&mut app, KeyCode::Esc);
+    let list = review_list(&app);
+    assert_eq!(list.selected, 1, "the cursor is where it was");
+    assert!(matches!(&list.load, PrReviewListLoad::Loaded(prs) if prs.len() == 2));
+    assert!(list.opening.is_none());
+
+    // Leaving drops the private review refs (off the UI thread).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !git_out(dir, &["for-each-ref", "refs/amf/review/"]).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "review refs never removed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_pr_review_never_writes_into_the_checkout_and_says_why_it_refuses() {
+    let repo = repo_with_teammate_pr();
+    let dir = repo.path();
+    let status_before = git_out(dir, &["status", "--porcelain=v1", "--untracked-files=all"]);
+    let mut app = review_tab_on(dir);
+    app.pr_review_work
+        .set_review_opener_for_test(open_teammate_pr);
+    press(&mut app, KeyCode::Enter);
+    settle_review_open(&mut app);
+    app.complete_diff_viewer_loading();
+
+    // Local-checkout actions refuse with a reason, and the review stays open.
+    // (`q` is not among them: it submits to GitHub instead of finishing into
+    // an agent — see the submit tests.)
+    for key in ['t', 'X', 'b', 'w', 'A', 'O', 'H', 'I'] {
+        app.message = None;
+        press(&mut app, KeyCode::Char(key));
+        let message = app.message.clone().unwrap_or_default();
+        assert!(
+            message.starts_with("Not available in a PR review:"),
+            "`{key}` gave {message:?}"
+        );
+        assert!(
+            matches!(app.mode, AppMode::DiffViewer(_)),
+            "`{key}` left the review"
+        );
+    }
+    // `q` opens the submit dialog rather than finishing, and Esc closes it.
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.pr_submit_open());
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.pr_submit_open());
+    assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+    for refusal in [
+        App::diff_review_open_in_editor as fn(&mut App),
+        App::diff_review_apply_suggestion_under_cursor,
+    ] {
+        app.message = None;
+        refusal(&mut app);
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.starts_with("Not available in a PR review:"))
+        );
+    }
+
+    // Reviewing actions still work, and persist nothing into the checkout.
+    press(&mut app, KeyCode::Char('a'));
+    assert!(viewer(&app).decisions.contains_key("pr_only.rs"));
+    app.persist_review_progress();
+    assert!(!dir.join(".claude").exists());
+    assert_eq!(
+        git_out(dir, &["status", "--porcelain=v1", "--untracked-files=all"]),
+        status_before
+    );
+}
+
+#[test]
+fn esc_while_a_pr_is_opening_stops_it_and_keeps_the_tab() {
+    let repo = repo_with_teammate_pr();
+    let mut app = review_tab_on(repo.path());
+    app.pr_review_work
+        .set_review_opener_for_test(open_teammate_pr);
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Esc);
+
+    assert!(review_list(&app).opening.is_none());
+    assert!(!app.pr_review_work.review_open_pending());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!app.poll_pr_review_open_bg());
+    assert!(matches!(app.mode, AppMode::PrReviewList(_)));
+}
+
+#[test]
+fn a_pr_that_fails_to_open_stays_on_the_tab_with_the_reason() {
+    let repo = repo_with_teammate_pr();
+    let mut app = review_tab_on(repo.path());
+    app.pr_review_work
+        .set_review_opener_for_test(refuse_to_open);
+    press(&mut app, KeyCode::Enter);
+    settle_review_open(&mut app);
+
+    let list = review_list(&app);
+    assert!(list.opening.is_none());
+    assert!(
+        list.open_error
+            .as_deref()
+            .is_some_and(|e| e.contains("network down"))
+    );
+}
+
+// ── PR review drafts ────────────────────────────────────────────────────────
+
+/// `review_tab_on`, with a real database attached and the test opener.
+fn review_tab_with_db(repo: &std::path::Path, db_file: &NamedTempFile) -> App {
+    let mut app = review_tab_on(repo);
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.pr_review_work
+        .set_review_opener_for_test(open_teammate_pr);
+    // Reload so the badges read the database that is now attached.
+    press(&mut app, KeyCode::Char('r'));
+    settle_review_list(&mut app);
+    app
+}
+
+fn open_selected_pr(app: &mut App) {
+    press(app, KeyCode::Enter);
+    settle_review_open(app);
+    app.complete_diff_viewer_loading();
+    assert!(viewer(app).is_pr_review());
+}
+
+/// Comment on the first commentable line of the current file.
+fn comment_first_line(app: &mut App, text: &str) {
+    press(app, KeyCode::Char('c'));
+    press(app, KeyCode::Enter);
+    for ch in text.chars() {
+        press(app, KeyCode::Char(ch));
+    }
+    press(app, KeyCode::Tab);
+    press(app, KeyCode::Esc); // leave the line cursor
+}
+
+/// Whether the Review tab's row for PR `number` carries the `↻ updated`
+/// badge: a saved draft whose head is not the row's current one.
+fn row_shows_updated_badge(app: &App, number: u32) -> bool {
+    let list = review_list(app);
+    let PrReviewListLoad::Loaded(prs) = &list.load else {
+        panic!("the list is not loaded");
+    };
+    let row = prs
+        .iter()
+        .find(|pr| pr.number == number)
+        .expect("PR listed");
+    list.drafts
+        .get(&number)
+        .is_some_and(|draft| draft.head_oid != row.head_oid)
+}
+
+fn saved_draft(app: &App) -> Option<crate::db::pr_review_drafts::PrReviewDraft> {
+    app.db
+        .as_ref()
+        .unwrap()
+        .load_pr_review_draft(TEST_REPO_KEY, 9)
+        .unwrap()
+}
+
+fn line_comment_texts(app: &App) -> Vec<String> {
+    let mut texts: Vec<String> = viewer(app)
+        .line_comments
+        .values()
+        .flatten()
+        .map(|c| c.text.clone())
+        .collect();
+    texts.sort();
+    texts
+}
+
+#[test]
+fn a_pr_review_draft_survives_leaving_and_reopening() {
+    let repo = repo_with_teammate_pr();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(repo.path(), &db_file);
+    open_selected_pr(&mut app);
+
+    comment_first_line(&mut app, "why pr?");
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, AppMode::PrReviewList(_)));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("draft saved"))
+    );
+
+    let draft = saved_draft(&app).expect("the draft is in the database");
+    assert_eq!(
+        draft.head_oid,
+        git_out(repo.path(), &["rev-parse", "teammate-pr"])
+    );
+    assert!(draft.file_fingerprints.contains_key("pr_only.rs"));
+    // …and nothing was written into the checkout.
+    assert!(!repo.path().join(".claude").exists());
+
+    // The list shows the draft; reopening resumes it.
+    press(&mut app, KeyCode::Char('r'));
+    settle_review_list(&mut app);
+    assert_eq!(
+        review_list(&app).drafts.get(&9).map(|d| d.comments),
+        Some(1)
+    );
+    open_selected_pr(&mut app);
+    assert_eq!(line_comment_texts(&app), ["why pr?"]);
+    assert!(viewer(&app).decisions.contains_key("pr_only.rs"));
+}
+
+#[test]
+fn opening_a_pr_without_reviewing_it_leaves_no_draft() {
+    let repo = repo_with_teammate_pr();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(repo.path(), &db_file);
+    open_selected_pr(&mut app);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(saved_draft(&app), None);
+}
+
+#[test]
+fn a_moved_pr_keeps_its_draft_comments_but_not_its_verdicts() {
+    let repo = repo_with_teammate_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs_at_real_heads);
+    open_selected_pr(&mut app);
+    comment_first_line(&mut app, "keep me");
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Esc);
+    // Before the author pushes, the row and the draft agree: no badge.
+    press(&mut app, KeyCode::Char('r'));
+    settle_review_list(&mut app);
+    assert!(!row_shows_updated_badge(&app, 9));
+
+    // The author pushes again (without touching the user's checkout).
+    git_out(
+        dir,
+        &["worktree", "add", "--quiet", "../pr-wt", "teammate-pr"],
+    );
+    let pr_wt = dir.parent().unwrap().join("pr-wt");
+    std::fs::write(pr_wt.join("pr_only.rs"), "fn pr() {}\nfn more() {}\n").unwrap();
+    git_out(&pr_wt, &["commit", "--quiet", "-am", "second push"]);
+    git_out(
+        dir,
+        &["worktree", "remove", "--force", pr_wt.to_str().unwrap()],
+    );
+    // The list's rows now report the new head, so the badge says "updated".
+    press(&mut app, KeyCode::Char('r'));
+    settle_review_list(&mut app);
+    assert!(row_shows_updated_badge(&app, 9));
+
+    open_selected_pr(&mut app);
+    assert_eq!(line_comment_texts(&app), ["keep me"]);
+    assert!(
+        viewer(&app).decisions.is_empty(),
+        "an approval of older code is not kept"
+    );
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("changed since your draft")),
+        "{:?}",
+        app.message
+    );
+}
+
+#[test]
+fn comments_on_a_file_that_left_the_pr_are_kept_in_the_draft() {
+    let repo = repo_with_teammate_pr();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(repo.path(), &db_file);
+    // A draft saved when the PR still touched `gone.rs`.
+    let draft = crate::db::pr_review_drafts::PrReviewDraft {
+        repo_key: TEST_REPO_KEY.to_string(),
+        pr_number: 9,
+        base_oid: "old-base".to_string(),
+        head_oid: "old-head".to_string(),
+        merge_base_oid: "old-mb".to_string(),
+        status: crate::db::pr_review_drafts::PrReviewDraftStatus::Draft,
+        progress: serde_json::json!({
+            "line_comments": {"gone.rs": [{
+                "location": {"old_line": null, "new_line": 1},
+                "text": "about a file the PR dropped"
+            }]}
+        })
+        .to_string(),
+        file_fingerprints: Default::default(),
+        updated_at: "2026-09-25T00:00:00Z".to_string(),
+    };
+    app.db
+        .as_ref()
+        .unwrap()
+        .upsert_pr_review_draft(&draft)
+        .unwrap();
+
+    open_selected_pr(&mut app);
+    assert!(
+        viewer(&app).line_comments.is_empty(),
+        "not shown on a file not in the diff"
+    );
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("1 comment(s) are on files no longer in the PR")),
+        "{:?}",
+        app.message
+    );
+    comment_first_line(&mut app, "new one");
+    press(&mut app, KeyCode::Esc);
+
+    let saved = saved_draft(&app).unwrap();
+    assert_eq!(crate::app::review::draft_comment_count(&saved.progress), 2);
+    assert!(saved.progress.contains("about a file the PR dropped"));
+}
+
+#[test]
+fn reloading_the_review_list_keeps_the_rows_and_the_highlighted_pr() {
+    let mut app = pr_review_test_app();
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs);
+    enter_pr_picker_for_test(&mut app);
+    press(&mut app, KeyCode::Tab);
+    settle_review_list(&mut app);
+    press(&mut app, KeyCode::Char('j'));
+
+    press(&mut app, KeyCode::Char('r'));
+    // The rows stay up (and navigable) while the reload is in flight.
+    assert!(review_list(&app).reloading);
+    assert!(matches!(
+        &review_list(&app).load,
+        PrReviewListLoad::Loaded(_)
+    ));
+    settle_review_list(&mut app);
+
+    assert!(!review_list(&app).reloading);
+    assert_eq!(
+        review_list(&app).selected,
+        1,
+        "still on #9, not back to the top"
+    );
+}
+
+#[test]
+fn leaving_a_pr_review_says_so_when_the_draft_could_not_be_saved() {
+    let repo = repo_with_teammate_pr();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(repo.path(), &db_file);
+    open_selected_pr(&mut app);
+    // Break the table out from under AMF with a second connection.
+    rusqlite::Connection::open(db_file.path())
+        .unwrap()
+        .execute_batch("DROP TABLE pr_review_drafts;")
+        .unwrap();
+
+    press(&mut app, KeyCode::Char('a'));
+    press(&mut app, KeyCode::Esc);
+
+    let message = app.message.clone().unwrap_or_default();
+    assert!(message.contains("draft NOT saved"), "{message}");
+    assert!(!message.contains("draft saved;"), "{message}");
+}
+
+// ── PR updates: what a new push does to a saved draft ───────────────────────
+
+/// PR #9 (`teammate-pr`) touching two files: `edit.rs`, whose added lines the
+/// author will later replace, and `keep.rs`, which the author won't touch
+/// again. The checkout sits on an unrelated branch.
+fn repo_with_two_file_pr() -> TempDir {
+    let repo = TempDir::new().unwrap();
+    let dir = repo.path();
+    git_out(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_out(dir, &["config", "user.name", "AMF Test"]);
+    git_out(dir, &["config", "user.email", "amf@example.com"]);
+    std::fs::write(dir.join("edit.rs"), "fn edit() {}\n").unwrap();
+    std::fs::write(dir.join("keep.rs"), "fn keep() {}\n").unwrap();
+    git_out(dir, &["add", "."]);
+    git_out(dir, &["commit", "--quiet", "-m", "initial"]);
+    git_out(dir, &["checkout", "--quiet", "-b", "teammate-pr"]);
+    std::fs::write(
+        dir.join("edit.rs"),
+        "fn edit() {}\nfn old_a() {}\nfn old_b() {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("keep.rs"), "fn keep() {}\nfn kept_line() {}\n").unwrap();
+    git_out(dir, &["commit", "--quiet", "-am", "pr v1"]);
+    git_out(dir, &["checkout", "--quiet", "main"]);
+    git_out(dir, &["checkout", "--quiet", "-b", "my-feature"]);
+    repo
+}
+
+/// The author pushes a new commit to the PR branch, via a scratch worktree
+/// so the user's checkout is never touched.
+fn push_to_pr(dir: &std::path::Path, path: &str, content: &str) {
+    let wt = dir.parent().unwrap().join(format!(
+        "pr-push-{}",
+        dir.file_name().unwrap().to_string_lossy()
+    ));
+    git_out(
+        dir,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            wt.to_str().unwrap(),
+            "teammate-pr",
+        ],
+    );
+    std::fs::write(wt.join(path), content).unwrap();
+    git_out(&wt, &["commit", "--quiet", "-am", "pr push"]);
+    git_out(
+        dir,
+        &["worktree", "remove", "--force", wt.to_str().unwrap()],
+    );
+}
+
+fn select_file(app: &mut App, path: &str) {
+    let AppMode::DiffViewer(state) = &mut app.mode else {
+        panic!("not in the viewer");
+    };
+    state.selected_file = state.files.iter().position(|f| f.path == path).unwrap();
+    state.on_file_changed();
+}
+
+/// Comment (with the real keys) on the current file's line containing `needle`.
+fn comment_on_line_containing(app: &mut App, needle: &str, text: &str) {
+    let AppMode::DiffViewer(state) = &mut app.mode else {
+        panic!("not in the viewer");
+    };
+    let file = &state.files[state.selected_file];
+    let index = file
+        .addressable_line_texts()
+        .iter()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("no line containing {needle:?}"));
+    state.comment_cursor = Some(index);
+    press(app, KeyCode::Enter);
+    for ch in text.chars() {
+        press(app, KeyCode::Char(ch));
+    }
+    press(app, KeyCode::Tab);
+    press(app, KeyCode::Esc); // leave the line cursor
+}
+
+fn comment<'a>(app: &'a App, path: &str, text: &str) -> &'a LineComment {
+    viewer(app).line_comments[path]
+        .iter()
+        .find(|c| c.text == text)
+        .unwrap_or_else(|| panic!("no comment {text:?} on {path}"))
+}
+
+#[test]
+fn a_pr_update_flags_only_changed_files_and_marks_comments_on_removed_code_outdated() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    open_selected_pr(&mut app);
+
+    // Review v1: approve both files, comment on code in each.
+    select_file(&mut app, "edit.rs");
+    comment_on_line_containing(&mut app, "old_a", "rename this");
+    select_file(&mut app, "keep.rs");
+    comment_on_line_containing(&mut app, "kept_line", "nice");
+    for path in ["edit.rs", "keep.rs"] {
+        select_file(&mut app, path);
+        press(&mut app, KeyCode::Char('a'));
+    }
+    assert_eq!(viewer(&app).decisions.len(), 2);
+    press(&mut app, KeyCode::Esc);
+
+    // The author replaces the lines the edit.rs comment was on.
+    push_to_pr(dir, "edit.rs", "fn edit() {}\nfn new_c() {}\n");
+    open_selected_pr(&mut app);
+    let state = viewer(&app);
+
+    // Only the changed file is flagged, filtered to, and loses its verdict.
+    assert_eq!(
+        state.changed_since_last,
+        std::collections::HashSet::from(["edit.rs".to_string()])
+    );
+    assert!(state.has_prior_review);
+    assert_eq!(state.file_filter, FileFilter::Changed);
+    assert_eq!(state.files[state.selected_file].path, "edit.rs");
+    assert!(
+        !state.decisions.contains_key("edit.rs"),
+        "changed code is re-reviewed"
+    );
+    assert_eq!(
+        state.decisions.get("keep.rs"),
+        Some(&ReviewDecision::Approve)
+    );
+
+    // Both comments are kept: the one on removed code is outdated, the one on
+    // untouched code still sits on its line.
+    assert!(comment(&app, "edit.rs", "rename this").anchor_lost);
+    let kept = comment(&app, "keep.rs", "nice");
+    assert!(!kept.anchor_lost);
+    let keep_file = state.files.iter().find(|f| f.path == "keep.rs").unwrap();
+    let kept_index = keep_file
+        .addressable_lines()
+        .iter()
+        .position(|loc| *loc == kept.location)
+        .unwrap();
+    assert!(keep_file.addressable_line_texts()[kept_index].contains("kept_line"));
+
+    let message = app.message.clone().unwrap_or_default();
+    assert!(message.contains("1 of 2 file(s) changed"), "{message}");
+    assert!(
+        message.contains("1 verdict(s) on them cleared"),
+        "{message}"
+    );
+    assert!(message.contains("1 comment(s) are outdated"), "{message}");
+
+    // The outdated comment survives the next save too.
+    press(&mut app, KeyCode::Esc);
+    let saved = saved_draft(&app).unwrap();
+    assert!(saved.progress.contains("rename this"));
+    assert_eq!(
+        saved.head_oid,
+        git_out(dir, &["rev-parse", "teammate-pr"]),
+        "the draft now describes the revision just reviewed"
+    );
+}
+
+#[test]
+fn a_new_push_that_changes_no_file_keeps_every_verdict() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    open_selected_pr(&mut app);
+    for path in ["edit.rs", "keep.rs"] {
+        select_file(&mut app, path);
+        press(&mut app, KeyCode::Char('a'));
+    }
+    press(&mut app, KeyCode::Esc);
+
+    // A new, empty commit: the head moves, but no file's diff changes.
+    let empty = git_out(
+        dir,
+        &[
+            "commit-tree",
+            "-m",
+            "empty push",
+            "-p",
+            "teammate-pr",
+            "teammate-pr^{tree}",
+        ],
+    );
+    git_out(dir, &["update-ref", "refs/heads/teammate-pr", &empty]);
+
+    open_selected_pr(&mut app);
+    let state = viewer(&app);
+    assert!(state.changed_since_last.is_empty());
+    assert_eq!(state.decisions.len(), 2);
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("none of its files' changes differ")),
+        "{:?}",
+        app.message
+    );
+}
+
+#[test]
+fn the_pr_notes_panel_shows_changes_and_outdated_comments_and_the_footer_only_usable_keys() {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    open_selected_pr(&mut app);
+    select_file(&mut app, "edit.rs");
+    comment_on_line_containing(&mut app, "old_a", "rename this");
+    press(&mut app, KeyCode::Esc);
+    push_to_pr(dir, "edit.rs", "fn edit() {}\nfn new_c() {}\n");
+    open_selected_pr(&mut app);
+    select_file(&mut app, "edit.rs");
+    press(&mut app, KeyCode::Char('e')); // expand the notes panel
+
+    let mut terminal = Terminal::new(TestBackend::new(160, 50)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(screen.contains("PR Review Notes"), "{screen}");
+    assert!(screen.contains("Changed since your draft"), "{screen}");
+    assert!(screen.contains("Outdated comments"), "{screen}");
+    assert!(screen.contains("rename this"), "{screen}");
+    assert!(
+        !screen.contains("review-notes.md"),
+        "no feature-notes placeholder"
+    );
+
+    // The footer offers only what a PR review can do.
+    press(&mut app, KeyCode::Char('e'));
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    for refused in [
+        "$EDITOR",
+        "gen walkthrough",
+        "AI review",
+        " overview",
+        " history",
+        "since last review",
+        "base ref",
+        "target:",
+        "→ finish",
+    ] {
+        assert!(!screen.contains(refused), "footer still offers {refused:?}");
+    }
+    assert!(screen.contains("pause (draft saved)"), "{screen}");
+}
+
+// ── Submitting a PR review ──────────────────────────────────────────────────
+
+use crate::app::pr_review::runtime::{PrPostOutcome, PrPostRequest};
+
+/// What the stub posters were asked to post, by the test's repo path, so
+/// parallel tests never read each other's requests.
+fn posted_requests() -> &'static std::sync::Mutex<HashMap<std::path::PathBuf, Vec<PrPostRequest>>> {
+    static POSTED: std::sync::OnceLock<
+        std::sync::Mutex<HashMap<std::path::PathBuf, Vec<PrPostRequest>>>,
+    > = std::sync::OnceLock::new();
+    POSTED.get_or_init(Default::default)
+}
+
+fn record(request: &PrPostRequest) {
+    posted_requests()
+        .lock()
+        .unwrap()
+        .entry(request.workdir.clone())
+        .or_default()
+        .push(request.clone());
+}
+
+fn requests_for(dir: &std::path::Path) -> Vec<PrPostRequest> {
+    posted_requests()
+        .lock()
+        .unwrap()
+        .get(dir)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn github_accepts(request: &PrPostRequest) -> PrPostOutcome {
+    record(request);
+    PrPostOutcome::Posted {
+        file_comment_failures: vec![],
+    }
+}
+
+fn github_is_down(request: &PrPostRequest) -> PrPostOutcome {
+    record(request);
+    PrPostOutcome::Failed("`gh api` (create review) failed: HTTP 502".to_string())
+}
+
+fn pr_has_moved(request: &PrPostRequest) -> PrPostOutcome {
+    record(request);
+    PrPostOutcome::HeadMoved {
+        current_head: "feedface00000000000000000000000000000000".to_string(),
+    }
+}
+
+fn settle_review_post(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.pr_review_work.review_post_pending() {
+        app.poll_pr_review_post_bg();
+        assert!(std::time::Instant::now() < deadline, "post never answered");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn submit_status(app: &App) -> PrSubmitStatus {
+    viewer(app)
+        .pr_submit
+        .as_ref()
+        .expect("the submit dialog is open")
+        .status
+        .clone()
+}
+
+/// Type into the open general-feedback (summary) editor and save it.
+fn write_summary(app: &mut App, text: &str) {
+    press(app, KeyCode::Char('e'));
+    for ch in text.chars() {
+        press(app, KeyCode::Char(ch));
+    }
+    press(app, KeyCode::Tab);
+}
+
+/// The two-file PR, opened for review, with a single-line comment on `edit.rs`.
+fn reviewed_two_file_pr(
+    repo: &std::path::Path,
+    db_file: &NamedTempFile,
+    poster: crate::app::pr_review::runtime::ReviewPoster,
+) -> App {
+    let mut app = review_tab_with_db(repo, db_file);
+    app.pr_review_work.set_review_poster_for_test(poster);
+    open_selected_pr(&mut app);
+    select_file(&mut app, "edit.rs");
+    comment_on_line_containing(&mut app, "old_a", "rename this");
+    app
+}
+
+#[test]
+fn each_review_event_posts_with_its_github_name_pinned_to_the_reviewed_head() {
+    for (steps, expected) in [(0, "COMMENT"), (1, "APPROVE"), (2, "REQUEST_CHANGES")] {
+        let repo = repo_with_two_file_pr();
+        let dir = repo.path();
+        let db_file = NamedTempFile::new().unwrap();
+        let mut app = reviewed_two_file_pr(dir, &db_file, github_accepts);
+
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(submit_status(&app), PrSubmitStatus::Ready);
+        for _ in 0..steps {
+            press(&mut app, KeyCode::Right);
+        }
+        write_summary(&mut app, "overall fine");
+        press(&mut app, KeyCode::Enter);
+        settle_review_post(&mut app);
+
+        let requests = requests_for(dir);
+        assert_eq!(requests.len(), 1, "{expected}");
+        let request = &requests[0];
+        assert_eq!(request.event.api_name(), expected);
+        assert_eq!(request.pr.number, 9);
+        assert_eq!(
+            (request.pr.owner.as_str(), request.pr.repo.as_str()),
+            ("acme", "widgets")
+        );
+        assert_eq!(
+            request.pr.head_sha,
+            git_out(dir, &["rev-parse", "teammate-pr"])
+        );
+        assert_eq!(request.body, "overall fine");
+        assert_eq!(request.comments.len(), 1);
+        assert!(request.comments[0].body.contains("rename this"));
+
+        // Posted: back on the list, the draft marked posted, no badge.
+        assert!(matches!(app.mode, AppMode::PrReviewList(_)), "{expected}");
+        assert!(!review_list(&app).drafts.contains_key(&9));
+        assert_eq!(
+            saved_draft(&app).unwrap().status,
+            crate::db::pr_review_drafts::PrReviewDraftStatus::Posted
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("Posted a") && m.contains("1 inline comment")),
+            "{:?}",
+            app.message
+        );
+    }
+}
+
+#[test]
+fn a_range_comment_and_a_suggestion_post_as_github_expects() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    app.pr_review_work
+        .set_review_poster_for_test(github_accepts);
+    open_selected_pr(&mut app);
+    select_file(&mut app, "edit.rs");
+
+    // A range over old_a..old_b.
+    {
+        let AppMode::DiffViewer(state) = &mut app.mode else {
+            unreachable!()
+        };
+        let file = &state.files[state.selected_file];
+        let start = file
+            .addressable_line_texts()
+            .iter()
+            .position(|l| l.contains("old_a"))
+            .unwrap();
+        state.comment_cursor = Some(start);
+    }
+    press(&mut app, KeyCode::Char('v'));
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Enter);
+    for ch in "both of these".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Esc);
+
+    // A suggestion on keep.rs's added line.
+    select_file(&mut app, "keep.rs");
+    {
+        let AppMode::DiffViewer(state) = &mut app.mode else {
+            unreachable!()
+        };
+        let file = &state.files[state.selected_file];
+        state.comment_cursor = file
+            .addressable_line_texts()
+            .iter()
+            .position(|l| l.contains("kept_line"));
+    }
+    press(&mut app, KeyCode::Char('S'));
+    for ch in "_v2".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Esc);
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+    settle_review_post(&mut app);
+
+    let request = requests_for(dir).pop().expect("posted");
+    let range = request
+        .comments
+        .iter()
+        .find(|c| c.path == "edit.rs")
+        .unwrap();
+    assert_eq!(
+        (range.start_line, range.line, range.side, range.start_side),
+        (Some(2), 3, "RIGHT", Some("RIGHT"))
+    );
+    assert!(range.body.contains("both of these"));
+    let suggestion = request
+        .comments
+        .iter()
+        .find(|c| c.path == "keep.rs")
+        .unwrap();
+    assert_eq!(suggestion.line, 2);
+    assert!(
+        suggestion.body.contains("```suggestion\n"),
+        "{}",
+        suggestion.body
+    );
+    assert!(suggestion.body.contains("_v2"), "{}", suggestion.body);
+}
+
+#[test]
+fn a_failed_post_keeps_the_draft_and_a_retry_posts_it() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = reviewed_two_file_pr(dir, &db_file, github_is_down);
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+    settle_review_post(&mut app);
+
+    match submit_status(&app) {
+        PrSubmitStatus::Failed(err) => assert!(err.contains("HTTP 502"), "{err}"),
+        other => panic!("expected a failure, got {other:?}"),
+    }
+    assert!(
+        matches!(app.mode, AppMode::DiffViewer(_)),
+        "still reviewing"
+    );
+    let draft = saved_draft(&app).expect("saved before posting");
+    assert_eq!(
+        draft.status,
+        crate::db::pr_review_drafts::PrReviewDraftStatus::Draft
+    );
+
+    app.pr_review_work
+        .set_review_poster_for_test(github_accepts);
+    press(&mut app, KeyCode::Enter); // retry
+    settle_review_post(&mut app);
+
+    assert_eq!(requests_for(dir).len(), 2);
+    assert!(matches!(app.mode, AppMode::PrReviewList(_)));
+    assert_eq!(
+        saved_draft(&app).unwrap().status,
+        crate::db::pr_review_drafts::PrReviewDraftStatus::Posted
+    );
+
+    // Reopening starts a new review rather than re-posting the old one.
+    open_selected_pr(&mut app);
+    assert!(viewer(&app).line_comments.is_empty());
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("already posted")),
+        "{:?}",
+        app.message
+    );
+}
+
+#[test]
+fn a_pr_that_moved_blocks_the_post_and_o_reopens_it_at_the_new_head() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = reviewed_two_file_pr(dir, &db_file, pr_has_moved);
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+    settle_review_post(&mut app);
+    assert!(matches!(
+        submit_status(&app),
+        PrSubmitStatus::HeadMoved { current_head } if current_head.starts_with("feedface")
+    ));
+
+    // Enter doesn't try again: the only way on is to look at the new code.
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.pr_review_work.review_post_pending());
+    assert_eq!(requests_for(dir).len(), 1);
+
+    press(&mut app, KeyCode::Char('o'));
+    settle_review_open(&mut app);
+    app.complete_diff_viewer_loading();
+    assert!(viewer(&app).is_pr_review());
+    assert!(viewer(&app).pr_submit.is_none());
+    assert_eq!(line_comment_texts(&app), ["rename this"], "draft kept");
+}
+
+#[test]
+fn approve_and_request_changes_are_refused_on_your_own_pr_before_posting() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = reviewed_two_file_pr(dir, &db_file, github_accepts);
+    app.gh_current_user = Some(Some("Alice".to_string())); // the PR's author
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Right); // Approve
+    press(&mut app, KeyCode::Enter);
+
+    match submit_status(&app) {
+        PrSubmitStatus::Failed(err) => assert!(err.contains("your own PR"), "{err}"),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert!(!app.pr_review_work.review_post_pending());
+    assert!(requests_for(dir).is_empty());
+}
+
+#[test]
+fn an_empty_review_is_refused_before_posting() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = review_tab_with_db(dir, &db_file);
+    app.pr_review_work
+        .set_review_poster_for_test(github_accepts);
+    open_selected_pr(&mut app);
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        submit_status(&app),
+        PrSubmitStatus::Failed(err) if err.contains("Nothing to post")
+    ));
+
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right); // Request changes
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        submit_status(&app),
+        PrSubmitStatus::Failed(err) if err.contains("needs a summary")
+    ));
+    assert!(requests_for(dir).is_empty());
+}
+
+#[test]
+fn esc_cannot_abandon_a_post_in_flight() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = reviewed_two_file_pr(dir, &db_file, github_accepts);
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+
+    // The answer isn't polled yet, so the post is still in flight.
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(
+        submit_status(&app),
+        PrSubmitStatus::Posting { .. }
+    ));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("wait for its answer"))
+    );
+    settle_review_post(&mut app);
+    assert!(matches!(app.mode, AppMode::PrReviewList(_)));
+}
+
+#[test]
+fn comments_that_cannot_go_on_the_diff_are_posted_in_the_summary() {
+    let repo = repo_with_two_file_pr();
+    let dir = repo.path();
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = reviewed_two_file_pr(dir, &db_file, github_accepts);
+    press(&mut app, KeyCode::Esc);
+    // The lines the comment was on are replaced: it becomes outdated.
+    push_to_pr(dir, "edit.rs", "fn edit() {}\nfn new_c() {}\n");
+    open_selected_pr(&mut app);
+    assert!(comment(&app, "edit.rs", "rename this").anchor_lost);
+
+    press(&mut app, KeyCode::Char('q'));
+    press(&mut app, KeyCode::Enter);
+    settle_review_post(&mut app);
+
+    let request = requests_for(dir).pop().expect("posted");
+    assert!(
+        request.comments.is_empty(),
+        "nothing inline: its code is gone"
+    );
+    assert!(
+        request
+            .body
+            .contains("Comments that couldn't be placed on the diff"),
+        "{}",
+        request.body
+    );
+    assert!(request.body.contains("`edit.rs`"), "{}", request.body);
+    assert!(
+        request.body.contains("code no longer in the PR"),
+        "{}",
+        request.body
+    );
+    assert!(request.body.contains("rename this"), "{}", request.body);
+}
+
+// ── Acceptance: a real PR on GitHub (opt-in) ────────────────────────────────
+
+/// Everything a PR review must leave byte-identical in a checkout.
+fn checkout_snapshot(dir: &std::path::Path) -> Vec<String> {
+    vec![
+        git_out(dir, &["rev-parse", "--symbolic-full-name", "HEAD"]),
+        git_out(dir, &["rev-parse", "HEAD"]),
+        git_out(dir, &["status", "--porcelain=v1", "--untracked-files=all"]),
+        git_out(dir, &["ls-files", "--stage"]),
+        git_out(dir, &["diff", "--cached"]),
+        git_out(dir, &["diff"]),
+        git_out(dir, &["stash", "list", "--format=%H %gs"]),
+        git_out(
+            dir,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/heads",
+                "refs/remotes",
+            ],
+        ),
+    ]
+}
+
+fn gh_json(args: &[&str]) -> serde_json::Value {
+    let output = std::process::Command::new("gh")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gh {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Poll a background job until `pending` clears, allowing for the network.
+fn settle_slowly(app: &mut App, pending: fn(&App) -> bool, poll: fn(&mut App) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    while pending(app) {
+        poll(app);
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting on GitHub"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// Dirt of every kind in `dir`: staged, unstaged, untracked, and a stash.
+fn make_dirty(dir: &std::path::Path) {
+    git_out(dir, &["config", "user.name", "AMF Acceptance"]);
+    git_out(dir, &["config", "user.email", "amf@example.com"]);
+    let readme = dir.join("README.md");
+    let original = std::fs::read_to_string(&readme).unwrap();
+    std::fs::write(&readme, format!("{original}\nstashed\n")).unwrap();
+    git_out(dir, &["stash", "push", "--quiet", "-m", "keep me"]);
+    std::fs::write(&readme, format!("{original}\nunstaged edit\n")).unwrap();
+    let changelog = dir.join("CHANGELOG.md");
+    let log = std::fs::read_to_string(&changelog).unwrap();
+    std::fs::write(&changelog, format!("{log}\nstaged edit\n")).unwrap();
+    git_out(dir, &["add", "CHANGELOG.md"]);
+    std::fs::write(dir.join("local-only-untracked.txt"), "stray\n").unwrap();
+}
+
+/// Task 11: review a real PR while the project's checkout and a feature
+/// worktree are dirty. Talks to GitHub — it pushes a commit to the PR's
+/// branch and posts a Comment review — so it runs only when asked:
+///
+/// ```text
+/// AMF_PR_REVIEW_ACCEPTANCE_PR=654 cargo test -j 2 --lib -- --ignored acceptance_
+/// ```
+///
+/// Needs `gh` signed in with push access to the PR's branch.
+#[test]
+#[ignore = "talks to GitHub; set AMF_PR_REVIEW_ACCEPTANCE_PR and run with --ignored"]
+fn acceptance_review_a_real_pr_while_a_local_feature_is_dirty() {
+    let Ok(number) = std::env::var("AMF_PR_REVIEW_ACCEPTANCE_PR") else {
+        eprintln!("AMF_PR_REVIEW_ACCEPTANCE_PR not set; skipping");
+        return;
+    };
+    let number: u32 = number.parse().expect("a PR number");
+    let repo_url = std::env::var("AMF_PR_REVIEW_ACCEPTANCE_REPO")
+        .unwrap_or_else(|_| "https://github.com/eldridgerdev/agent-mainframe".to_string());
+    let repo_slug = repo_url
+        .trim_start_matches("https://github.com/")
+        .to_string();
+
+    // A project clone with a dirty checkout and a dirty feature worktree.
+    let root = TempDir::new().unwrap();
+    let clone = root.path().join("project");
+    git_out(root.path(), &["clone", "--quiet", &repo_url, "project"]);
+    let feature = root.path().join("feature");
+    git_out(
+        &clone,
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "my-feature",
+            feature.to_str().unwrap(),
+        ],
+    );
+    make_dirty(&clone);
+    make_dirty(&feature);
+    let clone_before = checkout_snapshot(&clone);
+    let feature_before = checkout_snapshot(&feature);
+
+    // What GitHub says the PR is.
+    let pr = gh_json(&[
+        "pr",
+        "view",
+        &number.to_string(),
+        "-R",
+        &repo_slug,
+        "--json",
+        "title,author,headRefName,headRefOid,isDraft,isCrossRepository,headRepositoryOwner,files",
+    ]);
+    let pr_files: std::collections::BTreeSet<String> = pr["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_string())
+        .collect();
+
+    // ── The Review tab lists it, correctly, without blocking. ──
+    let db_file = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(clone.clone(), crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()), // any tmux call fails the test
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+    app.selection = Selection::Project(0);
+    let features_before = app.store.projects[0].features.len();
+    app.open_pr_review();
+    assert_eq!(
+        review_list(&app).load,
+        PrReviewListLoad::Loading,
+        "never blocks"
+    );
+    settle_slowly(
+        &mut app,
+        |a| a.pr_review_work.review_list_pending(),
+        App::poll_pr_review_list_bg,
+    );
+    let row = match &review_list(&app).load {
+        PrReviewListLoad::Loaded(prs) => prs
+            .iter()
+            .position(|p| p.number == number)
+            .expect("the PR is listed"),
+        other => panic!("list failed: {other:?}"),
+    };
+    {
+        let PrReviewListLoad::Loaded(prs) = &review_list(&app).load else {
+            unreachable!()
+        };
+        let listed = &prs[row];
+        assert_eq!(listed.title, pr["title"].as_str().unwrap());
+        assert_eq!(listed.author, pr["author"]["login"].as_str().unwrap());
+        assert_eq!(listed.is_draft, pr["isDraft"].as_bool().unwrap());
+        let branch = pr["headRefName"].as_str().unwrap();
+        let expected_label = if pr["isCrossRepository"].as_bool().unwrap() {
+            format!(
+                "{}:{branch}",
+                pr["headRepositoryOwner"]["login"].as_str().unwrap()
+            )
+        } else {
+            branch.to_string()
+        };
+        assert_eq!(listed.branch_label(), expected_label);
+    }
+    if let AppMode::PrReviewList(state) = &mut app.mode {
+        state.selected = row;
+    }
+
+    // ── Enter shows exactly the PR's merge-base → head files. ──
+    let open = |app: &mut App| {
+        press(app, KeyCode::Enter);
+        settle_slowly(
+            app,
+            |a| a.pr_review_work.review_open_pending(),
+            App::poll_pr_review_open_bg,
+        );
+        if let AppMode::PrReviewList(list) = &app.mode {
+            panic!("could not open: {:?}", list.open_error);
+        }
+        app.complete_diff_viewer_loading();
+        assert_eq!(viewer(app).error, None);
+    };
+    open(&mut app);
+    let shown: std::collections::BTreeSet<String> =
+        viewer(&app).files.iter().map(|f| f.path.clone()).collect();
+    assert_eq!(shown, pr_files, "exactly the PR's files");
+    assert!(!shown.contains("local-only-untracked.txt"));
+
+    // ── Comment, approve, pause, return, reopen: all restored. ──
+    let (commented, comment_line) = viewer(&app)
+        .files
+        .iter()
+        .find_map(|file| {
+            file.hunks
+                .iter()
+                .flat_map(|hunk| &hunk.lines)
+                .find(|line| {
+                    line.kind == crate::diff::DiffLineKind::Added
+                        && line.text.trim_start_matches('+').trim().len() > 4
+                })
+                .map(|line| {
+                    (
+                        file.path.clone(),
+                        line.text.trim_start_matches('+').to_string(),
+                    )
+                })
+        })
+        .expect("a file with an added line");
+    select_file(&mut app, &commented);
+    comment_on_line_containing(&mut app, &comment_line, "AMF acceptance: inline note");
+    for path in pr_files.iter() {
+        select_file(&mut app, path);
+        press(&mut app, KeyCode::Char('a'));
+    }
+    select_file(&mut app, &commented);
+    let position = viewer(&app).selected_file;
+    press(&mut app, KeyCode::Esc);
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("draft saved"))
+    );
+    open(&mut app);
+    assert_eq!(line_comment_texts(&app), ["AMF acceptance: inline note"]);
+    assert_eq!(viewer(&app).decisions.len(), pr_files.len());
+    assert_eq!(viewer(&app).selected_file, position, "position restored");
+
+    // ── The user's checkouts are untouched; no agent, feature, or session. ──
+    assert_eq!(checkout_snapshot(&clone), clone_before);
+    assert_eq!(checkout_snapshot(&feature), feature_before);
+    assert_eq!(app.store.projects[0].features.len(), features_before);
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .all(|f| f.sessions.is_empty())
+    );
+
+    // ── A new commit on the PR flags only the file it changed. ──
+    press(&mut app, KeyCode::Esc);
+    let touched = pr_files
+        .iter()
+        .find(|path| **path != commented && !path.ends_with(".rs"))
+        .or_else(|| pr_files.iter().find(|path| **path != commented))
+        .expect("a second file in the PR")
+        .clone();
+    let pusher = root.path().join("pusher");
+    git_out(root.path(), &["clone", "--quiet", &repo_url, "pusher"]);
+    git_out(&pusher, &["config", "user.name", "AMF Acceptance"]);
+    git_out(&pusher, &["config", "user.email", "amf@example.com"]);
+    let branch = pr["headRefName"].as_str().unwrap();
+    git_out(&pusher, &["checkout", "--quiet", branch]);
+    let touched_path = pusher.join(&touched);
+    let before = std::fs::read_to_string(&touched_path).unwrap_or_default();
+    std::fs::write(
+        &touched_path,
+        format!(
+            "{before}\nAMF acceptance push {}\n",
+            chrono::Utc::now().to_rfc3339()
+        ),
+    )
+    .unwrap();
+    git_out(
+        &pusher,
+        &["commit", "--quiet", "-am", "test: AMF acceptance push"],
+    );
+    git_out(&pusher, &["push", "--quiet", "origin", branch]);
+    let new_head = git_out(&pusher, &["rev-parse", "HEAD"]);
+
+    press(&mut app, KeyCode::Char('r'));
+    settle_slowly(
+        &mut app,
+        |a| a.pr_review_work.review_list_pending(),
+        App::poll_pr_review_list_bg,
+    );
+    open(&mut app);
+    let state = viewer(&app);
+    let DiffScope::PullRequest(target) = &state.scope else {
+        unreachable!()
+    };
+    assert_eq!(target.pr.head_oid, new_head, "reviewing the new head");
+    assert_eq!(
+        state.changed_since_last,
+        std::collections::HashSet::from([touched.clone()]),
+        "only the pushed file is flagged"
+    );
+    assert!(
+        !state.decisions.contains_key(&touched),
+        "its approval is cleared"
+    );
+    assert_eq!(
+        state.decisions.len(),
+        pr_files.len() - 1,
+        "the rest keep theirs"
+    );
+    assert_eq!(line_comment_texts(&app), ["AMF acceptance: inline note"]);
+
+    // ── Posting a Comment pins the inline comment to the reviewed head. ──
+    press(&mut app, KeyCode::Char('q'));
+    let marker = format!("[AMF acceptance test {}]", chrono::Utc::now().to_rfc3339());
+    write_summary(&mut app, &marker);
+    press(&mut app, KeyCode::Enter);
+    settle_slowly(
+        &mut app,
+        |a| a.pr_review_work.review_post_pending(),
+        App::poll_pr_review_post_bg,
+    );
+    assert!(
+        matches!(app.mode, AppMode::PrReviewList(_)),
+        "posted and back on the list: {:?}",
+        app.message
+    );
+    let reviews = gh_json(&["api", &format!("repos/{repo_slug}/pulls/{number}/reviews")]);
+    let review = reviews
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["body"].as_str().is_some_and(|b| b.contains(&marker)))
+        .expect("the review is on GitHub");
+    assert_eq!(review["state"], "COMMENTED");
+    assert_eq!(review["commit_id"].as_str().unwrap(), new_head);
+    let inline = gh_json(&[
+        "api",
+        &format!(
+            "repos/{repo_slug}/pulls/{number}/reviews/{}/comments",
+            review["id"]
+        ),
+    ]);
+    let inline = inline.as_array().unwrap();
+    assert_eq!(inline.len(), 1);
+    assert_eq!(inline[0]["path"].as_str().unwrap(), commented);
+    assert!(
+        inline[0]["body"]
+            .as_str()
+            .unwrap()
+            .contains("AMF acceptance: inline note")
+    );
+
+    // ── The review's refs are gone; the checkouts are still untouched. ──
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !git_out(&clone, &["for-each-ref", "refs/amf/review/"]).is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "review refs left behind"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(checkout_snapshot(&clone), clone_before);
+    assert_eq!(checkout_snapshot(&feature), feature_before);
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .all(|f| f.sessions.is_empty())
+    );
+}

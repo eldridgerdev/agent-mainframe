@@ -10,6 +10,29 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Review a teammate's pull request in AMF's diff viewer.** Press `G` on a
+  project row (or `Tab` in the PR picker) to see every open pull request in
+  the repository, including your own and drafts. `Enter` opens one in the same
+  viewer as the final review, showing exactly the pull request's changes. It
+  starts no agent and needs no feature, and it leaves your checked-out branch,
+  uncommitted changes, and stash untouched.
+- **Your review is saved as you go.** `Esc` pauses; opening the same pull
+  request later picks up your comments, verdicts, and place, and the list
+  shows which pull requests have a draft.
+- **New commits on the pull request are handled for you.** Reopening flags
+  only the files whose changes differ and clears your verdicts on just those.
+  Every comment is kept, and any whose code has gone is listed as outdated
+  instead of being lost.
+- **Submit straight to GitHub.** `q` posts your review as Comment, Approve,
+  or Request changes, with a summary and your inline comments, ranges, and
+  suggested changes. AMF won't post if the pull request has moved on since you
+  opened it, so your comments never land on code you haven't seen, and it
+  tells you plainly when GitHub wouldn't accept a choice (such as approving
+  your own pull request). Comments that can't sit on the diff go in the
+  summary. If posting fails, your draft is kept and you can retry.
+
 ### Changed
 
 - **The session sidebar's Usage box now shows small bars, like the
@@ -17,6 +40,11 @@ are tagged.
   used, for example `5h ┃┃┃┃░░░░░░ 38% · 3h`, and it changes colour at 50%
   and 80% used, like the dashboard's. Before, the box showed the percentage left
   (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
+
+### Migration
+
+- No migration is required. The review needs an authenticated `gh`, as PR
+  Triage does. AMF updates its database the first time it starts.
 
 ## [v0.46.0] - 2026-09-24
 

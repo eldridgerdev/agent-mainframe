@@ -141,7 +141,9 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     };
 
     let block = Block::default()
-        .title(if state.review {
+        .title(if matches!(&state.scope, DiffScope::PullRequest(_)) {
+            " PR Review "
+        } else if state.review {
             " Final Review "
         } else if matches!(&state.scope, DiffScope::Commit(_)) {
             " Commit Diff "
@@ -215,6 +217,146 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if let Some(setup) = &state.review_feature_setup {
         super::draw_review_feature_setup(frame, setup, theme);
     }
+    // Hidden while its summary is being edited, so the editor is visible.
+    if state.pr_submit.is_some() && !state.editing_general {
+        draw_pr_submit_modal(frame, state, theme);
+    }
+}
+
+/// The PR review's submit dialog: the event to post as, the summary, what
+/// will be posted where, and — after an attempt — what happened.
+fn draw_pr_submit_modal(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let (Some(submit), DiffScope::PullRequest(target)) = (&state.pr_submit, &state.scope) else {
+        return;
+    };
+    let area = centered_rect(70, 70, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let block = Block::default()
+        .title(format!(" Submit review — PR #{} ", target.pr.number))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let text = Style::default().fg(theme.text.to_color());
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let mut lines = vec![Line::from(Span::styled(" Post as:", muted))];
+    for event in crate::app::PrReviewEvent::ALL {
+        let chosen = event == submit.event;
+        let unavailable =
+            submit.own_pr == Some(true) && event != crate::app::PrReviewEvent::Comment;
+        let marker = if chosen { "(•)" } else { "( )" };
+        let style = if unavailable {
+            muted
+        } else if chosen {
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            text
+        };
+        let mut spans = vec![Span::styled(
+            format!("   {marker} {}", event.label()),
+            style,
+        )];
+        if unavailable {
+            spans.push(Span::styled("  — not on your own PR", muted));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(" Summary:", muted)));
+    let summary = state.general_feedback.trim();
+    if summary.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "   (none — e to write one)",
+            muted,
+        )));
+    } else {
+        for line in summary.lines().take(6) {
+            lines.push(Line::from(Span::styled(format!("   {line}"), text)));
+        }
+        if summary.lines().count() > 6 {
+            lines.push(Line::from(Span::styled("   …", muted)));
+        }
+    }
+
+    let (inline, files, in_summary) = crate::app::review::submission_counts(state);
+    lines.push(Line::from(""));
+    let mut counts = format!(" {inline} inline comment(s) · {files} file comment(s)");
+    if in_summary > 0 {
+        counts.push_str(&format!(
+            " · {in_summary} added to the summary (can't go on the diff)"
+        ));
+    }
+    lines.push(Line::from(Span::styled(counts, text)));
+    lines.push(Line::from(Span::styled(
+        format!(
+            " Pinned to {} {}",
+            target.pr.branch_label(),
+            target.pr.head_oid.get(..7).unwrap_or(&target.pr.head_oid)
+        ),
+        muted,
+    )));
+
+    lines.push(Line::from(""));
+    let danger = Style::default().fg(theme.danger.to_color());
+    let footer = match &submit.status {
+        crate::app::PrSubmitStatus::Ready => vec![
+            key(" ←/→"),
+            Span::raw(" choose  "),
+            key("e"),
+            Span::raw(" edit summary  "),
+            key("⏎"),
+            Span::raw(" post  "),
+            key("esc"),
+            Span::raw(" cancel (draft kept)"),
+        ],
+        crate::app::PrSubmitStatus::Posting { .. } => {
+            lines.push(Line::from(Span::styled(
+                " Posting to GitHub…",
+                Style::default().fg(theme.warning.to_color()),
+            )));
+            vec![Span::styled(" wait for GitHub's answer", muted)]
+        }
+        crate::app::PrSubmitStatus::Failed(err) => {
+            lines.push(Line::from(Span::styled(
+                format!(" Not posted: {err}"),
+                danger,
+            )));
+            vec![
+                key(" ⏎"),
+                Span::raw(" retry  "),
+                key("e"),
+                Span::raw(" edit summary  "),
+                key("esc"),
+                Span::raw(" close (draft kept)"),
+            ]
+        }
+        crate::app::PrSubmitStatus::HeadMoved { current_head } => {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " Not posted: PR #{} has new commits ({} → {}). Posting now would pin \
+                     your comments to code you haven't seen.",
+                    target.pr.number,
+                    target.pr.head_oid.get(..7).unwrap_or(&target.pr.head_oid),
+                    current_head.get(..7).unwrap_or(current_head)
+                ),
+                danger,
+            )));
+            vec![
+                key(" o"),
+                Span::raw(" reopen at the new head (draft kept, changes flagged)  "),
+                key("esc"),
+                Span::raw(" close"),
+            ]
+        }
+    };
+    lines.push(Line::from(footer));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 /// The review key surface, grouped by what the reviewer is trying to do. This
@@ -329,6 +471,58 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// The help overlay's sections for this review. A PR review leads with how
+/// to submit it and leaves out what it refuses (the keys that need a local
+/// feature, the AI passes, and finishing into an agent), so the overlay never
+/// advertises a key that can only explain why it won't work.
+fn review_help_sections(pr_review: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    const PR_REVIEW_SECTION: (&str, &[(&str, &str)]) = (
+        "Submitting (PR review)",
+        &[
+            ("q", "Submit to GitHub: Comment, Approve or Request changes"),
+            ("", "(inline comments pinned to the reviewed commit)"),
+            ("", "(dialog: ←/→ choose, e summary, ⏎ post, esc cancel)"),
+            ("o", "After a blocked post: reopen the PR at its new head"),
+            ("Esc", "Pause — leave with the draft saved"),
+            ("", "(Enter on the PR in the Review tab resumes it)"),
+        ],
+    );
+    const PR_HIDDEN_SECTIONS: &[&str] = &["Context and AI passes", "Finishing"];
+    const PR_HIDDEN_KEYS: &[&str] = &["x", "E", "b"];
+
+    if !pr_review {
+        return REVIEW_HELP_SECTIONS
+            .iter()
+            .map(|(title, binds)| (*title, binds.to_vec()))
+            .collect();
+    }
+    let mut sections = vec![(PR_REVIEW_SECTION.0, PR_REVIEW_SECTION.1.to_vec())];
+    for (title, binds) in REVIEW_HELP_SECTIONS {
+        if PR_HIDDEN_SECTIONS.contains(title) {
+            continue;
+        }
+        let mut kept = Vec::new();
+        let mut dropping = false;
+        for &(key, desc) in *binds {
+            // A continuation line belongs to the row above it.
+            if key.is_empty() {
+                if !dropping {
+                    kept.push((key, desc));
+                }
+                continue;
+            }
+            dropping = PR_HIDDEN_KEYS.contains(&key);
+            if !dropping {
+                kept.push((key, desc));
+            }
+        }
+        if !kept.is_empty() {
+            sections.push((*title, kept));
+        }
+    }
+    sections
+}
+
 /// A scrollable, read-only listing of every review-mode key (`?`). Takes full
 /// key precedence while open (`handle_diff_viewer_key`), like the other review
 /// modals. Groups mirror the dashboard help overlay's shape so the two read the
@@ -338,7 +532,11 @@ fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme:
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Final Review — Keys ")
+        .title(if state.is_pr_review() {
+            " PR Review — Keys "
+        } else {
+            " Final Review — Keys "
+        })
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -351,7 +549,7 @@ fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme:
         .split(inner);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (section, binds) in REVIEW_HELP_SECTIONS {
+    for (section, binds) in review_help_sections(state.is_pr_review()) {
         if !lines.is_empty() {
             lines.push(Line::from(""));
         }
@@ -361,7 +559,7 @@ fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme:
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
         )));
-        for (key, desc) in *binds {
+        for (key, desc) in binds {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {key:>14}"),
@@ -370,7 +568,7 @@ fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme:
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+                Span::styled(desc, Style::default().fg(theme.text.to_color())),
             ]));
         }
     }
@@ -1175,16 +1373,30 @@ pub fn draw_diff_viewer_loading(
     let area = centered_rect(54, 28, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let commit = match &state.scope {
-        DiffScope::Commit(commit) => Some(commit),
-        DiffScope::CurrentChanges => None,
+    let branch = if state.branch.is_empty() {
+        state.from_view.feature_name.as_str()
+    } else {
+        state.branch.as_str()
+    };
+    let (title, loading_label, detail) = match &state.scope {
+        DiffScope::Commit(commit) => (
+            " Commit Diff ",
+            " Loading commit diff...",
+            format!("{}  {}", commit.short_hash, commit.subject),
+        ),
+        DiffScope::CurrentChanges => (
+            " Current Changes ",
+            " Loading current changes...",
+            format!("Comparing all changes for {branch}"),
+        ),
+        DiffScope::PullRequest(target) => (
+            " PR Review ",
+            " Loading pull request...",
+            format!("#{}  {}", target.pr.number, target.pr.title),
+        ),
     };
     let block = Block::default()
-        .title(if commit.is_some() {
-            " Commit Diff "
-        } else {
-            " Current Changes "
-        })
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -1194,19 +1406,6 @@ pub fn draw_diff_viewer_loading(
     let throbber = throbber_widgets_tui::Throbber::default()
         .style(Style::default().fg(theme.warning.to_color()));
     let spinner = throbber.to_symbol_span(throbber_state);
-    let branch = if state.branch.is_empty() {
-        state.from_view.feature_name.as_str()
-    } else {
-        state.branch.as_str()
-    };
-    let loading_label = if commit.is_some() {
-        " Loading commit diff..."
-    } else {
-        " Loading current changes..."
-    };
-    let detail = commit
-        .map(|commit| format!("{}  {}", commit.short_hash, commit.subject))
-        .unwrap_or_else(|| format!("Comparing all changes for {branch}"));
 
     let loading = Paragraph::new(vec![
         Line::from(""),
@@ -1332,6 +1531,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
                 Span::raw("")
             },
         ],
+        DiffScope::PullRequest(target) => pr_scope_line(target, theme),
         DiffScope::Commit(commit) => vec![
             Span::styled(" Commit ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled(
@@ -1355,6 +1555,37 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
     frame.render_widget(header, area);
 }
 
+/// `PR #N · @author · base…head` with short OIDs: which PR, whose, and exactly
+/// which revisions the review is pinned to.
+fn pr_scope_line(target: &crate::app::PrDiffTarget, theme: &Theme) -> Vec<Span<'static>> {
+    let short = |oid: &str| oid.get(..7).unwrap_or(oid).to_string();
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let strong =
+        |color: ratatui::style::Color| Style::default().fg(color).add_modifier(Modifier::BOLD);
+    vec![
+        Span::styled(
+            format!(" PR #{}", target.pr.number),
+            strong(theme.primary.to_color()),
+        ),
+        Span::styled(format!(" · @{}", target.pr.author), muted),
+        Span::styled(" · ", muted),
+        Span::styled(
+            format!("{} {}", target.pr.base_ref, short(&target.merge_base_oid)),
+            strong(theme.project_title.to_color()),
+        ),
+        Span::styled("…", muted),
+        Span::styled(
+            format!(
+                "{} {}",
+                target.pr.branch_label(),
+                short(&target.pr.head_oid)
+            ),
+            strong(theme.project_title.to_color()),
+        ),
+        Span::styled(format!("  {}", target.pr.title), muted),
+    ]
+}
+
 /// Count approved and rejected files in a review-mode viewer.
 fn review_counts(state: &DiffViewerState) -> (usize, usize) {
     let mut approved = 0;
@@ -1374,10 +1605,10 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
         let error_widget = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                if matches!(&state.scope, DiffScope::Commit(_)) {
-                    " Could not load commit diff "
-                } else {
-                    " Could not load current changes "
+                match &state.scope {
+                    DiffScope::Commit(_) => " Could not load commit diff ",
+                    DiffScope::PullRequest(_) => " Could not load the pull request ",
+                    DiffScope::CurrentChanges => " Could not load current changes ",
                 },
                 Style::default()
                     .fg(theme.danger.to_color())
@@ -1398,10 +1629,10 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
         let empty = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
-                if matches!(&state.scope, DiffScope::Commit(_)) {
-                    " The selected commit has no file changes "
-                } else {
-                    " No changes against the selected base "
+                match &state.scope {
+                    DiffScope::Commit(_) => " The selected commit has no file changes ",
+                    DiffScope::PullRequest(_) => " This pull request has no file changes ",
+                    DiffScope::CurrentChanges => " No changes against the selected base ",
                 },
                 Style::default()
                     .fg(theme.success.to_color())
@@ -1409,10 +1640,16 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
             )),
             Line::from(""),
             Line::from(Span::styled(
-                if matches!(&state.scope, DiffScope::Commit(_)) {
-                    "This can happen for an empty commit or some merge commits."
-                } else {
-                    "Refresh with r after making more edits or commits."
+                match &state.scope {
+                    DiffScope::Commit(_) => {
+                        "This can happen for an empty commit or some merge commits."
+                    }
+                    DiffScope::PullRequest(_) => {
+                        "Its head adds nothing beyond its merge-base with the base branch."
+                    }
+                    DiffScope::CurrentChanges => {
+                        "Refresh with r after making more edits or commits."
+                    }
                 },
                 Style::default().fg(theme.text.to_color()),
             )),
@@ -1492,9 +1729,19 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
         .and_then(|p| state.generated_notes.get(p))
         .cloned();
 
+    // A PR review has no developer notes (those live in a feature's
+    // `.claude/`); its panel reports what the PR's updates did to this file
+    // and to the reviewer's comments instead.
+    let pr_notes = path
+        .as_deref()
+        .filter(|_| state.is_pr_review())
+        .map(|path| pr_review_notes_markdown(state, path));
+
     // The panel titles itself after whatever it is showing, so a generated
     // walkthrough isn't mistaken for a hand-written developer note.
-    let title = if note.is_none() && (generating || generated.is_some()) {
+    let title = if pr_notes.is_some() {
+        " PR Review Notes "
+    } else if note.is_none() && (generating || generated.is_some()) {
         " AI Walkthrough "
     } else {
         " Developer Notes "
@@ -1539,7 +1786,17 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
             section
         });
 
-    let (paragraph, rendered_lines) = if generating {
+    let (paragraph, rendered_lines) = if let Some(pr_notes) = pr_notes {
+        match pr_notes {
+            Some(text) => render_md(&text),
+            None => (
+                Paragraph::new("Nothing to note for this file.")
+                    .wrap(Wrap { trim: false })
+                    .style(Style::default().fg(theme.text_muted.to_color())),
+                0,
+            ),
+        }
+    } else if generating {
         (
             Paragraph::new("Generating walkthrough…")
                 .wrap(Wrap { trim: false })
@@ -1573,6 +1830,93 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
     state.notes_view_height = inner.height as usize;
 
     frame.render_widget(paragraph, inner);
+}
+
+/// The PR review notes panel for `path`, as markdown. `None` when there is
+/// nothing to say.
+/// - The file changed since the reviewer's draft (its verdict was cleared).
+/// - This file's outdated comments: kept, but their code is gone from the diff.
+/// - Comments on files the PR no longer touches (PR-wide, so on every file).
+fn pr_review_notes_markdown(state: &DiffViewerState, path: &str) -> Option<String> {
+    fn comment_line(anchor: String, comment: &crate::app::LineComment) -> String {
+        let text = comment.text.trim();
+        let text = if text.is_empty() && comment.suggestion.is_some() {
+            "(suggested change)"
+        } else {
+            text
+        };
+        format!("- **{anchor}** [{}] {text}\n", comment.severity.label())
+    }
+    let was = |comment: &crate::app::LineComment| {
+        comment
+            .location
+            .new_line
+            .or(comment.location.old_line)
+            .map(|line| format!("was L{line}"))
+            .unwrap_or_else(|| "was unanchored".to_string())
+    };
+
+    let mut sections = Vec::new();
+    if state.changed_since_last.contains(path) {
+        sections.push(
+            "**Changed since your draft.** Its changes differ from what you reviewed, so its \
+             verdict was cleared. Take another look."
+                .to_string(),
+        );
+    }
+    let outdated: Vec<&crate::app::LineComment> = state
+        .line_comments
+        .get(path)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.anchor_lost)
+        .collect();
+    if !outdated.is_empty() {
+        let mut section = String::from(
+            "### Outdated comments\n\nThe code these were on is no longer in the PR's diff. \
+             They stay in your draft and go in the review summary when you post.\n\n",
+        );
+        for comment in outdated {
+            section.push_str(&comment_line(was(comment), comment));
+        }
+        sections.push(section);
+    }
+    let detached = state.pr_detached_line_comments.len() + state.pr_detached_file_comments.len();
+    if detached > 0 {
+        let mut section = String::from(
+            "### Comments on files no longer in this PR\n\nKept in your draft; they go in the \
+             review summary when you post.\n\n",
+        );
+        let mut paths: Vec<&String> = state
+            .pr_detached_line_comments
+            .keys()
+            .chain(state.pr_detached_file_comments.keys())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        for detached_path in paths {
+            for comment in state
+                .pr_detached_line_comments
+                .get(detached_path)
+                .into_iter()
+                .flatten()
+            {
+                section.push_str(&comment_line(
+                    format!("{detached_path} ({})", was(comment)),
+                    comment,
+                ));
+            }
+            if let Some(comment) = state.pr_detached_file_comments.get(detached_path) {
+                section.push_str(&format!(
+                    "- **{detached_path}** (whole file) [{}] {}\n",
+                    comment.severity.label(),
+                    comment.text.trim()
+                ));
+            }
+        }
+        sections.push(section);
+    }
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
 
 fn body_constraints(area: Rect, state: &DiffViewerState) -> [Constraint; 2] {
@@ -1662,8 +2006,10 @@ fn file_risk_marker(
     if file.additions + file.deletions >= LARGE_FILE_CHANGE_THRESHOLD {
         flags.push("L");
     }
+    // "No developer note" means nothing in a PR review, which has none.
     if !state.review_notes.contains_key(&file.path)
         && !state.generated_notes.contains_key(&file.path)
+        && !state.is_pr_review()
     {
         flags.push("N");
     }
@@ -2285,10 +2631,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
 /// deleted or binary file is still selectable (and, in cursor mode, still has
 /// addressable removed lines), but `E` on it can only report why it won't open.
 fn editor_hint_applies(state: &DiffViewerState) -> bool {
-    state
-        .files
-        .get(state.selected_file)
-        .is_some_and(|file| file.can_open_in_editor())
+    // A PR review has no checkout to open.
+    !state.is_pr_review()
+        && state
+            .files
+            .get(state.selected_file)
+            .is_some_and(|file| file.can_open_in_editor())
 }
 
 /// Ceiling on the review footer's key hints. Both rows wrapped in full can eat
@@ -2571,11 +2919,12 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             Span::raw(" comment  "),
             key("S"),
             Span::raw(" suggest  "),
-            key("x"),
-            Span::raw(" apply suggestion  "),
-            key("R"),
-            Span::raw(" resolve/reopen  "),
         ];
+        // A PR review's suggestions are posted to GitHub, never applied here.
+        if !state.is_pr_review() {
+            second_spans.extend([key("x"), Span::raw(" apply suggestion  ")]);
+        }
+        second_spans.extend([key("R"), Span::raw(" resolve/reopen  ")]);
         // Same gating as the non-cursor footer: a deleted or binary file has
         // nothing for an editor to open, even though its removed lines stay
         // addressable and so can still be cursored.
@@ -2638,8 +2987,14 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
         second_line.push(Span::styled(label, Style::default().fg(color)));
     }
 
-    second_line.push(key("b"));
-    second_line.push(Span::raw(" base ref  "));
+    // A PR review refuses the keys that need a local feature (a base ref, a
+    // fix target, applying suggestions, finishing into an agent, AI passes run
+    // in a checkout), so its footer doesn't advertise them.
+    let pr_review = state.is_pr_review();
+    if !pr_review {
+        second_line.push(key("b"));
+        second_line.push(Span::raw(" base ref  "));
+    }
     second_line.push(key("F"));
     if state.file_filter == crate::app::FileFilter::All {
         second_line.push(Span::raw(" filter  "));
@@ -2649,7 +3004,6 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             Style::default().fg(theme.info.to_color()),
         ));
     }
-    second_line.push(key("t"));
     let (target_label, target_color) = match state.fix_target {
         crate::app::pr_review::FixTarget::DedicatedReview => {
             (" target: dedicated  ", theme.info.to_color())
@@ -2664,12 +3018,15 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             (" target: live  ", theme.text_muted.to_color())
         }
     };
-    second_line.push(Span::styled(
-        target_label,
-        Style::default().fg(target_color),
-    ));
+    if !pr_review {
+        second_line.push(key("t"));
+        second_line.push(Span::styled(
+            target_label,
+            Style::default().fg(target_color),
+        ));
+    }
     let pending_suggestions = state.pending_suggestion_count();
-    if pending_suggestions > 0 {
+    if pending_suggestions > 0 && !pr_review {
         second_line.push(key("X"));
         second_line.push(Span::styled(
             if state.apply_suggestions_on_finish {
@@ -2697,10 +3054,17 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             theme.text_muted.to_color()
         }),
     ));
-    second_line.push(key("q"));
-    second_line.push(Span::raw(" review summary → finish  "));
-    second_line.push(key("Esc"));
-    second_line.push(Span::raw(" pause (keep progress)"));
+    if pr_review {
+        second_line.push(key("q"));
+        second_line.push(Span::raw(" submit to GitHub  "));
+        second_line.push(key("Esc"));
+        second_line.push(Span::raw(" pause (draft saved)"));
+    } else {
+        second_line.push(key("q"));
+        second_line.push(Span::raw(" review summary → finish  "));
+        second_line.push(key("Esc"));
+        second_line.push(Span::raw(" pause (keep progress)"));
+    }
 
     // `?` leads the row rather than joining the second one: the first line is
     // long enough to wrap into both footer rows on a narrow terminal, clipping
@@ -2851,26 +3215,28 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
         .files
         .get(state.selected_file)
         .is_some_and(|file| state.review_notes.contains_key(&file.path));
-    if !has_note {
+    if !pr_review {
+        if !has_note {
+            first_line.push(Span::raw("  "));
+            first_line.push(key("w"));
+            first_line.push(Span::raw(" gen walkthrough"));
+        }
+
+        // Reviewer-triggered AI co-review pass over the current file.
         first_line.push(Span::raw("  "));
-        first_line.push(key("w"));
-        first_line.push(Span::raw(" gen walkthrough"));
+        first_line.push(key("A"));
+        first_line.push(Span::raw(" AI review"));
+
+        // Reviewer-triggered whole-changeset overview / risk summary.
+        first_line.push(Span::raw("  "));
+        first_line.push(key("O"));
+        first_line.push(Span::raw(" overview"));
+
+        // Read-only timeline across the live review and every finished round.
+        first_line.push(Span::raw("  "));
+        first_line.push(key("H"));
+        first_line.push(Span::raw(" history"));
     }
-
-    // Reviewer-triggered AI co-review pass over the current file.
-    first_line.push(Span::raw("  "));
-    first_line.push(key("A"));
-    first_line.push(Span::raw(" AI review"));
-
-    // Reviewer-triggered whole-changeset overview / risk summary.
-    first_line.push(Span::raw("  "));
-    first_line.push(key("O"));
-    first_line.push(Span::raw(" overview"));
-
-    // Read-only timeline across the live review and every finished round.
-    first_line.push(Span::raw("  "));
-    first_line.push(key("H"));
-    first_line.push(Span::raw(" history"));
 
     // Offer the interdiff only for a file that actually changed since the
     // last review — the case where re-reading the whole diff to find the fix
@@ -2879,7 +3245,7 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
         .files
         .get(state.selected_file)
         .is_some_and(|file| state.changed_since_last.contains(&file.path));
-    if current_changed {
+    if current_changed && !pr_review {
         first_line.push(Span::raw("  "));
         first_line.push(key("I"));
         first_line.push(Span::raw(" since last review"));
@@ -4970,6 +5336,38 @@ index 0000000..1111111
         );
     }
 
+    #[test]
+    fn pr_review_notes_list_comments_on_files_that_left_the_pr() {
+        let (mut state, _) = single_added_line_review_state();
+        // Nothing changed, nothing outdated, nothing detached: nothing to say.
+        assert_eq!(pr_review_notes_markdown(&state, "a.rs"), None);
+        state.pr_detached_line_comments.insert(
+            "gone.rs".to_string(),
+            vec![
+                serde_json::from_value(serde_json::json!({
+                    "location": {"old_line": null, "new_line": 4},
+                    "text": "about removed code"
+                }))
+                .unwrap(),
+            ],
+        );
+        state.pr_detached_file_comments.insert(
+            "gone.rs".to_string(),
+            serde_json::from_value(serde_json::json!({"text": "whole-file note"})).unwrap(),
+        );
+
+        let notes = pr_review_notes_markdown(&state, "a.rs").unwrap();
+
+        assert!(
+            notes.contains("Comments on files no longer in this PR"),
+            "{notes}"
+        );
+        assert!(notes.contains("gone.rs (was L4)"), "{notes}");
+        assert!(notes.contains("about removed code"), "{notes}");
+        assert!(notes.contains("gone.rs** (whole file)"), "{notes}");
+        assert!(!notes.contains("Outdated comments"), "{notes}");
+    }
+
     fn single_added_line_review_state() -> (DiffViewerState, DiffLineLocation) {
         let mut state = DiffViewerState::new(
             crate::app::ViewState::new(
@@ -5093,20 +5491,49 @@ index 0000000..1111111
     /// rendering bug that only shows up on screen.
     #[test]
     fn help_sections_are_non_empty_and_uniquely_titled() {
-        let mut titles = std::collections::HashSet::new();
-        for (title, binds) in REVIEW_HELP_SECTIONS {
-            assert!(titles.insert(*title), "duplicate help section: {title}");
-            assert!(!binds.is_empty(), "empty help section: {title}");
-            // A blank key column is a continuation line, so it must follow a
-            // real binding rather than lead a section.
-            assert!(
-                !binds[0].0.is_empty(),
-                "section {title} starts with a continuation line"
-            );
-            for (_, desc) in *binds {
-                assert!(!desc.is_empty(), "empty help description in {title}");
+        // Both variants: the PR review's filtering must not leave a bare
+        // heading or an orphaned continuation line behind.
+        for pr_review in [false, true] {
+            let mut titles = std::collections::HashSet::new();
+            for (title, binds) in review_help_sections(pr_review) {
+                assert!(titles.insert(title), "duplicate help section: {title}");
+                assert!(!binds.is_empty(), "empty help section: {title}");
+                // A blank key column is a continuation line, so it must follow
+                // a real binding rather than lead a section.
+                assert!(
+                    !binds[0].0.is_empty(),
+                    "section {title} starts with a continuation line"
+                );
+                for (_, desc) in &binds {
+                    assert!(!desc.is_empty(), "empty help description in {title}");
+                }
             }
         }
+    }
+
+    #[test]
+    fn pr_review_help_leads_with_submitting_and_omits_refused_keys() {
+        let sections = review_help_sections(true);
+        assert_eq!(sections[0].0, "Submitting (PR review)");
+        let keys: Vec<&str> = sections
+            .iter()
+            .flat_map(|(_, binds)| binds.iter().map(|(key, _)| *key))
+            .collect();
+        for refused in ["x", "E", "b", "w", "A", "O", "I", "H", "t", "X"] {
+            assert!(!keys.contains(&refused), "help still lists {refused}");
+        }
+        let descriptions: String = sections
+            .iter()
+            .flat_map(|(_, binds)| binds.iter().map(|(_, desc)| *desc))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!descriptions.contains("worktree"), "{descriptions}");
+        assert!(!descriptions.contains("dispatches fixes"), "{descriptions}");
+        // The Final Review overlay is unchanged.
+        assert_eq!(
+            review_help_sections(false).len(),
+            REVIEW_HELP_SECTIONS.len()
+        );
     }
 
     #[test]

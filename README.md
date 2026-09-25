@@ -230,7 +230,7 @@ and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-inte
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
-| `G` | Open GitHub PR triage |
+| `G` | Open GitHub PR triage; on a project row, review a PR yourself |
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
@@ -417,6 +417,40 @@ authenticated `gh` and an available Claude CLI. Fetching the review history
 does not use agent tokens; AMF then makes one agent pass to distill recurring
 findings and appends only new ones. You can press `Esc` while it runs to return
 to the picker without cancelling the background job.
+
+### Review a teammate's pull request
+
+To review a pull request yourself, rather than triage the comments on your own,
+press `G` on a project row, or press `G` on a feature and then `Tab`. The
+**Review** tab lists every open pull request in the repository, including your
+own and drafts, with its number, title, author, and branch (`owner:branch` for
+a fork). The list loads in the background; if `gh` isn't installed or signed
+in, the tab says so, and `r` retries.
+
+Press `Enter` to open a pull request in the same diff viewer as the final
+review. It shows exactly the pull request's changes, from where it branched to
+its latest commit. No agent is started and no feature is needed. AMF fetches
+the pull request into private `refs/amf/review/` refs and reads every file from
+git objects: your checked-out branch, staged and unstaged changes, untracked
+files, and stash are never touched, and the refs are removed when you leave.
+
+Review as you would a feature: approve or reject files, and leave line
+comments, ranges, and suggested changes. `Esc` pauses and saves your draft;
+`Enter` on the same pull request resumes it, and the list marks it with
+`● N comments`. If the pull request has new commits by then, AMF flags only
+the files whose changes differ, clears your verdicts on those files, and keeps
+every comment. A comment whose code is gone is listed as outdated in the notes
+panel, and `↻ updated` marks the row.
+
+Press `q` to submit. Choose **Comment**, **Approve**, or **Request changes**
+(GitHub doesn't allow the last two on your own pull request), and write a
+summary with `e`. Inline comments are pinned to the commit you reviewed. If the
+pull request has moved on since you opened it, AMF won't post; press `o` to
+reopen it at its new commit with your draft intact. Comments that can't sit on
+the diff, such as outdated ones, are included in the summary instead of being
+dropped. The walkthrough, AI co-review, and changeset-overview passes, and the
+keys that need a local checkout (`E`, `b`, `t`, `X`), aren't available in this
+mode.
 
 ### Reuse prompts and track TODOs
 

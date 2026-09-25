@@ -60,6 +60,121 @@ pub struct PrPickerState {
     pub current_user: Option<String>,
 }
 
+/// The PR picker's **Review** tab: every open PR in the repository, listed
+/// for a manual review in the native viewer rather than for comment triage.
+///
+/// A mode of its own rather than a field on [`PrPickerState`], so the Triage
+/// tab (and everything that builds a `PrPickerState`) is unchanged. `Tab`
+/// switches between the two; the Triage picker this tab was switched from
+/// rides along in `triage` and comes back verbatim.
+///
+/// The list is loaded off the UI thread. `request_id` names the load the tab
+/// is waiting on, so a late result from a load that has since been retried,
+/// or from a tab that was closed and reopened, is dropped.
+#[derive(Debug, Clone)]
+pub struct PrReviewListState {
+    /// Where `gh` runs: a feature's checkout, or the project's repo root when
+    /// the tab was opened from a project row. Only the repository matters.
+    pub workdir: PathBuf,
+    pub load: PrReviewListLoad,
+    /// Highlighted row, meaningful only while `load` is `Loaded`.
+    pub selected: usize,
+    /// True while a reload (`r`) of an already-loaded list is in flight. The
+    /// current rows stay on screen, and stay navigable, until it lands, so the
+    /// highlight can follow its PR into the new list.
+    pub reloading: bool,
+    pub request_id: u64,
+    /// The Triage tab to restore on `Tab`. `None` when this tab was opened
+    /// directly (a project row), in which case `Tab` loads Triage fresh.
+    pub triage: Option<PrPickerState>,
+    /// The logged-in `gh` user, to mark the user's own PRs. `None` until
+    /// resolved (or when it can't be).
+    pub current_user: Option<String>,
+    /// A PR being fetched for review (`Enter`), shown in place of the footer
+    /// until it opens. `Esc` abandons it and keeps the tab open.
+    pub opening: Option<PrReviewOpening>,
+    /// Why the last `Enter` could not open its PR.
+    pub open_error: Option<String>,
+    /// Saved drafts in this repository, by PR number, for the row badges.
+    pub drafts: std::collections::HashMap<u32, PrReviewDraftBadge>,
+}
+
+/// What a row shows about the draft saved for its PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewDraftBadge {
+    pub comments: usize,
+    /// The head the draft was saved at, compared with the row's current head
+    /// to say "updated since your review".
+    pub head_oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewOpening {
+    pub request_id: u64,
+    pub number: u32,
+}
+
+/// Where the Review tab's list is in its load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrReviewListLoad {
+    Loading,
+    Loaded(Vec<crate::github::ReviewablePr>),
+    Failed(PrReviewListError),
+}
+
+/// A failed list load, sorted by what the user can do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewListError {
+    pub kind: PrReviewListErrorKind,
+    /// `gh`'s own words, shown under the hint.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrReviewListErrorKind {
+    /// `gh` isn't installed or couldn't be run.
+    GhMissing,
+    /// `gh` isn't logged in (or its token was rejected).
+    Auth,
+    /// Anything else: network, no GitHub remote, a GitHub outage.
+    Other,
+}
+
+impl PrReviewListError {
+    /// Classify a failed `gh pr list` by its message. Heuristic by nature —
+    /// `gh` has no machine-readable error codes — so anything unrecognised is
+    /// `Other`, which still shows the raw message and offers a retry.
+    pub fn classify(detail: String) -> Self {
+        let lower = detail.to_ascii_lowercase();
+        let kind = if lower.contains("failed to run `gh`") {
+            PrReviewListErrorKind::GhMissing
+        } else if lower.contains("gh auth login")
+            || lower.contains("not logged in")
+            || lower.contains("authentication")
+            || lower.contains("bad credentials")
+            || lower.contains("http 401")
+        {
+            PrReviewListErrorKind::Auth
+        } else {
+            PrReviewListErrorKind::Other
+        };
+        Self { kind, detail }
+    }
+
+    /// The next step, in one line.
+    pub fn hint(&self) -> &'static str {
+        match self.kind {
+            PrReviewListErrorKind::GhMissing => {
+                "The GitHub CLI (gh) could not be run. Install it, then press r to retry."
+            }
+            PrReviewListErrorKind::Auth => {
+                "gh is not signed in. Run `! gh auth login`, then press r to retry."
+            }
+            PrReviewListErrorKind::Other => "Could not list pull requests. Press r to retry.",
+        }
+    }
+}
+
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR
 /// picker): pick how many recent merged/closed PRs to learn from before
 /// running the fetch + distill pass.

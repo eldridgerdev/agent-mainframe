@@ -64,6 +64,22 @@ pub(super) struct ReviewProgress {
     pub(super) selected_file: usize,
 }
 
+impl ReviewProgress {
+    /// The resumable parts of `state`, as they would be saved now.
+    pub(super) fn of(state: &DiffViewerState) -> Self {
+        Self {
+            decisions: state.decisions.clone(),
+            auto_rejected: state.auto_rejected.clone(),
+            line_comments: state.line_comments.clone(),
+            file_comments: state.file_comments.clone(),
+            general_feedback: state.general_feedback.clone(),
+            apply_suggestions_on_finish: state.apply_suggestions_on_finish,
+            applied_suggestions: state.applied_suggestions.clone(),
+            selected_file: state.selected_file,
+        }
+    }
+}
+
 /// Path of the saved review-progress file for a feature workdir.
 pub(super) fn review_progress_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("final-review-progress.json")
@@ -205,16 +221,13 @@ impl App {
         if !state.review {
             return;
         }
-        let progress = ReviewProgress {
-            decisions: state.decisions.clone(),
-            auto_rejected: state.auto_rejected.clone(),
-            line_comments: state.line_comments.clone(),
-            file_comments: state.file_comments.clone(),
-            general_feedback: state.general_feedback.clone(),
-            apply_suggestions_on_finish: state.apply_suggestions_on_finish,
-            applied_suggestions: state.applied_suggestions.clone(),
-            selected_file: state.selected_file,
-        };
+        // A PR review never writes into the checkout it runs git in: its
+        // draft goes to the database instead.
+        if state.is_pr_review() {
+            let _ = self.persist_pr_review_draft();
+            return;
+        }
+        let progress = ReviewProgress::of(state);
         let path = review_progress_path(&state.workdir);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -233,6 +246,19 @@ impl App {
                 format!("failed to serialize review progress: {err}"),
             ),
         }
+    }
+
+    /// When the open viewer is a PR review, refuse the action with `reason`
+    /// (so the refusal says why) and return `true`.
+    pub(crate) fn refuse_in_pr_review(&mut self, reason: &str) -> bool {
+        let pr_review = matches!(
+            &self.mode,
+            AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) if state.is_pr_review()
+        );
+        if pr_review {
+            self.message = Some(format!("Not available in a PR review: {reason}"));
+        }
+        pr_review
     }
 
     /// Refresh the re-anchor context snippet of every line comment that still
@@ -622,6 +648,9 @@ impl App {
     /// (the file's fingerprint can also move for reasons other than its own
     /// content, e.g. the base ref shifted underneath it).
     pub fn open_interdiff(&mut self) {
+        if self.refuse_in_pr_review("there is no earlier round of this PR review to compare with") {
+            return;
+        }
         let AppMode::DiffViewer(state) = &self.mode else {
             return;
         };

@@ -10,6 +10,14 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **The session sidebar's Usage box now shows small bars, like the
+  dashboard.** Each rate-limit window is drawn as a bar with the percentage
+  used, for example `5h ┃┃┃┃░░░░░░ 38% · 3h`, and it changes colour at 50%
+  and 80% used, like the dashboard's. Before, the box showed the percentage left
+  (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
+
 ## [v0.46.0] - 2026-09-24
 
 ### Added

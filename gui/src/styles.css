@@ -654,6 +654,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .modal-subtitle { margin-top: 2px; color: var(--text-muted); font-size: 13px; overflow-wrap: anywhere; }
 .modal-header-actions { display: flex; align-items: center; gap: 4px; margin: -4px -8px 0 0; }
 .modal-body { padding: 12px 20px 20px; overflow-y: auto; flex: 1; min-height: 0; }
+.recovery-choose { margin-top: 16px; }
+.recovery-session-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.recovery-session-row { display: flex; align-items: flex-start; gap: 10px; padding: 9px; border-radius: 6px; cursor: pointer; }
+.recovery-session-row:hover { background: var(--surface-2); }
+.recovery-session-row span { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.recovery-session-row strong, .recovery-session-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-lead { margin-bottom: 14px; }
 .modal-footer {
   display: flex;

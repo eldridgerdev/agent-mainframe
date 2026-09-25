@@ -14,7 +14,10 @@ import {
   PlanInput,
   PlanStatus,
   Project,
+  SavedAgentSession,
   SessionTarget,
+  SessionRecoveryChoice,
+  SessionRecoveryOption,
   WorkspaceSnapshot,
   asGuiError,
   createFeature,
@@ -26,6 +29,9 @@ import {
   planBeginTodoHost,
   planBeginTodoNew,
   planSnapshot,
+  recoverSession,
+  savedAgentSessions,
+  sessionRecoveryOption,
   startFeature,
   stopFeature,
   supportedHarnesses,
@@ -37,6 +43,7 @@ import {
 import TerminalPane from "./TerminalPane";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import PlanPanel from "./PlanPanel";
+import RecoveryDialog from "./RecoveryDialog";
 import {
   ApprovalDialog,
   EmptyState,
@@ -110,6 +117,20 @@ export default function App() {
   const [sendingPrompt, setSendingPrompt] = useState(false);
   const [planMinimized, setPlanMinimized] = useState(false);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<string | null>(null);
+  const [recoveryDialog, setRecoveryDialog] = useState<{
+    target: SessionTarget;
+    option: SessionRecoveryOption;
+    sessions: SavedAgentSession[] | null;
+    loading: boolean;
+    selectedId: string | null;
+  } | null>(null);
+  const [recoveryChecking, setRecoveryChecking] = useState(false);
+  const [pendingRecoveryApproval, setPendingRecoveryApproval] = useState<{
+    target: SessionTarget;
+    choice: SessionRecoveryChoice;
+    pickedId: string | null;
+    message: string;
+  } | null>(null);
   const [pendingTodoNew, setPendingTodoNew] = useState<{
     todoId: string;
     title: string;
@@ -409,21 +430,89 @@ export default function App() {
     },
   });
 
+  const recoverSessionMutation = useMutation({
+    mutationFn: ({ target, choice, pickedId, approved }: {
+      target: SessionTarget;
+      choice: SessionRecoveryChoice;
+      pickedId: string | null;
+      approved: boolean;
+    }) => recoverSession(target, choice, pickedId, approved),
+    onSuccess: () => {
+      setRecoveryDialog(null);
+      setPendingRecoveryApproval(null);
+    },
+    onError: (err, variables) => {
+      const error = asGuiError(err);
+      if (error.kind === "needs_approval" && !variables.approved) {
+        setRecoveryDialog(null);
+        setPendingRecoveryApproval({
+          target: variables.target,
+          choice: variables.choice,
+          pickedId: variables.pickedId,
+          message: error.message,
+        });
+      } else {
+        setPendingRecoveryApproval(null);
+        reportError(error);
+      }
+    },
+  });
+
   const stopFeatureMutation = useMutation({
     mutationFn: stopFeature,
     onError: reportError,
   });
 
-  const lifecycle = (projectId: string, feature: Feature) => {
+  const beginFeatureStart = async (projectId: string, feature: Feature, preferredSessionId?: string) => {
+    const target = { project_id: projectId, feature_id: feature.id };
+    const agentSession = feature.sessions.find((session) => session.id === preferredSessionId
+      && ["claude", "codex", "opencode"].includes(session.kind))
+      ?? feature.sessions.find((session) => ["claude", "codex", "opencode"].includes(session.kind));
+    if (!agentSession) {
+      startFeatureMutation.mutate({ target, approved: false });
+      return;
+    }
+    setRecoveryChecking(true);
+    try {
+      const sessionTarget = { ...target, session_id: agentSession.id };
+      const option = await sessionRecoveryOption(sessionTarget);
+      if (option) {
+        setRecoveryDialog({ target: sessionTarget, option, sessions: null, loading: false, selectedId: null });
+      } else {
+        startFeatureMutation.mutate({ target, approved: false });
+      }
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setRecoveryChecking(false);
+    }
+  };
+
+  const lifecycle = (projectId: string, feature: Feature, preferredSessionId?: string) => {
     const target = { project_id: projectId, feature_id: feature.id };
     return {
-      starting: startFeatureMutation.isPending
-        && startFeatureMutation.variables?.target.feature_id === feature.id,
+      starting: recoveryChecking || (startFeatureMutation.isPending
+        && startFeatureMutation.variables?.target.feature_id === feature.id),
       stopping: stopFeatureMutation.isPending
         && stopFeatureMutation.variables?.feature_id === feature.id,
-      onStart: () => startFeatureMutation.mutate({ target, approved: false }),
+      onStart: () => void beginFeatureStart(projectId, feature, preferredSessionId),
       onStop: () => stopFeatureMutation.mutate(target),
     };
+  };
+
+  const loadRecoverySessions = async () => {
+    if (!recoveryDialog) return;
+    const target = recoveryDialog.target;
+    setRecoveryDialog((current) => current && { ...current, loading: true });
+    try {
+      const sessions = await savedAgentSessions(target);
+      setRecoveryDialog((current) => current && sessionKey(current.target) === sessionKey(target)
+        ? { ...current, sessions, loading: false, selectedId: sessions[0]?.id ?? null }
+        : current);
+    } catch (err) {
+      setRecoveryDialog((current) => current && { ...current, loading: false });
+      reportError(err);
+    }
   };
 
   const activePlan = plan.data?.active ?? null;
@@ -581,7 +670,7 @@ export default function App() {
               { project_id: selectedProject.id, feature_id: selectedFeature.id },
               quick,
             )}
-            {...lifecycle(selectedProject.id, selectedFeature)}
+            {...lifecycle(selectedProject.id, selectedFeature, tabByFeature[selectedFeature.id])}
             draft={draft}
             onDraftChange={(text) => setDraft((current) => current && { ...current, text })}
             onDiscardDraft={() => setDraft(null)}
@@ -747,6 +836,43 @@ export default function App() {
           busy={startFeatureMutation.isPending}
           onConfirm={() => startFeatureMutation.mutate({ target: pendingStart.target, approved: true })}
           onCancel={() => setPendingStart(null)}
+        />
+      )}
+
+      {recoveryDialog && (
+        <RecoveryDialog
+          option={recoveryDialog.option}
+          sessions={recoveryDialog.sessions}
+          selectedId={recoveryDialog.selectedId}
+          loading={recoveryDialog.loading}
+          busy={recoverSessionMutation.isPending}
+          onChoose={() => void loadRecoverySessions()}
+          onBack={() => setRecoveryDialog((current) => current && { ...current, sessions: null })}
+          onSelect={(id) => setRecoveryDialog((current) => current && { ...current, selectedId: id })}
+          onRecover={(choice, pickedId) => recoverSessionMutation.mutate({
+            target: recoveryDialog.target,
+            choice,
+            pickedId,
+            approved: false,
+          })}
+          onClose={() => setRecoveryDialog(null)}
+        />
+      )}
+
+      {pendingRecoveryApproval && (
+        <ApprovalDialog
+          label="Approve agent recovery"
+          title="Start another agent?"
+          message={pendingRecoveryApproval.message}
+          confirmLabel="Start anyway"
+          busy={recoverSessionMutation.isPending}
+          onConfirm={() => recoverSessionMutation.mutate({
+            target: pendingRecoveryApproval.target,
+            choice: pendingRecoveryApproval.choice,
+            pickedId: pendingRecoveryApproval.pickedId,
+            approved: true,
+          })}
+          onCancel={() => setPendingRecoveryApproval(null)}
         />
       )}
 

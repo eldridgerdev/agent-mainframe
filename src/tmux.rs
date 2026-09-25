@@ -1216,31 +1216,37 @@ impl TmuxManager {
 
     pub fn resolve_view_target_ids(session: &str, window: &str) -> Result<(String, String)> {
         let target = format!("{}:{}", session, window);
+        let exact_target = format!("={session}:={window}");
         let output = Self::command()
             .args([
-                "display-message",
+                "list-panes",
                 "-t",
-                &target,
-                "-p",
-                "#{window_id} #{pane_id}",
+                &exact_target,
+                "-F",
+                "#{window_id} #{pane_id} #{pane_active}",
             ])
             .output()
             .context("Failed to resolve tmux view target IDs")?;
 
         if !output.status.success() {
-            bail!(
-                "{}",
-                Self::command_error(&output, "tmux display-message failed")
-            );
+            bail!("{}", Self::command_error(&output, "tmux list-panes failed"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = stdout.split_whitespace().collect();
-        if parts.len() == 2 {
-            Ok((parts[0].to_string(), parts[1].to_string()))
-        } else {
-            bail!("tmux did not return window_id and pane_id for {target}");
-        }
+        stdout
+            .lines()
+            .find_map(|line| {
+                let mut parts = line.split_whitespace();
+                match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    (Some(window_id), Some(pane_id), Some("1"), None)
+                        if window_id.starts_with('@') && pane_id.starts_with('%') =>
+                    {
+                        Some((window_id.to_string(), pane_id.to_string()))
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("tmux has no active pane for {target}"))
     }
 
     #[cfg(unix)]

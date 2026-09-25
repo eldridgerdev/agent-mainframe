@@ -144,7 +144,7 @@ fn get_snapshot(state: State<AppState>) -> Result<WorkspaceSnapshot, GuiError> {
         .0
         .lock()
         .expect("gui handle mutex poisoned")
-        .refresh_snapshot()
+        .refresh_live_snapshot()
 }
 
 /// Emits the post-mutation snapshot on `workspace-changed` so any open
@@ -191,6 +191,45 @@ fn start_feature(
 ) -> Result<StartFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_feature_with_approval(target, approved)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn session_recovery_option(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Option<agent_mainframe::gui_contract::SessionRecoveryOption>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .session_recovery_option(&target)
+}
+
+#[tauri::command]
+fn saved_agent_sessions(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Vec<agent_mainframe::gui_contract::SavedAgentSession>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .saved_agent_sessions(&target)
+}
+
+#[tauri::command]
+fn recover_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+    choice: agent_mainframe::gui_contract::SessionRecoveryChoice,
+    picked_id: Option<String>,
+    approved: bool,
+) -> Result<StartFeatureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.recover_session(target, choice, picked_id, approved)?;
     emit_workspace_changed(&app, &gui.snapshot());
     Ok(response)
 }
@@ -549,6 +588,9 @@ fn main() {
             create_project,
             create_feature,
             start_feature,
+            session_recovery_option,
+            saved_agent_sessions,
+            recover_session,
             stop_feature,
             attach_terminal,
             terminal_input,

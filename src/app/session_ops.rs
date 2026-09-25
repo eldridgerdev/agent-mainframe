@@ -92,6 +92,29 @@ pub(crate) fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
     id.filter(|id| !id.trim().is_empty())
 }
 
+/// The same saved transcripts used by the TUI's `S` pickers, exposed in a
+/// presentation-neutral shape for the GUI recovery dialog.
+pub(crate) fn saved_sessions_for_kind(
+    kind: &SessionKind,
+    workdir: &std::path::Path,
+) -> Result<Vec<(String, String, i64)>> {
+    match kind {
+        SessionKind::Claude => Ok(super::claude_sessions::fetch_claude_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        SessionKind::Codex => Ok(super::codex_sessions::fetch_codex_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        SessionKind::Opencode => Ok(super::opencode::fetch_opencode_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
 impl App {
     /// Intercept opening a persisted agent pane whose tmux session has
     /// disappeared *and* that AMF can offer a real choice about. Returns `true`

@@ -179,6 +179,10 @@ external workspace and TODO changes every two seconds. Each feature page has
 one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
+If tmux exits unexpectedly, the GUI shows the affected features as stopped.
+Start a feature to recreate its tmux session; when a saved Claude, Codex, or
+OpenCode session is available, the GUI offers to resume it, start fresh, or
+choose another saved session.
 
 ## Checks
 

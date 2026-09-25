@@ -375,6 +375,49 @@ mod tests {
     }
 
     #[test]
+    fn view_target_lookup_reports_missing_session_and_window() {
+        let session = TestSession::spawn("missing-target");
+        let missing_session = unique_session_name("absent");
+
+        let session_error =
+            TmuxManager::resolve_view_target_ids(&missing_session, "main").unwrap_err();
+        assert!(session_error.to_string().contains("can't find session"));
+
+        let window_error =
+            TmuxManager::resolve_view_target_ids(&session.name, "absent").unwrap_err();
+        assert!(window_error.to_string().contains("can't find window"));
+
+        let prefix = unique_session_name("prefix");
+        let prefixed_name = format!("{prefix}-live");
+        TmuxManager::create_session_with_window(&prefixed_name, "main", &PathBuf::from("/tmp"))
+            .unwrap();
+        let _prefixed_session = TestSession {
+            name: prefixed_name,
+        };
+        let prefix_error = TmuxManager::resolve_view_target_ids(&prefix, "main").unwrap_err();
+        assert!(prefix_error.to_string().contains("can't find session"));
+    }
+
+    #[test]
+    fn view_target_lookup_selects_the_active_pane() {
+        let session = TestSession::spawn("active-pane");
+        let target = format!("{}:main", session.name);
+        let output = TmuxManager::command()
+            .args(["split-window", "-d", "-t", &target])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+
+        let (_, pane_id) = TmuxManager::resolve_view_target_ids(&session.name, "main").unwrap();
+        let active_pane = TmuxManager::command()
+            .args(["display-message", "-t", &target, "-p", "#{pane_id}"])
+            .output()
+            .unwrap();
+        assert!(active_pane.status.success(), "{active_pane:?}");
+        assert_eq!(pane_id, String::from_utf8_lossy(&active_pane.stdout).trim());
+    }
+
+    #[test]
     fn live_output_after_a_change_is_delivered_and_reflects_current_state() {
         let session = TestSession::spawn("live-output");
         let (on_output, received) = output_collector();

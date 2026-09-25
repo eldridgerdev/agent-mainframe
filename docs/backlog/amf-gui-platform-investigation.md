@@ -24,6 +24,20 @@ A local build normally avoids the downloaded-app quarantine involved in this
 warning, but company restrictions can still apply. This documents an option
 for Mac users, not a newly completed macOS runtime test.
 
+### Follow-up: macOS tmux binary selection
+
+A Mac user reports that the tmux copy bundled with AMF caused their local
+terminal connection failure; they suspect it is outdated or broken. Confirm
+the exact executable and version in their installation, then compare behavior
+with Homebrew tmux before changing the default. The TUI release archive copies
+Homebrew tmux into the bundle via
+[`package-release-bundle.sh`](../../scripts/dev/package-release-bundle.sh),
+and [`TmuxRuntime`](../../src/tmux.rs) prefers a `tmux` or `tmux-real` beside
+the running executable. The GUI `.dmg` does not currently bundle tmux; it
+uses an installed executable found on `PATH`. This report remains a packaging
+investigation, separate from recovering feature sessions after `tmux
+kill-server`.
+
 Native Windows needs a session backend in addition to platform adaptations.
 ConPTY supplies terminal I/O; it does not supply tmux's independent server,
 session discovery, reconnectable screen state, or AMF's lifecycle policy.

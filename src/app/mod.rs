@@ -43,7 +43,7 @@ pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 mod search;
 mod session_config;
-mod session_ops;
+pub(crate) mod session_ops;
 mod session_titles;
 pub mod setup;
 mod skill_picker;

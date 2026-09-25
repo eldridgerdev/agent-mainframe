@@ -503,6 +503,27 @@ impl TmuxManager {
         Self::control_mode_compatible()
     }
 
+    fn cli_binary_override() -> &'static OnceLock<Option<PathBuf>> {
+        static CLI_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+        &CLI_BINARY
+    }
+
+    /// Name the `amf` CLI that sessions' hook scripts run as `$AMF_BIN`
+    /// (`amf notify`, the diff-review hooks, ...). Only a host that is *not*
+    /// the CLI needs this -- the GUI, whose own executable would open a new
+    /// window per hook event. `None` omits `AMF_BIN`, so the scripts fall back
+    /// to `amf` on `PATH`. First call wins; call it before launching sessions.
+    pub(crate) fn set_cli_binary(path: Option<PathBuf>) {
+        let _ = Self::cli_binary_override().set(path);
+    }
+
+    fn cli_binary() -> Option<PathBuf> {
+        match Self::cli_binary_override().get() {
+            Some(path) => path.clone(),
+            None => std::env::current_exe().ok(),
+        }
+    }
+
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
         RUNTIME.get_or_init(TmuxRuntime::detect)
@@ -535,7 +556,7 @@ impl TmuxManager {
             Self::shell_quote(&runtime.binary.to_string_lossy())
         )];
 
-        if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe) = Self::cli_binary() {
             parts.push(format!(
                 "AMF_BIN={}",
                 Self::shell_quote(&exe.to_string_lossy())

@@ -601,6 +601,8 @@ fn main() {
         // starts a thread.
         unsafe { login_path::adopt_login_shell_path() };
     }
+    // After the PATH adoption above, which the `amf` lookup reads.
+    agent_mainframe::gui_contract::use_cli_for_session_hooks();
     tauri::Builder::default()
         .setup(|app| {
             let db_path = agent_mainframe::project::db_path();

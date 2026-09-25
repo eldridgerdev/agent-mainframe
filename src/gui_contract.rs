@@ -1262,6 +1262,37 @@ impl GuiHandle {
     }
 }
 
+/// Point the sessions this process launches at the `amf` CLI rather than at
+/// the GUI itself. Hook scripts run `"${AMF_BIN:-amf}" notify ...` on every
+/// agent event, and `AMF_BIN` defaults to the launching executable -- which,
+/// in the GUI, opens another window per event. Resolves `amf` beside the GUI
+/// binary (a dev `target/` dir, or an install that ships both) and then on
+/// `PATH`; finding neither leaves `AMF_BIN` unset so the scripts fall back to
+/// `amf` on the session's own `PATH`. Call once at startup, before any
+/// session starts.
+pub fn use_cli_for_session_hooks() {
+    let cli = std::env::current_exe()
+        .ok()
+        .and_then(|exe| find_cli_binary(&exe, std::env::var_os("PATH").as_deref()));
+    crate::tmux::TmuxManager::set_cli_binary(cli);
+}
+
+fn find_cli_binary(
+    gui_exe: &std::path::Path,
+    path_var: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    let name = format!("amf{}", std::env::consts::EXE_SUFFIX);
+    let sibling = gui_exe.parent().map(|dir| dir.join(&name));
+    let on_path = path_var
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join(&name));
+    sibling
+        .into_iter()
+        .chain(on_path)
+        .find(|candidate| candidate.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,6 +1303,44 @@ mod tests {
 
     const PROJECT_ID: &str = "proj-1";
     const FEATURE_ID: &str = "feat-1";
+
+    fn touch(path: &std::path::Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    #[test]
+    fn session_hooks_prefer_the_amf_beside_the_gui_then_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gui_dir = tmp.path().join("target/debug");
+        let gui = gui_dir.join("amf-gui");
+        let path_dir = tmp.path().join("bin");
+        let path_amf = path_dir.join("amf");
+        let path_var = std::env::join_paths([tmp.path().join("empty"), path_dir]).unwrap();
+        touch(&gui);
+
+        assert_eq!(super::find_cli_binary(&gui, Some(&path_var)), None);
+
+        touch(&path_amf);
+        assert_eq!(
+            super::find_cli_binary(&gui, Some(&path_var)),
+            Some(path_amf.clone())
+        );
+
+        let sibling = gui_dir.join("amf");
+        touch(&sibling);
+        assert_eq!(super::find_cli_binary(&gui, Some(&path_var)), Some(sibling));
+    }
+
+    #[test]
+    fn session_hooks_never_resolve_to_a_directory_named_amf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gui = tmp.path().join("amf-gui");
+        touch(&gui);
+        std::fs::create_dir(tmp.path().join("amf")).unwrap();
+
+        assert_eq!(super::find_cli_binary(&gui, None), None);
+    }
 
     #[test]
     fn a_save_conflict_is_classified_even_under_added_context() {

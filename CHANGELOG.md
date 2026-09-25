@@ -33,6 +33,14 @@ are tagged.
   your own pull request). Comments that can't sit on the diff go in the
   summary. If posting fails, your draft is kept and you can retry.
 
+### Changed
+
+- **The session sidebar's Usage box now shows small bars, like the
+  dashboard.** Each rate-limit window is drawn as a bar with the percentage
+  used, for example `5h ┃┃┃┃░░░░░░ 38% · 3h`, and it changes colour at 50%
+  and 80% used, like the dashboard's. Before, the box showed the percentage left
+  (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
+
 ### Migration
 
 - No migration is required. The review needs an authenticated `gh`, as PR

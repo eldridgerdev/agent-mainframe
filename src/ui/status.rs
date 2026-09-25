@@ -14,7 +14,9 @@ use crate::project::SessionKind;
 use crate::theme::Theme;
 use crate::usage::Model;
 
-fn utilization_color(pct: f64, theme: &Theme) -> Color {
+/// Accent for a usage percentage (used, not remaining). Shared with the
+/// session sidebar's Usage bars so both surfaces change colour together.
+pub(crate) fn utilization_color(pct: f64, theme: &Theme) -> Color {
     if pct >= 80.0 {
         theme.usage_high.to_color()
     } else if pct >= 50.0 {

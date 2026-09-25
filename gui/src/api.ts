@@ -149,6 +149,61 @@ export interface StopFeatureResponse {
   message: string;
 }
 
+export type NewSessionKind = AgentSlug | "terminal" | "nvim";
+
+export interface NewSessionOption {
+  kind: NewSessionKind;
+  label: string;
+}
+
+export interface AddSessionResponse {
+  target: SessionTarget;
+  label: string;
+}
+
+export function newSessionOptions(target: FeatureTarget): Promise<NewSessionOption[]> {
+  return invoke("new_session_options", { target });
+}
+
+export function addSession(
+  target: FeatureTarget,
+  kind: NewSessionKind,
+  label: string | null,
+  approved: boolean,
+): Promise<AddSessionResponse> {
+  return invoke("add_session", { target, kind, label, approved });
+}
+
+export interface SessionRecoveryOption {
+  harness: string;
+  saved_id: string;
+}
+
+export interface SavedAgentSession {
+  id: string;
+  title: string;
+  updated: number;
+}
+
+export type SessionRecoveryChoice = "resume" | "clear" | "pick";
+
+export function sessionRecoveryOption(target: SessionTarget): Promise<SessionRecoveryOption | null> {
+  return invoke("session_recovery_option", { target });
+}
+
+export function savedAgentSessions(target: SessionTarget): Promise<SavedAgentSession[]> {
+  return invoke("saved_agent_sessions", { target });
+}
+
+export function recoverSession(
+  target: SessionTarget,
+  choice: SessionRecoveryChoice,
+  pickedId: string | null,
+  approved: boolean,
+): Promise<StartFeatureResponse> {
+  return invoke("recover_session", { target, choice, pickedId, approved });
+}
+
 export function createFeature(
   request: CreateFeatureRequest,
 ): Promise<CreateFeatureResponse> {

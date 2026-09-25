@@ -26,6 +26,11 @@ be on `PATH`. For a Mac, follow [macOS](#macos) below; on Windows, follow
 Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs
 (M1 and later). There is no Intel Mac build; build from source on an Intel Mac.
 
+The maintainer doesn't currently have a Mac available to set up and test Apple
+Developer ID signing and notarization. CI builds the macOS releases with an
+ad-hoc signature, so downloaded builds can show a **"developer cannot be
+verified"** warning. Developer ID signing and notarization remain pending.
+
 1. **Install `tmux`,** for example with `brew install tmux`, and install the
    agent CLIs you use.
 2. **Open the `.dmg` and drag AMF GUI into Applications.**
@@ -35,11 +40,9 @@ Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs
    Security**, scroll down and click **Open Anyway** next to AMF GUI, then
    confirm. macOS remembers this, so later launches open normally.
 
-   From a terminal, this does the same:
-
-   ```sh
-   xattr -dr com.apple.quarantine "/Applications/AMF GUI.app"
-   ```
+   On a company-managed Mac, **Open Anyway** may be unavailable. See
+   [Apple's explanation of these warnings](https://support.apple.com/en-us/102445)
+   and the local build option below.
 
 Apps opened from Finder, the Dock or Spotlight don't inherit your shell's
 `PATH`, so at startup the GUI asks your login shell (`$SHELL`, usually zsh)
@@ -47,6 +50,47 @@ for its `PATH`. As long as `tmux` and your agent CLIs work in a new terminal
 window, the GUI will find them. If your shell's startup files take longer than
 three seconds, the GUI gives up and keeps the system `PATH`; launch it from a
 terminal with `open -a "AMF GUI"` instead.
+
+### Build locally without a Developer ID
+
+You can build and run AMF on your own Mac without a Developer ID certificate or
+a paid Apple Developer account. A local build normally avoids the downloaded-app
+quarantine involved in that warning. Standard Git clients don't normally
+quarantine their checkouts; see
+[Apple's developer guidance](https://developer.apple.com/forums/thread/773965).
+Company security policies can still restrict locally built programs; a source
+build does not guarantee approval on a managed Mac.
+
+Install the current stable Rust toolchain, Node.js **22.12 or later**, `tmux`,
+and the agent CLIs you use. For the compiler and macOS SDK, Xcode Command Line
+Tools are sufficient; the full Xcode app is not required for this desktop build.
+See [Tauri's macOS prerequisites](https://v2.tauri.app/start/prerequisites/#macos).
+If the command line tools aren't installed, run:
+
+```sh
+xcode-select --install
+```
+
+Clone AMF with Git onto the Mac. From the repository root, build and launch a
+standalone executable:
+
+```sh
+cd gui
+npm ci
+npm run tauri -- build --no-bundle --ci
+../target/release/amf-gui
+```
+
+The executable is `target/release/amf-gui` at the repository root. Run it again
+from a terminal whenever you want to open the GUI; `tmux` and your agent CLIs
+must remain on `PATH`.
+
+For development with automatic rebuilding, run this from `gui/` after
+`npm ci` instead:
+
+```sh
+npm run tauri dev
+```
 
 ## Windows (WSL2)
 
@@ -104,6 +148,8 @@ Nerd Font installed in WSL.
 Install the current stable Rust toolchain, Node.js 22.12 or later, a C compiler,
 `tmux`, and the harness CLIs you intend to use. On Linux, install the system
 libraries in [Tauri's Linux prerequisites](https://v2.tauri.app/start/prerequisites/).
+On macOS, see [Build locally without a Developer ID](#build-locally-without-a-developer-id)
+for prerequisites and a standalone build that doesn't need a signing account.
 Run the app from a shell with `tmux` and the harness CLIs on `PATH`:
 
 ```sh
@@ -124,7 +170,8 @@ On Windows, build from source inside WSL2 the same way, after step 1 of
 
 The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
-project and feature creation, session terminals, TODO lists and agent starts,
+project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
+and Neovim sessions, session terminals, TODO lists and agent starts,
 and Full and Quick Plan interviews. Continue to use `amf` for workflows
 marked Planned.
 
@@ -133,6 +180,13 @@ external workspace and TODO changes every two seconds. Each feature page has
 one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
+Use **New session** on a feature page to start another agent, terminal, or
+Neovim session. You can name it or use the next default name; the new tab opens
+when creation succeeds. The picker shows the agents allowed for that project.
+If tmux exits unexpectedly, the GUI shows the affected features as stopped.
+Start a feature to recreate its tmux session; when a saved Claude, Codex, or
+OpenCode session is available, the GUI offers to resume it, start fresh, or
+choose another saved session.
 
 ## Checks
 

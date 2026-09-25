@@ -12,11 +12,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::resource_gate::{StartPreconditions, describe_tripped};
-use crate::app::{App, AppMode, StartIntent, TodoPlanOrigin};
+use crate::app::{App, AppMode, ReapplyOutcome, StartIntent, TodoPlanOrigin};
 use crate::automation::{
     CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
 };
-use crate::project::{Project, ProjectStatus, TodoSessionReference};
+use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
 /// A structured, serializable error every GUI-facing operation returns
 /// instead of a bare string, so the frontend can branch on `kind` (e.g. a
@@ -169,6 +169,39 @@ pub struct StopFeatureResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct SessionRecoveryOption {
+    pub harness: String,
+    pub saved_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SavedAgentSession {
+    pub id: String,
+    pub title: String,
+    pub updated: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NewSessionOption {
+    pub kind: SessionKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AddSessionResponse {
+    pub target: SessionTarget,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRecoveryChoice {
+    Resume,
+    Clear,
+    Pick,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TodoAgentLaunchResponse {
     pub target: SessionTarget,
     /// An editable prompt for the GUI composer. Launching the agent must not
@@ -223,6 +256,46 @@ impl GuiHandle {
         Ok(self.snapshot())
     }
 
+    /// Reconcile the displayed status with live tmux sessions without
+    /// changing the persisted store. A session can disappear without a DB
+    /// write (for example after tmux exits), and the GUI does not run the
+    /// TUI's background status synchronizer.
+    pub fn refresh_live_snapshot(&mut self) -> GuiResult<WorkspaceSnapshot> {
+        let mut snapshot = self.refresh_snapshot()?;
+        let live_sessions: std::collections::HashSet<String> = self
+            .app
+            .tmux
+            .list_sessions()
+            .map_err(GuiError::from)?
+            .into_iter()
+            .collect();
+        let mut name_counts = std::collections::HashMap::<String, usize>::new();
+        for feature in snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.features)
+        {
+            *name_counts.entry(feature.tmux_session.clone()).or_default() += 1;
+        }
+        for project in &mut snapshot.projects {
+            for feature in &mut project.features {
+                // A legacy store can assign the same tmux name to multiple
+                // features. A live session cannot identify its owner, so do
+                // not present every sibling as running or offer attachment.
+                if name_counts.get(feature.tmux_session.as_str()) == Some(&1)
+                    && live_sessions.contains(&feature.tmux_session)
+                {
+                    if feature.status == ProjectStatus::Stopped {
+                        feature.status = ProjectStatus::Idle;
+                    }
+                } else {
+                    feature.status = ProjectStatus::Stopped;
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
     pub fn create_project(
         &mut self,
         request: CreateProjectRequest,
@@ -272,6 +345,376 @@ impl GuiHandle {
             })
     }
 
+    fn locate_session(&self, target: &SessionTarget) -> GuiResult<(usize, usize, usize)> {
+        let (pi, fi) = self.locate(&FeatureTarget {
+            project_id: target.project_id.clone(),
+            feature_id: target.feature_id.clone(),
+        })?;
+        let si = self.app.store.projects[pi].features[fi]
+            .sessions
+            .iter()
+            .position(|session| session.id == target.session_id)
+            .ok_or_else(|| GuiError::not_found("The selected session no longer exists"))?;
+        Ok((pi, fi, si))
+    }
+
+    fn reject_ambiguous_live_session(&self, pi: usize, fi: usize) -> GuiResult<()> {
+        let feature = &self.app.store.projects[pi].features[fi];
+        if self.app.feature_tmux_session_is_shared(pi, fi)
+            && self.app.tmux.session_exists(&feature.tmux_session)
+        {
+            return Err(GuiError::conflict(
+                "Multiple features share this live tmux session. Stop that tmux session before starting or attaching a feature",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Match the TUI's per-repository harness picker, plus GUI-viewable
+    /// terminal/editor panes. External VS Code windows and configured custom
+    /// sessions need separate GUI workflows.
+    pub fn new_session_options(
+        &mut self,
+        target: &FeatureTarget,
+    ) -> GuiResult<Vec<NewSessionOption>> {
+        self.refresh_snapshot()?;
+        let (pi, _) = self.locate(target)?;
+        let project = &self.app.store.projects[pi];
+        let mut options = self
+            .app
+            .allowed_agents_for_repo(&project.repo)
+            .into_iter()
+            .map(|agent| {
+                let label = agent.display_name().to_string();
+                let kind = crate::app::session_ops::session_kind_for_agent(&agent);
+                NewSessionOption { kind, label }
+            })
+            .collect::<Vec<_>>();
+        options.extend([
+            NewSessionOption {
+                kind: SessionKind::Terminal,
+                label: "Terminal".to_string(),
+            },
+            NewSessionOption {
+                kind: SessionKind::Nvim,
+                label: "Neovim".to_string(),
+            },
+        ]);
+        Ok(options)
+    }
+
+    pub fn add_session(
+        &mut self,
+        target: FeatureTarget,
+        kind: SessionKind,
+        label: Option<String>,
+        approved: bool,
+    ) -> GuiResult<AddSessionResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let project_repo = self.app.store.projects[pi].repo.clone();
+        let agent = match kind {
+            SessionKind::Claude => Some(AgentKind::Claude),
+            SessionKind::Codex => Some(AgentKind::Codex),
+            SessionKind::Opencode => Some(AgentKind::Opencode),
+            SessionKind::Pi => Some(AgentKind::Pi),
+            SessionKind::Terminal | SessionKind::Nvim => None,
+            _ => {
+                return Err(GuiError::conflict(
+                    "This session type is not available in the GUI",
+                ));
+            }
+        };
+        if let Some(agent) = &agent
+            && !self
+                .app
+                .allowed_agents_for_repo(&project_repo)
+                .contains(agent)
+        {
+            return Err(GuiError::conflict(
+                "This agent is not allowed for this project",
+            ));
+        }
+        if self.app.block_if_feature_pending_worktree_script(pi, fi) {
+            return Err(GuiError::conflict(
+                "Wait for the feature's worktree setup to finish before adding a session",
+            ));
+        }
+        let feature = &self.app.store.projects[pi].features[fi];
+        let label = label
+            .map(|label| label.trim().to_string())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| feature.next_label(&kind));
+        let starts_feature = self.app.add_would_start_feature(pi, fi, &kind);
+        if !approved && (agent.is_some() || starts_feature) {
+            self.require_start_approval(&format!("Adding '{label}'"))?;
+        }
+
+        let session_id = if let Some(agent) = agent {
+            let (_, session_id, _) = self
+                .app
+                .create_agent_session_labeled_identified(
+                    pi,
+                    fi,
+                    &label,
+                    Some(agent),
+                    StartIntent::Approved,
+                )
+                .map_err(GuiError::from)?;
+            session_id
+        } else {
+            self.app
+                .add_builtin_tmux_session_identified(pi, fi, kind, label.clone())
+                .map_err(GuiError::from)?
+        };
+        Ok(AddSessionResponse {
+            target: SessionTarget {
+                project_id: target.project_id,
+                feature_id: target.feature_id,
+                session_id,
+            },
+            label,
+        })
+    }
+
+    /// Offer the same saved-session decision as the TUI when tmux disappears.
+    pub fn session_recovery_option(
+        &mut self,
+        target: &SessionTarget,
+    ) -> GuiResult<Option<SessionRecoveryOption>> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(target)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        let harness = match session.kind {
+            SessionKind::Claude => "Claude",
+            SessionKind::Codex => "Codex",
+            SessionKind::Opencode => "OpenCode",
+            _ => return Ok(None),
+        };
+        let Some(saved_id) = crate::app::session_ops::persisted_resume_id(session) else {
+            return Ok(None);
+        };
+        if self.app.user_stopped_features.contains(&feature.id) {
+            return Ok(None);
+        }
+        if self.app.tmux.session_exists(&feature.tmux_session) {
+            return Ok(None);
+        }
+        Ok(Some(SessionRecoveryOption {
+            harness: harness.to_string(),
+            saved_id,
+        }))
+    }
+
+    pub fn saved_agent_sessions(
+        &mut self,
+        target: &SessionTarget,
+    ) -> GuiResult<Vec<SavedAgentSession>> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(target)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        crate::app::session_ops::saved_sessions_for_kind(
+            &feature.sessions[si].kind,
+            &feature.workdir,
+        )
+        .map(|sessions| {
+            sessions
+                .into_iter()
+                .map(|(id, title, updated)| SavedAgentSession { id, title, updated })
+                .collect()
+        })
+        .map_err(GuiError::from)
+    }
+
+    pub fn recover_session(
+        &mut self,
+        target: SessionTarget,
+        choice: SessionRecoveryChoice,
+        picked_id: Option<String>,
+        approved: bool,
+    ) -> GuiResult<StartFeatureResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        let (agent, provider) = match session.kind {
+            SessionKind::Claude => (
+                AgentKind::Claude,
+                crate::token_tracking::TokenUsageProvider::Claude,
+            ),
+            SessionKind::Codex => (
+                AgentKind::Codex,
+                crate::token_tracking::TokenUsageProvider::Codex,
+            ),
+            SessionKind::Opencode => (
+                AgentKind::Opencode,
+                crate::token_tracking::TokenUsageProvider::Opencode,
+            ),
+            _ => return Err(GuiError::conflict("This session cannot be resumed")),
+        };
+        if self.app.tmux.session_exists(&feature.tmux_session) {
+            return Ok(StartFeatureResponse {
+                feature_id: target.feature_id,
+                already_running: true,
+                message: "The feature is already running".to_string(),
+            });
+        }
+        let resume_id = match choice {
+            SessionRecoveryChoice::Resume => Some(
+                crate::app::session_ops::persisted_resume_id(session).ok_or_else(|| {
+                    GuiError::conflict("The saved session ID is no longer available")
+                })?,
+            ),
+            SessionRecoveryChoice::Clear => None,
+            SessionRecoveryChoice::Pick => {
+                let id = picked_id.ok_or_else(|| GuiError::conflict("Choose a saved session"))?;
+                let sessions = crate::app::session_ops::saved_sessions_for_kind(
+                    &session.kind,
+                    &feature.workdir,
+                )
+                .map_err(GuiError::from)?;
+                if !sessions.iter().any(|(candidate, _, _)| candidate == &id) {
+                    return Err(GuiError::conflict(
+                        "The chosen session is no longer available",
+                    ));
+                }
+                Some(id)
+            }
+        };
+        if !approved {
+            self.require_start_approval(&format!("Recovering '{}'", feature.name))?;
+        }
+        self.app
+            .tmux
+            .check_harness_available(&agent)
+            .map_err(GuiError::from)?;
+
+        let mut created_session = false;
+        if let Err(error) = self.app.ensure_feature_running_for_recovery(
+            pi,
+            fi,
+            target.session_id.clone(),
+            resume_id.clone(),
+            &mut created_session,
+            StartIntent::Approved,
+        ) {
+            if created_session {
+                let tmux_session = &self.app.store.projects[pi].features[fi].tmux_session;
+                let _ = self.app.tmux.kill_session(tmux_session);
+            }
+            if created_session {
+                self.app.store.projects[pi].features[fi].status = ProjectStatus::Stopped;
+            }
+            return Err(GuiError::from(error));
+        }
+
+        // Another process may have started the same tmux session between our
+        // first existence check and the launch helper's own check. In that
+        // case it used its own resume choice; do not record ours over it.
+        if !created_session {
+            return Ok(StartFeatureResponse {
+                feature_id: target.feature_id,
+                already_running: true,
+                message: "The feature is already running".to_string(),
+            });
+        }
+
+        let tmux_session = self.app.store.projects[pi].features[fi]
+            .tmux_session
+            .clone();
+        let name = self.app.store.projects[pi].features[fi].name.clone();
+
+        let session = &mut self.app.store.projects[pi].features[fi].sessions[si];
+        Self::apply_recovery_choice(session, choice, resume_id.as_deref(), &provider);
+        let session_kind = session.kind.clone();
+        let outcome =
+            self.app.save_reapplying(|store| {
+                let Some((pi, fi)) =
+                    store.locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+                else {
+                    return false;
+                };
+                let feature = &mut store.projects[pi].features[fi];
+                if feature.tmux_session != tmux_session {
+                    return false;
+                }
+                let Some(session) = feature.sessions.iter_mut().find(|session| {
+                    session.id == target.session_id && session.kind == session_kind
+                }) else {
+                    return false;
+                };
+                Self::apply_recovery_choice(session, choice, resume_id.as_deref(), &provider);
+                feature.status = ProjectStatus::Idle;
+                feature.touch();
+                true
+            });
+        match outcome {
+            Ok(ReapplyOutcome::Saved) => {}
+            Ok(ReapplyOutcome::TargetGone | ReapplyOutcome::Conflict) => {
+                self.stop_failed_recovery(&tmux_session)?;
+                return Err(GuiError::conflict(
+                    "Workspace changed elsewhere while recovery started; the new session was stopped. Refresh and retry",
+                ));
+            }
+            Err(error) => {
+                self.stop_failed_recovery(&tmux_session)?;
+                return Err(GuiError::from(error));
+            }
+        }
+        Ok(StartFeatureResponse {
+            feature_id: target.feature_id,
+            already_running: false,
+            message: format!("Started '{name}'"),
+        })
+    }
+
+    fn apply_recovery_choice(
+        session: &mut crate::project::FeatureSession,
+        choice: SessionRecoveryChoice,
+        resume_id: Option<&str>,
+        provider: &crate::token_tracking::TokenUsageProvider,
+    ) {
+        match choice {
+            SessionRecoveryChoice::Clear => {
+                session.claude_session_id = None;
+                session.clear_token_usage_source();
+            }
+            SessionRecoveryChoice::Pick => {
+                let id = resume_id
+                    .expect("picked session ID was validated above")
+                    .to_string();
+                if session.kind == SessionKind::Claude {
+                    session.claude_session_id = Some(id.clone());
+                }
+                session.set_token_usage_source_exact(crate::token_tracking::TokenUsageSource {
+                    provider: provider.clone(),
+                    id,
+                });
+            }
+            SessionRecoveryChoice::Resume => {}
+        }
+    }
+
+    fn stop_failed_recovery(&mut self, tmux_session: &str) -> GuiResult<()> {
+        self.app.tmux.kill_session(tmux_session).map_err(|error| GuiError {
+            kind: GuiErrorKind::Internal,
+            message: format!(
+                "Recovery could not be saved, and the newly started tmux session '{tmux_session}' could not be stopped: {error}"
+            ),
+        })?;
+        // A failed DB write leaves the attempted recovery in memory. Restore
+        // the last committed state so a later GUI action cannot save it.
+        if let Some(db) = &self.app.db
+            && let Ok((store, version)) = db.load_store_versioned()
+        {
+            self.app.adopt_store_from_disk(store, version);
+        }
+        Ok(())
+    }
+
     /// The `(project_id, workdir)` pair that keys a feature's worktree TODO
     /// scope (`db::todos::TodoScope::Worktree`) -- exposed so `gui_todos`
     /// (a sibling module, not a descendant of this one) can resolve a
@@ -318,6 +761,7 @@ impl GuiHandle {
     ) -> GuiResult<StartFeatureResponse> {
         self.refresh_snapshot()?;
         let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
         let feature = &self.app.store.projects[pi].features[fi];
         let already_running = self.app.tmux.session_exists(&feature.tmux_session);
         if !already_running && !approved {
@@ -380,6 +824,7 @@ impl GuiHandle {
 
         self.refresh_snapshot()?;
         let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
         let resolved = self
             .db()?
             .resolve_todo_by_id(todo_id)
@@ -766,6 +1211,7 @@ impl GuiHandle {
     pub fn stop_feature(&mut self, target: FeatureTarget) -> GuiResult<StopFeatureResponse> {
         self.refresh_snapshot()?;
         let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
         let name = self.app.store.projects[pi].features[fi].name.clone();
 
         if self.app.store.projects[pi].features[fi].status == ProjectStatus::Stopped {
@@ -791,11 +1237,13 @@ impl GuiHandle {
     /// from `start_feature`/a snapshot's `feature.status` to check first, and
     /// duplicating that check here would just be a second place for the two
     /// to disagree.
-    pub fn resolve_session_target(&self, target: &SessionTarget) -> GuiResult<TerminalTarget> {
+    pub fn resolve_session_target(&mut self, target: &SessionTarget) -> GuiResult<TerminalTarget> {
+        self.refresh_snapshot()?;
         let (pi, fi) = self.locate(&FeatureTarget {
             project_id: target.project_id.clone(),
             feature_id: target.feature_id.clone(),
         })?;
+        self.reject_ambiguous_live_session(pi, fi)?;
         let feature = &self.app.store.projects[pi].features[fi];
         let session = feature
             .sessions
@@ -895,6 +1343,20 @@ mod tests {
         GuiHandle { app }
     }
 
+    fn prepend_project_elsewhere(db_path: &std::path::Path) {
+        let db = crate::db::AmfDb::open(db_path).unwrap();
+        let mut store = db.load_store().unwrap();
+        let mut project = Project::new(
+            "other".to_string(),
+            PathBuf::from("/tmp/other-repo"),
+            false,
+            AgentKind::default(),
+        );
+        project.id = "other-project".to_string();
+        store.projects.insert(0, project);
+        db.save_store(&store).unwrap();
+    }
+
     fn stale_target() -> FeatureTarget {
         FeatureTarget {
             project_id: PROJECT_ID.to_string(),
@@ -977,6 +1439,373 @@ mod tests {
             gui.app.store.projects[0].features[0].status,
             ProjectStatus::Idle
         );
+    }
+
+    #[test]
+    fn a_feature_left_running_in_the_database_can_restart_after_tmux_exits() {
+        let mut tmux = claude_cold_start_tmux();
+        tmux.expect_list_sessions()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        let mut gui = handle(store_with_one_feature(ProjectStatus::Active), tmux);
+
+        let snapshot = gui.refresh_live_snapshot().unwrap();
+        assert_eq!(
+            snapshot.projects[0].features[0].status,
+            ProjectStatus::Stopped
+        );
+
+        let response = gui.start_feature(target()).unwrap();
+        assert!(!response.already_running);
+        assert_eq!(
+            gui.app.store.projects[0].features[0].status,
+            ProjectStatus::Idle
+        );
+    }
+
+    #[test]
+    fn gui_adds_a_second_agent_session_with_a_stable_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        store.projects[0].features[0].workdir = dir.path().to_path_buf();
+        store.projects[0].features[0].add_session(SessionKind::Claude);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window()
+            .withf(|_, window, _| window == "claude-2")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .withf(|_, window, _, resume_id, _| window == "claude-2" && resume_id.is_none())
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let added = gui
+            .add_session(target(), SessionKind::Claude, None, true)
+            .unwrap();
+
+        assert_eq!(added.label, "Claude 2");
+        assert_eq!(added.target.project_id, PROJECT_ID);
+        assert_eq!(added.target.feature_id, FEATURE_ID);
+        assert_eq!(
+            gui.app.store.projects[0].features[0].sessions[1].id,
+            added.target.session_id
+        );
+    }
+
+    #[test]
+    fn gui_adds_a_named_terminal_session_without_launching_an_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        store.projects[0].features[0].workdir = dir.path().to_path_buf();
+        store.projects[0].features[0].add_session(SessionKind::Claude);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window()
+            .withf(|_, window, _| window == "terminal")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let added = gui
+            .add_session(
+                target(),
+                SessionKind::Terminal,
+                Some("  Build shell  ".into()),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(added.label, "Build shell");
+        assert_eq!(
+            gui.app.store.projects[0].features[0].sessions[1].id,
+            added.target.session_id
+        );
+    }
+
+    #[test]
+    fn terminal_session_survives_a_concurrent_store_write_with_its_record() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].features[0].add_session(SessionKind::Terminal);
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        let path = db_file.path().to_path_buf();
+        tmux.expect_create_window()
+            .times(1)
+            .returning(move |_, _, _| {
+                prepend_project_elsewhere(&path);
+                Ok(())
+            });
+        tmux.expect_kill_window().never();
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let added = gui
+            .add_session(target(), SessionKind::Terminal, Some("Shell".into()), true)
+            .unwrap();
+
+        let on_disk = writer.load_store().unwrap();
+        assert_eq!(on_disk.projects.len(), 2);
+        assert!(
+            on_disk.projects[1].features[0]
+                .sessions
+                .iter()
+                .any(|session| session.id == added.target.session_id)
+        );
+    }
+
+    #[test]
+    fn terminal_window_is_closed_if_its_feature_is_deleted_during_save() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].features[0].add_session(SessionKind::Terminal);
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        let path = db_file.path().to_path_buf();
+        tmux.expect_create_window()
+            .times(1)
+            .returning(move |_, _, _| {
+                let db = crate::db::AmfDb::open(&path).unwrap();
+                db.save_store(&ProjectStore::empty()).unwrap();
+                Ok(())
+            });
+        tmux.expect_kill_window().times(1).returning(|_, _| Ok(()));
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let error = gui
+            .add_session(target(), SessionKind::Terminal, None, true)
+            .unwrap_err();
+
+        assert!(error.message.contains("removed elsewhere"));
+        assert!(writer.load_store().unwrap().projects.is_empty());
+    }
+
+    #[test]
+    fn failed_terminal_add_stops_the_feature_it_started() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].features[0].add_session(SessionKind::Terminal);
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .returning(move |_| checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3);
+        tmux.expect_create_session_with_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_set_session_env()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_select_window()
+            .times(1)
+            .returning(|_, _| Ok(()));
+        let path = db_file.path().to_path_buf();
+        tmux.expect_create_window()
+            .times(1)
+            .returning(move |_, _, _| {
+                let db = crate::db::AmfDb::open(&path).unwrap();
+                db.save_store(&ProjectStore::empty()).unwrap();
+                Ok(())
+            });
+        tmux.expect_kill_window().times(1).returning(|_, _| Ok(()));
+        tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let error = gui
+            .add_session(target(), SessionKind::Terminal, None, true)
+            .unwrap_err();
+
+        assert!(error.message.contains("removed elsewhere"));
+        assert!(writer.load_store().unwrap().projects.is_empty());
+    }
+
+    #[test]
+    fn failed_save_after_starting_feature_stops_its_new_tmux_session() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].features[0].add_session(SessionKind::Terminal);
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .returning(move |_| checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= 3);
+        tmux.expect_create_session_with_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_set_session_env()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let path = db_file.path().to_path_buf();
+        tmux.expect_select_window().times(1).returning(move |_, _| {
+            prepend_project_elsewhere(&path);
+            Ok(())
+        });
+        tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+        tmux.expect_create_window().never();
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let error = gui
+            .add_session(target(), SessionKind::Terminal, None, true)
+            .unwrap_err();
+
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert_eq!(writer.load_store().unwrap().projects.len(), 2);
+    }
+
+    fn recoverable_claude_feature() -> (ProjectStore, SessionTarget) {
+        let mut store = store_with_one_feature(ProjectStatus::Active);
+        let session = store.projects[0].features[0].add_session(SessionKind::Claude);
+        session.claude_session_id = Some("saved-claude-id".to_string());
+        let target = SessionTarget {
+            project_id: PROJECT_ID.to_string(),
+            feature_id: FEATURE_ID.to_string(),
+            session_id: session.id.clone(),
+        };
+        (store, target)
+    }
+
+    fn claude_recovery_tmux_with_select(
+        expected_resume_id: Option<&'static str>,
+        on_select: impl Fn(&str, &str) -> anyhow::Result<()> + Send + Sync + 'static,
+    ) -> MockTmuxOps {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(false);
+        tmux.expect_check_harness_available()
+            .times(1)
+            .returning(|_| Ok(()));
+        tmux.expect_create_session_with_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_set_session_env()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .withf(move |_, _, _, resume_id, _| resume_id.as_deref() == expected_resume_id)
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().times(1).returning(on_select);
+        tmux
+    }
+
+    fn claude_recovery_tmux(expected_resume_id: Option<&'static str>) -> MockTmuxOps {
+        claude_recovery_tmux_with_select(expected_resume_id, |_, _| Ok(()))
+    }
+
+    #[test]
+    fn gui_recovery_resumes_the_saved_claude_session() {
+        let (store, target) = recoverable_claude_feature();
+        let mut gui = handle(store, claude_recovery_tmux(Some("saved-claude-id")));
+
+        let option = gui.session_recovery_option(&target).unwrap().unwrap();
+        assert_eq!(option.harness, "Claude");
+        assert_eq!(option.saved_id, "saved-claude-id");
+
+        let response = gui
+            .recover_session(target, SessionRecoveryChoice::Resume, None, true)
+            .unwrap();
+        assert!(!response.already_running);
+        assert_eq!(
+            gui.app.store.projects[0].features[0].status,
+            ProjectStatus::Idle
+        );
+    }
+
+    #[test]
+    fn gui_recovery_can_start_fresh_and_clear_the_saved_id() {
+        let (store, target) = recoverable_claude_feature();
+        let mut gui = handle(store, claude_recovery_tmux(None));
+
+        gui.recover_session(target, SessionRecoveryChoice::Clear, None, true)
+            .unwrap();
+
+        let session = &gui.app.store.projects[0].features[0].sessions[0];
+        assert_eq!(session.claude_session_id, None);
+        assert_eq!(session.token_usage_source, None);
+    }
+
+    #[test]
+    fn recovery_does_not_save_a_choice_when_another_process_started_first() {
+        let (store, target) = recoverable_claude_feature();
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .times(2)
+            .returning(move |_| checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) != 0);
+        tmux.expect_check_harness_available()
+            .times(1)
+            .returning(|_| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let response = gui
+            .recover_session(target, SessionRecoveryChoice::Clear, None, true)
+            .unwrap();
+
+        assert!(response.already_running);
+        let session = &gui.app.store.projects[0].features[0].sessions[0];
+        assert_eq!(
+            session.claude_session_id.as_deref(),
+            Some("saved-claude-id")
+        );
+    }
+
+    #[test]
+    fn recovery_reapplies_the_choice_after_an_unrelated_store_write() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let (store, target) = recoverable_claude_feature();
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let path = db_file.path().to_path_buf();
+        let mut tmux = claude_recovery_tmux_with_select(None, move |_, _| {
+            prepend_project_elsewhere(&path);
+            Ok(())
+        });
+        tmux.expect_kill_session().never();
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let response = gui
+            .recover_session(target, SessionRecoveryChoice::Clear, None, true)
+            .unwrap();
+
+        assert!(!response.already_running);
+        let on_disk = writer.load_store().unwrap();
+        assert_eq!(on_disk.projects.len(), 2);
+        assert_eq!(
+            on_disk.projects[1].features[0].sessions[0].claude_session_id,
+            None
+        );
+        assert_eq!(on_disk.projects[1].features[0].status, ProjectStatus::Idle);
+    }
+
+    #[test]
+    fn recovery_stops_its_new_tmux_session_if_target_was_deleted() {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let (store, target) = recoverable_claude_feature();
+        let writer = crate::db::AmfDb::open(db_file.path()).unwrap();
+        writer.save_store(&store).unwrap();
+        let path = db_file.path().to_path_buf();
+        let mut tmux = claude_recovery_tmux_with_select(None, move |_, _| {
+            let db = crate::db::AmfDb::open(&path).unwrap();
+            db.save_store(&ProjectStore::empty()).unwrap();
+            Ok(())
+        });
+        tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+        let mut gui = handle_loading_from(crate::db::AmfDb::open(db_file.path()).unwrap(), tmux);
+
+        let error = gui
+            .recover_session(target, SessionRecoveryChoice::Clear, None, true)
+            .unwrap_err();
+
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert!(writer.load_store().unwrap().projects.is_empty());
     }
 
     #[test]
@@ -1185,6 +2014,90 @@ mod tests {
     }
 
     #[test]
+    fn live_snapshot_shows_a_disappeared_tmux_session_as_stopped() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .returning(|| Ok(vec![]));
+        let mut gui = handle(store_with_one_feature(ProjectStatus::Active), tmux);
+
+        let snapshot = gui.refresh_live_snapshot().unwrap();
+
+        assert_eq!(
+            snapshot.projects[0].features[0].status,
+            ProjectStatus::Stopped
+        );
+        assert_eq!(
+            gui.app.store.projects[0].features[0].status,
+            ProjectStatus::Active
+        );
+    }
+
+    #[test]
+    fn live_snapshot_shows_a_restarted_tmux_session_as_idle() {
+        let store = store_with_one_feature(ProjectStatus::Stopped);
+        let session = store.projects[0].features[0].tmux_session.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .return_once(move || Ok(vec![session]));
+        let mut gui = handle(store, tmux);
+
+        let snapshot = gui.refresh_live_snapshot().unwrap();
+
+        assert_eq!(snapshot.projects[0].features[0].status, ProjectStatus::Idle);
+        assert_eq!(
+            gui.app.store.projects[0].features[0].status,
+            ProjectStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn live_legacy_tmux_name_collision_is_not_shown_or_attached_as_running() {
+        let mut store = store_with_one_feature(ProjectStatus::Active);
+        let first_session = store.projects[0].features[0]
+            .add_session(SessionKind::Terminal)
+            .id
+            .clone();
+        let mut second = store.projects[0].features[0].clone();
+        second.id = "other-feature".to_string();
+        second.status = ProjectStatus::Stopped;
+        store.projects[0].features.push(second);
+        let live_name = store.projects[0].features[0].tmux_session.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .return_once(move || Ok(vec![live_name]));
+        tmux.expect_session_exists().return_const(true);
+        let mut gui = handle(store, tmux);
+
+        let snapshot = gui.refresh_live_snapshot().unwrap();
+
+        assert!(
+            snapshot.projects[0]
+                .features
+                .iter()
+                .all(|feature| feature.status == ProjectStatus::Stopped)
+        );
+        let attach = gui
+            .resolve_session_target(&SessionTarget {
+                project_id: PROJECT_ID.to_string(),
+                feature_id: FEATURE_ID.to_string(),
+                session_id: first_session,
+            })
+            .unwrap_err();
+        assert_eq!(attach.kind, GuiErrorKind::Conflict);
+        assert_eq!(
+            gui.start_feature(target()).unwrap_err().kind,
+            GuiErrorKind::Conflict
+        );
+        assert_eq!(
+            gui.stop_feature(target()).unwrap_err().kind,
+            GuiErrorKind::Conflict
+        );
+    }
+
+    #[test]
     fn refresh_snapshot_sees_another_processs_committed_change() {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let writer = crate::db::AmfDb::open(tmp.path()).unwrap();
@@ -1212,7 +2125,7 @@ mod tests {
         let mut store = store_with_one_feature(ProjectStatus::Idle);
         store.projects[0].features[0].add_session(crate::project::SessionKind::Claude);
         let session_id = store.projects[0].features[0].sessions[0].id.clone();
-        let gui = handle(store, MockTmuxOps::new());
+        let mut gui = handle(store, MockTmuxOps::new());
 
         let resolved = gui
             .resolve_session_target(&SessionTarget {
@@ -1229,7 +2142,7 @@ mod tests {
     #[test]
     fn resolve_session_target_reports_not_found_for_an_unknown_session() {
         let store = store_with_one_feature(ProjectStatus::Idle);
-        let gui = handle(store, MockTmuxOps::new());
+        let mut gui = handle(store, MockTmuxOps::new());
 
         let err = gui
             .resolve_session_target(&SessionTarget {

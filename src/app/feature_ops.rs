@@ -995,6 +995,22 @@ impl App {
         )
     }
 
+    pub(crate) fn ensure_feature_running_tracking_creation(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        created_session: &mut bool,
+        intent: StartIntent,
+    ) -> Result<Started> {
+        self.ensure_feature_running_with_launch_override(
+            pi,
+            fi,
+            None,
+            Some(created_session),
+            intent,
+        )
+    }
+
     fn ensure_feature_running_with_launch_override(
         &mut self,
         pi: usize,

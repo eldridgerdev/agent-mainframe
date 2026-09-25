@@ -18,13 +18,14 @@ use agent_mainframe::automation::{
     CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
 };
 use agent_mainframe::gui_contract::{
-    FeatureTarget, GuiError, GuiErrorKind, GuiHandle, SessionTarget, StartFeatureResponse,
-    StopFeatureResponse, TodoAgentLaunchResponse, WorkspaceSnapshot,
+    AddSessionResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle, NewSessionOption,
+    SessionTarget, StartFeatureResponse, StopFeatureResponse, TodoAgentLaunchResponse,
+    WorkspaceSnapshot,
 };
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
-use agent_mainframe::project::{AgentKind, VibeMode};
+use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -144,7 +145,7 @@ fn get_snapshot(state: State<AppState>) -> Result<WorkspaceSnapshot, GuiError> {
         .0
         .lock()
         .expect("gui handle mutex poisoned")
-        .refresh_snapshot()
+        .refresh_live_snapshot()
 }
 
 /// Emits the post-mutation snapshot on `workspace-changed` so any open
@@ -191,6 +192,72 @@ fn start_feature(
 ) -> Result<StartFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_feature_with_approval(target, approved)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn new_session_options(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<Vec<NewSessionOption>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .new_session_options(&target)
+}
+
+#[tauri::command]
+fn add_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    kind: SessionKind,
+    label: Option<String>,
+    approved: bool,
+) -> Result<AddSessionResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.add_session(target, kind, label, approved)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn session_recovery_option(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Option<agent_mainframe::gui_contract::SessionRecoveryOption>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .session_recovery_option(&target)
+}
+
+#[tauri::command]
+fn saved_agent_sessions(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Vec<agent_mainframe::gui_contract::SavedAgentSession>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .saved_agent_sessions(&target)
+}
+
+#[tauri::command]
+fn recover_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+    choice: agent_mainframe::gui_contract::SessionRecoveryChoice,
+    picked_id: Option<String>,
+    approved: bool,
+) -> Result<StartFeatureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.recover_session(target, choice, picked_id, approved)?;
     emit_workspace_changed(&app, &gui.snapshot());
     Ok(response)
 }
@@ -549,6 +616,11 @@ fn main() {
             create_project,
             create_feature,
             start_feature,
+            new_session_options,
+            add_session,
+            session_recovery_option,
+            saved_agent_sessions,
+            recover_session,
             stop_feature,
             attach_terminal,
             terminal_input,

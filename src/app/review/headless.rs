@@ -42,6 +42,9 @@ impl App {
     /// is collected by `poll_review_walkthrough` and cached in `generated_notes`
     /// so the developer-notes panel is never empty.
     pub fn generate_review_walkthrough(&mut self) {
+        if self.refuse_in_pr_review("AI walkthroughs read a local checkout; a PR review has none") {
+            return;
+        }
         let (workdir, path, ctx) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
@@ -155,6 +158,10 @@ impl App {
     /// `<line>|<comment>`; `poll_co_review` parses them into *draft* line
     /// comments the reviewer then accepts / edits / dismisses.
     pub fn generate_co_review(&mut self) {
+        if self.refuse_in_pr_review("the AI co-review reads a local checkout; a PR review has none")
+        {
+            return;
+        }
         let (workdir, file) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
@@ -379,6 +386,11 @@ impl App {
     /// never re-triggers a headless request on its own — the plan's "manual
     /// only, never automatic" requirement is about *generation*, not viewing.
     pub fn open_changeset_overview(&mut self) {
+        if self.refuse_in_pr_review(
+            "the AI changeset overview reads a local checkout; a PR review has none",
+        ) {
+            return;
+        }
         let AppMode::DiffViewer(state) = &mut self.mode else {
             return;
         };
@@ -401,6 +413,11 @@ impl App {
     /// none is already in flight — the explicit "regenerate" action once the
     /// modal is open.
     pub fn generate_changeset_overview(&mut self) {
+        if self.refuse_in_pr_review(
+            "the AI changeset overview reads a local checkout; a PR review has none",
+        ) {
+            return;
+        }
         let (workdir, ctx) = {
             let AppMode::DiffViewer(state) = &self.mode else {
                 return;
@@ -1313,6 +1330,30 @@ impl App {
     }
 }
 
+/// Where `comment` would sit as an inline GitHub review comment, or `None`
+/// when it can't be posted inline. `allowed` is its file's entry from
+/// [`pr_postable_lines`] (`None`: unrestricted). The one rule for both
+/// [`build_pr_review`] and the PR review's submit dialog, which counts (and
+/// folds into the summary) exactly the comments this rejects.
+pub(super) fn inline_position(
+    comment: &LineComment,
+    allowed: Option<&HashSet<crate::diff::DiffLineLocation>>,
+) -> Option<(usize, &'static str)> {
+    // A comment we couldn't re-anchor holds a stale line number; posting it
+    // inline would pin it to the wrong line. Omit it — the local feedback file
+    // still carries it, flagged "anchor lost".
+    if comment.anchor_lost {
+        return None;
+    }
+    // Likewise for a line the reviewer only reached by expanding the rendered
+    // context: it's valid local feedback, but GitHub rejects an inline comment
+    // outside the PR's own diff.
+    if allowed.is_some_and(|allowed| !allowed.contains(&comment.location)) {
+        return None;
+    }
+    pr_line_side(&comment.location)
+}
+
 /// Map a diff-line location to a GitHub `(line, side)` pair: the current-file
 /// line (`RIGHT`) when present, else the base-file line (`LEFT`). `None` for an
 /// unanchored location.
@@ -1432,19 +1473,7 @@ pub(super) fn build_pr_review(
             allowed.is_none_or(|allowed| allowed.contains(loc))
         };
         for comment in file_comments {
-            // A comment we couldn't re-anchor holds a stale line number; posting
-            // it inline would pin it to the wrong line. Omit it — the local
-            // feedback file still carries it, flagged "anchor lost".
-            if comment.anchor_lost {
-                continue;
-            }
-            // Likewise for a line the reviewer only reached by expanding the
-            // rendered context: it's valid local feedback, but GitHub rejects
-            // an inline comment outside the PR's own diff.
-            if !in_diff(&comment.location) {
-                continue;
-            }
-            let Some((line, side)) = pr_line_side(&comment.location) else {
+            let Some((line, side)) = inline_position(comment, allowed) else {
                 continue;
             };
             // For a span, anchor the start with GitHub's start_line/start_side.

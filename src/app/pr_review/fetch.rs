@@ -233,6 +233,10 @@ impl App {
     /// then kicks the comment fetch onto a background thread. All of this
     /// spends zero agent tokens.
     pub fn open_pr_review(&mut self) {
+        // A project row has no branch PR to triage: open the Review tab.
+        if self.open_pr_review_list_for_selected_project() {
+            return;
+        }
         let Some((_project, feature)) = self.selected_feature() else {
             self.message = Some("Select a feature to review its PR".to_string());
             return;

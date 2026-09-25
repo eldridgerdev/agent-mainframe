@@ -1,3 +1,4 @@
+use super::pr_drafts::DraftSave;
 use super::preparation::{FEEDBACK_TITLE, parse_review_history_rounds};
 use crate::app::{
     App, AppMode, DiffViewerState, FileComment, FileFilter, ReviewDecision, ReviewHistoryState,
@@ -542,6 +543,12 @@ impl App {
     /// confirm (handled in the key layer) opens the pre-finish summary, same
     /// as when nothing is undecided.
     pub fn confirm_or_finish_review(&mut self) -> Result<()> {
+        // Finishing writes a feedback file into the checkout and dispatches it
+        // to an agent. A PR review is submitted to GitHub instead.
+        if matches!(&self.mode, AppMode::DiffViewer(state) if state.is_pr_review()) {
+            self.open_pr_submit();
+            return Ok(());
+        }
         let undecided = match &self.mode {
             AppMode::DiffViewer(state) if state.review => Self::diff_review_undecided_count(state),
             _ => return self.finish_final_review(),
@@ -587,6 +594,9 @@ impl App {
     /// reaches past the loaded tail so browsing history never puts old rounds
     /// back on the fixing agent's normal read path.
     pub fn open_review_history(&mut self) {
+        if self.refuse_in_pr_review("review history belongs to a local feature's review rounds") {
+            return;
+        }
         let workdir = match &self.mode {
             AppMode::DiffViewer(state) if state.review => state.workdir.clone(),
             _ => return,
@@ -838,8 +848,23 @@ impl App {
             self.message = Some("Finish check still running — wait for it to finish".to_string());
             return;
         }
+        // A PR review saves its draft (and position) on the way out, and the
+        // message reports what actually happened to it.
+        let saved = self.persist_pr_review_draft();
         self.close_diff_viewer();
-        self.message = Some("Review paused — progress saved, press f to resume".to_string());
+        self.message = Some(match saved {
+            DraftSave::Saved => {
+                "PR review paused — draft saved; Enter on the PR resumes it".to_string()
+            }
+            DraftSave::Empty => "Left the PR review — nothing to save".to_string(),
+            DraftSave::NoDatabase => {
+                "Left the PR review — no database, so the draft was not saved".to_string()
+            }
+            DraftSave::Failed(err) => format!("Left the PR review — draft NOT saved: {err}"),
+            DraftSave::NotAPrReview => {
+                "Review paused — progress saved, press f to resume".to_string()
+            }
+        });
     }
 
     /// Move the selection to the next file with no verdict (wrapping), so a
@@ -924,6 +949,9 @@ impl App {
     /// session, or a brand-new companion feature. Replaces the old two-state
     /// toggle; see [`Self::review_destination_pick_confirm`].
     pub fn diff_review_toggle_fix_target(&mut self) {
+        if self.refuse_in_pr_review("a PR review is posted to GitHub, not sent to an agent") {
+            return;
+        }
         self.open_review_destination_picker();
     }
 }

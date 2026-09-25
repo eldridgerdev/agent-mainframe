@@ -1,5 +1,5 @@
 use crate::app::{
-    DiffScope, DiffViewerFocus, DiffViewerLayout, ReviewDestinationPickState,
+    AppMode, DiffScope, DiffViewerFocus, DiffViewerLayout, ReviewDestinationPickState,
     TriageFeatureSetupState, ViewState,
 };
 use crate::editor::TextEditor;
@@ -437,8 +437,83 @@ pub enum SummaryItem {
     General,
 }
 
+/// The GitHub review a PR review is submitted as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrReviewEvent {
+    Comment,
+    Approve,
+    RequestChanges,
+}
+
+impl PrReviewEvent {
+    pub const ALL: [PrReviewEvent; 3] = [Self::Comment, Self::Approve, Self::RequestChanges];
+
+    /// The `event` GitHub's create-review API takes.
+    pub fn api_name(self) -> &'static str {
+        match self {
+            Self::Comment => "COMMENT",
+            Self::Approve => "APPROVE",
+            Self::RequestChanges => "REQUEST_CHANGES",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Comment => "Comment",
+            Self::Approve => "Approve",
+            Self::RequestChanges => "Request changes",
+        }
+    }
+}
+
+/// The PR review's submit dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrSubmitState {
+    pub event: PrReviewEvent,
+    pub status: PrSubmitStatus,
+    /// Whether the PR is the reviewer's own. GitHub refuses Approve and
+    /// Request changes on one's own PR. `None` when the `gh` user is unknown:
+    /// every event is offered, and GitHub's answer is shown if it refuses.
+    pub own_pr: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrSubmitStatus {
+    Ready,
+    /// In flight. The dialog can't be closed until it lands, since a post
+    /// abandoned halfway may still reach GitHub.
+    Posting {
+        request_id: u64,
+    },
+    /// The last attempt failed; the draft is intact and Enter retries.
+    Failed(String),
+    /// The PR has new commits since this review opened. Posting would pin
+    /// comments to code the reviewer hasn't seen, so it is blocked.
+    HeadMoved {
+        current_head: String,
+    },
+}
+
 pub struct DiffViewerState {
+    /// The session view to return to. A PR review has none (it is opened from
+    /// the PR picker, with no feature involved) and carries a placeholder here
+    /// that nothing reads: every exit from a PR review goes through
+    /// `return_to` instead, and the flows that would read this — finishing a
+    /// review and dispatching its feedback to an agent — are unreachable for
+    /// one.
     pub from_view: ViewState,
+    /// The mode a PR review returns to on exit (the Review tab, with its
+    /// cursor and loaded list intact). `None` for every local-feature viewer,
+    /// which returns to `from_view`.
+    pub return_to: Option<Box<AppMode>>,
+    /// A PR review's saved comments whose file is no longer in the PR's diff
+    /// (the PR changed since the draft was saved). Not shown in the file list,
+    /// but written back with every save so a PR update never loses a comment.
+    pub pr_detached_line_comments: std::collections::HashMap<String, Vec<LineComment>>,
+    pub pr_detached_file_comments: std::collections::HashMap<String, FileComment>,
+    /// The PR review's submit dialog (`q`), when open. It captures every key
+    /// except while the summary (the general-feedback editor) is being edited.
+    pub pr_submit: Option<PrSubmitState>,
     pub workdir: PathBuf,
     pub scope: DiffScope,
     pub branch: String,
@@ -748,9 +823,20 @@ impl DiffViewerState {
         self.vim_enabled
     }
 
+    /// A review of a pull request rather than of a local feature: its files
+    /// are git objects, not the checkout in `workdir`, so nothing may read
+    /// review state from that checkout or write to it.
+    pub fn is_pr_review(&self) -> bool {
+        matches!(self.scope, DiffScope::PullRequest(_))
+    }
+
     pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
         Self {
             from_view,
+            return_to: None,
+            pr_detached_line_comments: std::collections::HashMap::new(),
+            pr_detached_file_comments: std::collections::HashMap::new(),
+            pr_submit: None,
             workdir,
             scope: DiffScope::CurrentChanges,
             branch: String::new(),

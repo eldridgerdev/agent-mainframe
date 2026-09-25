@@ -16,6 +16,8 @@ mod integration;
 mod investigation;
 mod memory;
 mod reply;
+mod review_tab;
+pub(crate) mod revisions;
 pub(crate) mod state;
 
 #[cfg(test)]

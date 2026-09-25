@@ -386,6 +386,11 @@ impl App {
     /// that no longer matches. A successful application settles the thread,
     /// removes the now-consumed suggestion block, and refreshes the diff.
     pub fn diff_review_apply_suggestion_under_cursor(&mut self) {
+        if self.refuse_in_pr_review(
+            "suggestions in a PR review are posted to GitHub, never applied here",
+        ) {
+            return;
+        }
         let selected = match &self.mode {
             AppMode::DiffViewer(state) if state.review => {
                 let Some(cursor) = state.comment_cursor else {
@@ -436,6 +441,11 @@ impl App {
     /// before the finish-time check command. No suggestions are ever written by
     /// merely pressing `q` unless this has been enabled.
     pub fn diff_review_toggle_apply_suggestions_on_finish(&mut self) {
+        if self.refuse_in_pr_review(
+            "suggestions in a PR review are posted to GitHub, never applied here",
+        ) {
+            return;
+        }
         let message = if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.review {
                 return;
@@ -469,7 +479,8 @@ impl App {
         only: Option<(&str, usize)>,
     ) -> SuggestionApplyReport {
         let (workdir, jobs) = match &self.mode {
-            AppMode::DiffViewer(state) if state.review => {
+            // Never write a PR review's suggestions into the checkout.
+            AppMode::DiffViewer(state) if state.review && !state.is_pr_review() => {
                 let jobs = state
                     .files
                     .iter()
@@ -846,6 +857,9 @@ impl App {
     /// the actual suspend/run/restore is the main loop's job, since it owns the
     /// terminal state (`PendingEditorOpen`).
     pub fn diff_review_open_in_editor(&mut self) {
+        if self.refuse_in_pr_review("a PR review's files are git objects, not a checkout to open") {
+            return;
+        }
         let resolved = match &self.mode {
             AppMode::DiffViewer(state) => {
                 let Some(file) = state.files.get(state.selected_file) else {

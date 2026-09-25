@@ -200,6 +200,28 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return handle_feedback_editor_key(app, key, editing_general);
     }
 
+    // The PR review's submit dialog takes every key while it is open (its `e`
+    // opens the general-feedback editor above, which then has precedence).
+    if app.pr_submit_open() {
+        match code {
+            KeyCode::Esc => app.pr_submit_close(),
+            KeyCode::Left | KeyCode::Up | KeyCode::Char('h') | KeyCode::Char('k') => {
+                app.pr_submit_cycle_event(-1)
+            }
+            KeyCode::Right
+            | KeyCode::Down
+            | KeyCode::Tab
+            | KeyCode::Char('l')
+            | KeyCode::Char('j') => app.pr_submit_cycle_event(1),
+            KeyCode::BackTab => app.pr_submit_cycle_event(-1),
+            KeyCode::Char('e') => app.pr_submit_edit_summary(),
+            KeyCode::Enter => app.pr_submit_post(),
+            KeyCode::Char('o') => app.pr_submit_reopen_at_new_head(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Review verdict / completion keys take precedence over the read-only
     // bindings below; everything they don't handle falls through to the
     // shared navigation match.

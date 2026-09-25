@@ -46,11 +46,15 @@ three extracted features' types. Cross-feature mode transitions remain on App.
 | | `pr_review/investigation.rs` | Read-only investigation requests, results and follow-ups |
 | | `pr_review/integration.rs` | Fix target/harness selection, injection and linked session navigation |
 | | `pr_review/memory.rs` | Review-memory bootstrap, compact and append workflows |
+| | `pr_review/review_tab.rs` | "Review a PR" tab: open-PR list, tab switching, opening a PR into the viewer and leaving it |
+| | `pr_review/revisions.rs` | Object-only PR fetch into `refs/amf/review/N/*`, head check, merge-base, ref cleanup |
 | | `pr_review/state.rs`, `runtime.rs` | Dialog types and background work ownership |
 | Final Review | `review/preparation.rs` | Diff snapshots, persisted progression/history and review notes |
 | | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |
 | | `review/comments.rs` | Anchors, comments, suggestions and editor operations |
 | | `review/headless.rs` | Walkthrough/co-review/check workers, completion and feedback dispatch |
+| | `review/pr_drafts.rs` | PR review drafts in SQLite: save, resume, PR-update flags and outdated comments |
+| | `review/pr_submit.rs` | PR review submit dialog, GitHub payload and posting |
 | | `review/state.rs` | Viewer/comment/undo/history state and mode-owned child handles |
 | Learning | `learning/lifecycle.rs` | Open/close, reload, settings and persistence coordination |
 | | `learning/navigation.rs` | File trees, anchors, selection and answer navigation |
@@ -78,7 +82,10 @@ boundaries with private fields and shared production/test defaults:
 
 - `PrReviewWork`: independent fetch/investigation receivers; begin, poll and
   cancel methods. Cancel drops the receiver without killing the spawned worker.
-  AppMode still determines whether a result has a live target.
+  AppMode still determines whether a result has a live target. The "Review a
+  PR" list, open, and post slots tag each result with a request id so a retry
+  or a closed tab drops a stale one; their blocking loaders are plain `fn`s,
+  swapped in tests. A finished post is recorded even with no live target.
 - `AiReviewRun`: receiver, pending origin and live progress. Completion or PR
   invalidation clears them together; closing the running screen preserves them
   for later result application and reopening. Existing PR/workdir/head matching
@@ -100,7 +107,8 @@ state remain available for later incremental ownership work.
 SQLite connection and open/seed entrypoints; `migrations.rs` owns schema changes;
 `store.rs` persists projects. Other DB modules persist session status, tokens,
 debug logs, editors, prompt templates/overrides, TODOs, plan interviews, Learning,
-PR triage/investigations/terminal state and PR/AI review caches. DB code knows
+PR triage/investigations/terminal state, PR/AI review caches and manual PR review
+drafts (`pr_review_drafts.rs`, keyed by repository and PR number). DB code knows
 project/domain types and uses WorktreeManager to resolve legacy stores.
 
 `src/traits.rs` provides mockable TmuxOps and WorktreeOps, implemented by

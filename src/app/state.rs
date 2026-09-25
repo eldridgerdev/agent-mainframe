@@ -426,6 +426,23 @@ pub enum DiffScope {
     CurrentChanges,
     /// Exactly one commit, compared with its first parent.
     Commit(crate::diff::DiffCommit),
+    /// A pull request at pinned revisions: `merge_base..head`, both sides read
+    /// from git objects. Never the working tree, the checked-out branch, or
+    /// `HEAD`, so the feature the viewer was opened from cannot leak in.
+    PullRequest(Box<PrDiffTarget>),
+}
+
+/// The pull request a [`DiffScope::PullRequest`] viewer is reviewing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrDiffTarget {
+    /// The base repository as `host/owner/name` (`GithubRepository::canonical`),
+    /// or the raw fetch URL when that can't be parsed. Host-qualified so two
+    /// GitHub hosts' `owner/name` never collide as a draft key.
+    pub repo: String,
+    /// The PR at the revisions that were fetched and verified: `base_oid` and
+    /// `head_oid` are exactly what the private review refs point at.
+    pub pr: crate::github::ReviewablePr,
+    pub merge_base_oid: String,
 }
 
 pub struct DiffPickerState {
@@ -1776,6 +1793,8 @@ pub enum AppMode {
     PrNumberPrompt(PrNumberPromptState),
     /// Choosing a PR from a list (or falling through to the number prompt).
     PrPicker(PrPickerState),
+    /// The PR picker's Review tab (see [`PrReviewListState`]).
+    PrReviewList(Box<PrReviewListState>),
     /// Browse open issues for the selected project's canonical GitHub repo.
     #[allow(dead_code)] // Constructed by the issue-fixer dashboard entrypoint.
     IssueBrowser(crate::app::issue_fixer::IssueBrowserState),

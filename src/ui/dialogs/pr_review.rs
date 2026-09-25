@@ -21,7 +21,8 @@ use crate::{
         BootstrapPickState, BootstrapRunState, CompactConfirmState, CompactReviewState,
         CompactRunView, InvestigationAction, InvestigationActionPick, InvestigationFollowUpDraft,
         InvestigationHarnessPick, MarkPickState, PrInvestigationLoadState, PrNumberPromptState,
-        PrPickerState, PrReviewLoadState, PrReviewState, ReplyKindPickState,
+        PrPickerState, PrReviewListLoad, PrReviewListState, PrReviewLoadState, PrReviewState,
+        ReplyKindPickState,
     },
     editor::VimMode,
     theme::Theme,
@@ -90,7 +91,7 @@ pub fn draw_pr_picker(
     memory_paths: &crate::app::review_memory::ReviewMemoryPaths,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(" Pick a PR to triage (experimental) ");
+    let block = pane_block(theme).title(picker_tab_title(PickerTab::Triage, theme));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -166,7 +167,7 @@ pub fn draw_pr_picker(
     };
     let footer = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   c compact memory   esc close"
+            " j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   c compact memory   tab review   esc close"
         ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
@@ -554,12 +555,18 @@ pub fn draw_review_memory_compact_review(
     );
 }
 
-fn pr_picker_row(
-    entry: &crate::github::PrListEntry,
+/// The spans every PR-list row shares, on both picker tabs: `#N title ·
+/// @author · branch`, then `you` / `draft` chips.
+fn pr_row_spans(
+    number: u32,
+    title: &str,
+    author: &str,
+    branch: &str,
+    is_draft: bool,
     current_user: Option<&str>,
     theme: &Theme,
-) -> Line<'static> {
-    let is_mine = current_user.is_some_and(|me| entry.author.eq_ignore_ascii_case(me));
+) -> Vec<Span<'static>> {
+    let is_mine = current_user.is_some_and(|me| author.eq_ignore_ascii_case(me));
     let author_style = if is_mine {
         Style::default()
             .fg(theme.primary.to_color())
@@ -569,31 +576,237 @@ fn pr_picker_row(
     };
     let mut spans = vec![
         Span::styled(
-            format!("#{} ", entry.number),
+            format!("#{number} "),
             Style::default().fg(theme.primary.to_color()),
         ),
         Span::styled(
-            entry.title.clone(),
+            title.to_string(),
             Style::default().fg(theme.text.to_color()),
         ),
-        Span::styled(format!("  · @{}", entry.author), author_style),
+        Span::styled(format!("  · @{author}"), author_style),
         Span::styled(
-            format!(" · {}", entry.head_ref),
+            format!(" · {branch}"),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
     if is_mine {
         spans.push(chip("you", theme.primary.to_color()));
     }
-    if entry.is_draft {
+    if is_draft {
         spans.push(chip("draft", theme.text_muted.to_color()));
     }
+    spans
+}
+
+fn pr_picker_row(
+    entry: &crate::github::PrListEntry,
+    current_user: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = pr_row_spans(
+        entry.number,
+        &entry.title,
+        &entry.author,
+        &entry.head_ref,
+        entry.is_draft,
+        current_user,
+        theme,
+    );
     match entry.state.as_str() {
         "MERGED" => spans.push(chip("merged", theme.info.to_color())),
         "CLOSED" => spans.push(chip("closed", theme.danger.to_color())),
         _ => {}
     }
     Line::from(spans)
+}
+
+/// A Review-tab row: the shared row, with the fork-aware `owner:branch`, then
+/// what the reviewer has saved for it: `● 3 comments` (or `● draft` when the
+/// draft holds only verdicts), and `↻ updated` when the PR moved since.
+fn pr_review_list_row(
+    pr: &crate::github::ReviewablePr,
+    draft: Option<&crate::app::PrReviewDraftBadge>,
+    current_user: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans = pr_row_spans(
+        pr.number,
+        &pr.title,
+        &pr.author,
+        &pr.branch_label(),
+        pr.is_draft,
+        current_user,
+        theme,
+    );
+    if let Some(draft) = draft {
+        let label = match draft.comments {
+            0 => "\u{25cf} draft".to_string(),
+            1 => "\u{25cf} 1 comment".to_string(),
+            n => format!("\u{25cf} {n} comments"),
+        };
+        spans.push(chip(&label, theme.primary.to_color()));
+        if draft.head_oid != pr.head_oid {
+            spans.push(chip("\u{21bb} updated", theme.warning.to_color()));
+        }
+    }
+    Line::from(spans)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PickerTab {
+    Triage,
+    Review,
+}
+
+/// The picker's title, doubling as its tab strip: the active tab bold, the
+/// other muted, and the key that switches.
+fn picker_tab_title(active: PickerTab, theme: &Theme) -> Line<'static> {
+    let tab = |label: &'static str, tab: PickerTab| {
+        if tab == active {
+            Span::styled(
+                format!(" {label} "),
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            )
+        } else {
+            Span::styled(
+                format!(" {label} "),
+                Style::default().fg(theme.text_muted.to_color()),
+            )
+        }
+    };
+    Line::from(vec![
+        Span::raw(" "),
+        tab("Triage (experimental)", PickerTab::Triage),
+        Span::raw(" "),
+        tab("Review a PR", PickerTab::Review),
+        Span::styled(" · tab ", Style::default().fg(theme.text_muted.to_color())),
+    ])
+}
+
+/// The PR picker's Review tab: every open PR, with loading, empty, and
+/// failure states drawn in place of the list so each says what to do next.
+pub fn draw_pr_review_list(frame: &mut Frame, state: &PrReviewListState, theme: &Theme) {
+    let area = frame.area();
+    let block = pane_block(theme).title(picker_tab_title(PickerTab::Review, theme));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Min(1),    // list or state message
+            Constraint::Length(1), // opening / open error
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let text = Style::default().fg(theme.text.to_color());
+    let header = match &state.load {
+        PrReviewListLoad::Loaded(prs) if state.reloading => {
+            format!(" {} open PR(s) · reloading…", prs.len())
+        }
+        PrReviewListLoad::Loaded(prs) => format!(" {} open PR(s)", prs.len()),
+        PrReviewListLoad::Loading => " Loading…".to_string(),
+        PrReviewListLoad::Failed(_) => " Could not load".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(header, muted))),
+        layout[0],
+    );
+
+    match &state.load {
+        PrReviewListLoad::Loading => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled("  Loading open pull requests…", text)),
+                    Line::from(Span::styled(
+                        "  You can keep using AMF; Esc closes this, r restarts the load.",
+                        muted,
+                    )),
+                ]),
+                layout[1],
+            );
+        }
+        PrReviewListLoad::Failed(err) => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        format!("  {}", err.hint()),
+                        Style::default().fg(theme.danger.to_color()),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(format!("  {}", err.detail), muted)),
+                ])
+                .wrap(Wrap { trim: false }),
+                layout[1],
+            );
+        }
+        PrReviewListLoad::Loaded(prs) if prs.is_empty() => {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled("  No open PRs.", text)),
+                    Line::from(Span::styled("  Press r to reload.", muted)),
+                ]),
+                layout[1],
+            );
+        }
+        PrReviewListLoad::Loaded(prs) => {
+            let current_user = state.current_user.as_deref();
+            let items: Vec<ListItem> = prs
+                .iter()
+                .map(|pr| {
+                    ListItem::new(pr_review_list_row(
+                        pr,
+                        state.drafts.get(&pr.number),
+                        current_user,
+                        theme,
+                    ))
+                })
+                .collect();
+            let list = List::new(items)
+                .highlight_style(
+                    Style::default()
+                        .bg(theme.effective_selection_bg())
+                        .add_modifier(Modifier::BOLD),
+                )
+                .highlight_symbol("> ");
+            let mut list_state = ListState::default();
+            list_state.select(Some(state.selected.min(prs.len().saturating_sub(1))));
+            frame.render_stateful_widget(list, layout[1], &mut list_state);
+        }
+    }
+
+    let status = if let Some(opening) = &state.opening {
+        Some(Span::styled(
+            format!(" Fetching PR #{} for review…  esc stops", opening.number),
+            Style::default().fg(theme.warning.to_color()),
+        ))
+    } else {
+        state.open_error.as_ref().map(|err| {
+            Span::styled(
+                format!(" Could not open: {err}"),
+                Style::default().fg(theme.danger.to_color()),
+            )
+        })
+    };
+    if let Some(status) = status {
+        frame.render_widget(Paragraph::new(Line::from(status)), layout[2]);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " j/k move   \u{23ce} review   r reload   tab triage   esc close",
+            muted,
+        ))),
+        layout[3],
+    );
 }
 
 /// Full-screen loading frame shown while a PR's comments are fetched.
@@ -3026,6 +3239,99 @@ mod tests {
         let entry = sample_entry("alice");
         let line = pr_picker_row(&entry, None, &theme);
         assert!(!line_text(&line).contains("you"));
+    }
+
+    fn fork_draft_pr() -> crate::github::ReviewablePr {
+        crate::github::ReviewablePr {
+            number: 41,
+            title: "Fix parser".to_string(),
+            author: "alice".to_string(),
+            is_draft: true,
+            updated_at: String::new(),
+            base_ref: "main".to_string(),
+            base_oid: "a".to_string(),
+            head_ref: "main".to_string(),
+            head_oid: "b".to_string(),
+            is_cross_repository: true,
+            head_owner: "alice".to_string(),
+        }
+    }
+
+    #[test]
+    fn review_list_row_shows_fork_branch_author_and_draft() {
+        let theme = Theme::default();
+        let text = line_text(&pr_review_list_row(&fork_draft_pr(), None, None, &theme));
+        assert!(text.contains("#41"), "{text}");
+        assert!(text.contains("Fix parser"), "{text}");
+        assert!(text.contains("@alice"), "{text}");
+        assert!(text.contains("alice:main"), "{text}");
+        assert!(text.contains("draft"), "{text}");
+    }
+
+    #[test]
+    fn review_list_row_badges_a_saved_draft_and_a_pr_that_moved_since() {
+        let theme = Theme::default();
+        let pr = fork_draft_pr();
+        let saved_here = crate::app::PrReviewDraftBadge {
+            comments: 3,
+            head_oid: pr.head_oid.clone(),
+        };
+        let text = line_text(&pr_review_list_row(&pr, Some(&saved_here), None, &theme));
+        assert!(text.contains("3 comments"), "{text}");
+        assert!(!text.contains("updated"), "{text}");
+
+        let saved_earlier = crate::app::PrReviewDraftBadge {
+            comments: 0,
+            head_oid: "older".to_string(),
+        };
+        let text = line_text(&pr_review_list_row(&pr, Some(&saved_earlier), None, &theme));
+        assert!(text.contains("draft"), "{text}");
+        assert!(text.contains("updated"), "{text}");
+    }
+
+    fn render_review_list(load: PrReviewListLoad) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let state = PrReviewListState {
+            workdir: std::path::PathBuf::from("/tmp/repo"),
+            load,
+            selected: 0,
+            reloading: false,
+            request_id: 1,
+            triage: None,
+            current_user: None,
+            opening: None,
+            open_error: None,
+            drafts: Default::default(),
+        };
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(110, 12)).unwrap();
+        terminal
+            .draw(|frame| draw_pr_review_list(frame, &state, &theme))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn review_list_renders_loading_empty_failed_and_loaded_states() {
+        assert!(
+            render_review_list(PrReviewListLoad::Loading).contains("Loading open pull requests")
+        );
+        assert!(render_review_list(PrReviewListLoad::Loaded(vec![])).contains("No open PRs."));
+        let failed = render_review_list(PrReviewListLoad::Failed(
+            crate::app::PrReviewListError::classify("HTTP 401: Bad credentials".to_string()),
+        ));
+        assert!(failed.contains("gh auth login"), "{failed}");
+        assert!(failed.contains("press r to retry"), "{failed}");
+        let loaded = render_review_list(PrReviewListLoad::Loaded(vec![fork_draft_pr()]));
+        assert!(loaded.contains("1 open PR(s)"), "{loaded}");
+        assert!(loaded.contains("alice:main"), "{loaded}");
+        assert!(loaded.contains("Review a PR"), "{loaded}");
     }
 
     fn render_fix_confirm_with_target(

@@ -1558,3 +1558,107 @@ fn tree_toggle_folds_the_highlighted_row_not_the_hidden_selections_directory() {
     );
     assert_eq!(state.tree_cursor_dir.as_deref(), Some("src"));
 }
+
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The PR scope loads the PR's own `merge_base..head` even when the viewer
+/// is opened over a feature checkout on another branch, with committed,
+/// staged, and untracked changes of its own. Nothing from the feature leaks
+/// in, and the local-feature scope over the same workdir still shows only
+/// the feature's changes.
+#[test]
+fn a_pr_scope_shows_only_the_prs_changes_never_the_current_feature_branch() {
+    let repo = TempDir::new().unwrap();
+    let dir = repo.path();
+    git_in(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_in(dir, &["config", "user.name", "AMF Test"]);
+    git_in(dir, &["config", "user.email", "amf@example.com"]);
+    std::fs::write(dir.join("shared.rs"), "fn shared() {}\n").unwrap();
+    git_in(dir, &["add", "shared.rs"]);
+    git_in(dir, &["commit", "--quiet", "-m", "initial"]);
+    let merge_base = git_in(dir, &["rev-parse", "HEAD"]);
+
+    git_in(dir, &["checkout", "--quiet", "-b", "teammate-pr"]);
+    std::fs::write(dir.join("shared.rs"), "fn shared() { /* pr */ }\n").unwrap();
+    git_in(dir, &["commit", "--quiet", "-am", "pr change"]);
+    let head = git_in(dir, &["rev-parse", "HEAD"]);
+
+    git_in(dir, &["checkout", "--quiet", "main"]);
+    git_in(dir, &["checkout", "--quiet", "-b", "my-feature"]);
+    std::fs::write(dir.join("feature.rs"), "fn mine() {}\n").unwrap();
+    git_in(dir, &["add", "feature.rs"]);
+    git_in(dir, &["commit", "--quiet", "-m", "feature change"]);
+    std::fs::write(dir.join("staged.rs"), "staged\n").unwrap();
+    git_in(dir, &["add", "staged.rs"]);
+    std::fs::write(dir.join("untracked.rs"), "untracked\n").unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_repo(dir.to_path_buf(), crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let view = view_state_for("my-project", "my-feat");
+    let mut state = DiffViewerState::new(view.clone(), dir.to_path_buf());
+    state.scope = DiffScope::PullRequest(Box::new(PrDiffTarget {
+        repo: "acme/widgets".to_string(),
+        pr: crate::github::ReviewablePr {
+            number: 12,
+            title: "Tweak shared".to_string(),
+            author: "teammate".to_string(),
+            is_draft: false,
+            updated_at: String::new(),
+            base_ref: "main".to_string(),
+            base_oid: merge_base.clone(),
+            head_ref: "teammate-pr".to_string(),
+            head_oid: head.clone(),
+            is_cross_repository: false,
+            head_owner: "acme".to_string(),
+        },
+        merge_base_oid: merge_base.clone(),
+    }));
+    app.mode = AppMode::DiffViewerLoading(state);
+    app.complete_diff_viewer_loading();
+
+    let AppMode::DiffViewer(state) = &app.mode else {
+        panic!("viewer should have loaded");
+    };
+    assert_eq!(state.error, None);
+    let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        git_in(dir, &["diff", "--name-only", &merge_base, &head])
+            .lines()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(paths, ["shared.rs"]);
+    assert_eq!(
+        state.files[0].new_content.as_deref(),
+        Some("fn shared() { /* pr */ }\n")
+    );
+    assert_eq!(state.branch, "teammate-pr");
+    assert_eq!(state.base_commit, merge_base);
+
+    // The local-feature scope over the same checkout is untouched by any of it.
+    let mut local = DiffViewerState::new(view, dir.to_path_buf());
+    local.override_base_ref = Some("main".to_string());
+    app.mode = AppMode::DiffViewerLoading(local);
+    app.complete_diff_viewer_loading();
+    let AppMode::DiffViewer(local) = &app.mode else {
+        panic!("viewer should have loaded");
+    };
+    let local_paths: Vec<&str> = local.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(local_paths, ["feature.rs", "staged.rs", "untracked.rs"]);
+}

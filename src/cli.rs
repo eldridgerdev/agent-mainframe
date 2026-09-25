@@ -1259,6 +1259,18 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.pr_review_work.review_list_pending() && app.poll_pr_review_list_bg() {
+            force_redraw = true;
+        }
+
+        if app.pr_review_work.review_open_pending() && app.poll_pr_review_open_bg() {
+            force_redraw = true;
+        }
+
+        if app.pr_review_work.review_post_pending() && app.poll_pr_review_post_bg() {
+            force_redraw = true;
+        }
+
         if app.issue_work.pending() && app.poll_issue_browser_bg() {
             force_redraw = true;
         }

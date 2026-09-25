@@ -9,9 +9,11 @@
 //!
 //! Every function here blocks on `git` and runs from a worker thread.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Condvar, Mutex};
 
 use anyhow::{Context, Result, bail};
 
@@ -135,6 +137,9 @@ pub(crate) fn materialize(
     pr: &ReviewablePr,
     refresh: impl FnOnce() -> Result<ReviewablePr>,
 ) -> Result<MaterializedRevisions> {
+    // A review of this PR that just closed may still be deleting these same
+    // refs; letting that land after the fetch would strip the new review's.
+    wait_for_pending_removals(pr.number);
     let result = match fetch_pr_revisions(workdir, fetch_url, pr) {
         Err(MaterializeError::Moved { .. }) => match refresh() {
             Ok(current) => {
@@ -172,6 +177,70 @@ pub(crate) fn remove_review_refs(workdir: &Path, number: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Ref removals scheduled by [`remove_review_refs_in_background`] that have
+/// not finished yet, counted per PR number. Keyed by number alone, not by
+/// repository: the refs are shared by every worktree of a repository, and a
+/// needless wait for another repository's removal costs one `update-ref`.
+static PENDING_REMOVALS: (Mutex<Option<HashMap<u32, usize>>>, Condvar) =
+    (Mutex::new(None), Condvar::new());
+
+/// One scheduled removal of PR `number`'s refs. Registered on the scheduling
+/// thread, so an open started afterwards always waits for it; unregistered on
+/// drop, so a panicking removal still releases its waiters.
+struct PendingRemoval(u32);
+
+impl PendingRemoval {
+    fn register(number: u32) -> Self {
+        let (lock, _) = &PENDING_REMOVALS;
+        let mut pending = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *pending
+            .get_or_insert_with(HashMap::new)
+            .entry(number)
+            .or_default() += 1;
+        Self(number)
+    }
+}
+
+impl Drop for PendingRemoval {
+    fn drop(&mut self) {
+        let (lock, changed) = &PENDING_REMOVALS;
+        let mut pending = lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(map) = pending.as_mut()
+            && let Some(count) = map.get_mut(&self.0)
+        {
+            *count -= 1;
+            if *count == 0 {
+                map.remove(&self.0);
+            }
+        }
+        changed.notify_all();
+    }
+}
+
+/// [`remove_review_refs`] on a background thread, for closing a review
+/// without blocking the UI. A later [`materialize`] of the same PR waits for
+/// it rather than racing it.
+pub(crate) fn remove_review_refs_in_background(workdir: PathBuf, number: u32) {
+    let pending = PendingRemoval::register(number);
+    std::thread::spawn(move || {
+        let _pending = pending;
+        let _ = remove_review_refs(&workdir, number);
+    });
+}
+
+/// Block until no removal of PR `number`'s refs is pending.
+fn wait_for_pending_removals(number: u32) {
+    let (lock, changed) = &PENDING_REMOVALS;
+    let pending = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let _pending = changed
+        .wait_while(pending, |pending| {
+            pending
+                .as_ref()
+                .is_some_and(|map| map.contains_key(&number))
+        })
+        .unwrap_or_else(|e| e.into_inner());
 }
 
 /// Delete every PR review ref in the repository, returning how many went.
@@ -396,6 +465,32 @@ mod tests {
         assert_eq!(checkout_state(&fx.local), before);
         // Idempotent: closing twice is not an error.
         remove_review_refs(&fx.local, 7).unwrap();
+    }
+
+    #[test]
+    fn reopening_waits_for_a_pending_removal_instead_of_racing_it() {
+        let fx = Fixture::new();
+        materialize(&fx.local, &fx.url(), &fx.pr(), || unreachable!()).unwrap();
+        // Stand in for a removal thread that has not run yet.
+        let pending = PendingRemoval::register(7);
+        let reopen = {
+            let (local, url, pr) = (fx.local.clone(), fx.url(), fx.pr());
+            std::thread::spawn(move || materialize(&local, &url, &pr, || unreachable!()))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !reopen.is_finished(),
+            "the reopen must wait for the removal"
+        );
+        // The removal lands, then releases the reopen, which fetches anew.
+        remove_review_refs(&fx.local, 7).unwrap();
+        drop(pending);
+
+        reopen.join().unwrap().unwrap();
+        assert_eq!(
+            rev_parse(&fx.local, &review_ref(7, "head")).unwrap(),
+            fx.pr_head
+        );
     }
 
     #[test]

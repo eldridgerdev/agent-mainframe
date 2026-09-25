@@ -1,7 +1,7 @@
 //! The PR picker's **Review** tab: list every open PR in the repository so one
-//! can be opened for a manual review. Opening and reviewing are wired in
-//! later; this module owns the list, its background load, and switching
-//! between the Triage and Review tabs.
+//! can be opened for a manual review. This module owns the list and its
+//! background load, switching between the Triage and Review tabs, opening a
+//! PR into the review viewer, and leaving that review again.
 //!
 //! Nothing here runs `gh` on the UI thread. The Triage tab keeps its existing
 //! (synchronous) behavior; this tab only ever hands it back.
@@ -202,14 +202,14 @@ impl App {
 
     /// Leave a PR review for the mode it was opened from, dropping its
     /// private refs off the UI thread. Reopening fetches them again, which
-    /// only transfers what changed.
+    /// only transfers what changed, and waits for this removal to finish
+    /// first so the two never race over the same refs.
     pub(crate) fn exit_pr_review(&mut self, state: DiffViewerState) {
         if let DiffScope::PullRequest(target) = &state.scope {
-            let workdir = state.workdir.clone();
-            let number = target.pr.number;
-            std::thread::spawn(move || {
-                let _ = super::revisions::remove_review_refs(&workdir, number);
-            });
+            super::revisions::remove_review_refs_in_background(
+                state.workdir.clone(),
+                target.pr.number,
+            );
         }
         self.mode = match state.return_to {
             Some(origin) => *origin,

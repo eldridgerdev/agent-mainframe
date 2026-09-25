@@ -116,12 +116,11 @@ impl App {
     /// load), re-anchor every comment against this diff, and say in one message
     /// what happened — including comments whose code is gone (outdated).
     pub(crate) fn resume_pr_review(&mut self) {
-        let before = self.message.clone();
-        self.restore_pr_review_draft();
-        let restored = (self.message != before)
-            .then(|| self.message.clone())
-            .flatten();
+        let restored = self.restore_pr_review_draft();
+        // Separate what re-anchoring reports from whatever was showing before.
+        let prior = self.message.take();
         self.reanchor_line_comments();
+        let reanchored = self.message.take();
         let AppMode::DiffViewer(state) = &self.mode else {
             return;
         };
@@ -134,22 +133,25 @@ impl App {
         let outdated_note = (outdated > 0).then(|| {
             format!("{outdated} comment(s) are outdated — their code is gone (see the notes panel)")
         });
-        self.message = match (restored, outdated_note) {
-            (Some(restored), Some(outdated)) => Some(format!("{restored}; {outdated}")),
-            (Some(restored), None) => Some(restored),
-            // A refresh with nothing restored keeps the re-anchor message.
-            (None, _) => self.message.take(),
+        // A refresh with nothing restored leads with the re-anchor message.
+        self.message = match (restored.or(reanchored), outdated_note) {
+            (Some(lead), Some(outdated)) => Some(format!("{lead}; {outdated}")),
+            (Some(lead), None) => Some(lead),
+            (None, Some(outdated)) => Some(outdated),
+            (None, None) => prior,
         };
     }
 
-    /// Load the saved draft, if any, into a PR review that has just opened.
-    /// Runs once: a refresh (`r`) of a review already holding work keeps it.
-    fn restore_pr_review_draft(&mut self) {
+    /// Load the saved draft, if any, into a PR review that has just opened,
+    /// returning what to tell the reviewer about it — `None` when there was
+    /// nothing to load. Runs once: a refresh (`r`) of a review already
+    /// holding work keeps it.
+    fn restore_pr_review_draft(&mut self) -> Option<String> {
         let AppMode::DiffViewer(state) = &mut self.mode else {
-            return;
+            return None;
         };
         let DiffScope::PullRequest(target) = &state.scope else {
-            return;
+            return None;
         };
         if !state.decisions.is_empty()
             || !state.line_comments.is_empty()
@@ -158,42 +160,39 @@ impl App {
             || !state.pr_detached_line_comments.is_empty()
             || !state.pr_detached_file_comments.is_empty()
         {
-            return;
+            return None;
         }
         let Some(db) = &self.db else {
-            return;
+            return None;
         };
         let number = target.pr.number;
         let head = target.pr.head_oid.clone();
         let draft = match db.load_pr_review_draft(&target.repo, number) {
             Ok(Some(draft)) => draft,
-            Ok(None) => return,
+            Ok(None) => return None,
             Err(err) => {
                 self.log_warn("review", format!("failed to load PR review draft: {err}"));
-                self.message = Some(format!("Couldn't load your saved draft: {err}"));
-                return;
+                return Some(format!("Couldn't load your saved draft: {err}"));
             }
         };
         if draft.status == PrReviewDraftStatus::Posted {
             // That review is on GitHub; this is a new one.
-            self.message = Some(format!(
+            return Some(format!(
                 "You already posted a review of PR #{number} — this starts a new one"
             ));
-            return;
         }
         let progress: ReviewProgress = match serde_json::from_str(&draft.progress) {
             Ok(progress) => progress,
             Err(err) => {
                 self.log_warn("review", format!("unreadable PR review draft: {err}"));
-                self.message = Some(format!(
+                return Some(format!(
                     "Your saved draft for PR #{number} couldn't be read ({err}); starting fresh"
                 ));
-                return;
             }
         };
 
         let AppMode::DiffViewer(state) = &mut self.mode else {
-            return;
+            return None;
         };
         let known: std::collections::HashSet<String> =
             state.files.iter().map(|f| f.path.clone()).collect();
@@ -283,10 +282,10 @@ impl App {
                 "{detached} comment(s) are on files no longer in the PR (kept in the draft)"
             ));
         }
-        self.message = Some(if notes.is_empty() {
+        Some(if notes.is_empty() {
             format!("Resumed your draft review of PR #{number}")
         } else {
             format!("Resumed PR #{number}: {}", notes.join("; "))
-        });
+        })
     }
 }

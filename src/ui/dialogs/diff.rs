@@ -471,10 +471,6 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-/// A scrollable, read-only listing of every review-mode key (`?`). Takes full
-/// key precedence while open (`handle_diff_viewer_key`), like the other review
-/// modals. Groups mirror the dashboard help overlay's shape so the two read the
-/// same way.
 /// The help overlay's sections for this review. A PR review leads with how
 /// to submit it and leaves out what it refuses (the keys that need a local
 /// feature, the AI passes, and finishing into an agent), so the overlay never
@@ -527,6 +523,10 @@ fn review_help_sections(pr_review: bool) -> Vec<(&'static str, Vec<(&'static str
     sections
 }
 
+/// A scrollable, read-only listing of every review-mode key (`?`). Takes full
+/// key precedence while open (`handle_diff_viewer_key`), like the other review
+/// modals. Groups mirror the dashboard help overlay's shape so the two read the
+/// same way.
 fn draw_review_help_modal(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
     let area = centered_rect(72, 84, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);

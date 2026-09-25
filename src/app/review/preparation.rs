@@ -248,15 +248,6 @@ impl App {
         }
     }
 
-    /// Refresh the re-anchor context snippet of every line comment that still
-    /// resolves against the live diff. Called from `persist_review_progress`,
-    /// the choke point every state-changing review action funnels through, so a
-    /// freshly created / edited comment picks up its snippet without each
-    /// creation site having to capture one.
-    ///
-    /// A comment whose anchor is currently lost has no valid index to capture
-    /// from, so its previously-captured snippet is deliberately left intact —
-    /// that snippet is exactly what a later refresh needs to re-find it.
     /// When the open viewer is a PR review, refuse the action with `reason`
     /// (so the refusal says why) and return `true`.
     pub(crate) fn refuse_in_pr_review(&mut self, reason: &str) -> bool {
@@ -270,6 +261,15 @@ impl App {
         pr_review
     }
 
+    /// Refresh the re-anchor context snippet of every line comment that still
+    /// resolves against the live diff. Called from `persist_review_progress`,
+    /// the choke point every state-changing review action funnels through, so a
+    /// freshly created / edited comment picks up its snippet without each
+    /// creation site having to capture one.
+    ///
+    /// A comment whose anchor is currently lost has no valid index to capture
+    /// from, so its previously-captured snippet is deliberately left intact —
+    /// that snippet is exactly what a later refresh needs to re-find it.
     pub(super) fn recapture_anchor_contexts(&mut self) {
         let AppMode::DiffViewer(state) = &mut self.mode else {
             return;

@@ -1596,8 +1596,6 @@ mod tests {
         assert_eq!(provenance, None);
     }
 
-    /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
-    /// an older AMF and back doesn't duplicate or drop anything.
     /// An existing v40 database, holding data, gains `pr_review_drafts`
     /// without losing anything. (v40 is produced by running every migration
     /// and then peeling off exactly what 041 adds.)
@@ -1652,6 +1650,8 @@ mod tests {
         assert_eq!(version, 41);
     }
 
+    /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
+    /// an older AMF and back doesn't duplicate or drop anything.
     #[test]
     fn migrations_are_idempotent() {
         let conn = Connection::open_in_memory().unwrap();

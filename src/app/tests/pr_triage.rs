@@ -7837,6 +7837,18 @@ fn open_teammate_pr(
     })
 }
 
+/// [`two_open_prs`], but PR #9's row reports `teammate-pr`'s real head, as
+/// `gh` would once the author pushes, so the list can tell a moved PR apart.
+fn two_open_prs_at_real_heads(workdir: &std::path::Path, closed: bool) -> ReviewListLoaded {
+    let mut loaded = two_open_prs(workdir, closed);
+    if let Ok(prs) = &mut loaded.prs {
+        for pr in prs.iter_mut().filter(|pr| pr.number == 9) {
+            pr.head_oid = git_out(workdir, &["rev-parse", "teammate-pr"]);
+        }
+    }
+    loaded
+}
+
 fn refuse_to_open(
     _: &std::path::Path,
     _: &crate::github::ReviewablePr,
@@ -8057,6 +8069,22 @@ fn comment_first_line(app: &mut App, text: &str) {
     press(app, KeyCode::Esc); // leave the line cursor
 }
 
+/// Whether the Review tab's row for PR `number` carries the `↻ updated`
+/// badge: a saved draft whose head is not the row's current one.
+fn row_shows_updated_badge(app: &App, number: u32) -> bool {
+    let list = review_list(app);
+    let PrReviewListLoad::Loaded(prs) = &list.load else {
+        panic!("the list is not loaded");
+    };
+    let row = prs
+        .iter()
+        .find(|pr| pr.number == number)
+        .expect("PR listed");
+    list.drafts
+        .get(&number)
+        .is_some_and(|draft| draft.head_oid != row.head_oid)
+}
+
 fn saved_draft(app: &App) -> Option<crate::db::pr_review_drafts::PrReviewDraft> {
     app.db
         .as_ref()
@@ -8130,10 +8158,16 @@ fn a_moved_pr_keeps_its_draft_comments_but_not_its_verdicts() {
     let dir = repo.path();
     let db_file = NamedTempFile::new().unwrap();
     let mut app = review_tab_with_db(dir, &db_file);
+    app.pr_review_work
+        .set_review_list_loader_for_test(two_open_prs_at_real_heads);
     open_selected_pr(&mut app);
     comment_first_line(&mut app, "keep me");
     press(&mut app, KeyCode::Char('a'));
     press(&mut app, KeyCode::Esc);
+    // Before the author pushes, the row and the draft agree: no badge.
+    press(&mut app, KeyCode::Char('r'));
+    settle_review_list(&mut app);
+    assert!(!row_shows_updated_badge(&app, 9));
 
     // The author pushes again (without touching the user's checkout).
     git_out(
@@ -8148,16 +8182,9 @@ fn a_moved_pr_keeps_its_draft_comments_but_not_its_verdicts() {
         &["worktree", "remove", "--force", pr_wt.to_str().unwrap()],
     );
     // The list's rows now report the new head, so the badge says "updated".
-    let moved_head = git_out(dir, &["rev-parse", "teammate-pr"]);
     press(&mut app, KeyCode::Char('r'));
     settle_review_list(&mut app);
-    assert_ne!(
-        review_list(&app)
-            .drafts
-            .get(&9)
-            .map(|d| d.head_oid.as_str()),
-        Some(moved_head.as_str())
-    );
+    assert!(row_shows_updated_badge(&app, 9));
 
     open_selected_pr(&mut app);
     assert_eq!(line_comment_texts(&app), ["keep me"]);

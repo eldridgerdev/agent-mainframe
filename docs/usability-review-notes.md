@@ -51,3 +51,5 @@ record now remains available and the error explains this condition.
 Help and many footer hints still describe default shortcuts; workspace-specific
 key remaps need a separate check. Extremely narrow terminals and unusually long
 form values are not comprehensively covered across every advanced dialog.
+
+AMF acceptance push 2026-09-25T15:09:48.103491826+00:00

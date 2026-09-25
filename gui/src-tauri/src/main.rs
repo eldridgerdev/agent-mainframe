@@ -18,13 +18,14 @@ use agent_mainframe::automation::{
     CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
 };
 use agent_mainframe::gui_contract::{
-    FeatureTarget, GuiError, GuiErrorKind, GuiHandle, SessionTarget, StartFeatureResponse,
-    StopFeatureResponse, TodoAgentLaunchResponse, WorkspaceSnapshot,
+    AddSessionResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle, NewSessionOption,
+    SessionTarget, StartFeatureResponse, StopFeatureResponse, TodoAgentLaunchResponse,
+    WorkspaceSnapshot,
 };
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
-use agent_mainframe::project::{AgentKind, VibeMode};
+use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
@@ -191,6 +192,33 @@ fn start_feature(
 ) -> Result<StartFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_feature_with_approval(target, approved)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn new_session_options(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<Vec<NewSessionOption>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .new_session_options(&target)
+}
+
+#[tauri::command]
+fn add_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    kind: SessionKind,
+    label: Option<String>,
+    approved: bool,
+) -> Result<AddSessionResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.add_session(target, kind, label, approved)?;
     emit_workspace_changed(&app, &gui.snapshot());
     Ok(response)
 }
@@ -588,6 +616,8 @@ fn main() {
             create_project,
             create_feature,
             start_feature,
+            new_session_options,
+            add_session,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,

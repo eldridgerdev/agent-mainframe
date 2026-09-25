@@ -181,6 +181,18 @@ pub struct SavedAgentSession {
     pub updated: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct NewSessionOption {
+    pub kind: SessionKind,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AddSessionResponse {
+    pub target: SessionTarget,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionRecoveryChoice {
@@ -331,6 +343,119 @@ impl GuiHandle {
             .position(|session| session.id == target.session_id)
             .ok_or_else(|| GuiError::not_found("The selected session no longer exists"))?;
         Ok((pi, fi, si))
+    }
+
+    /// Match the TUI's per-repository harness picker, plus GUI-viewable
+    /// terminal/editor panes. External VS Code windows and configured custom
+    /// sessions need separate GUI workflows.
+    pub fn new_session_options(
+        &mut self,
+        target: &FeatureTarget,
+    ) -> GuiResult<Vec<NewSessionOption>> {
+        self.refresh_snapshot()?;
+        let (pi, _) = self.locate(target)?;
+        let project = &self.app.store.projects[pi];
+        let mut options = self
+            .app
+            .allowed_agents_for_repo(&project.repo)
+            .into_iter()
+            .map(|agent| {
+                let label = agent.display_name().to_string();
+                let kind = crate::app::session_ops::session_kind_for_agent(&agent);
+                NewSessionOption { kind, label }
+            })
+            .collect::<Vec<_>>();
+        options.extend([
+            NewSessionOption {
+                kind: SessionKind::Terminal,
+                label: "Terminal".to_string(),
+            },
+            NewSessionOption {
+                kind: SessionKind::Nvim,
+                label: "Neovim".to_string(),
+            },
+        ]);
+        Ok(options)
+    }
+
+    pub fn add_session(
+        &mut self,
+        target: FeatureTarget,
+        kind: SessionKind,
+        label: Option<String>,
+        approved: bool,
+    ) -> GuiResult<AddSessionResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi) = self.locate(&target)?;
+        let project_repo = self.app.store.projects[pi].repo.clone();
+        let agent = match kind {
+            SessionKind::Claude => Some(AgentKind::Claude),
+            SessionKind::Codex => Some(AgentKind::Codex),
+            SessionKind::Opencode => Some(AgentKind::Opencode),
+            SessionKind::Pi => Some(AgentKind::Pi),
+            SessionKind::Terminal | SessionKind::Nvim => None,
+            _ => {
+                return Err(GuiError::conflict(
+                    "This session type is not available in the GUI",
+                ));
+            }
+        };
+        if let Some(agent) = &agent
+            && !self
+                .app
+                .allowed_agents_for_repo(&project_repo)
+                .contains(agent)
+        {
+            return Err(GuiError::conflict(
+                "This agent is not allowed for this project",
+            ));
+        }
+        if self.app.block_if_feature_pending_worktree_script(pi, fi) {
+            return Err(GuiError::conflict(
+                "Wait for the feature's worktree setup to finish before adding a session",
+            ));
+        }
+        let feature = &self.app.store.projects[pi].features[fi];
+        let label = label
+            .map(|label| label.trim().to_string())
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| feature.next_label(&kind));
+        let starts_feature = self.app.add_would_start_feature(pi, fi, &kind);
+        if !approved && (agent.is_some() || starts_feature) {
+            self.require_start_approval(&format!("Adding '{label}'"))?;
+        }
+
+        let session_id = if let Some(agent) = agent {
+            let (_, session_id, _) = self
+                .app
+                .create_agent_session_labeled_identified(
+                    pi,
+                    fi,
+                    &label,
+                    Some(agent),
+                    StartIntent::Approved,
+                )
+                .map_err(GuiError::from)?;
+            session_id
+        } else {
+            self.app
+                .add_builtin_session_unchecked(pi, fi, kind, Some(label.clone()))
+                .map_err(GuiError::from)?;
+            self.app.store.projects[pi].features[fi]
+                .sessions
+                .last()
+                .ok_or_else(|| GuiError::not_found("The new session was not saved"))?
+                .id
+                .clone()
+        };
+        Ok(AddSessionResponse {
+            target: SessionTarget {
+                project_id: target.project_id,
+                feature_id: target.feature_id,
+                session_id,
+            },
+            label,
+        })
     }
 
     /// Offer the same saved-session decision as the TUI when tmux disappears.
@@ -1222,6 +1347,69 @@ mod tests {
         assert_eq!(
             gui.app.store.projects[0].features[0].status,
             ProjectStatus::Idle
+        );
+    }
+
+    #[test]
+    fn gui_adds_a_second_agent_session_with_a_stable_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        store.projects[0].features[0].workdir = dir.path().to_path_buf();
+        store.projects[0].features[0].add_session(SessionKind::Claude);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window()
+            .withf(|_, window, _| window == "claude-2")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .withf(|_, window, _, resume_id, _| window == "claude-2" && resume_id.is_none())
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let added = gui
+            .add_session(target(), SessionKind::Claude, None, true)
+            .unwrap();
+
+        assert_eq!(added.label, "Claude 2");
+        assert_eq!(added.target.project_id, PROJECT_ID);
+        assert_eq!(added.target.feature_id, FEATURE_ID);
+        assert_eq!(
+            gui.app.store.projects[0].features[0].sessions[1].id,
+            added.target.session_id
+        );
+    }
+
+    #[test]
+    fn gui_adds_a_named_terminal_session_without_launching_an_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        store.projects[0].features[0].workdir = dir.path().to_path_buf();
+        store.projects[0].features[0].add_session(SessionKind::Claude);
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_create_window()
+            .withf(|_, window, _| window == "terminal")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let added = gui
+            .add_session(
+                target(),
+                SessionKind::Terminal,
+                Some("  Build shell  ".into()),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(added.label, "Build shell");
+        assert_eq!(
+            gui.app.store.projects[0].features[0].sessions[1].id,
+            added.target.session_id
         );
     }
 

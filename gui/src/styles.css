@@ -660,6 +660,10 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .recovery-session-row:hover { background: var(--surface-2); }
 .recovery-session-row span { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
 .recovery-session-row strong, .recovery-session-row small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.new-session-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; border: 0; padding: 0; margin: 0 0 18px; }
+.new-session-options legend { font-weight: 600; margin-bottom: 10px; }
+.new-session-option { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.new-session-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
 .modal-lead { margin-bottom: 14px; }
 .modal-footer {
   display: flex;

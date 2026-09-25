@@ -756,7 +756,7 @@ impl App {
 
     /// Whether adding a `kind` session to `(pi, fi)` would bring the
     /// feature's tmux session — and so its saved agents — up.
-    fn add_would_start_feature(&self, pi: usize, fi: usize, kind: &SessionKind) -> bool {
+    pub(crate) fn add_would_start_feature(&self, pi: usize, fi: usize, kind: &SessionKind) -> bool {
         kind.is_tmux_backed()
             && self
                 .store

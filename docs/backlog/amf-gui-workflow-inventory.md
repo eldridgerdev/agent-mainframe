@@ -13,7 +13,8 @@ Keep them current as the staged GUI scope grows.
 
 | Status | GUI workflow |
 | --- | --- |
-| Available | Project and feature creation, feature start/stop, session navigation and live tmux terminal attachment/reconnection. |
+| Available | Project and feature creation, feature start/stop, additional allowed-agent, terminal and Neovim sessions with optional names, session navigation and live tmux terminal attachment/reconnection. |
+| Limited | VS Code and configured custom sessions still require the TUI session picker. |
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |
 | Limited | Creation-time planning with any `on_worktree_created` hook, and ordinary or direct TODO creation with a choice-prompting worktree hook, still need the TUI wizard. Script-only hooks run in ordinary and direct TODO creation. |

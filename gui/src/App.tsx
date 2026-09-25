@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
   AgentSlug,
+  NewSessionKind,
+  NewSessionOption,
   CreateFeatureRequest,
   Feature,
   FeatureTarget,
@@ -20,9 +22,11 @@ import {
   SessionRecoveryOption,
   WorkspaceSnapshot,
   asGuiError,
+  addSession,
   createFeature,
   createProject,
   getSnapshot,
+  newSessionOptions,
   planAct,
   planBegin,
   planBeginCreation,
@@ -44,6 +48,7 @@ import TerminalPane from "./TerminalPane";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
+import NewSessionDialog from "./NewSessionDialog";
 import {
   ApprovalDialog,
   EmptyState,
@@ -129,6 +134,18 @@ export default function App() {
     target: SessionTarget;
     choice: SessionRecoveryChoice;
     pickedId: string | null;
+    message: string;
+  } | null>(null);
+  const [newSessionDialog, setNewSessionDialog] = useState<{
+    target: FeatureTarget;
+    preferredKind: NewSessionKind;
+    options: NewSessionOption[];
+  } | null>(null);
+  const [newSessionLoading, setNewSessionLoading] = useState(false);
+  const [pendingAddSessionApproval, setPendingAddSessionApproval] = useState<{
+    target: FeatureTarget;
+    kind: NewSessionKind;
+    label: string | null;
     message: string;
   } | null>(null);
   const [pendingTodoNew, setPendingTodoNew] = useState<{
@@ -458,6 +475,48 @@ export default function App() {
     },
   });
 
+  const addSessionMutation = useMutation({
+    mutationFn: ({ target, kind, label, approved }: {
+      target: FeatureTarget;
+      kind: NewSessionKind;
+      label: string | null;
+      approved: boolean;
+    }) => addSession(target, kind, label, approved),
+    onSuccess: (response) => {
+      setNewSessionDialog(null);
+      setPendingAddSessionApproval(null);
+      openSession(response.target);
+    },
+    onError: (err, variables) => {
+      const error = asGuiError(err);
+      if (error.kind === "needs_approval" && !variables.approved) {
+        setNewSessionDialog(null);
+        setPendingAddSessionApproval({
+          target: variables.target,
+          kind: variables.kind,
+          label: variables.label,
+          message: error.message,
+        });
+      } else {
+        setPendingAddSessionApproval(null);
+        reportError(error);
+      }
+    },
+  });
+
+  async function openNewSession(project: Project, feature: Feature) {
+    const target = { project_id: project.id, feature_id: feature.id };
+    setNewSessionLoading(true);
+    try {
+      const options = await newSessionOptions(target);
+      setNewSessionDialog({ target, preferredKind: feature.agent, options });
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setNewSessionLoading(false);
+    }
+  }
+
   const stopFeatureMutation = useMutation({
     mutationFn: stopFeature,
     onError: reportError,
@@ -670,6 +729,8 @@ export default function App() {
               { project_id: selectedProject.id, feature_id: selectedFeature.id },
               quick,
             )}
+            onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
+            newSessionLoading={newSessionLoading}
             {...lifecycle(selectedProject.id, selectedFeature, tabByFeature[selectedFeature.id])}
             draft={draft}
             onDraftChange={(text) => setDraft((current) => current && { ...current, text })}
@@ -856,6 +917,38 @@ export default function App() {
             approved: false,
           })}
           onClose={() => setRecoveryDialog(null)}
+        />
+      )}
+
+      {newSessionDialog && (
+        <NewSessionDialog
+          options={newSessionDialog.options}
+          preferredKind={newSessionDialog.preferredKind}
+          busy={addSessionMutation.isPending}
+          onCreate={(kind, label) => addSessionMutation.mutate({
+            target: newSessionDialog.target,
+            kind,
+            label,
+            approved: false,
+          })}
+          onClose={() => setNewSessionDialog(null)}
+        />
+      )}
+
+      {pendingAddSessionApproval && (
+        <ApprovalDialog
+          label="Approve new session"
+          title="Start another agent?"
+          message={pendingAddSessionApproval.message}
+          confirmLabel="Start anyway"
+          busy={addSessionMutation.isPending}
+          onConfirm={() => addSessionMutation.mutate({
+            target: pendingAddSessionApproval.target,
+            kind: pendingAddSessionApproval.kind,
+            label: pendingAddSessionApproval.label,
+            approved: true,
+          })}
+          onCancel={() => setPendingAddSessionApproval(null)}
         />
       )}
 
@@ -1052,6 +1145,8 @@ function FeatureView({
   onTab,
   onBack,
   onPlan,
+  onNewSession,
+  newSessionLoading,
   starting,
   stopping,
   onStart,
@@ -1073,6 +1168,8 @@ function FeatureView({
   onTab: (tab: string) => void;
   onBack: () => void;
   onPlan: (quick: boolean) => void;
+  onNewSession: () => void;
+  newSessionLoading: boolean;
   draft: Draft | null;
   onDraftChange: (text: string) => void;
   onDiscardDraft: () => void;
@@ -1122,6 +1219,9 @@ function FeatureView({
         }
         actions={
           <>
+            <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
+              {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
+            </button>
             <Menu
               label="Plan"
               icon="sparkles"

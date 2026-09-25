@@ -170,7 +170,8 @@ On Windows, build from source inside WSL2 the same way, after step 1 of
 
 The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
-project and feature creation, session terminals, TODO lists and agent starts,
+project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
+and Neovim sessions, session terminals, TODO lists and agent starts,
 and Full and Quick Plan interviews. Continue to use `amf` for workflows
 marked Planned.
 
@@ -179,6 +180,9 @@ external workspace and TODO changes every two seconds. Each feature page has
 one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
+Use **New session** on a feature page to start another agent, terminal, or
+Neovim session. You can name it or use the next default name; the new tab opens
+when creation succeeds. The picker shows the agents allowed for that project.
 If tmux exits unexpectedly, the GUI shows the affected features as stopped.
 Start a feature to recreate its tmux session; when a saved Claude, Codex, or
 OpenCode session is available, the GUI offers to resume it, start fresh, or

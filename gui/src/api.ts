@@ -149,6 +149,31 @@ export interface StopFeatureResponse {
   message: string;
 }
 
+export type NewSessionKind = AgentSlug | "terminal" | "nvim";
+
+export interface NewSessionOption {
+  kind: NewSessionKind;
+  label: string;
+}
+
+export interface AddSessionResponse {
+  target: SessionTarget;
+  label: string;
+}
+
+export function newSessionOptions(target: FeatureTarget): Promise<NewSessionOption[]> {
+  return invoke("new_session_options", { target });
+}
+
+export function addSession(
+  target: FeatureTarget,
+  kind: NewSessionKind,
+  label: string | null,
+  approved: boolean,
+): Promise<AddSessionResponse> {
+  return invoke("add_session", { target, kind, label, approved });
+}
+
 export interface SessionRecoveryOption {
   harness: string;
   saved_id: string;

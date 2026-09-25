@@ -1203,11 +1203,9 @@ fn normalize_patch_path(path: &str) -> Option<String> {
 /// browser can't open a file that isn't on disk.
 #[allow(dead_code)] // Consumed by Learning Mode's repo-tree scope (Epic 2).
 pub fn list_repo_files(workdir: &Path) -> Result<Vec<String>> {
-    let stdout = git_capture(
-        workdir,
-        &["ls-files", "--cached", "--others", "--exclude-standard"],
-        false,
-    )?;
+    // TEST FIXTURE: a throwaway edit for exercising AMF's PR review.
+    let args = ["ls-files", "--cached", "--others", "--exclude-standard"];
+    let stdout = git_capture(workdir, &args, false)?;
     let mut files: Vec<String> = stdout
         .lines()
         .map(str::trim)
@@ -1324,8 +1322,9 @@ fn read_worktree_file(workdir: &Path, rel_path: &str) -> Result<Option<String>> 
     }
 }
 
+/// Drop repeated values, keeping each one's first position.
 fn dedupe_preserving_order(values: &mut Vec<String>) {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = std::collections::HashSet::with_capacity(values.len());
     values.retain(|value| seen.insert(value.clone()));
 }
 

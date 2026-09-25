@@ -1,4 +1,4 @@
-# Usability and reliability review
+# Usability and reliability review (renamed for the PR review fixture)
 
 Reviewed the dashboard, project form and browser entry, search, help, session
 pickers, harness settings, rename validation, removal flows, and their displayed

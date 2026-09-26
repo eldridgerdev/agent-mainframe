@@ -482,6 +482,38 @@ fn severity_event_approves_with_no_rejections_else_comments() {
 }
 
 #[test]
+fn empty_rejection_posts_no_filler_when_the_file_has_comments() {
+    // A line comment implicitly rejects its file with empty feedback; the
+    // comment already says what to revise, so no "Needs revision." file
+    // comment should be posted alongside it.
+    let rejected = vec![
+        ("a.rs".to_string(), String::new(), Severity::Suggestion),
+        ("b.rs".to_string(), String::new(), Severity::Blocker),
+    ];
+    let line_comments = vec![("a.rs".to_string(), vec![line_comment(Some(3), None, "nit")])];
+    let file_comment = vec![(
+        "b.rs".to_string(),
+        FileComment {
+            text: "Split this module.".to_string(),
+            severity: Severity::Blocker,
+            resolved: false,
+            carried: false,
+        },
+    )];
+    let (_, inline, file_comments) = build_pr_review(
+        &rejected,
+        &file_comment,
+        &line_comments,
+        "",
+        &HashMap::new(),
+    );
+    assert_eq!(inline.len(), 1);
+    assert_eq!(file_comments.len(), 1);
+    assert_eq!(file_comments[0].path, "b.rs");
+    assert_eq!(file_comments[0].body, "**[blocker]** Split this module.");
+}
+
+#[test]
 fn feedback_file_comment_tags_whole_file_rejection_with_severity() {
     // A whole-file rejection's file-level comment carries its severity tag.
     let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];

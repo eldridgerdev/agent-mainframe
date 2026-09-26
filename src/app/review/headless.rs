@@ -1511,22 +1511,34 @@ pub(super) fn build_pr_review(
     let body = general_feedback.trim().to_string();
 
     // Whole-file rejections carry the same conventional-comments severity
-    // tag as line comments, with a filler line when the reviewer left no
-    // feedback text (mirrors the old body-dump's bare "needs revision").
+    // tag as line comments. A rejection with no feedback text is usually the
+    // implicit verdict a line or file comment sets, and those comments already
+    // say what needs revising — so it posts nothing of its own. Only a bare
+    // rejection that is the file's sole signal gets a filler line. Check the
+    // inline comments actually built, not the raw sections: a line comment
+    // dropped as outside the diff says nothing on the PR.
+    let has_other_comments = |file: &str| {
+        comments
+            .iter()
+            .any(|c: &crate::github::PrReviewComment| c.path == file)
+            || file_comment_sections.iter().any(|(path, _)| path == file)
+    };
     let mut file_comments: Vec<crate::github::PrFileComment> = rejected
         .iter()
-        .map(|(file, feedback, severity)| {
+        .filter_map(|(file, feedback, severity)| {
             let feedback = feedback.trim();
             let tag = severity.label();
-            let body = if feedback.is_empty() {
-                format!("**[{tag}]** Needs revision.")
-            } else {
+            let body = if !feedback.is_empty() {
                 format!("**[{tag}]** {feedback}")
+            } else if has_other_comments(file) {
+                return None;
+            } else {
+                format!("**[{tag}]** Needs revision.")
             };
-            crate::github::PrFileComment {
+            Some(crate::github::PrFileComment {
                 path: file.clone(),
                 body,
-            }
+            })
         })
         .collect();
     file_comments.extend(file_comment_sections.iter().map(|(file, comment)| {

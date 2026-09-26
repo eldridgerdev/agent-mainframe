@@ -664,6 +664,11 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .new-session-options legend { font-weight: 600; margin-bottom: 10px; }
 .new-session-option { display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
 .new-session-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
+.delete-feature-todos { grid-template-columns: 1fr; margin: 16px 0 0; }
+.tab-group { display: inline-flex; align-items: center; }
+.tab-stopped { opacity: 0.55; font-style: italic; }
+.tab-close { visibility: hidden; margin: 0 4px 0 -8px; }
+.tab-group:hover .tab-close, .tab-group:focus-within .tab-close, .tab-group .tab-active + .tab-close { visibility: visible; }
 .modal-lead { margin-bottom: 14px; }
 .modal-footer {
   display: flex;

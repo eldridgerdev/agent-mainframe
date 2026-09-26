@@ -12,7 +12,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::resource_gate::{StartPreconditions, describe_tripped};
-use crate::app::{App, AppMode, ReapplyOutcome, StartIntent, TodoPlanOrigin};
+use crate::app::{
+    App, AppMode, DeleteStage, ReapplyOutcome, Selection, StartIntent, TodoDeleteDisposition,
+    TodoPlanOrigin,
+};
 use crate::automation::{
     CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
 };
@@ -115,6 +118,9 @@ pub type GuiResult<T> = Result<T, GuiError>;
 pub struct WorkspaceSnapshot {
     pub projects: Vec<Project>,
     pub snapshot_at: chrono::DateTime<chrono::Utc>,
+    /// Sessions of a running feature whose tmux window is gone: stopped on
+    /// their own (the TUI's `x`) or exited. Only a live snapshot fills this.
+    pub stopped_session_ids: Vec<String>,
 }
 
 /// Addresses one feature by stable id rather than dashboard selection or a
@@ -165,6 +171,56 @@ pub struct StartFeatureResponse {
 pub struct StopFeatureResponse {
     pub feature_id: String,
     pub already_stopped: bool,
+    pub message: String,
+}
+
+/// The GUI's answer to the TUI's delete-time TODO prompt. *Cancel* has no
+/// variant: the GUI cancels by not sending the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoDeleteChoice {
+    MoveToProject,
+    MoveToGlobal,
+    Delete,
+}
+
+impl From<TodoDeleteChoice> for TodoDeleteDisposition {
+    fn from(choice: TodoDeleteChoice) -> Self {
+        match choice {
+            TodoDeleteChoice::MoveToProject => TodoDeleteDisposition::MoveToProject,
+            TodoDeleteChoice::MoveToGlobal => TodoDeleteDisposition::MoveToGlobal,
+            TodoDeleteChoice::Delete => TodoDeleteDisposition::Delete,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DeleteFeatureResponse {
+    Deleted {
+        feature_id: String,
+        message: String,
+    },
+    /// Nothing was touched: the worktree's list holds `unfinished` open
+    /// TODOs, and the caller must resend with a [`TodoDeleteChoice`].
+    NeedsTodoDisposition {
+        unfinished: usize,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StopSessionResponse {
+    pub session_id: String,
+    /// Stopping a feature's only session stops the feature, as in the TUI.
+    pub feature_stopped: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoveSessionResponse {
+    pub session_id: String,
+    /// Removing a feature's last session stops the feature, as in the TUI.
+    pub feature_stopped: bool,
     pub message: String,
 }
 
@@ -237,6 +293,7 @@ impl GuiHandle {
         WorkspaceSnapshot {
             projects: self.app.store.projects.clone(),
             snapshot_at: chrono::Utc::now(),
+            stopped_session_ids: Vec::new(),
         }
     }
 
@@ -293,7 +350,56 @@ impl GuiHandle {
                 }
             }
         }
+
+        let running = |feature: &crate::project::Feature| {
+            feature.status != ProjectStatus::Stopped
+                && feature
+                    .sessions
+                    .iter()
+                    .any(|session| session.kind.is_tmux_backed())
+        };
+        let any_running = snapshot
+            .projects
+            .iter()
+            .flat_map(|project| &project.features)
+            .any(running);
+        if any_running {
+            let live_windows: std::collections::HashSet<(String, String)> = self
+                .app
+                .tmux
+                .window_activity()
+                .into_iter()
+                .map(|(session, window, _)| (session, window))
+                .collect();
+            // tmux unreachable: say nothing rather than call everything stopped.
+            if !live_windows.is_empty() {
+                for feature in snapshot
+                    .projects
+                    .iter()
+                    .flat_map(|project| &project.features)
+                    .filter(|feature| running(feature))
+                {
+                    for session in &feature.sessions {
+                        if session.kind.is_tmux_backed()
+                            && !live_windows.contains(&(
+                                feature.tmux_session.clone(),
+                                session.tmux_window.clone(),
+                            ))
+                        {
+                            snapshot.stopped_session_ids.push(session.id.clone());
+                        }
+                    }
+                }
+            }
+        }
         Ok(snapshot)
+    }
+
+    /// The snapshot mutations broadcast: live when tmux answers, so a
+    /// broadcast never contradicts the next poll.
+    pub fn broadcast_snapshot(&mut self) -> WorkspaceSnapshot {
+        self.refresh_live_snapshot()
+            .unwrap_or_else(|_| self.snapshot())
     }
 
     pub fn create_project(
@@ -496,12 +602,20 @@ impl GuiHandle {
         let Some(saved_id) = crate::app::session_ops::persisted_resume_id(session) else {
             return Ok(None);
         };
-        if self.app.user_stopped_features.contains(&feature.id) {
-            return Ok(None);
-        }
         if self.app.tmux.session_exists(&feature.tmux_session) {
-            return Ok(None);
+            // A running feature: only this session's own window can be
+            // brought back, and only when it is gone.
+            if self
+                .app
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+            {
+                return Ok(None);
+            }
         }
+        // Unlike the TUI, a feature stopped on purpose still asks: the TUI's
+        // silent restart only resumes Claude, so a Codex or OpenCode
+        // conversation would otherwise start over without a word.
         Ok(Some(SessionRecoveryOption {
             harness: harness.to_string(),
             saved_id,
@@ -555,11 +669,17 @@ impl GuiHandle {
             ),
             _ => return Err(GuiError::conflict("This session cannot be resumed")),
         };
-        if self.app.tmux.session_exists(&feature.tmux_session) {
+        let feature_running = self.app.tmux.session_exists(&feature.tmux_session);
+        if feature_running
+            && self
+                .app
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+        {
             return Ok(StartFeatureResponse {
                 feature_id: target.feature_id,
                 already_running: true,
-                message: "The feature is already running".to_string(),
+                message: format!("'{}' is already running", session.label),
             });
         }
         let resume_id = match choice {
@@ -585,19 +705,33 @@ impl GuiHandle {
             }
         };
         if !approved {
-            self.require_start_approval(&format!("Recovering '{}'", feature.name))?;
+            let what = if feature_running {
+                &session.label
+            } else {
+                &feature.name
+            };
+            self.require_start_approval(&format!("Recovering '{what}'"))?;
         }
         self.app
             .tmux
             .check_harness_available(&agent)
             .map_err(GuiError::from)?;
 
+        if feature_running {
+            return self.recover_session_window(target, si, choice, resume_id, &provider);
+        }
+
         let mut created_session = false;
         if let Err(error) = self.app.ensure_feature_running_for_recovery(
             pi,
             fi,
-            target.session_id.clone(),
-            resume_id.clone(),
+            crate::app::feature_ops::RecoveryLaunch {
+                session_id: target.session_id.clone(),
+                resume_id: resume_id.clone(),
+                // Per tab, like the TUI's session row: the feature's other
+                // agent sessions stay stopped, each with its own resume choice.
+                only_this_agent: true,
+            },
             &mut created_session,
             StartIntent::Approved,
         ) {
@@ -1230,6 +1364,280 @@ impl GuiHandle {
         })
     }
 
+    /// Recreate one stopped session's window inside a running feature (the
+    /// TUI's per-session restart) with the recovery choice applied.
+    fn recover_session_window(
+        &mut self,
+        target: SessionTarget,
+        si: usize,
+        choice: SessionRecoveryChoice,
+        resume_id: Option<String>,
+        provider: &crate::token_tracking::TokenUsageProvider,
+    ) -> GuiResult<StartFeatureResponse> {
+        let (pi, fi) = self.locate(&FeatureTarget {
+            project_id: target.project_id.clone(),
+            feature_id: target.feature_id.clone(),
+        })?;
+        let session = &mut self.app.store.projects[pi].features[fi].sessions[si];
+        Self::apply_recovery_choice(session, choice, resume_id.as_deref(), provider);
+        let label = session.label.clone();
+        self.app.message = None;
+        // `restart_*` saves the record, carrying the choice with it.
+        if let Err(error) =
+            self.app
+                .restart_stopped_session_window_resuming(pi, fi, si, Some(resume_id))
+        {
+            if let Some(db) = &self.app.db
+                && let Ok((store, version)) = db.load_store_versioned()
+            {
+                self.app.adopt_store_from_disk(store, version);
+            }
+            return Err(GuiError::from(error));
+        }
+        self.app.message = None;
+        Ok(StartFeatureResponse {
+            feature_id: target.feature_id,
+            already_running: false,
+            message: format!("Started '{label}'"),
+        })
+    }
+
+    /// Bring one stopped session back inside a running feature, the way the
+    /// TUI does when a stopped session row is opened. An agent session with a
+    /// saved conversation goes through [`Self::recover_session`] instead, so
+    /// the caller can offer to resume it.
+    pub fn start_session(
+        &mut self,
+        target: SessionTarget,
+        approved: bool,
+    ) -> GuiResult<StartFeatureResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        let label = session.label.clone();
+        if !self.app.tmux.session_exists(&feature.tmux_session) {
+            return Err(GuiError::conflict(format!(
+                "Start '{}' to bring its sessions back",
+                feature.name
+            )));
+        }
+        if self
+            .app
+            .tmux
+            .window_exists(&feature.tmux_session, &session.tmux_window)
+        {
+            return Ok(StartFeatureResponse {
+                feature_id: target.feature_id,
+                already_running: true,
+                message: format!("'{label}' is already running"),
+            });
+        }
+        if !approved && session.kind.is_agent_harness() {
+            self.require_start_approval(&format!("Starting '{label}'"))?;
+        }
+        self.app.message = None;
+        let started = self
+            .app
+            .restart_stopped_session_window_unchecked(pi, fi, si)?;
+        self.app.message = None;
+        if !started {
+            return Err(GuiError::conflict(format!("'{label}' cannot be restarted")));
+        }
+        Ok(StartFeatureResponse {
+            feature_id: target.feature_id,
+            already_running: false,
+            message: format!("Started '{label}'"),
+        })
+    }
+
+    /// The TUI's `x` on a session row: kill its tmux window but keep the
+    /// session, so it can be started (or resumed) again. A feature's only
+    /// session stops the whole feature, as in the TUI.
+    pub fn stop_session(&mut self, target: SessionTarget) -> GuiResult<StopSessionResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let label = feature.sessions[si].label.clone();
+        if !self.app.tmux.session_exists(&feature.tmux_session)
+            || !self
+                .app
+                .tmux
+                .window_exists(&feature.tmux_session, &feature.sessions[si].tmux_window)
+        {
+            return Ok(StopSessionResponse {
+                session_id: target.session_id,
+                feature_stopped: false,
+                message: format!("'{label}' is already stopped"),
+            });
+        }
+        let only_session = feature.sessions.len() <= 1;
+
+        if only_session {
+            // What `stop_feature` below does, minus the TUI's hook picker.
+            self.app.do_stop_feature(pi, fi)?;
+        } else {
+            self.app.selection = Selection::Session(pi, fi, si);
+            self.app.stop_session()?;
+        }
+        self.app.message = None;
+        Ok(StopSessionResponse {
+            session_id: target.session_id,
+            feature_stopped: only_session,
+            message: if only_session {
+                format!("Stopped '{label}' and its feature")
+            } else {
+                format!("Stopped '{label}'")
+            },
+        })
+    }
+
+    /// The TUI's `d` on a session row: kill its tmux window (the whole tmux
+    /// session when it is the feature's last one) and drop the record.
+    pub fn remove_session(&mut self, target: SessionTarget) -> GuiResult<RemoveSessionResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi, si) = self.locate_session(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let label = feature.sessions[si].label.clone();
+        let was_running = feature.status != ProjectStatus::Stopped;
+
+        self.app.selection = Selection::Session(pi, fi, si);
+        self.app.message = None;
+        self.app.remove_session()?;
+
+        let feature_stopped = was_running
+            && self
+                .app
+                .store
+                .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+                .is_some_and(|(pi, fi)| {
+                    self.app.store.projects[pi].features[fi].status == ProjectStatus::Stopped
+                });
+        Ok(RemoveSessionResponse {
+            session_id: target.session_id,
+            feature_stopped,
+            message: self
+                .app
+                .message
+                .take()
+                .unwrap_or_else(|| format!("Removed '{label}'")),
+        })
+    }
+
+    /// The TUI's feature delete: kill the tmux session, remove the worktree
+    /// (`--force`; the branch stays), and drop the feature. A worktree list
+    /// with open TODOs is settled first, and nothing is touched until the
+    /// caller has chosen what happens to them.
+    ///
+    /// Runs the TUI's staged deletion to completion before returning, the
+    /// way `create_feature` runs worktree creation.
+    pub fn delete_feature(
+        &mut self,
+        target: FeatureTarget,
+        todos: Option<TodoDeleteChoice>,
+    ) -> GuiResult<DeleteFeatureResponse> {
+        self.refresh_snapshot()?;
+        let (pi, fi) = self.locate(&target)?;
+        self.reject_ambiguous_live_session(pi, fi)?;
+        // The deletion is driven through `app.mode`, which is also where an
+        // open GUI plan lives.
+        if !matches!(self.app.mode, AppMode::Normal) {
+            return Err(GuiError::conflict(
+                "Finish or close the open plan before deleting a feature",
+            ));
+        }
+        let project_name = self.app.store.projects[pi].name.clone();
+        let feature = &self.app.store.projects[pi].features[fi];
+        let feature_name = feature.name.clone();
+        if self
+            .app
+            .paused_plan_interview_belongs_to_feature(&feature.id)
+        {
+            return Err(GuiError::conflict(
+                "Resume or finish the parked plan interview before deleting its feature",
+            ));
+        }
+
+        if let Some(disposition) = self
+            .app
+            .pending_todo_disposition(&project_name, &feature_name)
+        {
+            let Some(choice) = todos else {
+                return Ok(DeleteFeatureResponse::NeedsTodoDisposition {
+                    unfinished: disposition.unfinished,
+                });
+            };
+            self.app
+                .apply_todo_disposition(&disposition, choice.into())?;
+        }
+
+        self.app.message = None;
+        self.app.mode = AppMode::DeletingFeature(project_name, feature_name.clone());
+        let result = self.run_feature_deletion(&feature_name);
+        // Never leave the shared engine parked in a TUI dialog.
+        self.app.mode = AppMode::Normal;
+        let message = result?;
+        Ok(DeleteFeatureResponse::Deleted {
+            feature_id: target.feature_id,
+            message,
+        })
+    }
+
+    fn run_feature_deletion(&mut self, feature_name: &str) -> GuiResult<String> {
+        self.app.delete_feature()?;
+        loop {
+            match &self.app.mode {
+                AppMode::DeletingFeatureInProgress(state)
+                    if state.stage == DeleteStage::Completed && state.child.is_none() =>
+                {
+                    break;
+                }
+                AppMode::DeletingFeatureInProgress(_) => {}
+                // `delete_feature` declined without starting; it says why.
+                _ => {
+                    return Err(GuiError::conflict(
+                        self.app
+                            .message
+                            .take()
+                            .unwrap_or_else(|| format!("'{feature_name}' was not deleted")),
+                    ));
+                }
+            }
+            self.app.poll_deleting_feature()?;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let error = match &self.app.mode {
+            AppMode::DeletingFeatureInProgress(state) => state.error.clone(),
+            _ => None,
+        };
+        self.app.complete_deleting_feature()?;
+        if let Some(error) = error {
+            self.app.message = None;
+            return Err(GuiError::from(anyhow::anyhow!(
+                "Could not delete '{feature_name}': {error}"
+            )));
+        }
+        let mut message = self
+            .app
+            .message
+            .take()
+            .unwrap_or_else(|| format!("Deleted feature '{feature_name}'"));
+        // The deleted feature hosted the project's TODO list. The TUI asks;
+        // its `Esc` keeps the list on the first surviving feature, which is
+        // the choice that loses nothing.
+        if matches!(self.app.mode, AppMode::TodosHostReassign(_)) {
+            self.app.cancel_todos_host_reassign()?;
+            if let Some(rehomed) = self.app.message.take() {
+                message = format!("Deleted feature '{feature_name}'. {rehomed}");
+            }
+        }
+        Ok(message)
+    }
+
     /// Resolve a `SessionTarget` to the tmux session/window
     /// `gui_terminal::TerminalHandle::attach` needs. Does not check that the
     /// feature is actually running (a stopped feature has no live tmux
@@ -1770,6 +2178,76 @@ mod tests {
     }
 
     #[test]
+    fn resuming_one_tab_of_a_stopped_feature_leaves_its_other_agents_stopped() {
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        let feature = &mut store.projects[0].features[0];
+        // First in order, so its window is the one the tmux session opens with.
+        let other_window = feature.add_session(SessionKind::Codex).tmux_window.clone();
+        let claude = feature.add_session(SessionKind::Claude);
+        claude.claude_session_id = Some("saved-claude-id".to_string());
+        let (claude_id, claude_window) = (claude.id.clone(), claude.tmux_window.clone());
+        let terminal_window = feature
+            .add_session(SessionKind::Terminal)
+            .tmux_window
+            .clone();
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(false);
+        tmux.expect_check_harness_available().returning(|_| Ok(()));
+        let first = other_window.clone();
+        tmux.expect_create_session_with_window()
+            .withf(move |_, window, _| window == first)
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        let (created_claude, created_terminal) = (claude_window.clone(), terminal_window);
+        tmux.expect_create_window()
+            .withf(move |_, window, _| window == created_claude || window == created_terminal)
+            .times(2)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_kill_window()
+            .withf(move |_, window| window == other_window)
+            .times(1)
+            .returning(|_, _| Ok(()));
+        tmux.expect_launch_codex().never();
+        tmux.expect_launch_claude()
+            .withf(|_, _, _, resume, _| resume.as_deref() == Some("saved-claude-id"))
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window()
+            .withf(move |_, window| window == claude_window)
+            .times(1)
+            .returning(|_, _| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        gui.recover_session(
+            session_target(&claude_id),
+            SessionRecoveryChoice::Resume,
+            None,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 3);
+    }
+
+    #[test]
+    fn a_feature_stopped_on_purpose_still_offers_to_resume_a_tab() {
+        let (store, target) = recoverable_claude_feature();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(false);
+        let mut gui = handle(store, tmux);
+        gui.app.user_stopped_features.insert(FEATURE_ID.to_string());
+
+        let option = gui.session_recovery_option(&target).unwrap();
+
+        assert_eq!(
+            option.map(|option| option.saved_id).as_deref(),
+            Some("saved-claude-id")
+        );
+    }
+
+    #[test]
     fn gui_recovery_resumes_the_saved_claude_session() {
         let (store, target) = recoverable_claude_feature();
         let mut gui = handle(store, claude_recovery_tmux(Some("saved-claude-id")));
@@ -2051,6 +2529,221 @@ mod tests {
             gui.app.store.projects[0].features[0].status,
             ProjectStatus::Stopped
         );
+    }
+
+    fn session_target(session_id: &str) -> SessionTarget {
+        SessionTarget {
+            project_id: PROJECT_ID.to_string(),
+            feature_id: FEATURE_ID.to_string(),
+            session_id: session_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn removing_one_of_several_sessions_kills_only_its_window() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let feature = &mut store.projects[0].features[0];
+        feature.add_session(SessionKind::Terminal);
+        let doomed = feature.add_session(SessionKind::Terminal).id.clone();
+        let doomed_window = feature.sessions[1].tmux_window.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_kill_window()
+            .withf(move |_, window| window == doomed_window)
+            .times(1)
+            .returning(|_, _| Ok(()));
+        tmux.expect_kill_session().never();
+        let mut gui = handle(store, tmux);
+
+        let response = gui.remove_session(session_target(&doomed)).unwrap();
+
+        assert!(!response.feature_stopped);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert_eq!(feature.sessions.len(), 1);
+        assert!(feature.sessions.iter().all(|session| session.id != doomed));
+        assert_eq!(feature.status, ProjectStatus::Idle);
+    }
+
+    #[test]
+    fn removing_the_last_session_stops_the_feature() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let only = store.projects[0].features[0]
+            .add_session(SessionKind::Terminal)
+            .id
+            .clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let response = gui.remove_session(session_target(&only)).unwrap();
+
+        assert!(response.feature_stopped);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert!(feature.sessions.is_empty());
+        assert_eq!(feature.status, ProjectStatus::Stopped);
+    }
+
+    #[test]
+    fn stopping_one_of_several_sessions_keeps_its_record() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let feature = &mut store.projects[0].features[0];
+        feature.add_session(SessionKind::Terminal);
+        let stopped = feature.add_session(SessionKind::Terminal).id.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_kill_window().times(1).returning(|_, _| Ok(()));
+        tmux.expect_kill_session().never();
+        let mut gui = handle(store, tmux);
+
+        let response = gui.stop_session(session_target(&stopped)).unwrap();
+
+        assert!(!response.feature_stopped);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert_eq!(feature.sessions.len(), 2);
+        assert_eq!(feature.status, ProjectStatus::Idle);
+    }
+
+    #[test]
+    fn stopping_the_only_session_stops_the_feature_and_keeps_it() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let only = store.projects[0].features[0]
+            .add_session(SessionKind::Terminal)
+            .id
+            .clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(true);
+        tmux.expect_kill_session().times(1).returning(|_| Ok(()));
+        let mut gui = handle(store, tmux);
+
+        let response = gui.stop_session(session_target(&only)).unwrap();
+
+        assert!(response.feature_stopped);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert_eq!(feature.sessions.len(), 1);
+        assert_eq!(feature.status, ProjectStatus::Stopped);
+    }
+
+    #[test]
+    fn live_snapshot_lists_a_session_whose_window_is_gone() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let feature = &mut store.projects[0].features[0];
+        let tmux_session = feature.tmux_session.clone();
+        let live = feature.add_session(SessionKind::Terminal).clone();
+        let gone = feature.add_session(SessionKind::Terminal).id.clone();
+        let mut tmux = MockTmuxOps::new();
+        let listed = tmux_session.clone();
+        tmux.expect_list_sessions()
+            .returning(move || Ok(vec![listed.clone()]));
+        tmux.expect_window_activity()
+            .times(1)
+            .returning(move || vec![(tmux_session.clone(), live.tmux_window.clone(), 0)]);
+        let mut gui = handle(store, tmux);
+
+        let snapshot = gui.refresh_live_snapshot().unwrap();
+
+        assert_eq!(snapshot.stopped_session_ids, vec![gone]);
+    }
+
+    #[test]
+    fn recovering_a_stopped_codex_tab_resumes_it_in_its_own_window() {
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        let feature = &mut store.projects[0].features[0];
+        feature.add_session(SessionKind::Terminal);
+        let codex = feature.add_session(SessionKind::Codex);
+        codex.set_token_usage_source_exact(crate::token_tracking::TokenUsageSource {
+            provider: crate::token_tracking::TokenUsageProvider::Codex,
+            id: "saved-codex".to_string(),
+        });
+        let codex_id = codex.id.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_window_exists().return_const(false);
+        tmux.expect_check_harness_available().returning(|_| Ok(()));
+        tmux.expect_create_session_with_window().never();
+        tmux.expect_create_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_codex()
+            .withf(|_, _, _, resume, _| resume.as_deref() == Some("saved-codex"))
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        let mut gui = handle(store, tmux);
+        let target = session_target(&codex_id);
+
+        let option = gui.session_recovery_option(&target).unwrap();
+        assert_eq!(
+            option.map(|option| option.saved_id).as_deref(),
+            Some("saved-codex")
+        );
+        let response = gui
+            .recover_session(target, SessionRecoveryChoice::Resume, None, true)
+            .unwrap();
+
+        assert!(!response.already_running);
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 2);
+    }
+
+    #[test]
+    fn removing_a_stale_session_is_not_found() {
+        let store = store_with_one_feature(ProjectStatus::Idle);
+        let mut gui = handle(store, MockTmuxOps::new());
+
+        let err = gui.remove_session(session_target("gone")).unwrap_err();
+
+        assert_eq!(err.kind, GuiErrorKind::NotFound);
+    }
+
+    #[test]
+    fn deleting_a_stopped_non_worktree_feature_removes_it() {
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        // `spawn_kill_session` asks real tmux; a name nothing uses makes it a
+        // no-op, as it is for any stopped feature.
+        store.projects[0].features[0].tmux_session =
+            "amf-gui-contract-test-no-such-session".to_string();
+        let mut gui = handle(store, MockTmuxOps::new());
+
+        let response = gui.delete_feature(target(), None).unwrap();
+
+        assert!(matches!(response, DeleteFeatureResponse::Deleted { .. }));
+        assert!(gui.app.store.projects[0].features.is_empty());
+        assert!(matches!(gui.app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn deleting_a_worktree_with_open_todos_asks_first_and_touches_nothing() {
+        use crate::db::todos::{TodoPriority, TodoScope};
+
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].features[0].is_worktree = true;
+        let db = crate::db::AmfDb::open(db_file.path()).unwrap();
+        db.save_store(&store).unwrap();
+        let list = db
+            .load_or_create_todo_list(
+                &TodoScope::Worktree {
+                    project_id: PROJECT_ID.to_string(),
+                    workdir: "/tmp/test-workdir".to_string(),
+                },
+                Some(FEATURE_ID),
+            )
+            .unwrap();
+        db.add_todo(&list.id, "unfinished", None, TodoPriority::Med)
+            .unwrap();
+        let mut gui = handle_loading_from(db, MockTmuxOps::new());
+
+        let response = gui.delete_feature(target(), None).unwrap();
+
+        assert!(matches!(
+            response,
+            DeleteFeatureResponse::NeedsTodoDisposition { unfinished: 1 }
+        ));
+        assert_eq!(gui.app.store.projects[0].features.len(), 1);
+        let db = gui.app.db.as_ref().unwrap();
+        assert_eq!(db.todos(&list.id).unwrap().len(), 1);
     }
 
     #[test]

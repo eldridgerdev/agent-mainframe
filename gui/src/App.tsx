@@ -20,11 +20,13 @@ import {
   SessionTarget,
   SessionRecoveryChoice,
   SessionRecoveryOption,
+  TodoDeleteChoice,
   WorkspaceSnapshot,
   asGuiError,
   addSession,
   createFeature,
   createProject,
+  deleteFeature,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -37,7 +39,10 @@ import {
   savedAgentSessions,
   sessionRecoveryOption,
   startFeature,
+  removeSession,
+  startSession,
   stopFeature,
+  stopSession,
   supportedHarnesses,
   supportedModes,
   terminalSubmitPrompt,
@@ -49,6 +54,7 @@ import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
+import DeleteFeatureDialog from "./DeleteFeatureDialog";
 import {
   ApprovalDialog,
   EmptyState,
@@ -162,6 +168,27 @@ export default function App() {
   const [todoNewBusy, setTodoNewBusy] = useState(false);
   const [planBusy, setPlanBusy] = useState(false);
   const planActionInFlight = useRef(false);
+  // `isPending` reaches the dialog a render late, so a double-click (or
+  // Enter then click) would otherwise send two launches and two sessions.
+  const addSessionInFlight = useRef(false);
+  const [closeSessionDialog, setCloseSessionDialog] = useState<{
+    target: SessionTarget;
+    label: string;
+    last: boolean;
+  } | null>(null);
+  const removeSessionInFlight = useRef(false);
+  const [pendingSessionStart, setPendingSessionStart] = useState<{
+    target: SessionTarget;
+    message: string;
+  } | null>(null);
+  const [deleteFeatureDialog, setDeleteFeatureDialog] = useState<{
+    target: FeatureTarget;
+    projectName: string;
+    featureName: string;
+    isWorktree: boolean;
+    unfinished: number | null;
+  } | null>(null);
+  const deleteFeatureInFlight = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const [pendingStart, setPendingStart] = useState<{
@@ -482,6 +509,9 @@ export default function App() {
       label: string | null;
       approved: boolean;
     }) => addSession(target, kind, label, approved),
+    onSettled: () => {
+      addSessionInFlight.current = false;
+    },
     onSuccess: (response) => {
       setNewSessionDialog(null);
       setPendingAddSessionApproval(null);
@@ -504,6 +534,17 @@ export default function App() {
     },
   });
 
+  function requestAddSession(variables: {
+    target: FeatureTarget;
+    kind: NewSessionKind;
+    label: string | null;
+    approved: boolean;
+  }) {
+    if (addSessionInFlight.current) return;
+    addSessionInFlight.current = true;
+    addSessionMutation.mutate(variables);
+  }
+
   async function openNewSession(project: Project, feature: Feature) {
     const target = { project_id: project.id, feature_id: feature.id };
     setNewSessionLoading(true);
@@ -517,44 +558,125 @@ export default function App() {
     }
   }
 
-  const stopFeatureMutation = useMutation({
-    mutationFn: stopFeature,
+  const stopSessionMutation = useMutation({
+    mutationFn: stopSession,
+    onSuccess: (response) =>
+      pushToast({ tone: "info", title: "Session stopped", message: response.message }),
     onError: reportError,
   });
 
-  const beginFeatureStart = async (projectId: string, feature: Feature, preferredSessionId?: string) => {
-    const target = { project_id: projectId, feature_id: feature.id };
-    const agentSession = feature.sessions.find((session) => session.id === preferredSessionId
-      && ["claude", "codex", "opencode"].includes(session.kind))
-      ?? feature.sessions.find((session) => ["claude", "codex", "opencode"].includes(session.kind));
-    if (!agentSession) {
-      startFeatureMutation.mutate({ target, approved: false });
-      return;
-    }
+  const startSessionMutation = useMutation({
+    mutationFn: ({ target, approved }: { target: SessionTarget; approved: boolean }) =>
+      startSession(target, approved),
+    onSuccess: () => setPendingSessionStart(null),
+    onError: (err, variables) => {
+      const error = asGuiError(err);
+      if (error.kind === "needs_approval" && !variables.approved) {
+        setPendingSessionStart({ target: variables.target, message: error.message });
+      } else {
+        setPendingSessionStart(null);
+        reportError(error);
+      }
+    },
+  });
+
+  /** Start a stopped tab -- the TUI's `Enter` on a session row: offer to
+   * resume its saved conversation when it has one. In a stopped feature this
+   * starts the feature around that session. */
+  async function beginSessionStart(target: SessionTarget, featureStopped: boolean) {
     setRecoveryChecking(true);
     try {
-      const sessionTarget = { ...target, session_id: agentSession.id };
-      const option = await sessionRecoveryOption(sessionTarget);
+      const option = await sessionRecoveryOption(target);
       if (option) {
-        setRecoveryDialog({ target: sessionTarget, option, sessions: null, loading: false, selectedId: null });
+        setRecoveryDialog({ target, option, sessions: null, loading: false, selectedId: null });
+      } else if (featureStopped) {
+        startFeatureMutation.mutate({
+          target: { project_id: target.project_id, feature_id: target.feature_id },
+          approved: false,
+        });
       } else {
-        startFeatureMutation.mutate({ target, approved: false });
+        startSessionMutation.mutate({ target, approved: false });
       }
     } catch (err) {
       reportError(err);
     } finally {
       setRecoveryChecking(false);
     }
-  };
+  }
 
-  const lifecycle = (projectId: string, feature: Feature, preferredSessionId?: string) => {
+  const removeSessionMutation = useMutation({
+    mutationFn: removeSession,
+    onSettled: () => {
+      removeSessionInFlight.current = false;
+    },
+    onSuccess: (response) => {
+      setCloseSessionDialog(null);
+      pushToast({ tone: "info", title: "Session closed", message: response.message });
+    },
+    onError: (err) => {
+      setCloseSessionDialog(null);
+      reportError(err);
+    },
+  });
+
+  function requestRemoveSession(target: SessionTarget) {
+    if (removeSessionInFlight.current) return;
+    removeSessionInFlight.current = true;
+    removeSessionMutation.mutate(target);
+  }
+
+  const deleteFeatureMutation = useMutation({
+    mutationFn: ({ target, todos }: { target: FeatureTarget; todos: TodoDeleteChoice | null }) =>
+      deleteFeature(target, todos),
+    onSettled: () => {
+      deleteFeatureInFlight.current = false;
+    },
+    onSuccess: (response, { target }) => {
+      if (response.status === "needs_todo_disposition") {
+        setDeleteFeatureDialog((current) => current && { ...current, unfinished: response.unfinished });
+        return;
+      }
+      setDeleteFeatureDialog(null);
+      setView((current) => current?.kind === "feature" && current.featureId === target.feature_id
+        ? { kind: "project", projectId: target.project_id }
+        : current);
+      setTabByFeature((current) => {
+        const next = { ...current };
+        delete next[target.feature_id];
+        return next;
+      });
+      pushToast({ tone: "info", title: "Feature deleted", message: response.message });
+    },
+    onError: (err) => {
+      setDeleteFeatureDialog(null);
+      reportError(err);
+    },
+  });
+
+  function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null) {
+    if (deleteFeatureInFlight.current) return;
+    deleteFeatureInFlight.current = true;
+    deleteFeatureMutation.mutate({ target, todos });
+  }
+
+  const stopFeatureMutation = useMutation({
+    mutationFn: stopFeature,
+    onError: reportError,
+  });
+
+  /** The feature's Start, like the TUI's `c`: no resume prompt. Resuming is
+   * asked per session, from a stopped tab (the TUI's `Enter` on a session). */
+  const beginFeatureStart = (projectId: string, feature: Feature) =>
+    startFeatureMutation.mutate({ target: { project_id: projectId, feature_id: feature.id }, approved: false });
+
+  const lifecycle = (projectId: string, feature: Feature) => {
     const target = { project_id: projectId, feature_id: feature.id };
     return {
       starting: recoveryChecking || (startFeatureMutation.isPending
         && startFeatureMutation.variables?.target.feature_id === feature.id),
       stopping: stopFeatureMutation.isPending
         && stopFeatureMutation.variables?.feature_id === feature.id,
-      onStart: () => void beginFeatureStart(projectId, feature, preferredSessionId),
+      onStart: () => void beginFeatureStart(projectId, feature),
       onStop: () => stopFeatureMutation.mutate(target),
     };
   };
@@ -731,7 +853,36 @@ export default function App() {
             )}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
-            {...lifecycle(selectedProject.id, selectedFeature, tabByFeature[selectedFeature.id])}
+            stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
+            sessionStarting={recoveryChecking || startSessionMutation.isPending
+              || recoverSessionMutation.isPending}
+            onStartSession={(session) => void beginSessionStart({
+              project_id: selectedProject.id,
+              feature_id: selectedFeature.id,
+              session_id: session.id,
+            }, selectedFeature.status === "stopped")}
+            onStopSession={(session) => stopSessionMutation.mutate({
+              project_id: selectedProject.id,
+              feature_id: selectedFeature.id,
+              session_id: session.id,
+            })}
+            onCloseSession={(session) => setCloseSessionDialog({
+              target: {
+                project_id: selectedProject.id,
+                feature_id: selectedFeature.id,
+                session_id: session.id,
+              },
+              label: session.label,
+              last: selectedFeature.sessions.length === 1,
+            })}
+            onDeleteFeature={() => setDeleteFeatureDialog({
+              target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
+              projectName: selectedProject.name,
+              featureName: selectedFeature.name,
+              isWorktree: selectedFeature.is_worktree,
+              unfinished: null,
+            })}
+            {...lifecycle(selectedProject.id, selectedFeature)}
             draft={draft}
             onDraftChange={(text) => setDraft((current) => current && { ...current, text })}
             onDiscardDraft={() => setDraft(null)}
@@ -925,13 +1076,54 @@ export default function App() {
           options={newSessionDialog.options}
           preferredKind={newSessionDialog.preferredKind}
           busy={addSessionMutation.isPending}
-          onCreate={(kind, label) => addSessionMutation.mutate({
+          onCreate={(kind, label) => requestAddSession({
             target: newSessionDialog.target,
             kind,
             label,
             approved: false,
           })}
           onClose={() => setNewSessionDialog(null)}
+        />
+      )}
+
+      {closeSessionDialog && (
+        <ApprovalDialog
+          label="Close session"
+          title={`Close ${closeSessionDialog.label}?`}
+          message={closeSessionDialog.last
+            ? "This kills its tmux window and removes the session. It is the feature's last session, so the feature stops too."
+            : "This kills its tmux window and removes the session."}
+          confirmLabel="Close session"
+          busy={removeSessionMutation.isPending}
+          onConfirm={() => requestRemoveSession(closeSessionDialog.target)}
+          onCancel={() => setCloseSessionDialog(null)}
+        />
+      )}
+
+      {deleteFeatureDialog && (
+        <DeleteFeatureDialog
+          projectName={deleteFeatureDialog.projectName}
+          featureName={deleteFeatureDialog.featureName}
+          isWorktree={deleteFeatureDialog.isWorktree}
+          unfinished={deleteFeatureDialog.unfinished}
+          busy={deleteFeatureMutation.isPending}
+          onConfirm={(todos) => requestDeleteFeature(deleteFeatureDialog.target, todos)}
+          onClose={() => setDeleteFeatureDialog(null)}
+        />
+      )}
+
+      {pendingSessionStart && (
+        <ApprovalDialog
+          label="Approve session start"
+          title="Start another agent?"
+          message={pendingSessionStart.message}
+          confirmLabel="Start anyway"
+          busy={startSessionMutation.isPending}
+          onConfirm={() => startSessionMutation.mutate({
+            target: pendingSessionStart.target,
+            approved: true,
+          })}
+          onCancel={() => setPendingSessionStart(null)}
         />
       )}
 
@@ -942,7 +1134,7 @@ export default function App() {
           message={pendingAddSessionApproval.message}
           confirmLabel="Start anyway"
           busy={addSessionMutation.isPending}
-          onConfirm={() => addSessionMutation.mutate({
+          onConfirm={() => requestAddSession({
             target: pendingAddSessionApproval.target,
             kind: pendingAddSessionApproval.kind,
             label: pendingAddSessionApproval.label,
@@ -1147,6 +1339,12 @@ function FeatureView({
   onPlan,
   onNewSession,
   newSessionLoading,
+  stoppedSessionIds,
+  sessionStarting,
+  onStartSession,
+  onStopSession,
+  onCloseSession,
+  onDeleteFeature,
   starting,
   stopping,
   onStart,
@@ -1170,6 +1368,12 @@ function FeatureView({
   onPlan: (quick: boolean) => void;
   onNewSession: () => void;
   newSessionLoading: boolean;
+  stoppedSessionIds: string[];
+  sessionStarting: boolean;
+  onStartSession: (session: Feature["sessions"][number]) => void;
+  onStopSession: (session: Feature["sessions"][number]) => void;
+  onCloseSession: (session: Feature["sessions"][number]) => void;
+  onDeleteFeature: () => void;
   draft: Draft | null;
   onDraftChange: (text: string) => void;
   onDiscardDraft: () => void;
@@ -1194,6 +1398,8 @@ function FeatureView({
     session_id: activeTab,
   };
   const activeDraft = target && draft?.key === sessionKey(target) ? draft : null;
+  const isSessionStopped = (id: string) => !isStopped && stoppedSessionIds.includes(id);
+  const activeSession = sessions.find((session) => session.id === activeTab);
 
   return (
     <div className="page page-fill">
@@ -1239,23 +1445,54 @@ function FeatureView({
               onStart={onStart}
               onStop={onStop}
             />
+            <Menu
+              label="More feature actions"
+              icon="more"
+              className="btn btn-secondary btn-icon"
+              items={[
+                { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
+              ]}
+            />
           </>
         }
       />
 
       <div className="tabs" role="tablist" aria-label="Feature sessions">
         {sessions.map((session) => (
-          <button
-            key={session.id}
-            role="tab"
-            aria-selected={activeTab === session.id}
-            className={activeTab === session.id ? "tab tab-active" : "tab"}
-            onClick={() => onTab(session.id)}
-            title={session.kind}
-          >
-            <Icon name="terminal" size={14} />
-            {session.label}
-          </button>
+          <span key={session.id} className="tab-group">
+            <button
+              role="tab"
+              aria-selected={activeTab === session.id}
+              className={[
+                "tab",
+                activeTab === session.id && "tab-active",
+                isSessionStopped(session.id) && "tab-stopped",
+              ].filter(Boolean).join(" ")}
+              onClick={() => onTab(session.id)}
+              title={isSessionStopped(session.id) ? `${session.kind} (stopped)` : session.kind}
+            >
+              <Icon name="terminal" size={14} />
+              {session.label}
+            </button>
+            <span className="tab-close">
+              <Menu
+                label={`${session.label} actions`}
+                className="btn btn-ghost btn-icon btn-sm"
+                items={[
+                  isStopped || isSessionStopped(session.id)
+                    ? {
+                      label: "Start session",
+                      icon: "play",
+                      disabled: sessionStarting || starting,
+                      hint: isStopped ? "Starts the feature" : undefined,
+                      onSelect: () => onStartSession(session),
+                    }
+                    : { label: "Stop session", icon: "stop", onSelect: () => onStopSession(session) },
+                  { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
+                ]}
+              />
+            </span>
+          </span>
         ))}
         {pendingSession && (
           <button role="tab" aria-selected className="tab tab-active">
@@ -1282,16 +1519,34 @@ function FeatureView({
             icon="terminal"
             title="This feature is stopped"
             action={
-              <button className="btn btn-primary" onClick={onStart} disabled={starting}>
+              <button className="btn btn-primary"
+                onClick={() => (activeSession ? onStartSession(activeSession) : onStart())}
+                disabled={starting || sessionStarting}>
                 {starting ? <Spinner /> : <Icon name="play" size={12} />}
                 {starting ? "Starting…" : "Start feature"}
               </button>
             }
           >
-            Start it to attach to its agent sessions.
+            Starting it from this tab offers to resume this session's saved conversation, if it has one.
           </EmptyState>
         )}
-        {target && !isStopped && (
+        {target && !isStopped && activeSession && isSessionStopped(activeSession.id) && (
+          <EmptyState
+            icon="terminal"
+            title={`${activeSession.label} is stopped`}
+            action={
+              <button className="btn btn-primary" onClick={() => onStartSession(activeSession)}
+                disabled={sessionStarting}>
+                {sessionStarting ? <Spinner /> : <Icon name="play" size={12} />}
+                {sessionStarting ? "Starting…" : "Start session"}
+              </button>
+            }
+          >
+            The rest of the feature is still running. Starting an agent session
+            offers to resume its saved conversation when there is one.
+          </EmptyState>
+        )}
+        {target && !isStopped && !(activeSession && isSessionStopped(activeSession.id)) && (
           <div className="session">
             <TerminalPane key={sessionKey(target)} target={target} />
             {activeDraft && (

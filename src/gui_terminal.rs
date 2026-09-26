@@ -308,7 +308,42 @@ mod tests {
     /// actually isolates these tests from each other and from anything else
     /// on that shared server.
     fn unique_session_name(label: &str) -> String {
-        format!("amf-gui-terminal-test-{label}-{}", uuid::Uuid::new_v4())
+        format!("{TEST_SESSION_PREFIX}{label}-{}", uuid::Uuid::new_v4())
+    }
+
+    const TEST_SESSION_PREFIX: &str = "amf-gui-terminal-test-";
+
+    /// Older than any run of these tests takes, so no live run owns it.
+    const LEAKED_TEST_SESSION_AGE_SECS: i64 = 15 * 60;
+
+    /// `TestSession::drop` never runs when the test binary is killed (an OOM
+    /// kill, Ctrl+C), and those sessions then outlive it on the user's real
+    /// AMF tmux server. Each binary sweeps them once, before its first
+    /// session, leaving any a concurrent run may still own.
+    fn sweep_leaked_test_sessions() {
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        SWEEP.call_once(|| {
+            let Ok(output) = TmuxManager::command()
+                .args(["list-sessions", "-F", "#{session_created} #{session_name}"])
+                .output()
+            else {
+                return;
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs() as i64);
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let Some((created, name)) = line.split_once(' ') else {
+                    continue;
+                };
+                let stale = created
+                    .parse::<i64>()
+                    .is_ok_and(|created| now - created > LEAKED_TEST_SESSION_AGE_SECS);
+                if stale && name.starts_with(TEST_SESSION_PREFIX) {
+                    let _ = TmuxManager::kill_session(name);
+                }
+            }
+        });
     }
 
     struct TestSession {
@@ -318,6 +353,7 @@ mod tests {
     impl TestSession {
         fn spawn(label: &str) -> Self {
             ensure_process_stdin_is_a_pty();
+            sweep_leaked_test_sessions();
             let name = unique_session_name(label);
             TmuxManager::create_session_with_window(&name, "main", &PathBuf::from("/tmp"))
                 .expect("failed to create test tmux session");

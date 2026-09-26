@@ -28,7 +28,7 @@ export default function RecoveryDialog({
     <Modal
       label="Recover agent session"
       title={`Recover ${option.harness} session`}
-      subtitle="The tmux session ended, but AMF still has the agent's saved session."
+      subtitle="This agent is not running, but AMF still has its saved session."
       onClose={onClose}
       dismissable={!busy}
       footer={sessions === null ? (

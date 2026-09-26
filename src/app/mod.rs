@@ -15,7 +15,7 @@ mod context_settings;
 mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
-mod feature_ops;
+pub(crate) mod feature_ops;
 pub(crate) mod feature_setup;
 pub(crate) mod fix_cost;
 pub(crate) mod github_workflow;

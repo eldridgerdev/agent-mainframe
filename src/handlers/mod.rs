@@ -49,7 +49,10 @@ pub use dialog::{
     handle_resource_confirm_key, handle_session_config_key, handle_steering_prompt_key,
     handle_stopped_session_dialog_key, handle_theme_picker_key,
 };
-pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
+pub use diff::{
+    handle_diff_picker_key, handle_diff_viewer_key, handle_diff_viewer_wheel,
+    handle_review_harness_pick_key,
+};
 pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;

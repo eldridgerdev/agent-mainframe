@@ -399,6 +399,7 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Line cursor (press c first)",
         &[
             ("j / k", "Move the cursor a line at a time"),
+            ("Ctrl+J / K", "Move the cursor 10 lines at a time"),
             ("[ / ]", "Jump to the previous / next hunk"),
             ("v", "Start a range selection; v again clears it"),
             ("Enter", "Comment on the cursored line or selected span"),
@@ -416,6 +417,11 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("n / p", "Next / previous file"),
             ("j / k", "Scroll the patch, or walk file-tree rows"),
+            ("Ctrl+J / K", "Scroll the patch 10 lines at a time"),
+            (
+                "Mouse wheel",
+                "Scroll the patch, or the open note / overlay",
+            ),
             ("g / G", "Jump to the top / bottom of the focused panel"),
             ("Tab", "Move focus between the file list and the patch"),
             ("PgUp / PgDn", "Scroll the patch a screen at a time"),

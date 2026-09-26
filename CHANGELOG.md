@@ -10,7 +10,20 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
+  faster than `j` / `k` in the patch, and move the line cursor 10 lines in
+  cursor mode, the expanded notes, and the help, history, and overview panels.
+  They scroll as smoothly as `j` / `k` when held.
+- **The mouse wheel scrolls the diff viewer.** It scrolls the patch, or the
+  panel or note that is open on top of it, without moving your line cursor.
+  It does nothing over prompts and pickers, so a stray scroll can't change a
+  choice.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.47.0] - 2026-09-26
 

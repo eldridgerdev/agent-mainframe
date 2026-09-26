@@ -4,6 +4,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, AppMode, DiffViewerFocus};
 
 const PATCH_SCROLL_STEP: usize = 1;
+/// How far Ctrl+J/K (or Ctrl+↓/↑) moves, for covering ground faster than `j`/`k`.
+pub(crate) const PATCH_JUMP_STEP: usize = 10;
 const PATCH_PAGE_STEP: usize = 20;
 const FEEDBACK_PAGE_STEP: usize = 10;
 
@@ -18,8 +20,18 @@ pub fn handle_diff_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+/// Lines a `j`/`k` press moves: one, or [`PATCH_JUMP_STEP`] with Ctrl held.
+fn scroll_step(key: &KeyEvent) -> usize {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        PATCH_JUMP_STEP
+    } else {
+        PATCH_SCROLL_STEP
+    }
+}
+
 pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let code = key.code;
+    let step = scroll_step(&key);
 
     // The base-ref prompt is a single-line text input that takes precedence over
     // every other binding while it is open.
@@ -69,8 +81,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if help_open {
         match code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => app.close_review_help(),
-            KeyCode::Char('j') | KeyCode::Down => app.review_help_scroll_down(PATCH_SCROLL_STEP),
-            KeyCode::Char('k') | KeyCode::Up => app.review_help_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::Char('j') | KeyCode::Down => app.review_help_scroll_down(step),
+            KeyCode::Char('k') | KeyCode::Up => app.review_help_scroll_up(step),
             KeyCode::PageDown => app.review_help_scroll_down(PATCH_PAGE_STEP),
             KeyCode::PageUp => app.review_help_scroll_up(PATCH_PAGE_STEP),
             KeyCode::Home | KeyCode::Char('g') => app.review_help_scroll_top(),
@@ -100,8 +112,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('h') | KeyCode::Left => app.review_history_move(-1),
             KeyCode::Char('l') | KeyCode::Right => app.review_history_move(1),
-            KeyCode::Char('j') | KeyCode::Down => app.review_history_scroll_down(PATCH_SCROLL_STEP),
-            KeyCode::Char('k') | KeyCode::Up => app.review_history_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::Char('j') | KeyCode::Down => app.review_history_scroll_down(step),
+            KeyCode::Char('k') | KeyCode::Up => app.review_history_scroll_up(step),
             KeyCode::PageDown => app.review_history_scroll_down(PATCH_PAGE_STEP),
             KeyCode::PageUp => app.review_history_scroll_up(PATCH_PAGE_STEP),
             KeyCode::Home | KeyCode::Char('g') => app.review_history_scroll_top(),
@@ -120,10 +132,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => app.close_changeset_overview(),
             KeyCode::Char('O') => app.generate_changeset_overview(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                app.changeset_overview_scroll_down(PATCH_SCROLL_STEP)
-            }
-            KeyCode::Char('k') | KeyCode::Up => app.changeset_overview_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::Char('j') | KeyCode::Down => app.changeset_overview_scroll_down(step),
+            KeyCode::Char('k') | KeyCode::Up => app.changeset_overview_scroll_up(step),
             KeyCode::PageDown => app.changeset_overview_scroll_down(PATCH_PAGE_STEP),
             KeyCode::PageUp => app.changeset_overview_scroll_up(PATCH_PAGE_STEP),
             KeyCode::Home | KeyCode::Char('g') => app.changeset_overview_scroll_top(),
@@ -140,8 +150,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if interdiff_open {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => app.close_interdiff(),
-            KeyCode::Char('j') | KeyCode::Down => app.interdiff_scroll_down(PATCH_SCROLL_STEP),
-            KeyCode::Char('k') | KeyCode::Up => app.interdiff_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::Char('j') | KeyCode::Down => app.interdiff_scroll_down(step),
+            KeyCode::Char('k') | KeyCode::Up => app.interdiff_scroll_up(step),
             KeyCode::PageDown => app.interdiff_scroll_down(PATCH_PAGE_STEP),
             KeyCode::PageUp => app.interdiff_scroll_up(PATCH_PAGE_STEP),
             KeyCode::Home | KeyCode::Char('g') => app.interdiff_scroll_top(),
@@ -260,11 +270,11 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         if notes_expanded {
             match code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    app.review_notes_scroll_down(PATCH_SCROLL_STEP);
+                    app.review_notes_scroll_down(step);
                     return Ok(());
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    app.review_notes_scroll_up(PATCH_SCROLL_STEP);
+                    app.review_notes_scroll_up(step);
                     return Ok(());
                 }
                 KeyCode::PageDown => {
@@ -296,11 +306,11 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         if cursor_active && !notes_expanded {
             match code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    app.diff_review_cursor_move(1);
+                    app.diff_review_cursor_move(step as isize);
                     return Ok(());
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    app.diff_review_cursor_move(-1);
+                    app.diff_review_cursor_move(-(step as isize));
                     return Ok(());
                 }
                 KeyCode::PageDown => {
@@ -586,12 +596,12 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // the verdict-advance paths still move file-to-file.
         KeyCode::Char('j') | KeyCode::Down => match app.diff_viewer_focus() {
             Some(DiffViewerFocus::FileList) => app.diff_viewer_tree_move(1),
-            Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_down(PATCH_SCROLL_STEP),
+            Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_down(step),
             None => {}
         },
         KeyCode::Char('k') | KeyCode::Up => match app.diff_viewer_focus() {
             Some(DiffViewerFocus::FileList) => app.diff_viewer_tree_move(-1),
-            Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_up(PATCH_SCROLL_STEP),
+            Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_up(step),
             None => {}
         },
         // Tree folding is a file-list concern only, so it can't steal keys from
@@ -674,6 +684,82 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// Ctrl+J/K plus PgUp/PgDn scroll the editor. The session-wide Ctrl+T Vim
 /// toggle is handled by [`handle_diff_viewer_key`] before dispatch reaches
 /// this function.
+/// Scrolls whatever the diff viewer is showing by `lines`: an open read-only
+/// overlay, the feedback editor, the expanded notes panel, or else the patch.
+/// The wheel scrolls the view rather than moving the line cursor, and does
+/// nothing over prompts and pickers, where a stray scroll would change a
+/// choice.
+pub fn handle_diff_viewer_wheel(app: &mut App, lines: usize, down: bool) {
+    enum Target {
+        Help,
+        History,
+        Overview,
+        Interdiff,
+        Feedback,
+        Notes,
+        Patch,
+        None,
+    }
+
+    if app.review_feature_setup_open() || app.review_destination_pick_open() || app.pr_submit_open()
+    {
+        return;
+    }
+    let target = match &app.mode {
+        AppMode::DiffViewer(state) => {
+            if state.editing_base_ref || state.editing_search || state.summary_open {
+                Target::None
+            } else if state.help_open {
+                Target::Help
+            } else if state.review_history.is_some() {
+                Target::History
+            } else if state.changeset_overview_open {
+                Target::Overview
+            } else if state.interdiff_open {
+                Target::Interdiff
+            } else if state.feedback_editing
+                || state.editing_general
+                || state.editing_line_comment
+                || state.editing_file_comment
+                || state.editing_suggestion
+            {
+                Target::Feedback
+            } else if state.notes_expanded {
+                Target::Notes
+            } else {
+                Target::Patch
+            }
+        }
+        _ => Target::None,
+    };
+
+    match (target, down) {
+        (Target::Help, true) => app.review_help_scroll_down(lines),
+        (Target::Help, false) => app.review_help_scroll_up(lines),
+        (Target::History, true) => app.review_history_scroll_down(lines),
+        (Target::History, false) => app.review_history_scroll_up(lines),
+        (Target::Overview, true) => app.changeset_overview_scroll_down(lines),
+        (Target::Overview, false) => app.changeset_overview_scroll_up(lines),
+        (Target::Interdiff, true) => app.interdiff_scroll_down(lines),
+        (Target::Interdiff, false) => app.interdiff_scroll_up(lines),
+        (Target::Feedback, _) => {
+            if let AppMode::DiffViewer(state) = &mut app.mode {
+                state.feedback_scroll = if down {
+                    state.feedback_scroll.saturating_add(lines)
+                } else {
+                    state.feedback_scroll.saturating_sub(lines)
+                };
+                state.feedback_sync_to_cursor = false;
+            }
+        }
+        (Target::Notes, true) => app.review_notes_scroll_down(lines),
+        (Target::Notes, false) => app.review_notes_scroll_up(lines),
+        (Target::Patch, true) => app.diff_viewer_scroll_patch_down(lines),
+        (Target::Patch, false) => app.diff_viewer_scroll_patch_up(lines),
+        (Target::None, _) => {}
+    }
+}
+
 fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: bool) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
@@ -874,6 +960,99 @@ index 1111111..2222222 100644
 +fn gamma_alpha() {}
  fn delta() {}
 ";
+
+    /// A single-file review app with `lines` added lines, focused on the patch.
+    fn make_long_patch_app(workdir: &Path, lines: usize) -> App {
+        let mut patch =
+            format!("diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -0,0 +1,{lines} @@\n");
+        for i in 0..lines {
+            patch.push_str(&format!("+line {i}\n"));
+        }
+        let mut app = make_review_app_with_patch(workdir, &patch);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.focus = DiffViewerFocus::Patch;
+        }
+        app
+    }
+
+    fn patch_scroll_and_cursor(app: &App) -> (usize, Option<usize>) {
+        match &app.mode {
+            AppMode::DiffViewer(state) => (state.patch_scroll, state.comment_cursor),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn ctrl_j_and_k_scroll_the_patch_further_than_j_and_k() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_long_patch_app(dir.path(), 60);
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('j'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).0, PATCH_JUMP_STEP);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).0, PATCH_JUMP_STEP + 1);
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('k'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).0, 1);
+    }
+
+    #[test]
+    fn ctrl_j_and_k_move_the_line_cursor_further_than_j_and_k() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_long_patch_app(dir.path(), 60);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).1, Some(0));
+
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('j'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).1, Some(PATCH_JUMP_STEP));
+        handle_diff_viewer_key(&mut app, ctrl(KeyCode::Char('k'))).unwrap();
+        assert_eq!(patch_scroll_and_cursor(&app).1, Some(0));
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_patch_without_moving_the_line_cursor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_long_patch_app(dir.path(), 60);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+
+        handle_diff_viewer_wheel(&mut app, 3, true);
+        handle_diff_viewer_wheel(&mut app, 3, true);
+        assert_eq!(patch_scroll_and_cursor(&app), (6, Some(0)));
+        handle_diff_viewer_wheel(&mut app, 3, false);
+        assert_eq!(patch_scroll_and_cursor(&app), (3, Some(0)));
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_an_open_overlay_instead_of_the_patch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_long_patch_app(dir.path(), 60);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('?'))).unwrap();
+        // The overlay's scroll limit comes from its last draw.
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.help_rendered_lines = 50;
+            state.help_view_height = 10;
+        }
+
+        handle_diff_viewer_wheel(&mut app, 3, true);
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert_eq!(state.patch_scroll, 0);
+                assert_eq!(state.help_scroll, 3);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mouse_wheel_does_nothing_while_typing_a_search() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_long_patch_app(dir.path(), 60);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.editing_search = true;
+        }
+
+        handle_diff_viewer_wheel(&mut app, 3, true);
+        assert_eq!(patch_scroll_and_cursor(&app).0, 0);
+    }
 
     fn help_open(app: &App) -> bool {
         matches!(&app.mode, AppMode::DiffViewer(state) if state.help_open)

@@ -25,6 +25,12 @@ fn hold_active(app: &App) -> bool {
 }
 
 pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Ctrl+J/K jump further than j/k, matching the final-review diff viewer.
+    let step = if key.modifiers.contains(KeyModifiers::CONTROL) {
+        super::diff::PATCH_JUMP_STEP
+    } else {
+        PATCH_SCROLL_STEP
+    };
     if matches!(
         &app.mode,
         AppMode::DiffReviewPrompt(state) if state.explanation_child.is_some()
@@ -75,10 +81,10 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if hold_active(app) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+                app.diff_review_scroll_patch_down(step);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+                app.diff_review_scroll_patch_up(step);
             }
             KeyCode::PageDown => {
                 app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);
@@ -129,10 +135,10 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+            app.diff_review_scroll_patch_down(step);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+            app.diff_review_scroll_patch_up(step);
         }
         KeyCode::PageDown => {
             app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);

@@ -2617,6 +2617,11 @@ impl PatchRowsRequest<'_> {
     /// Everything the rows are derived from. Hashing the hunks rather than
     /// `file.patch` matters: context expansion rewrites the hunks without
     /// touching the patch text.
+    ///
+    /// This re-hashes the file's text every frame — about 0.15ms for a 550KB
+    /// diff, against a rebuild of several milliseconds. A revision stamped on
+    /// `DiffFile` would be cheaper, but every path that rewrites hunks would
+    /// have to remember to bump it, and one that forgot would draw stale rows.
     fn key(&self) -> u64 {
         use std::hash::{Hash, Hasher};
 
@@ -2636,6 +2641,14 @@ impl PatchRowsRequest<'_> {
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         highlight::cache_generation().hash(&mut hasher);
+        // The same sides and paths `file_highlights` asks the service for.
+        if let Some(source) = self.file.old_content.as_deref() {
+            highlight::parser_state_for(self.file.old_path.as_deref().map(Path::new), source)
+                .hash(&mut hasher);
+        }
+        if let Some(source) = self.file.new_content.as_deref() {
+            highlight::parser_state_for(Some(Path::new(&self.file.path)), source).hash(&mut hasher);
+        }
         format!("{:?}", self.theme).hash(&mut hasher);
         self.width.hash(&mut hasher);
         std::mem::discriminant(&self.layout).hash(&mut hasher);

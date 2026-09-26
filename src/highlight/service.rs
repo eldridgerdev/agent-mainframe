@@ -67,6 +67,14 @@ pub fn clear_cache() {
     }
 }
 
+/// Identifies the parser state highlighting this source would use. The service
+/// notices a grammar being installed, repaired, or broken on disk without its
+/// cache being cleared, so a caller memoising highlighted output needs this as
+/// well as [`cache_generation`] to see the same changes.
+pub fn parser_state_for(path: Option<&Path>, source: &str) -> u64 {
+    parser_state_hash(detect_language(path, None, source))
+}
+
 fn hash_text(source: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);

@@ -6267,7 +6267,9 @@ fn ai_review_post_dialog_seeds_usage_summary_only_on_the_overall_review() {
             let post = state.post_confirm.as_ref().unwrap();
             let body = post.editor.text();
             assert!(
-                body.contains("### AI review usage\n- Harness: claude\n- Model: sonnet"),
+                body.contains(
+                    "<details>\n<summary>AI review usage · harness claude · model sonnet"
+                ) && body.contains("\n\n- Harness: claude\n- Model: sonnet"),
                 "summary should carry the usage section: {body}"
             );
             assert!(body.contains("Input tokens: 12.3k"));

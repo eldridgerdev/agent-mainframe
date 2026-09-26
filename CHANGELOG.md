@@ -13,8 +13,8 @@ are tagged.
 ### Added
 
 - **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
-  faster than `j` / `k` in the patch, and move the line cursor 10 lines in
-  cursor mode, the expanded notes, and the help, history, and overview panels.
+  faster than `j` / `k`: they scroll the patch, the expanded notes, and the
+  help, history, and overview panels, and move the line cursor in cursor mode.
   They scroll as smoothly as `j` / `k` when held.
 - **The mouse wheel scrolls the diff viewer.** It scrolls the patch, or the
   panel or note that is open on top of it, without moving your line cursor.

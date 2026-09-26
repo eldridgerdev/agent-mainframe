@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.47.0] - 2026-09-26
+
 ### Added
 
 - **Review a teammate's pull request in AMF's diff viewer.** Press `G` on a
@@ -32,6 +36,9 @@ are tagged.
   tells you plainly when GitHub wouldn't accept a choice (such as approving
   your own pull request). Comments that can't sit on the diff go in the
   summary. If posting fails, your draft is kept and you can retry.
+- **Start another session from a feature page in the desktop app.** A new
+  **New session** button starts a Claude, Codex, OpenCode, or Pi agent, a
+  terminal, or Neovim, with an optional name, and opens it in a new tab.
 
 ### Changed
 
@@ -46,10 +53,26 @@ are tagged.
   harness, model, tokens, and estimated cost. Expand that line to see every
   metric, including elapsed time and cached and total tokens.
 
+### Fixed
+
+- **Holding `j`/`k` in the diff viewer now scrolls smoothly.** Large files no
+  longer stutter or keep scrolling after you let go, so you can read the diff
+  while it moves. This applies to the final review and to pull request reviews.
+- **Posting a review no longer adds a bare "Needs revision." comment** to every
+  file you had already commented on. The note is still posted for a file you
+  marked as needing revision without leaving any other comment.
+- **The desktop app recovers its sessions after tmux exits.** Feature pages
+  show whether sessions are really running, and restarting a feature offers
+  to bring back its saved agents, instead of leaving the page disconnected.
+- **Agent sessions started from the desktop app no longer open a new app
+  window each time the agent thinks or runs a tool.**
+
 ### Migration
 
 - No migration is required. The review needs an authenticated `gh`, as PR
   Triage does. AMF updates its database the first time it starts.
+- Desktop-app sessions started before upgrading can still open extra windows
+  until they are restarted.
 
 ## [v0.46.0] - 2026-09-24
 

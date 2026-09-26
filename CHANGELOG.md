@@ -21,6 +21,12 @@ are tagged.
   It does nothing over prompts and pickers, so a stray scroll can't change a
   choice.
 
+### Fixed
+
+- **PR Triage omits AI review usage stats from fix prompts.** Single-comment
+  and combined fixes send the review feedback and code context without the
+  review's harness, model, token counts, elapsed time, or cost summary.
+
 ### Migration
 
 - No migration is required.

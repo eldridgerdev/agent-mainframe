@@ -560,6 +560,91 @@ fn fix_prompt_strips_bot_boilerplate() {
 }
 
 #[test]
+fn single_and_combined_fix_prompts_omit_posted_review_usage() {
+    let attribution = crate::app::ai_review::AiReviewAttribution {
+        harness: Some("codex".into()),
+        model: Some("review-model".into()),
+        input_tokens: Some(12_300),
+        output_tokens: Some(4_500),
+        cached_tokens: Some(3_200),
+        total_tokens: Some(20_000),
+        elapsed_ms: Some(125_000),
+        estimated_cost: Some("$0.10".into()),
+    };
+    let legacy_usage = "### AI review usage\n\
+        - Harness: codex\n\
+        - Model: review-model\n\
+        - Elapsed: 2m 05s\n\
+        - Input tokens: 12.3k\n\
+        - Output tokens: 4.5k\n\
+        - Cached tokens: 3.2k\n\
+        - Total tokens: 20.0k\n\
+        - Estimated cost: $0.10";
+    let feedback = "Guard this behind the lock.\n\nKeep the early return.";
+    // AMF posts through the user's GitHub account, so usage removal must be
+    // independent of GitHub's bot flag and the comment's kind.
+    for usage in [attribution.usage_summary(), legacy_usage.to_string()] {
+        let body = format!("{feedback}\n\n{usage}\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}");
+        for is_bot in [false, true] {
+            let comment = inline_comment(&body, is_bot);
+            let summary = PrComment {
+                id: 2,
+                kind: CommentKind::ReviewSummary {
+                    state: "CHANGES_REQUESTED".into(),
+                },
+                path: None,
+                line: None,
+                diff_hunk: None,
+                ..comment.clone()
+            };
+            let all = [comment.clone(), summary.clone()];
+            for prompt in [
+                comment.fix_prompt(),
+                summary.fix_prompt(),
+                combined_fix_prompt(&[&comment, &summary], &all),
+            ] {
+                assert!(prompt.contains(feedback));
+                assert!(prompt.contains(AI_REVIEW_ATTRIBUTION_FOOTER));
+                assert!(!prompt.contains("AI review usage"));
+                assert!(!prompt.contains("review-model"));
+                assert!(!prompt.contains("$0.10"));
+            }
+            assert!(comment.fix_prompt().contains("File: src/app/sync.rs:42"));
+            assert!(comment.fix_prompt().contains("+ self.sync();"));
+            // The fetched comment and other consumers retain the full body.
+            assert_eq!(comment.body, body);
+            if !is_bot {
+                assert_eq!(comment.agent_text(), body);
+            }
+        }
+    }
+}
+
+#[test]
+fn fix_prompt_omits_unavailable_review_usage_without_a_footer() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    let comment = inline_comment(&format!("Please add a test.\n\n{usage}\n"), false);
+    assert_eq!(
+        comment.fix_prompt(),
+        inline_comment("Please add a test.", false).fix_prompt()
+    );
+}
+
+#[test]
+fn fix_prompt_preserves_feedback_about_usage() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    for body in [
+        "Fix the usage stats: input tokens and estimated cost are wrong.".to_string(),
+        "The heading should be `### AI review usage`.".to_string(),
+        "### AI review usage\nThis counter is wrong; please fix it.".to_string(),
+        format!("Preserve this example:\n\n```markdown\n{usage}\n```"),
+        format!("Preserve this example:\n\n```markdown\n\n{usage}\n\n```"),
+    ] {
+        assert!(inline_comment(&body, false).fix_prompt().contains(&body));
+    }
+}
+
+#[test]
 fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     let mut a = inline_comment("Guard this behind the lock.", false);
     a.path = Some("src/a.rs".into());

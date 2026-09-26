@@ -914,6 +914,16 @@ from the last *N* PRs) is reached from the PR entry flow:
       untouched — a human's quoted diff still renders. Unit-tested (fence
       stripped, suggestion-fence stripped, leading `> ` lines stripped, a
       non-diff fence left byte-for-byte intact). → `src/app/pr_review.rs`.
+- [x] **Remove AI review usage stats when sending a PR comment for a fix.**
+      Single-comment and combined-batch prompts omit AMF's generated usage
+      summary, including reviews posted under a human GitHub account. Both
+      the current collapsed summary and the older Markdown summary are
+      recognized. Review feedback, attribution, file references, and diff
+      context remain intact; stored and displayed comments retain their full
+      bodies. Regression coverage includes human/bot authors, both prompt
+      formats, unavailable metrics, and feedback or code examples discussing
+      usage. → `src/app/pr_review/domain.rs`, `src/app/pr_review/tests.rs`,
+      `CHANGELOG.md`.
 - [x] **AI attribution on AMF-posted comments (honesty — from real use).**
       A new shared `append_ai_attribution` helper (`src/app/pr_review.rs`)
       appends `— drafted by Claude via AMF` to AI-authored GitHub content —

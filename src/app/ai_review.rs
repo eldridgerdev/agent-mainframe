@@ -318,11 +318,14 @@ fn strip_ai_review_attribution(body: &str) -> &str {
     if !core.ends_with("</details>") {
         return core;
     }
-    if core.starts_with(AI_REVIEW_USAGE_OPEN) {
-        return "";
-    }
-    match core.rfind(&format!("\n\n{AI_REVIEW_USAGE_OPEN}")) {
-        Some(start) if !core[start + 2..].contains("\n</details>\n") => core[..start].trim_end(),
+    // An empty summary seeds a body that is *only* the usage block, so it
+    // opens at the very start rather than after a blank line.
+    let block_start = core
+        .rfind(&format!("\n\n{AI_REVIEW_USAGE_OPEN}"))
+        .map(|i| i + 2)
+        .or_else(|| core.starts_with(AI_REVIEW_USAGE_OPEN).then_some(0));
+    match block_start {
+        Some(start) if !core[start..].contains("\n</details>\n") => core[..start].trim_end(),
         _ => core,
     }
 }
@@ -3715,6 +3718,19 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let body = "Quoted:\n\n<details>\n<summary>AI review usage · x</summary>\n\n- a\n\n</details>\n\n\
                     <details>\n<summary>Notes</summary>\n\nmine\n\n</details>";
         assert_eq!(strip_ai_review_attribution(body), body);
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_keeps_user_details_after_a_leading_usage_block() {
+        // An empty summary seeds a body that is only the usage block; a
+        // `<details>` the user adds after it must survive, and the seeded
+        // block alone must still be stripped.
+        let seeded = append_ai_review_attribution("", Some(&sample_attribution()));
+        assert_eq!(strip_ai_review_attribution(&seeded), "");
+        let footer = crate::app::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
+        let core = seeded.trim_end().strip_suffix(footer).unwrap().trim_end();
+        let edited = format!("{core}\n\n<details>\n<summary>Notes</summary>\n\nmine\n\n</details>");
+        assert_eq!(strip_ai_review_attribution(&edited), edited);
     }
 
     #[test]

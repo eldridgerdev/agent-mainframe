@@ -1514,11 +1514,13 @@ pub(super) fn build_pr_review(
     // tag as line comments. A rejection with no feedback text is usually the
     // implicit verdict a line or file comment sets, and those comments already
     // say what needs revising — so it posts nothing of its own. Only a bare
-    // rejection that is the file's sole signal gets a filler line.
+    // rejection that is the file's sole signal gets a filler line. Check the
+    // inline comments actually built, not the raw sections: a line comment
+    // dropped as outside the diff says nothing on the PR.
     let has_other_comments = |file: &str| {
-        line_comment_sections
+        comments
             .iter()
-            .any(|(path, cs)| path == file && !cs.is_empty())
+            .any(|c: &crate::github::PrReviewComment| c.path == file)
             || file_comment_sections.iter().any(|(path, _)| path == file)
     };
     let mut file_comments: Vec<crate::github::PrFileComment> = rejected

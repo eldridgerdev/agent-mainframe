@@ -293,8 +293,11 @@ impl App {
         if let Err(error) = self.ensure_feature_running_for_recovery(
             pi,
             fi,
-            state.session_id.clone(),
-            resume_id,
+            crate::app::feature_ops::RecoveryLaunch {
+                session_id: state.session_id.clone(),
+                resume_id,
+                only_this_agent: false,
+            },
             &mut created_session,
             // Mid-recovery: the picked session id lives in a mode the dialog
             // would replace, so warn rather than park and lose it.
@@ -1531,17 +1534,20 @@ impl App {
         mode: &VibeMode,
         session_id: &str,
         extra_args: Vec<String>,
-        claude_resume_id: Option<String>,
+        resume_id: Option<String>,
     ) -> Result<()> {
         self.tmux.create_window(tmux_session, window, workdir)?;
         match agent {
             AgentKind::Claude => {
-                self.tmux.launch_claude(
+                self.tmux
+                    .launch_claude(tmux_session, window, session_id, resume_id, extra_args)?;
+            }
+            AgentKind::Opencode if resume_id.is_some() => {
+                self.tmux.launch_opencode_with_session(
                     tmux_session,
                     window,
                     session_id,
-                    claude_resume_id,
-                    extra_args,
+                    resume_id,
                 )?;
             }
             AgentKind::Opencode => {
@@ -1551,7 +1557,7 @@ impl App {
             AgentKind::Codex => {
                 let codex_args = crate::codex_config::launch_override_args(workdir, mode);
                 self.tmux
-                    .launch_codex(tmux_session, window, session_id, None, codex_args)?;
+                    .launch_codex(tmux_session, window, session_id, resume_id, codex_args)?;
             }
             AgentKind::Pi => {
                 self.tmux.launch_pi(tmux_session, window, session_id)?;
@@ -1826,6 +1832,20 @@ impl App {
         fi: usize,
         si: usize,
     ) -> Result<bool> {
+        self.restart_stopped_session_window_resuming(pi, fi, si, None)
+    }
+
+    /// The restart worker with an explicit resume choice for an agent
+    /// session: `None` keeps the TUI's default (its recorded Claude
+    /// conversation), `Some(Some(id))` resumes that conversation in any
+    /// harness, and `Some(None)` starts a fresh one.
+    pub(crate) fn restart_stopped_session_window_resuming(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+        resume_override: Option<Option<String>>,
+    ) -> Result<bool> {
         let Some((tmux_session, workdir, mode, remote_control, enable_chrome, feature_name)) = self
             .store
             .projects
@@ -1883,9 +1903,9 @@ impl App {
                 extra_args,
                 // Recreating an existing session's window: pick up where its
                 // prior Claude conversation left off, same as the
-                // whole-feature restart in `feature_ops.rs`. A no-op for the
-                // other harnesses, which ignore this argument.
-                session.claude_session_id.clone(),
+                // whole-feature restart in `feature_ops.rs`. Only Claude
+                // records one here; an override can resume any harness.
+                resume_override.unwrap_or_else(|| session.claude_session_id.clone()),
             )?;
         } else {
             self.tmux

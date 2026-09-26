@@ -974,22 +974,23 @@ impl App {
         fi: usize,
         intent: StartIntent,
     ) -> Result<Started> {
-        self.ensure_feature_running_with_launch_override(pi, fi, None, None, intent)
+        self.ensure_feature_running_with_launch_override(pi, fi, None, false, None, intent)
     }
 
+    /// Start a stopped feature for one session's recovery.
     pub(crate) fn ensure_feature_running_for_recovery(
         &mut self,
         pi: usize,
         fi: usize,
-        session_id: String,
-        resume_id: Option<String>,
+        launch: RecoveryLaunch,
         created_session: &mut bool,
         intent: StartIntent,
     ) -> Result<Started> {
         self.ensure_feature_running_with_launch_override(
             pi,
             fi,
-            Some((session_id, resume_id)),
+            Some((launch.session_id, launch.resume_id)),
+            launch.only_this_agent,
             Some(created_session),
             intent,
         )
@@ -1006,6 +1007,7 @@ impl App {
             pi,
             fi,
             None,
+            false,
             Some(created_session),
             intent,
         )
@@ -1016,6 +1018,7 @@ impl App {
         pi: usize,
         fi: usize,
         launch_override: Option<(String, Option<String>)>,
+        only_launch_target_agent: bool,
         created_session: Option<&mut bool>,
         intent: StartIntent,
     ) -> Result<Started> {
@@ -1084,19 +1087,36 @@ impl App {
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
+        // Left windowless (not an idle shell), so they read as stopped.
+        let held_back = |session: &crate::project::FeatureSession| {
+            only_launch_target_agent
+                && session.kind.is_agent_harness()
+                && launch_override
+                    .as_ref()
+                    .is_some_and(|(target_id, _)| target_id != &session.id)
+        };
         for session in &feature.sessions[1..] {
+            if held_back(session) {
+                continue;
+            }
             self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
                 &feature.workdir,
             )?;
         }
+        // The first window is created with the session itself; close it now
+        // that the others (including the target) exist.
+        if held_back(&feature.sessions[0]) {
+            self.tmux
+                .kill_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+        }
 
         let tmux_session = feature.tmux_session.clone();
         let windows: Vec<String> = feature
             .sessions
             .iter()
-            .filter(|session| session.kind.is_tmux_backed())
+            .filter(|session| session.kind.is_tmux_backed() && !held_back(session))
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -1131,6 +1151,10 @@ impl App {
                 .as_ref()
                 .filter(|(session_id, _)| session_id == &session.id)
                 .and_then(|(_, resume_id)| resume_id.clone());
+
+            if held_back(session) {
+                continue;
+            }
 
             if session.kind.is_agent_harness()
                 && !is_launch_target
@@ -1282,8 +1306,10 @@ impl App {
             }
         }
 
-        self.tmux
-            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+        if let Some(first) = feature.sessions.iter().find(|session| !held_back(session)) {
+            self.tmux
+                .select_window(&feature.tmux_session, &first.tmux_window)?;
+        }
 
         feature.status = ProjectStatus::Idle;
         feature.touch();
@@ -2266,6 +2292,18 @@ impl App {
 
         Ok(())
     }
+}
+
+/// Which session a recovery start is for, and how it comes back.
+pub(crate) struct RecoveryLaunch {
+    pub session_id: String,
+    /// `None` starts a fresh conversation.
+    pub resume_id: Option<String>,
+    /// Launch no other agent session and give none of them a window, so each
+    /// stays stopped until it is recovered on its own (the GUI's per-tab
+    /// resume). The TUI passes `false` and brings every session up as an
+    /// ordinary start would.
+    pub only_this_agent: bool,
 }
 
 #[cfg(test)]

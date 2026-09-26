@@ -49,6 +49,8 @@ export interface Project {
 export interface WorkspaceSnapshot {
   projects: Project[];
   snapshot_at: string;
+  /** Sessions of a running feature whose tmux window is gone. */
+  stopped_session_ids: string[];
 }
 
 export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "internal";
@@ -172,6 +174,49 @@ export function addSession(
   approved: boolean,
 ): Promise<AddSessionResponse> {
   return invoke("add_session", { target, kind, label, approved });
+}
+
+export interface StopSessionResponse {
+  session_id: string;
+  /** Stopping a feature's only session stops the feature, as in the TUI. */
+  feature_stopped: boolean;
+  message: string;
+}
+
+/** The TUI's `x`: kill the session's window but keep the session. */
+export function stopSession(target: SessionTarget): Promise<StopSessionResponse> {
+  return invoke("stop_session", { target });
+}
+
+/** Restart one stopped session inside a running feature, fresh. */
+export function startSession(target: SessionTarget, approved: boolean): Promise<StartFeatureResponse> {
+  return invoke("start_session", { target, approved });
+}
+
+export interface RemoveSessionResponse {
+  session_id: string;
+  /** Removing a feature's last session stops the feature, as in the TUI. */
+  feature_stopped: boolean;
+  message: string;
+}
+
+export function removeSession(target: SessionTarget): Promise<RemoveSessionResponse> {
+  return invoke("remove_session", { target });
+}
+
+/** What happens to a deleted worktree's unfinished TODOs. */
+export type TodoDeleteChoice = "move_to_project" | "move_to_global" | "delete";
+
+export type DeleteFeatureResponse =
+  | { status: "deleted"; feature_id: string; message: string }
+  /** Nothing was touched; resend with a `TodoDeleteChoice`. */
+  | { status: "needs_todo_disposition"; unfinished: number };
+
+export function deleteFeature(
+  target: FeatureTarget,
+  todos: TodoDeleteChoice | null,
+): Promise<DeleteFeatureResponse> {
+  return invoke("delete_feature", { target, todos });
 }
 
 export interface SessionRecoveryOption {

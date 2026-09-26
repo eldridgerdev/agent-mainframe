@@ -1488,8 +1488,14 @@ fn run_loop<B: Backend + io::Write>(
 
             // Drain all pending events before drawing once — without
             // this, fast typing or key repeat in compose mode pays a
-            // full frame draw per keystroke and falls behind.
-            if pane_live || startup_loading {
+            // full frame draw per keystroke and falls behind. The diff
+            // viewers opt in too, so holding j/k scrolls in step with the
+            // key rather than replaying a backlog after it is released.
+            let coalesce_keys = matches!(
+                app.mode,
+                app::AppMode::DiffViewer(_) | app::AppMode::DiffReviewPrompt(_)
+            );
+            if pane_live || startup_loading || coalesce_keys {
                 while event::poll(Duration::ZERO)? {
                     events.push(event::read()?);
                 }

@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
@@ -16,6 +17,7 @@ struct CacheKey {
 }
 
 static CACHE: OnceLock<Mutex<HashMap<CacheKey, HighlightedText>>> = OnceLock::new();
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub fn highlight_source(request: HighlightRequest<'_>) -> HighlightedText {
     let language = detect_language(request.path, request.language_hint, request.source);
@@ -52,10 +54,25 @@ fn cache() -> &'static Mutex<HashMap<CacheKey, HighlightedText>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Bumped whenever the highlight cache is cleared, so a caller memoising
+/// output derived from highlights can tell it has gone stale.
+pub fn cache_generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
+
 pub fn clear_cache() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
     if let Ok(mut cache) = cache().lock() {
         cache.clear();
     }
+}
+
+/// Identifies the parser state highlighting this source would use. The service
+/// notices a grammar being installed, repaired, or broken on disk without its
+/// cache being cleared, so a caller memoising highlighted output needs this as
+/// well as [`cache_generation`] to see the same changes.
+pub fn parser_state_for(path: Option<&Path>, source: &str) -> u64 {
+    parser_state_hash(detect_language(path, None, source))
 }
 
 fn hash_text(source: &str) -> u64 {

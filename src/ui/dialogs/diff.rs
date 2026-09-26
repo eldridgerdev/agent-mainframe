@@ -2264,23 +2264,23 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
     {
         let viewport = area.height.saturating_sub(2) as usize;
         let synced = state.files.get(state.selected_file).map(|file| {
-            let width = area.width.saturating_sub(2);
-            let mut cursor_row = None;
-            let lines = patch_lines(
+            let rows = cached_patch_rows(PatchRowsRequest {
                 file,
-                width,
+                width: area.width.saturating_sub(2),
                 theme,
-                true,
-                is_new_diff_file(file),
-                cursor_loc,
-                &commented,
-                &draft,
-                &blocker,
-                &selection,
-                &matched,
-                &mut cursor_row,
-            );
-            (lines.len(), cursor_row)
+                layout: DiffViewerLayout::Unified,
+                include_prologue: true,
+                new_file_presentation: is_new_diff_file(file),
+                commented: &commented,
+                draft: &draft,
+                blocker: &blocker,
+                selection: &selection,
+                matched: &matched,
+            });
+            let cursor_row = cursor_loc
+                .and_then(|loc| rows.rows.get(&loc))
+                .map(|span| span.start);
+            (rows.lines.len(), cursor_row)
         });
         if let Some((total_lines, Some(row))) = synced {
             if row < state.patch_scroll {
@@ -2537,44 +2537,274 @@ pub(crate) fn draw_patch_panel(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(options.border_color));
 
-    let scroll = u16::try_from(options.scroll).unwrap_or(u16::MAX);
-    match file {
-        Some(file) if matches!(options.layout, DiffViewerLayout::SideBySide) => {
-            let lines = side_by_side_lines(
-                file,
-                area.width.saturating_sub(2),
-                theme,
-                options.include_prologue,
-            );
-            frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+    let Some(file) = file else {
+        frame.render_widget(Paragraph::new("No file selected").block(block), area);
+        return;
+    };
+    let rows = cached_patch_rows(PatchRowsRequest {
+        file,
+        width: area.width.saturating_sub(2),
+        theme,
+        layout: options.layout.clone(),
+        include_prologue: options.include_prologue,
+        new_file_presentation: options.new_file_presentation,
+        commented: &options.commented,
+        draft: &options.draft,
+        blocker: &options.blocker,
+        selection: &options.selection,
+        matched: &options.matched,
+    });
+
+    // Only the visible rows go to the widget: a `Paragraph` scrolled over the
+    // whole file re-walks every row above the viewport on each frame.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let start = options.scroll.min(rows.lines.len());
+    let end = (start + inner.height as usize).min(rows.lines.len());
+    let visible = Paragraph::new(rows.lines[start..end].to_vec());
+    let visible = if matches!(options.layout, DiffViewerLayout::SideBySide) {
+        visible
+    } else {
+        visible.wrap(Wrap { trim: false })
+    };
+    frame.render_widget(visible, inner);
+
+    if let Some(cursor) = options.cursor {
+        paint_patch_cursor(
+            frame.buffer_mut(),
+            inner,
+            options.scroll,
+            &rows,
+            PatchCursor {
+                location: cursor,
+                has_comment: options.commented.contains(&cursor),
+                draft: options.draft.contains(&cursor),
+            },
+            theme,
+        );
+    }
+}
+
+/// The patch panel's rows for one file, memoised across frames.
+///
+/// Building them highlights, word-diffs, and wraps the whole file, which is
+/// far too slow to repeat on every frame while `j`/`k` is held. The review
+/// cursor is deliberately not part of the cache key: it is painted over the
+/// cached rows by [`paint_patch_cursor`], so moving it never forces a rebuild.
+struct PatchRows {
+    lines: Vec<Line<'static>>,
+    /// Rows each addressable diff line occupies (unified layout only).
+    rows: std::collections::HashMap<DiffLineLocation, std::ops::Range<usize>>,
+    /// Width of one line-number column in the unified gutter.
+    number_width: usize,
+}
+
+struct PatchRowsRequest<'a> {
+    file: &'a DiffFile,
+    width: u16,
+    theme: &'a Theme,
+    layout: DiffViewerLayout,
+    include_prologue: bool,
+    new_file_presentation: bool,
+    commented: &'a std::collections::HashSet<DiffLineLocation>,
+    draft: &'a std::collections::HashSet<DiffLineLocation>,
+    blocker: &'a std::collections::HashSet<DiffLineLocation>,
+    selection: &'a std::collections::HashSet<DiffLineLocation>,
+    matched: &'a std::collections::HashSet<DiffLineLocation>,
+}
+
+impl PatchRowsRequest<'_> {
+    /// Everything the rows are derived from. Hashing the hunks rather than
+    /// `file.patch` matters: context expansion rewrites the hunks without
+    /// touching the patch text.
+    ///
+    /// This re-hashes the file's text every frame — about 0.15ms for a 550KB
+    /// diff, against a rebuild of several milliseconds. A revision stamped on
+    /// `DiffFile` would be cheaper, but every path that rewrites hunks would
+    /// have to remember to bump it, and one that forgot would draw stale rows.
+    fn key(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        fn hash_locations(
+            set: &std::collections::HashSet<DiffLineLocation>,
+            hasher: &mut impl Hasher,
+        ) {
+            // Order-independent, since set iteration order is not stable.
+            let sum = set.iter().fold(0u64, |acc, loc| {
+                let mut item = std::collections::hash_map::DefaultHasher::new();
+                loc.hash(&mut item);
+                acc.wrapping_add(item.finish())
+            });
+            set.len().hash(hasher);
+            sum.hash(hasher);
         }
-        Some(file) => {
-            let mut cursor_row = None;
-            let lines = patch_lines(
-                file,
-                area.width.saturating_sub(2),
-                theme,
-                options.include_prologue,
-                options.new_file_presentation,
-                options.cursor,
-                &options.commented,
-                &options.draft,
-                &options.blocker,
-                &options.selection,
-                &options.matched,
-                &mut cursor_row,
-            );
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(block)
-                    .scroll((scroll, 0))
-                    .wrap(Wrap { trim: false }),
-                area,
-            );
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        highlight::cache_generation().hash(&mut hasher);
+        // The same sides and paths `file_highlights` asks the service for.
+        if let Some(source) = self.file.old_content.as_deref() {
+            highlight::parser_state_for(self.file.old_path.as_deref().map(Path::new), source)
+                .hash(&mut hasher);
         }
-        None => {
-            let patch = Paragraph::new("No file selected").block(block);
-            frame.render_widget(patch, area);
+        if let Some(source) = self.file.new_content.as_deref() {
+            highlight::parser_state_for(Some(Path::new(&self.file.path)), source).hash(&mut hasher);
+        }
+        format!("{:?}", self.theme).hash(&mut hasher);
+        self.width.hash(&mut hasher);
+        std::mem::discriminant(&self.layout).hash(&mut hasher);
+        self.include_prologue.hash(&mut hasher);
+        self.new_file_presentation.hash(&mut hasher);
+
+        let file = self.file;
+        file.path.hash(&mut hasher);
+        file.old_path.hash(&mut hasher);
+        std::mem::discriminant(&file.status).hash(&mut hasher);
+        file.is_binary.hash(&mut hasher);
+        file.patch.hash(&mut hasher);
+        file.old_content.hash(&mut hasher);
+        file.new_content.hash(&mut hasher);
+        for hunk in &file.hunks {
+            hunk.header.hash(&mut hasher);
+            (
+                hunk.old_start,
+                hunk.old_lines,
+                hunk.new_start,
+                hunk.new_lines,
+            )
+                .hash(&mut hasher);
+            for line in &hunk.lines {
+                std::mem::discriminant(&line.kind).hash(&mut hasher);
+                line.text.hash(&mut hasher);
+            }
+        }
+
+        for set in [
+            self.commented,
+            self.draft,
+            self.blocker,
+            self.selection,
+            self.matched,
+        ] {
+            hash_locations(set, &mut hasher);
+        }
+        hasher.finish()
+    }
+
+    fn build(&self) -> PatchRows {
+        let mut rows = std::collections::HashMap::new();
+        let lines = match self.layout {
+            DiffViewerLayout::SideBySide => {
+                side_by_side_lines(self.file, self.width, self.theme, self.include_prologue)
+            }
+            DiffViewerLayout::Unified => indexed_patch_lines(
+                self.file,
+                self.width,
+                self.theme,
+                self.include_prologue,
+                self.new_file_presentation,
+                None,
+                self.commented,
+                self.draft,
+                self.blocker,
+                self.selection,
+                self.matched,
+                &mut rows,
+            ),
+        };
+        PatchRows {
+            lines,
+            rows,
+            number_width: line_number_width(self.file),
+        }
+    }
+}
+
+thread_local! {
+    /// One entry is enough: a frame draws at most one patch panel, and the
+    /// review viewer's cursor-scroll sync asks for the same rows it renders.
+    static PATCH_ROWS_CACHE: std::cell::RefCell<Option<(u64, std::rc::Rc<PatchRows>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn cached_patch_rows(request: PatchRowsRequest<'_>) -> std::rc::Rc<PatchRows> {
+    let key = request.key();
+    PATCH_ROWS_CACHE.with(|cache| {
+        if let Some((cached_key, rows)) = cache.borrow().as_ref()
+            && *cached_key == key
+        {
+            return rows.clone();
+        }
+        let rows = std::rc::Rc::new(request.build());
+        *cache.borrow_mut() = Some((key, rows.clone()));
+        rows
+    })
+}
+
+struct PatchCursor {
+    location: DiffLineLocation,
+    has_comment: bool,
+    draft: bool,
+}
+
+/// Paints the review cursor onto rows rendered without it, reproducing what
+/// `wrap_gutter_line` draws for a cursored line: a selection-tinted gutter,
+/// high-contrast line numbers, the cursor marker, and bold content.
+fn paint_patch_cursor(
+    buf: &mut ratatui::buffer::Buffer,
+    inner: Rect,
+    scroll: usize,
+    rows: &PatchRows,
+    cursor: PatchCursor,
+    theme: &Theme,
+) {
+    let Some(span) = rows.rows.get(&cursor.location) else {
+        return;
+    };
+    let number_width = rows.number_width;
+    let marker_col = number_width * 2 + 2;
+    let gutter_width = marker_col + 2;
+    let marker = if cursor.has_comment {
+        "◆"
+    } else if cursor.draft {
+        "◈"
+    } else {
+        "▶"
+    };
+    let selection_bg = theme.selection.to_color();
+    let text_fg = theme.text.to_color();
+    let warning_fg = theme.warning.to_color();
+
+    for row in span.clone() {
+        let Some(offset) = row.checked_sub(scroll) else {
+            continue;
+        };
+        if offset >= inner.height as usize {
+            break;
+        }
+        let y = inner.y + offset as u16;
+        let first = row == span.start;
+        let line_width = rows.lines[row].width().min(inner.width as usize);
+        for dx in 0..line_width {
+            let cell = &mut buf[(inner.x + dx as u16, y)];
+            if dx >= gutter_width {
+                cell.set_style(Style::default().add_modifier(Modifier::BOLD));
+                continue;
+            }
+            cell.set_bg(selection_bg);
+            let is_number =
+                dx < number_width || (number_width + 1..number_width * 2 + 1).contains(&dx);
+            if is_number {
+                cell.set_fg(text_fg);
+            } else if dx >= marker_col {
+                if first {
+                    cell.set_fg(warning_fg);
+                    if dx == marker_col {
+                        cell.set_symbol(marker);
+                    }
+                } else {
+                    cell.set_fg(text_fg);
+                }
+            }
         }
     }
 }
@@ -3549,6 +3779,42 @@ fn patch_lines(
     matched: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
+    let mut rows = std::collections::HashMap::new();
+    let lines = indexed_patch_lines(
+        file,
+        width,
+        theme,
+        include_prologue,
+        new_file_presentation,
+        cursor,
+        commented,
+        draft,
+        blocker,
+        selection,
+        matched,
+        &mut rows,
+    );
+    *cursor_row = cursor.and_then(|loc| rows.get(&loc)).map(|span| span.start);
+    lines
+}
+
+/// [`patch_lines`], also recording which rows each addressable diff line
+/// occupies, so a cached render can place the review cursor without a rebuild.
+#[allow(clippy::too_many_arguments)]
+fn indexed_patch_lines(
+    file: &DiffFile,
+    width: u16,
+    theme: &Theme,
+    include_prologue: bool,
+    new_file_presentation: bool,
+    cursor: Option<DiffLineLocation>,
+    commented: &std::collections::HashSet<DiffLineLocation>,
+    draft: &std::collections::HashSet<DiffLineLocation>,
+    blocker: &std::collections::HashSet<DiffLineLocation>,
+    selection: &std::collections::HashSet<DiffLineLocation>,
+    matched: &std::collections::HashSet<DiffLineLocation>,
+    rows: &mut std::collections::HashMap<DiffLineLocation, std::ops::Range<usize>>,
+) -> Vec<Line<'static>> {
     let content_width = width as usize;
     if file.is_binary || file.hunks.is_empty() || content_width < 16 {
         return raw_patch_wrapped_lines(file, content_width, theme);
@@ -3624,9 +3890,7 @@ fn patch_lines(
                         new_line: Some(new_line),
                     };
                     let ann = annotation(loc);
-                    if ann.cursor {
-                        *cursor_row = Some(lines.len());
-                    }
+                    let start = lines.len();
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         Some(new_line),
@@ -3643,6 +3907,7 @@ fn patch_lines(
                         ann,
                         theme,
                     ));
+                    rows.insert(loc, start..lines.len());
                     old_line += 1;
                     new_line += 1;
                 }
@@ -3652,9 +3917,7 @@ fn patch_lines(
                         new_line: None,
                     };
                     let ann = annotation(loc);
-                    if ann.cursor {
-                        *cursor_row = Some(lines.len());
-                    }
+                    let start = lines.len();
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
@@ -3677,6 +3940,7 @@ fn patch_lines(
                         ann,
                         theme,
                     ));
+                    rows.insert(loc, start..lines.len());
                     old_line += 1;
                 }
                 DiffLineKind::Added => {
@@ -3685,9 +3949,7 @@ fn patch_lines(
                         new_line: Some(new_line),
                     };
                     let ann = annotation(loc);
-                    if ann.cursor {
-                        *cursor_row = Some(lines.len());
-                    }
+                    let start = lines.len();
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
@@ -3712,6 +3974,7 @@ fn patch_lines(
                         ann,
                         theme,
                     ));
+                    rows.insert(loc, start..lines.len());
                     new_line += 1;
                 }
                 DiffLineKind::NoNewlineMarker => {
@@ -5969,5 +6232,139 @@ index 0000000..1111111
         // The badges describe the one file the row is actually hiding — not the
         // decisions and Δ of the two the filter dropped.
         assert_eq!(summary.trim(), "(1) ·1", "summary was {summary:?}");
+    }
+
+    /// The patch panel renders from a cursor-free cache and paints the cursor
+    /// on afterwards; the result must match rendering every row with the
+    /// cursor built in, including a cursor line that wraps and one scrolled
+    /// partly out of view.
+    #[test]
+    fn cached_patch_panel_matches_a_full_render_with_the_cursor_built_in() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::collections::HashSet;
+
+        let long = "x".repeat(70);
+        let file = DiffFile {
+            old_path: None,
+            path: "notes.txt".into(),
+            status: DiffFileStatus::Modified,
+            additions: 2,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: "diff --git a/notes.txt b/notes.txt\n".into(),
+            hunks: vec![DiffHunk {
+                header: "@@ -1,3 +1,4 @@".into(),
+                old_start: 1,
+                old_lines: 3,
+                new_start: 1,
+                new_lines: 4,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " alpha".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Removed,
+                        text: "-beta".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: format!("+{long}"),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+gamma".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " delta".into(),
+                    },
+                ],
+            }],
+        };
+        let theme = Theme::default();
+        let wrapped = DiffLineLocation {
+            old_line: None,
+            new_line: Some(2),
+        };
+        let removed = DiffLineLocation {
+            old_line: Some(2),
+            new_line: None,
+        };
+        let context = DiffLineLocation {
+            old_line: Some(3),
+            new_line: Some(4),
+        };
+        let set = |locs: &[DiffLineLocation]| locs.iter().copied().collect::<HashSet<_>>();
+
+        let cases = [
+            (wrapped, set(&[]), set(&[]), set(&[context])),
+            (wrapped, set(&[wrapped]), set(&[]), set(&[])),
+            (removed, set(&[]), set(&[removed]), set(&[])),
+            (context, set(&[removed]), set(&[wrapped]), set(&[context])),
+        ];
+        for (cursor, commented, draft, matched) in cases {
+            for scroll in 0..6 {
+                let render = |cached: bool| {
+                    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            let area = frame.area();
+                            if cached {
+                                draw_patch_panel(
+                                    frame,
+                                    area,
+                                    Some(&file),
+                                    PatchPanelOptions {
+                                        title: "Patch".into(),
+                                        scroll,
+                                        cursor: Some(cursor),
+                                        commented: commented.clone(),
+                                        draft: draft.clone(),
+                                        matched: matched.clone(),
+                                        ..Default::default()
+                                    },
+                                    &theme,
+                                );
+                            } else {
+                                let lines = patch_lines(
+                                    &file,
+                                    area.width - 2,
+                                    &theme,
+                                    true,
+                                    false,
+                                    Some(cursor),
+                                    &commented,
+                                    &draft,
+                                    &HashSet::new(),
+                                    &HashSet::new(),
+                                    &matched,
+                                    &mut None,
+                                );
+                                let block = Block::default()
+                                    .title(" Patch [unified] ")
+                                    .borders(Borders::ALL)
+                                    .border_style(Style::default().fg(Color::Reset));
+                                frame.render_widget(
+                                    Paragraph::new(lines)
+                                        .block(block)
+                                        .scroll((scroll as u16, 0))
+                                        .wrap(Wrap { trim: false }),
+                                    area,
+                                );
+                            }
+                        })
+                        .unwrap();
+                    terminal.backend().buffer().clone()
+                };
+                assert_eq!(
+                    render(true),
+                    render(false),
+                    "cursor {cursor:?} at scroll {scroll}"
+                );
+            }
+        }
     }
 }

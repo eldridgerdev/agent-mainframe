@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, AppMode};
 use crate::claude::ClaudeLauncher;
 
-const PATCH_SCROLL_STEP: usize = 1;
 const PATCH_PAGE_STEP: usize = 20;
 
 fn diff_review_uses_new_file_presentation(app: &App) -> bool {
@@ -26,11 +25,7 @@ fn hold_active(app: &App) -> bool {
 
 pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // Ctrl+J/K jump further than j/k, matching the final-review diff viewer.
-    let step = if key.modifiers.contains(KeyModifiers::CONTROL) {
-        super::diff::PATCH_JUMP_STEP
-    } else {
-        PATCH_SCROLL_STEP
-    };
+    let step = super::diff::scroll_step(&key);
     if matches!(
         &app.mode,
         AppMode::DiffReviewPrompt(state) if state.explanation_child.is_some()

@@ -5,7 +5,7 @@ use crate::app::{App, AppMode, DiffViewerFocus};
 
 const PATCH_SCROLL_STEP: usize = 1;
 /// How far Ctrl+J/K (or Ctrl+↓/↑) moves, for covering ground faster than `j`/`k`.
-pub(crate) const PATCH_JUMP_STEP: usize = 10;
+const PATCH_JUMP_STEP: usize = 10;
 const PATCH_PAGE_STEP: usize = 20;
 const FEEDBACK_PAGE_STEP: usize = 10;
 
@@ -21,7 +21,7 @@ pub fn handle_diff_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Lines a `j`/`k` press moves: one, or [`PATCH_JUMP_STEP`] with Ctrl held.
-fn scroll_step(key: &KeyEvent) -> usize {
+pub(crate) fn scroll_step(key: &KeyEvent) -> usize {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         PATCH_JUMP_STEP
     } else {
@@ -679,11 +679,6 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Drive the multi-line feedback editor (per-file rejection or general
-/// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
-/// Ctrl+J/K plus PgUp/PgDn scroll the editor. The session-wide Ctrl+T Vim
-/// toggle is handled by [`handle_diff_viewer_key`] before dispatch reaches
-/// this function.
 /// Scrolls whatever the diff viewer is showing by `lines`: an open read-only
 /// overlay, the feedback editor, the expanded notes panel, or else the patch.
 /// The wheel scrolls the view rather than moving the line cursor, and does
@@ -760,6 +755,11 @@ pub fn handle_diff_viewer_wheel(app: &mut App, lines: usize, down: bool) {
     }
 }
 
+/// Drive the multi-line feedback editor (per-file rejection or general
+/// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
+/// Ctrl+J/K plus PgUp/PgDn scroll the editor. The session-wide Ctrl+T Vim
+/// toggle is handled by [`handle_diff_viewer_key`] before dispatch reaches
+/// this function.
 fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: bool) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 

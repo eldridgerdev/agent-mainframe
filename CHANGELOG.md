@@ -41,6 +41,11 @@ are tagged.
   and 80% used, like the dashboard's. Before, the box showed the percentage left
   (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
 
+- **The usage summary on AMF's AI review (`W`) is now collapsed on GitHub.**
+  The review's own summary comes first, followed by one line with the
+  harness, model, tokens, and estimated cost. Expand that line to see every
+  metric, including elapsed time and cached and total tokens.
+
 ### Migration
 
 - No migration is required. The review needs an authenticated `gh`, as PR

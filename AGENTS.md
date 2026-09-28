@@ -14,7 +14,7 @@ cargo test --locked app::tests::feature_sessions
 cargo test --locked app::pr_review
 cargo test --workspace --locked
 cargo fmt --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 The repository has unit and integration tests. Choose a focused suite while
@@ -30,7 +30,7 @@ Codex, OpenCode and Pi sessions in tmux. Source installations need `tmux` on PAT
 install the harnesses you intend to use. Tests mock paid harness execution.
 
 Use [the architecture guide](docs/development/architecture.md) to choose a module.
-`main.rs` owns startup, event deadlines and polling; `handlers/` dispatches input;
+`cli.rs` owns startup, event deadlines and polling; `handlers/` dispatches input;
 `ui/` renders; `app/` orchestrates feature workflows; `db/` owns persistence.
 PR Triage, Final Review and Learning each have a directory with owned state.
 Central AppMode remains the routing boundary. Feature test suites live under

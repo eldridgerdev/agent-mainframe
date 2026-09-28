@@ -340,6 +340,13 @@ pub struct OpencodeSessionPickerState {
     pub sessions: Vec<OpencodeSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first opencode-kind session) — the *only* session a restore may
+    /// overwrite. Every other opencode session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +354,13 @@ pub struct ClaudeSessionPickerState {
     pub sessions: Vec<super::claude_sessions::ClaudeSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first claude-kind session) — the *only* session a restore may
+    /// overwrite. Every other claude session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -354,6 +368,13 @@ pub struct CodexSessionPickerState {
     pub sessions: Vec<super::codex_sessions::CodexSessionInfo>,
     pub selected: usize,
     pub workdir: PathBuf,
+    /// The `FeatureSession::id` this picker was opened from (or, when opened
+    /// from the feature row rather than a specific session, the feature's
+    /// first codex-kind session) — the *only* session a restore may
+    /// overwrite. Every other codex session in the feature keeps its own
+    /// saved id. `None` when the feature had no sessions at all yet (they
+    /// are created fresh on restore, so the lone one created is the target).
+    pub target_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -406,6 +427,23 @@ pub enum DiffScope {
     CurrentChanges,
     /// Exactly one commit, compared with its first parent.
     Commit(crate::diff::DiffCommit),
+    /// A pull request at pinned revisions: `merge_base..head`, both sides read
+    /// from git objects. Never the working tree, the checked-out branch, or
+    /// `HEAD`, so the feature the viewer was opened from cannot leak in.
+    PullRequest(Box<PrDiffTarget>),
+}
+
+/// The pull request a [`DiffScope::PullRequest`] viewer is reviewing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrDiffTarget {
+    /// The base repository as `host/owner/name` (`GithubRepository::canonical`),
+    /// or the raw fetch URL when that can't be parsed. Host-qualified so two
+    /// GitHub hosts' `owner/name` never collide as a draft key.
+    pub repo: String,
+    /// The PR at the revisions that were fetched and verified: `base_oid` and
+    /// `head_oid` are exactly what the private review refs point at.
+    pub pr: crate::github::ReviewablePr,
+    pub merge_base_oid: String,
 }
 
 pub struct DiffPickerState {
@@ -701,10 +739,39 @@ impl ComposeState {
     }
 }
 
+/// One row in the `Latest Prompt` recall list: either a prompt actually sent
+/// to the harness (scanned from its transcript) or one AMF computed to seed a
+/// session but couldn't deliver, stashed by
+/// [`crate::app::App::stash_lost_prompt`] when the launch that would have
+/// carried it failed. Kept as a separate variant rather than folded into
+/// [`crate::app::util::PromptEntry`] so an unsent row can carry *why* it's
+/// here and be cleared from `unsent_prompts` once picked, without touching
+/// the transcript-scan path at all.
+#[derive(Clone)]
+pub enum LatestPromptItem {
+    Sent(crate::app::util::PromptEntry),
+    Unsent(crate::db::unsent_prompts::UnsentPrompt),
+}
+
+impl LatestPromptItem {
+    pub fn text(&self) -> &str {
+        match self {
+            LatestPromptItem::Sent(entry) => &entry.text,
+            LatestPromptItem::Unsent(prompt) => &prompt.body,
+        }
+    }
+
+    pub fn is_unsent(&self) -> bool {
+        matches!(self, LatestPromptItem::Unsent(_))
+    }
+}
+
 #[derive(Clone)]
 pub struct LatestPromptState {
     pub view: ViewState,
-    pub prompts: Vec<crate::app::util::PromptEntry>,
+    /// Unsent entries for this checkout are prepended ahead of the scanned
+    /// transcript history — see `App::poll_latest_prompt_menu_bg`.
+    pub prompts: Vec<LatestPromptItem>,
     pub selected: usize,
 }
 
@@ -1704,16 +1771,19 @@ pub enum AppMode {
     ConfirmingOpencodeSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     ClaudeSessionPicker(ClaudeSessionPickerState),
     ConfirmingClaudeSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     CodexSessionPicker(CodexSessionPickerState),
     ConfirmingCodexSession {
         session_id: String,
         workdir: PathBuf,
+        target_session_id: Option<String>,
     },
     StoppedSessionDialog(StoppedSessionDialogState),
     BookmarkPicker(BookmarkPickerState),
@@ -1724,6 +1794,16 @@ pub enum AppMode {
     PrNumberPrompt(PrNumberPromptState),
     /// Choosing a PR from a list (or falling through to the number prompt).
     PrPicker(PrPickerState),
+    /// The PR picker's Review tab (see [`PrReviewListState`]).
+    PrReviewList(Box<PrReviewListState>),
+    /// Browse open issues for the selected project's canonical GitHub repo.
+    #[allow(dead_code)] // Constructed by the issue-fixer dashboard entrypoint.
+    IssueBrowser(crate::app::issue_fixer::IssueBrowserState),
+    /// Configure the feature and editable prompt for the selected issue.
+    IssueSetup(crate::app::issue_fixer::IssueSetupState),
+    /// An existing feature already records the same canonical issue. The
+    /// carried setup preserves all edits if the user cancels the override.
+    IssueDuplicateWarning(crate::app::issue_fixer::IssueDuplicateWarningState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen PR Triage pane.
@@ -1734,9 +1814,16 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Confirming the review-memory compact pass (`c` in the PR picker, PR
+    /// Triage, or the dashboard leader key) before spending an agent pass on
+    /// it. Reachable from several screens, so it stashes `prior_mode` — see
+    /// [`ReviewMemoryCompactConfirmState`].
+    ReviewMemoryCompactConfirm(Box<ReviewMemoryCompactConfirmState>),
     /// Running the review-memory compact pass off the UI thread ("prevent
     /// review-memory rot"); shows a loading frame with the current stage.
-    ReviewMemoryCompactRunning(CompactRunState),
+    /// The mode to restore lives in [`App::review_memory_compact_pending`]
+    /// rather than here — see [`CompactRunView`].
+    ReviewMemoryCompactRunning(CompactRunView),
     /// Reviewing the compact pass's proposed replacement doc before it's
     /// written — full-screen, editable, nothing written until confirmed.
     ReviewMemoryCompactReview(CompactReviewState),
@@ -2271,6 +2358,10 @@ pub enum PendingStart {
         kind: SessionKind,
         label: Option<String>,
     },
+    /// Recreating one session's tmux window (`c` on a session whose window
+    /// was stopped individually with `x`) while the rest of its feature
+    /// stays up.
+    RestartSessionWindow { pi: usize, fi: usize, si: usize },
     /// Opening a stopped feature or session from the dashboard (`Enter`).
     /// Replayed against the current selection, which the dialog leaves alone.
     EnterView { auto_compose: bool },
@@ -2301,23 +2392,31 @@ pub struct ResourceConfirmState {
     pub plan_interview: Option<PlanInterviewState>,
 }
 
+// Hook continuations exist one at a time and are moved directly into the
+// worker. Keeping the launch fields flat makes the recovery path explicit;
+// boxing selected fields solely to equalize enum variants would obscure it.
+#[allow(clippy::large_enum_variant)]
 pub enum HookNext {
     WorktreeCreated {
         project_name: String,
+        feature_name: Option<String>,
         branch: String,
         mode: VibeMode,
         review: bool,
         plan_mode: bool,
+        quick_plan: bool,
         agent: AgentKind,
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
         remote_control: bool,
         steering_enabled: bool,
+        startup_prompt: Option<String>,
         /// Carried across the hook detour, which rebuilds the launch from
         /// scratch and would otherwise drop the TODO link on any project with
         /// an `on_worktree_created` hook.
         todo_origin: Option<TodoPlanOrigin>,
+        issue_source: Option<crate::project::IssueSource>,
     },
     StartFeature {
         pi: usize,
@@ -2342,17 +2441,22 @@ pub struct RunningHookState {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub feature_name: Option<String>,
     pub todo_origin: Option<TodoPlanOrigin>,
+    /// Source issue supplied by the issue-fixer workflow.
+    pub issue_source: Option<crate::project::IssueSource>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
     pub remote_control: bool,
     pub steering_enabled: bool,
+    pub startup_prompt: Option<String>,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -2422,17 +2526,21 @@ pub struct BackgroundHook {
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
+    pub feature_name: Option<String>,
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
     pub plan_mode: bool,
+    pub quick_plan: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
     pub remote_control: bool,
     pub steering_enabled: bool,
+    pub startup_prompt: Option<String>,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -2445,17 +2553,21 @@ impl BackgroundHook {
             script: state.script,
             workdir: state.workdir,
             project_name: state.project_name,
+            feature_name: state.feature_name,
             todo_origin: state.todo_origin,
+            issue_source: state.issue_source,
             branch: state.branch,
             mode: state.mode,
             review: state.review,
             plan_mode: state.plan_mode,
+            quick_plan: state.quick_plan,
             agent: state.agent,
             create_terminal: state.create_terminal,
             session_name: state.session_name,
             enable_chrome: state.enable_chrome,
             remote_control: state.remote_control,
             steering_enabled: state.steering_enabled,
+            startup_prompt: state.startup_prompt,
             child: state.child,
             output: state.output,
             success: state.success,
@@ -2556,6 +2668,10 @@ pub struct CreateFeatureState {
     /// `App`) so cancelling the wizard drops it — a stale origin would attach
     /// the next unrelated feature to the wrong TODO.
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
+    /// Optional display name supplied by a workflow with separate feature and
+    /// branch fields. Ordinary feature creation keeps this unset.
+    pub feature_name: Option<String>,
     pub branch: String,
     pub branch_error: Option<String>,
     pub allowed_agents: Vec<AgentKind>,
@@ -2629,6 +2745,8 @@ impl CreateFeatureState {
             project_name,
             project_repo,
             todo_origin: None,
+            issue_source: None,
+            feature_name: None,
             branch,
             branch_error: None,
             allowed_agents: AgentKind::ALL.to_vec(),
@@ -2741,6 +2859,9 @@ impl CreateFeatureState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
     pub project_name: String,
+    /// Separate display/persisted feature name for workflows whose branch is
+    /// user-editable. Ordinary creation leaves this `None` and uses `branch`.
+    pub feature_name: Option<String>,
     pub branch: String,
     pub workdir: PathBuf,
     pub is_worktree: bool,
@@ -2765,6 +2886,7 @@ pub struct PreparedFeatureLaunch {
     /// Set when this launch was started from a TODO, so accepting the plan can
     /// link the created feature back to the row it came from.
     pub todo_origin: Option<TodoPlanOrigin>,
+    pub issue_source: Option<crate::project::IssueSource>,
 }
 
 /// An accepted plan's exact deferred feature launch.
@@ -3058,7 +3180,10 @@ impl PlanInterviewState {
         pending_launch: PreparedFeatureLaunch,
         questions: Vec<PlanQuestion>,
     ) -> Self {
-        let feature_name = pending_launch.branch.clone();
+        let feature_name = pending_launch
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| pending_launch.branch.clone());
         let interview_key = crate::plan_interview::pending_interview_key(
             &pending_launch.project_name,
             &feature_name,
@@ -5194,6 +5319,7 @@ mod tests {
     fn prepared_launch(project_name: &str, branch: &str) -> PreparedFeatureLaunch {
         PreparedFeatureLaunch {
             project_name: project_name.into(),
+            feature_name: None,
             branch: branch.into(),
             workdir: PathBuf::from("/tmp/does-not-matter"),
             is_worktree: false,
@@ -5210,6 +5336,7 @@ mod tests {
             hook_succeeded: None,
             startup_prompt: None,
             todo_origin: None,
+            issue_source: None,
         }
     }
 

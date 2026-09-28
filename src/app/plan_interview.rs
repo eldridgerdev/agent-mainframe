@@ -14,6 +14,7 @@ use super::{
     Selection, StartIntent, TodoPlanOrigin,
 };
 use crate::db::plan_interviews::PlanInterviewRecord;
+use crate::db::todos::Todo;
 use crate::headless::HeadlessRunner;
 use crate::plan_interview::{self, PlanQuestion};
 use crate::project::AgentKind;
@@ -37,6 +38,14 @@ fn plan_kickoff_prompt(expert_brief: Option<&str>) -> String {
     format!(
         "{PLAN_KICKOFF_PROMPT}\n\nThe following expert implementation brief is guidance for this plan. Follow its ordered steps and invariants, run its validation plan, and stop if it names an unresolved assumption or stop condition.\n\n{brief}"
     )
+}
+
+/// What [`App::plan_pass_tool_access`] resolved for one pass.
+struct PassToolAccess {
+    mcp: Option<crate::headless::HeadlessMcp>,
+    read_only: bool,
+    note: String,
+    log_suffix: String,
 }
 
 impl App {
@@ -364,6 +373,7 @@ impl App {
     }
 
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
+        let startup_brief = prepared.startup_prompt.clone();
         let questions = self
             .store
             .find_project(&prepared.project_name)
@@ -374,6 +384,9 @@ impl App {
             .unwrap_or_else(crate::plan_interview::builtin_questions);
         let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation(prepared, questions);
+        if let Some(brief) = startup_brief {
+            state.editor = crate::editor::TextEditor::new(brief);
+        }
 
         // A launch started from a TODO opens on the brief that TODO composed,
         // editable like any other. The stash is taken either way, so a brief
@@ -500,8 +513,12 @@ impl App {
     /// there is never a draft to resume. A TODO origin is still carried onto
     /// the state so an accepted plan links back to the row it came from.
     pub(crate) fn start_quick_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
+        let startup_brief = prepared.startup_prompt.clone();
         let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation_quick(prepared);
+        if let Some(brief) = startup_brief {
+            state.editor = crate::editor::TextEditor::new(brief);
+        }
         state.todo_origin = todo_origin;
         self.mode = AppMode::PlanInterview(state);
         self.message = None;
@@ -550,6 +567,20 @@ impl App {
         let fi =
             self.resolve_todo_host_feature(pi, ctx.host_feature_id.as_deref(), ctx.fallback_fi);
 
+        self.start_todo_plan_in_host_feature_explicit(origin, &todo, pi, fi, scratchpad.as_deref())
+    }
+
+    /// Explicit-target counterpart used by the GUI. Both interfaces enter
+    /// the same interview state and therefore share draft, accept and cancel
+    /// behavior after the target has been resolved.
+    pub(crate) fn start_todo_plan_in_host_feature_explicit(
+        &mut self,
+        origin: TodoPlanOrigin,
+        todo: &Todo,
+        pi: usize,
+        fi: usize,
+        scratchpad: Option<&str>,
+    ) -> Result<()> {
         let Some((repo, feature_name, workdir, agent)) =
             self.store.projects.get(pi).and_then(|project| {
                 project.features.get(fi).map(|feature| {
@@ -566,8 +597,8 @@ impl App {
             return Ok(());
         };
 
-        let provenance = self.todo_provenance(pi, fi, &todo);
-        let brief = Self::compose_plan_brief(&todo, scratchpad.as_deref(), &provenance);
+        let provenance = self.todo_provenance(pi, fi, todo);
+        let brief = Self::compose_plan_brief(todo, scratchpad, &provenance);
 
         let questions = self.extension_for_repo(&repo).plan_interview_questions();
         let mut state =
@@ -763,6 +794,30 @@ impl App {
         }
     }
 
+    /// Tool access for one round, synthesis, review, or review follow-up
+    /// pass: the loaded MCP tools, whether the pass runs read-only (attached
+    /// docs or MCP), and its `{{tool_access_note}}`. Shared so the four passes
+    /// cannot drift apart; `without_mcp` is the pass's own no-MCP note.
+    fn plan_pass_tool_access(
+        &mut self,
+        harness: &AgentKind,
+        attached: &[plan_interview::AttachedDoc],
+        without_mcp: fn(bool) -> &'static str,
+    ) -> PassToolAccess {
+        let mcp = self.plan_interview_mcp(harness);
+        let has_docs = !attached.is_empty();
+        PassToolAccess {
+            read_only: has_docs || mcp.is_some(),
+            note: plan_interview::pass_tool_access_note(
+                has_docs,
+                mcp.as_ref().map(|mcp| mcp.allowed_tools.as_slice()),
+                without_mcp,
+            ),
+            log_suffix: plan_interview::pass_tool_access_log_suffix(attached.len(), mcp.is_some()),
+            mcp,
+        }
+    }
+
     /// Surface reference documents that could not be prepared for a headless
     /// pass — moved, deleted, or turned unreadable since they were attached.
     /// Never fatal: the pass proceeds with whatever prepared.
@@ -929,7 +984,16 @@ impl App {
         self.note_dropped_attachments(&dropped);
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
-        let read_only = !attached.is_empty();
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::round_synthesis_tool_access_note,
+        );
         let guarded = plan_interview::guard_context_for_prompt(
             |ctx| {
                 self.resolve_headless_prompt(
@@ -950,10 +1014,7 @@ impl App {
                                 &attached,
                             ),
                         )
-                        .with(
-                            "tool_access_note",
-                            plan_interview::round_synthesis_tool_access_note(read_only),
-                        ),
+                        .with("tool_access_note", tool_note.clone()),
                 )
             },
             &context,
@@ -979,11 +1040,7 @@ impl App {
             format!(
                 "starting AI round {round} with {} (~{token_estimate} tokens{})",
                 harness.display_name(),
-                if read_only {
-                    format!(", read-only for {} attached doc(s)", attached.len())
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -993,7 +1050,13 @@ impl App {
         let thread_workdir = workdir;
         std::thread::spawn(move || {
             let result = if read_only {
-                HeadlessRunner::run_read_only(&thread_harness, &thread_workdir, &prompt, None)
+                HeadlessRunner::run_read_only_with_mcp(
+                    &thread_harness,
+                    &thread_workdir,
+                    &prompt,
+                    None,
+                    mcp.as_ref(),
+                )
             } else {
                 HeadlessRunner::run(&thread_harness, &thread_workdir, &prompt, None, true)
             };
@@ -1089,7 +1152,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
-        let read_only = !attached.is_empty();
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::round_synthesis_tool_access_note,
+        );
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let guarded = plan_interview::guard_context_for_prompt(
@@ -1118,10 +1190,7 @@ impl App {
                                 revision_critique.as_deref(),
                             ),
                         )
-                        .with(
-                            "tool_access_note",
-                            plan_interview::round_synthesis_tool_access_note(read_only),
-                        ),
+                        .with("tool_access_note", tool_note.clone()),
                 )
             },
             &context,
@@ -1157,11 +1226,7 @@ impl App {
                     "synthesis"
                 },
                 harness.display_name(),
-                if read_only {
-                    format!(", read-only for {} attached doc(s)", attached.len())
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -1170,7 +1235,13 @@ impl App {
         let thread_harness = harness;
         std::thread::spawn(move || {
             let result = if read_only {
-                HeadlessRunner::run_read_only(&thread_harness, &workdir, &prompt, None)
+                HeadlessRunner::run_read_only_with_mcp(
+                    &thread_harness,
+                    &workdir,
+                    &prompt,
+                    None,
+                    mcp.as_ref(),
+                )
             } else {
                 HeadlessRunner::run(&thread_harness, &workdir, &prompt, None, true)
             };
@@ -1269,7 +1340,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
-        let read_only = !attached.is_empty();
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            log_suffix,
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::critique_tool_access_note,
+        );
         let repo = crate::worktree::WorktreeManager::repo_root(&workdir)
             .unwrap_or_else(|_| workdir.clone());
         let guarded = plan_interview::guard_context_for_prompt(
@@ -1292,10 +1372,7 @@ impl App {
                                 &attached,
                             ),
                         )
-                        .with(
-                            "tool_access_note",
-                            plan_interview::critique_tool_access_note(read_only),
-                        ),
+                        .with("tool_access_note", tool_note.clone()),
                 )
             },
             &context,
@@ -1333,11 +1410,7 @@ impl App {
                 "starting Expert plan review with {} model {} (~{token_estimate} tokens{})",
                 harness.display_name(),
                 model,
-                if read_only {
-                    format!(", read-only for {} attached doc(s)", attached.len())
-                } else {
-                    String::new()
-                }
+                log_suffix
             ),
         );
 
@@ -1345,7 +1418,13 @@ impl App {
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
             let result = if read_only {
-                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, Some(&model))
+                HeadlessRunner::run_read_only_with_mcp(
+                    &harness,
+                    &workdir,
+                    &prompt,
+                    Some(&model),
+                    mcp.as_ref(),
+                )
             } else {
                 HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
             };
@@ -1421,6 +1500,16 @@ impl App {
         let context = plan_interview::gather_repository_context(&workdir);
         let (attached, dropped) = plan_interview::prepare_attached_docs(&workdir, &attached_docs);
         self.note_dropped_attachments(&dropped);
+        let PassToolAccess {
+            mcp,
+            read_only,
+            note: tool_note,
+            ..
+        } = self.plan_pass_tool_access(
+            &harness,
+            &attached,
+            plan_interview::critique_tool_access_note,
+        );
         let prompt = plan_interview::build_critique_followup_prompt(
             &feature_name,
             &plan,
@@ -1431,6 +1520,7 @@ impl App {
             &attached,
             &findings,
             &clarification_answers,
+            tool_note,
         );
         let token_estimate = estimate_tokens(&prompt);
         if !self.precall_gate_with_model(
@@ -1449,10 +1539,16 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.plan_interview_critique_bg = Some(rx);
         std::thread::spawn(move || {
-            let result = if attached.is_empty() {
-                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
+            let result = if read_only {
+                HeadlessRunner::run_read_only_with_mcp(
+                    &harness,
+                    &workdir,
+                    &prompt,
+                    Some(&model),
+                    mcp.as_ref(),
+                )
             } else {
-                HeadlessRunner::run_read_only(&harness, &workdir, &prompt, Some(&model))
+                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
             };
             let _ = tx.send(result);
         });
@@ -2444,6 +2540,16 @@ impl App {
 
     /// Accept the reviewed plan and execute the launch it has been holding.
     pub(crate) fn complete_plan_interview(&mut self) -> Result<()> {
+        self.complete_plan_interview_with_resource_approval(false)
+    }
+
+    /// GUI-approved counterpart. The GUI presents its resource notice before
+    /// entering this method, so the TUI's `AppMode` confirmation is skipped
+    /// only for that explicitly approved request.
+    pub(crate) fn complete_plan_interview_with_resource_approval(
+        &mut self,
+        resource_approved: bool,
+    ) -> Result<()> {
         let (workdir, plan, interview_key, todo_origin, expert_brief) = match &self.mode {
             AppMode::PlanInterview(state) => (
                 state.workdir.clone(),
@@ -2505,7 +2611,7 @@ impl App {
             // A completed interview has all the state needed to pause safely,
             // so use the same interactive resource gate as manual starts. The
             // dialog retains this PlanInterview mode for cancellation.
-            if self.gate_plan_launch(pending.clone()) {
+            if !resource_approved && self.gate_plan_launch(pending.clone()) {
                 return Ok(());
             }
 
@@ -2562,10 +2668,19 @@ impl App {
         } = pending;
         let project_name = prepared.project_name.clone();
         let branch = prepared.branch.clone();
+        let feature_name = prepared
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| branch.clone());
         let todo_origin = prepared.todo_origin.clone();
 
         self.finish_feature_launch_resource_approved(prepared)?;
-        self.finalize_plan_interview_transcript(&interview_key, &project_name, &branch, &plan);
+        self.finalize_plan_interview_transcript(
+            &interview_key,
+            &project_name,
+            &feature_name,
+            &plan,
+        );
 
         // The feature exists only now, so this is the first moment the TODO can
         // be pointed at it. The row itself stays open: the plan is the start of
@@ -2644,7 +2759,9 @@ impl App {
             return;
         };
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+        if !self.attach_launched_todo_reference(&session_id, &origin.todo_id) {
+            return;
+        }
 
         // The row is already in progress (plan mode marked it when it began);
         // this only records which session is doing the work, matching the
@@ -2701,17 +2818,17 @@ impl App {
         let label = Self::todo_session_label(&origin.todo_title);
         // Warn rather than park: the confirmation dialog is an `AppMode`, and
         // the interview it would replace has already been consumed here.
-        let si = match self.create_agent_session_labeled(
+        let session_id = match self.create_agent_session_labeled_identified(
             pi,
             fi,
             &label,
             Some(agent),
             StartIntent::Warn("the agent for this TODO's plan"),
         ) {
-            Ok(si) => si,
+            Ok((_, session_id, _)) => session_id,
             Err(e) => {
                 if rollback_on_failure {
-                    self.todos_rollback_launch_best_effort(&origin.todo_id);
+                    self.todos_rollback_launch_best_effort(&origin.todo_id, None);
                 }
                 self.push_toast_error(format!("Plan saved, but the agent failed to start: {e}"));
                 self.message = Some(format!("Plan written to {}", plan_path.display()));
@@ -2719,30 +2836,45 @@ impl App {
             }
         };
 
-        let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
-
         // Tie the session to its TODO so the embedded sidebar renders the
         // "Active TODO" section, matching the non-plan spawn routes
         // (`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`). Without
         // this the plan-launched agent has no visible link back to its item.
-        self.attach_launched_todo_reference(pi, fi, si, &origin.todo_id);
+        // By id: either save above may have reloaded the store under a
+        // conflict, which re-points any index held from before it.
+        if !self.attach_launched_todo_reference(&session_id, &origin.todo_id) {
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, None);
+            }
+            self.push_toast_error("Plan saved, but the agent's session vanished as it was created");
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        }
 
         if planned_todo.is_some()
             && let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id))
         {
             if rollback_on_failure {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             return Err(e);
         }
 
+        let Some((pi, fi, si)) = self.session_indices_by_id(&session_id) else {
+            if rollback_on_failure {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
+            }
+            self.push_toast_error("Plan saved, but the agent's session vanished as it was created");
+            self.message = Some(format!("Plan written to {}", plan_path.display()));
+            return Ok(());
+        };
         self.selection = Selection::Session(pi, fi, si);
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(todo_plan_kickoff_prompt(plan_file)))
         {
             if rollback_on_failure {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             return Err(e);
         }
@@ -3095,6 +3227,7 @@ impl App {
             self.message = Some("Plan interview cancelled".into());
             return Ok(());
         };
+        let feature_name = prepared.feature_name.as_deref().unwrap_or(&prepared.branch);
 
         if let Some(pi) = self
             .store
@@ -3103,7 +3236,7 @@ impl App {
             .position(|project| project.name == prepared.project_name)
         {
             self.store.projects[pi].features.retain(|feature| {
-                !(feature.name == prepared.branch && feature.pending_worktree_script)
+                !(feature.name == feature_name && feature.pending_worktree_script)
             });
             self.selection = Selection::Project(pi);
             self.save()?;

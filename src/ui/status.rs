@@ -14,7 +14,9 @@ use crate::project::SessionKind;
 use crate::theme::Theme;
 use crate::usage::Model;
 
-fn utilization_color(pct: f64, theme: &Theme) -> Color {
+/// Accent for a usage percentage (used, not remaining). Shared with the
+/// session sidebar's Usage bars so both surfaces change colour together.
+pub(crate) fn utilization_color(pct: f64, theme: &Theme) -> Color {
     if pct >= 80.0 {
         theme.usage_high.to_color()
     } else if pct >= 50.0 {
@@ -167,6 +169,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 spans.extend(vec![
                     Span::styled(" n", key_style()),
                     Span::raw(" feature  "),
+                    Span::styled("g", key_style()),
+                    Span::raw(" issues  "),
                     Span::styled("N", key_style()),
                     Span::raw(" project  "),
                     Span::styled("Enter", key_style()),
@@ -729,6 +733,19 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::PrReviewList(_) => Line::from(vec![
+            Span::raw(" Review a PR  "),
+            Span::styled("j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" review  "),
+            Span::styled("r", key_style()),
+            Span::raw(" reload  "),
+            Span::styled("Tab", key_style()),
+            Span::raw(" triage  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::PrReviewLoading(_) => Line::from(vec![
             Span::raw(" Loading PR Triage comments (experimental)...  "),
             Span::styled("Esc", key_style()),
@@ -741,6 +758,15 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::ReviewMemoryBootstrapRunning(_) => Line::from(vec![
             Span::raw(" Bootstrapping review memory (experimental)...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ReviewMemoryCompactConfirm(_) => Line::from(vec![
+            Span::raw(" Compact review memory (experimental)  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" run  "),
+            Span::styled("g", key_style()),
+            Span::raw(" project/global  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
@@ -969,6 +995,30 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 ])
             }
         }
+        AppMode::IssueBrowser(_) => Line::from(vec![
+            Span::styled(" h/l", key_style()),
+            Span::raw(" page  "),
+            Span::styled("r", key_style()),
+            Span::raw(" refresh  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::IssueSetup(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("h/l", key_style()),
+            Span::raw(" change  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" create  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::IssueDuplicateWarning(_) => Line::from(vec![
+            Span::styled("Enter/y", key_style()),
+            Span::raw(" create another  "),
+            Span::styled("Esc/n", key_style()),
+            Span::raw(" return"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

@@ -1,0 +1,31 @@
+# AI Review — fix / batch-fix a finding without posting it to GitHub.
+#
+# Seeds the deterministic completed-review fixture (no model, no posting),
+# marks the finding, and hands it to PR Triage with `f`. Opening PR Triage
+# reads the PR's comments once through read-only `gh`; nothing is written to
+# GitHub and the scenario always cancels the fix dialog with Escape.
+#
+# Local run needs: export AMF_SCREENSHOT_PR_NUMBER=<n> GITHUB_REPOSITORY=owner/name
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:400
+expect:f fix
+expect:B fix marked
+note:The AI Review pane now offers fix (`f`), mark (`space`) and fix-marked (`B`) next to post (`W`), so a finding can be acted on without publishing it.
+shot:ai-review-fix-keys
+
+key:space
+wait:300
+expect:[*]
+note:`space` marks the finding for a combined fix; the list row shows `[*]`.
+shot:finding-marked
+
+key:B
+wait:5000
+expect:Inject combined fix for 1 comments
+expect_not:amf reply-draft
+note:`B` hands the marked finding to PR Triage as a local comment and opens the combined-fix dialog. The prompt carries the finding but no reply-draft instruction, because there is no GitHub comment to answer.
+shot:combined-fix-dialog-no-reply-draft
+
+key:Escape
+wait:400

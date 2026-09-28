@@ -42,10 +42,11 @@ reports the data:
   can keep going without the old conversation's history counting against
   the new session's budget — and `Dismiss: <leader X>` to clear the hint
   for that reading.
-- **Usage** shows Claude's and Codex's rolling rate-limit windows, one per
-  line, e.g. `5h  62% left · 3h` (percentage remaining, then time to
-  reset once known). OpenCode and Pi have no known usage API, so the
-  section is simply omitted for their sessions.
+- **Usage** shows Claude's and Codex's rolling rate-limit windows as small
+  bars, one per line, drawn like the dashboard status bar's usage bar, e.g.
+  `5h ┃┃┃┃░░░░░░ 38% · 3h` (percentage used, changing colour at 50% and
+  80% like the dashboard's, then time to reset once known). OpenCode and
+  Pi have no known usage API, so the section is simply omitted for their sessions.
 
 Context tracking works across all four harnesses; the usage windows are
 Claude- and Codex-only. See [Choosing a Harness](@/docs/harnesses.md) for

@@ -6,7 +6,7 @@ use crate::app::{
     App, AppMode, PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState,
 };
 use crate::github::{
-    GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
+    GhCli, GithubTransport, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
 };
 use anyhow::Result;
 use chrono::Local;
@@ -233,6 +233,10 @@ impl App {
     /// then kicks the comment fetch onto a background thread. All of this
     /// spends zero agent tokens.
     pub fn open_pr_review(&mut self) {
+        // A project row has no branch PR to triage: open the Review tab.
+        if self.open_pr_review_list_for_selected_project() {
+            return;
+        }
         let Some((_project, feature)) = self.selected_feature() else {
             self.message = Some("Select a feature to review its PR".to_string());
             return;
@@ -331,6 +335,7 @@ impl App {
             // A companion triage feature created on an earlier visit is reused
             // for every fix in this PR — adopt it now so `f` doesn't re-ask.
             self.adopt_existing_triage_feature();
+            self.apply_pending_local_findings();
             return;
         }
         self.start_pr_review_fetch(workdir, pr);
@@ -419,6 +424,17 @@ impl App {
     /// Persist a freshly-fetched review under its `PR# + head SHA` key so the
     /// next open is a cache hit. A write failure is non-fatal (logged, not shown).
     pub(crate) fn cache_pr_review(&mut self, review: &PrReview) {
+        // Local (unposted) AI findings are not GitHub truth; keep them out of
+        // the cache so a later cache-hit open shows only real comments.
+        let filtered;
+        let review = if review.comments.iter().any(PrComment::is_local_finding) {
+            let mut copy = review.clone();
+            copy.comments.retain(|c| !c.is_local_finding());
+            filtered = copy;
+            &filtered
+        } else {
+            review
+        };
         let result = match self.db.as_ref() {
             Some(db) => db.save_pr_review_cache(review),
             None => return,
@@ -460,7 +476,7 @@ impl App {
     /// list` fails outright, falls back to the manual number prompt so the user
     /// is never stuck. Zero agent tokens.
     pub fn open_pr_picker(&mut self, workdir: PathBuf, seed_number: Option<u32>) {
-        match GhCli::list_prs(&workdir, false) {
+        match GithubTransport::list_prs(&GhCli, &workdir, false) {
             Ok(entries) => {
                 let selected = seed_number
                     .and_then(|n| entries.iter().position(|e| e.number == n))
@@ -473,7 +489,6 @@ impl App {
                     include_closed: false,
                     error: None,
                     bootstrap_pick: None,
-                    compact_confirm: None,
                     current_user,
                 });
             }
@@ -493,7 +508,7 @@ impl App {
         if let Some(cached) = &self.gh_current_user {
             return cached.clone();
         }
-        let resolved = match GhCli::current_user(workdir) {
+        let resolved = match GithubTransport::current_user(&GhCli, workdir) {
             Ok(login) => Some(login),
             Err(e) => {
                 self.log_warn("pr_review", format!("could not resolve gh user: {e}"));
@@ -543,7 +558,7 @@ impl App {
             ),
             _ => return,
         };
-        match GhCli::list_prs(&workdir, include_closed) {
+        match GithubTransport::list_prs(&GhCli, &workdir, include_closed) {
             Ok(entries) => {
                 let selected = current
                     .and_then(|n| entries.iter().position(|e| e.number == n))
@@ -754,6 +769,7 @@ impl App {
                             investigation_context: Default::default(),
                         });
                         self.adopt_existing_triage_feature();
+                        self.apply_pending_local_findings();
                     }
                     Err(e) => {
                         self.mode = AppMode::Normal;

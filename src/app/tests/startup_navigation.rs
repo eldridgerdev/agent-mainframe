@@ -176,6 +176,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 )),
                 triage_source: None,
                 review_source: None,
+                issue_source: None,
             },
             Feature {
                 id: "feat-repo".to_string(),
@@ -203,6 +204,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 selected_plan_path: None,
                 triage_source: None,
                 review_source: None,
+                issue_source: None,
             },
         ],
         created_at: now,

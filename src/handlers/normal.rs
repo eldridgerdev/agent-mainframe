@@ -71,6 +71,11 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.start_create_feature();
             }
         }
+        KeyCode::Char('g') => {
+            if let Selection::Project(project_index) = app.selection {
+                app.open_issue_browser_for_project(project_index);
+            }
+        }
         KeyCode::Enter if app.paused_plan_interview_matches_selection() => {
             app.resume_paused_plan_interview();
         }
@@ -95,7 +100,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         },
         KeyCode::Char('x') => match &app.selection {
             Selection::Session(_, _, _) => {
-                app.remove_session()?;
+                app.stop_session()?;
             }
             Selection::Feature(_, _) => {
                 app.stop_feature()?;
@@ -361,6 +366,7 @@ pub(crate) const DASHBOARD_KEYBINDING_ACTIONS: &[(&str, char)] = &[
     ("quit", 'q'),
     ("create_project", 'N'),
     ("create_feature", 'n'),
+    ("issue_fixer", 'g'),
     ("start_session", 'c'),
     ("stop_session", 'x'),
     ("delete", 'd'),
@@ -416,6 +422,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('c') => {
             app.start_config_wizard();
         }
+        KeyCode::Char('m') => {
+            app.open_review_memory_compact_confirm();
+        }
         KeyCode::Char('h') => {
             app.open_bookmark_picker(None);
         }
@@ -455,6 +464,7 @@ mod tests {
         assert_eq!(default_key_for_action("quit"), Some('q'));
         assert_eq!(default_key_for_action("create_project"), Some('N'));
         assert_eq!(default_key_for_action("create_feature"), Some('n'));
+        assert_eq!(default_key_for_action("issue_fixer"), Some('g'));
         assert_eq!(default_key_for_action("start_session"), Some('c'));
         assert_eq!(default_key_for_action("stop_session"), Some('x'));
         assert_eq!(default_key_for_action("delete"), Some('d'));

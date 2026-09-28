@@ -60,7 +60,7 @@ pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
     /// Account-level rate-limit windows for this harness (the same `5h`/`7d`
-    /// figures the dashboard status bar shows), one per line. `None` when the
+    /// figures the dashboard status bar shows), one small bar per line. `None` when the
     /// harness has no usage source or the cache is not warm yet — the box is
     /// then omitted entirely.
     pub usage_text: Option<String>,
@@ -77,6 +77,7 @@ pub(crate) struct AgentSidebarData {
     /// session, so the header affordance is shown only when this is true.
     pub active_todo_affordance: bool,
     pub summary_text: String,
+    pub issue_source_text: Option<String>,
     pub pr_triage_text: Option<String>,
     pub plan_text: String,
     pub context_snapshot: Option<SessionContextSnapshot>,
@@ -208,7 +209,7 @@ pub fn attention_badge_text(attention_count: usize) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // exercised only by unit tests
-pub fn draw(
+pub(crate) fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,
@@ -600,6 +601,7 @@ fn draw_agent_sidebar(
         active_todos_text: None,
         active_todo_affordance: false,
         summary_text: String::new(),
+        issue_source_text: None,
         pr_triage_text: None,
         plan_text: String::new(),
         context_snapshot: None,
@@ -729,6 +731,23 @@ fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarS
             "Plan",
             data.plan_text.clone(),
             Constraint::Length(sidebar_section_height(&data.plan_text, section_width, 1, 2)),
+        ));
+    }
+
+    if let Some(issue_source_text) = data
+        .issue_source_text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+    {
+        sections.push(SidebarSection::new(
+            "Issue",
+            issue_source_text.to_string(),
+            Constraint::Length(sidebar_section_height(
+                issue_source_text,
+                section_width,
+                3,
+                5,
+            )),
         ));
     }
 
@@ -939,6 +958,11 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
                         .add_modifier(Modifier::DIM),
                 ));
             }
+            if title == "Usage"
+                && let Some(spans) = usage_bar_line_spans(line, theme)
+            {
+                return Line::from(spans);
+            }
             // Progress bar: "████░░░░ 2/5"
             if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
                 let split = line.find('░').unwrap_or(line.len());
@@ -1016,6 +1040,48 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
             }
         })
         .collect()
+}
+
+/// Styles one line of the Usage box (`5h ┃┃┃┃░░░░░░ 38% · 3h`, as written by
+/// [`crate::usage::format_sidebar_usage_windows`]) the way the dashboard status
+/// bar draws its usage bar: muted label, filled cells and percentage in the
+/// utilization colour, empty cells in the scrollbar colour. `None` for a line
+/// that is not in that shape, which then falls back to the plain styling.
+fn usage_bar_line_spans<'a>(line: &str, theme: &Theme) -> Option<Vec<Span<'a>>> {
+    use crate::usage::{USAGE_BAR_EMPTY, USAGE_BAR_FILLED};
+
+    let (label, rest) = line.split_once(' ')?;
+    let bar_len: usize = rest
+        .chars()
+        .take_while(|c| *c == USAGE_BAR_FILLED || *c == USAGE_BAR_EMPTY)
+        .map(char::len_utf8)
+        .sum();
+    if bar_len == 0 {
+        return None;
+    }
+    let (bar, tail) = rest.split_at(bar_len);
+    let (pct_text, reset) = tail.trim_start().split_once('%')?;
+    let pct: f64 = pct_text.parse().ok()?;
+    let color = super::status::utilization_color(pct, theme);
+    let filled: String = bar.chars().filter(|c| *c == USAGE_BAR_FILLED).collect();
+    let empty: String = bar.chars().filter(|c| *c == USAGE_BAR_EMPTY).collect();
+
+    Some(vec![
+        Span::styled(
+            format!("{label} "),
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled(filled, Style::default().fg(color)),
+        Span::styled(empty, Style::default().fg(theme.scrollbar.to_color())),
+        Span::styled(
+            format!(" {pct_text}%"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            reset.to_string(),
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ])
 }
 
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
@@ -1530,6 +1596,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1540,6 +1607,15 @@ mod tests {
                 .iter()
                 .all(|section| section.title != "Active TODO")
         );
+
+        data.issue_source_text =
+            Some("Repository: github.com/acme/widget\nIssue: #42\nComment: Posted".to_string());
+        let issue = sidebar_sections(&data, 10)
+            .into_iter()
+            .find(|section| section.title == "Issue")
+            .expect("linked issues render even in a narrow sidebar");
+        assert!(issue.body.contains("github.com/acme/widget"));
+        assert!(issue.body.contains("Issue: #42"));
 
         data.active_todos_text = Some("Ship it\nState: completed".to_string());
         let active = sidebar_sections(&data, 30)
@@ -1562,6 +1638,7 @@ mod tests {
             active_todos_text: Some(format!("{}\nState: open", "word ".repeat(60).trim())),
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1644,6 +1721,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1660,11 +1738,32 @@ mod tests {
     }
 
     #[test]
+    fn usage_lines_are_styled_like_the_dashboard_usage_bar() {
+        let theme = Theme::default();
+        let lines =
+            styled_sidebar_lines("Usage", "5h ┃┃┃┃┃┃┃┃┃░ 85% · 3h\n7d ┃░░░░░░░░░ 10%", &theme);
+        let high = crate::ui::status::utilization_color(85.0, &theme);
+        let low = crate::ui::status::utilization_color(10.0, &theme);
+
+        let spans = &lines[0].spans;
+        let texts: Vec<&str> = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(texts, ["5h ", "┃┃┃┃┃┃┃┃┃", "░", " 85%", " · 3h"]);
+        assert_eq!(spans[1].style.fg, Some(high));
+        assert_eq!(spans[2].style.fg, Some(theme.scrollbar.to_color()));
+        assert_eq!(spans[3].style.fg, Some(high));
+
+        let spans = &lines[1].spans;
+        let texts: Vec<&str> = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(texts, ["7d ", "┃", "░░░░░░░░░", " 10%", ""]);
+        assert_eq!(spans[1].style.fg, Some(low));
+    }
+
+    #[test]
     fn usage_section_sits_directly_under_status_when_present() {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
-            usage_text: Some("5h  62% left · 3h\n7d  90% left".into()),
+            usage_text: Some("5h ┃┃┃┃░░░░░░ 38% · 3h\n7d ┃░░░░░░░░░ 10%".into()),
             model_text: None,
             prompt_text: String::new(),
             work_text: None,
@@ -1672,6 +1771,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: AMF_PLAN.md".into(),
             context_snapshot: None,
@@ -1695,7 +1795,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Ready".into(),
-            usage_text: Some("5h  62% left · 3h\n7d  90% left".into()),
+            usage_text: Some("5h ┃┃┃┃░░░░░░ 38% · 3h\n7d ┃░░░░░░░░░ 10%".into()),
             model_text: Some("Model: claude".into()),
             prompt_text: "Preview: keep going".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
@@ -1703,6 +1803,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: Some("1 open PR".into()),
             plan_text: "Current: AMF_PLAN.md".into(),
             context_snapshot: None,
@@ -1737,6 +1838,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1763,6 +1865,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: "Current: docs/accepted.md".into(),
             context_snapshot: None,
@@ -1791,6 +1894,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1831,6 +1935,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1870,6 +1975,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1896,6 +2002,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: Some(context_snapshot(
@@ -1932,6 +2039,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -1984,6 +2092,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2034,6 +2143,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: Some("PR: #321 · 4 open\nStatus: Working".into()),
             plan_text: String::new(),
             context_snapshot: None,
@@ -2084,6 +2194,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2130,6 +2241,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2178,6 +2290,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2306,6 +2419,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2357,6 +2471,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2412,6 +2527,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Small summary.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2460,6 +2576,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2508,6 +2625,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: String::new(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,
@@ -2556,6 +2674,7 @@ mod tests {
             active_todos_text: None,
             active_todo_affordance: false,
             summary_text: "Codex sidebar ready.".into(),
+            issue_source_text: None,
             pr_triage_text: None,
             plan_text: String::new(),
             context_snapshot: None,

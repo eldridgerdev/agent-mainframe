@@ -227,10 +227,21 @@ pub fn format_usage_summary(windows: &[UsageWindow]) -> Option<String> {
     Some(parts.join("   "))
 }
 
-/// Multi-line variant of [`format_usage_summary`] for the narrow embedded
-/// session sidebar (~28 inner columns): one window per line, e.g.
-/// `5h  62% left · 3h`. Returns `None` for an empty slice so the sidebar
-/// omits the whole box rather than rendering an empty one.
+/// Cells in each window's bar in the embedded session sidebar. Sized so the
+/// widest line (`7d ` + bar + ` 100% · 23h`) fits the sidebar's ~28 inner
+/// columns without wrapping.
+pub const SIDEBAR_USAGE_BAR_WIDTH: usize = 10;
+/// Filled cell of a usage bar — the same glyph the dashboard status bar draws.
+pub const USAGE_BAR_FILLED: char = '┃';
+/// Empty cell of a usage bar.
+pub const USAGE_BAR_EMPTY: char = '░';
+
+/// Multi-line, bar-shaped variant of [`format_usage_summary`] for the narrow
+/// embedded session sidebar: one window per line, drawn like the dashboard
+/// status bar's usage bar — percentage **used** — e.g. `5h ┃┃┃┃░░░░░░ 38% · 3h`.
+/// The sidebar colours the bar from the percentage, so keep the shape
+/// `<label> <bar> <pct>%[ · <reset>]`. Returns `None` for an empty slice so the
+/// sidebar omits the whole box rather than rendering an empty one.
 pub fn format_sidebar_usage_windows(windows: &[UsageWindow]) -> Option<String> {
     if windows.is_empty() {
         return None;
@@ -239,15 +250,23 @@ pub fn format_sidebar_usage_windows(windows: &[UsageWindow]) -> Option<String> {
     let lines: Vec<String> = windows
         .iter()
         .map(|w| {
-            let pct = w.percent_remaining.round().clamp(0.0, 100.0) as i64;
+            let used = (100.0 - w.percent_remaining).clamp(0.0, 100.0);
+            let filled = ((used / 100.0) * SIDEBAR_USAGE_BAR_WIDTH as f64).round() as usize;
+            let bar = format!(
+                "{}{}",
+                USAGE_BAR_FILLED.to_string().repeat(filled),
+                USAGE_BAR_EMPTY
+                    .to_string()
+                    .repeat(SIDEBAR_USAGE_BAR_WIDTH - filled),
+            );
+            let pct = used.round() as i64;
             match w.reset_at {
                 Some(reset_at) if reset_at > now => format!(
-                    "{}  {}% left · {}",
+                    "{} {bar} {pct}% · {}",
                     w.label,
-                    pct,
                     format_reset_duration(reset_at - now)
                 ),
-                _ => format!("{}  {}% left", w.label, pct),
+                _ => format!("{} {bar} {pct}%", w.label),
             }
         })
         .collect();
@@ -1495,7 +1514,7 @@ mod usage_window_tests {
     }
 
     #[test]
-    fn format_sidebar_usage_windows_is_one_line_per_window() {
+    fn format_sidebar_usage_windows_is_one_bar_line_per_window() {
         let windows = vec![
             UsageWindow {
                 label: "5h",
@@ -1512,13 +1531,15 @@ mod usage_window_tests {
         let text = format_sidebar_usage_windows(&windows).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2);
-        // Reset clause is a live duration off `Utc::now()`; pin the stable part.
-        assert!(lines[0].starts_with("5h  62% left · "));
-        assert_eq!(lines[1], "7d  90% left");
+        // Percentages are *used*, matching the dashboard bar (62.4% left →
+        // 38% used → 4 of 10 cells). The reset clause is a live duration off
+        // `Utc::now()`; pin the stable part.
+        assert!(lines[0].starts_with("5h ┃┃┃┃░░░░░░ 38% · "));
+        assert_eq!(lines[1], "7d ┃░░░░░░░░░ 10%");
     }
 
     #[test]
-    fn format_sidebar_usage_windows_drops_past_reset_and_clamps_negative() {
+    fn format_sidebar_usage_windows_drops_past_reset_and_clamps_exhausted() {
         let windows = vec![UsageWindow {
             label: "5h",
             percent_remaining: -3.0,
@@ -1527,14 +1548,14 @@ mod usage_window_tests {
 
         assert_eq!(
             format_sidebar_usage_windows(&windows).unwrap(),
-            "5h  0% left"
+            "5h ┃┃┃┃┃┃┃┃┃┃ 100%"
         );
     }
 
     #[test]
-    fn format_sidebar_usage_windows_clamps_percentage_above_100() {
-        // A fresh window the source reports slightly over 100 must not
-        // render as "101% left".
+    fn format_sidebar_usage_windows_clamps_fresh_window_to_empty_bar() {
+        // A fresh window the source reports slightly over 100% remaining must
+        // not render a negative percentage or underflow the bar.
         let windows = vec![UsageWindow {
             label: "5h",
             percent_remaining: 100.6,
@@ -1543,8 +1564,20 @@ mod usage_window_tests {
 
         assert_eq!(
             format_sidebar_usage_windows(&windows).unwrap(),
-            "5h  100% left"
+            "5h ░░░░░░░░░░ 0%"
         );
+    }
+
+    #[test]
+    fn format_sidebar_usage_windows_widest_line_fits_the_sidebar() {
+        let windows = vec![UsageWindow {
+            label: "7d",
+            percent_remaining: 0.0,
+            reset_at: Some(Utc::now() + chrono::Duration::hours(23)),
+        }];
+
+        let text = format_sidebar_usage_windows(&windows).unwrap();
+        assert!(text.chars().count() <= 28, "{text:?} is too wide");
     }
 
     #[test]

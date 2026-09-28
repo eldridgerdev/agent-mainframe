@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the AMF GUI main window. Task 3 shell: no filesystem/shell/process permissions granted yet — those are added per Task 4+ operation as the GUI actually needs them.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

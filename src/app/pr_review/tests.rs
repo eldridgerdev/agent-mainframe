@@ -7,7 +7,7 @@ use super::investigation::{
     InvestigationChangedFile, InvestigationFollowUp, InvestigationPromptContext,
     build_investigation_prompt, investigation_failure_message, upsert_investigation_in_memory,
 };
-use super::memory::{bootstrap_pr_text, bootstrap_prompt};
+use super::memory::{ai_summary_context, bootstrap_pr_text, bootstrap_prompt};
 use super::reply::{
     commit_after_fix_request, commit_for_done_reply, commit_touching_file, commit_touching_line,
 };
@@ -538,7 +538,10 @@ fn combined_fix_prompt_drops_whole_file_hunks() {
     file_level.line = None;
     file_level.diff_hunk = Some("@@ -1,400 +1,420 @@\n+ enormous".into());
 
-    let prompt = combined_fix_prompt(&[&ordinary, &file_level]);
+    let prompt = combined_fix_prompt(
+        &[&ordinary, &file_level],
+        &[ordinary.clone(), file_level.clone()],
+    );
 
     // The line-anchored comment keeps its (small) hunk...
     assert!(prompt.contains("+ self.sync();"));
@@ -557,6 +560,91 @@ fn fix_prompt_strips_bot_boilerplate() {
 }
 
 #[test]
+fn single_and_combined_fix_prompts_omit_posted_review_usage() {
+    let attribution = crate::app::ai_review::AiReviewAttribution {
+        harness: Some("codex".into()),
+        model: Some("review-model".into()),
+        input_tokens: Some(12_300),
+        output_tokens: Some(4_500),
+        cached_tokens: Some(3_200),
+        total_tokens: Some(20_000),
+        elapsed_ms: Some(125_000),
+        estimated_cost: Some("$0.10".into()),
+    };
+    let legacy_usage = "### AI review usage\n\
+        - Harness: codex\n\
+        - Model: review-model\n\
+        - Elapsed: 2m 05s\n\
+        - Input tokens: 12.3k\n\
+        - Output tokens: 4.5k\n\
+        - Cached tokens: 3.2k\n\
+        - Total tokens: 20.0k\n\
+        - Estimated cost: $0.10";
+    let feedback = "Guard this behind the lock.\n\nKeep the early return.";
+    // AMF posts through the user's GitHub account, so usage removal must be
+    // independent of GitHub's bot flag and the comment's kind.
+    for usage in [attribution.usage_summary(), legacy_usage.to_string()] {
+        let body = format!("{feedback}\n\n{usage}\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}");
+        for is_bot in [false, true] {
+            let comment = inline_comment(&body, is_bot);
+            let summary = PrComment {
+                id: 2,
+                kind: CommentKind::ReviewSummary {
+                    state: "CHANGES_REQUESTED".into(),
+                },
+                path: None,
+                line: None,
+                diff_hunk: None,
+                ..comment.clone()
+            };
+            let all = [comment.clone(), summary.clone()];
+            for prompt in [
+                comment.fix_prompt(),
+                summary.fix_prompt(),
+                combined_fix_prompt(&[&comment, &summary], &all),
+            ] {
+                assert!(prompt.contains(feedback));
+                assert!(prompt.contains(AI_REVIEW_ATTRIBUTION_FOOTER));
+                assert!(!prompt.contains("AI review usage"));
+                assert!(!prompt.contains("review-model"));
+                assert!(!prompt.contains("$0.10"));
+            }
+            assert!(comment.fix_prompt().contains("File: src/app/sync.rs:42"));
+            assert!(comment.fix_prompt().contains("+ self.sync();"));
+            // The fetched comment and other consumers retain the full body.
+            assert_eq!(comment.body, body);
+            if !is_bot {
+                assert_eq!(comment.agent_text(), body);
+            }
+        }
+    }
+}
+
+#[test]
+fn fix_prompt_omits_unavailable_review_usage_without_a_footer() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    let comment = inline_comment(&format!("Please add a test.\n\n{usage}\n"), false);
+    assert_eq!(
+        comment.fix_prompt(),
+        inline_comment("Please add a test.", false).fix_prompt()
+    );
+}
+
+#[test]
+fn fix_prompt_preserves_feedback_about_usage() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    for body in [
+        "Fix the usage stats: input tokens and estimated cost are wrong.".to_string(),
+        "The heading should be `### AI review usage`.".to_string(),
+        "### AI review usage\nThis counter is wrong; please fix it.".to_string(),
+        format!("Preserve this example:\n\n```markdown\n{usage}\n```"),
+        format!("Preserve this example:\n\n```markdown\n\n{usage}\n\n```"),
+    ] {
+        assert!(inline_comment(&body, false).fix_prompt().contains(&body));
+    }
+}
+
+#[test]
 fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     let mut a = inline_comment("Guard this behind the lock.", false);
     a.path = Some("src/a.rs".into());
@@ -565,7 +653,7 @@ fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     b.path = Some("src/b.rs".into());
     b.line = Some(20);
 
-    let prompt = combined_fix_prompt(&[&a, &b]);
+    let prompt = combined_fix_prompt(&[&a, &b], &[a.clone(), b.clone()]);
 
     // One shared preamble, not repeated per comment.
     assert!(prompt.starts_with("Address these PR review comments."));
@@ -582,6 +670,110 @@ fn combined_fix_prompt_numbers_comments_under_one_preamble() {
 
     // Still no file contents — only the comment text + diff hunks.
     assert!(!prompt.contains("fn "));
+}
+
+#[test]
+fn combined_fix_prompt_warns_when_a_later_comment_shares_an_earlier_files_path() {
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.path = Some("src/a.rs".into());
+    a.line = Some(10);
+    let mut b = inline_comment("Rename this field.", false);
+    b.path = Some("src/a.rs".into());
+    b.line = Some(30);
+    let mut c = inline_comment("Different file entirely.", false);
+    c.path = Some("src/b.rs".into());
+    c.line = Some(5);
+
+    let prompt = combined_fix_prompt(&[&a, &b, &c], &[a.clone(), b.clone(), c.clone()]);
+
+    // The first entry on src/a.rs carries no warning...
+    let comment_1 = prompt.split("Comment 2:").next().unwrap();
+    assert!(!comment_1.contains("already addressed"));
+    // ...but the second entry on the same file does.
+    let comment_2 = prompt
+        .split("Comment 2:")
+        .nth(1)
+        .unwrap()
+        .split("Comment 3:")
+        .next()
+        .unwrap();
+    assert!(comment_2.contains("already addressed earlier in this triage session"));
+    // A later comment on a distinct file is unaffected.
+    let comment_3 = prompt.split("Comment 3:").nth(1).unwrap();
+    assert!(!comment_3.contains("already addressed"));
+}
+
+#[test]
+fn combined_fix_prompt_warns_when_a_batch_entry_shares_a_file_with_an_in_flight_fix() {
+    // Comment A on src/x.rs was already fixed via a single `f` (now
+    // `Fixing`). B and C are still untriaged and get combined-fixed together;
+    // B is the *first* occurrence of "src/x.rs" within this batch slice, so
+    // the intra-batch `seen_paths` tracking alone would miss it — the
+    // staleness has to come from consulting the wider comment list, exactly
+    // like `file_already_touched` does for a single fix.
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.id = 1;
+    a.path = Some("src/x.rs".into());
+    a.triage = TriageState::Fixing;
+    let mut b = inline_comment("Rename this field.", false);
+    b.id = 2;
+    b.path = Some("src/x.rs".into());
+    let mut c = inline_comment("Different file entirely.", false);
+    c.id = 3;
+    c.path = Some("src/y.rs".into());
+
+    let all = [a.clone(), b.clone(), c.clone()];
+    let prompt = combined_fix_prompt(&[&b, &c], &all);
+
+    let comment_1 = prompt.split("Comment 2:").next().unwrap();
+    assert!(comment_1.contains("already addressed earlier in this triage session"));
+    let comment_2 = prompt.split("Comment 2:").nth(1).unwrap();
+    assert!(!comment_2.contains("already addressed"));
+}
+
+#[test]
+fn file_already_touched_detects_a_sibling_fix_in_flight_or_done() {
+    let mut a = inline_comment("Guard this behind the lock.", false);
+    a.id = 1;
+    a.path = Some("src/a.rs".into());
+    let mut b = inline_comment("Also touches this file.", false);
+    b.id = 2;
+    b.path = Some("src/a.rs".into());
+    let mut c = inline_comment("A different file.", false);
+    c.id = 3;
+    c.path = Some("src/b.rs".into());
+
+    // Nothing else in flight yet.
+    assert!(!file_already_touched(
+        &b,
+        &[a.clone(), b.clone(), c.clone()]
+    ));
+
+    // A sibling on the same file that's mid-fix counts...
+    a.triage = TriageState::Fixing;
+    assert!(file_already_touched(&b, &[a.clone(), b.clone(), c.clone()]));
+
+    // ...and so does one already marked done.
+    a.triage = TriageState::Done;
+    assert!(file_already_touched(&b, &[a.clone(), b.clone(), c.clone()]));
+
+    // A sibling on a different file never counts, regardless of state.
+    c.triage = TriageState::Fixing;
+    assert!(!file_already_touched(&c, &[a, b, c.clone()]));
+}
+
+#[test]
+fn fix_prompt_with_note_appends_staleness_warning_only_when_asked() {
+    let c = inline_comment("Guard this behind the lock.", false);
+
+    let plain = c.fix_prompt_with_note(false);
+    assert_eq!(plain, c.fix_prompt());
+    assert!(!plain.contains("already addressed"));
+
+    let noted = c.fix_prompt_with_note(true);
+    assert!(noted.starts_with(&plain));
+    assert!(noted.contains("already addressed earlier in this triage session"));
+    assert!(noted.contains("re-read the file before editing"));
 }
 
 fn changed_files() -> Vec<InvestigationChangedFile> {
@@ -1367,6 +1559,62 @@ fn bootstrap_pr_text_strips_bot_boilerplate_and_skips_empty() {
     ];
     let text = bootstrap_pr_text(&comments, &[]);
     assert_eq!(text, "- (a.rs) Real point.");
+}
+
+fn sample_pr_ref(number: u32) -> PrRef {
+    PrRef {
+        number,
+        head_sha: "sha".to_string(),
+        url: format!("https://github.com/o/r/pull/{number}"),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    }
+}
+
+#[test]
+fn ai_summary_context_carries_file_hunk_and_pr_context() {
+    let comment = PrComment {
+        diff_hunk: Some("@@ -1,3 +1,3 @@\n-old\n+new\n".to_string()),
+        body: "Guard this behind the lock.".to_string(),
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(42));
+    assert!(context.contains("File: src/lib.rs:10"));
+    assert!(context.contains("Comment:\nGuard this behind the lock."));
+    assert!(context.contains("Diff hunk:\n@@ -1,3 +1,3 @@"));
+    assert!(context.contains("Pull request: #42 (https://github.com/o/r/pull/42)"));
+}
+
+#[test]
+fn ai_summary_context_file_level_comment_has_no_line_number() {
+    let comment = PrComment {
+        file_level: true,
+        line: None,
+        diff_hunk: None,
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(1));
+    assert!(context.starts_with("File: src/lib.rs\n"));
+    assert!(!context.contains("Diff hunk:"));
+}
+
+#[test]
+fn ai_summary_context_truncates_an_oversized_comment_with_an_explicit_marker() {
+    let comment = PrComment {
+        body: "x".repeat(10_000),
+        diff_hunk: None,
+        ..sample_comment(1, "alice", false)
+    };
+    let context = ai_summary_context(&comment, &sample_pr_ref(1));
+    assert!(
+        context.contains("[truncated]"),
+        "an oversized comment must carry an explicit truncation marker"
+    );
+    assert!(
+        context.len() < 10_500,
+        "the full 10k-char comment must not be forwarded verbatim"
+    );
 }
 
 #[test]

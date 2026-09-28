@@ -1,0 +1,6 @@
+{
+  "path": "__REPO_ROOT__",
+  "project_name": "issue-fixer-demo",
+  "preferred_agent": "codex",
+  "dry_run": false
+}

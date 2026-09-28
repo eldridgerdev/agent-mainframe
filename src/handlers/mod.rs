@@ -14,6 +14,7 @@ mod handoff;
 mod harness;
 mod hooks;
 mod input;
+mod issue_fixer;
 mod learning;
 mod mouse;
 mod normal;
@@ -49,7 +50,10 @@ pub use dialog::{
     handle_resource_confirm_key, handle_session_config_key, handle_steering_prompt_key,
     handle_stopped_session_dialog_key, handle_theme_picker_key,
 };
-pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
+pub use diff::{
+    handle_diff_picker_key, handle_diff_viewer_key, handle_diff_viewer_wheel,
+    handle_review_harness_pick_key,
+};
 pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
@@ -58,6 +62,9 @@ pub use handoff::handle_fresh_context_prompt_key;
 pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
+pub use issue_fixer::{
+    handle_issue_browser_key, handle_issue_duplicate_warning_key, handle_issue_setup_key,
+};
 pub use learning::handle_learning_key;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
@@ -75,8 +82,9 @@ pub use picker::{
 pub use plan_interview::handle_plan_interview_key;
 pub use plan_interview_attach::handle_plan_interview_attach_doc_key;
 pub use pr_review::{
-    handle_pr_investigation_loading_key, handle_pr_number_prompt_key, handle_pr_picker_key,
-    handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
+    handle_compact_confirm_key, handle_pr_investigation_loading_key, handle_pr_number_prompt_key,
+    handle_pr_picker_key, handle_pr_review_key, handle_pr_review_list_key,
+    handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
     handle_review_memory_compact_review_key, handle_review_memory_compact_running_key,
 };
 pub use precall::handle_prompt_precall_key;
@@ -154,12 +162,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key),
         AppMode::PrNumberPrompt(_) => handle_pr_number_prompt_key(app, key),
         AppMode::PrPicker(_) => handle_pr_picker_key(app, key),
+        AppMode::PrReviewList(_) => handle_pr_review_list_key(app, key),
+        AppMode::IssueBrowser(_) => handle_issue_browser_key(app, key),
+        AppMode::IssueSetup(_) => handle_issue_setup_key(app, key),
+        AppMode::IssueDuplicateWarning(_) => handle_issue_duplicate_warning_key(app, key),
         AppMode::PrReviewLoading(_) => handle_pr_review_loading_key(app, key),
         AppMode::PrReview(_) => handle_pr_review_key(app, key),
         AppMode::PrInvestigationLoading(_) => handle_pr_investigation_loading_key(app, key),
         AppMode::ReviewMemoryBootstrapRunning(_) => {
             handle_review_memory_bootstrap_running_key(app, key)
         }
+        AppMode::ReviewMemoryCompactConfirm(_) => handle_compact_confirm_key(app, key),
         AppMode::ReviewMemoryCompactRunning(_) => {
             handle_review_memory_compact_running_key(app, key)
         }

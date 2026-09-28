@@ -28,6 +28,7 @@ use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::app::pr_review::PrComment;
 use crate::editor::TextEditor;
 use crate::github::{GhCli, PrRef, PrResolution, PrReviewComment as GhPrReviewComment};
 use crate::headless::HeadlessRunner;
@@ -181,6 +182,12 @@ impl AiReviewAttribution {
     /// Deterministic Markdown appended only to the overall GitHub review
     /// body. Each metric is independently reported or called unavailable, so
     /// a partial harness event can never masquerade as a zero-token run.
+    ///
+    /// Rendered as a collapsed `<details>` block so the metadata doesn't
+    /// crowd the review's actual summary: the `<summary>` line carries the
+    /// compact [`Self::plain_label`] and expanding it shows every metric. The
+    /// blank lines inside the block are required for GitHub to render the
+    /// list as Markdown rather than raw text.
     pub fn usage_summary(&self) -> String {
         let token = |value: Option<u64>| {
             value
@@ -192,7 +199,8 @@ impl AiReviewAttribution {
             .map(format_elapsed)
             .unwrap_or_else(|| "unavailable".to_string());
         format!(
-            "### AI review usage\n\
+            "{AI_REVIEW_USAGE_OPEN}{}</summary>\n\
+             \n\
              - Harness: {}\n\
              - Model: {}\n\
              - Elapsed: {elapsed}\n\
@@ -200,7 +208,10 @@ impl AiReviewAttribution {
              - Output tokens: {}\n\
              - Cached tokens: {}\n\
              - Total tokens: {}\n\
-             - Estimated cost: {}",
+             - Estimated cost: {}\n\
+             \n\
+             </details>",
+            escape_summary_html(&self.plain_label()),
             self.harness.as_deref().unwrap_or("unavailable"),
             self.model_label(),
             token(self.input_tokens),
@@ -210,6 +221,18 @@ impl AiReviewAttribution {
             self.estimated_cost.as_deref().unwrap_or("unavailable"),
         )
     }
+}
+
+/// Opening of the collapsible usage block, up to where the compact label
+/// starts. [`strip_ai_review_attribution`] recognizes the block by it.
+const AI_REVIEW_USAGE_OPEN: &str = "<details>\n<summary>AI review usage · ";
+
+/// The `<summary>` line is raw HTML, so a model name like `a<b>` would
+/// otherwise be parsed as a tag and swallow the rest of the label.
+fn escape_summary_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn format_elapsed(elapsed_ms: u64) -> String {
@@ -287,17 +310,22 @@ fn strip_ai_review_attribution(body: &str) -> &str {
     let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
     let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
-    // The usage block is always its own trailing paragraph, separated by a
-    // blank line (see `append_ai_review_attribution`), so only a heading that
-    // actually *starts* that last paragraph counts as the real block — not
-    // one a finding's own text merely mentions or quotes somewhere earlier.
-    // Mirrors the previous line-anchored disclosure check, one level up
-    // (paragraph instead of line).
-    match core.rsplit_once("\n\n") {
-        Some((head, last)) if last.trim_start().starts_with("### AI review usage") => {
-            head.trim_end()
-        }
-        _ if core.trim_start().starts_with("### AI review usage") => "",
+    // The usage block is always the trailing `<details>` element, opened
+    // after a blank line (see `append_ai_review_attribution`), so only an
+    // opening that starts a paragraph *and* whose element runs to the end of
+    // the body counts as the real block — not one a finding's own text merely
+    // mentions or quotes somewhere earlier.
+    if !core.ends_with("</details>") {
+        return core;
+    }
+    // An empty summary seeds a body that is *only* the usage block, so it
+    // opens at the very start rather than after a blank line.
+    let block_start = core
+        .rfind(&format!("\n\n{AI_REVIEW_USAGE_OPEN}"))
+        .map(|i| i + 2)
+        .or_else(|| core.starts_with(AI_REVIEW_USAGE_OPEN).then_some(0));
+    match block_start {
+        Some(start) if !core[start..].contains("\n</details>\n") => core[..start].trim_end(),
         _ => core,
     }
 }
@@ -341,6 +369,17 @@ pub struct AiReviewFinding {
     /// itself (that reconciliation machinery was most of the friction the
     /// module doc above describes).
     pub published: bool,
+}
+
+/// Why a finding can't be handed to PR Triage for fixing, if it can't.
+fn fix_ineligible_reason(finding: &AiReviewFinding) -> Option<&'static str> {
+    if finding.published {
+        Some("Already posted to GitHub — fix it from PR Triage (r to refresh)")
+    } else if finding.skipped {
+        Some("Skipped finding — press s to unskip it before fixing")
+    } else {
+        None
+    }
 }
 
 /// Cache key for [`App::ai_review_finding_fix_costs`]. The per-frame result
@@ -1472,6 +1511,7 @@ impl App {
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
+            marked: Default::default(),
         });
     }
 
@@ -1706,6 +1746,105 @@ impl App {
         }
     }
 
+    /// Toggle whether the selected finding is marked for a combined fix
+    /// (`space`). Posted and skipped findings can't be marked.
+    pub fn ai_review_toggle_mark(&mut self) {
+        let AppMode::AiReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(finding) = state.findings.get(state.selected) else {
+            self.message = Some("No finding selected".into());
+            return;
+        };
+        if let Some(why) = fix_ineligible_reason(finding) {
+            self.message = Some(why.into());
+            return;
+        }
+        let selected = state.selected;
+        if !state.marked.remove(&selected) {
+            state.marked.insert(selected);
+        }
+        self.message = Some(format!("{} marked for a combined fix", state.marked.len()));
+    }
+
+    /// `f`: fix the selected finding without posting it to GitHub. Hands it to
+    /// PR Triage as a local comment, where the usual target picker and prompt
+    /// confirmation apply.
+    pub fn ai_review_fix_selected(&mut self) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let Some(finding) = state.findings.get(state.selected) else {
+            self.message = Some("No finding selected".into());
+            return;
+        };
+        if let Some(why) = fix_ineligible_reason(finding) {
+            self.message = Some(why.into());
+            return;
+        }
+        let selected = state.selected;
+        self.ai_review_send_to_triage(vec![selected], false);
+    }
+
+    /// `B`: fix every marked finding in one combined prompt, without posting.
+    pub fn ai_review_fix_marked(&mut self) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let mut indices: Vec<usize> = state
+            .marked
+            .iter()
+            .copied()
+            .filter(|i| {
+                state
+                    .findings
+                    .get(*i)
+                    .is_some_and(|f| fix_ineligible_reason(f).is_none())
+            })
+            .collect();
+        if indices.is_empty() {
+            self.message = Some("No findings marked — press space to mark".into());
+            return;
+        }
+        indices.sort_unstable();
+        self.ai_review_send_to_triage(indices, true);
+    }
+
+    /// Leave AI Review for PR Triage on the same PR — restoring the pane it was
+    /// opened from when there is one, opening it otherwise — and queue the given
+    /// findings there as local comments.
+    fn ai_review_send_to_triage(&mut self, indices: Vec<usize>, batch: bool) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let comments: Vec<PrComment> = indices
+            .iter()
+            .filter_map(|i| state.findings.get(*i))
+            .map(PrComment::from_ai_finding)
+            .collect();
+        let workdir = state.workdir.clone();
+        let pr = state.pr.clone();
+        self.pr_review_pending_local = Some(crate::app::pr_review::PendingLocalFindings {
+            pr_number: pr.number,
+            comments,
+            batch,
+        });
+        match self.ai_review_return_to.take() {
+            Some(return_to)
+                if matches!(
+                    &*return_to,
+                    AppMode::PrReview(s)
+                        if s.review.pr.number == pr.number
+                            && s.review.pr.head_sha == pr.head_sha
+                ) =>
+            {
+                self.mode = *return_to;
+            }
+            _ => self.enter_pr_review(workdir, pr),
+        }
+        self.apply_pending_local_findings();
+    }
+
     pub fn ai_review_toggle_skip(&mut self) {
         if let AppMode::AiReview(state) = &mut self.mode
             && let Some(finding) = state.findings.get_mut(state.selected)
@@ -1724,9 +1863,10 @@ impl App {
     /// combined batch. Indexed 1:1 with `state.findings`; all-`None` without a
     /// DB or a cached review to match findings against.
     ///
-    /// The AI Review pane has no fix action of its own — a finding's fix cost
-    /// only exists once it has been posted, picked up in PR Triage as an
-    /// ordinary comment, and fixed there. This is the read-back of that.
+    /// A finding's fix cost only exists once it has been posted, picked up in
+    /// PR Triage as an ordinary comment, and fixed there (fixing an unposted
+    /// finding via `f`/`B` hands it to PR Triage as a local comment that this
+    /// correlation does not see). This is the read-back of the posted case.
     ///
     /// Called once per render tick from `ui::dashboard::draw`, so the actual
     /// work (a triage DB load, a full `serde_json` parse of the cached PR
@@ -2450,6 +2590,7 @@ impl App {
                             base.summary = outcome.summary;
                             base.attribution = Some(outcome.attribution);
                             base.selected = 0;
+                            base.marked.clear();
                             base.detail_scroll = 0;
                             base.last_run = Some(AiReviewRun {
                                 ran_at: Local::now(),
@@ -3427,7 +3568,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let body = append_ai_review_attribution("finding text", Some(&attribution));
         assert_eq!(
             body,
-            "finding text\n\n### AI review usage\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n— AI review via AMF"
+            "finding text\n\n<details>\n<summary>AI review usage · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10</summary>\n\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n</details>\n\n— AI review via AMF"
         );
     }
 
@@ -3552,8 +3693,8 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             ..sample_attribution()
         };
         let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
-        assert_eq!(body.matches("### AI review usage").count(), 1);
-        assert!(body.ends_with("Estimated cost: $0.20\n\n— AI review via AMF"));
+        assert_eq!(body.matches("AI review usage").count(), 1);
+        assert!(body.ends_with("Estimated cost: $0.20\n\n</details>\n\n— AI review via AMF"));
     }
 
     #[test]
@@ -3561,11 +3702,52 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         // A finding that merely quotes or discusses the heading text (not as
         // its own trailing paragraph) must not be truncated as if it were the
         // real deterministic usage block.
-        let body = "Findings should avoid emitting a literal \"### AI review usage\" \
-                     heading inside generated text.\n\n— AI review via AMF";
+        let body = "Findings should avoid emitting a literal \"<summary>AI review usage · \" \
+                     line inside generated text.\n\n— AI review via AMF";
         assert_eq!(
             strip_ai_review_attribution(body),
             body.strip_suffix("\n\n— AI review via AMF").unwrap()
+        );
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_keeps_an_earlier_quoted_usage_block() {
+        // A summary that quotes a whole usage block, followed by more of the
+        // user's own text in a later `<details>`, must keep everything: only
+        // a usage block running to the end of the body is the seeded one.
+        let body = "Quoted:\n\n<details>\n<summary>AI review usage · x</summary>\n\n- a\n\n</details>\n\n\
+                    <details>\n<summary>Notes</summary>\n\nmine\n\n</details>";
+        assert_eq!(strip_ai_review_attribution(body), body);
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_keeps_user_details_after_a_leading_usage_block() {
+        // An empty summary seeds a body that is only the usage block; a
+        // `<details>` the user adds after it must survive, and the seeded
+        // block alone must still be stripped.
+        let seeded = append_ai_review_attribution("", Some(&sample_attribution()));
+        assert_eq!(strip_ai_review_attribution(&seeded), "");
+        let footer = crate::app::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
+        let core = seeded.trim_end().strip_suffix(footer).unwrap().trim_end();
+        let edited = format!("{core}\n\n<details>\n<summary>Notes</summary>\n\nmine\n\n</details>");
+        assert_eq!(strip_ai_review_attribution(&edited), edited);
+    }
+
+    #[test]
+    fn usage_summary_is_collapsible_and_escapes_the_summary_label() {
+        let attribution = AiReviewAttribution {
+            model: Some("a<b>&c".to_string()),
+            ..sample_attribution()
+        };
+        let summary = attribution.usage_summary();
+        assert!(summary.starts_with("<details>\n<summary>AI review usage · "));
+        assert!(summary.contains("model a&lt;b&gt;&amp;c · "));
+        assert!(summary.ends_with("\n\n</details>"));
+        let body = append_ai_review_attribution("Summary.", Some(&attribution));
+        assert_eq!(
+            strip_ai_review_attribution(&body),
+            "Summary.",
+            "the seeded block strips cleanly even with an escaped label"
         );
     }
 

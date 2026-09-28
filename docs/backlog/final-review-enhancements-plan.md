@@ -366,7 +366,7 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   dashboard's help-overlay pattern with review-specific groupings.
 - **Mouse support in the diff viewer.** `handlers/mouse.rs` already
   handles the dashboard; add click-to-select in the file list,
-  wheel-scroll in the patch, and click-to-place the comment cursor.
+  wheel-scroll in the patch (done), and click-to-place the comment cursor.
 
 #### AI co-review upgrades
 
@@ -1280,8 +1280,13 @@ Viewer:
       leaves the mode. See also
       `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`,
       the frame the bug was originally spotted in.
-- [ ] Mouse support in the diff viewer (file list, patch scroll,
-      comment cursor)
+- [x] Mouse-wheel scrolling in the diff viewer. The wheel scrolls whatever
+      is showing — an open overlay or the comment editor, the expanded notes,
+      else the patch — without moving the line cursor, and is ignored over
+      prompts and pickers so a stray notch can't change a choice. Shipped
+      alongside `Ctrl+J/K` (10 lines per press, cursor included).
+- [ ] Mouse clicks in the diff viewer (select in the file list,
+      click-to-place the comment cursor)
 
 AI co-review:
 

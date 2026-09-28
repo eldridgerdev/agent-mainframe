@@ -10,7 +10,213 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
+  faster than `j` / `k`: they scroll the patch, the expanded notes, and the
+  help, history, and overview panels, and move the line cursor in cursor mode.
+  They scroll as smoothly as `j` / `k` when held.
+- **The mouse wheel scrolls the diff viewer.** It scrolls the patch, or the
+  panel or note that is open on top of it, without moving your line cursor.
+  It does nothing over prompts and pickers, so a stray scroll can't change a
+  choice.
+
+### Fixed
+
+- **PR Triage omits AI review usage stats from fix prompts.** Single-comment
+  and combined fixes send the review feedback and code context without the
+  review's harness, model, token counts, elapsed time, or cost summary.
+
+### Migration
+
+- No migration is required.
+
+## [v0.47.0] - 2026-09-26
+
+### Added
+
+- **Review a teammate's pull request in AMF's diff viewer.** Press `G` on a
+  project row (or `Tab` in the PR picker) to see every open pull request in
+  the repository, including your own and drafts. `Enter` opens one in the same
+  viewer as the final review, showing exactly the pull request's changes. It
+  starts no agent and needs no feature, and it leaves your checked-out branch,
+  uncommitted changes, and stash untouched.
+- **Your review is saved as you go.** `Esc` pauses; opening the same pull
+  request later picks up your comments, verdicts, and place, and the list
+  shows which pull requests have a draft.
+- **New commits on the pull request are handled for you.** Reopening flags
+  only the files whose changes differ and clears your verdicts on just those.
+  Every comment is kept, and any whose code has gone is listed as outdated
+  instead of being lost.
+- **Submit straight to GitHub.** `q` posts your review as Comment, Approve,
+  or Request changes, with a summary and your inline comments, ranges, and
+  suggested changes. AMF won't post if the pull request has moved on since you
+  opened it, so your comments never land on code you haven't seen, and it
+  tells you plainly when GitHub wouldn't accept a choice (such as approving
+  your own pull request). Comments that can't sit on the diff go in the
+  summary. If posting fails, your draft is kept and you can retry.
+- **Start another session from a feature page in the desktop app.** A new
+  **New session** button starts a Claude, Codex, OpenCode, or Pi agent, a
+  terminal, or Neovim, with an optional name, and opens it in a new tab.
+
 ### Changed
+
+- **The session sidebar's Usage box now shows small bars, like the
+  dashboard.** Each rate-limit window is drawn as a bar with the percentage
+  used, for example `5h ┃┃┃┃░░░░░░ 38% · 3h`, and it changes colour at 50%
+  and 80% used, like the dashboard's. Before, the box showed the percentage left
+  (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
+
+- **The usage summary on AMF's AI review (`W`) is now collapsed on GitHub.**
+  The review's own summary comes first, followed by one line with the
+  harness, model, tokens, and estimated cost. Expand that line to see every
+  metric, including elapsed time and cached and total tokens.
+
+### Fixed
+
+- **Holding `j`/`k` in the diff viewer now scrolls smoothly.** Large files no
+  longer stutter or keep scrolling after you let go, so you can read the diff
+  while it moves. This applies to the final review and to pull request reviews.
+- **Posting a review no longer adds a bare "Needs revision." comment** to every
+  file you had already commented on. The note is still posted for a file you
+  marked as needing revision without leaving any other comment.
+- **The desktop app recovers its sessions after tmux exits.** Feature pages
+  show whether sessions are really running, and restarting a feature offers
+  to bring back its saved agents, instead of leaving the page disconnected.
+- **Agent sessions started from the desktop app no longer open a new app
+  window each time the agent thinks or runs a tool.**
+
+### Migration
+
+- No migration is required. The review needs an authenticated `gh`, as PR
+  Triage does. AMF updates its database the first time it starts.
+- Desktop-app sessions started before upgrading can still open extra windows
+  until they are restarted.
+
+## [v0.46.0] - 2026-09-24
+
+### Added
+
+- **Plan interviews can read linked tickets from Asana, Linear, Jira, and
+  other trackers.** List the exact read-only MCP tools the interview may
+  call in `plan_interview_mcp` in `~/.config/amf/config.json`. claude.ai
+  connectors and servers added with `claude mcp add` work as-is, and other
+  servers can be supplied as a config file. A brief that links a ticket then
+  has it fetched instead of pasted in. Works when the interview runs on
+  Claude; see "Issue trackers in plan interviews" in the README for examples.
+  The interview can still only read: it can't edit files or run commands, and
+  it won't load the repository's own Claude settings, hooks, MCP servers,
+  `CLAUDE.md`, skills, or subagents. If the setting has a mistake, the
+  interview runs without the tools and tells you why, once.
+
+### Migration
+
+- No migration is required. Ticket lookup is off until you add
+  `plan_interview_mcp` to your global config. It can't be set in a
+  project's `amf.json`, because MCP servers run programs.
+
+## [v0.45.0] - 2026-09-24
+
+### Added
+
+- **AMF now has a desktop app (preview) alongside `amf`.** It uses the same
+  projects, features and agent sessions as the terminal interface, so you can
+  switch between the two or run both at once. What you can do in it today:
+  - Browse your projects and features in a sidebar, with running features
+    listed first, and start or stop a feature with one click.
+  - Work in live terminal tabs, one per agent session.
+  - Keep global, project and worktree TODO lists: add, reorder, move and copy
+    items, and start a TODO in an existing feature or a new worktree, either
+    right away or after planning it. The agent's prompt opens as an editable
+    draft and is only sent when you say so.
+  - Run Full and Quick Plan interviews in a window you can minimize while the
+    agent works.
+  - Approve over-limit agent starts, as the TUI asks you to.
+
+  Everything else, including Learning Mode, PR triage and reviews, still
+  needs `amf`. See `gui/README.md` for the full list and for install steps.
+- **Every release now includes desktop app downloads** next to `amf`:
+  - **Linux (x86_64 and ARM64):** a `.deb` that also installs `tmux`, and an
+    AppImage for other distributions.
+  - **Windows:** install the x86_64 Linux build inside WSL2; it opens as a
+    normal window through WSLg. There is no native Windows build.
+  - **Apple Silicon Macs:** a `.dmg`. Opened from Finder or the Dock, the app
+    uses the same `PATH` as your terminal, so the `tmux` and agent CLIs you
+    already use are found.
+
+### Fixed
+
+- **Running AMF in more than one place no longer loses changes.** Two `amf`
+  windows, or `amf` and the desktop app, used to be able to overwrite each
+  other's projects and features without warning. AMF now picks up changes
+  made elsewhere about once a second, and if a save still collides it keeps
+  the other change, refreshes your view, and asks you to retry.
+
+### Migration
+
+- No migration is required. The desktop app is optional, and `amf` works as
+  before.
+- The desktop app needs `tmux` and your agent CLIs installed. On a Mac, the
+  app isn't signed with an Apple Developer ID yet: the first time you open
+  it, approve it under **System Settings → Privacy & Security → Open
+  Anyway**.
+
+## [v0.44.1] - 2026-09-22
+
+### Fixed
+
+- **Headless AI call confirmations no longer repeat their key hints.** View,
+  edit, continue, and cancel actions now appear once in the colored footer,
+  leaving the prompt details easier to scan. No migration is required.
+- Starting a feature or adding an agent session no longer opens another
+  feature's tmux session when their names overlap. Saved features that share
+  an older tmux name receive distinct sessions while keeping their saved
+  session names and IDs.
+
+### Migration
+
+- No manual migration is required. AMF separates affected saved features
+  when they are next started.
+
+## [v0.44.0] - 2026-09-21
+
+### Added
+
+- **Fix AI review findings without posting them to GitHub.** The AI Review
+  screen now has `f` (fix the selected finding), `space` (mark findings) and
+  `B` (fix all marked findings in one combined prompt). They take you to PR
+  Triage's usual fix dialog, with the finding added as a local comment, so you
+  choose the target agent and review the prompt as before. Nothing is posted,
+  and the prompt leaves out the "draft a reviewer reply" instruction because
+  there is no GitHub comment to answer. Posted or skipped findings can't be
+  fixed this way, and replying to a local finding says to post it first. These
+  local comments aren't kept when PR Triage is refreshed or reopened; the
+  finding itself stays on the AI Review screen.
+
+### Fixed
+
+- **PR Triage fix prompts now warn when a file was already touched this
+  session**, and check the whole comment list when several comments are fixed
+  in one combined prompt, so you are less likely to send an agent after a
+  hunk that has already changed.
+
+### Changed
+
+- **Doc/marketing site moved off `*.pages.dev` to `agentmainframe.dev`.** The
+  shared `pages.dev` subdomain is blocked by some corporate web filters; the
+  site now has its own custom domain, with the old `*.pages.dev` URL and
+  `www.agentmainframe.dev` redirecting to it. No change to the site's build
+  pipeline or deploy target.
+
+## [v0.43.0] - 2026-09-17
+
+### Changed
+
+- **Compacting review memory (`c`) is no longer limited to the PR picker.**
+  The same confirm-and-run flow that prunes/merges near-duplicate findings
+  now also works from PR Triage and the dashboard (leader key
+  `Ctrl+Space m`), restoring you to whichever screen you opened it from on
+  cancel or when the pass finishes.
 
 - **Expert plan review is now an explicit frontier-model action.** At the final
   plan review, press `a` to request an Expert review, select a model from the
@@ -31,6 +237,28 @@ are tagged.
 
 ### Added
 
+- **The "add to memory" dialog (`M` in PR Triage) can now generate a
+  recall-shaped finding with AI instead of the raw comment text.** Press `s`
+  in the confirm view to pick a harness (skipped when only one is installed)
+  and generate a short entry — the underlying issue, why it matters, where it
+  applies, and the check to run next time — with the file/PR context folded
+  in, since that text is the entry's only field. Generation runs in the
+  background without blocking the rest of AMF; the result lands in the same
+  editable confirm view for review before `⏎` saves it, and a failed or
+  unavailable harness falls back to the original raw comment with normal
+  save still available. Nothing is written until you explicitly confirm.
+
+- **GitHub issues can now become tracked AMF features.** Select a project on
+  the dashboard and press `g` to browse its open issues, refresh or page
+  through the list, then review the feature name, branch, harness settings,
+  planning mode, and generated issue prompt before creating anything. AMF
+  warns when the same canonical repository issue is already linked, records
+  the source issue on the feature row and session sidebar, and posts an
+  identifying GitHub comment only after local creation succeeds. Failed or
+  interrupted comments keep the feature and reconcile safely on restart
+  before retrying. Existing features remain unlinked; the one-time database
+  migration is automatic, so no migration action is required.
+
 - **The plan picker can now create a plan, not just select one.** When a
   feature has no plan yet, leader `n` in its session opens a picker over the
   worktree's Markdown files; pressing `p` there now starts the same guided
@@ -50,6 +278,16 @@ are tagged.
   the answers turn out to reveal more complexity than expected, escalates
   into the full Plan-mode interview — with an explicit message explaining why
   and everything already answered carried forward, so nothing is asked twice.
+
+- **A prompt that fails to reach an agent is no longer lost.** If AMF has a
+  prompt ready to send — for example, starting an agent from a TODO — but the
+  launch itself fails (hitting your agent limit, a harness spawn error), that
+  prompt now gets saved instead of discarded: it's added to your Prompt
+  Library as an editable "Unsent: ..." template (`leader P`, or `L` on the
+  dashboard) so it's never tied to a feature that may never start, and it
+  also leads the Latest Prompt list (`leader l`) for that checkout, marked
+  `[unsent]`, once a session exists there to send it from. No migration is
+  required.
 
 - **AMF now has a public website** (`site/`, built with the Zola static site
   generator): a landing page plus a documentation section covering
@@ -117,6 +355,34 @@ are tagged.
   No migration is required.
 
 ### Fixed
+
+- **PR Triage fix prompts now warn when a file has already been touched
+  earlier in the same triage session.** Each fix prompt carries GitHub's
+  diff hunk and line number for the comment, but those reflect the file as
+  it stood when the PR was fetched. If you already fixed (or are mid-fix on)
+  another comment on the same file — whether from an earlier single fix or
+  an earlier entry in a combined batch (`B`) — the next comment's prompt on
+  that file now says so explicitly, so the agent re-reads the file instead of
+  trusting a hunk that fix may have already moved.
+
+- **`x` on a session now stops it instead of deleting it.** Pressing `x` on
+  an individual session (not a whole feature) previously removed it from the
+  list entirely — the same destructive action as `d`, with no way to just
+  stop one. `x` now kills the session's tmux window and keeps it in the
+  list, restartable with `c`; `d` remains the only way to delete a session
+  for good. Restarting a stopped session with `c` now goes through the same
+  resource-limit gate as every other agent launch, and a restarted Claude
+  session resumes its prior conversation instead of starting fresh. No
+  migration is required.
+
+- **Restoring a saved session now only affects the session you picked it
+  for.** When a feature has more than one session for the same harness (e.g.
+  "Claude 1" and "Claude 2"), the saved-transcript picker (`S`) previously
+  applied the picked historical session to *every* session of that harness
+  in the feature, silently pointing them all at the same transcript. It now
+  restores only the session the picker was opened from; other sessions of
+  the same harness keep their own history untouched. No migration is
+  required.
 
 - Failed AI reviews now retain Claude’s structured error details and show the
   process exit status, making failures with empty stderr easier to diagnose.

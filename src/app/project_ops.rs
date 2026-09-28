@@ -293,6 +293,7 @@ impl App {
         }
 
         let mut project_id: Option<String> = None;
+        let mut feature_workdirs: Vec<PathBuf> = Vec::new();
         if let Some(project) = self.store.find_project(&project_name) {
             project_id = Some(project.id.clone());
             let features: Vec<(String, PathBuf, bool, String, String)> = project
@@ -309,6 +310,7 @@ impl App {
                 })
                 .collect();
             let repo = project.repo.clone();
+            feature_workdirs = features.iter().map(|f| f.1.clone()).collect();
 
             for (session, workdir, is_worktree, feature_id, branch) in features {
                 self.tmux.kill_session(&session).map_err(|err| anyhow::anyhow!(
@@ -361,6 +363,31 @@ impl App {
             self.log_warn(
                 "learning",
                 format!("failed to delete learning history for project {pid}: {e}"),
+            );
+        }
+
+        // Unsent-prompt rows are keyed by workdir, not project or feature id,
+        // matching how they're filed and recalled; clean up each deleted
+        // feature's checkout so a later, unrelated feature can't inherit a
+        // stale stashed prompt by reusing the same path.
+        let unsent_cleanup_errs: Vec<(PathBuf, anyhow::Error)> = match self.db.as_ref() {
+            Some(db) => feature_workdirs
+                .iter()
+                .filter_map(|workdir| {
+                    db.delete_unsent_prompts_for_workdir(workdir)
+                        .err()
+                        .map(|e| (workdir.clone(), e))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        for (workdir, e) in unsent_cleanup_errs {
+            self.log_warn(
+                "unsent_prompts",
+                format!(
+                    "failed to delete unsent prompts for workdir {}: {e}",
+                    workdir.display()
+                ),
             );
         }
 

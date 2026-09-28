@@ -41,6 +41,10 @@ other modal command surfaces.
 
 ## Progress
 
+- The dashboard GitHub issue browser is registered as the `issue_fixer`
+  action with default key `g`, so it is remappable through the existing
+  dashboard keybinding configuration. This expands the current catalog but
+  does not yet provide the shared scoped-action model proposed below.
 - First view-leader bindings are now config-driven: `next_feature` and
   `prev_feature` (previously hardcoded to leader `n`/`p`) have no default,
   are read from the existing `keybindings` map, and only appear in the leader

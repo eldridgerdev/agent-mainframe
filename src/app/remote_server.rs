@@ -679,6 +679,7 @@ pub(super) mod tests {
             enable_chrome: false,
             remote_control: false,
             pending_worktree_script: false,
+            issue_source: None,
             ready: false,
             status: ProjectStatus::Active,
             created_at: now,

@@ -249,6 +249,19 @@ mod tests {
     }
 
     #[test]
+    fn review_memory_ai_summary_renders_with_the_finding_context_substituted() {
+        let ctx = PromptContext::new().with(
+            "finding_context",
+            "File: src/lib.rs:10\n\nComment:\nGuard this.\n\nPull request: #1 (https://x/1)",
+        );
+        let rendered = resolve_prompt(PromptId::ReviewMemoryAiSummary, &AgentKind::Claude, &ctx);
+        assert!(rendered.contains("File: src/lib.rs:10"));
+        assert!(rendered.contains("Guard this."));
+        assert!(rendered.contains("Pull request: #1 (https://x/1)"));
+        assert!(!rendered.contains("{{"));
+    }
+
+    #[test]
     fn a_supplied_placeholder_is_substituted() {
         let ctx = PromptContext::new().with("q", "why");
         assert_eq!(render_template("[{{q}}]", &ctx), "[why]");

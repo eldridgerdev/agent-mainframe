@@ -27,6 +27,38 @@ pub struct TmuxManager;
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// Strip a tmux control-mode line's trailing CR/LF and the `-CC` PTY
+/// wrapper's DCS framing (`\eP1000p` ... `\e\`) some tmux versions add
+/// around each line when the client is attached to a real PTY (see
+/// `TmuxManager::spawn_control_mode_view_client`). Shared by the TUI's
+/// control-mode view worker and the GUI terminal transport -- both read
+/// lines off the same kind of client and need the same framing removed
+/// before matching on `%`-prefixed notifications.
+pub(crate) fn sanitize_tmux_control_line(line: &str) -> &str {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let line = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+    line.strip_suffix("\u{1b}\\").unwrap_or(line)
+}
+
+/// Extract `(pane_id, payload)` from a control-mode `%output`/`%extended-output`
+/// notification line, or `None` for any other line. The payload is the
+/// notification's own escaped text -- both consumers of this (the TUI's
+/// control-mode worker and the GUI terminal transport) use it purely as a
+/// dirty-signal for the pane named by `pane_id`, then re-fetch real content
+/// via `capture_pane_ansi`/`capture_pane_for_replay` rather than decoding
+/// this payload directly; see the inline comment on the control stream in
+/// `App::run_control_mode_view_worker` (`src/app/mod.rs`) for why.
+pub(crate) fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = line.strip_prefix("%output ") {
+        return rest.split_once(' ');
+    }
+
+    let rest = line.strip_prefix("%extended-output ")?;
+    let (metadata, payload) = rest.split_once(" : ")?;
+    let pane_id = metadata.split_whitespace().next()?;
+    Some((pane_id, payload))
+}
+
 pub struct SpawnedTmuxCommand {
     pub child: Child,
     pub output_rx: Receiver<String>,
@@ -471,6 +503,27 @@ impl TmuxManager {
         Self::control_mode_compatible()
     }
 
+    fn cli_binary_override() -> &'static OnceLock<Option<PathBuf>> {
+        static CLI_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+        &CLI_BINARY
+    }
+
+    /// Name the `amf` CLI that sessions' hook scripts run as `$AMF_BIN`
+    /// (`amf notify`, the diff-review hooks, ...). Only a host that is *not*
+    /// the CLI needs this -- the GUI, whose own executable would open a new
+    /// window per hook event. `None` omits `AMF_BIN`, so the scripts fall back
+    /// to `amf` on `PATH`. First call wins; call it before launching sessions.
+    pub(crate) fn set_cli_binary(path: Option<PathBuf>) {
+        let _ = Self::cli_binary_override().set(path);
+    }
+
+    fn cli_binary() -> Option<PathBuf> {
+        match Self::cli_binary_override().get() {
+            Some(path) => path.clone(),
+            None => std::env::current_exe().ok(),
+        }
+    }
+
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
         RUNTIME.get_or_init(TmuxRuntime::detect)
@@ -503,7 +556,7 @@ impl TmuxManager {
             Self::shell_quote(&runtime.binary.to_string_lossy())
         )];
 
-        if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe) = Self::cli_binary() {
             parts.push(format!(
                 "AMF_BIN={}",
                 Self::shell_quote(&exe.to_string_lossy())
@@ -1051,12 +1104,13 @@ impl TmuxManager {
         };
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
 
-        unsafe {
-            if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == -1 {
-                return Err(std::io::Error::last_os_error())
-                    .context("Failed to read terminal attributes for tmux PTY");
-            }
-            libc::cfmakeraw(&mut termios);
+        // The TUI always runs on a terminal and seeds the PTY from stdin's
+        // attributes. The GUI usually has no terminal on stdin (a desktop
+        // launch, or stdin piped by `npm`/`cargo`), where `tcgetattr` fails
+        // with ENOTTY; it gets the PTY's own defaults, made raw below.
+        let from_stdin = unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0;
+        if from_stdin {
+            unsafe { libc::cfmakeraw(&mut termios) };
         }
 
         #[cfg(target_os = "macos")]
@@ -1065,7 +1119,11 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &mut termios,
+                if from_stdin {
+                    &mut termios
+                } else {
+                    std::ptr::null_mut()
+                },
                 &mut winsize,
             )
         };
@@ -1075,7 +1133,11 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &termios,
+                if from_stdin {
+                    &termios
+                } else {
+                    std::ptr::null()
+                },
                 &winsize,
             )
         };
@@ -1086,6 +1148,22 @@ impl TmuxManager {
 
         let master = unsafe { File::from_raw_fd(master) };
         let slave = unsafe { File::from_raw_fd(slave) };
+
+        if !from_stdin {
+            let fd = slave.as_raw_fd();
+            unsafe {
+                if libc::tcgetattr(fd, &mut termios) == -1 {
+                    return Err(std::io::Error::last_os_error())
+                        .context("Failed to read terminal attributes for tmux PTY");
+                }
+                libc::cfmakeraw(&mut termios);
+                if libc::tcsetattr(fd, libc::TCSANOW, &termios) == -1 {
+                    return Err(std::io::Error::last_os_error())
+                        .context("Failed to set terminal attributes for tmux PTY");
+                }
+            }
+        }
+
         Ok((master, slave))
     }
 
@@ -1159,31 +1237,37 @@ impl TmuxManager {
 
     pub fn resolve_view_target_ids(session: &str, window: &str) -> Result<(String, String)> {
         let target = format!("{}:{}", session, window);
+        let exact_target = format!("={session}:={window}");
         let output = Self::command()
             .args([
-                "display-message",
+                "list-panes",
                 "-t",
-                &target,
-                "-p",
-                "#{window_id} #{pane_id}",
+                &exact_target,
+                "-F",
+                "#{window_id} #{pane_id} #{pane_active}",
             ])
             .output()
             .context("Failed to resolve tmux view target IDs")?;
 
         if !output.status.success() {
-            bail!(
-                "{}",
-                Self::command_error(&output, "tmux display-message failed")
-            );
+            bail!("{}", Self::command_error(&output, "tmux list-panes failed"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let parts: Vec<&str> = stdout.split_whitespace().collect();
-        if parts.len() == 2 {
-            Ok((parts[0].to_string(), parts[1].to_string()))
-        } else {
-            bail!("tmux did not return window_id and pane_id for {target}");
-        }
+        stdout
+            .lines()
+            .find_map(|line| {
+                let mut parts = line.split_whitespace();
+                match (parts.next(), parts.next(), parts.next(), parts.next()) {
+                    (Some(window_id), Some(pane_id), Some("1"), None)
+                        if window_id.starts_with('@') && pane_id.starts_with('%') =>
+                    {
+                        Some((window_id.to_string(), pane_id.to_string()))
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| anyhow::anyhow!("tmux has no active pane for {target}"))
     }
 
     #[cfg(unix)]
@@ -1460,8 +1544,11 @@ impl TmuxManager {
 
     /// Check if a tmux session exists
     pub fn session_exists(session: &str) -> bool {
+        // tmux accepts an unqualified target as a unique prefix. That can
+        // make a stopped feature appear to own another feature's session.
+        let exact_target = format!("={session}");
         Self::command()
-            .args(["has-session", "-t", session])
+            .args(["has-session", "-t", &exact_target])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -1843,6 +1930,31 @@ impl TmuxManager {
         };
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Full pane content plus cursor position, encoded as one string ready
+    /// to feed to any terminal emulator (vt100 for the TUI, xterm.js for the
+    /// GUI) immediately after a full reset. `capture-pane` output alone
+    /// carries no cursor-position information, so `cursor_position`'s
+    /// reported column/row is appended as an explicit CUP escape, clamped to
+    /// the given dimensions exactly as the TUI's own `position_parser_cursor`
+    /// does. See `crate::ui::pane::normalize_captured_pane` for why the
+    /// newline handling matters.
+    ///
+    /// Deliberately separate from the TUI's `reseed_control_view_parser`
+    /// (`src/app/mod.rs`) rather than a shared refactor of it: that function
+    /// sits on a timing-sensitive, already-tuned rendering hot path, and this
+    /// GUI-only helper duplicating its ~4 lines of glue is a smaller risk
+    /// than touching it.
+    pub fn capture_pane_for_replay(session: &str, window: &str, cols: u16, rows: u16) -> String {
+        let captured = Self::capture_pane_ansi(session, window).unwrap_or_default();
+        let mut normalized = crate::ui::pane::normalize_captured_pane(&captured);
+        if let Ok((x, y)) = Self::cursor_position(session, window) {
+            let row = y.min(rows.saturating_sub(1)).saturating_add(1);
+            let col = x.min(cols.saturating_sub(1)).saturating_add(1);
+            normalized.push_str(&format!("\x1b[{row};{col}H"));
+        }
+        normalized
     }
 
     /// Capture pane content with ANSI sequences, including scrollback history

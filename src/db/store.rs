@@ -205,11 +205,32 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
     })
 }
 
+/// [`load`] plus the `store_version` it was read at, as one consistent
+/// snapshot: reading them as two separate statements without a shared
+/// transaction could interleave with a concurrent [`save_checked`] and pair
+/// this load's data with a version that does not actually describe it.
+/// Every application-level load that will later save through
+/// [`save_checked`] needs this, not [`load`] plus a separate
+/// [`current_version`] call.
+pub fn load_versioned(conn: &Connection) -> Result<(ProjectStore, u64)> {
+    conn.execute_batch("BEGIN DEFERRED;")?;
+    let result = (|| -> Result<(ProjectStore, u64)> {
+        let store = load(conn)?;
+        let version = current_version(conn)?;
+        Ok((store, version))
+    })();
+    // Read-only transaction: nothing to keep even on success, just release
+    // the snapshot. Roll back either way rather than distinguish the
+    // success path, since there is no write to preserve.
+    let _ = conn.execute_batch("ROLLBACK;");
+    result
+}
+
 /// One `features` row in SELECT column order (see `load_features`): id, name,
 /// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
 /// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
 /// created_at, last_accessed, ready, triage_source, selected_plan_path,
-/// review_source.
+/// review_source, issue_source.
 type FeatureRow = (
     String,
     String,
@@ -233,6 +254,7 @@ type FeatureRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -241,7 +263,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 mode, review, plan_mode, agent, enable_chrome, status,
                 summary, summary_updated_at, nickname, collapsed,
                 created_at, last_accessed, ready, triage_source,
-                selected_plan_path, review_source
+                selected_plan_path, review_source, issue_source
          FROM features WHERE project_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -271,6 +293,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
                 row.get(19)?,
                 row.get(20)?,
                 row.get(21)?,
+                row.get(22)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -299,6 +322,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
         triage_source_json,
         selected_plan_path,
         review_source_json,
+        issue_source_json,
     ) in rows
     {
         let sessions = load_sessions(conn, &feat_id)?;
@@ -335,6 +359,9 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
             // Same degradation rule as `triage_source`: a malformed blob reads
             // as "not a companion review feature" rather than failing the load.
             review_source: review_source_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
+            issue_source: issue_source_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
         });
@@ -389,18 +416,104 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
 
 // ── save ─────────────────────────────────────────────────────
 
-pub fn save(conn: &Connection, store: &ProjectStore) -> Result<()> {
+/// The full-replace save's cross-process safety net (`AMF_PLAN.md` Task 5,
+/// "Establish cross-process coordination"). `save` below deletes and
+/// reinserts every row on every call: two processes (the TUI and the GUI,
+/// or two AMF instances) each holding their own in-memory `ProjectStore`
+/// would otherwise silently clobber each other's concurrent writes — the
+/// second save wins in full, discarding whatever the first one added, with
+/// no error and no trace. `store_meta`'s `store_version` key turns that into
+/// a detectable optimistic-concurrency conflict: every save increments it,
+/// and `save_checked` refuses to proceed when the caller's expected version
+/// doesn't match what's actually on disk.
+pub(super) fn current_version(conn: &Connection) -> Result<u64> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM store_meta WHERE key = 'store_version'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0))
+}
+
+/// Outcome of a version-checked save. `Conflict` carries the version that
+/// was actually on disk so the caller can decide how far it drifted (today,
+/// every caller just reloads and reports rather than inspecting this, but a
+/// large gap is a stronger signal than a one-behind race).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Saved { new_version: u64 },
+    Conflict { current_version: u64 },
+}
+
+/// Save without a version check: only for call sites with no concurrent
+/// writer to race against by construction (seeding/merging a legacy store at
+/// `AmfDb::open_or_seed` time, before anything holds a loaded version to
+/// check against). Ordinary application saves must go through
+/// [`save_checked`] instead — see its doc comment.
+pub fn save(conn: &Connection, store: &ProjectStore) -> Result<u64> {
     conn.execute_batch("BEGIN IMMEDIATE;")?;
-    match do_save(conn, store) {
-        Ok(()) => {
-            conn.execute_batch("COMMIT;")?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK;");
-            Err(e)
-        }
+    in_write_transaction(conn, || {
+        let next = current_version(conn)?.wrapping_add(1);
+        do_save(conn, store)?;
+        write_version(conn, next)?;
+        Ok(next)
+    })
+}
+
+/// Run `body` inside the write transaction the caller has just opened with
+/// `BEGIN IMMEDIATE`, committing on success and rolling back on *any* error
+/// -- including a failed `COMMIT` itself. Every early `?` between `BEGIN` and
+/// `COMMIT` has to go through here: returning without a `ROLLBACK` leaves the
+/// connection inside the transaction, holding SQLite's write lock, so every
+/// later `BEGIN` on it fails and other processes block until it is dropped.
+fn in_write_transaction<T>(conn: &Connection, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    let result = body().and_then(|value| {
+        conn.execute_batch("COMMIT;")?;
+        Ok(value)
+    });
+    if result.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK;");
     }
+    result
+}
+
+fn write_version(conn: &Connection, version: u64) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO store_meta (key, value) VALUES ('store_version', ?1)",
+        params![version.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Save `store`, but only if the on-disk version still matches
+/// `expected_version` — i.e. nothing else has saved since the caller last
+/// loaded. `BEGIN IMMEDIATE` takes SQLite's write lock before the version
+/// check runs, so the check-then-write is atomic against another process
+/// doing the same thing concurrently, not just against interleaving within
+/// one process.
+pub fn save_checked(
+    conn: &Connection,
+    store: &ProjectStore,
+    expected_version: u64,
+) -> Result<SaveOutcome> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    in_write_transaction(conn, || {
+        let on_disk = current_version(conn)?;
+        if on_disk != expected_version {
+            // Nothing written; `in_write_transaction` commits an empty
+            // transaction, which releases the lock just like a rollback.
+            return Ok(SaveOutcome::Conflict {
+                current_version: on_disk,
+            });
+        }
+        let next = on_disk.wrapping_add(1);
+        do_save(conn, store)?;
+        write_version(conn, next)?;
+        Ok(SaveOutcome::Saved { new_version: next })
+    })
 }
 
 fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
@@ -467,9 +580,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                     tmux_session, mode, review, plan_mode, agent, enable_chrome,
                     status, summary, summary_updated_at, nickname, collapsed,
                     created_at, last_accessed, ready, sort_order, triage_source,
-                    selected_plan_path, review_source
+                    selected_plan_path, review_source, issue_source
                 ) VALUES (
-                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25
                 )",
                 params![
                     feature.id,
@@ -503,6 +616,10 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         .map(|path| path.to_string_lossy()),
                     feature
                         .review_source
+                        .as_ref()
+                        .and_then(|link| serde_json::to_string(link).ok()),
+                    feature
+                        .issue_source
                         .as_ref()
                         .and_then(|link| serde_json::to_string(link).ok()),
                 ],
@@ -677,6 +794,13 @@ mod tests {
                 target_branch: "feature/my-feature".to_string(),
                 base_sha: "def456".to_string(),
             }),
+            issue_source: Some(crate::project::IssueSource {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widget".to_string(),
+                number: 73,
+                comment_status: crate::project::IssueCommentStatus::Posted,
+            }),
         };
 
         let project = Project {
@@ -734,6 +858,17 @@ mod tests {
                 base_sha: "def456".to_string(),
             }),
             "the companion review feature's source link must survive a save/load round trip"
+        );
+        assert_eq!(
+            lf.issue_source,
+            Some(crate::project::IssueSource {
+                host: "github.com".to_string(),
+                owner: "acme".to_string(),
+                repository: "widget".to_string(),
+                number: 73,
+                comment_status: crate::project::IssueCommentStatus::Posted,
+            }),
+            "the source issue link must survive without disturbing other associations"
         );
 
         assert_eq!(lf.sessions.len(), 1);
@@ -848,6 +983,7 @@ mod tests {
                     selected_plan_path: None,
                     triage_source: None,
                     review_source: None,
+                    issue_source: None,
                 },
                 Feature {
                     id: "feat-skip".to_string(),
@@ -875,6 +1011,7 @@ mod tests {
                     selected_plan_path: None,
                     triage_source: None,
                     review_source: None,
+                    issue_source: None,
                 },
             ],
             created_at: Utc::now(),
@@ -887,5 +1024,121 @@ mod tests {
 
         assert_eq!(loaded.projects[0].features.len(), 1);
         assert_eq!(loaded.projects[0].features[0].name, "keep");
+    }
+
+    // ── cross-process coordination (AMF_PLAN.md Task 5) ─────────────
+
+    #[test]
+    fn fresh_database_has_version_zero() {
+        let (_tmp, db) = open_temp_db();
+        assert_eq!(current_version(&db.conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn save_checked_succeeds_and_advances_the_version_when_expectation_matches() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+
+        let outcome = save_checked(&db.conn, &store, 0).unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Saved { new_version: 1 });
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn save_checked_reports_a_conflict_without_writing_when_expectation_is_stale() {
+        let (_tmp, db) = open_temp_db();
+        let mut store = empty_store();
+        store.projects.push(Project {
+            id: "proj-first".to_string(),
+            name: "first-writer".to_string(),
+            repo: PathBuf::from("/tmp/first"),
+            collapsed: false,
+            features: Vec::new(),
+            created_at: Utc::now(),
+            preferred_agent: crate::project::AgentKind::Claude,
+            is_git: true,
+        });
+        // A first writer's save, establishing version 1.
+        save_checked(&db.conn, &store, 0).unwrap();
+
+        // A second writer, still expecting version 0 (as if it had loaded
+        // before the first writer's save landed), tries to save something
+        // else entirely.
+        let mut stale_store = empty_store();
+        stale_store.projects.push(Project {
+            id: "proj-second".to_string(),
+            name: "second-writer".to_string(),
+            repo: PathBuf::from("/tmp/second"),
+            collapsed: false,
+            features: Vec::new(),
+            created_at: Utc::now(),
+            preferred_agent: crate::project::AgentKind::Claude,
+            is_git: true,
+        });
+        let outcome = save_checked(&db.conn, &stale_store, 0).unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Conflict { current_version: 1 });
+        // The rejected save must not have touched the table: the first
+        // writer's data is exactly what full-replace `save` would otherwise
+        // have silently discarded.
+        let loaded = load(&db.conn).unwrap();
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].name, "first-writer");
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn load_versioned_pairs_the_store_with_the_version_it_was_read_at() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+        save_checked(&db.conn, &store, 0).unwrap();
+        save_checked(&db.conn, &store, 1).unwrap();
+
+        let (_loaded, version) = load_versioned(&db.conn).unwrap();
+
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn unconditional_save_also_advances_the_version() {
+        // `save` (no expected-version check) is still the seed/merge path's
+        // save at `AmfDb::open_or_seed` time; it must keep incrementing the
+        // same counter `save_checked` reads; otherwise the very first
+        // application-level save after a fresh seed would see a version
+        // that does not match what is actually on disk.
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+
+        assert_eq!(save(&db.conn, &store).unwrap(), 1);
+
+        assert_eq!(current_version(&db.conn).unwrap(), 1);
+    }
+
+    /// A failure between `BEGIN IMMEDIATE` and `COMMIT` must not strand the
+    /// connection inside the transaction: that would hold the write lock
+    /// against every other process and make this connection's next `BEGIN`
+    /// fail with "cannot start a transaction within a transaction".
+    #[test]
+    fn a_failed_save_leaves_no_open_transaction_behind() {
+        let (_tmp, db) = open_temp_db();
+        let store = empty_store();
+        // `store_meta` is read and written after `BEGIN`; removing it makes
+        // both saves fail mid-transaction.
+        db.conn.execute_batch("DROP TABLE store_meta;").unwrap();
+
+        assert!(save_checked(&db.conn, &store, 0).is_err());
+        assert!(db.conn.is_autocommit());
+        assert!(save(&db.conn, &store).is_err());
+        assert!(db.conn.is_autocommit());
+
+        // And the connection is still usable for a new write transaction.
+        db.conn
+            .execute_batch("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT);")
+            .unwrap();
+        assert_eq!(
+            save_checked(&db.conn, &store, 0).unwrap(),
+            SaveOutcome::Saved { new_version: 1 }
+        );
     }
 }

@@ -1,8 +1,14 @@
 use crate::editor::TextEditor;
-use crate::project::{AgentKind, VibeMode};
+use crate::project::AgentKind;
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Compatibility names retained for PR Triage callers while the compact
+/// setup state is owned by the shared feature-setup boundary.
+pub(crate) use crate::app::feature_setup::{
+    FeatureSetupRow as TriageSetupRow, FeatureSetupState as TriageFeatureSetupState,
+};
 
 /// Transient state while a PR's comments are being fetched off the UI thread.
 #[derive(Debug, Clone)]
@@ -49,12 +55,124 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
-    /// When `Some`, the review-memory compact confirm overlay (`c`) is open
-    /// over the picker.
-    pub compact_confirm: Option<CompactConfirmState>,
     /// The logged-in `gh` user's login, when resolvable — used to highlight
     /// the user's own PRs in the row rendering. `None` if unresolved/failed.
     pub current_user: Option<String>,
+}
+
+/// The PR picker's **Review** tab: every open PR in the repository, listed
+/// for a manual review in the native viewer rather than for comment triage.
+///
+/// A mode of its own rather than a field on [`PrPickerState`], so the Triage
+/// tab (and everything that builds a `PrPickerState`) is unchanged. `Tab`
+/// switches between the two; the Triage picker this tab was switched from
+/// rides along in `triage` and comes back verbatim.
+///
+/// The list is loaded off the UI thread. `request_id` names the load the tab
+/// is waiting on, so a late result from a load that has since been retried,
+/// or from a tab that was closed and reopened, is dropped.
+#[derive(Debug, Clone)]
+pub struct PrReviewListState {
+    /// Where `gh` runs: a feature's checkout, or the project's repo root when
+    /// the tab was opened from a project row. Only the repository matters.
+    pub workdir: PathBuf,
+    pub load: PrReviewListLoad,
+    /// Highlighted row, meaningful only while `load` is `Loaded`.
+    pub selected: usize,
+    /// True while a reload (`r`) of an already-loaded list is in flight. The
+    /// current rows stay on screen, and stay navigable, until it lands, so the
+    /// highlight can follow its PR into the new list.
+    pub reloading: bool,
+    pub request_id: u64,
+    /// The Triage tab to restore on `Tab`. `None` when this tab was opened
+    /// directly (a project row), in which case `Tab` loads Triage fresh.
+    pub triage: Option<PrPickerState>,
+    /// The logged-in `gh` user, to mark the user's own PRs. `None` until
+    /// resolved (or when it can't be).
+    pub current_user: Option<String>,
+    /// A PR being fetched for review (`Enter`), shown in place of the footer
+    /// until it opens. `Esc` abandons it and keeps the tab open.
+    pub opening: Option<PrReviewOpening>,
+    /// Why the last `Enter` could not open its PR.
+    pub open_error: Option<String>,
+    /// Saved drafts in this repository, by PR number, for the row badges.
+    pub drafts: std::collections::HashMap<u32, PrReviewDraftBadge>,
+}
+
+/// What a row shows about the draft saved for its PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewDraftBadge {
+    pub comments: usize,
+    /// The head the draft was saved at, compared with the row's current head
+    /// to say "updated since your review".
+    pub head_oid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewOpening {
+    pub request_id: u64,
+    pub number: u32,
+}
+
+/// Where the Review tab's list is in its load.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrReviewListLoad {
+    Loading,
+    Loaded(Vec<crate::github::ReviewablePr>),
+    Failed(PrReviewListError),
+}
+
+/// A failed list load, sorted by what the user can do about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewListError {
+    pub kind: PrReviewListErrorKind,
+    /// `gh`'s own words, shown under the hint.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrReviewListErrorKind {
+    /// `gh` isn't installed or couldn't be run.
+    GhMissing,
+    /// `gh` isn't logged in (or its token was rejected).
+    Auth,
+    /// Anything else: network, no GitHub remote, a GitHub outage.
+    Other,
+}
+
+impl PrReviewListError {
+    /// Classify a failed `gh pr list` by its message. Heuristic by nature —
+    /// `gh` has no machine-readable error codes — so anything unrecognised is
+    /// `Other`, which still shows the raw message and offers a retry.
+    pub fn classify(detail: String) -> Self {
+        let lower = detail.to_ascii_lowercase();
+        let kind = if lower.contains("failed to run `gh`") {
+            PrReviewListErrorKind::GhMissing
+        } else if lower.contains("gh auth login")
+            || lower.contains("not logged in")
+            || lower.contains("authentication")
+            || lower.contains("bad credentials")
+            || lower.contains("http 401")
+        {
+            PrReviewListErrorKind::Auth
+        } else {
+            PrReviewListErrorKind::Other
+        };
+        Self { kind, detail }
+    }
+
+    /// The next step, in one line.
+    pub fn hint(&self) -> &'static str {
+        match self.kind {
+            PrReviewListErrorKind::GhMissing => {
+                "The GitHub CLI (gh) could not be run. Install it, then press r to retry."
+            }
+            PrReviewListErrorKind::Auth => {
+                "gh is not signed in. Run `! gh auth login`, then press r to retry."
+            }
+            PrReviewListErrorKind::Other => "Could not list pull requests. Press r to retry.",
+        }
+    }
 }
 
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR
@@ -100,12 +218,49 @@ pub struct CompactConfirmState {
     pub scope: crate::app::review_memory::MemoryScope,
 }
 
-/// Full-screen progress view for the review-memory compact pass's background
-/// read + rewrite, entered once the confirm overlay is accepted.
-#[derive(Debug, Clone)]
+/// Cross-context overlay for `open_review_memory_compact_confirm` (`c` in the
+/// PR picker, PR Triage, and the dashboard leader key): unlike the
+/// PR-picker-only bootstrap picker, this can be opened from several
+/// different screens, so it stashes `prior_mode` and restores it verbatim on
+/// cancel — the same idiom [`crate::app::precall::PendingPrecall`] and
+/// [`TodoImplementChoiceState`] use for overlays reachable from more than one
+/// place. Rendered as a modal over the dashboard tree regardless of where it
+/// was opened from (see [`crate::app::precall`]'s doc comment for why that's
+/// fine — nothing behind it needs to stay legible).
+pub struct ReviewMemoryCompactConfirmState {
+    /// Working directory of the repo whose review-memory doc this targets.
+    pub workdir: PathBuf,
+    pub confirm: CompactConfirmState,
+    /// The mode to return to on cancel. Boxed and undecorated (no
+    /// `Debug`/`Clone`) because `AppMode` itself isn't clonable.
+    pub prior_mode: Box<crate::app::AppMode>,
+}
+
+/// Small, cloneable view of the compact run's progress, shown by the
+/// full-screen running dialog. Deliberately holds nothing from
+/// [`CompactRunState`] beyond what rendering needs (not `origin` or `path`)
+/// so `AppMode::ReviewMemoryCompactRunning` stays clonable even though the
+/// run's actual restore target isn't — see [`App::review_memory_compact_pending`]
+/// for where `origin`/`path` live instead.
+///
+/// [`App::review_memory_compact_pending`]: crate::app::App::review_memory_compact_pending
+#[derive(Debug, Clone, Copy)]
+pub struct CompactRunView {
+    pub scope: crate::app::review_memory::MemoryScope,
+    pub stage: crate::app::pr_review::CompactStage,
+}
+
+/// The review-memory compact pass's background read + rewrite: the mode to
+/// restore on completion/cancel plus the resolved doc path and scope, kept in
+/// [`App::review_memory_compact_pending`] independent of `self.mode` (see that
+/// field's doc comment) rather than inside [`AppMode::ReviewMemoryCompactRunning`]
+/// itself, since `origin` makes this unclonable and the running screen only
+/// ever needs the smaller [`CompactRunView`] to draw itself.
+///
+/// [`App::review_memory_compact_pending`]: crate::app::App::review_memory_compact_pending
 pub struct CompactRunState {
-    /// The PR picker to return to on completion or cancel.
-    pub origin: PrPickerState,
+    /// The mode to return to on completion or cancel.
+    pub origin: Box<crate::app::AppMode>,
     /// Resolved path of the review-memory doc being compacted, carried
     /// through from confirm so the poll's success path doesn't need to
     /// re-resolve it (a second `repo_root` lookup) once the background
@@ -115,7 +270,6 @@ pub struct CompactRunState {
     /// running screen can name it (the path alone doesn't read as
     /// project-vs-global at a glance).
     pub scope: crate::app::review_memory::MemoryScope,
-    pub stage: crate::app::pr_review::CompactStage,
 }
 
 /// Full-screen review of the compact pass's proposed replacement doc, entered
@@ -125,10 +279,9 @@ pub struct CompactRunState {
 /// as every other write in this pane.
 ///
 /// [`append_finding`]: crate::app::review_memory::append_finding
-#[derive(Debug, Clone)]
 pub struct CompactReviewState {
-    /// The PR picker to return to on write or discard.
-    pub origin: PrPickerState,
+    /// The mode to return to on write or discard.
+    pub origin: Box<crate::app::AppMode>,
     /// Resolved path of the review-memory doc this will write to.
     pub path: PathBuf,
     /// Which doc is being rewritten, so the success toast names it.
@@ -248,6 +401,9 @@ pub struct AiReviewState {
     pub finding_editor: Option<TextEditor>,
     /// When `Some`, the post-to-GitHub confirm dialog is open (`W`).
     pub post_confirm: Option<AiReviewPostConfirmState>,
+    /// Indices into `findings` marked for a combined fix (`space`, then `B`).
+    /// Cleared when a new run replaces the findings.
+    pub marked: std::collections::HashSet<usize>,
 }
 
 /// State for the full-screen PR Triage pane.
@@ -593,115 +749,6 @@ pub struct HarnessPickState {
     pub session_name: Option<String>,
 }
 
-/// One editable row of the compact triage-feature setup overlay
-/// ([`TriageFeatureSetupState`]). Deliberately much smaller than the full
-/// feature-creation wizard: only the settings that change how the *triage*
-/// agent behaves, plus the branch it lands on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TriageSetupRow {
-    /// Apply a configured feature preset (or "Manual", which changes nothing).
-    Preset,
-    /// Which agent harness the triage feature runs.
-    Harness,
-    /// Vibe mode — the setting the whole feature exists for: triaging review
-    /// comments in, say, Vibeless while the source feature runs SuperVibe.
-    Mode,
-    /// Review mode (developer notes on every change).
-    Review,
-    /// Chrome/browser automation.
-    Chrome,
-    /// The companion branch name. Pre-filled and editable.
-    Branch,
-}
-
-impl TriageSetupRow {
-    pub const ALL: [TriageSetupRow; 6] = [
-        TriageSetupRow::Preset,
-        TriageSetupRow::Harness,
-        TriageSetupRow::Mode,
-        TriageSetupRow::Review,
-        TriageSetupRow::Chrome,
-        TriageSetupRow::Branch,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            TriageSetupRow::Preset => "Preset",
-            TriageSetupRow::Harness => "Harness",
-            TriageSetupRow::Mode => "Vibe mode",
-            TriageSetupRow::Review => "Review mode",
-            TriageSetupRow::Chrome => "Chrome",
-            TriageSetupRow::Branch => "Branch",
-        }
-    }
-}
-
-/// The compact feature-creation flow shown when the user picks `New feature…`
-/// as the fix target: a single settings list (no multi-step wizard) that
-/// creates an isolated, worktree-backed companion feature for this PR's
-/// triage work.
-///
-/// Plan mode is deliberately absent — it defers the launch into a planning
-/// interview, which makes no sense for a feature whose whole job is to apply
-/// review comments that already say what to do.
-#[derive(Debug, Clone)]
-pub struct TriageFeatureSetupState {
-    /// Presets available for this repo. Index 0 of the *choice* is "Manual"
-    /// (no preset); `presets[i - 1]` for any higher index.
-    pub presets: Vec<crate::extension::FeaturePreset>,
-    pub preset_index: usize,
-    /// Harnesses allowed for this repo.
-    pub agents: Vec<AgentKind>,
-    pub agent_index: usize,
-    pub mode: VibeMode,
-    pub review: bool,
-    pub enable_chrome: bool,
-    /// Companion branch name — deliberately *not* the PR's branch, which git
-    /// can't check out in a second worktree.
-    pub branch: String,
-    /// Focused row.
-    pub row: usize,
-    /// Inline validation/creation error (e.g. a duplicate feature name), shown
-    /// in the overlay so the user can correct it without losing the pane.
-    pub error: Option<String>,
-    /// True when the combined-batch flow (`B`) opened this, so the
-    /// continuation after creation reopens the batch dialog rather than the
-    /// single-comment one — mirroring `PrReviewState::pending_batch`.
-    pub pending_batch: bool,
-}
-
-impl TriageFeatureSetupState {
-    /// The chosen preset, or `None` for "Manual".
-    pub fn selected_preset(&self) -> Option<&crate::extension::FeaturePreset> {
-        self.preset_index
-            .checked_sub(1)
-            .and_then(|i| self.presets.get(i))
-    }
-
-    /// Display text for the preset row.
-    pub fn preset_label(&self) -> String {
-        match self.selected_preset() {
-            Some(preset) => preset.name.clone(),
-            None => "Manual".to_string(),
-        }
-    }
-
-    /// The focused row, or `Branch` if `row` somehow ran past the list.
-    pub fn focused_row(&self) -> TriageSetupRow {
-        TriageSetupRow::ALL
-            .get(self.row)
-            .copied()
-            .unwrap_or(TriageSetupRow::Branch)
-    }
-
-    pub fn agent(&self) -> AgentKind {
-        self.agents
-            .get(self.agent_index)
-            .cloned()
-            .unwrap_or_default()
-    }
-}
-
 /// How the companion triage feature's commits get back onto the PR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TriageIntegration {
@@ -902,8 +949,37 @@ pub struct MemoryAddState {
     pub editor: TextEditor,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `g` toggle
-    /// scope / `esc` cancel).
+    /// scope / `s` summarize with AI / `esc` cancel).
     pub editing: bool,
+    /// The "summarize with AI" sub-flow (`s`), when active. `None` — the
+    /// steady state — covers both "never started" and "a summary already
+    /// landed": on success [`editor`] is overwritten and this is cleared, so
+    /// the dialog falls straight back to its ordinary review/edit confirm
+    /// view rather than needing a distinct "Review" state of its own.
+    pub ai_summary: Option<MemoryAiSummaryState>,
+}
+
+/// State machine for [`MemoryAddState::ai_summary`]. Mirrors
+/// [`InvestigationHarnessPick`]'s per-run picker (the operator picks a
+/// harness for this one summary, not a session-persistent default) rather
+/// than Learning Mode's picker, which is tied to a multi-question overlay
+/// this dialog doesn't have.
+#[derive(Debug, Clone)]
+pub enum MemoryAiSummaryState {
+    /// Choosing which installed harness runs the summary.
+    PickingHarness(MemoryAiSummaryHarnessPick),
+    /// The headless run is in flight on a background thread.
+    Generating { harness: crate::project::AgentKind },
+    /// The run failed (or the harness came back empty); the raw seed/edited
+    /// text in [`MemoryAddState::editor`] was never touched.
+    Failed(String),
+}
+
+/// Flat single-select harness picker for [`MemoryAiSummaryState::PickingHarness`].
+#[derive(Debug, Clone)]
+pub struct MemoryAiSummaryHarnessPick {
+    pub harnesses: Vec<crate::project::AgentKind>,
+    pub selected: usize,
 }
 
 /// Confirm/edit dialog for a fix prompt: shows the exact text that will be

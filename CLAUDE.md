@@ -21,7 +21,7 @@ harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
 
 **Prompt registry** (`src/prompts/`): the single home for every headless
 prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (19 stable ids), `PromptSpec` (title/summary/placeholders/
+`PromptId` (22 stable ids), `PromptSpec` (title/summary/placeholders/
 `default_template`/`harness_variants`), and `resolve_template_layered` /
 `resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
 out of the call sites. `resolve.rs` has `PromptContext` +
@@ -299,7 +299,7 @@ option, and answers are pitched at a first-time reader by default. See
   non-blocking and several may be in flight: a persistent `mpsc` channel
   owned by `LearningRuns` plus a thread per run, drained by
   `poll_learning_answers_bg()` next to the other `poll_*_bg` calls in
-  `main.rs`. An answer that lands after the overlay closed is still
+  `src/cli.rs`. An answer that lands after the overlay closed is still
   persisted (`finish_learning_qa_in_db`), and a row left `running` by a
   previous process is failed on load by `reconcile_interrupted_qa`
   rather than reloading as "thinking…" forever.
@@ -375,6 +375,34 @@ explicit, opt-in exception: those passes then run through
   `MIGRATION_035` (column backfilled `'[]'`). A resumed or re-run interview
   restores the list verbatim; paths are re-validated at dispatch, not on
   resume.
+
+### Plan-interview MCP tools
+
+- **Opt-in, global only:** `AppConfig::plan_interview_mcp`
+  (`headless::HeadlessMcpConfig { config?, allowed_tools }`), never
+  `amf.json` — MCP servers run programs. `HeadlessMcpConfig::validate`
+  requires exact `mcp__<server>__<tool>` names (no wildcards) and, when
+  `config` is set, an absolute (`~/`-expanded) file. `App::plan_interview_mcp`
+  resolves it per pass, returning `None` for non-Claude harnesses and for an
+  invalid config (logged + toast once per distinct error, never fatal).
+- **Command:** `HeadlessRunner::run_read_only_with_mcp` →
+  `claude_mcp_read_only_args`. Verified against Claude Code 2.1.282: neither
+  `--safe-mode` nor `--strict-mcp-config` can be used, since both drop
+  claude.ai connectors (the common case — e.g. `mcp__claude_ai_Asana__*`).
+  Isolation is `--setting-sources ""` (verified: a repo hook, repo
+  `.mcp.json`, `CLAUDE.md`, `.claude/skills/`, and `.claude/agents/` do not
+  load; repo files still reach the model as data via `Read` and the prompt's
+  `repository_context`). `--tools` does not gate MCP tools, so `dontAsk` +
+  the exact `--allowedTools` list is what denies unlisted ones.
+  `claude_mcp_args_are_read_only` is the positive check.
+- **`MCP_CONNECTION_NONBLOCKING=false`** (`CLAUDE_MCP_BLOCKING_ENV`) makes the
+  run wait for claude.ai connectors; without it about half of `-p` runs
+  started with no connector tools. Undocumented upstream — re-verify on a
+  Claude Code upgrade.
+- **Passes:** round, synthesis (full + quick), critique, critique follow-up —
+  the ones with `{{tool_access_note}}`, which becomes
+  `plan_interview::mcp_tool_access_note`. Directed revision and investigation
+  are unchanged.
 
 ### Quick Plan mode
 
@@ -468,11 +496,11 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 19 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 22 stable ids
   (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
   `.investigation`/`.investigation_merge`, `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
-  `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`,
+  `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`/`.ai_summary`,
   `session.summary`, and the batched-review set
   `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
   holds the built-in text. The 6
@@ -480,7 +508,7 @@ and `AMF_PLAN.md` for the design decisions.
   the exact JSON payload the models see today (the drift-guard test
   `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins them to the
   `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 13 use granular tokens.
+  can't be `concat!`-ed); the other 14 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop

@@ -1,5 +1,57 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+
+/// A stable fingerprint of a migration's own SQL, stored alongside its
+/// `schema_version` row so a later run can tell whether the migration
+/// recorded at that version's slot is the one this build expects there.
+fn hash_migration_sql(sql: &str) -> String {
+    format!("{:x}", Sha256::digest(sql.as_bytes()))
+}
+
+/// `amf.db` is a single database shared by every AMF checkout on the
+/// machine, keyed only by position in `migrations`. A dev/pre-release build
+/// (a WIP branch, a beta) can apply a migration under a version number that
+/// a later release reassigns to a different migration — the version counter
+/// alone can't tell the two apart, so without this check the mismatched
+/// migration silently never runs and the app fails later with a confusing
+/// "no such column" deep in an unrelated query. Comparing hashes (not
+/// descriptions) avoids false positives from historical migrations whose
+/// description text was reworded after the fact without changing their SQL.
+fn check_for_migration_drift(conn: &Connection, migrations: &[(&str, &str)]) -> Result<()> {
+    let mut stmt =
+        conn.prepare("SELECT version, description, sql_hash FROM schema_version ORDER BY version")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (version, recorded_desc, recorded_hash) = row?;
+        let Some(recorded_hash) = recorded_hash else {
+            // Recorded before this check existed: no fingerprint to compare.
+            continue;
+        };
+        let Some((expected_desc, expected_sql)) = migrations.get((version - 1) as usize) else {
+            // This build doesn't even know about a migration this high — a
+            // downgrade, not the drift this check is for.
+            continue;
+        };
+        if recorded_hash != hash_migration_sql(expected_sql) {
+            bail!(
+                "Database schema drift detected at schema_version {version}: this database \
+                 recorded \"{recorded_desc}\" there, but this build of AMF expects \"{expected_desc}\" \
+                 in that slot. This usually means a pre-release or development build of AMF ran a \
+                 different migration under the same version number before a release renumbered it. \
+                 Refusing to start rather than run against a mismatched schema. Back up \
+                 ~/.config/amf/amf.db and reconcile schema_version by hand, or ask for help."
+            );
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn run(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -9,6 +61,21 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             description TEXT NOT NULL
         );",
     )?;
+
+    // Bootstrap out-of-band, like the table above, so the column exists
+    // before any migration row is ever inserted and this never has to
+    // compete with the numbered migrations for a version slot.
+    let has_sql_hash: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('schema_version') WHERE name = 'sql_hash'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_sql_hash {
+        conn.execute_batch("ALTER TABLE schema_version ADD COLUMN sql_hash TEXT;")?;
+    }
 
     let version: i64 = conn
         .query_row(
@@ -169,14 +236,28 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_038,
         ),
         (
-            "Add remote_devices table for Remote Control companion-app pairing",
+            "Link issue-fixer features to their canonical GitHub issue",
             MIGRATION_039,
         ),
         (
-            "Add Web Push subscriptions + VAPID key for Remote Control",
+            "Add unsent_prompts table for prompts a failed launch couldn't deliver",
             MIGRATION_040,
         ),
+        (
+            "Add pr_review_drafts table for manual PR review drafts",
+            MIGRATION_041,
+        ),
+        (
+            "Add remote_devices table for Remote Control companion-app pairing",
+            MIGRATION_042,
+        ),
+        (
+            "Add Web Push subscriptions + VAPID key for Remote Control",
+            MIGRATION_043,
+        ),
     ];
+
+    check_for_migration_drift(conn, migrations)?;
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
@@ -206,9 +287,9 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             };
             conn.execute_batch(sql)?;
             conn.execute(
-                "INSERT INTO schema_version (version, applied_at, description)
-                 VALUES (?1, datetime('now'), ?2)",
-                rusqlite::params![target, desc],
+                "INSERT INTO schema_version (version, applied_at, description, sql_hash)
+                 VALUES (?1, datetime('now'), ?2, ?3)",
+                rusqlite::params![target, desc, hash_migration_sql(sql)],
             )?;
             if let Some(transaction) = transaction {
                 transaction.commit()?;
@@ -963,6 +1044,58 @@ const MIGRATION_038: &str = "
 ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
 ";
 
+const MIGRATION_039: &str = "
+ALTER TABLE features ADD COLUMN issue_source TEXT;
+";
+
+/// A prompt AMF computed to seed a session's composer, but couldn't deliver
+/// because the launch that would have carried it failed (e.g. the agent limit
+/// or a harness spawn error). Scoped by `workdir` rather than a feature id so
+/// it survives feature recreation and is found by the same lookup the
+/// `Latest Prompt` recall (`leader l`) already does for that checkout — a
+/// stashed prompt shows up there once a session exists to view it, and is
+/// also saved into the `prompt_templates` library immediately so it is never
+/// only reachable through a feature that may never start.
+const MIGRATION_040: &str = "
+CREATE TABLE IF NOT EXISTS unsent_prompts (
+    id         TEXT PRIMARY KEY,
+    workdir    TEXT NOT NULL,
+    label      TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_unsent_prompts_workdir ON unsent_prompts(workdir);
+";
+
+/// Drafts of manual PR reviews ("Review a PR"), one per pull request. Kept
+/// here rather than beside the checkout like a feature's final review
+/// (`.claude/final-review-progress.json`), because a PR review must never
+/// write into the checkout it runs git in.
+///
+/// - `repo_key` is the base repository as `host/owner/name`.
+/// - `base_oid` / `head_oid` / `merge_base_oid` record the revision the draft
+///   was last saved at. When the PR has since moved, reopening compares
+///   against these.
+/// - `progress` is the final review's own `ReviewProgress` JSON (verdicts,
+///   line/file comments, general feedback, position), so both kinds of review
+///   share one draft format.
+/// - `file_fingerprints` maps each path to its diff fingerprint at `head_oid`,
+///   for flagging the files a PR update changed.
+const MIGRATION_041: &str = "
+CREATE TABLE IF NOT EXISTS pr_review_drafts (
+    repo_key          TEXT    NOT NULL,
+    pr_number         INTEGER NOT NULL,
+    base_oid          TEXT    NOT NULL,
+    head_oid          TEXT    NOT NULL,
+    merge_base_oid    TEXT    NOT NULL,
+    status            TEXT    NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'posted')),
+    progress          TEXT    NOT NULL,
+    file_fingerprints TEXT    NOT NULL DEFAULT '{}',
+    updated_at        TEXT    NOT NULL,
+    PRIMARY KEY (repo_key, pr_number)
+);
+";
+
 /// Paired-device registry for the Remote Control companion app (see
 /// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). Only the
 /// token's hash is stored — the plaintext per-device token lives on the
@@ -970,7 +1103,7 @@ ALTER TABLE plan_interviews ADD COLUMN preflight_model TEXT;
 /// `token_hash` is UNIQUE so a lookup by presented token can never
 /// ambiguously match more than one device. No foreign key elsewhere: a
 /// paired device is independent of any one project/feature.
-const MIGRATION_039: &str = "
+const MIGRATION_042: &str = "
 CREATE TABLE IF NOT EXISTS remote_devices (
     id           TEXT PRIMARY KEY,
     name         TEXT NOT NULL DEFAULT '',
@@ -992,7 +1125,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_devices_token_hash
 /// device's rows are skipped at send time (`list_active`). `remote_push_vapid`
 /// is a single row (`id = 1`) holding the server's VAPID signing key: minted
 /// once, because rotating it silently invalidates every subscription.
-const MIGRATION_040: &str = "
+const MIGRATION_043: &str = "
 CREATE TABLE IF NOT EXISTS remote_push_subscriptions (
     endpoint   TEXT PRIMARY KEY,
     device_id  TEXT NOT NULL REFERENCES remote_devices(id) ON DELETE CASCADE,
@@ -1011,6 +1144,47 @@ CREATE TABLE IF NOT EXISTS remote_push_vapid (
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
+
+    #[test]
+    fn migration_039_preserves_features_and_defaults_issue_source_to_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+             );
+             INSERT INTO schema_version VALUES (38, datetime('now'), 'seed');
+             INSERT INTO projects (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features (
+                id, project_id, name, branch, workdir, status,
+                created_at, last_accessed
+             ) VALUES (
+                'feat-1', 'proj-1', 'existing', 'existing', '/tmp/project',
+                'stopped', datetime('now'), datetime('now')
+             );",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let row: (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, issue_source FROM features WHERE id = 'feat-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("existing".to_string(), None));
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 43);
+    }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
     /// the todo tables 011 built, the triage table 009 built and 010 re-keyed,
@@ -1048,7 +1222,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 40);
+        assert_eq!(version, 43);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1143,7 +1317,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 43);
     }
 
     #[test]
@@ -1475,6 +1649,63 @@ mod tests {
         assert_eq!(provenance, None);
     }
 
+    /// An existing v40 database, holding data, gains `pr_review_drafts`
+    /// without losing anything. (v40 is produced by running every migration
+    /// and then peeling off exactly what 041 adds.)
+    #[test]
+    fn migration_041_adds_pr_review_drafts_to_an_existing_v40_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE pr_review_drafts;
+             DROP TABLE remote_push_subscriptions;
+             DROP TABLE remote_push_vapid;
+             DROP TABLE remote_devices;
+             DELETE FROM schema_version WHERE version >= 41;
+             INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
+             VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let body: String = conn
+            .query_row("SELECT body FROM unsent_prompts WHERE id = 'p1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(body, "kept across the migration");
+        conn.execute(
+            "INSERT INTO pr_review_drafts
+                (repo_key, pr_number, base_oid, head_oid, merge_base_oid, progress, updated_at)
+             VALUES ('github.com/a/b', 1, 'b', 'h', 'm', '{}', 'now')",
+            [],
+        )
+        .unwrap();
+        let (status, fingerprints): (String, String) = conn
+            .query_row(
+                "SELECT status, file_fingerprints FROM pr_review_drafts",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), fingerprints.as_str()), ("draft", "{}"));
+        // One draft per PR: the same key again is a conflict, not a second row.
+        assert!(
+            conn.execute(
+                "INSERT INTO pr_review_drafts
+                    (repo_key, pr_number, base_oid, head_oid, merge_base_oid, progress, updated_at)
+                 VALUES ('github.com/a/b', 1, 'b', 'h2', 'm', '{}', 'now')",
+                [],
+            )
+            .is_err()
+        );
+        let version: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 43);
+    }
+
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
     /// an older AMF and back doesn't duplicate or drop anything.
     #[test]
@@ -1485,7 +1716,61 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 40);
+        assert_eq!(rows, 43);
+    }
+
+    /// `amf.db` is shared by every checkout on the machine, keyed only by
+    /// position in the migrations list. A dev/pre-release build can apply a
+    /// *different* migration under a version number a later release reuses
+    /// (this happened for real: a WIP "remote_devices" migration recorded
+    /// itself as version 39, then main's own, unrelated version 39 —
+    /// `issue_source` — silently never ran because the counter already read
+    /// 39). This must fail loudly at startup instead of surfacing later as a
+    /// confusing "no such column" deep in an unrelated query.
+    #[test]
+    fn refuses_to_start_when_a_version_slot_was_recorded_for_a_different_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL,
+                sql_hash TEXT
+             );
+             INSERT INTO schema_version (version, applied_at, description, sql_hash)
+             VALUES (39, datetime('now'), 'Add remote_devices table', 'not-the-real-hash');",
+        )
+        .unwrap();
+
+        let err = super::run(&conn).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("schema drift") && message.contains("39"),
+            "expected a drift error naming version 39, got: {message}"
+        );
+    }
+
+    /// A database from before this check existed has no `sql_hash` for its
+    /// historical rows, and some of those rows' *description* text has
+    /// genuinely been reworded over time without changing the migration's
+    /// SQL. Neither should trip the drift check — only a hash mismatch
+    /// should.
+    #[test]
+    fn a_missing_sql_hash_is_not_treated_as_drift() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(super::MIGRATION_001).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL,
+                description TEXT NOT NULL
+             );
+             INSERT INTO schema_version VALUES
+                (1, datetime('now'), 'a totally different label than migrations.rs uses today');",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1596,7 +1881,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 40);
+        assert_eq!(version, 43);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

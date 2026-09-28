@@ -145,6 +145,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     app.store_path = store_file.path().to_path_buf();
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
+        feature_name: None,
         branch: "planned-feature".into(),
         workdir: repo.path().join(".worktrees/planned-feature"),
         is_worktree: true,
@@ -161,6 +162,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
 
@@ -713,6 +715,7 @@ fn plan_interview_app_for_agent(
     }
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
+        feature_name: None,
         branch: "planned-feature".into(),
         workdir: repo.path().join(".worktrees/planned-feature"),
         is_worktree: true,
@@ -729,6 +732,7 @@ fn plan_interview_app_for_agent(
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
     // The NamedTempFile return value keeps the store file alive for the
@@ -2359,6 +2363,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
 
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".into(),
+        feature_name: None,
         branch: "planned-feature".into(),
         workdir: repo.path().join(".worktrees/planned-feature"),
         is_worktree: true,
@@ -2375,6 +2380,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
         hook_succeeded: None,
         startup_prompt: None,
         todo_origin: None,
+        issue_source: None,
     })
     .unwrap();
 

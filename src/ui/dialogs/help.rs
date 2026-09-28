@@ -26,6 +26,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("S", "Pick session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
+        ("g", "Browse GitHub issues for the selected project"),
         ("B", "Create batch features"),
         ("O", "Open AMF settings project"),
         ("A", "Manage agent harnesses"),
@@ -35,6 +36,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("L", "Open prompt library"),
         ("E", "Edit headless AI prompt templates (overrides)"),
         ("G", "Open PR Triage (experimental)"),
+        ("", "(on a project row: Review a PR instead)"),
         ("W", "Open AI Review for this feature (experimental)"),
         (
             "K",
@@ -48,7 +50,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Companion review feature: land its commits on the source branch",
         ),
         ("c", "Start feature (create tmux)"),
-        ("x", "Stop feature / remove session"),
+        ("x", "Stop feature / session"),
         ("r", "Rename session/feature"),
         ("R", "Refresh statuses"),
         ("V", "Check pending diff review"),
@@ -70,6 +72,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "Ctrl+Space Q",
             "Pair a device with the Remote Control companion app (v: paired devices)",
         ),
+        ("Ctrl+Space m", "Compact review memory"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
     ];
@@ -458,10 +461,43 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("", "(g picks the project or global doc)"),
         ("c", "Compact review memory (merge dupes, prune stale)"),
         ("", "(g picks the project or global doc)"),
+        ("Tab", "Switch to the Review tab (review a PR yourself)"),
         ("q / Esc", "Close picker"),
     ];
 
     for (key, desc) in &pr_picker_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  In the PR picker's Review tab:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let review_tab_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate open PRs (yours and drafts included)"),
+        ("Enter", "Review the highlighted PR in the diff viewer"),
+        ("", "(no agent, no feature; your checkout is untouched)"),
+        ("r", "Reload the list"),
+        ("Tab", "Back to the Triage tab"),
+        ("q / Esc", "Close (or stop a PR that is still opening)"),
+        ("", "In the review: q submits to GitHub, Esc pauses"),
+        ("", "(draft saved; ? lists every key there)"),
+    ];
+
+    for (key, desc) in &review_tab_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

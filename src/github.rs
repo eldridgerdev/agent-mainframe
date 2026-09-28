@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::fmt;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -28,6 +29,41 @@ use std::process::{Command, Stdio};
 /// here (PRs, issues, reviews, repo metadata) so they can be reused across
 /// features rather than coupled to any one of them.
 pub struct GhCli;
+
+/// Shared GitHub transport boundary for app workflows.
+///
+/// The production adapter remains the existing `gh` CLI wrapper. Keeping the
+/// boundary as a small trait lets issue workflows reuse the PR picker/auth
+/// behavior and lets focused tests supply a deterministic transport without
+/// changing PR Triage's established `GhCli` calls.
+pub trait GithubTransport {
+    fn check_available(&self) -> Result<()>;
+    fn check_auth(&self) -> Result<()>;
+    fn current_user(&self, workdir: &Path) -> Result<String>;
+    fn list_prs(&self, workdir: &Path, include_closed: bool) -> Result<Vec<PrListEntry>>;
+    fn resolve_pr(&self, workdir: &Path) -> Result<PrResolution>;
+    fn fetch_pr_by_number(&self, workdir: &Path, number: u32) -> Result<PrRef>;
+    fn list_issues(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        page: u32,
+        per_page: u32,
+    ) -> Result<GithubIssuePage>;
+    fn issue_comment_bodies(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<Vec<String>>;
+    fn post_issue_comment(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+        body: &str,
+    ) -> Result<()>;
+}
 
 /// A resolved pull request, enough to drive every subsequent `gh` call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +110,167 @@ pub struct PrListEntry {
     /// `OPEN`, `CLOSED`, or `MERGED`.
     #[serde(default)]
     pub state: String,
+}
+
+/// `gh pr list` / `gh pr view` fields a manual PR review needs, shared by
+/// [`GhCli::list_reviewable_prs`] and [`GhCli::pr_revisions`] so the two can
+/// never disagree about which revision a row describes. Checked against the
+/// deserialized structs by a test, so a field added here without a matching
+/// struct field fails offline. (It cannot catch a name `gh` rejects: `gh`
+/// 2.53 has no `baseRefOid`, although GitHub's API does, so it is not asked
+/// for. See [`ReviewablePr::base_oid`].)
+const REVIEWABLE_PR_FIELDS: &str = "number,title,author,isDraft,updatedAt,\
+baseRefName,headRefName,headRefOid,isCrossRepository,headRepositoryOwner";
+
+/// One row of the manual "Review a PR" list: the triage picker's metadata plus
+/// the base/head revisions and fork identity a review has to pin itself to.
+/// Kept separate from [`PrListEntry`] so the triage picker's `gh pr list` call
+/// is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewablePr {
+    pub number: u32,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, deserialize_with = "deserialize_author_login")]
+    pub author: String,
+    #[serde(default)]
+    pub is_draft: bool,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(rename = "baseRefName")]
+    pub base_ref: String,
+    /// The base branch tip a review was pinned to. Never from `gh` (its
+    /// `--json` has no `baseRefOid` field): empty in a listed row, filled in
+    /// from the fetch once the PR is opened. GitHub diffs a PR against the
+    /// base branch's current tip, so the fetched tip is the right one.
+    #[serde(skip)]
+    pub base_oid: String,
+    #[serde(rename = "headRefName")]
+    pub head_ref: String,
+    #[serde(rename = "headRefOid")]
+    pub head_oid: String,
+    /// True when the head branch lives in a fork rather than the base repo.
+    #[serde(default)]
+    pub is_cross_repository: bool,
+    /// Login of the head repository's owner. Empty when GitHub no longer knows
+    /// it (a deleted fork).
+    #[serde(
+        default,
+        rename = "headRepositoryOwner",
+        deserialize_with = "deserialize_author_login"
+    )]
+    pub head_owner: String,
+}
+
+impl ReviewablePr {
+    /// The head branch as a reviewer should read it: `owner:branch` for a fork
+    /// PR, so two forks' `main` branches can't be mistaken for each other, and
+    /// the bare branch name otherwise.
+    pub fn branch_label(&self) -> String {
+        if self.is_cross_repository && !self.head_owner.is_empty() {
+            format!("{}:{}", self.head_owner, self.head_ref)
+        } else {
+            self.head_ref.clone()
+        }
+    }
+}
+
+/// One PR's current revisions, from `gh pr view` at the moment a review opens
+/// or posts. The row from [`GhCli::list_reviewable_prs`] can be stale by then.
+/// This call is what the fetched objects are verified against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrRevisions {
+    pub pr: ReviewablePr,
+    pub url: String,
+    pub owner: String,
+    pub repo: String,
+    /// `OPEN`, `CLOSED`, or `MERGED`.
+    pub state: String,
+}
+
+impl PrRevisions {
+    /// The [`PrRef`] that [`GhCli::create_review`] posts against, pinned to
+    /// this snapshot's head. A review posted through it lands on exactly the
+    /// commit that was reviewed.
+    pub fn pr_ref(&self) -> PrRef {
+        PrRef {
+            number: self.pr.number,
+            head_sha: self.pr.head_oid.clone(),
+            url: self.url.clone(),
+            owner: self.owner.clone(),
+            repo: self.repo.clone(),
+            head_ref: self.pr.head_ref.clone(),
+        }
+    }
+}
+
+/// Make a `git` command safe to run under the TUI: it can never prompt.
+///
+/// A fetch from an HTTPS URL that git holds no credentials for would
+/// otherwise ask for a username straight on the terminal, drawing over the
+/// TUI and hanging the worker on input it will never get. With prompts off it
+/// fails at once instead, and [`git_credentials_hint`] explains the fix.
+pub(crate) fn without_git_prompts(cmd: &mut Command) -> &mut Command {
+    cmd.env("GIT_TERMINAL_PROMPT", "0").stdin(Stdio::null())
+}
+
+/// When a git failure is a missing-credentials one, the next step to take.
+pub(crate) fn git_credentials_hint(stderr: &str) -> Option<&'static str> {
+    let lower = stderr.to_ascii_lowercase();
+    [
+        "terminal prompts disabled",
+        "could not read username",
+        "could not read password",
+        "authentication failed",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    .then_some(
+        "git has no credentials for this repository's HTTPS URL. \
+         Run `! gh auth setup-git` so git uses your gh login, then retry.",
+    )
+}
+
+/// A lightweight open issue snapshot used by the issue-fixer list and prompt.
+/// Pull requests are represented by the same GitHub REST endpoint and are
+/// filtered before this type reaches the app workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubIssue {
+    pub number: u32,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default, rename = "html_url")]
+    pub url: String,
+    #[serde(default)]
+    pub labels: Vec<GithubIssueLabel>,
+    #[serde(default, rename = "updated_at")]
+    pub updated_at: String,
+    #[serde(default, rename = "pull_request")]
+    pub(crate) pull_request: Option<serde_json::Value>,
+}
+
+impl GithubIssue {
+    pub fn is_pull_request(&self) -> bool {
+        self.pull_request.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GithubIssueLabel {
+    #[serde(default)]
+    pub name: String,
+}
+
+/// One explicit page from GitHub's open-issue endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubIssuePage {
+    pub issues: Vec<GithubIssue>,
+    pub page: u32,
+    pub per_page: u32,
+    pub has_next_page: bool,
 }
 
 /// The PR selected by `gh pr view` from the local branch's tracking/push
@@ -442,6 +639,14 @@ impl GhCli {
         }
     }
 
+    /// The URL of the repository `gh` resolves PRs against — honouring `gh repo
+    /// set-default`, an `upstream` remote, and fork checkouts — which is where
+    /// `pull/<n>/head` lives. Fetching `origin` blind would miss it in a fork
+    /// clone, whose `origin` is the fork.
+    pub fn base_repo_url(workdir: &Path) -> Result<String> {
+        Self::gh_stdout(workdir, &["repo", "view", "--json", "url", "-q", ".url"])
+    }
+
     /// Compute a PR's merge-base diff locally, bypassing the API line cap that
     /// makes `gh pr diff` fail on huge PRs.
     ///
@@ -477,16 +682,14 @@ impl GhCli {
         // The repo `gh` resolves the PR against (honours `gh repo set-default`,
         // an `upstream` remote, a fork checkout). Fetching `origin` blind would
         // fail on exactly the fork clones `gh pr diff` handled fine.
-        let repo_url = Self::gh_stdout(workdir, &["repo", "view", "--json", "url", "-q", ".url"])
-            .context(
-            "Failed to resolve the PR's base repository for the local diff fallback.",
-        )?;
+        let repo_url = Self::base_repo_url(workdir)
+            .context("Failed to resolve the PR's base repository for the local diff fallback.")?;
 
         let pid = std::process::id();
         let head_ref = format!("refs/amf/pr-{number}-{pid}-head");
         let base_ref = format!("refs/amf/pr-{number}-{pid}-base");
 
-        let fetch = Command::new("git")
+        let fetch = without_git_prompts(&mut Command::new("git"))
             .args(["fetch", "--quiet", "--no-tags", &repo_url])
             .arg(format!("+pull/{number}/head:{head_ref}"))
             .arg(format!("+refs/heads/{}:{base_ref}", refs.base_ref_name))
@@ -494,10 +697,11 @@ impl GhCli {
             .output()
             .context("Failed to run `git fetch` for the local diff fallback.")?;
         if !fetch.status.success() {
-            bail!(
-                "`git fetch` for PR #{number} failed: {}",
-                String::from_utf8_lossy(&fetch.stderr).trim()
-            );
+            let stderr = String::from_utf8_lossy(&fetch.stderr);
+            match git_credentials_hint(&stderr) {
+                Some(hint) => bail!("`git fetch` for PR #{number} failed: {hint}"),
+                None => bail!("`git fetch` for PR #{number} failed: {}", stderr.trim()),
+            }
         }
 
         let diff = Command::new("git")
@@ -581,6 +785,140 @@ impl GhCli {
             bail!("`gh pr list` failed: {}", stderr.trim());
         }
         parse_pr_list_json(&output.stdout)
+    }
+
+    /// List every open PR in the repository for the manual "Review a PR" list:
+    /// the user's own PRs and drafts included, newest-updated first, each with
+    /// the base/head revisions it would be reviewed at. Zero agent tokens (one
+    /// `gh pr list` call). Blocking: callers drive it from a worker thread.
+    pub fn list_reviewable_prs(workdir: &Path) -> Result<Vec<ReviewablePr>> {
+        let stdout = Self::gh_stdout(
+            workdir,
+            &[
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                "100",
+                "--json",
+                REVIEWABLE_PR_FIELDS,
+            ],
+        )?;
+        parse_reviewable_pr_list_json(stdout.as_bytes())
+    }
+
+    /// Resolve one PR's current base/head revisions (`gh pr view`), which a
+    /// review re-checks on open and again right before it posts.
+    pub fn pr_revisions(workdir: &Path, number: u32) -> Result<PrRevisions> {
+        let fields = format!("{REVIEWABLE_PR_FIELDS},url,state");
+        let stdout = Self::gh_stdout(
+            workdir,
+            &["pr", "view", &number.to_string(), "--json", &fields],
+        )?;
+        parse_pr_revisions_json(stdout.as_bytes())
+    }
+
+    /// Fetch one explicit page of open issues for a canonical repository.
+    /// GitHub's issues endpoint also returns pull requests, so those rows are
+    /// removed here before the page reaches the issue workflow. The response
+    /// is intentionally parsed strictly: a malformed payload is a recoverable
+    /// error, never an empty issue list that looks authoritative.
+    pub fn list_issues(
+        workdir: &Path,
+        repository: &GithubRepository,
+        page: u32,
+        per_page: u32,
+    ) -> Result<GithubIssuePage> {
+        let page = page.max(1);
+        let per_page = per_page.clamp(1, 100);
+        let endpoint = format!(
+            "repos/{}/{}/issues?state=open&sort=updated&direction=desc&page={page}&per_page={per_page}",
+            repository.owner, repository.name
+        );
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", &endpoint]);
+        if repository.host != "github.com" {
+            cmd.args(["--hostname", &repository.host]);
+        }
+        let output = cmd
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh api` while loading GitHub issues.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_rate_limited(&stderr) {
+                bail!("GitHub rate limit exceeded while loading issues; retry later");
+            }
+            bail!("`gh api {endpoint}` failed: {}", stderr.trim());
+        }
+
+        parse_issue_page(&output.stdout, page, per_page)
+    }
+
+    pub fn issue_comment_bodies(
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<Vec<String>> {
+        #[derive(Deserialize)]
+        struct BodyOnly {
+            #[serde(default)]
+            body: String,
+        }
+
+        let endpoint = format!(
+            "repos/{}/{}/issues/{number}/comments?per_page=100",
+            repository.owner, repository.name
+        );
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "--paginate", "--slurp"]);
+        if repository.host != "github.com" {
+            cmd.args(["--hostname", &repository.host]);
+        }
+        let output = cmd
+            .arg(endpoint)
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh api` while reconciling issue comments.")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_rate_limited(&stdout) || is_rate_limited(&stderr) {
+            bail!("GitHub rate limit exceeded while checking issue comments; retry later");
+        }
+        if !output.status.success() {
+            bail!(
+                "`gh api` failed while checking issue comments: {}",
+                stderr.trim()
+            );
+        }
+        let pages: Vec<Vec<BodyOnly>> = serde_json::from_slice(&output.stdout)
+            .context("GitHub returned malformed issue comments")?;
+        Ok(pages
+            .into_iter()
+            .flatten()
+            .map(|comment| comment.body)
+            .collect())
+    }
+
+    pub fn post_feature_issue_comment(
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+        body: &str,
+    ) -> Result<()> {
+        let endpoint = format!(
+            "repos/{}/{}/issues/{number}/comments",
+            repository.owner, repository.name
+        );
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "--method", "POST"]);
+        if repository.host != "github.com" {
+            cmd.args(["--hostname", &repository.host]);
+        }
+        cmd.arg(endpoint).args(["-f", &format!("body={body}")]);
+        cmd.current_dir(workdir);
+        run_write(cmd, "post issue feature comment")
     }
 
     /// List the repository's most-recently-updated merged/closed pull
@@ -951,6 +1289,61 @@ impl GhCli {
     }
 }
 
+impl GithubTransport for GhCli {
+    fn check_available(&self) -> Result<()> {
+        Self::check_available()
+    }
+
+    fn check_auth(&self) -> Result<()> {
+        Self::check_auth()
+    }
+
+    fn current_user(&self, workdir: &Path) -> Result<String> {
+        Self::current_user(workdir)
+    }
+
+    fn list_prs(&self, workdir: &Path, include_closed: bool) -> Result<Vec<PrListEntry>> {
+        Self::list_prs(workdir, include_closed)
+    }
+
+    fn resolve_pr(&self, workdir: &Path) -> Result<PrResolution> {
+        Self::resolve_pr(workdir)
+    }
+
+    fn fetch_pr_by_number(&self, workdir: &Path, number: u32) -> Result<PrRef> {
+        Self::fetch_pr_by_number(workdir, number)
+    }
+
+    fn list_issues(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        page: u32,
+        per_page: u32,
+    ) -> Result<GithubIssuePage> {
+        Self::list_issues(workdir, repository, page, per_page)
+    }
+
+    fn issue_comment_bodies(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<Vec<String>> {
+        Self::issue_comment_bodies(workdir, repository, number)
+    }
+
+    fn post_issue_comment(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+        body: &str,
+    ) -> Result<()> {
+        Self::post_feature_issue_comment(workdir, repository, number, body)
+    }
+}
+
 /// Build the JSON request body for the GitHub create-review API. Omits an empty
 /// `body` / `commit_id` and the `comments` array when there are none, so a
 /// summary-only review is a valid request.
@@ -1151,6 +1544,162 @@ pub struct TerminalPr {
     /// timestamp as GitHub returns it, stored verbatim rather than parsed. It
     /// is only ever persisted and shown, never compared.
     pub at: String,
+}
+
+/// Canonical identity of the GitHub repository associated with a project.
+/// Host is retained so GitHub Enterprise repositories never collide with
+/// github.com repositories that happen to use the same owner/name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GithubRepository {
+    pub host: String,
+    pub owner: String,
+    pub name: String,
+}
+
+impl GithubRepository {
+    /// Parse a GitHub remote in HTTPS, `ssh://`, or scp-style SSH form.
+    ///
+    /// Unknown hosts are accepted as GitHub Enterprise candidates; well-known
+    /// non-GitHub hosts are rejected. The later `gh` request remains the
+    /// authority for whether an Enterprise host is configured and reachable.
+    pub fn from_remote_url(url: &str) -> Option<Self> {
+        let url = url.trim();
+        if url.is_empty() {
+            return None;
+        }
+
+        let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+            if !matches!(
+                scheme.to_ascii_lowercase().as_str(),
+                "http" | "https" | "ssh" | "git"
+            ) {
+                return None;
+            }
+            let (authority, path) = rest.split_once('/')?;
+            (authority.rsplit('@').next()?.split(':').next()?, path)
+        } else {
+            let (authority, path) = url.split_once(':')?;
+            (authority.rsplit('@').next()?, path)
+        };
+
+        let host = host.trim().trim_end_matches('/').to_ascii_lowercase();
+        if host.is_empty() || is_known_non_github_host(&host) {
+            return None;
+        }
+        let path = path.trim_matches('/');
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+        let owner = segments.next()?.trim();
+        let name = segments.next()?.trim();
+        if owner.is_empty() || name.is_empty() || segments.next().is_some() {
+            return None;
+        }
+
+        Some(Self {
+            host,
+            owner: owner.to_ascii_lowercase(),
+            name: name.to_ascii_lowercase(),
+        })
+    }
+
+    /// Stable key used for duplicate lookup and persistence.
+    pub fn canonical(&self) -> String {
+        format!("{}/{}/{}", self.host, self.owner, self.name)
+    }
+
+    pub fn issue_url(&self, number: u32) -> String {
+        format!(
+            "https://{}/{}/{}/issues/{number}",
+            self.host, self.owner, self.name
+        )
+    }
+}
+
+/// Why a selected project cannot be associated with one GitHub repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GithubRepositoryError {
+    NotGitRepository,
+    NoRemote,
+    NoGithubRemote,
+    Ambiguous { repositories: Vec<GithubRepository> },
+}
+
+impl fmt::Display for GithubRepositoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotGitRepository => write!(f, "Selected project is not a git repository"),
+            Self::NoRemote => write!(f, "Selected git project has no remotes"),
+            Self::NoGithubRemote => write!(f, "Selected project has no GitHub remote"),
+            Self::Ambiguous { repositories } => write!(
+                f,
+                "Selected project has multiple GitHub repositories: {}",
+                repositories
+                    .iter()
+                    .map(GithubRepository::canonical)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for GithubRepositoryError {}
+
+fn is_known_non_github_host(host: &str) -> bool {
+    matches!(
+        host,
+        "gitlab.com" | "bitbucket.org" | "codeberg.org" | "gitee.com" | "sourceforge.net"
+    )
+}
+
+/// Resolve one canonical GitHub repository from the selected project's git
+/// remotes. Equivalent remotes are accepted once; distinct GitHub targets are
+/// reported as ambiguous rather than choosing an arbitrary remote.
+pub fn resolve_github_repository(
+    project_repo: &Path,
+) -> std::result::Result<GithubRepository, GithubRepositoryError> {
+    let remotes = Command::new("git")
+        .args(["remote"])
+        .current_dir(project_repo)
+        .output()
+        .map_err(|_| GithubRepositoryError::NotGitRepository)?;
+    if !remotes.status.success() {
+        return Err(GithubRepositoryError::NotGitRepository);
+    }
+    let remote_names: Vec<String> = String::from_utf8_lossy(&remotes.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+    if remote_names.is_empty() {
+        return Err(GithubRepositoryError::NoRemote);
+    }
+
+    let mut repositories = Vec::new();
+    for remote in remote_names {
+        let urls = Command::new("git")
+            .args(["remote", "get-url", "--all", &remote])
+            .current_dir(project_repo)
+            .output()
+            .map_err(|_| GithubRepositoryError::NoGithubRemote)?;
+        if !urls.status.success() {
+            continue;
+        }
+        for url in String::from_utf8_lossy(&urls.stdout).lines() {
+            if let Some(repository) = GithubRepository::from_remote_url(url)
+                && !repositories.contains(&repository)
+            {
+                repositories.push(repository);
+            }
+        }
+    }
+
+    match repositories.len() {
+        0 => Err(GithubRepositoryError::NoGithubRemote),
+        1 => Ok(repositories.remove(0)),
+        _ => Err(GithubRepositoryError::Ambiguous { repositories }),
+    }
 }
 
 /// Resolve `owner/repo` from the repository's `origin` remote.
@@ -1530,6 +2079,55 @@ fn parse_pr_list_json(stdout: &[u8]) -> Result<Vec<PrListEntry>> {
     Ok(entries)
 }
 
+/// Parse the manual-review `gh pr list` array, newest-updated first. Strict: a
+/// row missing its revisions fails the whole list, rather than showing a PR
+/// that could not be opened at a known commit.
+fn parse_reviewable_pr_list_json(stdout: &[u8]) -> Result<Vec<ReviewablePr>> {
+    let mut entries: Vec<ReviewablePr> =
+        serde_json::from_slice(stdout).context("Failed to parse `gh pr list` JSON output.")?;
+    // `updatedAt` is RFC 3339, so a lexical reverse sort is chronological.
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(entries)
+}
+
+fn parse_pr_revisions_json(stdout: &[u8]) -> Result<PrRevisions> {
+    #[derive(Deserialize)]
+    struct Extra {
+        url: String,
+        #[serde(default)]
+        state: String,
+    }
+    let pr: ReviewablePr =
+        serde_json::from_slice(stdout).context("Failed to parse `gh pr view` JSON output.")?;
+    let extra: Extra =
+        serde_json::from_slice(stdout).context("`gh pr view` output missing url.")?;
+    let (owner, repo) = parse_owner_repo(&extra.url)
+        .with_context(|| format!("Could not parse owner/repo from PR url: {}", extra.url))?;
+    Ok(PrRevisions {
+        pr,
+        url: extra.url,
+        owner,
+        repo,
+        state: extra.state,
+    })
+}
+
+fn parse_issue_page(stdout: &[u8], page: u32, per_page: u32) -> Result<GithubIssuePage> {
+    let raw: Vec<GithubIssue> =
+        serde_json::from_slice(stdout).context("Failed to parse GitHub issues JSON response.")?;
+    let has_next_page = raw.len() == per_page as usize;
+    let issues = raw
+        .into_iter()
+        .filter(|issue| !issue.is_pull_request())
+        .collect();
+    Ok(GithubIssuePage {
+        issues,
+        page,
+        per_page,
+        has_next_page,
+    })
+}
+
 /// Extract `(owner, repo)` from a GitHub PR URL like
 /// `https://github.com/owner/repo/pull/123`. Works for GHES hosts too since we
 /// key off the `/pull/` segment rather than the host.
@@ -1860,6 +2458,113 @@ mod tests {
                 "failed on {url}"
             );
         }
+    }
+
+    #[test]
+    fn canonical_github_identity_normalizes_equivalent_remote_spellings() {
+        let https = GithubRepository::from_remote_url(
+            "https://GitHub.com/EldridgerDev/Agent-Mainframe.git",
+        )
+        .unwrap();
+        let ssh = GithubRepository::from_remote_url("git@github.com:EldridgerDev/Agent-Mainframe")
+            .unwrap();
+        assert_eq!(https, ssh);
+        assert_eq!(https.canonical(), "github.com/eldridgerdev/agent-mainframe");
+
+        let enterprise = GithubRepository::from_remote_url(
+            "ssh://git@github.acme.example/platform/agent-mainframe.git",
+        )
+        .unwrap();
+        assert_eq!(
+            enterprise.canonical(),
+            "github.acme.example/platform/agent-mainframe"
+        );
+    }
+
+    #[test]
+    fn canonical_identity_rejects_known_non_github_hosts() {
+        assert!(GithubRepository::from_remote_url("git@gitlab.com:team/project.git").is_none());
+        assert!(GithubRepository::from_remote_url("https://bitbucket.org/team/project").is_none());
+    }
+
+    #[test]
+    fn issue_page_parsing_keeps_issue_metadata_filters_prs_and_marks_pages() {
+        let json = r#"[
+            {"number":7,"title":"Unicode 🚀","body":"line one\nline two",
+             "html_url":"https://github.com/acme/widget/issues/7",
+             "labels":[{"name":"bug"},{"name":"needs-help"}],
+             "updated_at":"2026-09-15T12:00:00Z"},
+            {"number":8,"title":"A pull request","body":null,
+             "html_url":"https://github.com/acme/widget/pull/8",
+             "labels":[],"updated_at":"2026-09-15T11:00:00Z",
+             "pull_request":{"url":"https://api.github.com/repos/acme/widget/pulls/8"}}
+        ]"#;
+        let page = parse_issue_page(json.as_bytes(), 2, 2).unwrap();
+        assert_eq!(page.page, 2);
+        assert_eq!(page.per_page, 2);
+        assert!(page.has_next_page);
+        assert_eq!(page.issues.len(), 1);
+        assert_eq!(page.issues[0].number, 7);
+        assert_eq!(page.issues[0].body.as_deref(), Some("line one\nline two"));
+        assert_eq!(page.issues[0].labels[1].name, "needs-help");
+    }
+
+    #[test]
+    fn malformed_issue_page_is_a_recoverable_parse_error() {
+        let error = parse_issue_page(br#"[{\"number\":1}"#, 1, 50)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("GitHub issues JSON"));
+    }
+
+    #[test]
+    fn repository_resolution_reports_unavailable_and_ambiguous_states() {
+        let no_git = tempfile::tempdir().unwrap();
+        assert_eq!(
+            resolve_github_repository(no_git.path()),
+            Err(GithubRepositoryError::NotGitRepository)
+        );
+
+        let no_remote = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(no_remote.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            resolve_github_repository(no_remote.path()),
+            Err(GithubRepositoryError::NoRemote)
+        );
+
+        let ambiguous = tempfile::tempdir().unwrap();
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(ambiguous.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        for (name, url) in [
+            ("origin", "git@github.com:one/project.git"),
+            ("upstream", "https://github.com/two/project.git"),
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(["remote", "add", name, url])
+                    .current_dir(ambiguous.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(matches!(
+            resolve_github_repository(ambiguous.path()),
+            Err(GithubRepositoryError::Ambiguous { .. })
+        ));
     }
 
     /// A remote that names no repository yields nothing, so the sweep reports
@@ -2216,5 +2921,127 @@ mod tests {
         assert!(!obj.contains_key("body"));
         assert!(!obj.contains_key("comments"));
         assert_eq!(v["event"], "COMMENT");
+    }
+
+    /// A fork PR and a same-repo draft, as `gh pr list --json` returns them.
+    const REVIEWABLE_PR_LIST_FIXTURE: &str = r#"[
+      {"number": 41, "title": "Fix parser", "author": {"login": "alice", "is_bot": false},
+       "isDraft": false, "updatedAt": "2026-09-20T10:00:00Z",
+       "baseRefName": "main",
+       "headRefName": "main", "headRefOid": "bbbb000000000000000000000000000000000000",
+       "isCrossRepository": true, "headRepositoryOwner": {"id": "U_1", "login": "alice"}},
+      {"number": 42, "title": "WIP: new cache", "author": {"login": "me"},
+       "isDraft": true, "updatedAt": "2026-09-24T10:00:00Z",
+       "baseRefName": "main",
+       "headRefName": "cache", "headRefOid": "cccc000000000000000000000000000000000000",
+       "isCrossRepository": false, "headRepositoryOwner": {"id": "O_1", "login": "acme"}}
+    ]"#;
+
+    #[test]
+    fn reviewable_pr_list_parses_a_fork_pr_as_owner_colon_branch() {
+        let entries = parse_reviewable_pr_list_json(REVIEWABLE_PR_LIST_FIXTURE.as_bytes()).unwrap();
+        let fork = entries.iter().find(|e| e.number == 41).unwrap();
+        assert!(fork.is_cross_repository);
+        assert_eq!(fork.author, "alice");
+        assert_eq!(fork.head_owner, "alice");
+        assert_eq!(fork.branch_label(), "alice:main");
+        assert_eq!(fork.base_ref, "main");
+        assert!(
+            fork.base_oid.is_empty(),
+            "the base tip comes from the fetch"
+        );
+        assert_eq!(fork.head_oid, "bbbb000000000000000000000000000000000000");
+        assert!(!fork.is_draft);
+    }
+
+    #[test]
+    fn reviewable_pr_list_keeps_drafts_and_sorts_newest_first() {
+        let entries = parse_reviewable_pr_list_json(REVIEWABLE_PR_LIST_FIXTURE.as_bytes()).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.number).collect::<Vec<_>>(),
+            vec![42, 41]
+        );
+        let draft = &entries[0];
+        assert!(draft.is_draft);
+        assert_eq!(draft.title, "WIP: new cache");
+        // Same-repo head: the bare branch, never the base repo's owner.
+        assert_eq!(draft.branch_label(), "cache");
+    }
+
+    #[test]
+    fn reviewable_pr_list_parses_an_empty_list() {
+        assert!(parse_reviewable_pr_list_json(b"[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn reviewable_pr_list_rejects_a_row_without_a_head_revision() {
+        // A row we could not open at a known commit must not look openable.
+        let json = br#"[{"number": 7, "title": "x", "baseRefName": "main", "headRefName": "b"}]"#;
+        assert!(parse_reviewable_pr_list_json(json).is_err());
+    }
+
+    #[test]
+    fn a_deleted_fork_falls_back_to_the_bare_branch() {
+        let json = br#"[{"number": 9, "baseRefName": "main",
+            "headRefName": "patch-1", "headRefOid": "b",
+            "isCrossRepository": true, "headRepositoryOwner": null}]"#;
+        let entries = parse_reviewable_pr_list_json(json).unwrap();
+        assert_eq!(entries[0].branch_label(), "patch-1");
+    }
+
+    /// The `--json` field list is a string `gh` validates and serde never sees,
+    /// so pin it to the struct: every requested field must be one the fixture
+    /// (and therefore the struct) carries, and vice versa.
+    #[test]
+    fn reviewable_pr_fields_match_what_the_struct_reads() {
+        let requested: std::collections::BTreeSet<&str> = REVIEWABLE_PR_FIELDS.split(',').collect();
+        let fixture: Vec<serde_json::Map<String, serde_json::Value>> =
+            serde_json::from_str(REVIEWABLE_PR_LIST_FIXTURE).unwrap();
+        let present: std::collections::BTreeSet<&str> =
+            fixture[0].keys().map(String::as_str).collect();
+        assert_eq!(requested, present);
+    }
+
+    #[test]
+    fn pr_revisions_parse_into_a_pr_ref_pinned_to_the_head() {
+        let json = br#"{"number": 41, "title": "Fix parser", "author": {"login": "alice"},
+            "isDraft": false, "updatedAt": "2026-09-20T10:00:00Z",
+            "baseRefName": "main",
+            "headRefName": "main", "headRefOid": "bbbb",
+            "isCrossRepository": true, "headRepositoryOwner": {"login": "alice"},
+            "url": "https://github.com/acme/widgets/pull/41", "state": "OPEN"}"#;
+        let revisions = parse_pr_revisions_json(json).unwrap();
+        assert_eq!(revisions.state, "OPEN");
+        assert_eq!(revisions.pr.head_oid, "bbbb");
+        let pr = revisions.pr_ref();
+        assert_eq!(pr.number, 41);
+        assert_eq!(pr.head_sha, "bbbb");
+        assert_eq!((pr.owner.as_str(), pr.repo.as_str()), ("acme", "widgets"));
+    }
+
+    #[test]
+    fn git_credential_failures_get_the_setup_git_hint() {
+        for stderr in [
+            "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+            "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/acme/x/'",
+        ] {
+            let hint = git_credentials_hint(stderr).unwrap();
+            assert!(hint.contains("gh auth setup-git"), "{stderr}");
+        }
+        assert_eq!(
+            git_credentials_hint("fatal: couldn't find remote ref refs/pull/8/head"),
+            None
+        );
+    }
+
+    #[test]
+    fn git_without_prompts_disables_terminal_prompts() {
+        let mut cmd = Command::new("git");
+        without_git_prompts(&mut cmd);
+        assert!(
+            cmd.get_envs()
+                .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
+                    && value == Some(std::ffi::OsStr::new("0")))
+        );
     }
 }

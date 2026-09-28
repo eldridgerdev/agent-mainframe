@@ -401,6 +401,11 @@ pub struct Feature {
     /// ordinary feature and for PR-triage companions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_source: Option<ReviewSource>,
+    /// GitHub issue this feature was created to fix. Canonical repository
+    /// identity and issue number are persisted so duplicate lookup and later
+    /// comments do not depend on the current checkout's remote configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_source: Option<IssueSource>,
 }
 
 /// The PR and source feature a companion triage feature was created for. Also
@@ -438,6 +443,31 @@ pub struct ReviewSource {
     /// Commit the companion worktree was branched from. Everything after it on
     /// the companion branch is what integration pushes or cherry-picks back.
     pub base_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueSource {
+    pub host: String,
+    pub owner: String,
+    pub repository: String,
+    pub number: u32,
+    #[serde(default)]
+    pub comment_status: IssueCommentStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "state", content = "message", rename_all = "snake_case")]
+pub enum IssueCommentStatus {
+    #[default]
+    Pending,
+    Posted,
+    Failed(String),
+}
+
+impl IssueSource {
+    pub fn canonical_repository(&self) -> String {
+        format!("{}/{}/{}", self.host, self.owner, self.repository)
+    }
 }
 
 #[derive(Deserialize)]
@@ -481,6 +511,8 @@ struct FeatureDe {
     triage_source: Option<TriageSource>,
     #[serde(default)]
     review_source: Option<ReviewSource>,
+    #[serde(default)]
+    issue_source: Option<IssueSource>,
 }
 
 impl<'de> Deserialize<'de> for Feature {
@@ -516,6 +548,7 @@ impl<'de> Deserialize<'de> for Feature {
             selected_plan_path: feature.selected_plan_path,
             triage_source: feature.triage_source,
             review_source: feature.review_source,
+            issue_source: feature.issue_source,
         })
     }
 }
@@ -636,6 +669,7 @@ impl Feature {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         }
     }
 
@@ -1242,6 +1276,7 @@ impl ProjectStore {
                             selected_plan_path: None,
                             triage_source: None,
                             review_source: None,
+                            issue_source: None,
                         }
                     })
                     .collect();
@@ -1301,6 +1336,30 @@ impl ProjectStore {
 
     pub fn find_project_mut(&mut self, name: &str) -> Option<&mut Project> {
         self.projects.iter_mut().find(|p| p.name == name)
+    }
+
+    /// Resolve a feature's stable id to its current `(project_index,
+    /// feature_index)` pair. Feature ids are UUIDs generated at creation
+    /// time (see `Feature::new_for_project`), so a bare `feature_id` lookup
+    /// is unambiguous; `project_id` is still checked when given so a caller
+    /// addressing the wrong project gets `None` (a stale/mismatched
+    /// reference) rather than silently acting on an unrelated project's
+    /// feature.
+    pub fn locate_feature_by_id(
+        &self,
+        project_id: Option<&str>,
+        feature_id: &str,
+    ) -> Option<(usize, usize)> {
+        self.projects.iter().enumerate().find_map(|(pi, project)| {
+            if project_id.is_some_and(|id| id != project.id) {
+                return None;
+            }
+            project
+                .features
+                .iter()
+                .position(|f| f.id == feature_id)
+                .map(|fi| (pi, fi))
+        })
     }
 
     pub fn add_feature(&mut self, project_name: &str, feature: Feature) -> bool {
@@ -1475,6 +1534,7 @@ mod tests {
         });
         let feature: Feature = serde_json::from_value(json).unwrap();
         assert!(feature.triage_source.is_none());
+        assert!(feature.issue_source.is_none());
         assert!(feature.selected_plan_path.is_none());
     }
 
@@ -1503,6 +1563,41 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&feature).unwrap()).unwrap();
 
         assert_eq!(round_tripped.triage_source, feature.triage_source);
+    }
+
+    #[test]
+    fn feature_issue_source_round_trips_through_json() {
+        let mut feature = Feature::new(
+            "issue-fix".to_string(),
+            "issue/42".to_string(),
+            PathBuf::from("/tmp/wd"),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Codex,
+            false,
+            false,
+        );
+        feature.issue_source = Some(IssueSource {
+            host: "github.example.com".to_string(),
+            owner: "acme".to_string(),
+            repository: "widget".to_string(),
+            number: 42,
+            comment_status: IssueCommentStatus::Pending,
+        });
+
+        let round_tripped: Feature =
+            serde_json::from_str(&serde_json::to_string(&feature).unwrap()).unwrap();
+        assert_eq!(round_tripped.issue_source, feature.issue_source);
+        assert_eq!(
+            round_tripped
+                .issue_source
+                .as_ref()
+                .unwrap()
+                .canonical_repository(),
+            "github.example.com/acme/widget"
+        );
     }
 
     use super::*;
@@ -1585,6 +1680,7 @@ mod tests {
             selected_plan_path: None,
             triage_source: None,
             review_source: None,
+            issue_source: None,
         }
     }
 
@@ -1648,6 +1744,7 @@ mod tests {
                     selected_plan_path: None,
                     triage_source: None,
                     review_source: None,
+                    issue_source: None,
                 }],
                 created_at: Utc::now(),
                 preferred_agent: AgentKind::Claude,
@@ -1730,6 +1827,7 @@ mod tests {
                         selected_plan_path: None,
                         triage_source: None,
                         review_source: None,
+                        issue_source: None,
                     },
                     Feature {
                         id: "feature-2".to_string(),
@@ -1757,6 +1855,7 @@ mod tests {
                         selected_plan_path: None,
                         triage_source: None,
                         review_source: None,
+                        issue_source: None,
                     },
                 ],
                 created_at: Utc::now(),

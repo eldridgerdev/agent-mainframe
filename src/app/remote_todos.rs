@@ -184,7 +184,7 @@ impl App {
             Ok(si) => si,
             Err(e) => {
                 if reserved_here {
-                    self.todos_rollback_launch_best_effort(&todo.id);
+                    self.todos_rollback_launch_best_effort(&todo.id, None);
                 }
                 return Err(format!("Couldn't start the agent: {e}"));
             }
@@ -204,7 +204,7 @@ impl App {
         self.refresh_active_todos_sidebar_cache();
         if let Err(e) = self.todos_mark_in_progress(&todo.id, Some(&session_id)) {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&todo.id);
+                self.todos_rollback_launch_best_effort(&todo.id, Some(&session_id));
             }
             return Err(e.to_string());
         }

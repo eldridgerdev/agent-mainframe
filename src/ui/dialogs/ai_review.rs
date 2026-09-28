@@ -183,12 +183,15 @@ fn finding_location(f: &AiReviewFinding) -> String {
 fn finding_list_line(
     index: usize,
     f: &AiReviewFinding,
+    marked: bool,
     has_combined_cost: bool,
     theme: &Theme,
     width: usize,
 ) -> Line<'static> {
     let marker = if f.published {
         "✓"
+    } else if marked {
+        "*"
     } else if f.skipped {
         "-"
     } else {
@@ -258,7 +261,8 @@ fn draw_finding_list(
         .enumerate()
         .map(|(i, f)| {
             let has_combined = finding_fix_costs.get(i).is_some_and(Option::is_some);
-            let line = finding_list_line(i, f, has_combined, theme, width);
+            let line =
+                finding_list_line(i, f, state.marked.contains(&i), has_combined, theme, width);
             if i == state.selected {
                 Line::from(
                     line.spans
@@ -457,7 +461,9 @@ pub fn draw_ai_review(
         "A regenerate"
     };
     let keys = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   s skip/unskip   e edit   {ai_action}   W post   esc/q close"),
+        format!(
+            " j/k move   f fix   space mark   B fix marked   s skip   e edit   {ai_action}   W post   esc/q close"
+        ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(keys, outer[3]);
@@ -831,6 +837,7 @@ mod tests {
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,
+                marked: Default::default(),
             },
             progress: crate::app::AiReviewRunProgress {
                 stage: crate::app::ai_review::AiReviewStage::Reviewing {
@@ -911,6 +918,7 @@ mod tests {
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
+            marked: Default::default(),
         }
     }
 

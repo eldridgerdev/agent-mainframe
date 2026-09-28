@@ -2088,11 +2088,11 @@ fn starting_a_host_feature_plan_session_attaches_the_active_todo_sidebar_referen
     assert!(cached.contains("plan then build"));
 }
 
-/// `attach_launched_todo_reference` is the shared write behind both plan
-/// routes: set the provenance, persist, refresh the cache — and no-op cleanly
-/// if the session index has gone stale.
+/// `attach_launched_todo_reference` is the shared write behind every TODO
+/// launch route: set the provenance, persist, refresh the cache — and report
+/// `false`, without a panic, when the session is not in the store.
 #[test]
-fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index() {
+fn attach_launched_todo_reference_records_provenance_and_reports_a_missing_session() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),
         Box::new(MockTmuxOps::new()),
@@ -2113,7 +2113,7 @@ fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index(
         .unwrap();
     app.db = Some(db);
 
-    app.attach_launched_todo_reference(0, 0, 0, &todo.id);
+    assert!(app.attach_launched_todo_reference(&session_id, &todo.id));
 
     assert!(
         app.store.projects[0].features[0].sessions[0]
@@ -2127,8 +2127,8 @@ fn attach_launched_todo_reference_records_provenance_and_survives_a_stale_index(
             .is_some_and(|c| c.contains("attach me"))
     );
 
-    // An out-of-range session index is a no-op, not a panic.
-    app.attach_launched_todo_reference(0, 0, 9, &todo.id);
+    // A session that is not in the store is reported, not a panic.
+    assert!(!app.attach_launched_todo_reference("no-such-session", &todo.id));
 }
 
 #[test]
@@ -2190,7 +2190,7 @@ fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation
 
     // Agent-creation failure path.
     assert!(app.todos_reserve_launch(&todo).unwrap());
-    app.todos_rollback_launch(&todo.id).unwrap();
+    app.todos_rollback_launch(&todo.id, None).unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(
@@ -2209,7 +2209,8 @@ fn failed_agent_session_startup_and_prompt_setup_both_roll_back_todo_reservation
     assert!(app.todos_reserve_launch(&current).unwrap());
     app.todos_mark_in_progress(&todo.id, Some("session-created"))
         .unwrap();
-    app.todos_rollback_launch(&todo.id).unwrap();
+    app.todos_rollback_launch(&todo.id, Some("session-created"))
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert_eq!(
@@ -3168,4 +3169,57 @@ fn disposition_cancel_leaves_the_feature_and_its_todos_intact() {
     let db = app.db.as_ref().unwrap();
     assert!(db.todo_list_by_id(&list_id).unwrap().is_some());
     assert_eq!(db.todos(&list_id).unwrap().len(), 2);
+}
+
+// ----- Unsent prompt recovery on a failed TODO spawn -----------------------
+
+/// A TODO spawn whose harness launch fails must not just toast the error away
+/// — the prompt it would have seeded is saved into the User prompt library
+/// (tagged "unsent") so it is not lost, and the TODO's reservation is rolled
+/// back so `implement next` will offer it again.
+#[test]
+fn failed_todo_spawn_stashes_the_seed_prompt_instead_of_losing_it() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).returning(|_| true);
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Err(anyhow::anyhow!("agent limit reached")));
+    tmux.expect_kill_window().times(1).returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    let todo = sample_todo("Fix the login bug", false);
+
+    app.spawn_todo_agent(0, 0, &todo, false).unwrap();
+
+    // The TODO's reservation is rolled back — the failed launch never
+    // actually started work on it.
+    assert!(matches!(
+        app.store.projects[0].features[0].sessions.len(),
+        0
+    ));
+
+    let unsent = app
+        .store
+        .prompt_templates
+        .iter()
+        .find(|t| t.tags.iter().any(|tag| tag == "unsent"))
+        .expect("failed launch should stash an unsent prompt template");
+    assert_eq!(unsent.name, "Unsent: TODO: Fix the login bug");
+    assert!(!unsent.body.trim().is_empty());
+
+    let message = app
+        .toasts
+        .iter()
+        .map(|t| t.message.as_str())
+        .collect::<Vec<_>>()
+        .join(" | ");
+    assert!(
+        message.contains("saved the prompt to your library"),
+        "expected a toast pointing at the saved prompt, got: {message}"
+    );
 }

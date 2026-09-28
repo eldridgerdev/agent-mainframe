@@ -12,6 +12,14 @@ pub(super) fn with_reply_draft_handoff(
     pr_number: u32,
     requests: &[ReplyDraftRequest],
 ) -> String {
+    // A local AI finding has no GitHub comment to reply to.
+    let requests: Vec<&ReplyDraftRequest> = requests
+        .iter()
+        .filter(|r| !super::domain::is_local_finding_id(r.comment_id))
+        .collect();
+    if requests.is_empty() {
+        return prompt;
+    }
     prompt.push_str(
         "\n\nAfter implementing and verifying each fix, draft a concise reviewer-facing \
          reply explaining what changed and any relevant validation. Do not post \

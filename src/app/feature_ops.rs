@@ -14,6 +14,60 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
 impl App {
+    pub(crate) fn feature_tmux_session_is_shared(&self, pi: usize, fi: usize) -> bool {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return false;
+        };
+        self.store
+            .projects
+            .iter()
+            .flat_map(|p| &p.features)
+            .any(|other| other.id != feature.id && other.tmux_session == feature.tmux_session)
+    }
+
+    /// A legacy feature may still have a name such as `amf-main`, shared with
+    /// another project. Never treat that other feature's tmux session as ours.
+    pub(crate) fn disambiguate_feature_tmux_session(&mut self, pi: usize, fi: usize) -> Result<()> {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return Ok(());
+        };
+        let current = feature.tmux_session.clone();
+        let feature_id = feature.id.clone();
+        let used = |name: &str| {
+            self.store
+                .projects
+                .iter()
+                .flat_map(|p| &p.features)
+                .any(|f| f.id != feature_id && f.tmux_session == name)
+        };
+        if !self.feature_tmux_session_is_shared(pi, fi) {
+            return Ok(());
+        }
+        // A genuinely running feature is never the one that gets moved: only a
+        // session absent from tmux is safe to rename out from under a collision.
+        if self.tmux.session_exists(&current) {
+            return Ok(());
+        }
+
+        let base = format!("{current}-{feature_id}");
+        let mut replacement = base.clone();
+        let mut suffix = 2;
+        while used(&replacement) || self.tmux.session_exists(&replacement) {
+            replacement = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        self.store.projects[pi].features[fi].tmux_session = replacement.clone();
+        if let Err(error) = self.save() {
+            self.store.projects[pi].features[fi].tmux_session = current;
+            return Err(error);
+        }
+        self.log_warn(
+            "tmux",
+            format!("Assigned distinct tmux session {replacement} to feature {feature_id}"),
+        );
+        Ok(())
+    }
+
     /// Whether Remote Control may be enabled for a launch given the current
     /// config and environment (z.ai / third-party provider, Claude Code
     /// version). Mirrors the wizard's availability check so a feature flagged
@@ -216,6 +270,7 @@ impl App {
         };
         let project_name = state.project_name.clone();
         let project_repo = state.project_repo.clone();
+        let feature_name = state.feature_name.clone();
         let branch = state.branch.clone();
         let worktree_name = worktree_name(&project_name, &branch);
         let mode = state.mode.clone();
@@ -229,8 +284,14 @@ impl App {
         let remote_control = state.remote_control;
         let steering_enabled = state.steering_enabled;
         let todo_origin = state.todo_origin.clone();
+        let issue_source = state.issue_source.clone();
+        let startup_prompt =
+            (!state.task_prompt.trim().is_empty()).then(|| state.task_prompt.clone());
+        // Extracted (not read via `state` below) so the borrow of `self.mode`
+        // ends here: `self.save()` further down now takes `&mut self`.
+        let agent = state.agent.clone();
 
-        if branch.is_empty() {
+        if feature_name.as_deref().unwrap_or(&branch).trim().is_empty() {
             self.set_create_feature_branch_error("Feature name cannot be empty");
             return Ok(());
         }
@@ -238,14 +299,14 @@ impl App {
             self.message = Some("Error: Session name cannot be empty".into());
             return Ok(());
         }
-        if !self.allows_agent_for_repo(&project_repo, &state.agent) {
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
             self.message = Some(format!(
                 "Error: Harness '{}' is not allowed for this workspace",
-                state.agent.display_name()
+                agent.display_name()
             ));
             return Ok(());
         }
-        if let Err(err) = self.ensure_agent_mode_supported(&state.agent, &mode) {
+        if let Err(err) = self.ensure_agent_mode_supported(&agent, &mode) {
             self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
@@ -259,7 +320,8 @@ impl App {
                 }
             };
 
-            let normalized_branch = normalized_feature_name(&branch);
+            let normalized_branch =
+                normalized_feature_name(feature_name.as_deref().unwrap_or(&branch));
             if project
                 .features
                 .iter()
@@ -322,17 +384,21 @@ impl App {
                         prompt.options.clone(),
                         HookNext::WorktreeCreated {
                             project_name,
+                            feature_name: feature_name.clone(),
                             branch,
                             mode,
                             review,
                             plan_mode,
-                            agent: state.agent.clone(),
+                            quick_plan,
+                            agent: agent.clone(),
                             create_terminal,
                             enable_chrome,
                             remote_control,
                             steering_enabled,
+                            startup_prompt: startup_prompt.clone(),
                             session_name,
                             todo_origin: todo_origin.clone(),
+                            issue_source: issue_source.clone(),
                         },
                     );
                 } else {
@@ -340,17 +406,21 @@ impl App {
                         hook_cfg.script(),
                         wt_path.clone(),
                         project_name,
+                        feature_name.clone(),
                         branch,
                         mode,
                         review,
                         plan_mode,
-                        state.agent.clone(),
+                        quick_plan,
+                        agent.clone(),
                         create_terminal,
                         session_name,
                         enable_chrome,
                         remote_control,
                         steering_enabled,
+                        startup_prompt,
                         todo_origin,
+                        issue_source,
                         None,
                     );
                 }
@@ -364,6 +434,7 @@ impl App {
 
         let prepared = PreparedFeatureLaunch {
             project_name: project_name.clone(),
+            feature_name,
             branch: branch.clone(),
             workdir,
             is_worktree,
@@ -371,15 +442,16 @@ impl App {
             review,
             plan_mode,
             quick_plan,
-            agent: state.agent.clone(),
+            agent: agent.clone(),
             create_terminal,
             session_name,
             enable_chrome,
             remote_control,
             steering_enabled,
             hook_succeeded: None,
-            startup_prompt: None,
+            startup_prompt,
             todo_origin,
+            issue_source,
         };
 
         self.finish_feature_launch(prepared)
@@ -419,10 +491,18 @@ impl App {
         prepared: PreparedFeatureLaunch,
         resource_approved: bool,
     ) -> Result<()> {
+        // The feature row and its issue association are one store write. Keep
+        // a snapshot so a failed write cannot leave a phantom in-memory row
+        // that a retry would mistake for a successful creation.
+        let store_before_write = self.store.clone();
         // Taken unconditionally so a seed left behind by an abandoned wizard
         // cannot leak into a later launch; only read below when this launch is
         // a non-plan TODO spawn.
         let todo_spawn_seed = self.pending_todo_spawn_prompt.take();
+        let feature_name = prepared
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| prepared.branch.clone());
 
         let existing_pending = self
             .store
@@ -433,52 +513,113 @@ impl App {
                 self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| f.name == prepared.branch && f.pending_worktree_script)
+                    .position(|f| f.name == feature_name && f.pending_worktree_script)
                     .map(|fi| (pi, fi))
             });
 
-        if let Some((pi, fi)) = existing_pending {
-            if let Some(feature) = self
+        // Captured explicitly rather than re-derived as "the last feature in
+        // the project" below: the `existing_pending` branch can update a
+        // feature anywhere in the vector, not only the last one, and another
+        // feature may be appended to the project between here and any later
+        // lookup.
+        let finish_pending = |feature: &mut Feature| {
+            feature.workdir = prepared.workdir.clone();
+            feature.is_worktree = prepared.is_worktree;
+            feature.mode = prepared.mode.clone();
+            feature.review = prepared.review;
+            feature.plan_mode = prepared.plan_mode;
+            feature.agent = prepared.agent.clone();
+            feature.enable_chrome = prepared.enable_chrome;
+            feature.remote_control = prepared.remote_control;
+            feature.issue_source = prepared.issue_source.clone();
+            feature.pending_worktree_script = false;
+        };
+        // What to re-apply if the save below conflicts with another process:
+        // the finishing touches to the pending row, or the whole new row.
+        let mut new_feature: Option<Feature> = None;
+        let target_feature_id = if let Some((pi, fi)) = existing_pending {
+            let feature = self
                 .store
                 .projects
                 .get_mut(pi)
-                .and_then(|project| project.features.get_mut(fi))
-            {
-                feature.workdir = prepared.workdir.clone();
-                feature.is_worktree = prepared.is_worktree;
-                feature.mode = prepared.mode.clone();
-                feature.review = prepared.review;
-                feature.plan_mode = prepared.plan_mode;
-                feature.agent = prepared.agent.clone();
-                feature.enable_chrome = prepared.enable_chrome;
-                feature.remote_control = prepared.remote_control;
-                feature.pending_worktree_script = false;
+                .and_then(|project| project.features.get_mut(fi));
+            let target_feature_id = feature.as_ref().map(|feature| feature.id.clone());
+            if let Some(feature) = feature {
+                finish_pending(feature);
             }
+            target_feature_id
         } else {
             let feature = Feature::new_for_project(
                 &prepared.project_name,
-                prepared.branch.clone(),
+                feature_name.clone(),
                 prepared.branch.clone(),
                 prepared.workdir.clone(),
                 prepared.is_worktree,
-                prepared.mode,
+                prepared.mode.clone(),
                 prepared.review,
                 prepared.plan_mode,
-                prepared.agent,
+                prepared.agent.clone(),
                 prepared.enable_chrome,
                 prepared.remote_control,
             );
 
             let mut feature = feature;
+            feature.issue_source = prepared.issue_source.clone();
             Self::initialize_feature_sessions(
                 &mut feature,
                 prepared.create_terminal,
                 Some(prepared.session_name.clone()),
             );
+            let target_feature_id = feature.id.clone();
+            new_feature = Some(feature.clone());
             self.store.add_feature(&prepared.project_name, feature);
-        }
+            Some(target_feature_id)
+        };
 
-        self.save()?;
+        // A conflict reloads the store from disk; re-apply this creation to
+        // it by id instead of losing the row while its worktree stays behind.
+        let saved = self.save_reapplying(|store| {
+            let Some(id) = target_feature_id.as_deref() else {
+                return true;
+            };
+            let Some(project) = store.find_project_mut(&prepared.project_name) else {
+                return false;
+            };
+            if let Some(feature) = project.features.iter_mut().find(|f| f.id == id) {
+                if new_feature.is_none() {
+                    finish_pending(feature);
+                }
+                return true;
+            }
+            match &new_feature {
+                Some(feature) => {
+                    project.features.push(feature.clone());
+                    true
+                }
+                // The pending row was removed elsewhere.
+                None => false,
+            }
+        });
+        match saved {
+            Ok(ReapplyOutcome::Saved) => {}
+            // The store now holds the other writer's state, without this row;
+            // restoring the pre-write snapshot would put a stale store back
+            // under the new version and clobber that writer on the next save.
+            Ok(ReapplyOutcome::TargetGone) => anyhow::bail!(
+                "feature was not saved: its project or pending row was removed elsewhere (any created worktree was kept)"
+            ),
+            Ok(ReapplyOutcome::Conflict) => {
+                return Err(anyhow::anyhow!(SAVE_CONFLICT_MESSAGE).context(
+                    "feature was not saved: another AMF process kept changing the workspace; retry creation (any created worktree was kept)",
+                ));
+            }
+            Err(error) => {
+                self.store = store_before_write;
+                anyhow::bail!(
+                    "feature was not saved; retry creation (any created worktree was kept): {error}"
+                );
+            }
+        }
         if let Some(feature) = self
             .store
             .find_project(&prepared.project_name)
@@ -486,7 +627,7 @@ impl App {
                 project
                     .features
                     .iter()
-                    .find(|feature| feature.name == prepared.branch)
+                    .find(|feature| feature.name == feature_name)
             })
         {
             self.log_info(
@@ -497,35 +638,58 @@ impl App {
                 ),
             );
         }
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == prepared.project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
+        if let Some((pi, fi)) = target_feature_id.as_deref().and_then(|id| {
+            self.store
+                .projects
+                .iter()
+                .position(|p| p.name == prepared.project_name)
+                .and_then(|pi| {
+                    self.store.projects[pi]
+                        .features
+                        .iter()
+                        .position(|f| f.id == id)
+                        .map(|fi| (pi, fi))
+                })
+        }) {
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
+            self.queue_issue_comment_for_feature(pi, fi);
         }
 
         self.mode = AppMode::Normal;
 
+        let mut startup_prompt_persisted = false;
+        if let Some(prompt) = prepared.startup_prompt.as_deref() {
+            startup_prompt_persisted = self.persist_startup_prompt(&prepared.workdir, prompt);
+        }
+
         let mut started = false;
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == prepared.project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
+        if let Some((pi, fi)) = target_feature_id.as_deref().and_then(|id| {
+            self.store
+                .projects
+                .iter()
+                .position(|p| p.name == prepared.project_name)
+                .and_then(|pi| {
+                    self.store.projects[pi]
+                        .features
+                        .iter()
+                        .position(|f| f.id == id)
+                        .map(|fi| (pi, fi))
+                })
+        }) {
             // Ordinary automation and creation paths cannot be parked mid-flow,
             // so they leave the feature stopped and explain how to start it.
             // An accepted plan can preserve its state in the resource dialog;
             // confirmation resumes here with approval already granted.
-            started = resource_approved || self.autostart_allowed(&prepared.branch);
+            started = resource_approved || self.autostart_allowed(&feature_name);
             if started {
                 // `autostart_allowed` above is this path's gate.
-                self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+                if let Err(error) = self.ensure_feature_running(pi, fi, StartIntent::Approved) {
+                    anyhow::bail!(
+                        "feature '{}' was saved but its agent did not start; retry with c: {error}",
+                        feature_name
+                    );
+                }
             }
             self.save()?;
             if started {
@@ -553,17 +717,27 @@ impl App {
                     match self.enter_view_without_auto_compose() {
                         Ok(()) => match self.open_compose_seeded(prompt) {
                             Ok(()) => return Ok(()),
-                            Err(error) => self.log_warn(
-                                "feature_create",
-                                format!("failed to seed the startup prompt: {error}"),
-                            ),
+                            Err(error) => {
+                                let notice = format!(
+                                    "Feature '{}' started, but its prompt was not opened; {}: {error}",
+                                    feature_name,
+                                    Self::startup_prompt_fallback_note(startup_prompt_persisted)
+                                );
+                                self.log_warn("feature_create", notice.clone());
+                                self.push_toast_warning(notice);
+                                return Ok(());
+                            }
                         },
-                        Err(error) => self.log_warn(
-                            "feature_create",
-                            format!(
-                                "failed to open the new session for its startup prompt: {error}"
-                            ),
-                        ),
+                        Err(error) => {
+                            let notice = format!(
+                                "Feature '{}' started, but its prompt was not opened; {}: {error}",
+                                feature_name,
+                                Self::startup_prompt_fallback_note(startup_prompt_persisted)
+                            );
+                            self.log_warn("feature_create", notice.clone());
+                            self.push_toast_warning(notice);
+                            return Ok(());
+                        }
                     }
                 } else if prepared.steering_enabled {
                     self.open_startup_steering_prompt(pi, fi)?;
@@ -581,21 +755,7 @@ impl App {
                 .as_ref()
                 .filter(|_| !prepared.plan_mode)
             {
-                // Locate the just-created feature the same way the started
-                // branch does — by project position, then the last feature —
-                // rather than by `name == branch`, which are distinct fields
-                // that diverge under slugify or a user-edited name.
-                let feature_id = self
-                    .store
-                    .projects
-                    .iter()
-                    .position(|p| p.name == prepared.project_name)
-                    .and_then(|pi| {
-                        let fi = self.store.projects[pi].features.len().saturating_sub(1);
-                        self.store.projects[pi].features.get(fi)
-                    })
-                    .map(|f| f.id.clone());
-                match feature_id {
+                match target_feature_id.clone() {
                     Some(feature_id) => {
                         if let Some(db) = self.db.as_ref()
                             && let Err(e) = db.set_todo_linked_feature(&origin.todo_id, &feature_id)
@@ -664,14 +824,18 @@ impl App {
         }
     }
 
-    pub(crate) fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
+    pub(crate) fn persist_startup_prompt(
+        &mut self,
+        workdir: &std::path::Path,
+        prompt: &str,
+    ) -> bool {
         let claude_dir = workdir.join(".claude");
         if let Err(err) = std::fs::create_dir_all(&claude_dir) {
             self.log_warn(
                 "steering",
                 format!("Failed to create .claude dir for startup prompt: {err}"),
             );
-            return;
+            return false;
         }
 
         let path = claude_dir.join("latest-prompt.txt");
@@ -683,6 +847,16 @@ impl App {
                     path.display()
                 ),
             );
+            return false;
+        }
+        true
+    }
+
+    fn startup_prompt_fallback_note(persisted: bool) -> &'static str {
+        if persisted {
+            "it was saved to .claude/latest-prompt.txt"
+        } else {
+            "it could not be saved to .claude/latest-prompt.txt either; the prompt has been lost"
         }
     }
 
@@ -821,6 +995,22 @@ impl App {
         )
     }
 
+    pub(crate) fn ensure_feature_running_tracking_creation(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        created_session: &mut bool,
+        intent: StartIntent,
+    ) -> Result<Started> {
+        self.ensure_feature_running_with_launch_override(
+            pi,
+            fi,
+            None,
+            Some(created_session),
+            intent,
+        )
+    }
+
     fn ensure_feature_running_with_launch_override(
         &mut self,
         pi: usize,
@@ -829,6 +1019,7 @@ impl App {
         created_session: Option<&mut bool>,
         intent: StartIntent,
     ) -> Result<Started> {
+        self.disambiguate_feature_tmux_session(pi, fi)?;
         // Ask before any of the setup below runs, and only when this call will
         // really start something: an already-running session means the harness
         // is already counted, and re-entering its feature must not prompt.
@@ -1118,6 +1309,16 @@ impl App {
             .map(|f| f.status.clone());
 
         if status != Some(ProjectStatus::Stopped) {
+            // The feature is up, but the selected *session* may have been
+            // stopped individually (`x` on a session that wasn't the
+            // feature's only one) — that session's window can still be
+            // brought back on its own.
+            if let Selection::Session(pi, fi, si) = self.selection
+                && self.restart_stopped_session_window(pi, fi, si)?
+            {
+                return Ok(());
+            }
+
             if let Some(name) = self
                 .store
                 .projects
@@ -1491,6 +1692,7 @@ impl App {
             feature_name,
             tmux_session,
             repo,
+            workdir,
             feature_identity,
             had_error,
             error_msg,
@@ -1501,6 +1703,7 @@ impl App {
                     s.feature_name.clone(),
                     s.tmux_session.clone(),
                     s.repo.clone(),
+                    s.workdir.clone(),
                     self.store
                         .find_project(&s.project_name)
                         .and_then(|project| {
@@ -1542,6 +1745,12 @@ impl App {
                 let _ = db.delete_feature_statuses(feature_id);
                 let _ = db.delete_launched_editors_for_feature(feature_id);
             }
+        }
+        // Keyed by workdir, not feature id, since that is how a stashed
+        // prompt is filed and recalled; unconditional so it fires whether or
+        // not the feature had a live worktree todo list to dispose of.
+        if let Some(db) = self.db.as_ref() {
+            let _ = db.delete_unsent_prompts_for_workdir(&workdir);
         }
         if let Some((feature_id, branch)) = feature_identity.as_ref() {
             self.clear_pr_association_for_deleted_feature(feature_id, &repo, branch);
@@ -1867,18 +2076,22 @@ impl App {
                     prompt.options.clone(),
                     HookNext::WorktreeCreated {
                         project_name,
+                        feature_name: None,
                         branch: new_branch,
                         mode,
                         review,
                         plan_mode: false,
+                        quick_plan: false,
                         agent: agent.clone(),
                         create_terminal: false,
                         session_name: Self::default_session_name_for_agent(&agent),
                         enable_chrome,
                         remote_control,
                         steering_enabled: false,
+                        startup_prompt: None,
                         // Not reachable from a TODO: this is the fork/batch path.
                         todo_origin: None,
+                        issue_source: None,
                     },
                 );
                 return Ok(());
@@ -1888,9 +2101,11 @@ impl App {
                 hook_cfg.script(),
                 workdir.clone(),
                 project_name.clone(),
+                None,
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                false,
                 false,
                 agent.clone(),
                 false,
@@ -1898,7 +2113,9 @@ impl App {
                 enable_chrome,
                 remote_control,
                 false,
+                None,
                 // Not reachable from a TODO: this is the fork path.
+                None,
                 None,
                 None,
             );

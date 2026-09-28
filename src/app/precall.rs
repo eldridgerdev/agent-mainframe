@@ -44,6 +44,7 @@ pub enum PrecallAction {
     PrReviewAiReview,
     ReviewMemoryBootstrap,
     ReviewMemoryCompact,
+    ReviewMemoryAiSummary,
 }
 
 impl PrecallAction {
@@ -62,6 +63,7 @@ impl PrecallAction {
             PrecallAction::PrReviewAiReview => PromptId::PrReviewAiReview,
             PrecallAction::ReviewMemoryBootstrap => PromptId::ReviewMemoryBootstrap,
             PrecallAction::ReviewMemoryCompact => PromptId::ReviewMemoryCompact,
+            PrecallAction::ReviewMemoryAiSummary => PromptId::ReviewMemoryAiSummary,
         }
     }
 }
@@ -187,9 +189,10 @@ impl App {
         let Some(pending) = self.take_pending_precall() else {
             return Ok(());
         };
+        let harness = pending.harness.clone();
         self.mode = *pending.prior_mode;
         self.precall_cleared = Some(pending.action);
-        let result = self.dispatch_precall(pending.action);
+        let result = self.dispatch_precall(pending.action, harness);
         // The re-dispatched method's gate runs synchronously inside
         // `dispatch_precall`. Whether it consumed the clearance (normal path)
         // or bailed before reaching its gate (e.g. no harness → falls through
@@ -218,7 +221,7 @@ impl App {
         self.open_prompt_overrides_focused(None, Some(id));
     }
 
-    fn dispatch_precall(&mut self, action: PrecallAction) -> Result<()> {
+    fn dispatch_precall(&mut self, action: PrecallAction, harness: AgentKind) -> Result<()> {
         match action {
             PrecallAction::PlanRound => self.start_next_plan_interview_ai_round(),
             PrecallAction::PlanSynthesis => self.start_plan_interview_synthesis(),
@@ -252,6 +255,10 @@ impl App {
             }
             PrecallAction::ReviewMemoryCompact => {
                 self.review_memory_compact_confirm_run();
+                Ok(())
+            }
+            PrecallAction::ReviewMemoryAiSummary => {
+                self.pr_review_start_memory_ai_summary(harness);
                 Ok(())
             }
         }

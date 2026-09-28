@@ -33,7 +33,7 @@ use anyhow::Result;
 
 use crate::app::pr_review::{FixTarget, TRIAGE_SESSION_LABEL};
 use crate::app::state::{
-    AppMode, TriageFeatureSetupState, TriageIntegrateState, TriageIntegration, TriageSetupRow,
+    AppMode, TriageFeatureSetupState, TriageIntegrateState, TriageIntegration,
 };
 use crate::app::{App, StartIntent};
 use crate::extension::merge_project_extension_config;
@@ -117,8 +117,7 @@ impl App {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(setup) = &mut state.new_feature_setup
         {
-            let len = TriageSetupRow::ALL.len() as isize;
-            setup.row = ((setup.row as isize + delta).rem_euclid(len)) as usize;
+            setup.move_row(delta);
         }
     }
 
@@ -130,65 +129,10 @@ impl App {
     /// actually be used — and those rows stay editable afterwards, so a preset
     /// is a starting point rather than a lock.
     pub fn pr_review_triage_setup_adjust(&mut self, delta: isize) {
-        let Some(applied_preset) = (match &mut self.mode {
-            AppMode::PrReview(state) => state.new_feature_setup.as_mut().map(|setup| {
-                setup.error = None;
-                match setup.focused_row() {
-                    TriageSetupRow::Preset => {
-                        let len = setup.presets.len() as isize + 1;
-                        setup.preset_index =
-                            ((setup.preset_index as isize + delta).rem_euclid(len)) as usize;
-                        setup.selected_preset().cloned()
-                    }
-                    TriageSetupRow::Harness => {
-                        let len = setup.agents.len().max(1) as isize;
-                        setup.agent_index =
-                            ((setup.agent_index as isize + delta).rem_euclid(len)) as usize;
-                        None
-                    }
-                    TriageSetupRow::Mode => {
-                        let all = VibeMode::ALL;
-                        let current =
-                            all.iter().position(|m| *m == setup.mode).unwrap_or(0) as isize;
-                        let next = (current + delta).rem_euclid(all.len() as isize) as usize;
-                        setup.mode = all[next].clone();
-                        None
-                    }
-                    TriageSetupRow::Review => {
-                        setup.review = !setup.review;
-                        None
-                    }
-                    TriageSetupRow::Chrome => {
-                        setup.enable_chrome = !setup.enable_chrome;
-                        None
-                    }
-                    TriageSetupRow::Branch => None,
-                }
-            }),
-            _ => None,
-        }) else {
-            return;
-        };
-
-        if let Some(preset) = applied_preset
-            && let AppMode::PrReview(state) = &mut self.mode
+        if let AppMode::PrReview(state) = &mut self.mode
             && let Some(setup) = &mut state.new_feature_setup
         {
-            if let Some(idx) = setup.agents.iter().position(|a| *a == preset.agent) {
-                setup.agent_index = idx;
-            }
-            setup.mode = preset.mode.clone();
-            setup.review = preset.review;
-            setup.enable_chrome = preset.enable_chrome;
-            if let Some(prefix) = &preset.branch_prefix {
-                let base = setup
-                    .branch
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&setup.branch)
-                    .to_string();
-                setup.branch = format!("{}{}", prefix, base);
-            }
+            setup.adjust(delta);
         }
     }
 
@@ -202,7 +146,7 @@ impl App {
                 if state
                     .new_feature_setup
                     .as_ref()
-                    .is_some_and(|setup| setup.focused_row() == TriageSetupRow::Branch)
+                    .is_some_and(|setup| setup.on_branch_row())
         )
     }
 
@@ -210,10 +154,8 @@ impl App {
     pub fn pr_review_triage_setup_branch_push(&mut self, c: char) {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(setup) = &mut state.new_feature_setup
-            && setup.focused_row() == TriageSetupRow::Branch
         {
-            setup.error = None;
-            setup.branch.push(c);
+            setup.branch_push(c);
         }
     }
 
@@ -221,10 +163,8 @@ impl App {
     pub fn pr_review_triage_setup_branch_backspace(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(setup) = &mut state.new_feature_setup
-            && setup.focused_row() == TriageSetupRow::Branch
         {
-            setup.error = None;
-            setup.branch.pop();
+            setup.branch_backspace();
         }
     }
 

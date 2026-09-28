@@ -16,9 +16,12 @@ mod diff;
 pub(crate) mod dormant;
 pub(crate) mod editor_ops;
 mod feature_ops;
+pub(crate) mod feature_setup;
 pub(crate) mod fix_cost;
+pub(crate) mod github_workflow;
 mod handoff;
 mod hooks;
+pub(crate) mod issue_fixer;
 pub(crate) mod learning;
 mod navigation;
 mod notifications;
@@ -45,7 +48,7 @@ pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 mod search;
 mod session_config;
-mod session_ops;
+pub(crate) mod session_ops;
 mod session_titles;
 pub mod setup;
 mod skill_picker;
@@ -102,6 +105,8 @@ pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
 pub(crate) use diff::context_level_label;
+pub use feature_setup::{FeatureSetupRow, FeatureSetupState};
+pub use issue_fixer::{IssueBrowserState, IssueBrowserStatus};
 pub(crate) use resource_gate::{StartIntent, Started};
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
@@ -159,6 +164,33 @@ pub const GH_GRAPHQL_BACKOFF: Duration = Duration::from_secs(15 * 60);
 /// cuts it tenfold and is still far inside a PR badge's useful freshness.
 pub const ACTIVE_PR_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
+/// `App::save`'s message on a detected cross-process conflict (`AMF_PLAN.md`
+/// Task 5). A shared constant, not a literal repeated at each call site, so
+/// `gui_contract::GuiError`'s `From<anyhow::Error>` impl can classify this
+/// specific failure as `GuiErrorKind::Conflict` by exact match without the
+/// two texts silently drifting apart.
+pub(crate) const SAVE_CONFLICT_MESSAGE: &str = "Workspace changed elsewhere (another AMF window or process) before this save landed. Your \
+     change was not saved; the view has been refreshed with the current state -- please retry.";
+
+/// How many times `App::save_reapplying` re-applies a change after a
+/// conflict before giving up. Each conflict means another process committed
+/// in the moment between this one's reload and its save; two in a row is
+/// already unusual, so this only bounds a pathological writer.
+const SAVE_REAPPLY_ATTEMPTS: usize = 3;
+
+/// Result of `App::save_reapplying`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReapplyOutcome {
+    /// The change is on disk.
+    Saved,
+    /// The row the change applies to was removed by another writer; the
+    /// store is that writer's, without the change.
+    TargetGone,
+    /// Other writers kept landing first; the store is the latest on disk,
+    /// without the change.
+    Conflict,
+}
+
 /// Cached dashboard metadata for an open pull request associated with a
 /// feature's branch. The branch and head SHA travel with the badge so a
 /// background result can never be applied after the feature changes branches.
@@ -213,22 +245,7 @@ pub struct ViewSnapshot {
     pub pipe_read_duration: Option<Duration>,
 }
 
-fn sanitize_tmux_control_line(line: &str) -> &str {
-    let line = line.trim_end_matches(['\r', '\n']);
-    let line = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
-    line.strip_suffix("\u{1b}\\").unwrap_or(line)
-}
-
-fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = line.strip_prefix("%output ") {
-        return rest.split_once(' ');
-    }
-
-    let rest = line.strip_prefix("%extended-output ")?;
-    let (metadata, payload) = rest.split_once(" : ")?;
-    let pane_id = metadata.split_whitespace().next()?;
-    Some((pane_id, payload))
-}
+use crate::tmux::{parse_tmux_output_notification, sanitize_tmux_control_line};
 
 fn parser_cursor(parser: &vt100::Parser) -> Option<(u16, u16)> {
     let (row, col) = parser.screen().cursor_position();
@@ -591,6 +608,12 @@ pub struct AppConfig {
     /// which only works on this machine or over `adb reverse`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_public_url: Option<String>,
+    /// MCP servers (e.g. an issue tracker) the plan interview's Claude
+    /// passes may consult, read-only. Global scope only, deliberately: an MCP
+    /// config names programs to run, so a repository's `amf.json` must not be
+    /// able to supply one. See [`crate::headless::HeadlessMcpConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_interview_mcp: Option<crate::headless::HeadlessMcpConfig>,
 }
 
 pub(crate) fn default_remote_bind() -> String {
@@ -746,6 +769,7 @@ impl Default for AppConfig {
             review_prompt_budget_tokens: None,
             remote_bind: default_remote_bind(),
             remote_public_url: None,
+            plan_interview_mcp: None,
         }
     }
 }
@@ -874,6 +898,12 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub db: Option<crate::db::AmfDb>,
+    /// The `store_meta` version `store` was loaded at, when `db` is `Some`.
+    /// `save` uses this for a version-checked (cross-process-safe) write and
+    /// updates it after every save/reload — see `AMF_PLAN.md` Task 5 and
+    /// `db::store::save_checked`. `None` when there is no DB (tests, or the
+    /// JSON-file fallback), where there is nothing else to race against.
+    pub(crate) store_version: Option<u64>,
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
@@ -983,7 +1013,7 @@ pub struct App {
     /// Transient context-hint dismissal state keyed by AMF session ID.
     pub(crate) context_hint_states: context_hints::ContextHintStates,
     pub context_collector: SessionContextCollector,
-    pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
+    pub(crate) session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Background refresh and last-known values for the dashboard's open-PR
     /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
     /// worker behind `active_pr_bg`.
@@ -1012,6 +1042,9 @@ pub struct App {
     /// a stale negative answer.
     pub(crate) confirmed_no_terminal_pr: HashSet<String>,
     pub(crate) pr_review_work: pr_review::runtime::PrReviewWork,
+    /// Background GitHub issue-page request and its cancellation boundary.
+    pub(crate) issue_work: issue_fixer::IssueWork,
+    pub(crate) issue_comment_work: issue_fixer::IssueCommentWork,
     /// Receiver for the background "all prompts" scan (leader-key latest-prompt
     /// menu). Reading and parsing every Claude/Codex/opencode transcript file
     /// for a session can be slow, so it runs off the UI thread; see
@@ -1022,6 +1055,10 @@ pub struct App {
     /// result so a late-arriving response can be matched or discarded. See
     /// `app::plan_interview::poll_plan_interview_ai_bg`.
     pub plan_interview_ai_bg: Option<Receiver<(usize, Result<String>)>>,
+    /// The `plan_interview_mcp` validation error last reported, so an invalid
+    /// config warns once rather than on every pass and every precall replay.
+    /// Cleared when the config validates, so breaking it again warns again.
+    pub(crate) plan_interview_mcp_warned: Option<String>,
     /// Receiver for the final plan-synthesis headless call. Kept separate
     /// from adaptive rounds so late results can only be applied to the
     /// matching loading phase.
@@ -1044,6 +1081,10 @@ pub struct App {
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
     pub pr_review_return: Option<PrReviewReturn>,
+    /// AI review findings handed to PR Triage for fixing that haven't been
+    /// installed yet (PR Triage may still be loading). See
+    /// [`App::apply_pending_local_findings`].
+    pub(crate) pr_review_pending_local: Option<pr_review::PendingLocalFindings>,
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
@@ -1061,6 +1102,9 @@ pub struct App {
     /// `review_memory_compact_bg` is `Some`; both are cleared together once
     /// `Done` is processed.
     pub review_memory_compact_pending: Option<CompactRunState>,
+    /// Receiver for the background "summarize with AI" run started from the
+    /// memory-add dialog (`s`). See `app::pr_review::pr_review_start_memory_ai_summary`.
+    pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
@@ -1168,7 +1212,7 @@ pub struct App {
     /// frame after the pane is back to full height is revealed — so a
     /// clean pane shows no wobble and a corrupted one just resolves.
     view_display_frozen_until: Option<Instant>,
-    pub harness_check_tx: Sender<HarnessCheckResult>,
+    pub(crate) harness_check_tx: Sender<HarnessCheckResult>,
     harness_check_rx: Receiver<HarnessCheckResult>,
     /// The Remote Control companion-app server: `Some` exactly while it is
     /// running, on a dedicated thread with its own tokio runtime. Toggled
@@ -2383,7 +2427,7 @@ impl App {
     pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
-        let store = db.load_store()?;
+        let (store, store_version) = db.load_store_versioned()?;
         setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
@@ -2428,6 +2472,7 @@ impl App {
             store,
             store_path,
             db: Some(db),
+            store_version: Some(store_version),
             precall_cleared: None,
             precall_return: None,
             config,
@@ -2493,16 +2538,21 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            issue_work: issue_fixer::IssueWork::default(),
+            issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
+            plan_interview_mcp_warned: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
             plan_interview_investigation_bg: None,
             pr_review_return: None,
+            pr_review_pending_local: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
+            memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
@@ -2618,6 +2668,7 @@ impl App {
             }
         }
         crate::highlight::reload_runtime_state();
+        app.queue_recoverable_issue_comments();
 
         Ok(app)
     }
@@ -2674,6 +2725,7 @@ impl App {
             store,
             store_path: PathBuf::new(),
             db: None,
+            store_version: None,
             precall_cleared: None,
             precall_return: None,
             config: AppConfig {
@@ -2746,16 +2798,21 @@ impl App {
             terminal_prs: HashMap::new(),
             confirmed_no_terminal_pr: HashSet::new(),
             pr_review_work: pr_review::runtime::PrReviewWork::default(),
+            issue_work: issue_fixer::IssueWork::default(),
+            issue_comment_work: issue_fixer::IssueCommentWork::default(),
             latest_prompt_menu_bg: None,
             plan_interview_ai_bg: None,
+            plan_interview_mcp_warned: None,
             plan_interview_synthesis_bg: None,
             plan_interview_critique_bg: None,
             plan_interview_directed_feedback_bg: None,
             plan_interview_investigation_bg: None,
             pr_review_return: None,
+            pr_review_pending_local: None,
             review_memory_bootstrap_bg: None,
             review_memory_compact_bg: None,
             review_memory_compact_pending: None,
+            memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
@@ -3351,6 +3408,42 @@ impl App {
             .unwrap_or_else(|| crate::headless::default_prompt_budget_tokens(harness))
     }
 
+    /// The validated `plan_interview_mcp` for a pass run by `harness`, or
+    /// `None` when it is unset, the harness is not Claude (the only one whose
+    /// isolation mode can load an explicit MCP config), or the config is
+    /// invalid — which is logged and surfaced, never fatal: the pass runs
+    /// exactly as it would without MCP.
+    pub(crate) fn plan_interview_mcp(
+        &mut self,
+        harness: &AgentKind,
+    ) -> Option<crate::headless::HeadlessMcp> {
+        let config = self.config.plan_interview_mcp.as_ref()?;
+        if *harness != AgentKind::Claude {
+            self.log_info(
+                "plan_interview",
+                format!(
+                    "plan_interview_mcp ignored: {} passes cannot load MCP servers",
+                    harness.display_name()
+                ),
+            );
+            return None;
+        }
+        match config.validate() {
+            Ok(mcp) => {
+                self.plan_interview_mcp_warned = None;
+                Some(mcp)
+            }
+            Err(reason) => {
+                if self.plan_interview_mcp_warned.as_ref() != Some(&reason) {
+                    self.log_warn("plan_interview", reason.clone());
+                    self.message = Some(format!("MCP not loaded for plan interview: {reason}"));
+                    self.plan_interview_mcp_warned = Some(reason);
+                }
+                None
+            }
+        }
+    }
+
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
         let ext_allowed = self.extension_for_repo(repo).allowed_agents();
         if self.store.available_harnesses.is_empty() {
@@ -3533,15 +3626,182 @@ impl App {
         Ok(())
     }
 
-    pub fn save(&self) -> Result<()> {
+    /// Persists `self.store`, reporting whether it actually saved or hit a
+    /// concurrent-writer conflict, without turning a conflict into an `Err`
+    /// -- see `save`, which wraps this for TUI call sites that just want to
+    /// bail with a message, `save_reapplying` for call sites whose change can
+    /// be re-applied onto the refreshed store, and `gui_contract::GuiHandle`,
+    /// which wraps it to report `GuiErrorKind::Conflict` instead of a bare
+    /// internal error.
+    ///
+    /// Cross-process-safe when backed by a real DB (`AMF_PLAN.md` Task 5):
+    /// the save only applies if nothing else -- the GUI, another AMF
+    /// process, or a stale reload -- has saved since this `App` last loaded
+    /// or saved successfully. On a detected conflict the in-memory store is
+    /// refreshed from disk (see `adopt_store_from_disk`) before returning, so
+    /// the caller's next action sees current state instead of repeating the
+    /// same conflict; the change that triggered this save is discarded, not
+    /// merged, which is the honest outcome for a full-replace store with no
+    /// per-field merge logic (see `db::store::save`'s doc comment).
+    ///
+    /// Any `(pi, fi, si)` the caller held from before the call may be stale
+    /// after `Ok(false)`; re-resolve by stable id before indexing again.
+    pub(crate) fn save_reporting_conflict(&mut self) -> Result<bool> {
         if let Some(db) = &self.db {
-            return db.save_store(&self.store);
+            let Some(expected) = self.store_version else {
+                // No known baseline -- either genuinely the first save this
+                // process has made, or (several tests' pattern) a DB attached
+                // to an `App` built via `new_for_test` after the fact, with
+                // no `load_store_versioned` call to establish one. Either
+                // way there is nothing yet to conflict *with*: save
+                // unconditionally once and adopt the version that save
+                // committed (read inside its own transaction, so it cannot
+                // be a later writer's), so every save after this one is
+                // protected.
+                self.store_version = Some(db.save_store(&self.store)?);
+                return Ok(true);
+            };
+            return match db.save_store_checked(&self.store, expected)? {
+                crate::db::store::SaveOutcome::Saved { new_version } => {
+                    self.store_version = Some(new_version);
+                    Ok(true)
+                }
+                crate::db::store::SaveOutcome::Conflict { .. } => {
+                    // One snapshot, not `load_store` plus the version the
+                    // rejected save saw: a write landing between the two
+                    // would pair this data with an older version and make
+                    // the next save conflict for no reason.
+                    let (store, version) = db.load_store_versioned()?;
+                    self.adopt_store_from_disk(store, version);
+                    Ok(false)
+                }
+            };
         }
-        // Fallback for tests: write JSON to store_path if set.
+        // Fallback for tests: write JSON to store_path if set. No other
+        // writer exists in this path, so there is nothing to race against.
         if !self.store_path.as_os_str().is_empty() {
-            return self.store.save(&self.store_path);
+            self.store.save(&self.store_path)?;
         }
-        Ok(())
+        Ok(true)
+    }
+
+    /// Save, and on a cross-process conflict re-apply this caller's change
+    /// onto the refreshed store and try again, instead of discarding it.
+    ///
+    /// For changes that can be described by stable id -- "append this
+    /// session to feature X", "tag session Y with TODO Z" -- and that follow
+    /// a side effect (a tmux window, a worktree) which would otherwise be
+    /// left running with no store record. `reapply` runs against the store
+    /// just reloaded from disk; it returns `false`, without mutating, when
+    /// its target no longer exists there, which ends the attempt with
+    /// [`ReapplyOutcome::TargetGone`] so the caller can undo its side effect.
+    ///
+    /// After anything but `Saved` the store holds the other writer's state
+    /// without this change. An `Err` (a failed DB write, not a conflict)
+    /// leaves the unsaved change in memory, as `save` does.
+    pub(crate) fn save_reapplying(
+        &mut self,
+        mut reapply: impl FnMut(&mut ProjectStore) -> bool,
+    ) -> Result<ReapplyOutcome> {
+        let mut attempts = 0;
+        loop {
+            if self.save_reporting_conflict()? {
+                return Ok(ReapplyOutcome::Saved);
+            }
+            attempts += 1;
+            if attempts >= SAVE_REAPPLY_ATTEMPTS {
+                return Ok(ReapplyOutcome::Conflict);
+            }
+            if !reapply(&mut self.store) {
+                return Ok(ReapplyOutcome::TargetGone);
+            }
+        }
+    }
+
+    /// Adopt a newer store written by another process (the GUI, another
+    /// TUI, or `amf` automation) if one has landed since this `App` last
+    /// loaded or saved. Called from the TUI's event loop so the next save
+    /// starts from current state instead of conflicting on it.
+    ///
+    /// Only in modes whose state refers to the store by name or id -- the
+    /// dashboard and the session view -- because other modes can hold
+    /// `(pi, fi)` indices a reload would silently re-point. Anywhere else
+    /// the check waits for the next call.
+    pub fn refresh_store_if_changed_elsewhere(&mut self) -> Result<bool> {
+        if !matches!(self.mode, AppMode::Normal | AppMode::Viewing(_)) {
+            return Ok(false);
+        }
+        let Some(db) = &self.db else {
+            return Ok(false);
+        };
+        let Some(known) = self.store_version else {
+            return Ok(false);
+        };
+        if db.current_store_version()? == known {
+            return Ok(false);
+        }
+        let (store, version) = db.load_store_versioned()?;
+        self.adopt_store_from_disk(store, version);
+        Ok(true)
+    }
+
+    /// Replace the in-memory store with one just loaded from disk, keeping
+    /// the dashboard selection on the same project/feature/session by id --
+    /// an index into the old store can name a different row, or none, in
+    /// the new one. A selection whose row is gone falls back to its nearest
+    /// surviving ancestor, then to the first project.
+    pub(crate) fn adopt_store_from_disk(&mut self, store: ProjectStore, version: u64) {
+        let ids = self.selection_ids();
+        self.store = store;
+        self.store_version = Some(version);
+        self.selection = self.selection_for_ids(ids);
+    }
+
+    fn selection_ids(&self) -> (Option<String>, Option<String>, Option<String>) {
+        let (pi, fi, si) = match self.selection {
+            Selection::Project(pi) => (pi, None, None),
+            Selection::Feature(pi, fi) => (pi, Some(fi), None),
+            Selection::Session(pi, fi, si) => (pi, Some(fi), Some(si)),
+        };
+        let project = self.store.projects.get(pi);
+        let feature = fi.and_then(|fi| project.and_then(|p| p.features.get(fi)));
+        let session = si.and_then(|si| feature.and_then(|f| f.sessions.get(si)));
+        (
+            project.map(|p| p.id.clone()),
+            feature.map(|f| f.id.clone()),
+            session.map(|s| s.id.clone()),
+        )
+    }
+
+    fn selection_for_ids(
+        &self,
+        (project_id, feature_id, session_id): (Option<String>, Option<String>, Option<String>),
+    ) -> Selection {
+        if let Some((pi, fi, si)) = session_id
+            .as_deref()
+            .and_then(|id| self.session_indices_by_id(id))
+        {
+            return Selection::Session(pi, fi, si);
+        }
+        if let Some((pi, fi)) = feature_id
+            .as_deref()
+            .and_then(|id| self.feature_indices_by_id(id))
+        {
+            return Selection::Feature(pi, fi);
+        }
+        let pi = project_id
+            .as_deref()
+            .and_then(|id| self.store.projects.iter().position(|p| p.id == id))
+            .unwrap_or(0);
+        Selection::Project(pi)
+    }
+
+    pub fn save(&mut self) -> Result<()> {
+        if self.save_reporting_conflict()? {
+            Ok(())
+        } else {
+            anyhow::bail!(SAVE_CONFLICT_MESSAGE)
+        }
     }
 
     pub fn start_theme_picker(&mut self) {

@@ -14,13 +14,16 @@
 use anyhow::Result;
 use uuid::Uuid;
 
+use crate::app::prompt_library::LostPromptContext;
 use crate::app::{
-    App, AppMode, Selection, StartIntent, TodoDeleteDisposition, TodoImplementChoice,
-    TodoImplementChoiceState, TodoLaunchAction, TodoLaunchStep, TodoPane, TodoPaneKind,
-    TodoPlanDestination, TodoPlanOrigin, TodoReferenceCompletionState, TodoScopeMoveState,
-    TodoSpawnTargetState, TodoViewState, TodosHostReassignState,
+    App, AppMode, ReapplyOutcome, SAVE_CONFLICT_MESSAGE, Selection, StartIntent,
+    TodoDeleteDisposition, TodoImplementChoice, TodoImplementChoiceState, TodoLaunchAction,
+    TodoLaunchStep, TodoPane, TodoPaneKind, TodoPlanDestination, TodoPlanOrigin,
+    TodoReferenceCompletionState, TodoScopeMoveState, TodoSpawnTargetState, TodoViewState,
+    TodosHostReassignState,
 };
 use crate::db::todos::{Todo, TodoPriority, TodoScope, TodoStatus, TodoWorkState};
+use crate::project::ProjectStore;
 
 /// The selected TODO and the overlay context needed to act on it, gathered in
 /// one read so callers do not re-borrow `self.mode` field by field.
@@ -119,6 +122,16 @@ impl App {
             project_id: project.id.clone(),
             workdir: Self::todo_workdir_key(&feature.workdir),
         })
+    }
+
+    /// `(pi, fi)`'s checkout path, for stashing a prompt under
+    /// [`LostPromptContext`] when a TODO-triggered launch fails.
+    pub(crate) fn feature_workdir(&self, pi: usize, fi: usize) -> Option<std::path::PathBuf> {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.workdir.clone())
     }
 
     /// The scope a write from `(pi, fi)` lands in when no pane says otherwise:
@@ -1576,8 +1589,10 @@ impl App {
         }
 
         let created_session = existing.is_none();
-        let (pi, fi, si) = match existing {
-            Some(found) => found,
+        let session_id = match existing {
+            Some((epi, efi, esi)) => self.store.projects[epi].features[efi].sessions[esi]
+                .id
+                .clone(),
             None => {
                 let agent = self
                     .store
@@ -1590,86 +1605,86 @@ impl App {
                 // The link back to the TODO is recorded from inside the
                 // Todos overlay, which the confirmation dialog would replace,
                 // so this start warns instead of parking.
-                match self.create_agent_session_labeled(
+                match self.create_agent_session_labeled_identified(
                     pi,
                     fi,
                     &label,
                     Some(agent),
                     StartIntent::Warn("the agent for this TODO"),
                 ) {
-                    Ok(si) => (pi, fi, si),
+                    Ok((_, session_id, _)) => session_id,
                     Err(e) => {
                         if reserved_here {
-                            self.todos_rollback_launch_best_effort(&todo.id);
+                            self.todos_rollback_launch_best_effort(&todo.id, None);
                         }
-                        self.push_toast_error(format!("Failed to launch agent: {e}"));
+                        match self.feature_workdir(pi, fi) {
+                            Some(workdir) => self.stash_lost_prompt(
+                                LostPromptContext {
+                                    label: format!("TODO: {}", todo.title),
+                                    workdir,
+                                },
+                                prompt,
+                                format!("Failed to launch agent: {e}"),
+                            ),
+                            None => self.push_toast_error(format!("Failed to launch agent: {e}")),
+                        }
                         return Ok(());
                     }
                 }
             }
         };
 
-        let Some(session_id) = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .and_then(|f| f.sessions.get(si))
-            .map(|s| s.id.clone())
-        else {
+        // The generic session launcher saves before this TODO-specific
+        // provenance is known. `attach_launched_todo_reference` finds the
+        // session by id, so a save conflict in either write -- which reloads
+        // the store -- cannot point it (or anything below) at the wrong row.
+        if created_session && !self.attach_launched_todo_reference(&session_id, &todo.id) {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&todo.id);
+                self.todos_rollback_launch_best_effort(&todo.id, None);
             }
             self.push_toast_error("The session for this TODO vanished as it was created");
             return Ok(());
-        };
-        if created_session {
-            let Some(session) = self
-                .store
-                .projects
-                .get_mut(pi)
-                .and_then(|project| project.features.get_mut(fi))
-                .and_then(|feature| feature.sessions.get_mut(si))
-            else {
-                if reserved_here {
-                    self.todos_rollback_launch_best_effort(&todo.id);
-                }
-                self.push_toast_error("The session for this TODO vanished as it was created");
-                return Ok(());
-            };
-            session.todo_reference = Some(crate::project::TodoSessionReference {
-                todo_id: todo.id.clone(),
-                launched_from_todo_menu: true,
-            });
-
-            // The generic session launcher saves before this TODO-specific
-            // provenance is known. Persist the follow-up separately; a live
-            // harness is retained if the write fails, matching the launcher's
-            // existing failure policy.
-            if let Err(e) = self.save() {
-                self.log_warn(
-                    "todos",
-                    format!("started TODO agent but couldn't save its TODO reference: {e}"),
-                );
-            }
-            self.refresh_active_todos_sidebar_cache();
         }
         if let Err(e) = self.todos_mark_in_progress(&todo.id, Some(&session_id)) {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&todo.id);
+                self.todos_rollback_launch_best_effort(&todo.id, Some(&session_id));
             }
             return Err(e);
         }
 
+        // Re-resolved rather than carried from before the saves above, which
+        // may have reloaded the store under a conflict.
+        let Some((pi, fi, si)) = self.session_indices_by_id(&session_id) else {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&todo.id, Some(&session_id));
+            }
+            self.push_toast_error("The session for this TODO vanished as it was created");
+            return Ok(());
+        };
+
         // Switch into the session view and seed the composer (editable). The
         // seed is not submitted, so the user reviews it before sending.
         self.selection = Selection::Session(pi, fi, si);
+        // Cloned up front: `prompt` moves into the closure below, but a
+        // failure there still needs the text to stash rather than lose it.
+        let prompt_for_recovery = prompt.clone();
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
         {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&todo.id);
+                self.todos_rollback_launch_best_effort(&todo.id, Some(&session_id));
+            }
+            if let Some(workdir) = self.feature_workdir(pi, fi) {
+                self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt_for_recovery,
+                    format!("Started the agent, but couldn't open its session: {e}"),
+                );
+                return Ok(());
             }
             return Err(e);
         }
@@ -1738,51 +1753,73 @@ impl App {
             .and_then(|f| f.sessions.iter().position(|s| s.kind.is_agent_harness()));
         let Some(si) = si else {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, None);
             }
             self.mode = AppMode::Normal;
-            self.push_toast_error("The new feature has no agent session to seed");
+            match self.feature_workdir(pi, fi) {
+                Some(workdir) => self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt,
+                    "The new feature has no agent session to seed",
+                ),
+                None => self.push_toast_error("The new feature has no agent session to seed"),
+            }
             return Ok(());
         };
         let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
 
-        if let Some(session) = self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-            .and_then(|f| f.sessions.get_mut(si))
-        {
-            session.todo_reference = Some(crate::project::TodoSessionReference {
-                todo_id: origin.todo_id.clone(),
-                launched_from_todo_menu: true,
-            });
+        if !self.attach_launched_todo_reference(&session_id, &origin.todo_id) {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, None);
+            }
+            self.mode = AppMode::Normal;
+            self.push_toast_error("The new feature's agent session vanished before it was linked");
+            return Ok(());
         }
-        if let Err(e) = self.save() {
-            self.log_warn(
-                "todos",
-                format!("seeded TODO feature but couldn't save its reference: {e}"),
-            );
-        }
-        self.refresh_active_todos_sidebar_cache();
 
         if let Err(e) = self.todos_mark_in_progress(&origin.todo_id, Some(&session_id)) {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             self.mode = AppMode::Normal;
             return Err(e);
         }
 
+        // The reference save may have reloaded the store under a conflict.
+        let Some((pi, fi, si)) = self.session_indices_by_id(&session_id) else {
+            if reserved_here {
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
+            }
+            self.mode = AppMode::Normal;
+            self.push_toast_error("The new feature's agent session vanished before it was linked");
+            return Ok(());
+        };
         self.selection = Selection::Session(pi, fi, si);
+        // Cloned up front: `prompt` moves into the closure below, but a
+        // failure there still needs the text to stash rather than lose it.
+        let prompt_for_recovery = prompt.clone();
         if let Err(e) = self
             .enter_view_without_auto_compose()
             .and_then(|_| self.open_compose_seeded(prompt))
         {
             if reserved_here {
-                self.todos_rollback_launch_best_effort(&origin.todo_id);
+                self.todos_rollback_launch_best_effort(&origin.todo_id, Some(&session_id));
             }
             self.mode = AppMode::Normal;
+            if let Some(workdir) = self.feature_workdir(pi, fi) {
+                self.stash_lost_prompt(
+                    LostPromptContext {
+                        label: format!("TODO: {}", todo.title),
+                        workdir,
+                    },
+                    prompt_for_recovery,
+                    format!("Started the agent, but couldn't open its session: {e}"),
+                );
+                return Ok(());
+            }
             return Err(e);
         }
         self.push_toast_info(format!(
@@ -1977,8 +2014,10 @@ impl App {
         if !work.reserve_launch() {
             return Ok(false);
         }
-        if let Some(db) = &self.db {
-            db.set_todo_work_state(&todo.id, &work)?;
+        if let Some(db) = &self.db
+            && !db.reserve_todo_agent_launch(&todo.id)?
+        {
+            return Ok(false);
         }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in &mut state.panes {
@@ -2003,20 +2042,32 @@ impl App {
     pub(crate) fn todos_prepare_planned_launch(&mut self, todo: &Todo) -> Result<Option<bool>> {
         match todo.work.status {
             TodoStatus::InProgress => Ok(Some(false)),
-            TodoStatus::NotStarted => {
-                self.todos_reserve_launch(todo)?;
-                Ok(Some(true))
-            }
+            TodoStatus::NotStarted => Ok(self.todos_reserve_launch(todo)?.then_some(true)),
             TodoStatus::Completed => Ok(None),
         }
     }
 
     /// Restore the pre-launch state after agent creation or prompt setup fails.
-    pub(crate) fn todos_rollback_launch(&mut self, todo_id: &str) -> Result<()> {
+    ///
+    /// `launched_session` is the session this launch already linked with
+    /// `todos_mark_in_progress`, when the failure came after that link (a
+    /// prompt-delivery failure): the rollback still applies then, and clears
+    /// the link along with the status. It does not apply when the TODO has
+    /// since been linked to some *other* session or had its status changed
+    /// by hand, which is someone else's state to keep.
+    pub(crate) fn todos_rollback_launch(
+        &mut self,
+        todo_id: &str,
+        launched_session: Option<&str>,
+    ) -> Result<()> {
         let mut work = TodoWorkState::default();
         work.rollback_launch();
-        if let Some(db) = &self.db {
-            db.set_todo_work_state(todo_id, &work)?;
+        let rolled_back = match &self.db {
+            Some(db) => db.rollback_reserved_todo_agent_launch(todo_id, launched_session)?,
+            None => true,
+        };
+        if !rolled_back {
+            return Ok(());
         }
         if let AppMode::Todos(state) = &mut self.mode {
             for pane in &mut state.panes {
@@ -2035,8 +2086,12 @@ impl App {
     /// DB write) replace that message with an opaque, unrelated one, so this
     /// logs a rollback failure instead of propagating it — the caller's
     /// original error is always what reaches the user.
-    pub(crate) fn todos_rollback_launch_best_effort(&mut self, todo_id: &str) {
-        if let Err(e) = self.todos_rollback_launch(todo_id) {
+    pub(crate) fn todos_rollback_launch_best_effort(
+        &mut self,
+        todo_id: &str,
+        launched_session: Option<&str>,
+    ) {
+        if let Err(e) = self.todos_rollback_launch(todo_id, launched_session) {
             self.log_warn(
                 "todos",
                 format!("failed to roll back reservation for TODO {todo_id}: {e}"),
@@ -2490,44 +2545,66 @@ impl App {
         self.db.as_ref()?.resolve_todo_by_id(todo_id).ok()?
     }
 
-    /// Record on session `(pi, fi, si)` that it was launched for `todo_id` from
+    /// Record on session `session_id` that it was launched for `todo_id` from
     /// the TODO menu, persist that, and refresh the sidebar cache so the
     /// embedded view's "Active TODO" section appears without waiting for the
     /// next status sync.
     ///
-    /// Shared by the plan-launch routes (`start_todo_plan_session`,
-    /// `link_todo_to_new_feature`); the direct-spawn routes
-    /// (`todos_spawn_agent`, `finish_todo_spawn_in_new_feature`) inline the
-    /// same three steps because they interleave them with launch rollback.
-    /// Best-effort about the save, matching those routes: a live harness is
-    /// kept even if its provenance write fails.
+    /// Shared by every TODO launch route. The session is found by id, both
+    /// here and again if the save conflicts with another process's write: the
+    /// reference is then re-applied to the refreshed store instead of being
+    /// dropped, and an index held from before the reload is never trusted.
+    /// Returns `false` only when the session is not in the store at all (it
+    /// was never saved, or another writer removed it), so the caller can
+    /// treat the launch as lost. Best-effort about the save otherwise: a live
+    /// harness is kept even if its provenance write fails.
     pub(crate) fn attach_launched_todo_reference(
         &mut self,
-        pi: usize,
-        fi: usize,
-        si: usize,
+        session_id: &str,
         todo_id: &str,
-    ) {
-        let Some(session) = self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|project| project.features.get_mut(fi))
-            .and_then(|feature| feature.sessions.get_mut(si))
-        else {
-            return;
-        };
-        session.todo_reference = Some(crate::project::TodoSessionReference {
+    ) -> bool {
+        let reference = crate::project::TodoSessionReference {
             todo_id: todo_id.to_string(),
             launched_from_todo_menu: true,
-        });
-        if let Err(e) = self.save() {
-            self.log_warn(
-                "todos",
-                format!("recorded a TODO session reference but couldn't save it: {e}"),
-            );
+        };
+        let apply = |store: &mut ProjectStore| {
+            let found = store.projects.iter_mut().find_map(|project| {
+                project
+                    .features
+                    .iter_mut()
+                    .find_map(|feature| feature.sessions.iter_mut().find(|s| s.id == session_id))
+            });
+            match found {
+                Some(session) => {
+                    session.todo_reference = Some(reference.clone());
+                    true
+                }
+                None => false,
+            }
+        };
+        if !apply(&mut self.store) {
+            return false;
         }
+        let present = match self.save_reapplying(apply) {
+            Ok(ReapplyOutcome::Saved) => true,
+            Ok(ReapplyOutcome::TargetGone) => false,
+            Ok(ReapplyOutcome::Conflict) => {
+                self.log_warn(
+                    "todos",
+                    format!("recorded a TODO session reference but couldn't save it: {SAVE_CONFLICT_MESSAGE}"),
+                );
+                self.session_indices_by_id(session_id).is_some()
+            }
+            Err(e) => {
+                self.log_warn(
+                    "todos",
+                    format!("recorded a TODO session reference but couldn't save it: {e}"),
+                );
+                true
+            }
+        };
         self.refresh_active_todos_sidebar_cache();
+        present
     }
 
     /// Rebuild the cached per-session active-TODO sidebar text from current persisted

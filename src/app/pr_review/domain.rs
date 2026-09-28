@@ -141,6 +141,65 @@ pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 /// footer identifies their origin without turning them into follow-up replies.
 pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
+/// Leave AMF's posted usage summary out of fix prompts, even when the review
+/// was posted under a human GitHub account. Match the generated paragraph so
+/// feedback that merely discusses usage or quotes its heading stays intact.
+fn strip_review_usage(body: &str) -> Cow<'_, str> {
+    let trimmed = body.trim_end();
+    let (core, footer) = match trimmed.strip_suffix(AI_REVIEW_ATTRIBUTION_FOOTER) {
+        Some(core) => (core.trim_end(), Some(AI_REVIEW_ATTRIBUTION_FOOTER)),
+        None => (trimmed, None),
+    };
+    // Current reviews use a collapsed details block; older ones used a
+    // Markdown heading. Both contain the same deterministic metric list.
+    let (feedback, metrics) = if let Some(core) = core.strip_suffix("\n\n</details>") {
+        let Some((before, metrics)) = core.rsplit_once("</summary>\n\n") else {
+            return Cow::Borrowed(body);
+        };
+        let opening = "<details>\n<summary>AI review usage · ";
+        let Some((feedback, summary)) = before
+            .rsplit_once(&format!("\n\n{opening}"))
+            .or_else(|| before.strip_prefix(opening).map(|summary| ("", summary)))
+        else {
+            return Cow::Borrowed(body);
+        };
+        if summary.contains('\n') {
+            return Cow::Borrowed(body);
+        }
+        (feedback, metrics)
+    } else {
+        let (feedback, usage) = core.rsplit_once("\n\n").unwrap_or(("", core));
+        let Some(metrics) = usage.strip_prefix("### AI review usage\n") else {
+            return Cow::Borrowed(body);
+        };
+        (feedback, metrics)
+    };
+    let mut lines = metrics.lines();
+    if ![
+        "- Harness: ",
+        "- Model: ",
+        "- Elapsed: ",
+        "- Input tokens: ",
+        "- Output tokens: ",
+        "- Cached tokens: ",
+        "- Total tokens: ",
+        "- Estimated cost: ",
+    ]
+    .into_iter()
+    .all(|label| lines.next().is_some_and(|line| line.starts_with(label)))
+        || lines.next().is_some()
+    {
+        return Cow::Borrowed(body);
+    }
+    match footer {
+        Some(footer) if !feedback.trim_end().is_empty() => {
+            Cow::Owned(format!("{}\n\n{footer}", feedback.trim_end()))
+        }
+        Some(footer) => Cow::Borrowed(footer),
+        None => Cow::Borrowed(feedback.trim_end()),
+    }
+}
+
 /// Which agent session AMF asked for a reply draft, captured at fix injection
 /// and persisted with the draft (`db::pr_comment_triage::begin_reply_draft`).
 ///
@@ -716,7 +775,84 @@ pub(super) const WHOLE_FILE_HUNK_LINES: usize = 150;
 /// the referenced code hard to spot and wastes prompt context.
 pub(super) const COMMENT_HUNK_CONTEXT_LINES: usize = 3;
 
+/// AI review findings waiting to be installed into PR Triage as local comments
+/// ([`PrComment::from_ai_finding`]) so the fix flow can run on them.
+#[derive(Debug, Clone)]
+pub struct PendingLocalFindings {
+    pub pr_number: u32,
+    pub comments: Vec<PrComment>,
+    /// `true` opens the combined-batch dialog over all of `comments`; `false`
+    /// opens the single-fix dialog for the first one.
+    pub batch: bool,
+}
+
+/// Bit set in the id of a [`PrComment`] built from an unposted AI review
+/// finding ([`PrComment::from_ai_finding`]). GitHub ids are far below 2^62 and
+/// the value still fits the `i64` SQLite stores, so a local id never collides
+/// with a fetched one.
+const LOCAL_FINDING_ID_BIT: u64 = 1 << 62;
+
+/// Whether `id` belongs to a local, unposted AI finding rather than a real
+/// GitHub comment.
+pub fn is_local_finding_id(id: u64) -> bool {
+    id & LOCAL_FINDING_ID_BIT != 0
+}
+
 impl PrComment {
+    /// Whether this comment is an AI review finding that only exists locally —
+    /// there is no GitHub comment to reply to, resolve, or refresh.
+    pub fn is_local_finding(&self) -> bool {
+        is_local_finding_id(self.id)
+    }
+
+    /// Wrap an unposted AI review finding as a triage comment so PR Triage's
+    /// fix / batch-fix flow can run on it without posting it to GitHub first.
+    /// The id is derived from the finding's anchor and text, so handing the same
+    /// finding over twice yields the same comment.
+    pub fn from_ai_finding(finding: &crate::app::ai_review::AiReviewFinding) -> Self {
+        use sha2::{Digest, Sha256};
+        let side = finding.side.map(|side| match side {
+            crate::diff::DiffSide::Old => "LEFT".to_string(),
+            crate::diff::DiffSide::New => "RIGHT".to_string(),
+        });
+        let mut hasher = Sha256::new();
+        hasher.update(finding.path.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update(finding.line.unwrap_or(0).to_le_bytes());
+        hasher.update(side.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update(finding.body.as_bytes());
+        let digest = hasher.finalize();
+        let hash = u64::from_le_bytes(digest[..8].try_into().expect("8 bytes"));
+        let anchored = finding.path.is_some();
+        Self {
+            id: (hash & (LOCAL_FINDING_ID_BIT - 1)) | LOCAL_FINDING_ID_BIT,
+            kind: if anchored {
+                CommentKind::Inline
+            } else {
+                CommentKind::Conversation
+            },
+            author: "AI review (not posted)".to_string(),
+            is_bot: false,
+            path: finding.path.clone(),
+            line: finding.line,
+            side,
+            outdated: false,
+            file_level: anchored && finding.line.is_none(),
+            diff_hunk: finding.diff_hunk.clone(),
+            body: finding.body.clone(),
+            snippet: super::fetch::make_snippet(&finding.body, false),
+            in_reply_to: None,
+            thread_id: None,
+            is_resolved: false,
+            triage: TriageState::Untriaged,
+            local_note: None,
+            batch_id: None,
+            github_id: None,
+            github_review_id: None,
+        }
+    }
+
     /// The diff hunk worth showing and injecting, or `None` when it should be
     /// replaced by a bare `File:` reference — for a file-level comment (whose
     /// hunk is the entire file diff) or an oversized hunk.
@@ -791,7 +927,7 @@ impl PrComment {
 
     /// Assemble the minimal "fix" prompt for this comment: a single instruction
     /// line, the `file:line` pointer, the (bot-stripped) comment text, and the
-    /// GitHub-provided diff hunk.
+    /// GitHub-provided diff hunk. Posted AI review usage is omitted.
     ///
     /// Deliberately carries **no file contents** — the agent already has the
     /// repo checked out and opens what it needs. This minimal context is the
@@ -799,10 +935,26 @@ impl PrComment {
     /// free: GitHub returns it per inline comment, so including it costs no
     /// extra fetch.
     pub fn fix_prompt(&self) -> String {
-        format!(
+        self.fix_prompt_with_note(false)
+    }
+
+    /// Like [`fix_prompt`], but when `file_already_touched` is true — another
+    /// comment on the same file was already fixed (or is currently being
+    /// fixed) elsewhere in this triage session — appends [`STALE_HUNK_NOTE`].
+    /// GitHub's `diff_hunk` reflects the file as it stood when the PR was
+    /// fetched; an earlier fix in the same file can already have moved lines
+    /// or content the hunk above still shows unchanged.
+    ///
+    /// [`fix_prompt`]: Self::fix_prompt
+    pub fn fix_prompt_with_note(&self, file_already_touched: bool) -> String {
+        let mut out = format!(
             "Address this PR review comment.\n{}",
             self.fix_prompt_body()
-        )
+        );
+        if file_already_touched {
+            out.push_str(STALE_HUNK_NOTE);
+        }
+        out
     }
 
     /// The per-comment context block shared by the single-comment [`fix_prompt`]
@@ -827,10 +979,11 @@ impl PrComment {
             out.push('\n');
         }
 
+        let text = self.agent_text();
         out.push_str(&format!(
             "Comment (@{}): {}\n",
             self.author,
-            self.agent_text().trim()
+            strip_review_usage(&text).trim()
         ));
 
         match self.prompt_hunk() {
@@ -919,6 +1072,32 @@ impl PrComment {
 pub fn reply_posted_via_amf(reply: &PrComment) -> bool {
     let body = reply.body.trim_end();
     body.ends_with(AMF_ATTRIBUTION_FOOTER) || body.ends_with(AI_ATTRIBUTION_FOOTER)
+}
+
+/// Appended to a fix prompt when another comment on the same file was already
+/// addressed earlier in this triage session (a prior single fix now `Fixing`
+/// or `Done`, or an earlier entry in the same combined batch). GitHub's
+/// `diff_hunk` and `line` are fixed at fetch time; an earlier fix already
+/// applied to the file can shift or rewrite the exact lines a later comment's
+/// hunk still shows unchanged.
+pub(super) const STALE_HUNK_NOTE: &str = "\n(Note: another comment on this file was already \
+addressed earlier in this triage session. The file:line pointer and diff hunk above are from \
+the original PR diff and may no longer match the file's current content — re-read the file \
+before editing.)";
+
+/// Whether another comment in `all` targets the same file as `target` and has
+/// already been fixed (`Done`) or is currently being fixed (`Fixing`) — the
+/// signal that `target`'s own `diff_hunk` may already be stale relative to
+/// the file on disk. `all` is scanned by id so `target` never matches itself.
+pub(super) fn file_already_touched(target: &PrComment, all: &[PrComment]) -> bool {
+    let Some(path) = target.path.as_deref() else {
+        return false;
+    };
+    all.iter().any(|c| {
+        c.id != target.id
+            && c.path.as_deref() == Some(path)
+            && matches!(c.triage, TriageState::Fixing | TriageState::Done)
+    })
 }
 
 /// Where a reply is delivered on GitHub.
@@ -1050,17 +1229,41 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// principle #3): the preamble and any repeated file context are paid once
 /// across the whole set instead of once per comment. Injected once into the
 /// dedicated triage session so the agent works the list autonomously.
-pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
+///
+/// `all` is the review's full comment list (`state.review.comments`), passed
+/// through to [`file_already_touched`] for each entry — the same check
+/// [`PrComment::fix_prompt_with_note`] runs for a single fix. Without it, a
+/// batch entry whose file was already fixed (or is `Fixing`) by a comment
+/// *outside* this batch — an earlier single fix, or an earlier combined batch
+/// — would carry no staleness note just because it happens to be the first
+/// occurrence of that path within *this* call's slice.
+pub fn combined_fix_prompt(comments: &[&PrComment], all: &[PrComment]) -> String {
     let mut out = String::from(
         "Address these PR review comments. Work through each one in order; \
          open the referenced files yourself as needed.\n",
     );
+    // Track paths already emitted so a later comment on a file an earlier
+    // entry already covers gets the same staleness warning a repeat single
+    // fix does — the agent works the list in order, so by the time it reaches
+    // entry N it may already have edited a file entry N-1 (or earlier) named.
+    // This catches batch-local duplicates that `file_already_touched` can't:
+    // two untriaged comments on the same file, both still in this same batch,
+    // neither yet `Fixing`/`Done`.
+    let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, comment) in comments.iter().enumerate() {
         out.push_str(&format!(
-            "\nComment {}:\n{}\n",
+            "\nComment {}:\n{}",
             i + 1,
             comment.fix_prompt_body()
         ));
+        let already_seen_in_batch = comment
+            .path
+            .as_deref()
+            .is_some_and(|path| !seen_paths.insert(path));
+        if already_seen_in_batch || file_already_touched(comment, all) {
+            out.push_str(STALE_HUNK_NOTE);
+        }
+        out.push('\n');
     }
     out.trim_end().to_string()
 }

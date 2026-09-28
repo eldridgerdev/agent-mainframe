@@ -1,4 +1,7 @@
+
 # Agent Mainframe (AMF)
+
+**Docs and more:** [agentmainframe.dev](https://agentmainframe.dev)
 
 Run multiple AI coding agents in parallel—each on its own branch and in its
 own terminal—without losing track of them.
@@ -13,7 +16,6 @@ reviewed.
 
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
-**Docs and more:** [agent-mainframe-site.pages.dev](https://agent-mainframe-site.pages.dev)
 
 ## What AMF does
 
@@ -102,9 +104,20 @@ amf
 
 This source installation requires Rust, a C compiler, and `tmux`.
 
+If you don't already have Rust and Cargo installed, install them with
+[rustup](https://rustup.rs):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Restart your shell (or run `source "$HOME/.cargo/env"`) so `cargo` is on your
+`PATH`, then re-run the `cargo install` command above.
+
 ### Build from source
 
-Building uses the current stable Rust toolchain, a C compiler, and `tmux`:
+Building uses the current stable Rust toolchain, a C compiler, and `tmux`.
+See "Install from crates.io" above for installing Rust via rustup if needed.
 
 ```bash
 git clone https://github.com/eldridgerdev/agent-mainframe
@@ -195,6 +208,9 @@ your own text alone or add it alongside a picked option; `Enter` in the box
 returns to the options without submitting, and `Enter` on the option list
 submits.
 
+To let the interview read a ticket the brief links to (Asana, Linear, Jira,
+and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-interviews).
+
 ## Essential controls
 
 ### Dashboard
@@ -214,7 +230,7 @@ submits.
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
-| `G` | Open GitHub PR triage |
+| `G` | Open GitHub PR triage; on a project row, review a PR yourself |
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
@@ -401,6 +417,40 @@ authenticated `gh` and an available Claude CLI. Fetching the review history
 does not use agent tokens; AMF then makes one agent pass to distill recurring
 findings and appends only new ones. You can press `Esc` while it runs to return
 to the picker without cancelling the background job.
+
+### Review a teammate's pull request
+
+To review a pull request yourself, rather than triage the comments on your own,
+press `G` on a project row, or press `G` on a feature and then `Tab`. The
+**Review** tab lists every open pull request in the repository, including your
+own and drafts, with its number, title, author, and branch (`owner:branch` for
+a fork). The list loads in the background; if `gh` isn't installed or signed
+in, the tab says so, and `r` retries.
+
+Press `Enter` to open a pull request in the same diff viewer as the final
+review. It shows exactly the pull request's changes, from where it branched to
+its latest commit. No agent is started and no feature is needed. AMF fetches
+the pull request into private `refs/amf/review/` refs and reads every file from
+git objects: your checked-out branch, staged and unstaged changes, untracked
+files, and stash are never touched, and the refs are removed when you leave.
+
+Review as you would a feature: approve or reject files, and leave line
+comments, ranges, and suggested changes. `Esc` pauses and saves your draft;
+`Enter` on the same pull request resumes it, and the list marks it with
+`● N comments`. If the pull request has new commits by then, AMF flags only
+the files whose changes differ, clears your verdicts on those files, and keeps
+every comment. A comment whose code is gone is listed as outdated in the notes
+panel, and `↻ updated` marks the row.
+
+Press `q` to submit. Choose **Comment**, **Approve**, or **Request changes**
+(GitHub doesn't allow the last two on your own pull request), and write a
+summary with `e`. Inline comments are pinned to the commit you reviewed. If the
+pull request has moved on since you opened it, AMF won't post; press `o` to
+reopen it at its new commit with your draft intact. Comments that can't sit on
+the diff, such as outdated ones, are included in the summary instead of being
+dropped. The walkthrough, AI co-review, and changeset-overview passes, and the
+keys that need a local checkout (`E`, `b`, `t`, `X`), aren't available in this
+mode.
 
 ### Reuse prompts and track TODOs
 
@@ -646,6 +696,102 @@ back to plain idle and the session leaves the `i` list. `0` keeps states up
 until the agent produces output again. Ageing out does not stop or change the
 session, and a waiting session still counts toward `max_concurrent_agents` and
 still qualifies as dormant.
+
+### Issue trackers in plan interviews
+
+Plan interviews can read tickets from an issue tracker such as Asana, Linear,
+or Jira through the same MCP tools Claude Code uses. When the brief links a
+ticket, the interview fetches it and treats its contents as part of the
+brief, so you don't have to paste it in. This works only when the interview
+runs on Claude. Other harnesses ignore the setting and log that they did.
+
+This is a **global-only** setting in `~/.config/amf/config.json`. A
+repository's `amf.json` can't turn it on, because MCP servers run programs.
+
+**claude.ai connectors** (tools named `mcp__claude_ai_<Name>__…`) and
+servers you added with `claude mcp add` load automatically. You only list
+the tools the interview may call:
+
+```json
+{
+  "plan_interview_mcp": {
+    "allowed_tools": [
+      "mcp__claude_ai_Asana__get_task",
+      "mcp__claude_ai_Asana2__get_task"
+    ]
+  }
+}
+```
+
+`allowed_tools` takes **exact** tool names in the form
+`mcp__<server>__<tool>`. Wildcards such as `mcp__claude_ai_Asana__*` are
+rejected, because most tracker tools can also create and edit tickets. List
+only tools that read. The interview sees every connected tool, but anything
+not on this list is denied.
+
+The tool names above are placeholders. To print the real ones, run this
+command, which makes one small model call:
+
+```sh
+echo hi | MCP_CONNECTION_NONBLOCKING=false claude -p --output-format stream-json \
+  --verbose --setting-sources "" --tools Read --model haiku \
+  | grep -o '"mcp__claude_ai_Asana[^"]*"' | sort -u
+```
+
+If you have more than one connector for the same tracker (for example two
+Asana workspaces, `Asana` and `Asana2`), allow the read tools from each one
+so tickets from either workspace can be read.
+
+**A server that isn't in Claude Code yet** can be supplied as a file with
+`config`, which takes an absolute or `~/` path to a file in the
+`{"mcpServers": {...}}` format of `.mcp.json`:
+
+```json
+{
+  "plan_interview_mcp": {
+    "config": "~/.config/amf/plan-mcp.json",
+    "allowed_tools": ["mcp__linear__get_issue"]
+  }
+}
+```
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "<the server's MCP URL>"
+    }
+  }
+}
+```
+
+The server key (`linear` here) is the middle part of each tool name.
+
+With this configured, the adaptive rounds, the synthesis pass, the Expert
+plan review, and its follow-up run with read-only repository tools plus the
+listed MCP tools. Directed revisions and isolated investigations don't use
+them. The interview still can't edit files or run shell commands, and the
+repository's own Claude settings, hooks, `.mcp.json` servers, `CLAUDE.md`,
+skills, and subagents are not loaded (the interview can still read those
+files, like any other file in the repository). AMF passes `--setting-sources ""` for that, plus
+`MCP_CONNECTION_NONBLOCKING=false` so a run waits for claude.ai connectors
+instead of sometimes starting without them. If a tool name or the config
+file is invalid, the interview runs without MCP and shows why.
+
+To test a setup outside AMF, run the same command the interview uses from
+the feature's directory. Like AMF, it sends the prompt on stdin: a prompt
+argument after `--allowedTools` can be read as another tool name. Add
+`--mcp-config <path>` before `--allowedTools` if you set `config`, and
+separate several tools with commas.
+
+```sh
+echo "Fetch Asana task 1201234567890 and summarize it" |
+  MCP_CONNECTION_NONBLOCKING=false claude -p --output-format text \
+    --setting-sources "" --tools Read,Glob,Grep \
+    --permission-mode dontAsk --no-session-persistence \
+    --allowedTools mcp__claude_ai_Asana__get_task
+```
 
 ### Built-in customization skills
 

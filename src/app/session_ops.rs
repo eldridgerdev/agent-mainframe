@@ -92,6 +92,29 @@ pub(crate) fn persisted_resume_id(session: &FeatureSession) -> Option<String> {
     id.filter(|id| !id.trim().is_empty())
 }
 
+/// The same saved transcripts used by the TUI's `S` pickers, exposed in a
+/// presentation-neutral shape for the GUI recovery dialog.
+pub(crate) fn saved_sessions_for_kind(
+    kind: &SessionKind,
+    workdir: &std::path::Path,
+) -> Result<Vec<(String, String, i64)>> {
+    match kind {
+        SessionKind::Claude => Ok(super::claude_sessions::fetch_claude_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        SessionKind::Codex => Ok(super::codex_sessions::fetch_codex_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        SessionKind::Opencode => Ok(super::opencode::fetch_opencode_sessions(workdir)?
+            .into_iter()
+            .map(|session| (session.id, session.title, session.updated))
+            .collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
 impl App {
     /// Intercept opening a persisted agent pane whose tmux session has
     /// disappeared *and* that AMF can offer a real choice about. Returns `true`
@@ -349,11 +372,14 @@ impl App {
         pi: usize,
         fi: usize,
         intent: StartIntent,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if self.block_if_feature_pending_worktree_script(pi, fi) {
             anyhow::bail!("feature cannot start while its worktree script is still running");
         }
 
+        self.disambiguate_feature_tmux_session(pi, fi)?;
+
+        let feature_id = self.store.projects[pi].features[fi].id.clone();
         let tmux_session = self
             .store
             .projects
@@ -362,30 +388,48 @@ impl App {
             .map(|feature| feature.tmux_session.clone())
             .ok_or_else(|| anyhow::anyhow!("feature not found"))?;
 
-        if !self.tmux.session_exists(&tmux_session)
-            && self.ensure_feature_running(pi, fi, intent)? == Started::Parked
-        {
-            // Unreachable for the callers that exist: adding a session is
-            // either pre-approved or warn-only, because there is no way to
-            // hand the caller its new session back after a dialog.
-            anyhow::bail!("this start cannot wait on a confirmation dialog");
-        }
+        let mut created_session = false;
+        let result = (|| -> Result<()> {
+            if !self.tmux.session_exists(&tmux_session)
+                && self.ensure_feature_running_tracking_creation(
+                    pi,
+                    fi,
+                    &mut created_session,
+                    intent,
+                )? == Started::Parked
+            {
+                // Callers here are pre-approved or warn-only; none can hand
+                // back a parked start after the session picker closes.
+                anyhow::bail!("this start cannot wait on a confirmation dialog");
+            }
 
-        if !self.tmux.session_exists(&tmux_session) {
-            anyhow::bail!("failed to start feature session");
-        }
+            if !self.tmux.session_exists(&tmux_session) {
+                anyhow::bail!("failed to start feature session");
+            }
 
-        if let Some(feature) = self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|project| project.features.get_mut(fi))
-        {
-            feature.status = ProjectStatus::Idle;
-            feature.touch();
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|project| project.features.get_mut(fi))
+            {
+                feature.status = ProjectStatus::Idle;
+                feature.touch();
+            }
+            self.save()
+        })();
+        if result.is_err() && created_session {
+            // The launch belongs to this call. A failed save (including a
+            // conflict that reloaded the store) must not leave it running.
+            let _ = self.tmux.kill_session(&tmux_session);
+            if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id)
+                && self.store.projects[pi].features[fi].tmux_session == tmux_session
+            {
+                self.store.projects[pi].features[fi].status = ProjectStatus::Stopped;
+            }
         }
-        self.save()?;
-        Ok(())
+        result?;
+        Ok(created_session)
     }
 
     /// Open the custom session picker for the currently
@@ -731,14 +775,17 @@ impl App {
 
     /// Whether adding a `kind` session to `(pi, fi)` would bring the
     /// feature's tmux session — and so its saved agents — up.
-    fn add_would_start_feature(&self, pi: usize, fi: usize, kind: &SessionKind) -> bool {
+    pub(crate) fn add_would_start_feature(&self, pi: usize, fi: usize, kind: &SessionKind) -> bool {
         kind.is_tmux_backed()
             && self
                 .store
                 .projects
                 .get(pi)
                 .and_then(|project| project.features.get(fi))
-                .is_some_and(|feature| !self.tmux.session_exists(&feature.tmux_session))
+                .is_some_and(|feature| {
+                    self.feature_tmux_session_is_shared(pi, fi)
+                        || !self.tmux.session_exists(&feature.tmux_session)
+                })
     }
 
     /// Add a session that has already cleared the resource gate (or never
@@ -759,14 +806,65 @@ impl App {
         self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
 
         match kind {
-            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, label),
-            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, label),
+            SessionKind::Terminal => self
+                .add_terminal_session_for_picker(pi, fi, label)
+                .map(|_| ()),
+            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, label).map(|_| ()),
             SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi => {
                 self.add_agent_session_for_picker(pi, fi, kind, label)
             }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => anyhow::bail!("unsupported session type"),
         }
+    }
+
+    /// GUI variant for tmux-backed builtins: the store can reorder on a
+    /// conflict retry, so the caller needs the new session's stable ID.
+    pub(crate) fn add_builtin_tmux_session_identified(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: String,
+    ) -> Result<String> {
+        if !matches!(kind, SessionKind::Terminal | SessionKind::Nvim) {
+            anyhow::bail!("unsupported builtin tmux session type");
+        }
+        let feature_id = self.store.projects[pi].features[fi].id.clone();
+        let created_feature_session =
+            self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
+        let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
+        let result = match kind {
+            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, Some(label)),
+            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, Some(label)),
+            _ => unreachable!("validated above"),
+        };
+        if result.is_err() && created_feature_session {
+            // The add started this feature as well as opening a new window.
+            // Closing only the window would leave an unexpectedly running
+            // feature after a failed request (including a save conflict).
+            self.tmux.kill_session(&tmux_session)?;
+            if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id)
+                && self.store.projects[pi].features[fi].tmux_session == tmux_session
+            {
+                let feature = &mut self.store.projects[pi].features[fi];
+                feature.status = ProjectStatus::Stopped;
+                feature.touch();
+                let _ = self.save_reapplying(|store| {
+                    let Some((pi, fi)) = store.locate_feature_by_id(None, &feature_id) else {
+                        return false;
+                    };
+                    let feature = &mut store.projects[pi].features[fi];
+                    if feature.tmux_session != tmux_session {
+                        return false;
+                    }
+                    feature.status = ProjectStatus::Stopped;
+                    feature.touch();
+                    true
+                })?;
+            }
+        }
+        result
     }
 
     /// Add a native TODOs session under the given feature and create the
@@ -839,7 +937,7 @@ impl App {
         pi: usize,
         fi: usize,
         label: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         let feature = match self
             .store
             .projects
@@ -856,18 +954,25 @@ impl App {
             Some(label) => feature.add_session_named(SessionKind::Terminal, label),
             None => feature.add_session(SessionKind::Terminal),
         };
-        let window = session.tmux_window.clone();
+        let session_record = session.clone();
+        let window = session_record.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux.create_window(&tmux_session, &window, &workdir)?;
+        if let Err(error) = self.tmux.create_window(&tmux_session, &window, &workdir) {
+            feature
+                .sessions
+                .retain(|session| session.id != session_record.id);
+            return Err(error);
+        }
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
+        let feature_id = feature.id.clone();
         self.selection = Selection::Session(pi, fi, si);
-        self.save()?;
+        self.save_new_builtin_tmux_session(&feature_id, &tmux_session, &session_record)?;
         self.message = Some(format!("Added '{}'", label));
 
-        Ok(())
+        Ok(session_record.id)
     }
 
     fn add_nvim_session_for_picker(
@@ -875,7 +980,7 @@ impl App {
         pi: usize,
         fi: usize,
         label: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         if std::process::Command::new("nvim")
             .arg("--version")
             .stdout(std::process::Stdio::null())
@@ -902,19 +1007,82 @@ impl App {
             Some(label) => feature.add_session_named(SessionKind::Nvim, label),
             None => feature.add_session(SessionKind::Nvim),
         };
-        let window = session.tmux_window.clone();
+        let session_record = session.clone();
+        let window = session_record.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux.create_window(&tmux_session, &window, &workdir)?;
-        self.tmux.send_keys(&tmux_session, &window, "nvim")?;
+        if let Err(error) = self.tmux.create_window(&tmux_session, &window, &workdir) {
+            feature
+                .sessions
+                .retain(|session| session.id != session_record.id);
+            return Err(error);
+        }
+        if let Err(error) = self.tmux.send_keys(&tmux_session, &window, "nvim") {
+            let _ = self.tmux.kill_window(&tmux_session, &window);
+            feature
+                .sessions
+                .retain(|session| session.id != session_record.id);
+            return Err(error);
+        }
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
+        let feature_id = feature.id.clone();
         self.selection = Selection::Session(pi, fi, si);
-        self.save()?;
+        self.save_new_builtin_tmux_session(&feature_id, &tmux_session, &session_record)?;
         self.message = Some(format!("Added '{}'", label));
 
-        Ok(())
+        Ok(session_record.id)
+    }
+
+    fn save_new_builtin_tmux_session(
+        &mut self,
+        feature_id: &str,
+        tmux_session: &str,
+        session_record: &FeatureSession,
+    ) -> Result<()> {
+        let outcome = self.save_reapplying(|store| {
+            let Some((pi, fi)) = store.locate_feature_by_id(None, feature_id) else {
+                return false;
+            };
+            let feature = &mut store.projects[pi].features[fi];
+            if feature.tmux_session != tmux_session {
+                return false;
+            }
+            if !feature
+                .sessions
+                .iter()
+                .any(|session| session.id == session_record.id)
+            {
+                feature.sessions.push(session_record.clone());
+            }
+            feature.collapsed = false;
+            true
+        });
+        match outcome {
+            Ok(ReapplyOutcome::Saved) => Ok(()),
+            Ok(lost @ (ReapplyOutcome::TargetGone | ReapplyOutcome::Conflict)) => {
+                let _ = self
+                    .tmux
+                    .kill_window(tmux_session, &session_record.tmux_window);
+                anyhow::bail!(if lost == ReapplyOutcome::TargetGone {
+                    "the feature was removed elsewhere while its session opened; the new window was closed"
+                } else {
+                    crate::app::SAVE_CONFLICT_MESSAGE
+                });
+            }
+            Err(error) => {
+                let _ = self
+                    .tmux
+                    .kill_window(tmux_session, &session_record.tmux_window);
+                if let Some((pi, fi)) = self.store.locate_feature_by_id(None, feature_id) {
+                    self.store.projects[pi].features[fi]
+                        .sessions
+                        .retain(|session| session.id != session_record.id);
+                }
+                Err(error)
+            }
+        }
     }
 
     fn add_vscode_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
@@ -1199,6 +1367,24 @@ impl App {
         harness: Option<AgentKind>,
         intent: StartIntent,
     ) -> Result<usize> {
+        self.create_agent_session_labeled_identified(pi, fi, label, harness, intent)
+            .map(|(index, _, _)| index)
+    }
+
+    /// The same launch as `create_agent_session_labeled`, with stable session
+    /// and window identities for adapters that must associate the result with
+    /// another persisted record (such as a GUI TODO launch). A save conflict
+    /// reloads the store, which can move the feature itself, so a caller
+    /// that keeps going after this returns should re-resolve `(pi, fi, si)`
+    /// from the session id rather than trust the `pi`/`fi` it passed in.
+    pub(crate) fn create_agent_session_labeled_identified(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: &str,
+        harness: Option<AgentKind>,
+        intent: StartIntent,
+    ) -> Result<(usize, String, String)> {
         // This always launches a harness, so the gate runs unconditionally --
         // once, here, covering both the new session and any of the feature's
         // own agents that come up with it.
@@ -1245,7 +1431,9 @@ impl App {
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
 
+        let feature_id = feature.id.clone();
         let session = feature.add_session_named(kind.clone(), label.to_string());
+        let session_record = session.clone();
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();
         feature.collapsed = false;
@@ -1264,6 +1452,8 @@ impl App {
             &mode,
             &session_id,
             extra_args,
+            // Brand-new session: nothing to resume yet.
+            None,
         );
         if let Err(e) = launched {
             // Best-effort: whether the window exists depends on which step
@@ -1280,23 +1470,57 @@ impl App {
             return Err(e);
         }
 
-        // The session is up by now, so a failed save is not worth tearing a
-        // live agent back down for — and returning an error here would tell
-        // the caller nothing was started while a harness is running. It is
-        // logged and the in-memory store keeps the session; the next save
-        // writes it out.
-        if let Err(e) = self.save() {
-            self.log_warn(
+        // The session is up by now. A save that conflicts with another
+        // process's write re-adds this record to the refreshed store rather
+        // than dropping it, which would leave a live harness with no row
+        // behind it. Only when the feature itself is gone (or writers keep
+        // winning) is the window torn down and the start reported failed.
+        let outcome = self.save_reapplying(|store| {
+            let Some((pi, fi)) = store.locate_feature_by_id(None, &feature_id) else {
+                return false;
+            };
+            let feature = &mut store.projects[pi].features[fi];
+            if !feature.sessions.iter().any(|s| s.id == session_record.id) {
+                feature.sessions.push(session_record.clone());
+            }
+            feature.collapsed = false;
+            true
+        });
+        match outcome {
+            Ok(ReapplyOutcome::Saved) => {}
+            Ok(lost @ (ReapplyOutcome::TargetGone | ReapplyOutcome::Conflict)) => {
+                let _ = self.tmux.kill_window(&tmux_session, &window);
+                anyhow::bail!(if lost == ReapplyOutcome::TargetGone {
+                    "the feature was removed elsewhere while its agent started; the new window was closed"
+                } else {
+                    crate::app::SAVE_CONFLICT_MESSAGE
+                });
+            }
+            // A failed DB write (not a conflict) is not worth tearing a live
+            // agent back down for, and returning an error here would tell the
+            // caller nothing was started while a harness is running. It is
+            // logged and the in-memory store keeps the session; the next save
+            // writes it out.
+            Err(e) => self.log_warn(
                 "session",
                 format!("started '{label}' but couldn't save the store: {e}"),
-            );
+            ),
         }
-        Ok(si)
+        // A reload re-pointed indices; resolve this session's own.
+        let si = self
+            .session_indices_by_id(&session_id)
+            .map_or(si, |(_, _, si)| si);
+        Ok((si, session_id, window))
     }
 
     /// Create the tmux window for a new agent session and launch its harness in
     /// it. Split out so the caller can undo the session record as one unit when
     /// any step of it fails.
+    ///
+    /// `claude_resume_id` is the prior `claude_session_id` to resume, when the
+    /// launch is recreating an existing Claude session's window rather than
+    /// starting a brand-new one (mirrors `feature_ops.rs`'s whole-feature
+    /// restart, which resumes from `session.claude_session_id`).
     #[allow(clippy::too_many_arguments)]
     fn launch_agent_session_window(
         &self,
@@ -1307,12 +1531,18 @@ impl App {
         mode: &VibeMode,
         session_id: &str,
         extra_args: Vec<String>,
+        claude_resume_id: Option<String>,
     ) -> Result<()> {
         self.tmux.create_window(tmux_session, window, workdir)?;
         match agent {
             AgentKind::Claude => {
-                self.tmux
-                    .launch_claude(tmux_session, window, session_id, None, extra_args)?;
+                self.tmux.launch_claude(
+                    tmux_session,
+                    window,
+                    session_id,
+                    claude_resume_id,
+                    extra_args,
+                )?;
             }
             AgentKind::Opencode => {
                 self.tmux
@@ -1330,6 +1560,10 @@ impl App {
         Ok(())
     }
 
+    /// Permanently delete a session: kill its tmux window and drop it from
+    /// `feature.sessions` for good. This is `d`'s behavior on a
+    /// `Selection::Session` — for a lighter-weight stop that keeps the
+    /// record around, see [`Self::stop_session`].
     pub fn remove_session(&mut self) -> Result<()> {
         let (pi, fi, si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, *si),
@@ -1428,5 +1662,293 @@ impl App {
         self.message = Some(format!("Removed '{}'", label));
 
         Ok(())
+    }
+
+    /// Stop an individual session: kill its tmux window, but keep it in
+    /// `feature.sessions` so it stays in the list and can be restarted. This
+    /// is `x`'s behavior on a `Selection::Session` — distinct from `d`
+    /// (`remove_session`), which deletes the record for good.
+    ///
+    /// A feature's *only* session is indistinguishable from the feature
+    /// itself, so that case is handed off to [`Self::stop_feature`] (which
+    /// already accepts a `Session` selection) rather than reimplementing its
+    /// lifecycle hook, editor cleanup, etc. here.
+    pub fn stop_session(&mut self) -> Result<()> {
+        let (pi, fi, si) = match &self.selection {
+            Selection::Session(pi, fi, si) => (*pi, *fi, *si),
+            _ => return Ok(()),
+        };
+
+        let is_only_session = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.sessions.len() <= 1)
+            .unwrap_or(true);
+
+        if is_only_session {
+            return self.stop_feature();
+        }
+
+        let (tmux_session, workdir, window, label, is_custom, on_stop, session_id, is_tmux_backed) = {
+            let feature = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
+                Some(f) => f,
+                None => return Ok(()),
+            };
+            let session = match feature.sessions.get(si) {
+                Some(s) => s,
+                None => return Ok(()),
+            };
+            (
+                feature.tmux_session.clone(),
+                feature.workdir.clone(),
+                session.tmux_window.clone(),
+                session.label.clone(),
+                session.kind == SessionKind::Custom,
+                session.on_stop.clone(),
+                session.id.clone(),
+                session.kind.is_tmux_backed(),
+            )
+        };
+
+        if !is_tmux_backed {
+            return Ok(());
+        }
+
+        if self.tmux.session_exists(&tmux_session)
+            && self.tmux.window_exists(&tmux_session, &window)
+        {
+            self.tmux
+                .kill_window(&tmux_session, &window)
+                .map_err(|err| {
+                    anyhow::anyhow!(
+                        "Could not stop session '{label}': {err}. Session retained; try again."
+                    )
+                })?;
+        }
+
+        // Run the custom session cleanup after a successful stop, same as a
+        // full removal does.
+        if is_custom {
+            if let Some(ref cmd) = on_stop {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&workdir)
+                    .env("AMF_SESSION_ID", &session_id)
+                    .env(
+                        "AMF_STATUS_DIR",
+                        workdir.join(".amf").join("session-status"),
+                    )
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+
+            let status_file = workdir
+                .join(".amf")
+                .join("session-status")
+                .join(format!("{}.txt", session_id));
+            let _ = std::fs::remove_file(status_file);
+            if let Some(ref db) = self.db {
+                let _ = db.delete_session_status(&session_id);
+            }
+        }
+
+        self.save()?;
+        self.message = Some(format!("Stopped '{}'", label));
+
+        Ok(())
+    }
+
+    /// Recreate the tmux window for a single session that was stopped
+    /// individually (via `x`) while the rest of its feature — and any other
+    /// sessions' windows — kept running. This is the multi-session
+    /// counterpart to restarting a fully-stopped feature with `c`.
+    ///
+    /// Recreating an agent-harness window spends the machine's agent budget
+    /// exactly like any other launch primitive, so this goes through the
+    /// resource gate before calling the unchecked worker below. A tripped
+    /// gate parks the restart in `AppMode::ConfirmResourceStart`, replayed by
+    /// `confirm_pending_start()` via `PendingStart::RestartSessionWindow`.
+    ///
+    /// Returns `true` when it actually recreated the window, or parked it on
+    /// the resource-gate confirmation; `false` when there was nothing to do
+    /// here: the window is already up, the session kind has no tmux window
+    /// at all, or the feature's own tmux session is down (in which case the
+    /// ordinary whole-feature restart applies instead).
+    pub(crate) fn restart_stopped_session_window(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<bool> {
+        if self.restart_stopped_session_window_would_start_agent(pi, fi, si)
+            && self.gate_start(PendingStart::RestartSessionWindow { pi, fi, si })
+        {
+            return Ok(true);
+        }
+
+        self.restart_stopped_session_window_unchecked(pi, fi, si)
+    }
+
+    /// Whether recreating `(pi, fi, si)`'s window would spawn an agent
+    /// harness process — the condition the resource gate cares about, mirrored
+    /// from the early-outs in `restart_stopped_session_window_unchecked`
+    /// below.
+    fn restart_stopped_session_window_would_start_agent(
+        &self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> bool {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return false;
+        };
+        if !self.tmux.session_exists(&feature.tmux_session) {
+            return false;
+        }
+        let Some(session) = feature.sessions.get(si) else {
+            return false;
+        };
+        session.kind.is_agent_harness()
+            && !self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window)
+    }
+
+    /// The restart worker: recreates the window unconditionally, assuming the
+    /// resource gate has already been checked (or does not apply).
+    pub(crate) fn restart_stopped_session_window_unchecked(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<bool> {
+        let Some((tmux_session, workdir, mode, remote_control, enable_chrome, feature_name)) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| {
+                (
+                    f.tmux_session.clone(),
+                    f.workdir.clone(),
+                    f.mode.clone(),
+                    f.remote_control,
+                    f.enable_chrome,
+                    f.name.clone(),
+                )
+            })
+        else {
+            return Ok(false);
+        };
+
+        if !self.tmux.session_exists(&tmux_session) {
+            return Ok(false);
+        }
+
+        let Some(session) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.get(si))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+
+        if !session.kind.is_tmux_backed()
+            || self.tmux.window_exists(&tmux_session, &session.tmux_window)
+        {
+            return Ok(false);
+        }
+
+        if let Some(agent) = agent_for_session_kind(&session.kind) {
+            let use_rc = remote_control && self.remote_control_allowed();
+            let extra_args: Vec<String> = mode.cli_flags(LaunchOpts {
+                enable_chrome,
+                remote_control: use_rc,
+                session_name: if use_rc { Some(feature_name) } else { None },
+            });
+            self.launch_agent_session_window(
+                &agent,
+                &tmux_session,
+                &session.tmux_window,
+                &workdir,
+                &mode,
+                &session.id,
+                extra_args,
+                // Recreating an existing session's window: pick up where its
+                // prior Claude conversation left off, same as the
+                // whole-feature restart in `feature_ops.rs`. A no-op for the
+                // other harnesses, which ignore this argument.
+                session.claude_session_id.clone(),
+            )?;
+        } else {
+            self.tmux
+                .create_window(&tmux_session, &session.tmux_window, &workdir)?;
+            match session.kind {
+                SessionKind::Nvim => {
+                    self.tmux
+                        .send_keys(&tmux_session, &session.tmux_window, "nvim")?;
+                }
+                SessionKind::Vscode => {
+                    self.tmux.send_keys(
+                        &tmux_session,
+                        &session.tmux_window,
+                        &format!("code {}", workdir.display()),
+                    )?;
+                }
+                SessionKind::Custom => {
+                    let runnable = match &session.pre_check {
+                        Some(check) if !check.is_empty() => std::process::Command::new("bash")
+                            .arg("-c")
+                            .arg(check)
+                            .current_dir(&workdir)
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false),
+                        _ => true,
+                    };
+                    if runnable {
+                        let status_dir =
+                            crate::extension::generated_amf_subdir(&workdir, "session-status");
+                        let status_dir_str = status_dir.to_string_lossy().into_owned();
+                        let env_prefix = TmuxManager::shell_env_prefix(&[
+                            ("AMF_SESSION_ID", &session.id),
+                            ("AMF_STATUS_DIR", &status_dir_str),
+                        ]);
+                        let shell_cmd = if let Some(ref cmd) = session.command {
+                            format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"))
+                        } else {
+                            env_prefix
+                        };
+                        self.tmux.run_shell_command(
+                            &tmux_session,
+                            &session.tmux_window,
+                            &shell_cmd,
+                        )?;
+                    }
+                }
+                // A bare terminal needs nothing beyond the window itself;
+                // Todos has no tmux window and never reaches here.
+                SessionKind::Terminal | SessionKind::Todos => {}
+                SessionKind::Claude
+                | SessionKind::Opencode
+                | SessionKind::Codex
+                | SessionKind::Pi => {
+                    unreachable!(
+                        "agent-harness kinds are handled by launch_agent_session_window above"
+                    )
+                }
+            }
+        }
+
+        self.save()?;
+        self.message = Some(format!("Restarted '{}'", session.label));
+        Ok(true)
     }
 }

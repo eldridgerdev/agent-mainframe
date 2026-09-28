@@ -776,6 +776,50 @@ pub fn load_commit_snapshot(
     })
 }
 
+/// Load the changes between two commits, `base..head`, reading both sides of
+/// every file from git objects. The working tree, the index, and `HEAD` are
+/// never consulted, so the result is the same from any checkout of the
+/// repository. Paths are repository-relative (no `--relative`): a pull
+/// request's diff is the whole repository's.
+///
+/// `branch` and `base_ref` are left empty for the caller to label.
+pub fn load_range_snapshot(
+    workdir: &Path,
+    base: &str,
+    head: &str,
+    ignore_whitespace: bool,
+) -> Result<DiffSnapshot> {
+    let patch = git_capture(
+        workdir,
+        &with_whitespace_flag(
+            &[
+                "diff",
+                "--find-renames",
+                "--no-ext-diff",
+                "--no-color",
+                "--unified=3",
+                base,
+                head,
+            ],
+            ignore_whitespace,
+        ),
+        false,
+    )?;
+    let mut files = parse_unified_diff(&patch)?;
+    hydrate_commit_file_contents(workdir, Some(base), head, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let total_additions = files.iter().map(|file| file.additions).sum();
+    let total_deletions = files.iter().map(|file| file.deletions).sum();
+    Ok(DiffSnapshot {
+        branch: String::new(),
+        base_ref: String::new(),
+        base_commit: base.to_string(),
+        files,
+        total_additions,
+        total_deletions,
+    })
+}
+
 pub fn load_review_file(original: &Path, proposed: &Path, display_path: &str) -> Result<DiffFile> {
     let output = Command::new("git")
         .args([
@@ -1922,6 +1966,50 @@ index 1111111..2222222 100644
             !files.contains(&"src.txt".to_string()),
             "a file that isn't on disk can't be browsed: {files:?}"
         );
+    }
+
+    #[test]
+    fn range_snapshot_is_exactly_merge_base_to_head_and_ignores_the_checkout() {
+        let repo = init_repo_with_main();
+        let dir = repo.path();
+        let merge_base = rev_parse(dir, "HEAD");
+        // The PR: edits src.txt, adds pr_new.txt, lives on a branch we leave.
+        git(dir, &["checkout", "--quiet", "-b", "pr"]);
+        std::fs::write(dir.join("src.txt"), "base\npr line\n").unwrap();
+        std::fs::write(dir.join("pr_new.txt"), "from the pr\n").unwrap();
+        git(dir, &["add", "src.txt", "pr_new.txt"]);
+        git(dir, &["commit", "-m", "pr change"]);
+        let head = rev_parse(dir, "HEAD");
+        // The user's own feature, checked out, with dirt on the same file.
+        git(dir, &["checkout", "--quiet", "main"]);
+        git(dir, &["checkout", "--quiet", "-b", "my-feature"]);
+        std::fs::write(dir.join("feature.txt"), "mine\n").unwrap();
+        git(dir, &["add", "feature.txt"]);
+        git(dir, &["commit", "-m", "feature change"]);
+        std::fs::write(dir.join("src.txt"), "dirty local edit\n").unwrap();
+        std::fs::write(dir.join("untracked.txt"), "stray\n").unwrap();
+
+        let snapshot = load_range_snapshot(dir, &merge_base, &head, false).unwrap();
+
+        let expected = Command::new("git")
+            .args(["diff", "--name-only", &merge_base, &head])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let expected: Vec<String> = String::from_utf8_lossy(&expected.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let paths: Vec<String> = snapshot.files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(paths, expected);
+        assert_eq!(paths, ["pr_new.txt", "src.txt"]);
+
+        let src = snapshot.files.iter().find(|f| f.path == "src.txt").unwrap();
+        // Both sides come from objects, never the dirty working tree.
+        assert_eq!(src.old_content.as_deref(), Some("base\n"));
+        assert_eq!(src.new_content.as_deref(), Some("base\npr line\n"));
+        assert_eq!(snapshot.base_commit, merge_base);
+        assert!(snapshot.branch.is_empty(), "the caller labels the range");
     }
 
     fn init_repo_with_main() -> TempDir {

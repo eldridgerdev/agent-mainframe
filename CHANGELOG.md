@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Ask AI questions while reviewing code.** Press `Q` in Final Review,
+  manual PR review (`G`), or AI PR review (`W`) to ask about the selected code
+  or find reusable helpers elsewhere in the repository. Questions run
+  read-only, preserve your review position, and support follow-ups until the
+  review closes. PR questions require a clean checkout at the reviewed head.
+- **Turn an answer into an editable review comment.** Choose `i` for an
+  inline draft or `g` for general feedback, edit the text, then open the existing
+  comment editor with `Ctrl+Enter`. Existing comments are preserved, and
+  publishing remains an explicit review action.
 - **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
   faster than `j` / `k`: they scroll the patch, the expanded notes, and the
   help, history, and overview panels, and move the line cursor in cursor mode.

@@ -26,6 +26,7 @@ mod precall;
 mod prompt_library;
 mod prompt_overrides;
 mod review_destination;
+mod review_questions;
 mod search;
 mod skill_picker;
 mod todos;
@@ -106,6 +107,10 @@ pub use view::handle_view_key;
 
 pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     use crate::app::AppMode;
+
+    if app.review_questions().is_some_and(|q| q.open) {
+        return review_questions::handle(app, key);
+    }
 
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),

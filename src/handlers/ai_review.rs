@@ -47,6 +47,7 @@ pub fn handle_ai_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('B') => app.ai_review_fix_marked(),
         KeyCode::Char('e') => app.ai_review_edit_finding(),
         KeyCode::Char('A') => app.start_ai_pr_review(),
+        KeyCode::Char('Q') => app.open_review_questions(),
         KeyCode::Char('W') => app.ai_review_open_post_confirm(),
         _ => {}
     }

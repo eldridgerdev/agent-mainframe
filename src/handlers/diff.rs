@@ -409,6 +409,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.open_review_help();
                 return Ok(());
             }
+            KeyCode::Char('Q') => {
+                app.open_review_questions();
+                return Ok(());
+            }
             KeyCode::Char('H') => {
                 app.open_review_history();
                 return Ok(());

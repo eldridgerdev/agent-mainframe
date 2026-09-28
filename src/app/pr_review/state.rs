@@ -344,6 +344,7 @@ pub struct AiReviewRunState {
 /// for why this is a separate workflow rather than bolted onto triage).
 #[derive(Debug, Clone)]
 pub struct AiReviewState {
+    pub(crate) questions: crate::app::review_questions::Questions,
     /// Working directory of the feature whose PR this reviews.
     pub workdir: PathBuf,
     /// The PR being reviewed.

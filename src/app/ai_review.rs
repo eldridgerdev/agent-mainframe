@@ -798,7 +798,7 @@ fn resolve_ai_review_location(
 
 /// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
 /// a small window around an already-resolved source coordinate).
-fn diff_hunk_for_location(
+pub(super) fn diff_hunk_for_location(
     files: &[crate::diff::DiffFile],
     path: &str,
     side: crate::diff::DiffSide,
@@ -1494,6 +1494,7 @@ impl App {
             None => (Vec::new(), None, None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
+            questions: Default::default(),
             workdir,
             pr,
             findings,
@@ -1601,6 +1602,8 @@ impl App {
     /// running, isn't aborted — [`Self::poll_ai_pr_review_bg`] still surfaces
     /// the result via the pending run origin.
     pub fn close_ai_review(&mut self) {
+        self.cancel_review_question();
+        self.ai_review_run.clear_question_history();
         match self.ai_review_return_to.take() {
             Some(return_to) => self.mode = *return_to,
             None => self.mode = AppMode::Normal,
@@ -2092,6 +2095,7 @@ impl App {
     /// picker can pause before the paid pass without duplicating lifecycle
     /// setup.
     pub(crate) fn begin_ai_pr_review(&mut self) {
+        self.cancel_review_question();
         let mut origin = match &self.mode {
             AppMode::AiReview(state) => state.clone(),
             _ => return,

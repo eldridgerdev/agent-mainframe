@@ -452,6 +452,26 @@ dropped. The walkthrough, AI co-review, and changeset-overview passes, and the
 keys that need a local checkout (`E`, `b`, `t`, `X`), aren't available in this
 mode.
 
+### Ask questions during review
+
+Press `Q` in Final Review, manual PR review (`G`), or AI PR review (`W`) to ask
+about the reviewed code. `Ctrl+Enter` sends a question; `Ctrl+H` changes the
+harness. The AI can inspect repository code beyond the selected file or lines,
+including unchanged helpers. PR questions require a clean local checkout at the
+reviewed PR head. If that checkout is unavailable, AMF explains the mismatch and
+keeps the review and question intact.
+
+After an answer, `e` starts a follow-up, `r` retries, `[`/`]` browse the
+conversation, and `j`/`k` scroll the answer. `Esc` returns to the same review
+position; a running question continues while the overlay is closed. `Ctrl+X`
+cancels its request. Conversation history clears when the review closes.
+
+Use `i` to draft an inline comment at the question's selected diff line, or `g`
+to draft a general review comment. Edit the generated text, then `Ctrl+Enter`
+opens the existing comment editor. `Esc` discards the generated draft. Existing
+comments are preserved, changed code invalidates old draft anchors, and posting
+still requires the review's explicit submit action.
+
 ### Reuse prompts and track TODOs
 
 Press `L` to manage reusable prompt templates, or open them from a session with

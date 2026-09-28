@@ -495,6 +495,7 @@ pub enum PrSubmitStatus {
 }
 
 pub struct DiffViewerState {
+    pub(crate) questions: crate::app::review_questions::Questions,
     /// The session view to return to. A PR review has none (it is opened from
     /// the PR picker, with no feature involved) and carries a placeholder here
     /// that nothing reads: every exit from a PR review goes through
@@ -839,6 +840,7 @@ impl DiffViewerState {
             pr_submit: None,
             workdir,
             scope: DiffScope::CurrentChanges,
+            questions: Default::default(),
             branch: String::new(),
             base_ref: String::new(),
             base_commit: String::new(),

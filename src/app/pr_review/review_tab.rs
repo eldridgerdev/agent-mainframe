@@ -205,6 +205,7 @@ impl App {
     /// only transfers what changed, and waits for this removal to finish
     /// first so the two never race over the same refs.
     pub(crate) fn exit_pr_review(&mut self, state: DiffViewerState) {
+        self.cancel_review_question();
         if let DiffScope::PullRequest(target) = &state.scope {
             super::revisions::remove_review_refs_in_background(
                 state.workdir.clone(),

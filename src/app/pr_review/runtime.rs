@@ -400,6 +400,12 @@ impl AiReviewRun {
         &self.origin
     }
 
+    pub(crate) fn clear_question_history(&mut self) {
+        if let Some(origin) = &mut self.origin {
+            origin.questions = Default::default();
+        }
+    }
+
     pub(crate) fn progress(&self) -> &Option<AiReviewRunProgress> {
         &self.progress
     }

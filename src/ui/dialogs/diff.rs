@@ -131,6 +131,10 @@ pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Them
 }
 
 pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
+    if state.questions.open {
+        super::review_questions::draw(frame, &mut state.questions, theme);
+        return;
+    }
     let area = centered_rect(96, 90, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -392,6 +396,10 @@ const REVIEW_HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("", "(starts off; enabling Vim enters Normal mode)"),
             ("Tab", "Submit an open editor in either keymap"),
             ("Ctrl+Q", "Cancel an open editor in either keymap"),
+            (
+                "Q",
+                "Ask AI about this review with read-only repository discovery",
+            ),
             ("Esc", "Cancel plain editing; Vim Insert enters Normal mode"),
         ],
     ),
@@ -3112,6 +3120,8 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
             ),
             key("?"),
             Span::raw(" keys  "),
+            key("Q"),
+            Span::raw(" ask AI  "),
         ];
         // Surface a committed search so its shadowing of n/N is discoverable.
         if !state.editing_search && !state.search_query.trim().is_empty() {
@@ -3309,6 +3319,8 @@ fn review_hint_lines(state: &DiffViewerState, theme: &Theme) -> [Line<'static>; 
     let mut first_line = vec![
         key(" ?"),
         Span::raw(" keys  "),
+        key("Q"),
+        Span::raw(" ask AI  "),
         key("a"),
         Span::raw(" approve  "),
         key("r"),

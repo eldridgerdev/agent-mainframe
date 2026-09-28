@@ -27,6 +27,7 @@ mod prompt_overrides;
 mod resource_gate;
 mod review_destination;
 mod review_harness;
+mod review_questions;
 mod search;
 mod session;
 mod theme;

@@ -360,6 +360,9 @@ impl App {
             }
             Err(error) => {
                 q.error = Some(error.clone());
+                let message = format!("question failed: {error}");
+                self.log_warn("review_questions", message);
+                let q = self.review_questions_mut().expect("owned review");
                 if matches!(job.task, Task::Answer { .. })
                     && let Some(turn) = q.turns.get_mut(job.turn)
                 {

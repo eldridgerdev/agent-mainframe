@@ -4,6 +4,11 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(crate) fn handle(app: &mut App, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // Ctrl+S is the submit key: without the kitty keyboard protocol (which
+    // AMF does not enable) most terminals send Ctrl+Enter as a plain Enter,
+    // which the editor takes as a newline. Ctrl+Enter stays as an alias for
+    // terminals that do report it.
+    let submit = ctrl && matches!(key.code, KeyCode::Char('s') | KeyCode::Enter);
     let Some(q) = app.review_questions() else {
         return Ok(());
     };
@@ -24,7 +29,7 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> Result<()> {
         if q.request.is_some() {
             return Ok(());
         }
-        if ctrl && key.code == KeyCode::Enter {
+        if submit {
             app.transfer_review_question_draft();
         } else if let Some((_, editor)) = &mut app.review_questions_mut().expect("review").draft {
             editor.handle_key(key);
@@ -33,7 +38,7 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent) -> Result<()> {
     }
     if ctrl && key.code == KeyCode::Char('h') {
         app.cycle_review_question_harness();
-    } else if ctrl && key.code == KeyCode::Enter {
+    } else if submit {
         app.submit_review_question();
     } else if q.editing {
         app.review_questions_mut()

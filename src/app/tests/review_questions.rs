@@ -983,3 +983,71 @@ fn untracked_symlinks_and_unreadable_entries_do_not_block_questions() {
     assert!(q.error.is_none(), "{:?}", q.error);
     assert!(q.turns[0].answer.is_some());
 }
+
+#[test]
+fn ctrl_s_submits_and_the_overlay_shows_the_request_is_running() {
+    // Blocks until cancelled, so the request stays visibly in progress.
+    fn slow(input: &RunInput) -> anyhow::Result<String> {
+        while !input.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        anyhow::bail!("cancelled")
+    }
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    app.review_question_work.runner = slow;
+    app.open_review_questions();
+    app.review_questions_mut().unwrap().editor = TextEditor::new("Where is this used?".into());
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        20,
+    )
+    .unwrap();
+    let q = app.review_questions().unwrap();
+    assert!(
+        q.request.is_some(),
+        "Ctrl+S must submit, not type into the editor"
+    );
+    assert_eq!(q.turns.len(), 1);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(screen.contains("Asking Claude…"), "{screen}");
+    assert!(screen.contains("Ctrl+X cancels"));
+    app.cancel_review_question();
+}
+
+#[test]
+fn a_failed_question_shows_its_reason_where_the_answer_would_be() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    fixture.manual(&mut app);
+    std::fs::write(fixture.dir.path().join("scratch.txt"), "uncommitted\n").unwrap();
+    ask(&mut app);
+    let q = app.review_questions().unwrap();
+    assert!(q.turns[0].answer.is_none());
+    let backend = ratatui::backend::TestBackend::new(140, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let screen = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(
+        screen.contains("The question was not answered."),
+        "{screen}"
+    );
+    assert!(screen.contains("has local changes"), "{screen}");
+    assert!(!screen.contains("Ctrl+S asks your question"));
+}

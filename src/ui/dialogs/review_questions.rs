@@ -2,8 +2,8 @@ use crate::{app::review_questions::Questions, theme::Theme};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::Style,
-    text::Line,
+    style::{Modifier, Style},
+    text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
@@ -52,16 +52,23 @@ pub(crate) fn draw(frame: &mut Frame, q: &mut Questions, theme: &Theme) {
         ));
     }
     frame.render_widget(Paragraph::new(header).wrap(Wrap { trim: false }), areas[0]);
-    let answer = turn.and_then(|t| t.answer.as_deref()).unwrap_or_else(|| {
-        if q.request.is_some() { "Working… You can close this overlay and continue reviewing. Ctrl+X cancels this request." }
-        else { "Answers include repository references. Ctrl+Enter asks your question." }
-    });
+    let failure = turn.and_then(|t| t.error.as_deref()).or(q.error.as_deref());
+    // A failed question must say why where the answer would be: a reason only
+    // in the footer reads as "nothing happened" and every retry looks the same.
+    let answer = match (turn.and_then(|t| t.answer.as_deref()), failure) {
+        (Some(answer), _) => answer.to_string(),
+        (None, _) if q.request.is_some() => "Working… You can close this overlay and continue reviewing. Ctrl+X cancels this request.".into(),
+        (None, Some(reason)) if turn.is_some() => format!(
+            "**The question was not answered.**\n\n{reason}\n\nFix that, then press `r` to retry — or `e` to ask something else."
+        ),
+        _ => "Answers include repository references. Ctrl+S asks your question.".into(),
+    };
     let mut width = 0;
     let mut lines = Vec::new();
     super::markdown::draw_markdown_document(
         frame,
         areas[1],
-        answer,
+        &answer,
         std::path::Path::new("review-answer.md"),
         &mut q.scroll,
         &mut width,
@@ -109,24 +116,56 @@ pub(crate) fn draw(frame: &mut Frame, q: &mut Questions, theme: &Theme) {
         .or_else(|| turn.and_then(|t| t.error.as_deref()))
         .unwrap_or("");
     let hints = if q.draft.is_some() {
-        "Ctrl+Enter: open existing comment editor · Esc: discard draft · Ctrl+X: cancel"
+        "Ctrl+S: open existing comment editor · Esc: discard draft · Ctrl+X: cancel"
     } else if q.editing {
-        "Ctrl+Enter: ask · Ctrl+H: harness · Esc: return to review · Ctrl+X: cancel"
+        "Ctrl+S: ask · Ctrl+H: harness · Esc: return to review · Ctrl+X: cancel"
     } else {
         "e: follow-up · r: retry · [/]: history · j/k: scroll · i/g: inline/general draft · Esc: return"
     };
+    let status = match q.started_at {
+        Some(started) => progress_line(q, started.elapsed(), theme),
+        None => Line::from("Drafting and answering never publish a comment."),
+    };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(error),
+            Line::styled(
+                error,
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
             Line::from(hints),
-            Line::from(if let Some(started) = q.started_at {
-                format!("Request in progress… {}s", started.elapsed().as_secs())
-            } else {
-                "Drafting and answering never publish a comment.".into()
-            }),
+            status,
         ])
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(theme.text_muted.to_color())),
         areas[3],
     );
+}
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// The one thing on screen that says a request is live, so it has to read as
+/// activity rather than as another muted footer line: a spinner driven by the
+/// elapsed time (the overlay redraws on `ANIMATED_REDRAW_INTERVAL` while a
+/// request is open), what is being done, by which harness, and for how long.
+fn progress_line(q: &Questions, elapsed: std::time::Duration, theme: &Theme) -> Line<'static> {
+    let frame = SPINNER[(elapsed.as_millis() / 100) as usize % SPINNER.len()];
+    let action = if q.draft.is_some() {
+        "Checking the draft"
+    } else if q.turns.get(q.selected).is_some_and(|t| t.answer.is_some()) {
+        "Drafting a review comment"
+    } else {
+        "Asking"
+    };
+    let accent = Style::default()
+        .fg(theme.info.to_color())
+        .add_modifier(Modifier::BOLD);
+    Line::from(vec![
+        Span::styled(
+            format!("{frame} {action} {}… ", q.harness.display_name()),
+            accent,
+        ),
+        Span::raw(format!("{}s · Ctrl+X cancels", elapsed.as_secs())),
+    ])
 }

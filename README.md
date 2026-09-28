@@ -455,8 +455,9 @@ mode.
 ### Ask questions during review
 
 Press `Q` in Final Review, manual PR review (`G`), or AI PR review (`W`) to ask
-about the reviewed code. `Ctrl+Enter` sends a question; `Ctrl+H` changes the
-harness. The AI can inspect repository code beyond the selected file or lines,
+about the reviewed code. `Ctrl+S` sends a question (`Ctrl+Enter` also works in
+terminals that report it); `Ctrl+H` changes the harness. While a request runs,
+the overlay shows a spinner, the harness, and the elapsed time. The AI can inspect repository code beyond the selected file or lines,
 including unchanged helpers. PR questions require a clean local checkout at the
 reviewed PR head. If that checkout is unavailable, AMF explains the mismatch and
 keeps the review and question intact.
@@ -467,7 +468,7 @@ position; a running question continues while the overlay is closed. `Ctrl+X`
 cancels its request. Conversation history clears when the review closes.
 
 Use `i` to draft an inline comment at the question's selected diff line, or `g`
-to draft a general review comment. Edit the generated text, then `Ctrl+Enter`
+to draft a general review comment. Edit the generated text, then `Ctrl+S`
 opens the existing comment editor. `Esc` discards the generated draft. Existing
 comments are preserved, changed code invalidates old draft anchors, and posting
 still requires the review's explicit submit action.

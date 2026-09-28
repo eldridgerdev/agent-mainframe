@@ -19,7 +19,7 @@ are tagged.
   review closes. PR questions require a clean checkout at the reviewed head.
 - **Turn an answer into an editable review comment.** Choose `i` for an
   inline draft or `g` for general feedback, edit the text, then open the existing
-  comment editor with `Ctrl+Enter`. Existing comments are preserved, and
+  comment editor with `Ctrl+S`. Existing comments are preserved, and
   publishing remains an explicit review action.
 - **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
   faster than `j` / `k`: they scroll the patch, the expanded notes, and the

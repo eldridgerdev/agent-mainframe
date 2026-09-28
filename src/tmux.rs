@@ -2014,6 +2014,31 @@ impl TmuxManager {
         }
     }
 
+    /// Size and cursor of a window's active pane:
+    /// `(cols, rows, cursor_x, cursor_y, cursor_visible)`.
+    pub fn pane_geometry(session: &str, window: &str) -> Result<(u16, u16, u16, u16, bool)> {
+        let target = format!("{}:{}", session, window);
+        let output = Self::command()
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag}",
+            ])
+            .output()
+            .context("Failed to get pane geometry")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<u16> = stdout
+            .split_whitespace()
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        match parts[..] {
+            [cols, rows, x, y, flag] => Ok((cols, rows, x, y, flag != 0)),
+            _ => bail!("tmux did not return pane geometry for {target}"),
+        }
+    }
+
     /// Get the current size (cols, rows) of a window's active pane.
     pub fn pane_size(session: &str, window: &str) -> Result<(u16, u16)> {
         let target = format!("{}:{}", session, window);

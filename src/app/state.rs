@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+use crate::db::remote_devices::RemoteDevice;
 use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
@@ -151,7 +152,7 @@ impl ViewState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingInput {
     pub session_id: String,
     pub cwd: String,
@@ -1880,12 +1881,107 @@ pub enum AppMode {
     Dormant(DormantViewState),
     /// Global context-window/severity settings (`w` on the dashboard).
     ContextSettings(ContextSettingsState),
+    /// Pairing a phone to the Remote Control companion app: a one-time code
+    /// (shown as a QR + digits) that `App::process_pairing_exchange`
+    /// validates against `POST /pair/exchange` requests relayed from the
+    /// server thread (`docs/backlog/remote-control-companion-app-plan.md`,
+    /// Epic 4). This struct *is* the pending-pairing state — there is no
+    /// separate copy on `App`, so closing the dialog (which drops it)
+    /// invalidates the code.
+    RemotePairing(RemotePairingState),
+}
+
+impl AppMode {
+    /// The mode this one stashed to restore verbatim on exit, if any — a
+    /// sub-mode opened over an overlay (e.g. `TodoImplementChoice` over
+    /// `Todos`) keeps that overlay alive inside it.
+    pub fn stashed_mode(&self) -> Option<&AppMode> {
+        match self {
+            AppMode::TodoImplementChoice(state) => Some(&state.origin),
+            AppMode::TodoSpawnTarget(state) => Some(&state.origin),
+            AppMode::PromptEditor(state) => Some(&state.return_to),
+            AppMode::SkillPicker(state) => Some(&state.return_to),
+            AppMode::PromptPrecall(pending) => Some(&pending.prior_mode),
+            AppMode::SyntaxLanguagePicker(state) => state.return_to.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this mode is, or has stashed underneath it, the TODOs
+    /// overlay — whose in-memory panes will be restored as they are.
+    pub fn holds_todos_overlay(&self) -> bool {
+        let mut mode = Some(self);
+        while let Some(current) = mode {
+            if matches!(current, AppMode::Todos(_)) {
+                return true;
+            }
+            mode = current.stashed_mode();
+        }
+        false
+    }
 }
 
 /// The view to return to plus the stable TODO identity to complete.
 pub struct TodoReferenceCompletionState {
     pub view: ViewState,
     pub todo_id: String,
+}
+
+/// UI status for the active `RemotePairing` dialog.
+pub enum PairingDialogStatus {
+    /// No exchange attempt has resolved yet.
+    Waiting,
+    /// A device successfully paired; `Esc`/`Enter` closes the dialog.
+    Paired { device_name: String },
+    /// The most recent attempt failed, or the code expired/locked out —
+    /// human-readable, shown directly, and cleared by `r` regenerating.
+    Failed(String),
+}
+
+pub struct RemotePairingState {
+    /// The current one-time code. Also embedded in `qr_payload`.
+    pub code: String,
+    /// The URL the QR encodes, minus the code: `AppConfig::remote_public_url`
+    /// when set, else `http://<addr>`. Shown under the QR so the address can
+    /// be typed when a camera isn't handy.
+    pub url: String,
+    /// Pre-rendered half-block QR glyphs (`crate::qr::render_qr_lines`),
+    /// one `String` per row. Empty when encoding failed (shouldn't happen
+    /// for this payload shape) — the dialog falls back to the digits alone.
+    pub qr_lines: Vec<String>,
+    pub expires_at: Instant,
+    /// Failed exchange attempts against `code` so far.
+    pub attempts: u32,
+    /// Set once `attempts` hits the cap — the code is dead even if it
+    /// hasn't expired yet; only `r` (a fresh code) recovers.
+    pub locked: bool,
+    pub status: PairingDialogStatus,
+    /// Which sub-screen of the dialog is showing — the pairing code itself,
+    /// or the paired-devices list (`v`) with per-device revoke. Lives here
+    /// rather than as a separate `AppMode` because it's a view toggle on
+    /// the same dialog, not a new destination — `Esc` from the devices list
+    /// returns to `Pairing`, and only `Esc` from `Pairing` closes the dialog.
+    pub view: PairingDialogView,
+}
+
+/// The `RemotePairing` dialog's current sub-screen.
+pub enum PairingDialogView {
+    Pairing,
+    Devices(RemoteDevicesListState),
+}
+
+/// The paired-devices list shown by pressing `v` in the pairing dialog.
+pub struct RemoteDevicesListState {
+    /// Loaded once on `v` — every paired device, most recently paired
+    /// first (`AmfDb::list_remote_devices`'s own ordering). Revoking
+    /// updates this copy directly rather than reloading, so the cursor
+    /// position is stable across a revoke.
+    pub devices: Vec<RemoteDevice>,
+    pub selected: usize,
+    /// Set by a first `d` press on a revocable row; a second `d` while set
+    /// performs the revoke. Any other key clears it — mirrors the prompt
+    /// overrides manager's `confirm_clear` (`app/prompt_overrides.rs`).
+    pub confirm_revoke: bool,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up

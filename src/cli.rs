@@ -1338,6 +1338,12 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.poll_remote_server_bg() {
+            force_redraw = true;
+        }
+        // Not gated on the server toggle: see `app/remote_push.rs`.
+        app.poll_remote_push();
+
         if app.latest_prompt_menu_bg.is_some() && app.poll_latest_prompt_menu_bg() {
             force_redraw = true;
         }

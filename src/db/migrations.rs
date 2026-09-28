@@ -247,6 +247,14 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add pr_review_drafts table for manual PR review drafts",
             MIGRATION_041,
         ),
+        (
+            "Add remote_devices table for Remote Control companion-app pairing",
+            MIGRATION_042,
+        ),
+        (
+            "Add Web Push subscriptions + VAPID key for Remote Control",
+            MIGRATION_043,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1088,6 +1096,51 @@ CREATE TABLE IF NOT EXISTS pr_review_drafts (
 );
 ";
 
+/// Paired-device registry for the Remote Control companion app (see
+/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). Only the
+/// token's hash is stored — the plaintext per-device token lives on the
+/// device itself, minted and hashed during the pairing exchange (Epic 4).
+/// `token_hash` is UNIQUE so a lookup by presented token can never
+/// ambiguously match more than one device. No foreign key elsewhere: a
+/// paired device is independent of any one project/feature.
+const MIGRATION_042: &str = "
+CREATE TABLE IF NOT EXISTS remote_devices (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL DEFAULT '',
+    token_hash   TEXT NOT NULL,
+    paired_at    TEXT NOT NULL,
+    last_seen_at TEXT,
+    revoked      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_devices_token_hash
+    ON remote_devices(token_hash);
+";
+
+/// Web Push for the Remote Control PWA. A subscription is keyed by its push
+/// `endpoint` — the browser's own identity for it — so a phone that
+/// re-subscribes (or re-pairs and subscribes again) replaces its row rather
+/// than adding a second. Each belongs to the paired device that registered
+/// it; deleting the device takes its subscriptions with it, and a revoked
+/// device's rows are skipped at send time (`list_active`). `remote_push_vapid`
+/// is a single row (`id = 1`) holding the server's VAPID signing key: minted
+/// once, because rotating it silently invalidates every subscription.
+const MIGRATION_043: &str = "
+CREATE TABLE IF NOT EXISTS remote_push_subscriptions (
+    endpoint   TEXT PRIMARY KEY,
+    device_id  TEXT NOT NULL REFERENCES remote_devices(id) ON DELETE CASCADE,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_push_vapid (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    private_key TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1130,7 +1183,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 43);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1169,7 +1222,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 41);
+        assert_eq!(version, 43);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1264,7 +1317,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 43);
     }
 
     #[test]
@@ -1605,7 +1658,10 @@ mod tests {
         super::run(&conn).unwrap();
         conn.execute_batch(
             "DROP TABLE pr_review_drafts;
-             DELETE FROM schema_version WHERE version = 41;
+             DROP TABLE remote_push_subscriptions;
+             DROP TABLE remote_push_vapid;
+             DROP TABLE remote_devices;
+             DELETE FROM schema_version WHERE version >= 41;
              INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
              VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
         )
@@ -1647,7 +1703,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 43);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1660,7 +1716,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 41);
+        assert_eq!(rows, 43);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1825,7 +1881,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 41);
+        assert_eq!(version, 43);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

@@ -24,6 +24,7 @@ mod precall;
 mod project;
 mod prompt_library;
 mod prompt_overrides;
+mod remote_pairing;
 mod resource_gate;
 mod review_destination;
 mod review_harness;
@@ -69,6 +70,7 @@ pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
 pub use prompt_overrides::draw_prompt_overrides;
+pub use remote_pairing::draw_remote_pairing_dialog;
 pub use resource_gate::draw_resource_confirm_dialog;
 pub use review_destination::{
     draw_review_destination_pick, draw_review_feature_setup, draw_review_integrate,

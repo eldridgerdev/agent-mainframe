@@ -11,6 +11,8 @@ pub mod pr_review_drafts;
 mod pr_terminal_state;
 pub mod prompt_overrides;
 pub mod prompt_templates;
+pub mod remote_devices;
+pub mod remote_push;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -517,6 +519,74 @@ impl AmfDb {
 
     pub fn delete_launched_editors_for_feature(&self, feature_id: &str) -> Result<()> {
         editors::delete_for_feature(&self.conn, feature_id)
+    }
+}
+
+/// Devices paired to the Remote Control companion app (see
+/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2): pairing
+/// mints them, the server's auth table is built from them, and the paired
+/// devices view revokes them.
+impl AmfDb {
+    pub fn create_remote_device(
+        &self,
+        name: &str,
+        token_hash: &str,
+    ) -> Result<remote_devices::RemoteDevice> {
+        remote_devices::create(&self.conn, name, token_hash)
+    }
+
+    #[cfg(test)]
+    pub fn find_remote_device_by_id(
+        &self,
+        id: &str,
+    ) -> Result<Option<remote_devices::RemoteDevice>> {
+        remote_devices::find_by_id(&self.conn, id)
+    }
+
+    #[cfg(test)]
+    pub fn find_remote_device_by_token_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<remote_devices::RemoteDevice>> {
+        remote_devices::find_by_token_hash(&self.conn, token_hash)
+    }
+
+    pub fn list_remote_devices(&self) -> Result<Vec<remote_devices::RemoteDevice>> {
+        remote_devices::list_all(&self.conn)
+    }
+
+    pub fn touch_remote_device_last_seen(&self, id: &str) -> Result<()> {
+        remote_devices::touch_last_seen(&self.conn, id)
+    }
+
+    pub fn revoke_remote_device(&self, id: &str) -> Result<()> {
+        remote_devices::revoke(&self.conn, id)
+    }
+}
+
+/// Web Push state for the Remote Control PWA.
+impl AmfDb {
+    pub fn upsert_push_subscription(
+        &self,
+        subscription: &remote_push::PushSubscription,
+    ) -> Result<()> {
+        remote_push::upsert(&self.conn, subscription)
+    }
+
+    pub fn list_active_push_subscriptions(&self) -> Result<Vec<remote_push::PushSubscription>> {
+        remote_push::list_active(&self.conn)
+    }
+
+    pub fn delete_push_subscription(&self, endpoint: &str) -> Result<()> {
+        remote_push::delete(&self.conn, endpoint)
+    }
+
+    pub fn vapid_private_key(&self) -> Result<Option<String>> {
+        remote_push::vapid_private_key(&self.conn)
+    }
+
+    pub fn claim_vapid_private_key(&self, key: &str) -> Result<String> {
+        remote_push::claim_vapid_private_key(&self.conn, key)
     }
 }
 

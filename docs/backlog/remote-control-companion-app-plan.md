@@ -1,6 +1,12 @@
 # Remote Control — companion app
 
-- **Status:** Ready
+- **Status:** Phases 1–3 implemented (2026-09-28) as a **PWA** served by
+  AMF itself, which replaced the Flutter client at the user's direction
+  (2026-09-26). It covers status, push, the terminal (simple and full), and
+  feature/session/TODO/prompt/diff actions. User guide:
+  [`docs/remote-control.md`](../remote-control.md). Detailed progress is in the
+  feature's `AMF_PLAN.md`. The Flutter epics below (3, 6) are superseded;
+  the `mobile/` Flutter project was removed before merge (2026-09-28).
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -56,8 +62,9 @@ explicitly:
   desktop session with no conflict resolution — both sides can type
   into the same pane; last input wins at the terminal level, same as
   two local terminals attached to one tmux session.
-- **Client**: a cross-platform native app built with **Flutter** (iOS +
-  Android from one Dart codebase) — not a PWA. Chosen over a PWA for
+- **Client (superseded 2026-09-26 — now a PWA, see Status)**: a
+  cross-platform native app built with **Flutter** (iOS + Android from one
+  Dart codebase) — not a PWA. Chosen over a PWA for
   more reliable push delivery and native terminal performance, at the
   cost of app-store distribution and a new (non-Rust) toolchain. The
   terminal view uses an embedded WebView hosting xterm.js for
@@ -175,61 +182,180 @@ channel between it and the main event loop. No independent value on its
 own — this is the load-bearing dependency for every other server-side
 epic.
 
-- [ ] Add tokio + axum (or equivalent) dependency.
-- [ ] Dedicated server thread, started/stopped by the on/off toggle.
-- [ ] `mpsc` channel wiring: remote requests marshalled onto the main
+- [x] Add tokio + axum (or equivalent) dependency.
+- [x] Dedicated server thread, started/stopped by the on/off toggle.
+- [x] `mpsc` channel wiring: remote requests marshalled onto the main
       loop, responses/state pushed back the same way.
-- [ ] Toggle surfaced in the dashboard/leader menu (state only — LAN vs.
+- [x] Toggle surfaced in the dashboard/leader menu (state only — LAN vs.
       tunnel indicator comes with the tunnel work in Epic 4/9).
 
-Verification: server starts/stops cleanly with the toggle and doesn't
-block or slow the existing 50ms/250ms poll loop; a test exercises
-start/stop without a real network client.
+**Done (2026-09-14).** `src/remote_server.rs` runs the server on a
+dedicated `amf-remote-server` thread with its own tokio runtime and a
+single `/health` route (real routes land with Epics 4/5/8/9). Shutdown
+is a tokio oneshot signal with graceful `axum::serve` teardown;
+lifecycle is reported back over a plain `std::sync::mpsc` channel
+(`Started`/`Stopped`), matching the existing `ipc.rs` cross-thread
+pattern rather than inventing a new one. `App::remote_server` owns the
+handle, `App::toggle_remote_server` starts/stops it (bound to
+`Ctrl+Space C` on the dashboard — no auto-start, ever), and
+`App::poll_remote_server_bg` drains events every main-loop tick.
+Loopback-only (`127.0.0.1`) on an OS-assigned port at the time.
+Correction (2026-09-14, once Epic 4 landed): auth existing doesn't by
+itself open up LAN/tunnel exposure — the bind address is unchanged by
+Epic 4; widening it is separate follow-up work. **Superseded
+(2026-09-28):** the server now binds the configurable
+`AppConfig::remote_bind`, `127.0.0.1:47800` by default — a fixed port so
+a tunnel survives restarts (see `docs/remote-control.md`). Only tests
+still bind port 0.
+
+Verification: 4 new tests (start/stop without a client, drop-without-
+explicit-stop joins cleanly and doesn't hang, two servers on
+independent OS-assigned ports, full toggle round-trip through `App`).
+Full suite (2251 tests), `cargo clippy --all-targets -- -D warnings`,
+and `cargo fmt --check` all pass.
 
 ### Epic 2 — Device storage (P0)
 
 Fully independent of Epic 1 — this is a data-model addition only.
 Safe to build first or in parallel.
 
-- [ ] `remote_devices` migration, following the existing `MIGRATION_0xx`
+- [x] `remote_devices` migration, following the existing `MIGRATION_0xx`
       convention.
-- [ ] `src/db/remote_devices.rs` (or similar): create, lookup by token,
+- [x] `src/db/remote_devices.rs` (or similar): create, lookup by token,
       revoke, update last-seen.
 
-Verification: unit tests for create/lookup/revoke, consistent with the
-`#[cfg(test)]` convention in `app/tests.rs`.
+**Done (2026-09-14).** `MIGRATION_042` (numbered 029 when first written,
+renumbered by later merges of main) adds `remote_devices` (id, name,
+token_hash, paired_at, last_seen_at, revoked) with a UNIQUE index on
+`token_hash`. `src/db/remote_devices.rs` stores only the hashed token —
+minting and hashing a real token is Epic 4's job — and exposes
+create/find-by-id/find-by-token-hash/list-all/touch-last-seen/revoke,
+wrapped as `AmfDb` methods. Originally marked `#[allow(dead_code)]`
+until Epic 4 called in; that allow is gone now that pairing, auth, and
+revoke use the module, and the two lookups only tests use
+(find-by-id/find-by-token-hash) are `#[cfg(test)]`. Web Push's tables are
+`MIGRATION_043`.
+
+Verification: 7 new unit tests (create/lookup by id/lookup by token
+hash/unknown lookups return `None` not an error/revoke leaves the row
+findable so callers can distinguish unknown-vs-revoked/touch-last-seen/
+list-all/unique-token-hash constraint). Full suite (2258 tests, after
+also bumping 4 migration tests that hardcoded the prior latest-version
+number), clippy, and fmt all pass.
 
 ### Epic 3 — Native app groundwork (P0)
 
 Front-loads the app-store-adjacent lead time the Flutter decision adds
 (account approval, signing, CI) so it isn't discovered as a blocker
 mid-Phase-1. Fully independent of Epics 1–2; can start immediately.
+**Narrowed (2026-09-14) to Android-only for now** — iOS (Apple Developer
+account, TestFlight, code signing) is deliberately deferred, per the user.
 
-- [ ] Flutter project scaffold (iOS + Android targets).
-- [ ] Apple Developer account + Google Play Console account (or confirm
-      existing ones can be used).
-- [ ] Code signing set up for both platforms.
-- [ ] TestFlight / Play Console internal-testing track configured for
-      installing dev builds on a real phone without a store release.
-- [ ] Minimal CI build (or documented local build steps) producing an
-      installable artifact for each platform.
+- [x] Flutter project scaffold (Android target only; iOS deferred).
+- [ ] ~~Apple Developer account~~ — deferred with iOS.
+- [ ] Google Play Console account (or confirm an existing one can be
+      used). Still open — not needed for local `adb install` testing.
+- [ ] Code signing for Android (a release/upload key). Still open — debug
+      builds are unsigned-for-distribution by default and that's all
+      that exists so far.
+- [ ] Play Console internal-testing track configured for installing dev
+      builds on a real phone without a store release. Still open —
+      superseded for now by `adb install` (see `mobile/README.md`).
+- [x] Documented local build steps producing an installable artifact
+      (`mobile/README.md`); CI is still open.
 
-Verification: an empty scaffold app installs on a real iOS and Android
-device via TestFlight/internal testing.
+**Removed (2026-09-28).** Superseded by the PWA; the `mobile/` project
+described below was deleted before merge rather than kept as dead code.
+
+**Done (2026-09-14), scaffold half.** `mobile/` is a Flutter project
+(`flutter create --platforms=android --org dev.agentmainframe
+--project-name amf_companion mobile`), Android-only. Toolchain (Flutter
+3.47.4 stable + Android SDK platform 36 / build-tools 34 & 36, no
+sudo/snap — extracted from the official tarballs into `~/dev/flutter`
+and `~/dev/android-sdk`, since this dev box has no root access in this
+session) is documented in `mobile/README.md` rather than committed
+(machine-local, like any other SDK install). `flutter build apk --debug`
+produces `mobile/build/app/outputs/flutter-apk/app-debug.apk`; nested
+`mobile/.gitignore` (from the template) keeps `build/`, `.dart_tool/`,
+`.idea/`, and `android/local.properties` out of git the same way the
+main repo's `target/` is already excluded — only source, `pubspec.*`,
+and the Android project skeleton are tracked.
+
+Also built the actual Phase 1 screens on top of the scaffold (a step
+ahead of where this epic's checklist originally stopped, since an empty
+counter-app scaffold wasn't worth committing on its own): pairing
+(`lib/pairing_screen.dart`, manual server-address + code entry —
+`POST /pair/exchange`) and status (`lib/status_screen.dart`, polls
+`GET /status` every 5s with the stored bearer token, clears the
+credential and returns to pairing on a 401). `lib/models.dart` /
+`lib/api_client.dart` mirror `src/remote_server.rs`'s JSON shapes
+directly; `lib/credential_store.dart` persists the one device credential
+via `shared_preferences`. Not built yet: QR-code scanning (manual entry
+only — also the desktop dialog's own fallback) and Firebase push
+(Epic 6's job, and a separate external-service decision).
+
+Verification: `flutter analyze` and `flutter test` (2 new widget tests —
+shows pairing with no stored credential, goes straight to status with
+one) both clean; `flutter build apk --debug` succeeds. **Not done:**
+install on a real device — no phone was connected in this session (the
+server is loopback-only regardless; see `mobile/README.md` for the
+`adb reverse` step needed to test pairing for real once one is).
 
 ### Epic 4 — Pairing flow (P1)
 
 Needs Epic 1 (server to expose the exchange endpoint) and Epic 2
 (device storage).
 
-- [ ] One-time pairing code generation + QR rendering on desktop.
-- [ ] Code exchange endpoint issuing a per-device token.
-- [ ] Rate-limiting/lockout on repeated failed pairing attempts.
-- [ ] Pairing dialog UI (QR + code + status) on desktop.
+- [x] One-time pairing code generation + QR rendering on desktop.
+- [x] Code exchange endpoint issuing a per-device token.
+- [x] Rate-limiting/lockout on repeated failed pairing attempts.
+- [x] Pairing dialog UI (QR + code + status) on desktop.
 
-Verification: automated tests for token issuance, invalid/expired code
-rejection, and lockout after repeated failures; one manual pass pairing
-a real phone.
+**Done (2026-09-14).** `App::start_pairing` (`Ctrl+Space Q`, dashboard
+leader — `C` was already taken for the toggle; checked both the
+dashboard- and view-leader namespaces before picking `Q`, free in both)
+opens `AppMode::RemotePairing`, whose state *is* the pending pairing —
+there's no separate copy on `App`, so closing the dialog invalidates the
+code by construction rather than by a second cleanup step. The code is a
+6-digit number (`remote_server::generate_pairing_code`, `uuid`-backed —
+no new RNG dependency); the QR encodes `amf-pair://<addr>?code=<code>`
+via a new `src/qr.rs` (the `qrcode` crate, half-block Unicode rendering,
+the same approach sketched for the unrelated session-URL QR in
+`remote-control-qr-overlay-plan.md`, landing here first).
+
+`POST /pair/exchange` (`src/remote_server.rs`) never itself decides
+whether a code is valid: per the plan's DB-concurrency decision the main
+loop is the sole SQLite writer, so the handler only forwards the request
+as a `PairingExchangeRequest` and `.await`s the outcome on a `oneshot`
+embedded in it (a 5s timeout guards against an unresponsive main loop).
+`App::process_pairing_exchange` (`src/app/remote_server.rs`), drained
+every tick by `poll_remote_server_bg` alongside the existing lifecycle
+events, validates against the dialog's own state: wrong code increments
+`attempts` and locks out at `MAX_PAIRING_ATTEMPTS` (5); a *correct* code
+locks the same way immediately after minting a device, making the code
+single-use rather than replayable for as long as the success screen is
+up. Token minting (`generate_device_token`) and hashing
+(`hash_token`, SHA-256) live in `remote_server.rs`, called from the App
+side that owns the DB write — `db/remote_devices.rs`'s Epic 2 comment
+about this being Epic 4's job is now accurate. A stopped server flips an
+open dialog to a "server stopped" failure state instead of leaving it
+stuck on "Waiting for phone…".
+
+Verification: 18 new tests — token issuance and DB persistence, blank
+device-name fallback, wrong-code rejection without burning the real
+code, lockout at the attempt cap (and that lockout also blocks the
+*correct* code), single-use enforcement after success, expiry,
+regenerate replacing the code, no-DB-configured failure, a server-stop
+mid-dialog transition, and a real end-to-end HTTP round trip
+(`ureq` POST against a live `/pair/exchange`, wrong code then right code,
+driven entirely through `App::poll_remote_server_bg` the way a real
+phone's requests would be). Full suite (2276 tests), clippy
+`--all-targets -D warnings`, and `cargo fmt --check` all clean.
+**Not done:** the "one manual pass pairing a real phone" verification
+item — there is no phone client yet (Epic 3/6) and the server is still
+loopback-only (`127.0.0.1`, see Epic 1), so nothing off this machine can
+reach `/pair/exchange` yet regardless. Revisit once Epic 6 (or a LAN/
+tunnel bind) exists to actually try it.
 
 ### Epic 5 — Status/notification relay (P1)
 
@@ -237,16 +363,34 @@ Needs Epic 1 only — the read-only relay logic can be built and tested
 against a local client before pairing/auth exists, though it should be
 gated behind auth (Epic 4) before being exposed on a real network.
 
-- [ ] Read-only status/notification endpoint (WebSocket or polling)
+- [x] Read-only status/notification endpoint (WebSocket or polling)
       sourced from the existing `app/notifications.rs` scan.
-- [ ] Independent of the remote-control toggle's on/off state, per the
+- [x] Independent of the remote-control toggle's on/off state, per the
       notification/toggle split in Architecture.
-- [ ] Auth-gated once Epic 4 lands (do not ship unauthenticated on a
-      real network).
+- [x] Auth-gated once Epic 4 lands (do not ship unauthenticated on a
+      real network). Done (2026-09-14) as part of Epic 7 — see that
+      epic for the middleware and its tests.
 
-Verification: automated test that a simulated attention event is
-delivered over the channel; manual check that a live AMF instance's
-status is visible over the relay.
+**Done (2026-09-14), backend half.** `GET /status` on
+`src/remote_server.rs` serves a `RemoteStatusSnapshot` (plain polling,
+not a WebSocket — simplest thing that works for a feed this small and
+low-frequency; nothing here rules out a push transport later).
+`App::build_remote_status_snapshot` builds it from `self.store` plus the
+existing in-memory `self.attention` map — attention *detection* was
+already independent of this toggle before this epic (that's
+`app/notifications.rs`, untouched here); what's new is a read-only
+window onto it. Pushed to the server thread over a `tokio::mpsc`
+channel every `poll_remote_server_bg` tick; a relay task holds the
+latest snapshot behind a `Mutex` so the server thread never reads `App`
+directly. `RemoteFeatureStatus` is a deliberately narrow wire type, not
+a mirror of `project::Feature`. The Flutter-side status *view* is Epic
+6's job — this epic is the backend feed it will call.
+
+Verification: 3 new tests, including a real HTTP round trip
+(`ureq::get` against a live `/status`) both before and after
+`publish_status`, and the `poll_remote_server_bg` publish loop verified
+end-to-end over real HTTP from `App`. Full suite (2261 tests, run twice
+for flakiness), clippy, and fmt all clean.
 
 ### Epic 6 — App shell + push (P1)
 
@@ -254,25 +398,66 @@ Needs Epic 3 (scaffold) to exist at all; needs Epic 4 for a real pairing
 flow and Epic 5 for real status data, though UI scaffolding for both
 screens can be built against mocked data in parallel with those landing.
 
-- [ ] Pairing/scan screen.
-- [ ] Status/notification list screen (Phase 1 view).
+- [ ] Pairing/scan screen. Partially done under Epic 3 (2026-09-14):
+      manual entry works end-to-end against `/pair/exchange`; QR
+      scanning itself is not built.
+- [ ] Status/notification list screen (Phase 1 view). Also done under
+      Epic 3 (2026-09-14): polls `/status`, shows attention state.
 - [ ] Firebase Cloud Messaging integration for attention push
-      notifications.
+      notifications. Not started — needs a Firebase project decision
+      first (see Risks).
 
 Verification: manual install/pairing on a real phone; confirm a
-notification triggered by a real agent question arrives.
+notification triggered by a real agent question arrives. Neither done
+yet — no phone was connected this session (see Epic 3's verification
+note) and push isn't built.
 
 ### Epic 7 — Device revoke (P1)
 
 Needs Epic 4 (pairing/token model).
 
-- [ ] Revoke action in the desktop paired-devices list.
-- [ ] Revoke closes any active connection for that device immediately
+- [x] Revoke action in the desktop paired-devices list.
+- [x] Revoke closes any active connection for that device immediately
       (not just on next reconnect).
-- [ ] Revoked token rejected on all subsequent requests.
+- [x] Revoked token rejected on all subsequent requests.
 
-Verification: automated test that a revoked token is rejected; manual
-test that an open connection is torn down on revoke.
+**Done (2026-09-14).** Two halves. First, `/status` actually checks a
+token now: `require_device_auth` (`src/remote_server.rs`) is an axum
+`route_layer` on `/status` that reads `Authorization: Bearer <token>`
+and checks it against an in-memory `HashMap<token_hash,
+AuthorizedDevice>`. That table is published by `App` every tick
+(`App::build_authorized_devices`, alongside the existing status
+snapshot) from `db.list_remote_devices()` with revoked rows filtered
+out — same channel-routed shape as the status feed and pairing
+exchange, so the server thread still never opens its own database
+connection. A hit reports the device id back over a fire-and-forget
+channel so `App::drain_device_seen_events` can record `last_seen_at`
+from the main loop. Missing, unknown, and revoked tokens all produce
+the same 401 (no signal beyond "no", matching the pairing exchange's
+own non-disclosure).
+
+Second, the revoke UI itself: `v` from the pairing dialog
+(`Ctrl+Space Q`) opens a paired-devices list as a sub-screen of that
+same dialog (`RemotePairingState::view: PairingDialogView`) rather than
+a new leader binding or `AppMode` — the list only makes sense in
+relation to an open pairing session, and `Esc` from it returns to the
+pairing screen rather than closing the dialog outright. `j`/`k` move
+the cursor; `d`, `d` revokes the selected device (arm on the first
+press, confirm on the second, any other key clears the arm) — the same
+contract the prompt overrides manager's `d`, `d` clear uses. There is
+no live connection for a revoke to tear down yet (that arrives with
+Epic 9's terminal streaming); "immediately" for now means the very
+next tick's published table excludes the device, which is exactly what
+an unknown token already looks like to `require_device_auth`.
+
+Verification: 3 new server-level tests (`/status` rejects no token and
+an unrecognized one, a valid one passes and reports last-seen) and 6
+new `App`-level tests (open/close the devices view, selection wraps
+and clears a pending confirmation, the arm-then-confirm flow updates
+both the DB row and the dialog's own copy, any other key clears the
+confirmation, a revoked device drops out of the authorized table) —
+all pass; full suite (2662 tests), clippy `--all-targets -D warnings`,
+and `cargo fmt --check` all clean.
 
 ### Epic 8 — Prompt response (P2)
 
@@ -362,7 +547,15 @@ connections.
   Developer / Google Play accounts, code signing, TestFlight/Play
   Console internal testing, and store review turnaround for any future
   update. Epic 3 exists specifically to front-load this rather than
-  discover it mid-Phase-1.
+  discover it mid-Phase-1. **Narrowed (2026-09-14):** iOS is deferred
+  entirely for now (per the user), so only the Android half of this
+  (Play Console account, signing, internal-testing track) is still
+  open — see Epic 3.
+- Firebase Cloud Messaging (Epic 6's push notifications) needs a
+  Firebase project created and wired up (a new external-service
+  dependency, `google-services.json` committed or generated per build,
+  a server-side key for AMF to send from) — not yet decided or
+  scoped; needs sign-off before Epic 6's push half starts.
 - The tunnel mechanism is resolved to "integrate with an existing tool"
   (Tailscale, ngrok, or cloudflared), but *which one* to document/support
   first is still open — pick it when Epic 9 (or a LAN/tunnel toggle in

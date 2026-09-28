@@ -58,11 +58,11 @@ impl App {
             let db = self.db.as_ref()?;
             let key = match db.vapid_private_key() {
                 Ok(Some(stored)) => VapidKey::from_private_key_b64(&stored),
-                Ok(None) => {
-                    let key = VapidKey::generate();
-                    db.set_vapid_private_key(&key.private_key_b64())
-                        .map(|()| key)
-                }
+                // Another instance sharing `amf.db` may mint one at the same
+                // moment; whichever was stored first is the key to use.
+                Ok(None) => db
+                    .claim_vapid_private_key(&VapidKey::generate().private_key_b64())
+                    .and_then(|stored| VapidKey::from_private_key_b64(&stored)),
                 Err(e) => Err(e),
             };
             match key {

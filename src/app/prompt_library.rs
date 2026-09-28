@@ -910,10 +910,6 @@ pub(crate) struct LostPromptContext {
     pub workdir: PathBuf,
 }
 
-/// Read the `prompt_templates` declared in the project config (`amf.json`,
-/// or the legacy `.amf/config.json`). Returns an empty list when the file
-/// is absent or unparseable, mirroring the tolerant loading in
-/// `merge_project_extension_config`.
 impl App {
     /// The library as the picker would show it for feature `(pi, fi)`,
     /// read-only and without opening the picker — for Remote Control.
@@ -946,6 +942,10 @@ impl App {
     }
 }
 
+/// Read the `prompt_templates` declared in the project config (`amf.json`,
+/// or the legacy `.amf/config.json`). Returns an empty list when the file
+/// is absent or unparseable, mirroring the tolerant loading in
+/// `merge_project_extension_config`.
 fn load_project_prompt_templates(repo: &Path) -> Vec<PromptTemplate> {
     let Some(path) = crate::extension::resolve_project_config_path(repo) else {
         return Vec::new();

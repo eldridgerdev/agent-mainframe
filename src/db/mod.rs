@@ -523,10 +523,9 @@ impl AmfDb {
 }
 
 /// Devices paired to the Remote Control companion app (see
-/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2). The
-/// pairing flow that mints tokens and the auth path that looks them up are
-/// Epic 4, so nothing calls these yet outside this module's own tests.
-#[allow(dead_code)]
+/// `docs/backlog/remote-control-companion-app-plan.md`, Epic 2): pairing
+/// mints them, the server's auth table is built from them, and the paired
+/// devices view revokes them.
 impl AmfDb {
     pub fn create_remote_device(
         &self,
@@ -536,6 +535,7 @@ impl AmfDb {
         remote_devices::create(&self.conn, name, token_hash)
     }
 
+    #[cfg(test)]
     pub fn find_remote_device_by_id(
         &self,
         id: &str,
@@ -543,6 +543,7 @@ impl AmfDb {
         remote_devices::find_by_id(&self.conn, id)
     }
 
+    #[cfg(test)]
     pub fn find_remote_device_by_token_hash(
         &self,
         token_hash: &str,
@@ -584,8 +585,8 @@ impl AmfDb {
         remote_push::vapid_private_key(&self.conn)
     }
 
-    pub fn set_vapid_private_key(&self, key: &str) -> Result<()> {
-        remote_push::set_vapid_private_key(&self.conn, key)
+    pub fn claim_vapid_private_key(&self, key: &str) -> Result<String> {
+        remote_push::claim_vapid_private_key(&self.conn, key)
     }
 }
 

@@ -3,17 +3,16 @@
 //!
 //! This module only stores and looks up hashed tokens — it has no opinion
 //! on how a token is minted or hashed. That belongs to the pairing flow
-//! (Epic 4), which is the only caller expected to see a plaintext token.
-//! Once issued, every subsequent request authenticates by hashing the
-//! presented token the same way and looking it up here.
-//!
-//! Epic 4 (pairing flow) is the first real caller, so this module is
-//! exercised only by its own tests for now.
-#![allow(dead_code)]
+//! (`App::apply_pairing_exchange`), the only caller that sees a plaintext
+//! token. The server's authorized-device table is built from these rows
+//! (`App::refresh_authorized_devices`), and every request authenticates by
+//! hashing the presented token the same way and looking it up there.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+#[cfg(test)]
+use rusqlite::OptionalExtension;
+use rusqlite::{Connection, params};
 use uuid::Uuid;
 
 /// One paired device.
@@ -58,8 +57,9 @@ pub fn create(conn: &Connection, name: &str, token_hash: &str) -> Result<RemoteD
     Ok(device)
 }
 
-/// Look up a device by id (for the desktop paired-devices list acting on a
-/// selection, e.g. revoke).
+/// Look up a device by id. Test-only: the paired-devices view works from
+/// `list_all`.
+#[cfg(test)]
 pub fn find_by_id(conn: &Connection, id: &str) -> Result<Option<RemoteDevice>> {
     conn.query_row(
         "SELECT id, name, token_hash, paired_at, last_seen_at, revoked
@@ -71,10 +71,10 @@ pub fn find_by_id(conn: &Connection, id: &str) -> Result<Option<RemoteDevice>> {
     .map_err(Into::into)
 }
 
-/// Look up a device by its token's hash — the authentication path every
-/// request other than pairing itself will use. Returns a revoked device
-/// too (rather than hiding it as "not found"), so callers can distinguish
-/// an unknown token from a revoked one and respond/log accordingly.
+/// Look up a device by its token's hash. Returns a revoked device too
+/// (rather than hiding it as "not found"). Test-only: requests authenticate
+/// against the table `App::refresh_authorized_devices` publishes.
+#[cfg(test)]
 pub fn find_by_token_hash(conn: &Connection, token_hash: &str) -> Result<Option<RemoteDevice>> {
     conn.query_row(
         "SELECT id, name, token_hash, paired_at, last_seen_at, revoked

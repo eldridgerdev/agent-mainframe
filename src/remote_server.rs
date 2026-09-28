@@ -132,10 +132,10 @@ type SharedStatus = Arc<Mutex<RemoteStatusSnapshot>>;
 
 /// One device authorized to make authenticated requests, keyed by its
 /// token's hash in the table `App` publishes every tick (see
-/// `App::build_authorized_devices`). Revoked devices are simply absent, so
+/// `App::refresh_authorized_devices`). Revoked devices are simply absent, so
 /// a revoke takes effect on the next tick without the server thread ever
 /// touching the database itself.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizedDevice {
     pub device_id: String,
     pub device_name: String,
@@ -1145,11 +1145,6 @@ mod tests {
         }
     }
 
-    /// Publish a single authorized device and wait (briefly — the relay
-    /// task applies it asynchronously) until a request bearing its token
-    /// actually gets past `require_device_auth`, so callers don't race the
-    /// relay. Returns the plaintext token to send as `Authorization: Bearer
-    /// <token>`.
     #[test]
     fn push_routes_require_auth_and_forward_as_the_device() {
         let mut handle = start(
@@ -1431,6 +1426,11 @@ mod tests {
         }
     }
 
+    /// Publish a single authorized device and wait (briefly — the relay
+    /// task applies it asynchronously) until a request bearing its token
+    /// actually gets past `require_device_auth`, so callers don't race the
+    /// relay. Returns the plaintext token to send as `Authorization: Bearer
+    /// <token>`.
     fn publish_one_authorized_device(handle: &RemoteServerHandle, addr: SocketAddr) -> String {
         let token = "test-device-token".to_string();
         let mut table = HashMap::new();

@@ -80,15 +80,23 @@ pub fn vapid_private_key(conn: &Connection) -> Result<Option<String>> {
     .map_err(Into::into)
 }
 
-/// Store the VAPID private key. Only ever called once per database: every
-/// existing subscription is bound to the matching public key.
-pub fn set_vapid_private_key(conn: &Connection, key: &str) -> Result<()> {
+/// Store `key` as the VAPID private key unless one is already stored, and
+/// return whichever key the database now holds. Every subscription is bound
+/// to the matching public key, so the first key written wins: two AMF
+/// instances sharing `amf.db` that both mint one must both end up signing
+/// with the stored key, never overwrite it.
+pub fn claim_vapid_private_key(conn: &Connection, key: &str) -> Result<String> {
     conn.execute(
         "INSERT INTO remote_push_vapid (id, private_key, created_at) VALUES (1, ?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET private_key = excluded.private_key",
+         ON CONFLICT(id) DO NOTHING",
         params![key, Utc::now().to_rfc3339()],
     )?;
-    Ok(())
+    conn.query_row(
+        "SELECT private_key FROM remote_push_vapid WHERE id = 1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -161,8 +169,17 @@ mod tests {
         let (_tmp, db) = open_temp_db();
         assert_eq!(db.vapid_private_key().unwrap(), None);
 
-        db.set_vapid_private_key("secret").unwrap();
+        assert_eq!(db.claim_vapid_private_key("secret").unwrap(), "secret");
 
         assert_eq!(db.vapid_private_key().unwrap().as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn a_second_vapid_key_never_overwrites_the_first() {
+        let (_tmp, db) = open_temp_db();
+        db.claim_vapid_private_key("first").unwrap();
+
+        assert_eq!(db.claim_vapid_private_key("second").unwrap(), "first");
+        assert_eq!(db.vapid_private_key().unwrap().as_deref(), Some("first"));
     }
 }

@@ -1229,6 +1229,9 @@ pub struct App {
     pub remote_server_addr: Option<SocketAddr>,
     /// Web Push to paired phones — see `app/remote_push.rs`.
     pub remote_push: remote_push::RemotePushState,
+    /// The authorized-device table the server checks bearer tokens
+    /// against — see `app/remote_server.rs`.
+    pub remote_devices: remote_server::AuthorizedDevicesCache,
 }
 
 pub(crate) struct HarnessCheckResult {
@@ -2605,6 +2608,7 @@ impl App {
             remote_server: None,
             remote_server_addr: None,
             remote_push: Default::default(),
+            remote_devices: Default::default(),
         };
 
         match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
@@ -2864,6 +2868,7 @@ impl App {
             remote_server: None,
             remote_server_addr: None,
             remote_push: Default::default(),
+            remote_devices: Default::default(),
         }
     }
 

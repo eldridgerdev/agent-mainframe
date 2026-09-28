@@ -34,6 +34,30 @@ const PAIRING_CODE_TTL: Duration = Duration::from_secs(300);
 /// not per device — a new code resets the counter.
 const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
+/// How long a loaded authorized-device table is trusted before it is
+/// re-read. Pairing and revoking from this instance invalidate it
+/// immediately; this bounds how long a revoke made by another AMF instance
+/// sharing `amf.db` can go unnoticed.
+const AUTHORIZED_DEVICES_TTL: Duration = Duration::from_secs(5);
+
+/// The authorized-device table, cached so the per-tick publish never
+/// queries the database. On a failed reload the last good table is kept:
+/// the PWA treats a 401 as a revocation and deletes its token, so
+/// publishing an empty table over a transient SQLite error would unpair
+/// every phone.
+#[derive(Default)]
+pub struct AuthorizedDevicesCache {
+    table: HashMap<String, AuthorizedDevice>,
+    /// When `table` was last loaded; `None` means reload on next use.
+    loaded_at: Option<Instant>,
+    /// `table` has changed (or the server restarted) since it was last
+    /// published.
+    unpublished: bool,
+    /// The previous reload failed — logged once per failure streak rather
+    /// than every tick while it keeps retrying.
+    load_failing: bool,
+}
+
 /// What the pairing QR encodes: the PWA's own URL with the code, so a phone
 /// camera opens the pairing page pre-filled. The configured public URL when
 /// there is one (the tunnel's), else the bind address.
@@ -73,6 +97,8 @@ impl App {
             }
         };
         self.log_info("remote_server", format!("Starting on {bind_addr}"));
+        // A fresh server starts with an empty table: reload and republish.
+        self.invalidate_authorized_devices();
         let vapid_public_key = self.ensure_vapid_key().map(|key| key.public_key_b64());
         self.remote_server = Some(remote_server::start(
             bind_addr,
@@ -157,9 +183,16 @@ impl App {
         // Push a fresh snapshot every tick the server is up. Building it is
         // a cheap in-memory scan (no I/O), and the server thread only ever
         // sees the latest one — see `RemoteServerHandle::publish_status`.
+        // The device table is cached and only republished when it changes.
+        if self.remote_server.is_some() {
+            self.refresh_authorized_devices();
+        }
         if let Some(handle) = &self.remote_server {
             handle.publish_status(self.build_remote_status_snapshot());
-            handle.publish_authorized_devices(self.build_authorized_devices());
+            if self.remote_devices.unpublished {
+                handle.publish_authorized_devices(self.remote_devices.table.clone());
+                self.remote_devices.unpublished = false;
+            }
         }
 
         paired || seen || pushed || acted || changed
@@ -348,6 +381,7 @@ impl App {
         match db.revoke_remote_device(&device_id) {
             Ok(()) => {
                 self.invalidate_push_subscriptions();
+                self.invalidate_authorized_devices();
                 self.log_info("remote_server", format!("Device revoked: {device_id}"));
                 self.push_toast_info(format!("Revoked \"{device_name}\""));
                 if let AppMode::RemotePairing(state) = &mut self.mode
@@ -365,19 +399,16 @@ impl App {
         }
     }
 
-    /// The device-token authorization table `/status` (and any future
+    /// The device-token authorization table `/status` (and every other
     /// authenticated route) checks incoming `Authorization: Bearer <token>`
-    /// headers against, published to the server thread every tick like the
-    /// status snapshot. Revoked devices are simply left out, so a revoke
-    /// takes effect on the next tick rather than needing its own teardown
-    /// path — there's no persistent connection yet (that's Epic 6) for a
-    /// revoke to have to tear down.
-    fn build_authorized_devices(&self) -> HashMap<String, AuthorizedDevice> {
+    /// headers against. Revoked devices are simply left out, so a revoke
+    /// takes effect as soon as the table is republished.
+    fn load_authorized_devices(&self) -> anyhow::Result<HashMap<String, AuthorizedDevice>> {
         let Some(db) = &self.db else {
-            return HashMap::new();
+            return Ok(HashMap::new());
         };
-        let devices = db.list_remote_devices().unwrap_or_default();
-        devices
+        Ok(db
+            .list_remote_devices()?
             .into_iter()
             .filter(|d| !d.revoked)
             .map(|d| {
@@ -389,7 +420,48 @@ impl App {
                     },
                 )
             })
-            .collect()
+            .collect())
+    }
+
+    /// Reload the cached table if it was invalidated or has outlived
+    /// `AUTHORIZED_DEVICES_TTL`. A failed reload keeps the last good table
+    /// and retries next tick.
+    pub(super) fn refresh_authorized_devices(&mut self) -> &HashMap<String, AuthorizedDevice> {
+        let fresh = self
+            .remote_devices
+            .loaded_at
+            .is_some_and(|at| at.elapsed() < AUTHORIZED_DEVICES_TTL);
+        if !fresh {
+            match self.load_authorized_devices() {
+                Ok(table) => {
+                    let cache = &mut self.remote_devices;
+                    if table != cache.table {
+                        cache.table = table;
+                        cache.unpublished = true;
+                    }
+                    cache.loaded_at = Some(Instant::now());
+                    cache.load_failing = false;
+                }
+                Err(e) => {
+                    if !self.remote_devices.load_failing {
+                        self.log_error(
+                            "remote_server",
+                            format!("Loading paired devices (keeping the last table): {e}"),
+                        );
+                    }
+                    self.remote_devices.load_failing = true;
+                }
+            }
+        }
+        &self.remote_devices.table
+    }
+
+    /// Drop the cached device table — call after anything that changes
+    /// which devices are authorized (pair, revoke) or when a new server
+    /// needs the table published to it.
+    pub(super) fn invalidate_authorized_devices(&mut self) {
+        self.remote_devices.loaded_at = None;
+        self.remote_devices.unpublished = true;
     }
 
     /// Record a last-seen timestamp for every device that made an
@@ -490,6 +562,7 @@ impl App {
         let hash = remote_server::hash_token(&token);
         match db.create_remote_device(&name, &hash) {
             Ok(device) => {
+                self.invalidate_authorized_devices();
                 // One-time code: lock it out after a single successful
                 // exchange too, not just after failures, so a replayed
                 // request (or an attacker who saw the code) can't mint a
@@ -804,7 +877,7 @@ pub(super) mod tests {
         );
         app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
         // /status is authenticated (Epic "device revoke" auth wiring) — a
-        // paired device is what lets `build_authorized_devices` publish a
+        // paired device is what lets `refresh_authorized_devices` publish a
         // non-empty table for this request to pass.
         let token = "test-token";
         app.db
@@ -1355,7 +1428,7 @@ pub(super) mod tests {
 
     #[test]
     fn revoked_devices_are_excluded_from_the_authorized_table() {
-        let (_db_file, app) = test_app_with_db();
+        let (_db_file, mut app) = test_app_with_db();
         let device = app
             .db
             .as_ref()
@@ -1363,13 +1436,60 @@ pub(super) mod tests {
             .create_remote_device("Phone A", "hash-a")
             .unwrap();
 
-        assert_eq!(app.build_authorized_devices().len(), 1);
+        assert_eq!(app.refresh_authorized_devices().len(), 1);
 
         app.db
             .as_ref()
             .unwrap()
             .revoke_remote_device(&device.id)
             .unwrap();
-        assert!(app.build_authorized_devices().is_empty());
+        app.invalidate_authorized_devices();
+        assert!(app.refresh_authorized_devices().is_empty());
+    }
+
+    #[test]
+    fn the_authorized_table_is_cached_until_invalidated() {
+        let (_db_file, mut app) = test_app_with_db();
+        let db = app.db.as_ref().unwrap();
+        db.create_remote_device("Phone A", "hash-a").unwrap();
+        assert_eq!(app.refresh_authorized_devices().len(), 1);
+
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone B", "hash-b")
+            .unwrap();
+        assert_eq!(
+            app.refresh_authorized_devices().len(),
+            1,
+            "no reload while fresh"
+        );
+
+        app.invalidate_authorized_devices();
+        assert_eq!(app.refresh_authorized_devices().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_last_good_table() {
+        let (db_file, mut app) = test_app_with_db();
+        app.db
+            .as_ref()
+            .unwrap()
+            .create_remote_device("Phone A", "hash-a")
+            .unwrap();
+        assert_eq!(app.refresh_authorized_devices().len(), 1);
+        app.remote_devices.unpublished = false;
+
+        // Break the table out from under the app's connection so the next
+        // reload errors, standing in for a transient SQLITE_BUSY.
+        rusqlite::Connection::open(db_file.path())
+            .unwrap()
+            .execute_batch("DROP TABLE remote_devices")
+            .unwrap();
+        app.invalidate_authorized_devices();
+        app.remote_devices.unpublished = false;
+
+        assert_eq!(app.refresh_authorized_devices().len(), 1);
+        assert!(!app.remote_devices.unpublished, "nothing new to publish");
     }
 }

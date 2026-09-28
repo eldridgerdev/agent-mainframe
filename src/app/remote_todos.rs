@@ -2,16 +2,17 @@
 //! worktree's, its project's, the global one), with add / status / delete.
 //!
 //! Writes go straight to the database, so they are refused while the desk
-//! has the TODOs overlay open: its in-memory panes are that screen's source
-//! of truth (see `AppMode::Todos`) and would neither see a phone's edit nor
-//! keep it.
+//! has the TODOs overlay open — including under a sub-mode that will
+//! restore it (`AppMode::holds_todos_overlay`): its in-memory panes are
+//! that screen's source of truth (see `AppMode::Todos`) and would neither
+//! see a phone's edit nor keep it.
 
 use serde_json::{Value, json};
 
 use crate::db::todos::{TodoPriority, TodoScope, TodoStatus};
 
+use super::App;
 use super::resource_gate::StartIntent;
-use super::{App, AppMode};
 
 impl App {
     fn remote_todo_db(&self) -> Result<&crate::db::AmfDb, String> {
@@ -21,7 +22,7 @@ impl App {
     }
 
     fn refuse_while_desk_edits_todos(&self) -> Result<(), String> {
-        if matches!(self.mode, AppMode::Todos(_)) {
+        if self.mode.holds_todos_overlay() {
             return Err("TODOs are open on the desk — close them there to edit from here.".into());
         }
         Ok(())
@@ -63,7 +64,7 @@ impl App {
                 })).collect::<Vec<_>>(),
             }));
         }
-        Ok(json!({ "lists": lists, "editable": !matches!(self.mode, AppMode::Todos(_)) }))
+        Ok(json!({ "lists": lists, "editable": !self.mode.holds_todos_overlay() }))
     }
 
     pub(super) fn remote_add_todo(
@@ -229,7 +230,40 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::remote_server::tests::test_app_with_feature_and_db;
+    use crate::app::{AppMode, TodoImplementChoiceState, TodoPaneKind};
     use crate::remote_server::RemoteAction;
+
+    #[test]
+    fn writes_are_refused_while_a_sub_mode_holds_the_todos_overlay() {
+        let (_db, mut app) = test_app_with_feature_and_db();
+        let feature_id = app.store.projects[0].features[0].id.clone();
+        app.open_todos_view(0, 0).unwrap();
+        let overlay = std::mem::replace(&mut app.mode, AppMode::Normal);
+        app.mode = AppMode::TodoImplementChoice(Box::new(TodoImplementChoiceState {
+            origin: Box::new(overlay),
+            pi: 0,
+            fallback_fi: 0,
+            host_feature_id: None,
+            pane_kind: TodoPaneKind::Project,
+            todo_id: "t".into(),
+            todo_title: "T".into(),
+            skipped_ids: Vec::new(),
+            selected: 0,
+        }));
+
+        assert!(
+            app.apply_remote_action(RemoteAction::AddTodo {
+                feature_id: feature_id.clone(),
+                scope: "project".into(),
+                title: "From the phone".into(),
+            })
+            .is_err()
+        );
+        let listed = app
+            .apply_remote_action(RemoteAction::ListTodos { feature_id })
+            .unwrap();
+        assert_eq!(listed["editable"], false);
+    }
 
     #[test]
     fn add_list_complete_and_delete_round_trip() {

@@ -6,7 +6,7 @@
   feature/session/TODO/prompt/diff actions. User guide:
   [`docs/remote-control.md`](../remote-control.md). Detailed progress is in the
   feature's `AMF_PLAN.md`. The Flutter epics below (3, 6) are superseded;
-  `mobile/` is pending deletion.
+  the `mobile/` Flutter project was removed before merge (2026-09-28).
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -199,10 +199,14 @@ pattern rather than inventing a new one. `App::remote_server` owns the
 handle, `App::toggle_remote_server` starts/stops it (bound to
 `Ctrl+Space C` on the dashboard — no auto-start, ever), and
 `App::poll_remote_server_bg` drains events every main-loop tick.
-Loopback-only (`127.0.0.1`). Correction (2026-09-14, once Epic 4
-landed): auth existing doesn't by itself open up LAN/tunnel exposure —
-the bind address is unchanged by Epic 4; widening it is separate
-follow-up work.
+Loopback-only (`127.0.0.1`) on an OS-assigned port at the time.
+Correction (2026-09-14, once Epic 4 landed): auth existing doesn't by
+itself open up LAN/tunnel exposure — the bind address is unchanged by
+Epic 4; widening it is separate follow-up work. **Superseded
+(2026-09-28):** the server now binds the configurable
+`AppConfig::remote_bind`, `127.0.0.1:47800` by default — a fixed port so
+a tunnel survives restarts (see `docs/remote-control.md`). Only tests
+still bind port 0.
 
 Verification: 4 new tests (start/stop without a client, drop-without-
 explicit-stop joins cleanly and doesn't hang, two servers on
@@ -220,15 +224,17 @@ Safe to build first or in parallel.
 - [x] `src/db/remote_devices.rs` (or similar): create, lookup by token,
       revoke, update last-seen.
 
-**Done (2026-09-14).** `MIGRATION_029` adds `remote_devices` (id, name,
+**Done (2026-09-14).** `MIGRATION_042` (numbered 029 when first written,
+renumbered by later merges of main) adds `remote_devices` (id, name,
 token_hash, paired_at, last_seen_at, revoked) with a UNIQUE index on
 `token_hash`. `src/db/remote_devices.rs` stores only the hashed token —
 minting and hashing a real token is Epic 4's job — and exposes
 create/find-by-id/find-by-token-hash/list-all/touch-last-seen/revoke,
-wrapped as `AmfDb` methods. Marked `#[allow(dead_code)]` until Epic 4
-calls in, matching this codebase's existing convention for infra staged
-ahead of its consuming epic (see `todos`/`learning`/`plan_interviews` in
-`src/db/mod.rs`).
+wrapped as `AmfDb` methods. Originally marked `#[allow(dead_code)]`
+until Epic 4 called in; that allow is gone now that pairing, auth, and
+revoke use the module, and the two lookups only tests use
+(find-by-id/find-by-token-hash) are `#[cfg(test)]`. Web Push's tables are
+`MIGRATION_043`.
 
 Verification: 7 new unit tests (create/lookup by id/lookup by token
 hash/unknown lookups return `None` not an error/revoke leaves the row
@@ -257,6 +263,9 @@ account, TestFlight, code signing) is deliberately deferred, per the user.
       superseded for now by `adb install` (see `mobile/README.md`).
 - [x] Documented local build steps producing an installable artifact
       (`mobile/README.md`); CI is still open.
+
+**Removed (2026-09-28).** Superseded by the PWA; the `mobile/` project
+described below was deleted before merge rather than kept as dead code.
 
 **Done (2026-09-14), scaffold half.** `mobile/` is a Flutter project
 (`flutter create --platforms=android --org dev.agentmainframe

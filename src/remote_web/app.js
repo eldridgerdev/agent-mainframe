@@ -11,6 +11,11 @@ const TERM_FONT_KEY = "amf-remote-term-font";
 const HISTORY_LINES = 2000;
 const POLL_MS = 3000;
 const XTERM_VERSION = "5.5.0";
+// Subresource Integrity for the two files loaded from the CDN, which share
+// an origin with the device token. Checked against the npm tarball for
+// XTERM_VERSION — recompute both when bumping it.
+const XTERM_JS_SRI = "sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/";
+const XTERM_CSS_SRI = "sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP";
 
 const $ = (id) => document.getElementById(id);
 
@@ -903,10 +908,12 @@ async function insertPrompt(body, values) {
 
 let xtermLoading = null;
 
-function loadScript(src) {
+function loadScript(src, integrity) {
   return new Promise((resolve, reject) => {
     const script = el("script");
     script.src = src;
+    script.integrity = integrity;
+    script.crossOrigin = "anonymous";
     script.onload = resolve;
     script.onerror = () => reject(new Error(`Couldn't load ${src}`));
     document.head.append(script);
@@ -920,8 +927,10 @@ function loadXterm() {
     const css = el("link");
     css.rel = "stylesheet";
     css.href = `${base}/css/xterm.css`;
+    css.integrity = XTERM_CSS_SRI;
+    css.crossOrigin = "anonymous";
     document.head.append(css);
-    xtermLoading = loadScript(`${base}/lib/xterm.js`).catch((e) => {
+    xtermLoading = loadScript(`${base}/lib/xterm.js`, XTERM_JS_SRI).catch((e) => {
       xtermLoading = null;
       throw e;
     });

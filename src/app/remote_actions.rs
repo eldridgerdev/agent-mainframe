@@ -152,7 +152,9 @@ impl App {
             ));
         }
         let workdir = feature.workdir.clone();
-        let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
+        // The phone can target any project, not just the desk's active one.
+        let repo = self.store.projects[pi].repo.clone();
+        let on_start = self.extension_for_repo(&repo).lifecycle_hooks.on_start;
         if on_start.as_ref().is_some_and(|cfg| cfg.prompt().is_some()) {
             return Err(
                 "This project's on_start hook asks a question — start it from the desk.".into(),
@@ -182,7 +184,9 @@ impl App {
             ));
         }
         let workdir = feature.workdir.clone();
-        let on_stop = self.active_extension.lifecycle_hooks.on_stop.clone();
+        // The phone can target any project, not just the desk's active one.
+        let repo = self.store.projects[pi].repo.clone();
+        let on_stop = self.extension_for_repo(&repo).lifecycle_hooks.on_stop;
         if on_stop.as_ref().is_some_and(|cfg| cfg.prompt().is_some()) {
             return Err(
                 "This project's on_stop hook asks a question — stop it from the desk.".into(),
@@ -528,6 +532,30 @@ mod tests {
                 review: false,
             }),
             Err::<serde_json::Value, _>("No project named 'ghost'.".into())
+        );
+    }
+
+    #[test]
+    fn hooks_come_from_the_target_project_not_the_desks() {
+        let (_db, mut app) = test_app_with_feature_and_db();
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(
+            repo.path().join("amf.json"),
+            r#"{"lifecycle_hooks": {"on_stop": {
+                "script": "true",
+                "prompt": {"title": "Why?", "options": ["a", "b"]}
+            }}}"#,
+        )
+        .unwrap();
+        app.store.projects[0].repo = repo.path().to_path_buf();
+        app.active_extension = Default::default();
+        let id = feature_id(&app);
+
+        assert_eq!(
+            app.apply_remote_action(RemoteAction::StopFeature { feature_id: id }),
+            Err::<serde_json::Value, _>(
+                "This project's on_stop hook asks a question — stop it from the desk.".into()
+            )
         );
     }
 

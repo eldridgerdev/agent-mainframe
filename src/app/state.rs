@@ -1891,6 +1891,36 @@ pub enum AppMode {
     RemotePairing(RemotePairingState),
 }
 
+impl AppMode {
+    /// The mode this one stashed to restore verbatim on exit, if any — a
+    /// sub-mode opened over an overlay (e.g. `TodoImplementChoice` over
+    /// `Todos`) keeps that overlay alive inside it.
+    pub fn stashed_mode(&self) -> Option<&AppMode> {
+        match self {
+            AppMode::TodoImplementChoice(state) => Some(&state.origin),
+            AppMode::TodoSpawnTarget(state) => Some(&state.origin),
+            AppMode::PromptEditor(state) => Some(&state.return_to),
+            AppMode::SkillPicker(state) => Some(&state.return_to),
+            AppMode::PromptPrecall(pending) => Some(&pending.prior_mode),
+            AppMode::SyntaxLanguagePicker(state) => state.return_to.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this mode is, or has stashed underneath it, the TODOs
+    /// overlay — whose in-memory panes will be restored as they are.
+    pub fn holds_todos_overlay(&self) -> bool {
+        let mut mode = Some(self);
+        while let Some(current) = mode {
+            if matches!(current, AppMode::Todos(_)) {
+                return true;
+            }
+            mode = current.stashed_mode();
+        }
+        false
+    }
+}
+
 /// The view to return to plus the stable TODO identity to complete.
 pub struct TodoReferenceCompletionState {
     pub view: ViewState,

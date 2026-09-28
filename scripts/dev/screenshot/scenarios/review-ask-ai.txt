@@ -20,6 +20,7 @@ key:Tab|wait:250
 key:c|wait:200
 key:Q|wait:250
 text:Can we reuse an existing helper for this normalization?
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Can we reuse an existing helper for this normalization?"
 note:Final Review accepts a question without leaving the selected diff line; history belongs to this review.
 expect:Ask AI
 expect:Can we reuse an existing helper for this normalization?
@@ -51,6 +52,7 @@ run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Editable I
 key:End
 key:Enter
 text:Please reuse it here.
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Please reuse it here."
 note:Explicit inline conversion produces editable local text; the added sentence proves it can be changed before handoff.
 expect:Editable Inline comment draft
 expect:Please reuse it here.
@@ -118,6 +120,7 @@ expect:Edit finding
 expect_not:Ask AI
 shot:ai-pr-inline-comment-editor
 key:Escape|wait:300
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "AI Review · PR #42"
 note:The editable draft remains a local AI PR finding at the selected caller line, awaiting explicit posting.
 expect:src/caller.rs
 expect:Could we reuse

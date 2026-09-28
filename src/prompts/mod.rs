@@ -62,7 +62,12 @@ pub enum PromptId {
     PlanInterviewQuickSynthesis,
     /// Learning Mode read-only code-reading Q&A (`app/learning.rs`).
     LearningAnswer,
+    /// Review questions: answer a reviewer's question about the code under
+    /// Final Review, a manual PR review, or the AI PR pane
+    /// (`app/review_questions/`, read-only tools).
     ReviewQuestion,
+    /// Review questions: turn an answer into an inline or general review
+    /// comment draft (`app/review_questions/`, no repository tools).
     ReviewQuestionDraft,
     /// Final Review: plain-language walkthrough of a file's diff (Claude).
     ReviewWalkthrough,

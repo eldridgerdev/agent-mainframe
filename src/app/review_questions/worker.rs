@@ -1,4 +1,4 @@
-use super::context::{self, AiDiffLoader, PreparedContext, QuestionContext};
+use super::context::{self, AiDiffLoader, DiffVersionKey, PreparedContext, QuestionContext};
 use super::state::DraftDestination;
 use crate::project::AgentKind;
 use anyhow::{Result, ensure};
@@ -88,6 +88,8 @@ pub(crate) struct Work {
     pub job: Option<Job>,
     pub runner: Runner,
     pub ai_diff: AiDiffLoader,
+    /// Last `diff_version`, reused while its inputs' identity is unchanged.
+    diff_version: Option<(DiffVersionKey, String)>,
 }
 impl Default for Work {
     fn default() -> Self {
@@ -95,6 +97,23 @@ impl Default for Work {
             job: None,
             runner: run,
             ai_diff: context::load_ai_diff,
+            diff_version: None,
+        }
+    }
+}
+
+impl Work {
+    /// `QuestionContext::diff_version`, recomputed only when
+    /// `diff_version_key` changes: the pending-job poll runs every frame.
+    pub fn diff_version(&mut self, state: &crate::app::DiffViewerState) -> String {
+        let key = QuestionContext::diff_version_key(state);
+        match &self.diff_version {
+            Some((cached, version)) if *cached == key => version.clone(),
+            _ => {
+                let version = QuestionContext::diff_version(state);
+                self.diff_version = Some((key, version.clone()));
+                version
+            }
         }
     }
 }
@@ -113,6 +132,8 @@ pub(crate) struct Start {
 impl Work {
     pub fn start(&mut self, start: Start) {
         self.job = None;
+        // Never trust a key cached while no job was polling it.
+        self.diff_version = None;
         let (sender, receiver) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         self.job = Some(Job {

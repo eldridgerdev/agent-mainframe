@@ -936,3 +936,50 @@ fn pending_request_timeout_retains_question_and_allows_retry() {
             .is_some()
     );
 }
+
+#[test]
+fn refresh_keeps_a_pending_question_and_a_stashed_review_reconciles_on_return() {
+    let fixture = Fixture::new();
+    let mut app = fixture.app();
+    if let AppMode::DiffViewer(s) = &mut app.mode {
+        s.override_base_ref = Some(fixture.base.clone());
+    }
+    ask(&mut app);
+    let _sender = inject(&mut app);
+    app.open_review_questions();
+    // `r`: the unchanged reload must not orphan or cancel the request.
+    app.refresh_diff_viewer();
+    assert!(!app.poll_review_questions());
+    assert!(app.review_questions().unwrap().request.is_some());
+    app.complete_diff_viewer_loading();
+    assert!(!app.poll_review_questions());
+    assert!(app.review_question_work.job.is_some());
+    // Stashed behind another mode: the job is released...
+    let stashed = std::mem::replace(&mut app.mode, AppMode::Normal);
+    assert!(!app.poll_review_questions());
+    assert!(app.review_question_work.job.is_none());
+    // ...and the returning review is unlocked rather than spinning forever.
+    app.mode = stashed;
+    assert!(app.poll_review_questions());
+    let q = app.review_questions().unwrap();
+    assert!(q.request.is_none() && q.started_at.is_none());
+    assert!(q.error.as_ref().unwrap().contains("interrupted"));
+    assert!(!app.has_visible_animation());
+}
+
+#[cfg(unix)]
+#[test]
+fn untracked_symlinks_and_unreadable_entries_do_not_block_questions() {
+    let fixture = Fixture::new();
+    let dir = fixture.dir.path();
+    std::fs::create_dir(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("assets/keep.txt"), "x").unwrap();
+    commit(dir);
+    std::os::unix::fs::symlink("assets", dir.join("assets-link")).unwrap();
+    std::os::unix::fs::symlink("missing", dir.join("dangling")).unwrap();
+    let mut app = fixture.app();
+    ask(&mut app);
+    let q = app.review_questions().unwrap();
+    assert!(q.error.is_none(), "{:?}", q.error);
+    assert!(q.turns[0].answer.is_some());
+}

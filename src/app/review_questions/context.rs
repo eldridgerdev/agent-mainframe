@@ -43,6 +43,8 @@ pub(crate) struct PreparedContext {
     pub revision: String,
 }
 
+pub(crate) type DiffVersionKey = (PathBuf, String, String, usize, usize);
+
 pub(crate) fn hash(value: impl Hash) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.hash(&mut hasher);
@@ -82,6 +84,26 @@ impl QuestionContext {
             &state.base_commit,
             files_version(&state.files),
         ))
+    }
+    /// Cheap identity for everything `diff_version` hashes. The file list is
+    /// identified by its allocation: production only ever replaces it
+    /// wholesale (a reload assigns a freshly built `Vec` while the old one is
+    /// still alive, so the address always differs), never edits contents in
+    /// place. The content size guards against a later list landing on a freed
+    /// address. Lets a poll skip rehashing megabytes of contents per frame.
+    pub fn diff_version_key(state: &DiffViewerState) -> DiffVersionKey {
+        let size = |c: &Option<String>| c.as_ref().map_or(0, String::len);
+        (
+            state.workdir.clone(),
+            format!("{:?}", state.scope),
+            state.base_commit.clone(),
+            state.files.as_ptr() as usize,
+            state
+                .files
+                .iter()
+                .map(|f| size(&f.old_content) + size(&f.new_content) + f.patch.len())
+                .sum(),
+        )
     }
     pub fn ai_version(state: &AiReviewState) -> String {
         hash((
@@ -262,14 +284,33 @@ pub(crate) fn repository_stamp(workdir: &Path) -> Result<String> {
         workdir,
         &["ls-files", "--others", "--exclude-standard", "-z"],
     )?;
-    let mut untracked = Vec::new();
-    for path in paths.split('\0').filter(|p| !p.is_empty()) {
-        untracked.push((
-            path,
-            std::fs::read(workdir.join(path)).with_context(|| format!("Cannot inspect {path}"))?,
-        ));
-    }
+    let untracked = paths
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(|path| (path, untracked_stamp(&workdir.join(path))))
+        .collect::<Vec<_>>();
     Ok(hash((head, patch, staged, untracked)))
+}
+
+/// Change detector for one untracked path, without reading its contents: this
+/// runs several times per question, and `ls-files --others` also lists
+/// symlinks (to directories, or dangling) and unreadable files, none of which
+/// may fail the stamp. A symlink is its target; anything else is its type,
+/// size and mtime — any write moves the mtime.
+fn untracked_stamp(path: &Path) -> String {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => match std::fs::read_link(path) {
+            Ok(target) => format!("link:{}", target.display()),
+            Err(e) => format!("link-unreadable:{:?}", e.kind()),
+        },
+        Ok(meta) => format!(
+            "{}:{}:{:?}",
+            if meta.is_file() { "file" } else { "other" },
+            meta.len(),
+            meta.modified().ok()
+        ),
+        Err(e) => format!("missing:{:?}", e.kind()),
+    }
 }
 
 pub(crate) type AiDiffLoader = fn(&Path, &crate::github::PrRef) -> Result<Vec<DiffFile>>;

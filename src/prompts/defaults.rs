@@ -17,12 +17,12 @@
 // Plan interview (src/plan_interview.rs builders)
 // ---------------------------------------------------------------------------
 //
-// These six keep a **single `{{interview_input}}` token** rather than one
+// These eight keep a **single `{{interview_input}}` token** rather than one
 // token per field: an override edits the tuned instruction prose while AMF
-// still owns the JSON data section's shape. The prose below must stay
-// byte-identical to the `plan_interview::*_PROMPT` constants — the
+// still owns the JSON data section's shape. The six full-mode templates' prose
+// must stay byte-identical to the `plan_interview::*_PROMPT` constants — the
 // `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` test enforces
-// that. Synthesis additionally carries `{{revision_addendum}}` (the
+// that; the two Quick Plan templates have no such twin and live only here. Synthesis additionally carries `{{revision_addendum}}` (the
 // `SYNTHESIS_REVISION_ADDENDUM` text, or empty on a first pass).
 
 /// `plan_interview.round` — one adaptive interview round. Runs no-tools

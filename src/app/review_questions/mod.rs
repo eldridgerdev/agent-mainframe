@@ -22,16 +22,22 @@ use state::Turn;
 use worker::{Outcome, Task};
 
 impl App {
+    // A refresh (`r`, base-ref change) passes through `DiffViewerLoading`; the
+    // conversation stays reachable so a pending request is not orphaned.
     pub(crate) fn review_questions(&self) -> Option<&Questions> {
         match &self.mode {
-            AppMode::DiffViewer(s) if s.review => Some(&s.questions),
+            AppMode::DiffViewer(s) | AppMode::DiffViewerLoading(s) if s.review => {
+                Some(&s.questions)
+            }
             AppMode::AiReview(s) => Some(&s.questions),
             _ => None,
         }
     }
     pub(crate) fn review_questions_mut(&mut self) -> Option<&mut Questions> {
         match &mut self.mode {
-            AppMode::DiffViewer(s) if s.review => Some(&mut s.questions),
+            AppMode::DiffViewer(s) | AppMode::DiffViewerLoading(s) if s.review => {
+                Some(&mut s.questions)
+            }
             AppMode::AiReview(s) => Some(&mut s.questions),
             _ => None,
         }
@@ -246,19 +252,55 @@ impl App {
             }
         }
     }
-    pub(crate) fn poll_review_questions(&mut self) -> bool {
-        let Some(job) = self.review_question_work.job.as_ref() else {
+    /// A review stashed behind another mode loses its job (see below); when it
+    /// comes back, its request has nothing left to finish it. Without this the
+    /// overlay would show "Request in progress" forever and lock the editor.
+    fn reconcile_orphaned_review_question(&mut self) -> bool {
+        let job = self
+            .review_question_work
+            .job
+            .as_ref()
+            .map(|j| (j.owner.clone(), j.request));
+        let Some(q) = self.review_questions_mut() else {
             return false;
         };
+        let Some(request) = q.request else {
+            return false;
+        };
+        if job.is_some_and(|(owner, r)| owner == q.owner && r == request) {
+            return false;
+        }
+        q.request = None;
+        q.started_at = None;
+        q.error = Some("Question interrupted when the review was left; retry when ready".into());
+        for turn in q.turns.iter_mut() {
+            if turn.answer.is_none() && turn.error.is_none() {
+                turn.error = Some("Interrupted".into());
+            }
+        }
+        true
+    }
+    pub(crate) fn poll_review_questions(&mut self) -> bool {
+        if self.reconcile_orphaned_review_question() {
+            return true;
+        }
+        if self.review_question_work.job.is_none() {
+            return false;
+        }
         let current = match &self.mode {
-            AppMode::DiffViewer(s) if s.review => Some(QuestionContext::diff_version(s)),
+            // Mid-refresh: wait for the reloaded files before comparing.
+            AppMode::DiffViewerLoading(s) if s.review => return false,
+            AppMode::DiffViewer(s) if s.review => Some(self.review_question_work.diff_version(s)),
             AppMode::AiReview(s) => Some(QuestionContext::ai_version(s)),
             _ => None,
         };
+        let job = self.review_question_work.job.as_ref().expect("pending job");
         let owned = self
             .review_questions()
             .is_some_and(|q| q.owner == job.owner && q.request == Some(job.request));
         if !owned {
+            // Out of reach (closed, or stashed behind another modal): release
+            // the harness; a stashed review is reconciled when it returns.
             self.review_question_work.job = None;
             return false;
         }

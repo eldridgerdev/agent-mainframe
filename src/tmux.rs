@@ -23,6 +23,23 @@ use uuid::Uuid;
 use crate::debug::{LogLevel, log_to_file};
 use crate::traits::TmuxOps;
 
+/// The path hooks should run as `$AMF_BIN`, given `current_exe()`.
+///
+/// On Linux `current_exe()` reads `/proc/self/exe`, which reports a binary
+/// replaced while AMF runs (every `cargo build` of a dev checkout) or
+/// deleted with its worktree as `<path> (deleted)`. Baking that into a
+/// session's environment breaks every hook for the session's lifetime,
+/// silently: the scripts swallow the failure. Strip the marker and use the
+/// path if a binary sits there again (the rebuilt one); otherwise return
+/// `None` so the scripts fall back to `amf` on `PATH`.
+fn usable_cli_binary(exe: PathBuf) -> Option<PathBuf> {
+    let path = match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => exe,
+    };
+    path.is_file().then_some(path)
+}
+
 pub struct TmuxManager;
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -520,7 +537,7 @@ impl TmuxManager {
     fn cli_binary() -> Option<PathBuf> {
         match Self::cli_binary_override().get() {
             Some(path) => path.clone(),
-            None => std::env::current_exe().ok(),
+            None => std::env::current_exe().ok().and_then(usable_cli_binary),
         }
     }
 
@@ -2427,6 +2444,24 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn a_rebuilt_or_deleted_binary_never_becomes_a_dead_amf_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("amf");
+        fs::write(&exe, "").unwrap();
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", exe.display()));
+
+        // A live binary is used as-is.
+        assert_eq!(super::usable_cli_binary(exe.clone()), Some(exe.clone()));
+        // Rebuilt in place: `/proc/self/exe` says "(deleted)", but the path
+        // holds the new binary.
+        assert_eq!(super::usable_cli_binary(deleted.clone()), Some(exe.clone()));
+        // Gone for good (worktree removed): omit it, so hooks use PATH.
+        fs::remove_file(&exe).unwrap();
+        assert_eq!(super::usable_cli_binary(deleted), None);
+        assert_eq!(super::usable_cli_binary(exe), None);
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

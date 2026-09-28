@@ -33,6 +33,10 @@ fi
 
 HOOK_INPUT=$(cat)
 
+# $AMF_BIN names the amf that started this session. A rebuilt or deleted
+# build leaves it pointing at nothing, so fall back to `amf` on PATH.
+[ -x "${AMF_BIN:-}" ] || AMF_BIN=amf
+
 # `amf hook-field` reads the hook JSON so this script needs no JSON parser of
 # its own. It prints nothing and exits 0 for an absent field, which is the same
 # shape as the `jq -r '... // empty'` it replaces.

@@ -10,13 +10,28 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.48.0] - 2026-09-28
+
 ### Added
 
+- **Use AMF from your phone with AMF Remote.** Pair an installable web app to
+  see which features need attention, receive push notifications, and read or
+  type into the same agent terminals as your computer. You can start and stop
+  features, manage sessions and TODOs, review changes, and use your prompt
+  library from the phone.
+- **Remote access starts when you ask for it.** Use `leader+C` to toggle the
+  server and `leader+Q` to pair a device by QR code. Each device can be revoked
+  independently. HTTPS through a tunnel such as Tailscale enables phone access,
+  installation, and notifications; see [AMF Remote setup](https://github.com/eldridgerdev/agent-mainframe/blob/v0.48.0/docs/remote-control.md).
 - **Ask AI questions while reviewing code.** Press `Q` in Final Review,
   manual PR review (`G`), or AI PR review (`W`) to ask about the selected code
-  or find reusable helpers elsewhere in the repository. Questions run
-  read-only, preserve your review position, and support follow-ups until the
-  review closes. PR questions require a clean checkout at the reviewed head.
+  or find reusable helpers elsewhere in the repository. Send with `Ctrl+S`;
+  the pre-call notice lets you inspect or edit the prompt before continuing.
+  Questions run read-only, preserve your review position, and support
+  follow-ups until the review closes. PR questions require a clean checkout at
+  the reviewed head.
 - **Turn an answer into an editable review comment.** Choose `i` for an
   inline draft or `g` for general feedback, edit the text, then open the existing
   comment editor with `Ctrl+S`. Existing comments are preserved, and
@@ -38,7 +53,9 @@ are tagged.
 
 ### Migration
 
-- No migration is required.
+- No manual migration is required. AMF updates its database on first startup.
+- Phone access is optional. Set up an HTTPS tunnel and `remote_public_url`
+  before pairing a phone; the server is off until you enable it.
 
 ## [v0.47.0] - 2026-09-26
 

@@ -368,6 +368,10 @@ pub fn draw_ai_review(
     finding_fix_costs: &[Option<String>],
 ) {
     let area = frame.area();
+    if state.questions.open {
+        super::review_questions::draw(frame, &mut state.questions, theme);
+        return;
+    }
     // A sub-header line naming the harness/model that produced the current
     // findings and what the run cost. Absent until a run completes for this
     // head SHA (or for a legacy cache row with no attribution).
@@ -462,7 +466,7 @@ pub fn draw_ai_review(
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix   space mark   B fix marked   s skip   e edit   {ai_action}   W post   esc/q close"
+            " j/k move   f fix   space mark   B fix marked   s skip   e edit   Q ask AI   {ai_action}   W post   esc/q close"
         ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
@@ -813,6 +817,7 @@ mod tests {
     fn running_pane_renders_live_activity_elapsed_time_and_usage() {
         let mut state = AiReviewRunState {
             origin: AiReviewState {
+                questions: Default::default(),
                 workdir: PathBuf::from("/tmp/review"),
                 pr: crate::github::PrRef {
                     number: 473,
@@ -894,6 +899,7 @@ mod tests {
         attribution: Option<crate::app::ai_review::AiReviewAttribution>,
     ) -> AiReviewState {
         AiReviewState {
+            questions: Default::default(),
             workdir: PathBuf::from("/tmp/review"),
             pr: crate::github::PrRef {
                 number: 12,

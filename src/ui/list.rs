@@ -832,6 +832,7 @@ mod tests {
         app.ai_review_run.set_receiver_for_test(Some(rx));
         app.ai_review_run
             .set_origin_for_test(Some(crate::app::AiReviewState {
+                questions: Default::default(),
                 workdir,
                 pr: crate::github::PrRef {
                     number: 321,

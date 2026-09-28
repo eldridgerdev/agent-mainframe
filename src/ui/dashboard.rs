@@ -2795,6 +2795,7 @@ mod tests {
             head_ref: "main".to_string(),
         };
         let origin = crate::app::AiReviewState {
+            questions: Default::default(),
             workdir: feature.workdir.clone(),
             pr,
             findings: Vec::new(),
@@ -2961,6 +2962,7 @@ mod tests {
         app.ai_review_run.set_receiver_for_test(Some(rx));
         app.ai_review_run
             .set_origin_for_test(Some(crate::app::AiReviewState {
+                questions: Default::default(),
                 workdir,
                 pr,
                 findings: Vec::new(),

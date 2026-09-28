@@ -477,6 +477,7 @@ pub(super) fn sample_ai_review_state(
     pr: crate::github::PrRef,
 ) -> crate::app::AiReviewState {
     crate::app::AiReviewState {
+        questions: Default::default(),
         workdir,
         pr,
         findings: Vec::new(),

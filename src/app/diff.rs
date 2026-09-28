@@ -92,6 +92,7 @@ impl App {
     }
 
     pub fn close_diff_viewer(&mut self) {
+        self.cancel_review_question();
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) => state,
             other => {

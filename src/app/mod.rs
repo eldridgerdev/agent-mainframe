@@ -46,6 +46,7 @@ pub(crate) mod resource_gate;
 pub(crate) mod review;
 pub(crate) mod review_destination;
 pub(crate) mod review_memory;
+pub(crate) mod review_questions;
 mod search;
 mod session_config;
 pub(crate) mod session_ops;
@@ -1106,6 +1107,7 @@ pub struct App {
     /// memory-add dialog (`s`). See `app::pr_review::pr_review_start_memory_ai_summary`.
     pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
+    pub(crate) review_question_work: review_questions::Work,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -1358,6 +1360,12 @@ impl App {
     }
 
     pub(crate) fn has_visible_animation(&self) -> bool {
+        if self
+            .review_questions()
+            .is_some_and(|q| q.open && q.request.is_some())
+        {
+            return true;
+        }
         let base = match &self.mode {
             AppMode::Normal => self.has_dashboard_animation(),
             AppMode::RunningHook(state) => state.child.is_some(),
@@ -2557,6 +2565,7 @@ impl App {
             review_memory_compact_pending: None,
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
+            review_question_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2818,6 +2827,7 @@ impl App {
             review_memory_compact_pending: None,
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
+            review_question_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,

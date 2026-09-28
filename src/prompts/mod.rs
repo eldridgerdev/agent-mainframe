@@ -62,6 +62,13 @@ pub enum PromptId {
     PlanInterviewQuickSynthesis,
     /// Learning Mode read-only code-reading Q&A (`app/learning.rs`).
     LearningAnswer,
+    /// Review questions: answer a reviewer's question about the code under
+    /// Final Review, a manual PR review, or the AI PR pane
+    /// (`app/review_questions/`, read-only tools).
+    ReviewQuestion,
+    /// Review questions: turn an answer into an inline or general review
+    /// comment draft (`app/review_questions/`, no repository tools).
+    ReviewQuestionDraft,
     /// Final Review: plain-language walkthrough of a file's diff (Claude).
     ReviewWalkthrough,
     /// Final Review: AI co-reviewer first pass over a file (Claude).
@@ -95,7 +102,7 @@ pub enum PromptId {
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 22] = [
+    pub const ALL: [PromptId; 24] = [
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
         PromptId::PlanInterviewCritique,
@@ -105,6 +112,8 @@ impl PromptId {
         PromptId::PlanInterviewQuickRound,
         PromptId::PlanInterviewQuickSynthesis,
         PromptId::LearningAnswer,
+        PromptId::ReviewQuestion,
+        PromptId::ReviewQuestionDraft,
         PromptId::ReviewWalkthrough,
         PromptId::ReviewCoReview,
         PromptId::ReviewChangesetOverview,
@@ -133,6 +142,8 @@ impl PromptId {
             PromptId::PlanInterviewQuickRound => "plan_interview.quick_round",
             PromptId::PlanInterviewQuickSynthesis => "plan_interview.quick_synthesis",
             PromptId::LearningAnswer => "learning.answer",
+            PromptId::ReviewQuestion => "review.question",
+            PromptId::ReviewQuestionDraft => "review.question_draft",
             PromptId::ReviewWalkthrough => "review.walkthrough",
             PromptId::ReviewCoReview => "review.co_review",
             PromptId::ReviewChangesetOverview => "review.changeset_overview",
@@ -210,7 +221,7 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 22] = [
+static SPECS: [PromptSpec; 24] = [
     PromptSpec {
         id: PromptId::PlanInterviewRound,
         title: "Plan interview: adaptive round",
@@ -293,6 +304,40 @@ static SPECS: [PromptSpec; 22] = [
             "run_mode_instructions",
         ],
         default_template: defaults::LEARNING_ANSWER,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewQuestion,
+        title: "Review: ask AI",
+        summary: "Answers reviewer questions with read-only repository discovery.",
+        placeholders: &[
+            "review_identity",
+            "repository_path",
+            "review_revision",
+            "context_version",
+            "selection",
+            "diff",
+            "earlier_turns",
+            "question",
+        ],
+        default_template: defaults::REVIEW_QUESTION,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
+    PromptSpec {
+        id: PromptId::ReviewQuestionDraft,
+        title: "Review: draft comment from answer",
+        summary: "Turns an answer into editable local review-comment text.",
+        placeholders: &[
+            "review_identity",
+            "repository_path",
+            "review_revision",
+            "context_version",
+            "selection",
+            "diff",
+            "question",
+            "answer",
+        ],
+        default_template: defaults::REVIEW_QUESTION_DRAFT,
         harness_variants: NO_HARNESS_VARIANTS,
     },
     PromptSpec {

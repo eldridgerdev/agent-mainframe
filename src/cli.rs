@@ -1337,6 +1337,9 @@ fn run_loop<B: Backend + io::Write>(
         if app.poll_learning_answers_bg() {
             force_redraw = true;
         }
+        if app.poll_review_questions() {
+            force_redraw = true;
+        }
 
         if app.poll_remote_server_bg() {
             force_redraw = true;
@@ -1423,6 +1426,9 @@ fn run_loop<B: Backend + io::Write>(
                     .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
             }
             if animating {
+                deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
+            }
+            if app.review_question_work.job.is_some() {
                 deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
             }
             if app.leader_active

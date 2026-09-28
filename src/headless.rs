@@ -438,6 +438,45 @@ impl HeadlessRunner {
         run_command(harness, &spec, workdir, prompt, model)
     }
 
+    /// Review questions have their own cancellation token and deadline. The
+    /// command's capabilities, rather than its prompt, enforce read-only access.
+    pub(crate) fn run_review_question(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+        cancelled: &std::sync::atomic::AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<String> {
+        let spec = read_only_command_for(harness)?;
+        anyhow::ensure!(
+            headless_command_is_read_only(harness, &spec),
+            "Unsupported read-only harness"
+        );
+        run_cancellable_command(harness, &spec, workdir, prompt, model, cancelled, timeout)
+    }
+
+    pub(crate) fn run_review_comment_draft(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: Option<&str>,
+        cancelled: &std::sync::atomic::AtomicBool,
+        timeout: std::time::Duration,
+    ) -> Result<String> {
+        // Codex retains its read-only sandbox; other harnesses receive no
+        // repository tools because drafting already has all its evidence.
+        let mut spec = command_for(harness, true);
+        if *harness == AgentKind::Claude {
+            spec.args.push("--no-session-persistence");
+        }
+        anyhow::ensure!(
+            headless_command_is_read_only(harness, &spec),
+            "Unsupported restricted drafting harness"
+        );
+        run_cancellable_command(harness, &spec, workdir, prompt, model, cancelled, timeout)
+    }
+
     /// [`Self::run_read_only`], plus the user's MCP tools when `mcp` is set
     /// and the harness is Claude — the only harness with an isolation mode
     /// that can still load MCP servers and claude.ai connectors (see
@@ -719,6 +758,134 @@ fn run_command(
     model: Option<&str>,
 ) -> Result<String> {
     run_command_with_args(harness, spec, &[], workdir, prompt, model)
+}
+
+fn run_cancellable_command(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    cancelled: &std::sync::atomic::AtomicBool,
+    timeout: std::time::Duration,
+) -> Result<String> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::atomic::Ordering;
+    anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
+    let args = assemble_args_with(harness, spec, &[], model);
+    let child = Command::new(&spec.binary)
+        .args(&args)
+        .envs(spec.envs.iter().copied())
+        .current_dir(workdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "Could not launch {} for a read-only question",
+                harness.display_name()
+            )
+        })?;
+    let mut run = ReviewRunChild {
+        child: Some(LeasedChild::new(child)),
+        armed: true,
+    };
+    let child = run.child.as_mut().expect("new run");
+    let process = child.child.as_mut().expect("new child");
+    let mut stdin = process.stdin.take().context("Question stdin unavailable")?;
+    let mut stdout = process
+        .stdout
+        .take()
+        .context("Question stdout unavailable")?;
+    let mut stderr = process
+        .stderr
+        .take()
+        .context("Question stderr unavailable")?;
+    let prompt = prompt.to_owned();
+    let writer = std::thread::spawn(move || stdin.write_all(prompt.as_bytes()));
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let errors = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stderr.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
+        anyhow::ensure!(
+            started.elapsed() < timeout,
+            "Question timed out; retry when ready"
+        );
+        // Keep the parent's PID reserved until its pipes drain. If the
+        // parent exits before descendants, cancellation still addresses this
+        // run's process group without risking a reused PID.
+        if writer.is_finished()
+            && reader.is_finished()
+            && errors.is_finished()
+            && let Some(status) = child.try_wait()?
+        {
+            run.armed = false;
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stderr = errors
+        .join()
+        .map_err(|_| anyhow::anyhow!("Question stderr reader stopped"))??;
+    anyhow::ensure!(
+        status.success(),
+        "{} question failed: {}",
+        harness.display_name(),
+        String::from_utf8_lossy(&stderr).trim()
+    );
+    writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("Question prompt writer stopped"))??;
+    let stdout = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("Question output reader stopped"))??;
+    let answer = String::from_utf8_lossy(&stdout).trim().to_string();
+    anyhow::ensure!(
+        !answer.is_empty(),
+        "The harness returned an empty answer; retry when ready"
+    );
+    Ok(answer)
+}
+
+/// Dedicated process group for a cancellable review request. The child and
+/// concurrency lease stay owned until the group is terminated and reaped.
+struct ReviewRunChild {
+    child: Option<LeasedChild>,
+    armed: bool,
+}
+impl Drop for ReviewRunChild {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(child) = self.child.take() else {
+            return;
+        };
+        let Some(process) = &child.child else {
+            return;
+        };
+        let group = process.id() as libc::pid_t;
+        std::thread::spawn(move || {
+            // SAFETY: the unreaped child reserves this dedicated group ID.
+            unsafe {
+                libc::kill(-group, libc::SIGTERM);
+            }
+            std::thread::sleep(ABANDONED_RUN_GRACE);
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+            let _ = child.wait_with_output();
+        });
+    }
 }
 
 fn run_command_with_args(
@@ -1656,6 +1823,146 @@ fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
 mod tests {
     use super::*;
     use crate::resources::limits::{in_flight_headless_runs, lock_lease_tests, wait_for_in_flight};
+
+    #[test]
+    fn review_question_commands_keep_each_harness_read_only_and_pipe_the_prompt() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = lock_lease_tests();
+        let dir = tempfile::TempDir::new().unwrap();
+        let executable = dir.path().join("mock-harness");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$OPENCODE_PERMISSION\" > permission\ncat > prompt\nprintf 'mock answer'\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        for harness in [
+            AgentKind::Claude,
+            AgentKind::Codex,
+            AgentKind::Opencode,
+            AgentKind::Pi,
+        ] {
+            let mut spec = read_only_command_for(&harness).unwrap();
+            assert!(headless_command_is_read_only(&harness, &spec));
+            spec.binary = executable.to_str().unwrap().into();
+            let result = run_cancellable_command(
+                &harness,
+                &spec,
+                dir.path(),
+                "find the unchanged helper",
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+            assert_eq!(result, "mock answer");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
+                "find the unchanged helper"
+            );
+            let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+            match harness {
+                AgentKind::Claude => {
+                    assert!(args.contains("--safe-mode"));
+                    assert!(args.contains("Read,Glob,Grep"));
+                }
+                AgentKind::Codex => {
+                    assert!(args.contains("--sandbox\nread-only"));
+                    assert!(args.contains("--ephemeral"));
+                }
+                AgentKind::Opencode => {
+                    assert!(args.contains("--pure"));
+                    assert_eq!(
+                        std::fs::read_to_string(dir.path().join("permission")).unwrap(),
+                        OPENCODE_READ_ONLY_PERMISSION
+                    );
+                }
+                AgentKind::Pi => {
+                    assert!(args.contains("read,grep,find,ls"));
+                    assert!(args.contains("--no-extensions"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn review_question_timeout_and_cancellation_release_only_their_child() {
+        struct UnrelatedChild(std::process::Child);
+        impl Drop for UnrelatedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let _guard = lock_lease_tests();
+        let mut unrelated = UnrelatedChild(Command::new("sleep").arg("30").spawn().unwrap());
+        let baseline = wait_for_in_flight(0);
+        let spec = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec!["-c", "sleep 30 & wait"],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let result = run_cancellable_command(
+            &AgentKind::Claude,
+            &spec,
+            Path::new("/tmp"),
+            "question",
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::from_millis(50),
+        );
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert_eq!(wait_for_in_flight(baseline), baseline);
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = cancelled.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            token.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let result = run_cancellable_command(
+            &AgentKind::Claude,
+            &spec,
+            Path::new("/tmp"),
+            "question",
+            None,
+            &cancelled,
+            std::time::Duration::from_secs(5),
+        );
+        canceller.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(wait_for_in_flight(baseline), baseline);
+        assert!(unrelated.0.try_wait().unwrap().is_none());
+    }
+
+    #[test]
+    fn review_question_launch_exit_and_empty_output_failures_are_actionable() {
+        let _guard = lock_lease_tests();
+        for (binary, args, expected) in [
+            ("amf-no-question-harness", vec![], "Could not launch"),
+            (
+                "sh",
+                vec!["-c", "cat >/dev/null; echo failure >&2; exit 1"],
+                "failure",
+            ),
+            ("sh", vec!["-c", "cat >/dev/null"], "empty answer"),
+        ] {
+            let spec = HeadlessCommand {
+                binary: binary.into(),
+                args,
+                trailing: vec![],
+                envs: vec![],
+            };
+            let error = run_cancellable_command(
+                &AgentKind::Claude,
+                &spec,
+                Path::new("/tmp"),
+                "question",
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
 
     #[test]
     fn a_failed_headless_spawn_releases_its_lease() {

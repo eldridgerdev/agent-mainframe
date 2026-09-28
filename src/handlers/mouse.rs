@@ -16,6 +16,18 @@ const HELP_MOUSE_SCROLL_LINES: usize = 3;
 const PLAN_INTERVIEW_MOUSE_SCROLL_LINES: usize = 3;
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
+    if app.review_questions().is_some_and(|q| q.open) {
+        if let Some(q) = app.review_questions_mut() {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => q.scroll += VIEW_MOUSE_SCROLL_LINES,
+                MouseEventKind::ScrollUp => {
+                    q.scroll = q.scroll.saturating_sub(VIEW_MOUSE_SCROLL_LINES)
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             handle_scroll_up(app, visible_rows);

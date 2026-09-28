@@ -456,8 +456,10 @@ mode.
 
 Press `Q` in Final Review, manual PR review (`G`), or AI PR review (`W`) to ask
 about the reviewed code. `Ctrl+S` sends a question (`Ctrl+Enter` also works in
-terminals that report it); `Ctrl+H` changes the harness. While a request runs,
-the overlay shows a spinner, the harness, and the elapsed time. The AI can inspect repository code beyond the selected file or lines,
+terminals that report it); `Ctrl+H` changes the harness. As with AMF's other
+AI calls, a notice first shows which prompt will run and lets you view or edit it
+(`review.question`, and `review.question_draft` for comment drafts). While a
+request runs, the overlay shows a spinner, the harness, and the elapsed time. The AI can inspect repository code beyond the selected file or lines,
 including unchanged helpers. PR questions require a clean local checkout at the
 reviewed PR head. If that checkout is unavailable, AMF explains the mismatch and
 keeps the review and question intact.

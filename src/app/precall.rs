@@ -45,6 +45,8 @@ pub enum PrecallAction {
     ReviewMemoryBootstrap,
     ReviewMemoryCompact,
     ReviewMemoryAiSummary,
+    ReviewQuestion,
+    ReviewQuestionDraft(crate::app::review_questions::DraftDestination),
 }
 
 impl PrecallAction {
@@ -64,6 +66,8 @@ impl PrecallAction {
             PrecallAction::ReviewMemoryBootstrap => PromptId::ReviewMemoryBootstrap,
             PrecallAction::ReviewMemoryCompact => PromptId::ReviewMemoryCompact,
             PrecallAction::ReviewMemoryAiSummary => PromptId::ReviewMemoryAiSummary,
+            PrecallAction::ReviewQuestion => PromptId::ReviewQuestion,
+            PrecallAction::ReviewQuestionDraft(_) => PromptId::ReviewQuestionDraft,
         }
     }
 }
@@ -259,6 +263,14 @@ impl App {
             }
             PrecallAction::ReviewMemoryAiSummary => {
                 self.pr_review_start_memory_ai_summary(harness);
+                Ok(())
+            }
+            PrecallAction::ReviewQuestion => {
+                self.submit_review_question();
+                Ok(())
+            }
+            PrecallAction::ReviewQuestionDraft(destination) => {
+                self.draft_review_question(destination);
                 Ok(())
             }
         }

@@ -14,6 +14,7 @@ mod worker;
 pub(crate) use state::{DraftDestination, Questions};
 pub(crate) use worker::Work;
 
+use crate::app::precall::PrecallAction;
 use crate::app::{App, AppMode};
 use crate::editor::TextEditor;
 use crate::prompts::PromptId;
@@ -122,15 +123,6 @@ impl App {
             .chars()
             .take(32_000)
             .collect();
-        q.turns.push(Turn {
-            question: question.clone(),
-            answer: None,
-            error: None,
-            context: context.clone(),
-            prepared: None,
-        });
-        q.selected = q.turns.len() - 1;
-        q.scroll = 0;
         self.start_review_question_task(context, Task::Answer { question, earlier });
     }
     pub(crate) fn retry_review_question(&mut self) {
@@ -217,7 +209,44 @@ impl App {
             AppMode::AiReview(s) => s.model.clone(),
             _ => self.config.review_model.clone(),
         };
+        // Asking and drafting are user-initiated headless calls, so they get
+        // the same pre-call notice (view / edit prompt / continue) as the
+        // others. Transfer runs no harness. The notice re-dispatches the same
+        // entry point, so nothing below may run before it clears.
+        let gated = match &task {
+            Task::Answer { question, earlier } => Some((
+                PrecallAction::ReviewQuestion,
+                context.preview_tokens(question, earlier, ""),
+            )),
+            Task::Draft {
+                destination,
+                question,
+                answer,
+                ..
+            } => Some((
+                PrecallAction::ReviewQuestionDraft(*destination),
+                context.preview_tokens(question, "", answer),
+            )),
+            Task::Transfer { .. } => None,
+        };
+        if let Some((action, tokens)) = gated {
+            let preview = crate::prompts::render_template(&template, &tokens);
+            if !self.precall_gate_with_model(action, &harness, model.as_deref(), &preview) {
+                return;
+            }
+        }
         let q = self.review_questions_mut().expect("review");
+        if let Task::Answer { question, .. } = &task {
+            q.turns.push(Turn {
+                question: question.clone(),
+                answer: None,
+                error: None,
+                context: context.clone(),
+                prepared: None,
+            });
+            q.selected = q.turns.len() - 1;
+            q.scroll = 0;
+        }
         q.next_request += 1;
         q.request = Some(q.next_request);
         q.started_at = Some(std::time::Instant::now());

@@ -157,6 +157,12 @@ fn draft(input: &RunInput) -> anyhow::Result<String> {
     assert!(!input.prompt.contains("{{"));
     Ok("Could we call reusable() from helper.rs here?".into())
 }
+/// Continue through the pre-call notice a user-initiated question opens.
+fn confirm_precall(app: &mut App) {
+    if matches!(app.mode, AppMode::PromptPrecall(_)) {
+        app.precall_confirm().unwrap();
+    }
+}
 fn drain(app: &mut App) {
     let until = Instant::now() + Duration::from_secs(5);
     while app.review_question_work.job.is_some() && Instant::now() < until {
@@ -173,6 +179,7 @@ fn ask(app: &mut App) {
     app.review_questions_mut().unwrap().editor =
         TextEditor::new("Can we reuse an existing helper?".into());
     app.submit_review_question();
+    confirm_precall(app);
     drain(app);
 }
 
@@ -275,6 +282,7 @@ fn follow_ups_receive_same_context_history_but_closing_review_clears_it() {
     app.review_questions_mut().unwrap().editor =
         TextEditor::new("Is the return type compatible?".into());
     app.submit_review_question();
+    confirm_precall(&mut app);
     drain(&mut app);
     assert_eq!(app.review_questions().unwrap().turns.len(), 2);
     let owner = app.review_questions().unwrap().owner.clone();
@@ -329,6 +337,7 @@ fn cancellation_retry_switching_and_obsolete_completion_are_isolated() {
             .is_err()
     );
     app.retry_review_question();
+    confirm_precall(&mut app);
     drain(&mut app);
     assert_eq!(app.review_questions().unwrap().turns.len(), 2);
     assert!(app.review_questions().unwrap().turns[1].answer.is_some());
@@ -365,6 +374,7 @@ fn empty_failure_and_disconnection_are_recoverable() {
         assert!(!app.review_questions().unwrap().editor.text().is_empty());
         app.review_question_work.runner = inspect_helper;
         app.retry_review_question();
+        confirm_precall(&mut app);
         drain(&mut app);
         assert!(
             app.review_questions()
@@ -407,6 +417,7 @@ fn inline_and_general_drafts_are_editable_and_preserve_existing_drafts() {
             ask(&mut app);
             app.review_question_work.runner = draft;
             app.draft_review_question(destination);
+            confirm_precall(&mut app);
             drain(&mut app);
             let q = app.review_questions_mut().unwrap();
             assert!(q.draft.is_some(), "{:?}", q.error);
@@ -526,6 +537,7 @@ fn ai_inline_drafts_keep_context_and_deleted_line_sides_in_the_posting_payload()
         ask(&mut app);
         app.review_question_work.runner = draft;
         app.draft_review_question(DraftDestination::Inline);
+        confirm_precall(&mut app);
         drain(&mut app);
         app.transfer_review_question_draft();
         drain(&mut app);
@@ -560,6 +572,7 @@ fn changed_context_rejects_drafts_and_escape_preserves_comment_text() {
     ask(&mut app);
     app.review_question_work.runner = draft;
     app.draft_review_question(DraftDestination::General);
+    confirm_precall(&mut app);
     drain(&mut app);
     std::fs::write(fixture.dir.path().join("helper.rs"), "changed\n").unwrap();
     app.transfer_review_question_draft();
@@ -838,6 +851,7 @@ fn changes_during_execution_reject_the_answer_and_refresh_recovers() {
     }
     app.review_question_work.runner = inspect_helper;
     app.retry_review_question();
+    confirm_precall(&mut app);
     drain(&mut app);
     assert!(app.review_questions().unwrap().turns[1].answer.is_some());
 }
@@ -883,6 +897,7 @@ fn changed_inline_selection_is_rejected_instead_of_moving_the_anchor() {
     ask(&mut app);
     app.review_question_work.runner = draft;
     app.draft_review_question(DraftDestination::Inline);
+    confirm_precall(&mut app);
     drain(&mut app);
     if let AppMode::DiffViewer(s) = &mut app.mode {
         s.comment_cursor = Some(0);
@@ -925,6 +940,7 @@ fn pending_request_timeout_retains_question_and_allows_retry() {
         "Can we reuse an existing helper?"
     );
     app.retry_review_question();
+    confirm_precall(&mut app);
     drain(&mut app);
     assert!(
         app.review_questions()
@@ -1004,6 +1020,14 @@ fn ctrl_s_submits_and_the_overlay_shows_the_request_is_running() {
         20,
     )
     .unwrap();
+    // Like every user-initiated headless call, it stops at the notice first.
+    let AppMode::PromptPrecall(pending) = &app.mode else {
+        panic!("Ctrl+S must open the pre-call notice");
+    };
+    assert_eq!(pending.prompt_id, PromptId::ReviewQuestion);
+    assert!(pending.preview.contains("Where is this used?"));
+    assert!(pending.preview.contains("caller.rs"));
+    app.precall_confirm().unwrap();
     let q = app.review_questions().unwrap();
     assert!(
         q.request.is_some(),
@@ -1044,10 +1068,7 @@ fn a_failed_question_shows_its_reason_where_the_answer_would_be() {
         .iter()
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(
-        screen.contains("The question was not answered."),
-        "{screen}"
-    );
+    assert!(screen.contains("Not answered."), "{screen}");
     assert!(screen.contains("has local changes"), "{screen}");
     assert!(!screen.contains("Ctrl+S asks your question"));
 }

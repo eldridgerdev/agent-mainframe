@@ -214,6 +214,37 @@ impl QuestionContext {
         }
     }
 
+    /// The prompt as the pre-call notice shows it, built on the UI thread
+    /// before anything runs. A diff or PR review already holds the files the
+    /// worker will verify against, so this is the prompt that will be sent;
+    /// the AI PR pane's diff is fetched from GitHub by the worker, so its
+    /// preview says so instead of guessing.
+    pub fn preview_tokens(&self, question: &str, earlier: &str, answer: &str) -> PromptContext {
+        let (revision, files) = match &self.target {
+            ReviewTarget::Diff { scope, files, .. } => (
+                match scope {
+                    DiffScope::PullRequest(t) => t.pr.head_oid.clone(),
+                    DiffScope::Commit(c) => c.hash.clone(),
+                    DiffScope::CurrentChanges => "(the checkout's HEAD, read when it runs)".into(),
+                },
+                files.clone(),
+            ),
+            ReviewTarget::Ai(pr) => (pr.head_sha.clone(), Arc::new(Vec::new())),
+        };
+        let prepared = PreparedContext {
+            stamp: String::new(),
+            files,
+            revision,
+        };
+        let tokens = self.tokens(&prepared, question, earlier, answer);
+        match self.target {
+            ReviewTarget::Ai(_) => tokens.with(
+                "diff",
+                "(the PR diff is fetched from GitHub when the question runs)",
+            ),
+            ReviewTarget::Diff { .. } => tokens,
+        }
+    }
     pub fn tokens(
         &self,
         prepared: &PreparedContext,

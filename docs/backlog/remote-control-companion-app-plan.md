@@ -1,7 +1,12 @@
 # Remote Control — companion app
 
-- **Status:** In progress — Epics 1, 2, 4, 5, 7 shipped 2026-09-14; Epic 3
-  (Android-only) scaffold + Phase 1 screens also shipped 2026-09-14
+- **Status:** Phases 1–3 implemented (2026-09-28) as a **PWA** served by
+  AMF itself, which replaced the Flutter client at the user's direction
+  (2026-09-26). It covers status, push, the terminal (simple and full), and
+  feature/session/TODO/prompt/diff actions. User guide:
+  [`docs/remote-control.md`](../remote-control.md). Detailed progress is in the
+  feature's `AMF_PLAN.md`. The Flutter epics below (3, 6) are superseded;
+  `mobile/` is pending deletion.
 - **Owner:** unassigned
 - **Relates to:** shipped interactive Remote Control (v0.24.0, see
   `CHANGELOG.md`) — bridges **one Claude session at a time** to
@@ -57,8 +62,9 @@ explicitly:
   desktop session with no conflict resolution — both sides can type
   into the same pane; last input wins at the terminal level, same as
   two local terminals attached to one tmux session.
-- **Client**: a cross-platform native app built with **Flutter** (iOS +
-  Android from one Dart codebase) — not a PWA. Chosen over a PWA for
+- **Client (superseded 2026-09-26 — now a PWA, see Status)**: a
+  cross-platform native app built with **Flutter** (iOS + Android from one
+  Dart codebase) — not a PWA. Chosen over a PWA for
   more reliable push delivery and native terminal performance, at the
   cost of app-store distribution and a new (non-Rust) toolchain. The
   terminal view uses an embedded WebView hosting xterm.js for

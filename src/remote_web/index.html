@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#161b22">
+  <title>AMF Remote</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/icon-192.png">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <button id="back" class="icon" aria-label="Back" hidden>&#8249;</button>
+    <h1 id="title">AMF Remote</h1>
+    <span id="conn" class="conn" hidden></span>
+    <button id="unpair" class="link" hidden>Unpair</button>
+  </header>
+
+  <main id="main">
+    <!-- Pairing: shown when this browser holds no device token. -->
+    <section id="view-pairing" class="view" hidden>
+      <p class="muted">
+        On the desktop, start the remote server (<kbd>Ctrl+Space C</kbd>), open
+        the pairing dialog (<kbd>Ctrl+Space Q</kbd>) and scan its QR code, or
+        type the 6-digit code here.
+      </p>
+      <form id="pair-form" class="form">
+        <label>Pairing code
+          <input id="code" inputmode="numeric" autocomplete="one-time-code"
+                 pattern="[0-9]{6}" maxlength="6" required>
+        </label>
+        <label>Device name
+          <input id="device-name" maxlength="64" required>
+        </label>
+        <button type="submit" id="pair-submit">Pair</button>
+        <p id="pair-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- Home: attention first, then every feature by project. -->
+    <section id="view-home" class="view" hidden>
+      <div id="push" class="card push" hidden>
+        <span id="push-state"></span>
+        <button id="push-enable" hidden>Turn on notifications</button>
+        <button id="push-test" class="secondary" hidden>Send test</button>
+      </div>
+      <p id="status-meta" class="muted"></p>
+      <h2 id="attention-heading" hidden>Needs attention</h2>
+      <ul id="attention" class="list"></ul>
+      <div class="row-between">
+        <h2>Features</h2>
+        <button id="new-feature" class="secondary small">+ New</button>
+      </div>
+      <div id="projects"></div>
+      <p id="status-empty" class="muted" hidden>No features yet.</p>
+    </section>
+
+    <!-- One feature: lifecycle and sessions. -->
+    <section id="view-feature" class="view" hidden>
+      <div class="card">
+        <div id="feature-project" class="muted small-text"></div>
+        <div id="feature-branch" class="mono small-text"></div>
+        <div id="feature-summary" class="small-text" hidden></div>
+        <div class="row-between">
+          <span id="feature-status" class="badge"></span>
+          <span id="feature-attention" class="attention-text"></span>
+        </div>
+        <div class="actions">
+          <button id="feature-start" hidden>Start</button>
+          <button id="feature-stop" class="danger" hidden>Stop</button>
+          <button id="feature-diff" class="secondary">Changes</button>
+          <button id="feature-todos" class="secondary">TODOs</button>
+        </div>
+      </div>
+      <h2>Sessions</h2>
+      <ul id="sessions" class="list"></ul>
+      <p id="sessions-empty" class="muted" hidden>No sessions.</p>
+      <h2>Add a session</h2>
+      <div class="actions wrap">
+        <button class="secondary" data-add="agent">Agent</button>
+        <button class="secondary" data-add="terminal">Terminal</button>
+        <button class="secondary" data-add="claude">Claude</button>
+        <button class="secondary" data-add="codex">Codex</button>
+        <button class="secondary" data-add="opencode">OpenCode</button>
+        <button class="secondary" data-add="pi">Pi</button>
+      </div>
+      <p id="feature-message" class="muted" role="status"></p>
+      <h2>Danger zone</h2>
+      <button id="feature-delete" class="danger small">Delete feature…</button>
+    </section>
+
+    <!-- A feature's changes against its base branch. -->
+    <section id="view-diff" class="view" hidden>
+      <p id="diff-summary" class="muted"></p>
+      <div id="diff-files"></div>
+    </section>
+
+    <!-- The TODO lists a feature can see. -->
+    <section id="view-todos" class="view" hidden>
+      <p id="todos-note" class="muted" hidden></p>
+      <div id="todo-lists"></div>
+    </section>
+
+    <!-- Create a feature. -->
+    <section id="view-new" class="view" hidden>
+      <form id="new-form" class="form">
+        <label>Project
+          <select id="new-project" required></select>
+        </label>
+        <label>Branch / feature name
+          <input id="new-branch" autocapitalize="off" autocorrect="off" spellcheck="false" required>
+        </label>
+        <label>Agent
+          <select id="new-agent">
+            <option value="">Project default</option>
+            <option value="claude">Claude</option>
+            <option value="codex">Codex</option>
+            <option value="opencode">OpenCode</option>
+            <option value="pi">Pi</option>
+          </select>
+        </label>
+        <details class="more">
+          <summary class="muted">More options</summary>
+          <div class="form">
+            <label>Mode
+              <select id="new-mode">
+                <option value="">Default</option>
+                <option value="vibeless">Vibeless</option>
+                <option value="vibe">Vibe</option>
+                <option value="supervibe">SuperVibe</option>
+              </select>
+            </label>
+            <label>Worktree
+              <select id="new-worktree">
+                <option value="">Automatic</option>
+                <option value="true">New worktree</option>
+                <option value="false">Repo root</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="new-review"> Review changes before finishing</label>
+          </div>
+        </details>
+        <button type="submit" id="new-submit">Create feature</button>
+        <p class="muted small-text">Hooks and anything else use the project's defaults.</p>
+        <p id="new-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <!-- A live session. -->
+    <section id="view-session" class="view session" hidden>
+      <div class="session-bar">
+        <div class="segmented" role="tablist">
+          <button id="mode-simple" role="tab">Simple</button>
+          <button id="mode-full" role="tab">Full</button>
+        </div>
+        <div class="session-tools">
+          <button id="prompts-open" class="secondary small">Prompts</button>
+          <button id="history-toggle" class="secondary small">History</button>
+          <button id="font-down" class="secondary small" aria-label="Smaller text">A−</button>
+          <button id="font-up" class="secondary small" aria-label="Larger text">A+</button>
+          <button id="fit-toggle" class="secondary small">Wrap</button>
+        </div>
+      </div>
+      <div id="term-status" class="muted small-text" role="status"></div>
+      <pre id="screen" class="screen" hidden></pre>
+      <div id="xterm" class="xterm-host" hidden></div>
+      <div class="keys" id="keys">
+        <button data-key="Escape">Esc</button>
+        <button data-key="Tab">Tab</button>
+        <button id="ctrl-toggle">Ctrl</button>
+        <button data-key="C-c">^C</button>
+        <button data-key="Up">&#8593;</button>
+        <button data-key="Down">&#8595;</button>
+        <button data-key="Left">&#8592;</button>
+        <button data-key="Right">&#8594;</button>
+        <button data-key="BTab">&#8679;Tab</button>
+        <button data-key="Enter">&#9166;</button>
+        <button data-text="1">1</button>
+        <button data-text="2">2</button>
+        <button data-text="3">3</button>
+        <button data-text="y">y</button>
+        <button data-text="n">n</button>
+      </div>
+      <form id="send-form" class="send">
+        <textarea id="send-text" rows="1" placeholder="Type a reply…" autocapitalize="sentences"></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Prompt library sheet (session view). -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-labelledby="sheet-title">
+      <div class="row-between">
+        <h2 id="sheet-title">Prompts</h2>
+        <button id="sheet-close" class="link">Close</button>
+      </div>
+      <div id="sheet-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

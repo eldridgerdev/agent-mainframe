@@ -5,7 +5,6 @@ use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -153,7 +152,7 @@ impl ViewState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingInput {
     pub session_id: String,
     pub cwd: String,
@@ -1825,11 +1824,10 @@ pub enum PairingDialogStatus {
 pub struct RemotePairingState {
     /// The current one-time code. Also embedded in `qr_payload`.
     pub code: String,
-    /// The server's actual bound address, shown alongside the QR — see
-    /// `DEFAULT_BIND_ADDR` in `app/remote_server.rs` for why this is
-    /// loopback-only for now. Also what the QR itself encodes, as
-    /// `amf-pair://<addr>?code=<code>`.
-    pub addr: SocketAddr,
+    /// The URL the QR encodes, minus the code: `AppConfig::remote_public_url`
+    /// when set, else `http://<addr>`. Shown under the QR so the address can
+    /// be typed when a camera isn't handy.
+    pub url: String,
     /// Pre-rendered half-block QR glyphs (`crate::qr::render_qr_lines`),
     /// one `String` per row. Empty when encoding failed (shouldn't happen
     /// for this payload shape) — the dialog falls back to the digits alone.

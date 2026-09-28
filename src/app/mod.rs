@@ -32,8 +32,12 @@ pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
 pub(crate) mod prompt_overrides;
+pub(crate) mod remote_actions;
+pub(crate) mod remote_attention;
 pub mod remote_control;
+pub(crate) mod remote_push;
 pub(crate) mod remote_server;
+pub(crate) mod remote_todos;
 mod rename;
 pub(crate) mod resource_gate;
 pub(crate) mod review;
@@ -574,6 +578,23 @@ pub struct AppConfig {
     /// `amf.json` `review_prompt_budget_tokens` overrides this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_prompt_budget_tokens: Option<usize>,
+    /// Where the Remote Control server listens (`host:port`). Loopback by
+    /// default: reaching it from a phone goes through a tunnel the user runs
+    /// (`tailscale serve`, cloudflared, …), and a fixed port is what lets
+    /// that tunnel survive toggling the server. `0.0.0.0:<port>` exposes it
+    /// on the LAN instead (plain HTTP, so no install or push there).
+    #[serde(default = "default_remote_bind")]
+    pub remote_bind: String,
+    /// The URL a phone uses to reach the Remote Control server, e.g.
+    /// `https://my-pc.tailnet.ts.net`. The pairing QR encodes it so a scan
+    /// opens the right page; unset, the QR falls back to the bind address,
+    /// which only works on this machine or over `adb reverse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_public_url: Option<String>,
+}
+
+pub(crate) fn default_remote_bind() -> String {
+    "127.0.0.1:47800".to_string()
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -723,6 +744,8 @@ impl Default for AppConfig {
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
             review_prompt_budget_tokens: None,
+            remote_bind: default_remote_bind(),
+            remote_public_url: None,
         }
     }
 }
@@ -1158,9 +1181,10 @@ pub struct App {
     /// The server's actual bound address, set on `Started` and cleared on
     /// `Stopped` (`poll_remote_server_bg`). `None` while the server is
     /// starting up or not running — `start_pairing` needs this to build the
-    /// pairing QR, since the address isn't known until the OS actually
-    /// binds it (`DEFAULT_BIND_ADDR` asks for any free port).
+    /// pairing QR when no `remote_public_url` is configured.
     pub remote_server_addr: Option<SocketAddr>,
+    /// Web Push to paired phones — see `app/remote_push.rs`.
+    pub remote_push: remote_push::RemotePushState,
 }
 
 pub(crate) struct HarnessCheckResult {
@@ -2530,6 +2554,7 @@ impl App {
             harness_check_rx,
             remote_server: None,
             remote_server_addr: None,
+            remote_push: Default::default(),
         };
 
         match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
@@ -2781,6 +2806,7 @@ impl App {
             harness_check_rx,
             remote_server: None,
             remote_server_addr: None,
+            remote_push: Default::default(),
         }
     }
 

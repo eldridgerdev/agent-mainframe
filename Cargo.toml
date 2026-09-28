@@ -76,12 +76,21 @@ notify = "8.2.0"
 # its own thread, started/stopped by an explicit user toggle — the rest of
 # AMF stays synchronous.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 # Pairing (Epic 4): rendering the pairing QR in the terminal. Token hashing
 # (`src/db/remote_devices.rs` never sees a plaintext token) reuses the `sha2`
 # dependency above.
 qrcode = { version = "0.14", default-features = false }
+# Web Push for the Remote Control PWA: payload encryption only. The crate's
+# `vapid` feature would pull in jwt-simple (RSA, Ed25519, P-384, ML-DSA, …) to
+# make one ES256 signature; `src/remote_push.rs` signs it with `p256` instead.
+web-push-native = { version = "0.5", default-features = false }
+p256 = { version = "0.13", features = ["ecdsa"] }
+base64ct = { version = "1", features = ["alloc"] }
 
 [dev-dependencies]
 mockall = "0.13"
 pretty_assertions = "1"
+# A blocking WebSocket client for the Remote Control terminal-socket tests;
+# already in the tree through axum's `ws` feature.
+tungstenite = "0.29"

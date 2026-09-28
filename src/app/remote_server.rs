@@ -7,24 +7,22 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use crate::project::ProjectStatus;
 use crate::remote_server::{
-    self, AuthorizedDevice, PairingExchangeOutcome, RemoteFeatureStatus, RemoteServerEvent,
-    RemoteStatusSnapshot,
+    self, AuthorizedDevice, PairingExchangeOutcome, RemoteFeatureStatus, RemoteProjectInfo,
+    RemoteServerEvent, RemoteSessionInfo, RemoteStatusSnapshot,
 };
+use crate::remote_terminal::PaneTarget;
 
 use super::{
     App, AppMode, PairingDialogStatus, PairingDialogView, RemoteDevicesListState,
     RemotePairingState,
 };
 
-/// Default bind address: loopback-only until the pairing/auth epics land,
-/// so the skeleton never exposes anything beyond localhost. Port 0 asks the
-/// OS for any free port rather than fixing one — nothing outside this
-/// machine can reach it yet, no user ever types it, and the eventual
-/// pairing QR (Epic 4) will encode whatever host:port the server actually
-/// bound to, so there is no reason to also solve "what if the fixed port
-/// is taken" right now.
-const DEFAULT_BIND_ADDR: &str = "127.0.0.1:0";
+/// Tests bind here: port 0 asks the OS for any free port, so parallel
+/// tests never collide. Real runs use `AppConfig::remote_bind`.
+#[cfg(test)]
+const TEST_BIND_ADDR: &str = "127.0.0.1:0";
 
 /// How long a freshly generated pairing code stays valid. Short enough that
 /// a code left on screen isn't a standing risk, long enough to actually
@@ -35,6 +33,16 @@ const PAIRING_CODE_TTL: Duration = Duration::from_secs(300);
 /// and a fresh one must be generated (`r` in the dialog). Counted per code,
 /// not per device — a new code resets the counter.
 const MAX_PAIRING_ATTEMPTS: u32 = 5;
+
+/// What the pairing QR encodes: the PWA's own URL with the code, so a phone
+/// camera opens the pairing page pre-filled. The configured public URL when
+/// there is one (the tunnel's), else the bind address.
+fn pairing_url(public_url: Option<&str>, addr: SocketAddr, code: &str) -> String {
+    match public_url.map(str::trim).filter(|url| !url.is_empty()) {
+        Some(url) => format!("{}/?code={code}", url.trim_end_matches('/')),
+        None => format!("http://{addr}/?code={code}"),
+    }
+}
 
 impl App {
     /// Flip the on/off toggle. Never called automatically — the
@@ -48,11 +56,31 @@ impl App {
     }
 
     fn start_remote_server(&mut self) {
-        let bind_addr: SocketAddr = DEFAULT_BIND_ADDR
-            .parse()
-            .expect("DEFAULT_BIND_ADDR must be a valid socket address");
+        #[cfg(test)]
+        let configured = TEST_BIND_ADDR.to_string();
+        #[cfg(not(test))]
+        let configured = self.config.remote_bind.clone();
+        let bind_addr: SocketAddr = match configured.parse() {
+            Ok(addr) => addr,
+            Err(_) => {
+                self.push_toast_warning(format!(
+                    "remote_bind \"{configured}\" isn't host:port — using {}",
+                    super::default_remote_bind()
+                ));
+                super::default_remote_bind()
+                    .parse()
+                    .expect("default_remote_bind is a valid address")
+            }
+        };
         self.log_info("remote_server", format!("Starting on {bind_addr}"));
-        self.remote_server = Some(remote_server::start(bind_addr));
+        let vapid_public_key = self.ensure_vapid_key().map(|key| key.public_key_b64());
+        self.remote_server = Some(remote_server::start(
+            bind_addr,
+            remote_server::ServerConfig {
+                vapid_public_key,
+                pane_io: std::sync::Arc::new(crate::remote_terminal::TmuxPaneIo),
+            },
+        ));
         self.push_toast_info("Remote-control server starting…");
     }
 
@@ -117,6 +145,15 @@ impl App {
             }
         }
 
+        // Pairing first, so a device minted this tick is already in the
+        // authorized table published below — a table built before it would
+        // otherwise reach the server thread after the pairing reply and
+        // briefly un-authorize the token that reply just handed out.
+        let paired = self.drain_pairing_requests();
+        let seen = self.drain_device_seen_events();
+        let pushed = self.drain_push_requests();
+        let acted = self.drain_remote_commands();
+
         // Push a fresh snapshot every tick the server is up. Building it is
         // a cheap in-memory scan (no I/O), and the server thread only ever
         // sees the latest one — see `RemoteServerHandle::publish_status`.
@@ -125,7 +162,7 @@ impl App {
             handle.publish_authorized_devices(self.build_authorized_devices());
         }
 
-        self.drain_pairing_requests() || self.drain_device_seen_events() || changed
+        paired || seen || pushed || acted || changed
     }
 
     /// Open the pairing dialog with a fresh one-time code, or explain why
@@ -161,11 +198,15 @@ impl App {
 
     fn build_pairing_state(&self, addr: SocketAddr) -> RemotePairingState {
         let code = remote_server::generate_pairing_code();
-        let qr_payload = format!("amf-pair://{addr}?code={code}");
+        let qr_payload = pairing_url(self.config.remote_public_url.as_deref(), addr, &code);
+        let url = qr_payload
+            .split_once("/?code=")
+            .map_or(qr_payload.as_str(), |(base, _)| base)
+            .to_string();
         let qr_lines = crate::qr::render_qr_lines(&qr_payload).unwrap_or_default();
         RemotePairingState {
             code,
-            addr,
+            url,
             qr_lines,
             expires_at: Instant::now() + PAIRING_CODE_TTL,
             attempts: 0,
@@ -306,6 +347,7 @@ impl App {
         let Some(db) = &self.db else { return };
         match db.revoke_remote_device(&device_id) {
             Ok(()) => {
+                self.invalidate_push_subscriptions();
                 self.log_info("remote_server", format!("Device revoked: {device_id}"));
                 self.push_toast_info(format!("Revoked \"{device_name}\""));
                 if let AppMode::RemotePairing(state) = &mut self.mode
@@ -528,33 +570,78 @@ impl App {
     /// look. A deliberately narrow read model — see
     /// `remote_server::RemoteFeatureStatus`.
     fn build_remote_status_snapshot(&self) -> RemoteStatusSnapshot {
-        let features = self
+        let attention_by_feature = self.remote_attention_by_feature();
+        let mut pane_targets = HashMap::new();
+        let mut workdirs = HashMap::new();
+        let mut features = Vec::new();
+        for project in &self.store.projects {
+            for feature in &project.features {
+                let running = feature.status != ProjectStatus::Stopped;
+                workdirs.insert(feature.id.clone(), feature.workdir.clone());
+                let sessions = feature
+                    .sessions
+                    .iter()
+                    .map(|session| {
+                        let live = running && session.kind.is_tmux_backed();
+                        if live {
+                            pane_targets.insert(
+                                session.id.clone(),
+                                PaneTarget {
+                                    session: feature.tmux_session.clone(),
+                                    window: session.tmux_window.clone(),
+                                },
+                            );
+                        }
+                        RemoteSessionInfo {
+                            id: session.id.clone(),
+                            label: session.label.clone(),
+                            kind: serde_json::to_value(&session.kind)
+                                .ok()
+                                .and_then(|v| v.as_str().map(str::to_string))
+                                .unwrap_or_default(),
+                            live,
+                        }
+                    })
+                    .collect();
+                let attention = attention_by_feature.get(&feature.id);
+                features.push(RemoteFeatureStatus {
+                    project_name: project.name.clone(),
+                    feature_name: feature.name.clone(),
+                    status: feature.status.to_string(),
+                    needs_attention: attention.is_some(),
+                    attention_reason: attention.map(|a| a.reason.clone()),
+                    attention_detail: attention.and_then(|a| a.detail.clone()),
+                    feature_id: feature.id.clone(),
+                    branch: feature.branch.clone(),
+                    agent: feature.agent.slug().to_string(),
+                    sessions,
+                    summary: feature.summary.clone(),
+                    nickname: feature.nickname.clone(),
+                });
+            }
+        }
+        let projects = self
             .store
             .projects
             .iter()
-            .flat_map(|project| {
-                project.features.iter().map(move |feature| {
-                    let attention = self.attention.get(&feature.tmux_session);
-                    RemoteFeatureStatus {
-                        project_name: project.name.clone(),
-                        feature_name: feature.name.clone(),
-                        status: feature.status.to_string(),
-                        needs_attention: attention.is_some(),
-                        attention_reason: attention.map(|record| record.state.label().to_string()),
-                    }
-                })
+            .map(|project| RemoteProjectInfo {
+                name: project.name.clone(),
+                preferred_agent: project.preferred_agent.slug().to_string(),
             })
             .collect();
 
         RemoteStatusSnapshot {
             generated_at: chrono::Utc::now().to_rfc3339(),
             features,
+            projects,
+            pane_targets,
+            workdirs,
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::app::ProjectStore;
     use crate::app::attention::{AttentionRecord, AttentionState};
@@ -638,6 +725,23 @@ mod tests {
             app.poll_remote_server_bg();
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn pairing_url_prefers_the_public_url() {
+        let addr: SocketAddr = "127.0.0.1:47800".parse().unwrap();
+        assert_eq!(
+            pairing_url(None, addr, "123456"),
+            "http://127.0.0.1:47800/?code=123456"
+        );
+        assert_eq!(
+            pairing_url(Some("https://pc.tail1.ts.net/"), addr, "123456"),
+            "https://pc.tail1.ts.net/?code=123456"
+        );
+        assert_eq!(
+            pairing_url(Some("  "), addr, "123456"),
+            "http://127.0.0.1:47800/?code=123456"
+        );
     }
 
     #[test]
@@ -751,6 +855,19 @@ mod tests {
 
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    /// `one_feature_store` (`my-project` / `my-feature`, tmux session
+    /// `amf-my-feature`) backed by a temporary database.
+    pub(in crate::app) fn test_app_with_feature_and_db() -> (tempfile::NamedTempFile, App) {
+        let db_file = tempfile::NamedTempFile::new().unwrap();
+        let mut app = App::new_for_test(
+            one_feature_store(),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
+        (db_file, app)
     }
 
     fn test_app_with_db() -> (tempfile::NamedTempFile, App) {
@@ -1064,6 +1181,17 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["token"].as_str().unwrap().len(), 64);
         assert!(!body["device_id"].as_str().unwrap().is_empty());
+
+        // The fresh token works straight away, with no main-loop tick in
+        // between to republish the authorized table — the PWA fetches
+        // `/status` the moment pairing returns.
+        let status = ureq::get(format!("http://{addr}/status"))
+            .header(
+                "Authorization",
+                format!("Bearer {}", body["token"].as_str().unwrap()),
+            )
+            .call();
+        assert!(status.is_ok(), "fresh token was rejected: {status:?}");
 
         let devices = app.db.as_ref().unwrap().list_remote_devices().unwrap();
         assert_eq!(devices.len(), 1);

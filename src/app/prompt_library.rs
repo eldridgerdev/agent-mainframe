@@ -848,6 +848,38 @@ impl App {
 /// or the legacy `.amf/config.json`). Returns an empty list when the file
 /// is absent or unparseable, mirroring the tolerant loading in
 /// `merge_project_extension_config`.
+impl App {
+    /// The library as the picker would show it for feature `(pi, fi)`,
+    /// read-only and without opening the picker — for Remote Control.
+    pub(crate) fn prompt_library_for_feature(
+        &self,
+        pi: usize,
+        fi: usize,
+    ) -> Vec<PromptLibraryEntry> {
+        let Some(project) = self.store.projects.get(pi) else {
+            return Vec::new();
+        };
+        let user = self
+            .db
+            .as_ref()
+            .and_then(|db| db.load_prompt_templates().ok())
+            .unwrap_or_else(|| self.store.prompt_templates.clone());
+        let global = if self.store_path.as_os_str().is_empty() {
+            self.config.extension.prompt_templates.clone()
+        } else {
+            crate::extension::load_global_extension_config().prompt_templates
+        };
+        let project_templates = load_project_prompt_templates(&project.repo);
+        let worktree_templates = project
+            .features
+            .get(fi)
+            .filter(|feature| feature.workdir != project.repo)
+            .map(|feature| load_project_prompt_templates(&feature.workdir))
+            .unwrap_or_default();
+        merge_prompt_library_entries(&user, &global, &project_templates, &worktree_templates)
+    }
+}
+
 fn load_project_prompt_templates(repo: &Path) -> Vec<PromptTemplate> {
     let Some(path) = crate::extension::resolve_project_config_path(repo) else {
         return Vec::new();

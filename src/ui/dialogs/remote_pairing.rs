@@ -115,7 +115,7 @@ pub fn draw_remote_pairing_dialog(
     lines.push(status_line);
     lines.push(
         Line::from(Span::styled(
-            format!("Server: {}", state.addr),
+            format!("Open: {}", state.url),
             Style::default().fg(theme.text_muted.to_color()),
         ))
         .alignment(Alignment::Center),

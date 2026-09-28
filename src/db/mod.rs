@@ -11,6 +11,7 @@ mod pr_terminal_state;
 pub mod prompt_overrides;
 pub mod prompt_templates;
 pub mod remote_devices;
+pub mod remote_push;
 mod session_status;
 pub mod store;
 pub mod todos;
@@ -472,6 +473,32 @@ impl AmfDb {
 
     pub fn revoke_remote_device(&self, id: &str) -> Result<()> {
         remote_devices::revoke(&self.conn, id)
+    }
+}
+
+/// Web Push state for the Remote Control PWA.
+impl AmfDb {
+    pub fn upsert_push_subscription(
+        &self,
+        subscription: &remote_push::PushSubscription,
+    ) -> Result<()> {
+        remote_push::upsert(&self.conn, subscription)
+    }
+
+    pub fn list_active_push_subscriptions(&self) -> Result<Vec<remote_push::PushSubscription>> {
+        remote_push::list_active(&self.conn)
+    }
+
+    pub fn delete_push_subscription(&self, endpoint: &str) -> Result<()> {
+        remote_push::delete(&self.conn, endpoint)
+    }
+
+    pub fn vapid_private_key(&self) -> Result<Option<String>> {
+        remote_push::vapid_private_key(&self.conn)
+    }
+
+    pub fn set_vapid_private_key(&self, key: &str) -> Result<()> {
+        remote_push::set_vapid_private_key(&self.conn, key)
     }
 }
 

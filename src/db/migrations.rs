@@ -172,6 +172,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add remote_devices table for Remote Control companion-app pairing",
             MIGRATION_039,
         ),
+        (
+            "Add Web Push subscriptions + VAPID key for Remote Control",
+            MIGRATION_040,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -980,6 +984,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_devices_token_hash
     ON remote_devices(token_hash);
 ";
 
+/// Web Push for the Remote Control PWA. A subscription is keyed by its push
+/// `endpoint` — the browser's own identity for it — so a phone that
+/// re-subscribes (or re-pairs and subscribes again) replaces its row rather
+/// than adding a second. Each belongs to the paired device that registered
+/// it; deleting the device takes its subscriptions with it, and a revoked
+/// device's rows are skipped at send time (`list_active`). `remote_push_vapid`
+/// is a single row (`id = 1`) holding the server's VAPID signing key: minted
+/// once, because rotating it silently invalidates every subscription.
+const MIGRATION_040: &str = "
+CREATE TABLE IF NOT EXISTS remote_push_subscriptions (
+    endpoint   TEXT PRIMARY KEY,
+    device_id  TEXT NOT NULL REFERENCES remote_devices(id) ON DELETE CASCADE,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS remote_push_vapid (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    private_key TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1020,7 +1048,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1115,7 +1143,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     #[test]
@@ -1457,7 +1485,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 39);
+        assert_eq!(rows, 40);
     }
 
     /// `prompt_overrides` stands up on a fresh database and on one seeded at an
@@ -1568,7 +1596,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 39);
+        assert_eq!(version, 40);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

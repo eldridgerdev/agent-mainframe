@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn renders_a_nonempty_square_ish_block_for_a_short_payload() {
-        let lines = render_qr_lines("amf-pair://127.0.0.1:54321?code=123456")
+        let lines = render_qr_lines("http://127.0.0.1:54321/?code=123456")
             .expect("short payload should always encode");
         assert!(!lines.is_empty());
         // Half-block rendering packs 2 module rows per line, so lines are

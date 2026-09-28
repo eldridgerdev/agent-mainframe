@@ -1,6 +1,6 @@
 //! SQLite persistence for Remote Control Web Push: the subscriptions each
 //! paired browser registers, and the server's one VAPID signing key. See
-//! `MIGRATION_040` for the schema and why it is shaped this way.
+//! `MIGRATION_043` for the schema and why it is shaped this way.
 
 use anyhow::Result;
 use chrono::Utc;

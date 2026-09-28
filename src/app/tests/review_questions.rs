@@ -30,6 +30,7 @@ impl Fixture {
             "pub fn reusable() -> u32 { 1 }\n",
         )
         .unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agents\n\nProject rules.\n").unwrap();
         commit(dir.path());
         let base = git(dir.path(), &["rev-parse", "HEAD"]).unwrap();
         std::fs::write(
@@ -1071,4 +1072,44 @@ fn a_failed_question_shows_its_reason_where_the_answer_would_be() {
     assert!(screen.contains("Not answered."), "{screen}");
     assert!(screen.contains("has local changes"), "{screen}");
     assert!(!screen.contains("Ctrl+S asks your question"));
+}
+
+#[test]
+fn amf_managed_blocks_do_not_count_as_local_changes_but_real_edits_do() {
+    for surface in [1, 2] {
+        let fixture = Fixture::new();
+        let dir = fixture.dir.path();
+        let mut app = fixture.app();
+        if surface == 1 {
+            fixture.manual(&mut app);
+        } else {
+            fixture.ai(&mut app);
+        }
+        // A tracked AGENTS.md gains AMF's Plan Mode block (Codex/OpenCode/Pi).
+        crate::app::setup::ensure_plan_mode_instructions(dir, &AgentKind::Codex, true);
+        // An untracked file that is nothing but an AMF block.
+        std::fs::write(
+            dir.join("CLAUDE.local.md"),
+            "<!-- AMF:review-instructions:begin -->\n\nReview.\n\n<!-- AMF:review-instructions:end -->\n",
+        )
+        .unwrap();
+        assert!(!git(dir, &["status", "--porcelain"]).unwrap().is_empty());
+        ask(&mut app);
+        let q = app.review_questions().unwrap();
+        assert!(q.turns[0].answer.is_some(), "{:?}", q.turns[0].error);
+
+        // An edit outside the block is the user's, and is named.
+        let agents = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            agents.replace("Project rules.", "Edited."),
+        )
+        .unwrap();
+        app.retry_review_question();
+        confirm_precall(&mut app);
+        drain(&mut app);
+        let q = app.review_questions().unwrap();
+        let error = q.turns.last().unwrap().error.as_deref().unwrap_or_default();
+        assert!(error.contains("has local changes (AGENTS.md)"), "{error}");
+    }
 }

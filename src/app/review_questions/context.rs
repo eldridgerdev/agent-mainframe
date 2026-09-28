@@ -287,6 +287,46 @@ pub(crate) fn git(workdir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output.stdout)?.trim_end().to_string())
 }
 
+/// Paths that make a pinned checkout differ from its commit, ignoring what AMF
+/// itself wrote: a file whose only difference from `HEAD` is an AMF-managed
+/// block (plan / review instructions, the matching `.gitignore` entry), or an
+/// untracked file that is nothing but one. Without this, every feature AMF set
+/// up for Plan or Review Mode refuses PR questions on its own checkout.
+fn local_changes(workdir: &Path) -> Result<Vec<String>> {
+    let root = PathBuf::from(git(workdir, &["rev-parse", "--show-toplevel"])?);
+    let status = git(
+        workdir,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=normal"],
+    )?;
+    let mut entries = status.split('\0').filter(|e| !e.is_empty());
+    let mut changed = Vec::new();
+    while let Some(entry) = entries.next() {
+        // Porcelain v1: two status characters (index, worktree), a space, path.
+        let (code, path) = (
+            entry.get(..2).unwrap_or(entry),
+            entry.get(3..).unwrap_or(""),
+        );
+        if code.starts_with(['R', 'C']) {
+            entries.next(); // the rename/copy source; the change stands
+        }
+        let unmanaged = |text: &str| crate::app::setup::strip_amf_managed_blocks(text);
+        let working = || std::fs::read_to_string(root.join(path)).ok();
+        // Only an unstaged edit or an untracked file can be AMF's own doing.
+        let amf_only = match code {
+            " M" => working().is_some_and(|now| {
+                git(workdir, &["show", &format!("HEAD:{path}")])
+                    .is_ok_and(|then| unmanaged(&now).trim_end() == unmanaged(&then).trim_end())
+            }),
+            "??" => working().is_some_and(|now| unmanaged(&now).trim().is_empty()),
+            _ => false,
+        };
+        if !amf_only {
+            changed.push(path.to_string());
+        }
+    }
+    Ok(changed)
+}
+
 pub(crate) fn repository_stamp(workdir: &Path) -> Result<String> {
     let head = git(workdir, &["rev-parse", "HEAD"])?;
     let patch = git(
@@ -395,13 +435,11 @@ pub(crate) fn prepare(context: &QuestionContext, ai_diff: AiDiffLoader) -> Resul
                 head == expected,
                 "Matching checkout unavailable: review is at {expected}, checkout is at {head}. Repository search stopped; return to review or select a matching checkout"
             );
+            let changed = local_changes(&context.workdir)?;
             ensure!(
-                git(
-                    &context.workdir,
-                    &["status", "--porcelain", "--untracked-files=normal"]
-                )?
-                .is_empty(),
-                "Matching checkout has local changes; repository search stopped"
+                changed.is_empty(),
+                "Matching checkout has local changes ({}); repository search stopped",
+                changed.join(", ")
             );
             let actual = if base.is_empty() {
                 crate::diff::load_commit_snapshot(&context.workdir, expected, *ignore_whitespace)?
@@ -427,13 +465,11 @@ pub(crate) fn prepare(context: &QuestionContext, ai_diff: AiDiffLoader) -> Resul
                 "Matching PR checkout unavailable: review is at {}, checkout is at {head}; repository search stopped",
                 pr.head_sha
             );
+            let changed = local_changes(&context.workdir)?;
             ensure!(
-                git(
-                    &context.workdir,
-                    &["status", "--porcelain", "--untracked-files=normal"]
-                )?
-                .is_empty(),
-                "PR checkout has local changes; repository search stopped"
+                changed.is_empty(),
+                "PR checkout has local changes ({}); repository search stopped",
+                changed.join(", ")
             );
             ai_diff(&context.workdir, pr)?
         }

@@ -568,11 +568,16 @@ fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
                 "remove remote_public_url to use Tailscale's address automatically, or correct it",
             );
         }
-        return Finding::new(
+        let finding = Finding::new(
             ID,
             Severity::Ok,
             format!("AMF Remote pairs phones at {url}"),
         );
+        return if untagged {
+            finding.with_advice(lock_down)
+        } else {
+            finding
+        };
     }
 
     match inputs.tailscale {
@@ -1075,6 +1080,15 @@ mod tests {
         let remote = finding(&report, "remote-access");
         assert_eq!(remote.severity, Severity::Notice);
         assert!(remote.summary.contains("differs"));
+
+        fixture.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        let report = fixture.run(&|_| false);
+        let agreed = finding(&report, "remote-access");
+        assert_eq!(agreed.severity, Severity::Ok);
+        assert!(
+            agreed.advice.as_deref().unwrap().contains("tag:amf"),
+            "a configured URL still gets the lock-down reminder"
+        );
 
         fixture.config.remote_public_url = Some("http://192.168.0.2:47800".into());
         let report = fixture.run(&|_| false);

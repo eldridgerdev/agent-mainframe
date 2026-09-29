@@ -41,6 +41,8 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
             KeyCode::Down | KeyCode::Char('j') => app.plan_expert_model_pick_move(1),
             KeyCode::Up | KeyCode::Char('k') => app.plan_expert_model_pick_move(-1),
+            KeyCode::Right | KeyCode::Char('l') => app.plan_expert_reasoning_cycle(1),
+            KeyCode::Left | KeyCode::Char('h') => app.plan_expert_reasoning_cycle(-1),
             _ => {}
         }
         return Ok(());

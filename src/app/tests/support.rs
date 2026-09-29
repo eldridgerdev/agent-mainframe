@@ -492,6 +492,7 @@ pub(super) fn sample_ai_review_state(
         harness_pick_origin: None,
         model: None,
         model_picked: false,
+        reasoning: None,
         model_pick: None,
         finding_editor: None,
         post_confirm: None,

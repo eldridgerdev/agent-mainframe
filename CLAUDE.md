@@ -554,6 +554,33 @@ and `AMF_PLAN.md` for the design decisions.
   (`learning.answer`, `session.summary`) call `announce_headless_run` — a
   toast, never the modal — so a queued batch can't deadlock.
 
+### Reasoning level (headless runs)
+
+Wherever AMF lets you pick a headless model, it also lets you pick how hard
+the model thinks.
+
+- **One vocabulary, per-harness flags.** `headless::ReasoningLevel`
+  (`minimal`..`max`) maps through `reasoning_args`: Claude `--effort`, Codex
+  `-c model_reasoning_effort="…"`, OpenCode `--variant`. Pi has no verified flag,
+  so it offers none. `ReasoningLevel::supported_for(harness)` is the verified
+  set; a level the harness cannot express is **dropped, never passed through**
+  (Codex has no `max`; Claude has no `minimal`).
+- **`ModelSel`** (`model` + `reasoning`) is what every `HeadlessRunner` entry and
+  `ClaudeLauncher::spawn_headless` accept via `impl Into<ModelSel>`, so a
+  caller with only a model (`Option<&str>`) is unchanged.
+- **Pickers.** The AI Review (`A`) and Expert plan review model pickers carry
+  `AiModelPickState::{reasoning_levels, reasoning}`; `h`/`l` (or ←/→) cycle
+  Default → each level on the same screen. The row is hidden for a harness
+  with no levels. Expert reasoning is **not persisted** with the interview
+  draft (it would need a migration on the shared `amf.db`); a resumed draft
+  falls back to the `plan_preflight` config entry.
+- **Config.** `review_reasoning` / `review_reasonings` mirror `review_model` /
+  `review_models` (`AppConfig::review_reasoning_for`; Expert plan review never
+  inherits the shared default). Applies to the picker seed, Final Review
+  (walkthrough, co-review, overview, diff explain) and review memory.
+- **Attribution** records the level (`AiReviewAttribution::reasoning`) only when
+  the harness could use it.
+
 ### Batched Review of Oversized Diffs
 
 When an AI review's diff would overflow the model, it is split into bounded

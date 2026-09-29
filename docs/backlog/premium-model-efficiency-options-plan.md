@@ -442,6 +442,15 @@ Keep requested settings separate from observed model/settings because users
 can change them inside a harness. Probe supported capabilities and preserve
 unknown values rather than silently mapping them to unrelated controls.
 
+### Shipped so far
+
+The headless model pickers (AI Review `A`, Expert plan review) and the
+`review_reasoning` / `review_reasonings` config now carry a per-run reasoning
+level (Claude `--effort`, Codex `model_reasoning_effort`, OpenCode `--variant`;
+Pi has no verified flag). A level a harness cannot express is dropped. Not yet
+covered: feature presets, interactive sessions, Pi, persisting the Expert level
+with a paused interview, and any evaluation of level against quality or cost.
+
 ### Savings calculation
 
 Assume an evaluated workflow maintains quality while reducing reasoning from

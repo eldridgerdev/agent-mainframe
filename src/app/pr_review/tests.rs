@@ -564,6 +564,7 @@ fn single_and_combined_fix_prompts_omit_posted_review_usage() {
     let attribution = crate::app::ai_review::AiReviewAttribution {
         harness: Some("codex".into()),
         model: Some("review-model".into()),
+        reasoning: None,
         input_tokens: Some(12_300),
         output_tokens: Some(4_500),
         cached_tokens: Some(3_200),
@@ -1715,4 +1716,138 @@ fn reply_effective_agent_drafted_drops_once_the_user_edits_the_draft() {
 fn reply_effective_agent_drafted_false_without_a_draft() {
     let reply = reply_state(false, "", "Done.");
     assert!(!reply_effective_agent_drafted(&reply));
+}
+
+mod reasoning_level {
+    use crate::app::ReviewAction;
+    use crate::app::ai_review::AiReviewAttribution;
+    use crate::app::pr_review::state::{AiModelPickState, ModelPickRow};
+    use crate::headless::ReasoningLevel::{self, High, Low, Max, XHigh};
+    use crate::project::AgentKind;
+
+    fn pick(harness: &AgentKind, seed: Option<ReasoningLevel>) -> AiModelPickState {
+        AiModelPickState::new(harness, vec![ModelPickRow::Default], 0, String::new(), seed)
+    }
+
+    #[test]
+    fn cycling_steps_through_default_then_each_level_and_wraps() {
+        let mut state = pick(&AgentKind::Codex, None);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            state.cycle_reasoning(1);
+            seen.push(state.reasoning);
+        }
+        assert_eq!(
+            seen,
+            [
+                Some(Low),
+                Some(ReasoningLevel::Medium),
+                Some(High),
+                Some(XHigh),
+                None
+            ]
+        );
+        state.cycle_reasoning(-1);
+        assert_eq!(
+            state.reasoning,
+            Some(XHigh),
+            "backwards from Default wraps to the top"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_levels_offers_none_and_ignores_cycling() {
+        let mut state = pick(&AgentKind::Pi, Some(High));
+        assert!(state.reasoning_levels.is_empty());
+        assert_eq!(
+            state.reasoning, None,
+            "a seed the harness cannot express is dropped"
+        );
+        state.cycle_reasoning(1);
+        assert_eq!(state.reasoning, None);
+    }
+
+    #[test]
+    fn seeding_a_level_the_harness_lacks_falls_back_to_default() {
+        assert_eq!(pick(&AgentKind::Codex, Some(Max)).reasoning, None);
+        assert_eq!(pick(&AgentKind::Claude, Some(Max)).reasoning, Some(Max));
+    }
+
+    #[test]
+    fn per_action_level_beats_the_shared_default() {
+        let mut config = crate::app::AppConfig {
+            review_reasoning: Some(Low),
+            ..Default::default()
+        };
+        config
+            .review_reasonings
+            .insert("co_review".to_string(), High);
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::CoReview),
+            Some(High)
+        );
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::Walkthrough),
+            Some(Low)
+        );
+    }
+
+    #[test]
+    fn expert_plan_review_never_inherits_the_shared_default() {
+        let mut config = crate::app::AppConfig {
+            review_reasoning: Some(Max),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::PlanPreflight),
+            None
+        );
+        config
+            .review_reasonings
+            .insert("plan_preflight".to_string(), High);
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::PlanPreflight),
+            Some(High)
+        );
+    }
+
+    #[test]
+    fn attribution_names_the_level_only_when_the_harness_could_use_it() {
+        let pricing = crate::token_tracking::TokenPricingConfig::default();
+        let elapsed = std::time::Duration::from_secs(1);
+        let used = AiReviewAttribution::from_run(
+            &AgentKind::Claude,
+            Some("opus"),
+            Some(High),
+            None,
+            &pricing,
+            elapsed,
+        );
+        assert!(used.plain_label().contains("model opus · reasoning high"));
+        let unsupported = AiReviewAttribution::from_run(
+            &AgentKind::Pi,
+            None,
+            Some(High),
+            None,
+            &pricing,
+            elapsed,
+        );
+        assert_eq!(unsupported.reasoning, None);
+        assert!(!unsupported.plain_label().contains("reasoning"));
+    }
+
+    #[test]
+    fn config_round_trips_and_stays_absent_by_default() {
+        let json = serde_json::to_string(&crate::app::AppConfig::default()).unwrap();
+        assert!(!json.contains("review_reasoning"));
+        let config: crate::app::AppConfig = serde_json::from_str(
+            r#"{"review_reasoning":"xhigh","review_reasonings":{"co_review":"low"}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.review_reasoning, Some(XHigh));
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::CoReview),
+            Some(Low)
+        );
+    }
 }

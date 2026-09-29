@@ -16,6 +16,18 @@ are tagged.
   hide or show its features. Each heading shows the feature count, and your
   choices are remembered on this device across refreshes and reloads. Features
   needing attention stay visible at the top even when their project is collapsed.
+- **Choose a reasoning level alongside the model.** The AI Review (`A`) and
+  Expert plan review model pickers have a new Reasoning row: press `h` / `l`
+  (or ←/→) to step from Default through the levels your harness supports.
+  Claude offers low to max, Codex low to xhigh, and OpenCode minimal, high and
+  max; Pi has no reasoning control yet, so the row is hidden. Default sends
+  nothing, so the harness keeps its own level.
+- **Set a default reasoning level in config.** `review_reasoning` and per-action
+  `review_reasonings` mirror `review_model` / `review_models` and also apply to
+  Final Review passes and review memory. Expert plan review never inherits the
+  shared default.
+- **AI reviews record the level they ran at** in their attribution line
+  (for example `model opus · reasoning high`).
 
 ### Changed
 
@@ -29,6 +41,8 @@ are tagged.
   you to press `leader+C` first.
 - **The phone's feature list is sorted by status.** Within each project,
   features that need you come first, then active, idle, and stopped ones.
+- **A paused Expert plan review resumes with the config level, not the one you
+  picked.** The model is restored with the draft but the reasoning level is not.
 
 ### Removed
 

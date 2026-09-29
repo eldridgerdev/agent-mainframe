@@ -1,0 +1,14 @@
+# Browser proof of the remote PWA, with sample status data and no live agents.
+# Use --config scenarios/remote-dashboard-collapse-config.json.
+# Browser assertions live beside the captures in capture-remote-dashboard.cjs.
+
+# Install before generating a pairing code, so downloads cannot expire it.
+run:node "$SCRIPT_DIR/capture-remote-dashboard.cjs" --install-browser
+key:C-Space
+key:Q
+wait:5000
+note:The isolated AMF server is ready to pair the browser. The helper preserves this setup capture internally and publishes only the three PWA frames.
+expect:Pair a Device
+expect:Waiting for phone to scan
+shot:remote-pairing-ready
+run:node "$SCRIPT_DIR/capture-remote-dashboard.cjs" "$SESSION" "$OUT_DIR"

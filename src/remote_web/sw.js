@@ -3,7 +3,7 @@
 // page). API routes are never cached — status is live or nothing.
 "use strict";
 
-const CACHE = "amf-remote-v4";
+const CACHE = "amf-remote-v5";
 const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

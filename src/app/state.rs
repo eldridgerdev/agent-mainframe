@@ -3151,6 +3151,10 @@ pub struct PlanInterviewState {
     /// (that would need a schema change on the shared `amf.db`), so a resumed
     /// interview falls back to `review_reasoning_for(PlanPreflight)`.
     pub expert_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// The picker was confirmed this session, so `expert_reasoning` is
+    /// authoritative even when `None` (an explicit "Default"). False for a
+    /// resumed draft, where the config level applies instead.
+    pub expert_reasoning_picked: bool,
     /// Single-select model picker shown before the Expert pre-call gate.
     pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
@@ -3357,6 +3361,7 @@ impl PlanInterviewState {
             critique: None,
             expert_model: None,
             expert_reasoning: None,
+            expert_reasoning_picked: false,
             expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
@@ -4145,6 +4150,7 @@ impl PlanInterviewState {
         self.critique = None;
         self.expert_model = None;
         self.expert_reasoning = None;
+        self.expert_reasoning_picked = false;
         self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;

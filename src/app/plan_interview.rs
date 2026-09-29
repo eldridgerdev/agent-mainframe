@@ -94,7 +94,11 @@ impl App {
                     rows,
                     selected,
                     custom_input,
-                    state.expert_reasoning.or(reasoning_default),
+                    if state.expert_reasoning_picked {
+                        state.expert_reasoning
+                    } else {
+                        reasoning_default
+                    },
                 ));
             }
         }
@@ -159,19 +163,24 @@ impl App {
         }
     }
 
-    /// The level an Expert review pass runs at: the picker's choice, else the
+    /// The level an Expert review pass runs at: the picker's choice (even
+    /// "Default"), else, when none was made, the
     /// `plan_preflight` config entry (a resumed draft has the model but not
     /// the level — see `PlanInterviewState::expert_reasoning`), dropped when
     /// the harness cannot express it.
     fn expert_reasoning_for(&self, harness: &AgentKind) -> Option<crate::headless::ReasoningLevel> {
         let picked = match &self.mode {
-            AppMode::PlanInterview(state) => state.expert_reasoning,
+            AppMode::PlanInterview(state) if state.expert_reasoning_picked => {
+                Some(state.expert_reasoning)
+            }
             _ => None,
         };
+        // An explicit pick is authoritative, including "Default" (`None`).
         picked
-            .or(self
-                .config
-                .review_reasoning_for(ReviewAction::PlanPreflight))
+            .unwrap_or_else(|| {
+                self.config
+                    .review_reasoning_for(ReviewAction::PlanPreflight)
+            })
             .filter(|level| crate::headless::ReasoningLevel::supported_for(harness).contains(level))
     }
 
@@ -222,6 +231,7 @@ impl App {
                 .expert_model_pick
                 .as_ref()
                 .and_then(|pick| pick.reasoning);
+            state.expert_reasoning_picked = true;
             state.expert_model = Some(model);
             state.expert_model_pick = None;
         }

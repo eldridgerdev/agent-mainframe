@@ -262,6 +262,22 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
     let serve_cmd = input
         .cli
         .display_command(&format!("serve --bg {}", input.port));
+    // A step AMF can't check yet says why, and words its instructions as
+    // "if you haven't" — it may well be done already (reported from real
+    // use: an unseen, already-signed-in Tailscale was told to `tailscale up`).
+    let unchecked = match status {
+        None => "Checking Tailscale…",
+        Some(TailscaleStatus::NotInstalled) => {
+            "AMF can't see Tailscale here (step 1), so it can't check this."
+        }
+        Some(TailscaleStatus::Running(_)) => "AMF can check this once step 3 is done.",
+        Some(_) => "AMF can check this once step 2 is done.",
+    };
+    let unknown = |title: &str, lines: Vec<String>| {
+        let mut all = vec![unchecked.to_string()];
+        all.extend(lines);
+        SetupStep::new(Unknown, title, all)
+    };
     let mut steps = Vec::new();
 
     if let Some(url) = input.public_url {
@@ -282,22 +298,20 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
         "Already installed? AMF looks for `tailscale` on your PATH; if it".into(),
         "lives elsewhere, set \"remote_tailscale_cli\" to it in config.json.".into(),
     ];
-    steps.push(SetupStep::new(
-        match status {
-            None => Unknown,
-            Some(TailscaleStatus::NotInstalled) => Todo,
-            Some(_) => Done,
-        },
-        "Install Tailscale on this computer and your phone",
-        match status {
-            Some(TailscaleStatus::NotInstalled) | None => install,
-            Some(_) => vec![
+    let install_title = "Install Tailscale on this computer and your phone";
+    steps.push(match status {
+        None => unknown(install_title, install),
+        Some(TailscaleStatus::NotInstalled) => SetupStep::new(Todo, install_title, install),
+        Some(_) => SetupStep::new(
+            Done,
+            install_title,
+            vec![
                 format!("Found: {}", input.cli.display_command(""))
                     .trim_end()
                     .to_string(),
             ],
-        },
-    ));
+        ),
+    });
 
     let up = input.cli.display_command("up");
     steps.push(match status {
@@ -329,10 +343,12 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
                 "\"remote_tailscale_socket\" to that path in config.json.".into(),
             ],
         ),
-        Some(TailscaleStatus::NotInstalled) | None => SetupStep::new(
-            Unknown,
+        Some(TailscaleStatus::NotInstalled) | None => unknown(
             "Sign in on both, with the same account",
-            vec![format!("Run: {up}")],
+            vec![
+                format!("If you haven't signed in yet: {up}"),
+                "and sign in to the same account in the phone's app.".into(),
+            ],
         ),
     });
 
@@ -347,7 +363,14 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
             vec![format!("This computer is {}.", node.dns_name)],
         ),
         Some(_) => SetupStep::new(Todo, "Turn on HTTPS for your tailnet", https_lines),
-        None => SetupStep::new(Unknown, "Turn on HTTPS for your tailnet", https_lines),
+        None => unknown(
+            "Turn on HTTPS for your tailnet",
+            vec![
+                "If you haven't yet: admin console → DNS, enable MagicDNS and".into(),
+                "HTTPS Certificates.".into(),
+                tailscale::ADMIN_DNS_URL.into(),
+            ],
+        ),
     });
 
     let share_lines = vec![
@@ -364,7 +387,14 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
         None if node.is_some_and(|node| node.https_enabled) => {
             SetupStep::new(Todo, "Share AMF on your tailnet", share_lines)
         }
-        None => SetupStep::new(Unknown, "Share AMF on your tailnet", share_lines),
+        None => unknown(
+            "Share AMF on your tailnet",
+            vec![
+                format!("If it isn't shared yet: {serve_cmd}"),
+                "(or press t here once AMF sees Tailscale). Never use".into(),
+                "`tailscale funnel`, which would put AMF on the public internet.".into(),
+            ],
+        ),
     });
 
     let lock_lines = vec![
@@ -391,11 +421,11 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
             "Limit access to your own devices (recommended)",
             lock_lines,
         ),
-        None => SetupStep::new(
-            Unknown,
-            "Limit access to your own devices (recommended)",
-            lock_lines,
-        ),
+        None => unknown("Limit access to your own devices (recommended)", {
+            let mut lines = vec!["If you haven't yet:".to_string()];
+            lines.extend(lock_lines);
+            lines
+        }),
     });
 
     steps.push(SetupStep::new(
@@ -462,6 +492,31 @@ mod tests {
     fn a_serving_tagged_node_has_only_pairing_left() {
         let status = node(true, Some("https://pc.tail1.ts.net"), true);
         assert_eq!(states(Some(&status)), [Done, Done, Done, Done, Done, Todo]);
+    }
+
+    #[test]
+    fn steps_it_cannot_check_say_why_and_never_order_a_command() {
+        let cli = TailscaleCli::new(None, None);
+        let steps = setup_steps(&SetupInput {
+            status: Some(&TailscaleStatus::NotInstalled),
+            public_url: None,
+            cli: &cli,
+            port: 47800,
+        });
+        for step in steps.iter().filter(|step| step.state == Unknown) {
+            assert!(
+                step.lines[0].contains("can't check this"),
+                "{} should say why it's unchecked",
+                step.title
+            );
+            assert!(
+                !step.lines.iter().any(|line| line.starts_with("Run:")),
+                "{} shouldn't tell the user to run anything outright",
+                step.title
+            );
+        }
+        let sign_in = &steps[1];
+        assert!(sign_in.lines[1].starts_with("If you haven't signed in yet: tailscale up"));
     }
 
     #[test]

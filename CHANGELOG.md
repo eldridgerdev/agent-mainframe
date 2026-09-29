@@ -10,6 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Collapse projects in AMF Remote's dashboard.** Tap a project heading to
+  hide or show its features. Each heading shows the feature count, and your
+  choices are remembered on this device across refreshes and reloads. Features
+  needing attention stay visible at the top even when their project is collapsed.
+
 ### Changed
 
 - **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone

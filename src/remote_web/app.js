@@ -8,6 +8,7 @@ const CREDENTIAL_KEY = "amf-remote-credential";
 const TERM_MODE_KEY = "amf-remote-term-mode";
 const TERM_WRAP_KEY = "amf-remote-term-wrap";
 const TERM_FONT_KEY = "amf-remote-term-font";
+const COLLAPSED_PROJECTS_KEY = "amf-remote-collapsed-projects";
 const HISTORY_LINES = 2000;
 const POLL_MS = 3000;
 const XTERM_VERSION = "5.5.0";
@@ -277,6 +278,17 @@ async function pair(event) {
 
 // ---- Home ----------------------------------------------------------------
 
+function loadCollapsedProjects() {
+  try {
+    const names = JSON.parse(storageGet(COLLAPSED_PROJECTS_KEY));
+    return new Set(Array.isArray(names) ? names.filter((name) => typeof name === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const collapsedProjects = loadCollapsedProjects();
+
 function showHome() {
   showView("home");
   refreshPush();
@@ -330,16 +342,43 @@ function renderHome() {
     if (!byProject.has(feature.project_name)) byProject.set(feature.project_name, []);
     byProject.get(feature.project_name).push(feature);
   }
+  // Polling rebuilds the rows; keep keyboard focus on the same project.
+  const focusedProject = document.activeElement?.classList.contains("project-toggle")
+    ? document.activeElement.dataset.project : null;
+  let focusedToggle = null;
   const groups = [];
   for (const [name, list] of byProject) {
     if (list.length === 0) continue;
-    groups.push(el("h3", null, name));
+    const group = el("section", "project-group");
+    const heading = el("h3", "project-heading");
+    const toggle = el("button", "project-toggle");
+    toggle.type = "button";
+    toggle.dataset.project = name;
+    const chevron = el("span", "project-chevron", "›");
+    chevron.setAttribute("aria-hidden", "true");
+    const count = el("span", "badge", `${list.length} feature${list.length === 1 ? "" : "s"}`);
+    toggle.append(chevron, el("span", "project-name", name), count);
     const ul = el("ul", "list");
+    ul.id = `project-features-${encodeURIComponent(name)}`;
+    ul.hidden = collapsedProjects.has(name);
+    toggle.setAttribute("aria-controls", ul.id);
+    toggle.setAttribute("aria-expanded", String(!ul.hidden));
+    toggle.addEventListener("click", () => {
+      ul.hidden = !ul.hidden;
+      toggle.setAttribute("aria-expanded", String(!ul.hidden));
+      if (ul.hidden) collapsedProjects.add(name);
+      else collapsedProjects.delete(name);
+      storageSet(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsedProjects]));
+    });
+    if (name === focusedProject) focusedToggle = toggle;
     list.sort((a, b) => statusRank(a) - statusRank(b));
     ul.append(...list.map((f) => featureItem(f, { showProject: false })));
-    groups.push(ul);
+    heading.append(toggle);
+    group.append(heading, ul);
+    groups.push(group);
   }
   $("projects").replaceChildren(...groups);
+  focusedToggle?.focus({ preventScroll: true });
   $("status-empty").hidden = all.length > 0;
 }
 

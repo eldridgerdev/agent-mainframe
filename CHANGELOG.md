@@ -47,6 +47,10 @@ are tagged.
 
 ### Fixed
 
+- **The pairing dialog no longer hides everything under the QR code.** On
+  shorter terminals the QR filled the dialog, cutting off the pairing code,
+  the address, and the keys. The dialog now fits its content, and shows
+  everything but the QR when the terminal is too short for both.
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
   which a phone can't open. The dialog now says so and offers the fix.

@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
@@ -32,47 +32,7 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
         PairingDialogView::Pairing => {}
     }
 
-    let qr_rows = state.qr_lines.len() as u16;
-    // QR (if any) + blank + code line + blank + status line + blank + hint,
-    // clamped so a small terminal still gets a scrollable-looking box
-    // rather than an error — the content just won't all fit, which is no
-    // worse than any other dialog on a tiny terminal.
-    let height_pct = if qr_rows == 0 { 30 } else { 70 };
-    let area = centered_rect(64, height_pct, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
-    let border_color = match state.status {
-        PairingDialogStatus::Paired { .. } => theme.success.to_color(),
-        PairingDialogStatus::Failed(_) => theme.danger.to_color(),
-        PairingDialogStatus::Waiting => theme.primary.to_color(),
-    };
-    let block = Block::default()
-        .title(" Pair a Device ")
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(border_color));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    if state.qr_lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "(QR code unavailable — use the number below)",
-            Style::default().fg(theme.text_muted.to_color()),
-        )));
-    } else {
-        for row in &state.qr_lines {
-            lines.push(
-                Line::from(Span::styled(
-                    row.clone(),
-                    Style::default().fg(theme.text.to_color()),
-                ))
-                .alignment(Alignment::Center),
-            );
-        }
-    }
-    lines.push(Line::from(""));
+    let mut lines: Vec<Line> = vec![Line::from("")];
 
     let spaced_code: String = state
         .code
@@ -156,7 +116,7 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
                 if offer_serve {
                     "Tailscale is running: press t to share AMF on it."
                 } else {
-                    "Press s to set up Tailscale for an HTTPS address."
+                    "Tailscale can give your phone an HTTPS address."
                 },
                 warning,
             ))
@@ -169,6 +129,25 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
     lines.push(Line::from(""));
 
     let already_paired = matches!(state.status, PairingDialogStatus::Paired { .. });
+    if !already_paired {
+        // Its own line, not just a hint-row entry: the walkthrough is the
+        // way in for someone who has never set up a tunnel.
+        let call_to_action = Style::default().fg(theme.primary.to_color());
+        lines.push(
+            Line::from(vec![
+                Span::styled("New here? Press ", call_to_action),
+                Span::styled(
+                    "s",
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" for setup instructions.", call_to_action),
+            ])
+            .alignment(Alignment::Center),
+        );
+        lines.push(Line::from(""));
+    }
     let hint_line = if already_paired {
         Line::from(vec![
             Span::styled(" Enter/Esc", Style::default().fg(theme.warning.to_color())),
@@ -190,7 +169,94 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
     .alignment(Alignment::Center);
     lines.push(hint_line);
 
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    // Size the dialog to its content rather than a share of the screen: the
+    // text under the QR (code, address, keys) always gets its rows, and the
+    // QR takes what is left — so a short terminal loses QR padding, then the
+    // QR itself, but never the code or the keys.
+    let screen = frame.area();
+    let width = (screen.width * 64 / 100).max(66).min(screen.width);
+    let inner_width = width.saturating_sub(2).max(1);
+    let text_rows: u16 = lines
+        .iter()
+        .map(|line| (line.width() as u16).div_ceil(inner_width).max(1))
+        .sum();
+    let qr = fit_qr(
+        &state.qr_lines,
+        screen.height.saturating_sub(2).saturating_sub(text_rows),
+    );
+    let qr_rows = qr.map_or(1, |rows| rows.len() as u16);
+    let area = centered_fixed(width, qr_rows + text_rows + 2, screen);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let border_color = match state.status {
+        PairingDialogStatus::Paired { .. } => theme.success.to_color(),
+        PairingDialogStatus::Failed(_) => theme.danger.to_color(),
+        PairingDialogStatus::Waiting => theme.primary.to_color(),
+    };
+    let block = Block::default()
+        .title(" Pair a Device ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [qr_area, text_area] =
+        Layout::vertical([Constraint::Length(qr_rows), Constraint::Min(0)]).areas(inner);
+
+    let qr_lines: Vec<Line> = match qr {
+        Some(rows) => rows
+            .iter()
+            .map(|row| {
+                Line::from(Span::styled(
+                    row.clone(),
+                    Style::default().fg(theme.text.to_color()),
+                ))
+                .alignment(Alignment::Center)
+            })
+            .collect(),
+        None => vec![
+            Line::from(Span::styled(
+                if state.qr_lines.is_empty() {
+                    "(QR code unavailable — use the number below)"
+                } else {
+                    "Make the terminal taller to show the QR code."
+                },
+                Style::default().fg(theme.text_muted.to_color()),
+            ))
+            .alignment(Alignment::Center),
+        ],
+    };
+    frame.render_widget(Paragraph::new(qr_lines), qr_area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), text_area);
+}
+
+/// The QR rows that fit in `available` rows: all of them; else with the
+/// quiet zone cut to one blank row a side (two modules — the dialog's own
+/// padding supplies the rest); else none.
+fn fit_qr(rows: &[String], available: u16) -> Option<&[String]> {
+    if rows.is_empty() {
+        return None;
+    }
+    if rows.len() as u16 <= available {
+        return Some(rows);
+    }
+    let blank = |row: &String| row.trim().is_empty();
+    let first = rows.iter().position(|row| !blank(row))?.saturating_sub(1);
+    let last = (rows.iter().rposition(|row| !blank(row))? + 1).min(rows.len() - 1);
+    let trimmed = &rows[first..=last];
+    (trimmed.len() as u16 <= available).then_some(trimmed)
+}
+
+/// A `width` × `height` rectangle centred in `area`, shrunk to fit it.
+fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
 }
 
 /// ` key label   key label` in the dialogs' hint style.
@@ -199,7 +265,7 @@ fn hint_spans(keys: &[(&str, &str)], theme: &Theme) -> Line<'static> {
     let label_style = Style::default().fg(theme.text_muted.to_color());
     let mut spans = Vec::new();
     for (i, (key, label)) in keys.iter().enumerate() {
-        let gap = if i + 1 == keys.len() { "" } else { "   " };
+        let gap = if i + 1 == keys.len() { "" } else { "  " };
         spans.push(Span::styled(format!(" {key}"), key_style));
         spans.push(Span::styled(format!(" {label}{gap}"), label_style));
     }
@@ -465,6 +531,92 @@ mod tests {
         assert!(shows(&rows, "press t to share AMF on it"));
         assert!(shows(&rows, " t serve "));
         assert!(shows(&rows, "s setup"));
+        assert!(shows(&rows, "New here? Press s for setup instructions."));
+    }
+
+    fn screen_sized(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                if let AppMode::RemotePairing(state) = &app.mode {
+                    draw_remote_pairing_dialog(frame, app, state);
+                }
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn spaced_code(app: &App) -> String {
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        state
+            .code
+            .chars()
+            .map(String::from)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// A reported bug: at 70% of the screen, the QR filled the dialog and
+    /// clipped the code, address and keys below it.
+    #[test]
+    fn the_code_and_keys_survive_every_terminal_height() {
+        let mut app = app();
+        app.config.remote_public_url = Some("https://amf-dev.tail88768d.ts.net".into());
+        app.open_pairing_dialog_for_test("127.0.0.1:47800".parse().unwrap());
+        let code = spaced_code(&app);
+
+        let roomy = screen_sized(&app, 169, 43);
+        for text in [
+            &code[..],
+            "Open: https://amf-dev",
+            "New here? Press s",
+            "s setup",
+        ] {
+            assert!(shows(&roomy, text), "169x43 should show {text:?}");
+        }
+        assert!(shows(&roomy, "█▀▀▀▀▀█"), "and the whole QR");
+
+        let short = screen_sized(&app, 100, 32);
+        assert!(shows(&short, &code) && shows(&short, "s setup"));
+        assert!(
+            shows(&short, "█▀▀▀▀▀█"),
+            "a trimmed quiet zone still fits the QR"
+        );
+
+        let tiny = screen_sized(&app, 80, 20);
+        assert!(shows(&tiny, &code) && shows(&tiny, "s setup"));
+        assert!(shows(
+            &tiny,
+            "Make the terminal taller to show the QR code."
+        ));
+    }
+
+    #[test]
+    fn fit_qr_trims_the_quiet_zone_before_giving_up() {
+        let rows: Vec<String> = ["  ", "  ", "██", "▀▀", "  ", "  "]
+            .iter()
+            .map(|row| row.to_string())
+            .collect();
+        assert_eq!(fit_qr(&rows, 6).map(<[String]>::len), Some(6));
+        assert_eq!(fit_qr(&rows, 5).map(<[String]>::len), Some(4));
+        assert_eq!(fit_qr(&rows, 3), None);
+        assert_eq!(fit_qr(&[], 10), None);
+    }
+
+    #[test]
+    fn a_paired_dialog_drops_the_setup_prompt() {
+        let mut app = app();
+        if let AppMode::RemotePairing(state) = &mut app.mode {
+            state.status = PairingDialogStatus::Paired {
+                device_name: "phone".into(),
+            };
+        }
+        assert!(!shows(&screen(&app), "New here?"));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::app::{
     App, PairingDialogStatus, PairingDialogView, PairingUrlSource, RemoteDevicesListState,
     RemotePairingState,
 };
-use crate::tailscale::ServeOutcome;
+use crate::tailscale::{ServeOutcome, TailscaleStatus};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -103,6 +103,18 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
             ))
             .alignment(Alignment::Center),
         );
+    }
+    let isolated = matches!(
+        &tailscale.status,
+        Some(TailscaleStatus::Running(node)) if node.serve_url.is_some() && node.isolated()
+    );
+    if isolated && state.url_source != PairingUrlSource::Direct {
+        for text in [
+            "⚠ No other device on your tailnet can reach this computer.",
+            "Press s to see what to check.",
+        ] {
+            lines.push(Line::from(Span::styled(text, warning)).alignment(Alignment::Center));
+        }
     }
     if state.url_unreachable {
         lines.push(
@@ -548,6 +560,7 @@ mod tests {
             https_enabled: true,
             tagged_for_amf: false,
             serve_url: None,
+            peers: 1,
         }));
         let rows = screen(&app);
         assert!(shows(&rows, "Phones can't open this"));
@@ -664,6 +677,25 @@ mod tests {
             unreachable!()
         };
         assert_eq!(*scroll + 1, max_scroll.get(), "one step up moves at once");
+    }
+
+    #[test]
+    fn warns_when_no_device_can_reach_this_computer() {
+        let mut app = app();
+        app.feed_tailscale_probe(TailscaleStatus::Running(TailnetNode {
+            dns_name: "pc.tail1.ts.net".into(),
+            https_enabled: true,
+            tagged_for_amf: true,
+            serve_url: Some("https://pc.tail1.ts.net".into()),
+            peers: 0,
+        }));
+        app.poll_remote_server_bg();
+        let rows = screen(&app);
+        assert!(shows(&rows, "Open: https://pc.tail1.ts.net"));
+        assert!(shows(
+            &rows,
+            "No other device on your tailnet can reach this computer."
+        ));
     }
 
     #[test]

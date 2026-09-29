@@ -315,6 +315,18 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
 
     let up = input.cli.display_command("up");
     steps.push(match status {
+        // Reported from real use: every step ticked while the phone had
+        // been removed from the tailnet and the policy let nothing in.
+        Some(TailscaleStatus::Running(node)) if node.isolated() => SetupStep::new(
+            Todo,
+            "Sign in on both, with the same account",
+            vec![
+                "This computer is on your tailnet, but no other device can reach it.".into(),
+                "Sign in to the same account in the phone's Tailscale app. If it".into(),
+                "already says connected, log out and back in there. Then check".into(),
+                "that your access policy lets your devices in (step 5).".into(),
+            ],
+        ),
         Some(TailscaleStatus::Running(_)) => SetupStep::new(
             Done,
             "Sign in on both, with the same account",
@@ -408,6 +420,22 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
         "Your devices can then reach only AMF, only over HTTPS.".into(),
     ];
     steps.push(match node {
+        Some(node) if node.tagged_for_amf && node.isolated() => SetupStep::new(
+            Todo,
+            "Limit access to your own devices (recommended)",
+            vec![
+                format!(
+                    "Tagged {}, but the policy lets no device reach it. It needs:",
+                    tailscale::ACCESS_TAG
+                ),
+                format!(
+                    "  {{ \"src\": [\"autogroup:member\"], \"dst\": [\"{}\"], \"ip\": [\"tcp:443\"] }}",
+                    tailscale::ACCESS_TAG
+                ),
+                "inside \"grants\" (c copies the whole policy). Keep your phone untagged.".into(),
+                format!("   {}", tailscale::ADMIN_ACL_URL),
+            ],
+        ),
         Some(node) if node.tagged_for_amf => SetupStep::new(
             Done,
             "Limit access to your own devices (recommended)",
@@ -450,6 +478,7 @@ mod tests {
             https_enabled: https,
             tagged_for_amf: tagged,
             serve_url: serve.map(str::to_string),
+            peers: 1,
         })
     }
 
@@ -520,6 +549,18 @@ mod tests {
     }
 
     #[test]
+    fn an_unreachable_computer_is_not_all_ticks() {
+        let mut isolated = node(true, Some("https://pc.tail1.ts.net"), true);
+        if let TailscaleStatus::Running(node) = &mut isolated {
+            node.peers = 0;
+        }
+        assert_eq!(
+            states(Some(&isolated)),
+            [Done, Todo, Done, Done, Todo, Todo]
+        );
+    }
+
+    #[test]
     fn a_stopped_daemon_is_the_sign_in_step() {
         let status = TailscaleStatus::Unavailable("failed to connect".into());
         assert_eq!(states(Some(&status))[..2], [Done, Todo]);
@@ -565,6 +606,7 @@ mod tests {
                 https_enabled: true,
                 tagged_for_amf: false,
                 serve_url: None,
+                peers: 1,
             }),
             &cli,
         );

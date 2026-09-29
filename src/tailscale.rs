@@ -110,6 +110,18 @@ pub struct TailnetNode {
     /// `https://machine.tailnet.ts.net[:port]` when `tailscale serve`
     /// proxies to AMF's port on this machine.
     pub serve_url: Option<String>,
+    /// Other devices on the tailnet this node can see, online or not.
+    /// Tailscale only lists a peer when the access policy lets traffic
+    /// flow one way or the other, so `0` means no phone can reach AMF:
+    /// none is signed in yet, or the policy shuts them out.
+    pub peers: usize,
+}
+
+impl TailnetNode {
+    /// No other device can reach this computer, whatever is served.
+    pub fn isolated(&self) -> bool {
+        self.peers == 0
+    }
 }
 
 /// How a `tailscale serve` attempt went.
@@ -263,6 +275,8 @@ struct StatusJson {
     self_node: Option<SelfJson>,
     #[serde(default)]
     cert_domains: Option<Vec<String>>,
+    #[serde(rename = "Peer", default)]
+    peer: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Deserialize)]
@@ -290,6 +304,7 @@ fn parse_status(json: &str) -> Option<ParsedStatus> {
                     .tags
                     .is_some_and(|tags| tags.iter().any(|t| t == ACCESS_TAG)),
                 serve_url: None,
+                peers: status.peer.map_or(0, |peers| peers.len()),
             })
         }
         "NeedsLogin" | "NeedsMachineAuth" => ParsedStatus::Other(TailscaleStatus::NeedsLogin),
@@ -457,7 +472,8 @@ mod tests {
         "BackendState": "Running",
         "Self": { "DNSName": "amf-dev.tail88768d.ts.net.", "HostName": "amf-dev", "Tags": null },
         "MagicDNSSuffix": "tail88768d.ts.net",
-        "CertDomains": ["amf-dev.tail88768d.ts.net"]
+        "CertDomains": ["amf-dev.tail88768d.ts.net"],
+        "Peer": { "nodekey:abc": { "HostName": "oneplus-12", "Online": false } }
     }"#;
 
     /// A real `tailscale serve status --json` after `tailscale serve --bg 47800`.
@@ -484,6 +500,17 @@ mod tests {
         assert!(node.https_enabled);
         assert!(!node.tagged_for_amf);
         assert_eq!(node.serve_url, None);
+        assert_eq!(node.peers, 1, "an offline peer still counts");
+        assert!(!node.isolated());
+    }
+
+    #[test]
+    fn a_node_nothing_can_reach_is_isolated() {
+        // What a real tagged node reported while its access policy let no
+        // device in: `"Peer": null`.
+        let node =
+            running(r#"{"BackendState":"Running","Peer":null,"Self":{"DNSName":"pc.t.ts.net."}}"#);
+        assert!(node.isolated());
     }
 
     #[test]

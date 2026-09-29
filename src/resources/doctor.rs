@@ -518,9 +518,10 @@ fn check_legacy_project_config(inputs: &Inputs<'_>) -> Finding {
 
 /// Can a phone reach AMF Remote over HTTPS? Mirrors the pairing dialog's
 /// setup steps (`app/remote_tailscale.rs`), one finding with the next step
-/// as advice. Never a warning: AMF Remote is optional, and someone who
-/// hasn't paired a phone and has no Tailscale is told nothing is set up
-/// rather than that something is wrong.
+/// as advice. AMF Remote is optional, so an unfinished setup is only a
+/// notice, and someone who hasn't paired a phone and has no Tailscale is
+/// told nothing is set up. The one warning is a setup that looks finished
+/// but can't work: AMF is served, yet no other device can reach it.
 fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
     const ID: &str = "remote-access";
     let config = inputs.config;
@@ -568,6 +569,12 @@ fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
                 "remove remote_public_url to use Tailscale's address automatically, or correct it",
             );
         }
+        if let TailscaleStatus::Running(node) = inputs.tailscale
+            && node.isolated()
+            && serve_url.is_some()
+        {
+            return isolated_finding(url);
+        }
         let finding = Finding::new(
             ID,
             Severity::Ok,
@@ -581,6 +588,9 @@ fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
     }
 
     match inputs.tailscale {
+        TailscaleStatus::Running(node) if node.serve_url.is_some() && node.isolated() => {
+            isolated_finding(node.serve_url.as_deref().unwrap_or_default())
+        }
         TailscaleStatus::Running(node) => match (&node.serve_url, node.https_enabled) {
             (Some(url), _) => {
                 let finding =
@@ -641,6 +651,21 @@ fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
             tailscale::DOWNLOAD_URL
         )),
     }
+}
+
+/// Served, but Tailscale shows no other device that may reach this computer:
+/// no phone is signed in, or the access policy shuts them all out.
+fn isolated_finding(url: &str) -> Finding {
+    Finding::new(
+        "remote-access",
+        Severity::Warn,
+        format!("AMF Remote is served at {url}, but no other device on your tailnet can reach this computer"),
+    )
+    .with_advice(format!(
+        "sign in on your phone with the same Tailscale account (log out and back in if it already says connected); \
+         if you limited access, the policy needs a grant from your devices to {}:443",
+        tailscale::ACCESS_TAG
+    ))
 }
 
 pub fn detect_wsl() -> bool {
@@ -1034,6 +1059,7 @@ mod tests {
             https_enabled: https,
             tagged_for_amf: tagged,
             serve_url: serve.map(str::to_string),
+            peers: 1,
         })
     }
 
@@ -1069,6 +1095,28 @@ mod tests {
         fixture.tailscale = tailnet(true, Some("https://pc.tail1.ts.net"), true);
         let locked = finding(&fixture.run(&|_| false), "remote-access").clone();
         assert_eq!(locked.advice, None);
+    }
+
+    #[test]
+    fn remote_access_warns_when_no_device_can_reach_this_computer() {
+        let mut fixture = Fixture::new();
+        let mut isolated = tailnet(true, Some("https://pc.tail1.ts.net"), true);
+        if let TailscaleStatus::Running(node) = &mut isolated {
+            node.peers = 0;
+        }
+        fixture.tailscale = isolated;
+        let report = fixture.run(&|_| false);
+        let remote = finding(&report, "remote-access");
+        assert_eq!(remote.severity, Severity::Warn);
+        assert!(remote.summary.contains("no other device"));
+
+        fixture.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        let report = fixture.run(&|_| false);
+        assert_eq!(
+            finding(&report, "remote-access").severity,
+            Severity::Warn,
+            "a configured URL pointing at the same tailnet address is just as unreachable"
+        );
     }
 
     #[test]

@@ -1012,6 +1012,7 @@ pub(super) mod tests {
             https_enabled: true,
             tagged_for_amf: false,
             serve_url: url.map(str::to_string),
+            peers: 1,
         })
     }
 

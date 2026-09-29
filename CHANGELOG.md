@@ -23,6 +23,10 @@ are tagged.
   wheel.
 - **`amf doctor` checks phone access.** It reports whether a phone can reach
   AMF Remote over HTTPS and, if not, the next step to take.
+- **A warning when no device can reach AMF.** If Tailscale serves AMF but no
+  other device on your tailnet may connect (the phone isn't signed in, or an
+  access policy shuts it out), the pairing dialog, its setup steps and
+  `amf doctor` now say so, instead of showing everything as done.
 - **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
   and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
   socket outside the usual places, such as a `tailscaled` you start

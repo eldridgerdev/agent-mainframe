@@ -1229,6 +1229,12 @@ pub struct App {
     /// starting up or not running — `start_pairing` needs this to build the
     /// pairing QR when no `remote_public_url` is configured.
     pub remote_server_addr: Option<SocketAddr>,
+    /// When `Ctrl+Space Q` was pressed while the server was off or still
+    /// starting: the pairing dialog opens once it is listening and the
+    /// dashboard or a session view is on screen (`poll_remote_server_bg`).
+    /// Forgotten if the start fails or the request outlives
+    /// `remote_server::PAIRING_REQUEST_WINDOW`.
+    pub pairing_requested: Option<std::time::Instant>,
     /// Web Push to paired phones — see `app/remote_push.rs`.
     pub remote_push: remote_push::RemotePushState,
     /// The authorized-device table the server checks bearer tokens
@@ -2616,6 +2622,7 @@ impl App {
             harness_check_rx,
             remote_server: None,
             remote_server_addr: None,
+            pairing_requested: None,
             remote_push: Default::default(),
             remote_devices: Default::default(),
         };
@@ -2877,6 +2884,7 @@ impl App {
             harness_check_rx,
             remote_server: None,
             remote_server_addr: None,
+            pairing_requested: None,
             remote_push: Default::default(),
             remote_devices: Default::default(),
         }

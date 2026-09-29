@@ -623,36 +623,6 @@ impl App {
         Ok(())
     }
 
-    /// Toggle Remote Control on the focused Claude session by sending `/rc`.
-    /// Sent straight to the tmux pane (bypassing the AMF composer), mirroring
-    /// how the compose path submits slash commands.
-    pub fn toggle_remote_control_in_view(&mut self) -> Result<()> {
-        let (session, window) = match &self.mode {
-            AppMode::Viewing(v) if v.session_kind == SessionKind::Claude => {
-                (v.session.clone(), v.window.clone())
-            }
-            AppMode::Viewing(_) => {
-                self.push_toast_warning("Remote Control: not a Claude session");
-                return Ok(());
-            }
-            _ => return Ok(()),
-        };
-
-        if let Some(reason) =
-            crate::claude::ClaudeLauncher::remote_control_block_reason(self.config.zai.is_some())
-        {
-            self.push_toast_warning(format!("Remote Control {reason}"));
-            return Ok(());
-        }
-
-        // Clear any leftover input so `/rc` cannot merge with typed text.
-        self.tmux.send_key_name(&session, &window, "C-u")?;
-        self.tmux.send_literal(&session, &window, "/rc")?;
-        self.tmux.send_key_name(&session, &window, "Enter")?;
-        self.push_toast_info("Sent /rc to toggle Remote Control");
-        Ok(())
-    }
-
     pub fn latest_prompt_select_next(&mut self) {
         if let AppMode::LatestPrompt(state) = &mut self.mode
             && !state.prompts.is_empty()

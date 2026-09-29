@@ -28,7 +28,7 @@ fi
 # $AMF_BIN names the amf that started this session. A rebuilt or deleted
 # build leaves it pointing at nothing, so fall back to `amf` on PATH.
 [ -x "${AMF_BIN:-}" ] || AMF_BIN=amf
-AMF_CMD="${AMF_BIN:-amf}"
+AMF_CMD="$AMF_BIN"
 
 send() {
     printf '%s' "$INPUT" | "$AMF_CMD" notify --source codex-notify "$@" 2>/dev/null || true

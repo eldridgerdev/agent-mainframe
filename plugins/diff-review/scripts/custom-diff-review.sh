@@ -40,7 +40,7 @@ HOOK_INPUT=$(cat)
 # `amf hook-field` reads the hook JSON so this script needs no JSON parser of
 # its own. It prints nothing and exits 0 for an absent field, which is the same
 # shape as the `jq -r '... // empty'` it replaces.
-AMF_CMD="${AMF_BIN:-amf}"
+AMF_CMD="$AMF_BIN"
 hook_field() {
     printf '%s' "$HOOK_INPUT" | "$AMF_CMD" hook-field "$@" 2>/dev/null || true
 }

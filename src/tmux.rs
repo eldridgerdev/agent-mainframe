@@ -32,12 +32,28 @@ use crate::traits::TmuxOps;
 /// silently: the scripts swallow the failure. Strip the marker and use the
 /// path if a binary sits there again (the rebuilt one); otherwise return
 /// `None` so the scripts fall back to `amf` on `PATH`.
+///
+/// "A binary sits there" is the scripts' own `[ -x ]` test, so a path this
+/// accepts is never one they would then discard. Whatever sits at the path
+/// is trusted to be amf: it is where this very process was started from, and
+/// confirming more would mean running it.
 fn usable_cli_binary(exe: PathBuf) -> Option<PathBuf> {
     let path = match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
         Some(stripped) => PathBuf::from(stripped),
         None => exe,
     };
-    path.is_file().then_some(path)
+    is_executable_file(&path).then_some(path)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 pub struct TmuxManager;
@@ -2451,6 +2467,15 @@ mod tests {
         let exe = dir.path().join("amf");
         fs::write(&exe, "").unwrap();
         let deleted = std::path::PathBuf::from(format!("{} (deleted)", exe.display()));
+
+        // Not executable: the scripts' `[ -x ]` would discard it, so omit it
+        // here too rather than set an AMF_BIN nothing will run.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(super::usable_cli_binary(exe.clone()), None);
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        }
 
         // A live binary is used as-is.
         assert_eq!(super::usable_cli_binary(exe.clone()), Some(exe.clone()));

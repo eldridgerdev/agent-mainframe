@@ -32,9 +32,21 @@ if (process.argv[2] === "--install-browser") {
 
 const [session, outDir] = process.argv.slice(2);
 assert(session && outDir, "Usage: capture-remote-dashboard.cjs <tmux-session> <output-directory>");
-const pane = execFileSync("tmux", ["capture-pane", "-p", "-t", session], { encoding: "utf8" });
-const url = pane.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
-const code = pane.match(/\b\d(?: \d){5}\b/)?.[0].replaceAll(" ", "");
+// The pairing dialog can still be drawing; poll briefly instead of trusting
+// the scenario's fixed wait. The code is searched for only after the URL so an
+// earlier digit run (a clock, a port) cannot be mistaken for it.
+function readPairing() {
+  const pane = execFileSync("tmux", ["capture-pane", "-p", "-t", session], { encoding: "utf8" });
+  const found = pane.match(/http:\/\/127\.0\.0\.1:\d+/);
+  if (!found) return {};
+  const after = pane.slice(found.index + found[0].length);
+  return { url: found[0], code: after.match(/(?<!\d)\d(?: \d){5}(?!\d)/)?.[0].replaceAll(" ", "") };
+}
+let { url, code } = readPairing();
+for (let attempt = 0; attempt < 20 && !(url && code); attempt++) {
+  execFileSync("sleep", ["0.5"]);
+  ({ url, code } = readPairing());
+}
 assert(url, "The isolated AMF pairing URL must be visible.");
 assert(code, "The isolated AMF pairing code must be visible.");
 
@@ -102,7 +114,9 @@ const snapshot = {
       "Both sample projects start expanded, with feature counts and the needs-attention section above them.");
 
     await amf().tap();
-    await page.evaluate(() => refresh());
+    // Let a real poll rebuild the rows: collapsed state must survive it.
+    await page.waitForResponse(response => response.url() === `${url}/status`);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
     assert.equal(await amf().getAttribute("aria-expanded"), "false");
     assert.equal(await api().getAttribute("aria-expanded"), "true");
     assert.equal(await page.getByText("Terminal polish", { exact: true }).isVisible(), false);
@@ -130,6 +144,9 @@ const snapshot = {
     fs.mkdirSync(setupDir, { recursive: true });
     for (const extension of ["ansi", "txt"]) {
       const setup = `001-remote-pairing-ready.${extension}`;
+      // Not a browser failure: the harness's `shot:` step did not write it.
+      assert(fs.existsSync(path.join(outDir, setup)),
+        `Setup capture ${setup} is missing; check the scenario's shot:remote-pairing-ready step.`);
       fs.renameSync(path.join(outDir, setup), path.join(setupDir, setup));
     }
     fs.writeFileSync(path.join(outDir, "capture-notes.jsonl"),

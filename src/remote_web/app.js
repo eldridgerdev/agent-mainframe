@@ -319,6 +319,8 @@ function statusRank(feature) {
   return feature.needs_attention ? 0 : (STATUS_RANK[feature.status] ?? 2);
 }
 
+let lastProjectsSignature = null;
+
 function renderHome() {
   const all = features();
   const attention = all.filter((f) => f.needs_attention);
@@ -345,8 +347,26 @@ function renderHome() {
   // Polling rebuilds the rows; keep keyboard focus on the same project.
   const focusedProject = document.activeElement?.classList.contains("project-toggle")
     ? document.activeElement.dataset.project : null;
+  // Forget collapse preferences for projects that no longer exist.
+  if (snapshot) {
+    const pruned = [...collapsedProjects].filter((name) => !byProject.has(name));
+    if (pruned.length) {
+      for (const name of pruned) collapsedProjects.delete(name);
+      storageSet(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsedProjects]));
+    }
+  }
+  // Rebuilding every poll drops focus and makes assistive tech re-announce the
+  // controls, so leave the DOM alone when nothing shown has changed. Collapse
+  // state is excluded: clicks already update the DOM and the set directly.
+  const signature = JSON.stringify([...byProject]);
+  if (signature === lastProjectsSignature) {
+    $("status-empty").hidden = all.length > 0;
+    return;
+  }
+  lastProjectsSignature = signature;
   let focusedToggle = null;
   const groups = [];
+  let groupIndex = 0;
   for (const [name, list] of byProject) {
     if (list.length === 0) continue;
     const group = el("section", "project-group");
@@ -359,7 +379,7 @@ function renderHome() {
     const count = el("span", "badge", `${list.length} feature${list.length === 1 ? "" : "s"}`);
     toggle.append(chevron, el("span", "project-name", name), count);
     const ul = el("ul", "list");
-    ul.id = `project-features-${encodeURIComponent(name)}`;
+    ul.id = `project-features-${groupIndex++}`;
     ul.hidden = collapsedProjects.has(name);
     toggle.setAttribute("aria-controls", ul.id);
     toggle.setAttribute("aria-expanded", String(!ul.hidden));

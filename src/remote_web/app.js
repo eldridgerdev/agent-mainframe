@@ -300,6 +300,13 @@ function featureItem(feature, { showProject, href }) {
   return li;
 }
 
+// Home-list order within a project: anything waiting on you, then what's
+// running, then what isn't. Sort is stable, so ties keep the desk's order.
+const STATUS_RANK = { active: 1, idle: 2, stopped: 3 };
+function statusRank(feature) {
+  return feature.needs_attention ? 0 : (STATUS_RANK[feature.status] ?? 2);
+}
+
 function renderHome() {
   const all = features();
   const attention = all.filter((f) => f.needs_attention);
@@ -328,6 +335,7 @@ function renderHome() {
     if (list.length === 0) continue;
     groups.push(el("h3", null, name));
     const ul = el("ul", "list");
+    list.sort((a, b) => statusRank(a) - statusRank(b));
     ul.append(...list.map((f) => featureItem(f, { showProject: false })));
     groups.push(ul);
   }

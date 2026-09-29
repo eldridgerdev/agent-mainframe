@@ -16,7 +16,7 @@ use crate::remote_terminal::PaneTarget;
 
 use super::{
     App, AppMode, PairingDialogStatus, PairingDialogView, RemoteDevicesListState,
-    RemotePairingState,
+    RemotePairingState, ViewState,
 };
 
 /// Tests bind here: port 0 asks the OS for any free port, so parallel
@@ -142,6 +142,9 @@ impl App {
                     self.log_info("remote_server", format!("Listening on {addr}"));
                     self.push_toast_info(format!("Remote-control server listening on {addr}"));
                     self.remote_server_addr = Some(addr);
+                    if std::mem::take(&mut self.pairing_requested) {
+                        self.open_pairing_dialog(addr);
+                    }
                 }
                 RemoteServerEvent::Stopped { error } => {
                     match error {
@@ -160,6 +163,7 @@ impl App {
                     // nothing left to read from its receiver.
                     self.remote_server = None;
                     self.remote_server_addr = None;
+                    self.pairing_requested = false;
                     // An in-progress pairing dialog is now pairing against
                     // a server that no longer exists — say so rather than
                     // leaving it silently stuck on "Waiting for phone…".
@@ -198,21 +202,37 @@ impl App {
         paired || seen || pushed || acted || changed
     }
 
-    /// Open the pairing dialog with a fresh one-time code, or explain why
-    /// not: the server (Epic 1) must already be running — pairing never
-    /// starts it, per the on-demand server-lifecycle decision.
+    /// Open the pairing dialog with a fresh one-time code. Pressing it is
+    /// itself an on-demand request, so a stopped server is started first
+    /// and the dialog opens once it is listening (`pairing_requested`).
+    /// Opened over a session view, the dialog returns to it on close.
     pub fn start_pairing(&mut self) {
         if self.remote_server.is_none() {
-            self.push_toast_warning("Start the remote-control server first (Ctrl+Space C)");
+            self.pairing_requested = true;
+            self.start_remote_server();
             return;
         }
         let Some(addr) = self.remote_server_addr else {
-            self.push_toast_warning(
-                "Remote-control server is still starting — try again in a moment",
-            );
+            self.pairing_requested = true;
             return;
         };
-        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr));
+        self.open_pairing_dialog(addr);
+    }
+
+    /// Show the dialog over the dashboard or a session view. Anything else
+    /// on screen (another dialog, reached while a deferred request waited
+    /// for the server) is left alone and the user is told how to pair.
+    fn open_pairing_dialog(&mut self, addr: SocketAddr) {
+        let from_view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Normal => None,
+            AppMode::Viewing(view) => Some(view),
+            other => {
+                self.mode = other;
+                self.push_toast_info("Remote-control server ready — Ctrl+Space Q to pair");
+                return;
+            }
+        };
+        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, from_view));
     }
 
     /// Replace the current code with a fresh one — used both for the `r`
@@ -224,14 +244,22 @@ impl App {
             self.push_toast_warning("Remote-control server is no longer running");
             return;
         };
-        if matches!(self.mode, AppMode::RemotePairing(_)) {
-            self.mode = AppMode::RemotePairing(self.build_pairing_state(addr));
+        if let AppMode::RemotePairing(state) = &mut self.mode {
+            let from_view = state.from_view.take();
+            self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, from_view));
         }
     }
 
-    fn build_pairing_state(&self, addr: SocketAddr) -> RemotePairingState {
+    fn build_pairing_state(
+        &self,
+        addr: SocketAddr,
+        from_view: Option<ViewState>,
+    ) -> RemotePairingState {
         let code = remote_server::generate_pairing_code();
-        let qr_payload = pairing_url(self.config.remote_public_url.as_deref(), addr, &code);
+        let public_url = self.config.remote_public_url.as_deref();
+        let url_unreachable = public_url.is_none_or(|url| url.trim().is_empty())
+            && (addr.ip().is_loopback() || addr.ip().is_unspecified());
+        let qr_payload = pairing_url(public_url, addr, &code);
         let url = qr_payload
             .split_once("/?code=")
             .map_or(qr_payload.as_str(), |(base, _)| base)
@@ -246,6 +274,8 @@ impl App {
             locked: false,
             status: PairingDialogStatus::Waiting,
             view: PairingDialogView::Pairing,
+            url_unreachable,
+            from_view,
         }
     }
 
@@ -254,9 +284,13 @@ impl App {
     /// what invalidates the code — a closed dialog leaves nothing an
     /// in-flight `/pair/exchange` request can still match.
     pub fn cancel_pairing(&mut self) {
-        if matches!(self.mode, AppMode::RemotePairing(_)) {
-            self.mode = AppMode::Normal;
-        }
+        self.mode = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::RemotePairing(state) => match state.from_view {
+                Some(view) => AppMode::Viewing(view),
+                None => AppMode::Normal,
+            },
+            other => other,
+        };
     }
 
     /// Switch the open pairing dialog to its paired-devices sub-screen
@@ -957,7 +991,7 @@ pub(super) mod tests {
     fn open_pairing_dialog(app: &mut App) -> String {
         let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
         app.remote_server_addr = Some(addr);
-        app.mode = AppMode::RemotePairing(app.build_pairing_state(addr));
+        app.mode = AppMode::RemotePairing(app.build_pairing_state(addr, None));
         let AppMode::RemotePairing(state) = &app.mode else {
             unreachable!()
         };
@@ -965,26 +999,64 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn start_pairing_requires_a_running_server() {
+    fn start_pairing_starts_a_stopped_server_and_opens_once_it_listens() {
         let mut app = test_app();
         app.start_pairing();
+        assert!(app.remote_server.is_some(), "Q should start the server");
         assert!(
             matches!(app.mode, AppMode::Normal),
-            "no server running, so pairing shouldn't open"
+            "the address isn't known until the server reports Started"
         );
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(app.mode, AppMode::RemotePairing(_)) && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected the dialog once the server was listening");
+        };
+        assert!(state.from_view.is_none());
+        assert!(!app.pairing_requested);
+
+        app.toggle_remote_server();
+        wait_until_stopped(&mut app, Duration::from_secs(2));
     }
 
     #[test]
-    fn start_pairing_waits_for_the_server_to_finish_binding() {
+    fn a_deferred_pairing_request_does_not_replace_another_dialog() {
         let mut app = test_app();
-        app.toggle_remote_server(); // Some(handle), but Started not drained yet
         app.start_pairing();
-        assert!(
-            matches!(app.mode, AppMode::Normal),
-            "server handle exists but addr isn't known yet"
-        );
+        app.mode = AppMode::Help(crate::app::HelpState {
+            from_view: None,
+            scroll_offset: 0,
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.remote_server_addr.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(app.mode, AppMode::Help(_)));
+        assert!(!app.pairing_requested);
+
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn pairing_flags_an_address_no_phone_can_open() {
+        let mut app = test_app();
+        let loopback: SocketAddr = "127.0.0.1:47800".parse().unwrap();
+        let wildcard: SocketAddr = "0.0.0.0:47800".parse().unwrap();
+        let lan: SocketAddr = "192.168.0.10:47800".parse().unwrap();
+
+        assert!(app.build_pairing_state(loopback, None).url_unreachable);
+        assert!(app.build_pairing_state(wildcard, None).url_unreachable);
+        assert!(!app.build_pairing_state(lan, None).url_unreachable);
+
+        app.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        assert!(!app.build_pairing_state(loopback, None).url_unreachable);
     }
 
     #[test]

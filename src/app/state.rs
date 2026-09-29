@@ -1962,6 +1962,15 @@ pub struct RemotePairingState {
     /// the same dialog, not a new destination — `Esc` from the devices list
     /// returns to `Pairing`, and only `Esc` from `Pairing` closes the dialog.
     pub view: PairingDialogView,
+    /// Set when `url` is an address no phone can open — the server's own
+    /// loopback or wildcard bind, because no `remote_public_url` is
+    /// configured. The dialog says so instead of showing a QR that can
+    /// only fail.
+    pub url_unreachable: bool,
+    /// The session view the dialog was opened over (`Ctrl+Space Q` from a
+    /// session), restored on close — the same shape as the bookmark
+    /// picker's `from_view`.
+    pub from_view: Option<ViewState>,
 }
 
 /// The `RemotePairing` dialog's current sub-screen.

@@ -398,14 +398,13 @@ Needs Epic 3 (scaffold) to exist at all; needs Epic 4 for a real pairing
 flow and Epic 5 for real status data, though UI scaffolding for both
 screens can be built against mocked data in parallel with those landing.
 
-- [ ] Pairing/scan screen. Partially done under Epic 3 (2026-09-14):
-      manual entry works end-to-end against `/pair/exchange`; QR
-      scanning itself is not built.
-- [ ] Status/notification list screen (Phase 1 view). Also done under
-      Epic 3 (2026-09-14): polls `/status`, shows attention state.
-- [ ] Firebase Cloud Messaging integration for attention push
-      notifications. Not started — needs a Firebase project decision
-      first (see Risks).
+- [x] Pairing/scan screen. Done in the PWA (2026-09-26): the QR opens
+      the pairing page with the code filled in, so the phone's own camera
+      does the scanning.
+- [x] Status/notification list screen (Phase 1 view). Done in the PWA,
+      sorted by status within each project (2026-09-28).
+- [x] ~~Firebase Cloud Messaging~~ push notifications. Done as Web Push
+      with AMF's own VAPID key (2026-09-26/28), so no Firebase project.
 
 Verification: manual install/pairing on a real phone; confirm a
 notification triggered by a real agent question arrives. Neither done
@@ -464,9 +463,11 @@ and `cargo fmt --check` all clean.
 Needs the full Phase 1 stack (Epics 1, 5, 6) — this extends the same
 server/app surfaces rather than introducing new ones.
 
-- [ ] Endpoint for reading an agent's pending question.
-- [ ] Endpoint for submitting a response, without full terminal access.
-- [ ] Prompt-response view in the Flutter app.
+- [x] ~~Endpoint for reading an agent's pending question.~~ /
+      ~~Endpoint for submitting a response.~~ Done through the session
+      view instead (2026-09-28): the rendered pane plus quick keys and a
+      reply box, so no separate question endpoint was needed.
+- [x] Prompt-response view — the PWA's Simple session view.
 
 Verification: automated test round-tripping a captured question/answer;
 manual test answering a real agent prompt from the phone.
@@ -479,10 +480,11 @@ unauthenticated. Independent of Epic 8 (prompt response); could be
 built in parallel with it if capacity allows, though sequencing after
 Phase 2 keeps risk ordered from lowest to highest privilege.
 
-- [ ] Stream `TmuxManager::capture_pane_ansi` output over WebSocket.
-- [ ] Forward phone keystrokes back through the existing
+- [x] Stream `TmuxManager::capture_pane_ansi` output over WebSocket
+      (`src/remote_terminal.rs`, 2026-09-28).
+- [x] Forward phone keystrokes back through the existing
       `send_literal`/`send_key_name` paths.
-- [ ] Shared read/write with local access, no conflict handling
+- [x] Shared read/write with local access, no conflict handling
       (matching the concurrent-access decision).
 
 Verification: manual test typing from both phone and desktop into the
@@ -492,12 +494,35 @@ same session; automated test on the send/receive framing logic.
 
 Needs Epic 6 (app shell) and Epic 9 (terminal backend).
 
-- [ ] xterm.js full-terminal view via embedded WebView.
-- [ ] Native simplified mobile view.
-- [ ] User toggle between the two.
+- [x] xterm.js full-terminal view (the PWA's Full view, 2026-09-28).
+- [x] Simplified mobile view (the PWA's Simple view).
+- [x] User toggle between the two, remembered per device.
 
 Verification: manual check of both views over both LAN and tunnel
 connections.
+
+### Real-use follow-ups (2026-09-28)
+
+Found by using it on a real phone over Tailscale:
+
+- [x] Dead `$AMF_BIN` after a rebuild silenced every hook, so nothing
+      reached attention or push. Hooks now fall back to `amf` on `PATH`
+      (#667).
+- [x] `Ctrl+Space C` in a session sent Claude's `/rc` instead of
+      toggling AMF's server, and `Q` did nothing there. Both now drive
+      AMF Remote from a session too, and the pairing dialog returns to
+      the session on close. The `/rc` toggle key was dropped.
+- [x] `Ctrl+Space Q` refused while the server was off. It now starts
+      the server and opens the dialog once it's listening.
+- [x] Without `remote_public_url`, the QR pointed at `127.0.0.1`, which
+      no phone can open, with no warning. The dialog now says so.
+- [x] Phone home list sorted by status (attention, active, idle,
+      stopped).
+- [ ] A userspace `tailscaled` doesn't survive a WSL restart, so the
+      tunnel silently disappears. This is a user-setup issue, but the docs
+      could mention it.
+- [ ] Still unverified end to end: a push triggered by a real agent,
+      and answering a real Claude permission prompt from the phone.
 
 ## Parallelization view
 
@@ -551,7 +576,8 @@ connections.
   entirely for now (per the user), so only the Android half of this
   (Play Console account, signing, internal-testing track) is still
   open — see Epic 3.
-- Firebase Cloud Messaging (Epic 6's push notifications) needs a
+- **Resolved (2026-09-26): push uses Web Push with AMF's own VAPID
+  key, so none of this applies.** Firebase Cloud Messaging (Epic 6's push notifications) needed a
   Firebase project created and wired up (a new external-service
   dependency, `google-services.json` committed or generated per build,
   a server-side key for AMF to send from) — not yet decided or

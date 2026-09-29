@@ -616,7 +616,7 @@ pub struct AppConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_tailscale_cli: Option<String>,
     /// `tailscaled`'s socket, for a daemon not at its platform default —
-    /// typically a userspace `tailscaled --socket=…` under WSL.
+    /// one the user starts themselves with its own `--socket`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_tailscale_socket: Option<String>,
     /// MCP servers (e.g. an issue tracker) the plan interview's Claude

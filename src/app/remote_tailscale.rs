@@ -183,7 +183,6 @@ impl App {
 
     /// The setup walkthrough for this machine, from the latest probe.
     pub fn pairing_setup_steps(&self) -> Vec<SetupStep> {
-        static IS_WSL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let cli = self.tailscale_cli();
         setup_steps(&SetupInput {
             status: self.remote_tailscale.status.as_ref(),
@@ -195,7 +194,6 @@ impl App {
                 .filter(|url| !url.is_empty()),
             cli: &cli,
             port: self.remote_port(),
-            is_wsl: *IS_WSL.get_or_init(crate::resources::doctor::detect_wsl),
         })
     }
 
@@ -248,7 +246,6 @@ pub struct SetupInput<'a> {
     pub public_url: Option<&'a str>,
     pub cli: &'a TailscaleCli,
     pub port: u16,
-    pub is_wsl: bool,
 }
 
 /// The pairing dialog's setup walkthrough (`s`), from a phone with nothing
@@ -279,22 +276,12 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
         ));
     }
 
-    let mut install = vec![
+    let install = vec![
         format!("This computer: {}", tailscale::DOWNLOAD_URL),
         "Your phone: the Tailscale app from its app store.".into(),
+        "Already installed? AMF looks for `tailscale` on your PATH; if it".into(),
+        "lives elsewhere, set \"remote_tailscale_cli\" to it in config.json.".into(),
     ];
-    if input.is_wsl {
-        install.extend([
-            "Under WSL, install it inside WSL. Without systemd, run the daemon".into(),
-            "yourself in userspace mode and tell AMF where its socket is:".into(),
-            "  tailscaled --tun=userspace-networking \\".into(),
-            "    --statedir=$HOME/.local/share/tailscale \\".into(),
-            "    --socket=$HOME/.local/share/tailscale/tailscaled.sock &".into(),
-            "  then set \"remote_tailscale_socket\" to that socket in config.json.".into(),
-            "It stops when WSL shuts down; start it again before pairing.".into(),
-        ]);
-    }
-    install.push("Installed somewhere unusual? Set \"remote_tailscale_cli\".".into());
     steps.push(SetupStep::new(
         match status {
             None => Unknown,
@@ -337,7 +324,9 @@ pub fn setup_steps(input: &SetupInput<'_>) -> Vec<SetupStep> {
             "Sign in on both, with the same account",
             vec![
                 format!("Tailscale didn't answer: {why}"),
-                "Start tailscaled (see step 1 for WSL), then press r to re-check.".into(),
+                "Start Tailscale (its app, or the tailscaled service), then press r.".into(),
+                "Running tailscaled with its own --socket? Set".into(),
+                "\"remote_tailscale_socket\" to that path in config.json.".into(),
             ],
         ),
         Some(TailscaleStatus::NotInstalled) | None => SetupStep::new(
@@ -434,14 +423,13 @@ mod tests {
         })
     }
 
-    fn states(status: Option<&TailscaleStatus>, is_wsl: bool) -> Vec<StepState> {
+    fn states(status: Option<&TailscaleStatus>) -> Vec<StepState> {
         let cli = TailscaleCli::new(None, None);
         setup_steps(&SetupInput {
             status,
             public_url: None,
             cli: &cli,
             port: 47800,
-            is_wsl,
         })
         .iter()
         .map(|step| step.state)
@@ -453,7 +441,7 @@ mod tests {
     #[test]
     fn nothing_installed_starts_at_step_one() {
         assert_eq!(
-            states(Some(&TailscaleStatus::NotInstalled), false),
+            states(Some(&TailscaleStatus::NotInstalled)),
             [Todo, Unknown, Unknown, Unknown, Unknown, Todo]
         );
     }
@@ -461,11 +449,11 @@ mod tests {
     #[test]
     fn a_fresh_tailnet_needs_https_then_serve() {
         assert_eq!(
-            states(Some(&node(false, None, false)), false),
+            states(Some(&node(false, None, false))),
             [Done, Done, Todo, Unknown, Todo, Todo]
         );
         assert_eq!(
-            states(Some(&node(true, None, false)), false),
+            states(Some(&node(true, None, false))),
             [Done, Done, Done, Todo, Todo, Todo]
         );
     }
@@ -473,35 +461,57 @@ mod tests {
     #[test]
     fn a_serving_tagged_node_has_only_pairing_left() {
         let status = node(true, Some("https://pc.tail1.ts.net"), true);
-        assert_eq!(
-            states(Some(&status), false),
-            [Done, Done, Done, Done, Done, Todo]
-        );
+        assert_eq!(states(Some(&status)), [Done, Done, Done, Done, Done, Todo]);
     }
 
     #[test]
     fn a_stopped_daemon_is_the_sign_in_step() {
         let status = TailscaleStatus::Unavailable("failed to connect".into());
-        assert_eq!(states(Some(&status), false)[..2], [Done, Todo]);
+        assert_eq!(states(Some(&status))[..2], [Done, Todo]);
+    }
+
+    fn step_text(status: &TailscaleStatus, cli: &TailscaleCli) -> Vec<String> {
+        setup_steps(&SetupInput {
+            status: Some(status),
+            public_url: None,
+            cli,
+            port: 47800,
+        })
+        .into_iter()
+        .flat_map(|step| step.lines)
+        .collect()
     }
 
     #[test]
-    fn wsl_gets_userspace_instructions_and_the_socket_flag_is_shown() {
-        let cli = TailscaleCli::new(None, Some("/tmp/ts.sock"));
-        let steps = setup_steps(&SetupInput {
-            status: Some(&TailscaleStatus::NotInstalled),
-            public_url: None,
-            cli: &cli,
-            port: 47800,
-            is_wsl: true,
-        });
-        let text: Vec<&str> = steps
-            .iter()
-            .flat_map(|step| step.lines.iter().map(String::as_str))
-            .collect();
+    fn the_steps_are_the_same_everywhere_and_name_the_config_keys() {
+        let cli = TailscaleCli::new(None, None);
+        let missing = step_text(&TailscaleStatus::NotInstalled, &cli);
         assert!(
-            text.iter()
-                .any(|line| line.contains("userspace-networking"))
+            missing
+                .iter()
+                .any(|line| line.contains("remote_tailscale_cli"))
+        );
+        assert!(!missing.iter().any(|line| line.contains("WSL")));
+
+        let silent = step_text(&TailscaleStatus::Unavailable("no socket".into()), &cli);
+        assert!(
+            silent
+                .iter()
+                .any(|line| line.contains("remote_tailscale_socket"))
+        );
+    }
+
+    #[test]
+    fn a_configured_socket_is_in_the_commands_shown() {
+        let cli = TailscaleCli::new(None, Some("/tmp/ts.sock"));
+        let text = step_text(
+            &TailscaleStatus::Running(crate::tailscale::TailnetNode {
+                dns_name: "pc.tail1.ts.net".into(),
+                https_enabled: true,
+                tagged_for_amf: false,
+                serve_url: None,
+            }),
+            &cli,
         );
         assert!(
             text.iter()
@@ -517,7 +527,6 @@ mod tests {
             public_url: Some("https://example.test"),
             cli: &cli,
             port: 47800,
-            is_wsl: false,
         });
         assert_eq!(steps[0].title, "Phone address set by remote_public_url");
         assert_eq!(steps.len(), 7);

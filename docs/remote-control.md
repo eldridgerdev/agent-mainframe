@@ -101,10 +101,21 @@ To have Tailscale check the rule every time the policy is saved, add a
 ],
 ```
 
-#### WSL
+#### Tailscale in a non-standard place
 
-Install Tailscale inside WSL (not only on Windows). Without systemd, run the
-daemon yourself in userspace mode and tell AMF where its socket is:
+AMF runs `tailscale` from your `PATH` (on macOS it also tries the app's
+bundled CLI), talking to the daemon at its usual socket. If yours differs,
+tell AMF in `~/.config/amf/config.json`:
+
+```json
+{
+  "remote_tailscale_cli": "~/bin/tailscale",
+  "remote_tailscale_socket": "~/.local/share/tailscale/tailscaled.sock"
+}
+```
+
+The socket setting is for a `tailscaled` you start yourself with its own
+`--socket`, for example where no service manager runs it for you:
 
 ```sh
 tailscaled --tun=userspace-networking \
@@ -112,15 +123,8 @@ tailscaled --tun=userspace-networking \
   --socket="$HOME/.local/share/tailscale/tailscaled.sock" &
 ```
 
-```json
-{
-  "remote_tailscale_socket": "~/.local/share/tailscale/tailscaled.sock"
-}
-```
-
-The daemon stops when WSL shuts down, and with it your phone's access, so
-start it again before using AMF Remote. If the `tailscale` command isn't on
-your `PATH`, set `remote_tailscale_cli` to it too.
+A daemon started this way stops when the machine (or WSL) shuts down, and
+your phone loses access with it, so start it again before using AMF Remote.
 
 #### Other tunnels
 

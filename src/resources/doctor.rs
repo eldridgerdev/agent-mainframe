@@ -615,8 +615,8 @@ fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
         )
         .with_detail(vec![why.clone()])
         .with_advice(
-            "start tailscaled; under WSL without systemd, see docs/remote-control.md \
-             (and set remote_tailscale_socket if it uses a custom socket)",
+            "start Tailscale (its app, or the tailscaled service); if tailscaled uses its \
+             own --socket, set remote_tailscale_socket to it",
         ),
         TailscaleStatus::NotInstalled if inputs.paired_devices == 0 => Finding::new(
             ID,

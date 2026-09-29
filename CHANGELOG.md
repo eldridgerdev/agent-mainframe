@@ -24,7 +24,8 @@ are tagged.
   AMF Remote over HTTPS and, if not, the next step to take.
 - **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
   and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
-  socket outside the usual places, such as a userspace daemon under WSL.
+  socket outside the usual places, such as a `tailscaled` you start
+  yourself.
 
 ### Changed
 

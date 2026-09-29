@@ -34,6 +34,13 @@ const PAIRING_CODE_TTL: Duration = Duration::from_secs(300);
 /// not per device — a new code resets the counter.
 const MAX_PAIRING_ATTEMPTS: u32 = 5;
 
+/// How long a `Ctrl+Space Q` pressed before the server was listening stays
+/// live. Binding normally takes milliseconds; past this the user has
+/// likely moved on (in a session view, to typing into the agent, whose
+/// keys would land on a dialog that appeared late), so the request is
+/// dropped with a toast rather than opening a dialog nobody is expecting.
+pub(super) const PAIRING_REQUEST_WINDOW: Duration = Duration::from_secs(2);
+
 /// How long a loaded authorized-device table is trusted before it is
 /// re-read. Pairing and revoking from this instance invalidate it
 /// immediately; this bounds how long a revoke made by another AMF instance
@@ -70,7 +77,9 @@ fn pairing_url(public_url: Option<&str>, addr: SocketAddr, code: &str) -> String
 
 impl App {
     /// Flip the on/off toggle. Never called automatically — the
-    /// server-lifecycle decision is that this is on-demand only.
+    /// server-lifecycle decision is that this is on-demand only. The only
+    /// other start is `start_pairing`, which is itself a keypress asking
+    /// for the server (`Ctrl+Space Q`), so it counts as on-demand too.
     pub fn toggle_remote_server(&mut self) {
         if self.remote_server.is_some() {
             self.stop_remote_server();
@@ -142,9 +151,6 @@ impl App {
                     self.log_info("remote_server", format!("Listening on {addr}"));
                     self.push_toast_info(format!("Remote-control server listening on {addr}"));
                     self.remote_server_addr = Some(addr);
-                    if std::mem::take(&mut self.pairing_requested) {
-                        self.open_pairing_dialog(addr);
-                    }
                 }
                 RemoteServerEvent::Stopped { error } => {
                     match error {
@@ -163,7 +169,7 @@ impl App {
                     // nothing left to read from its receiver.
                     self.remote_server = None;
                     self.remote_server_addr = None;
-                    self.pairing_requested = false;
+                    self.pairing_requested = None;
                     // An in-progress pairing dialog is now pairing against
                     // a server that no longer exists — say so rather than
                     // leaving it silently stuck on "Waiting for phone…".
@@ -179,6 +185,7 @@ impl App {
         // authorized table published below — a table built before it would
         // otherwise reach the server thread after the pairing reply and
         // briefly un-authorize the token that reply just handed out.
+        let pairing_opened = self.service_pairing_request();
         let paired = self.drain_pairing_requests();
         let seen = self.drain_device_seen_events();
         let pushed = self.drain_push_requests();
@@ -199,7 +206,7 @@ impl App {
             }
         }
 
-        paired || seen || pushed || acted || changed
+        pairing_opened || paired || seen || pushed || acted || changed
     }
 
     /// Open the pairing dialog with a fresh one-time code. Pressing it is
@@ -208,31 +215,64 @@ impl App {
     /// Opened over a session view, the dialog returns to it on close.
     pub fn start_pairing(&mut self) {
         if self.remote_server.is_none() {
-            self.pairing_requested = true;
+            self.pairing_requested = Some(Instant::now());
             self.start_remote_server();
             return;
         }
         let Some(addr) = self.remote_server_addr else {
-            self.pairing_requested = true;
+            self.pairing_requested = Some(Instant::now());
             return;
         };
-        self.open_pairing_dialog(addr);
+        match self.take_pairing_host() {
+            Some(view) => self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view)),
+            None => self.push_toast_info("Close this dialog, then Ctrl+Space Q to pair"),
+        }
     }
 
-    /// Show the dialog over the dashboard or a session view. Anything else
-    /// on screen (another dialog, reached while a deferred request waited
-    /// for the server) is left alone and the user is told how to pair.
-    fn open_pairing_dialog(&mut self, addr: SocketAddr) {
-        let from_view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
-            AppMode::Normal => None,
-            AppMode::Viewing(view) => Some(view),
+    /// Honour a `Ctrl+Space Q` pressed before the server was listening.
+    /// It waits for the address and for the dashboard or a session view
+    /// to be on screen — another dialog reached in the meantime (help, a
+    /// picker) is never replaced, but closing it within the window still
+    /// gets the pairing dialog. Past `PAIRING_REQUEST_WINDOW` it is dropped
+    /// with a toast naming the key, so a slow bind can't pop a dialog up
+    /// under someone typing into an agent. Returns `true` when it opened.
+    fn service_pairing_request(&mut self) -> bool {
+        let Some(requested_at) = self.pairing_requested else {
+            return false;
+        };
+        if requested_at.elapsed() > PAIRING_REQUEST_WINDOW {
+            self.pairing_requested = None;
+            self.push_toast_info(if self.remote_server_addr.is_some() {
+                "Remote-control server ready — Ctrl+Space Q to pair"
+            } else {
+                "Remote-control server still starting — Ctrl+Space Q to pair once it's listening"
+            });
+            return true;
+        }
+        let Some(addr) = self.remote_server_addr else {
+            return false;
+        };
+        let Some(view) = self.take_pairing_host() else {
+            return false;
+        };
+        self.pairing_requested = None;
+        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view));
+        true
+    }
+
+    /// The screen the pairing dialog may open over, taken out of
+    /// `self.mode`: `Some(None)` for the dashboard, `Some(Some(view))` for
+    /// a session view (the dialog returns to it on close). Anything else is
+    /// left in place and yields `None`.
+    fn take_pairing_host(&mut self) -> Option<Option<ViewState>> {
+        match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Normal => Some(None),
+            AppMode::Viewing(view) => Some(Some(view)),
             other => {
                 self.mode = other;
-                self.push_toast_info("Remote-control server ready — Ctrl+Space Q to pair");
-                return;
+                None
             }
-        };
-        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, from_view));
+        }
     }
 
     /// Replace the current code with a fresh one — used both for the `r`
@@ -1017,14 +1057,14 @@ pub(super) mod tests {
             panic!("expected the dialog once the server was listening");
         };
         assert!(state.from_view.is_none());
-        assert!(!app.pairing_requested);
+        assert!(app.pairing_requested.is_none());
 
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));
     }
 
     #[test]
-    fn a_deferred_pairing_request_does_not_replace_another_dialog() {
+    fn a_deferred_pairing_request_waits_for_another_dialog_to_close() {
         let mut app = test_app();
         app.start_pairing();
         app.mode = AppMode::Help(crate::app::HelpState {
@@ -1037,8 +1077,47 @@ pub(super) mod tests {
             app.poll_remote_server_bg();
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(matches!(app.mode, AppMode::Help(_)));
-        assert!(!app.pairing_requested);
+        app.poll_remote_server_bg();
+        assert!(
+            matches!(app.mode, AppMode::Help(_)),
+            "another dialog is never replaced"
+        );
+        assert!(app.pairing_requested.is_some(), "the request is kept");
+
+        app.mode = AppMode::Normal;
+        app.poll_remote_server_bg();
+        assert!(matches!(app.mode, AppMode::RemotePairing(_)));
+        assert!(app.pairing_requested.is_none());
+
+        app.toggle_remote_server();
+        wait_until_stopped(&mut app, Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_pairing_request_older_than_its_window_is_dropped_not_opened() {
+        let mut app = test_app();
+        app.start_pairing();
+        // Hold the dialog off while the server comes up, then age the
+        // request past its window, as a slow bind would.
+        app.mode = AppMode::Help(crate::app::HelpState {
+            from_view: None,
+            scroll_offset: 0,
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while app.remote_server_addr.is_none() && Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.mode = AppMode::Normal;
+        app.pairing_requested =
+            Instant::now().checked_sub(PAIRING_REQUEST_WINDOW + Duration::from_secs(1));
+
+        assert!(app.poll_remote_server_bg());
+        assert!(
+            matches!(app.mode, AppMode::Normal),
+            "a stale request must not pop a dialog up under the user"
+        );
+        assert!(app.pairing_requested.is_none());
 
         app.toggle_remote_server();
         wait_until_stopped(&mut app, Duration::from_secs(2));

@@ -51,7 +51,10 @@ explicitly:
   session/device.
 - **Server lifecycle**: the remote-control server is on-demand only,
   toggled on/off by the user; it is not a background daemon that runs
-  automatically whenever AMF is running.
+  automatically whenever AMF is running. Asking to pair (`Ctrl+Space Q`)
+  while it is off counts as such a request: it starts the server and
+  opens the pairing dialog once it is listening. Nothing starts it
+  without a keypress.
 - **Terminal rendering**: the client supports both a full interactive
   terminal (xterm.js-style, over WebSocket) and a simplified
   mobile-friendly view, user-selectable.
@@ -197,7 +200,9 @@ lifecycle is reported back over a plain `std::sync::mpsc` channel
 (`Started`/`Stopped`), matching the existing `ipc.rs` cross-thread
 pattern rather than inventing a new one. `App::remote_server` owns the
 handle, `App::toggle_remote_server` starts/stops it (bound to
-`Ctrl+Space C` on the dashboard — no auto-start, ever), and
+`Ctrl+Space C` on the dashboard — no auto-start, ever; the later
+`Ctrl+Space Q` pairing start is a user request too, see "Server
+lifecycle" above), and
 `App::poll_remote_server_bg` drains events every main-loop tick.
 Loopback-only (`127.0.0.1`) on an OS-assigned port at the time.
 Correction (2026-09-14, once Epic 4 landed): auth existing doesn't by

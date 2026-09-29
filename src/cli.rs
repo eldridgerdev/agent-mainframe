@@ -761,6 +761,15 @@ fn run_doctor(json: bool) -> Result<()> {
         .and_then(|db| db.all_launched_editors().ok())
         .unwrap_or_default();
     let worktrees = doctor::worktrees_on_disk(&store);
+    let tailscale = crate::tailscale::TailscaleCli::new(
+        config.remote_tailscale_cli.as_deref(),
+        config.remote_tailscale_socket.as_deref(),
+    )
+    .probe(crate::tailscale::bind_port(&config.remote_bind));
+    let paired_devices = db
+        .as_ref()
+        .and_then(|db| db.list_remote_devices().ok())
+        .map_or(0, |devices| devices.iter().filter(|d| !d.revoked).count());
 
     let report = doctor::diagnose(&doctor::Inputs {
         config: &config,
@@ -772,6 +781,8 @@ fn run_doctor(json: bool) -> Result<()> {
         worktrees: &worktrees,
         editors: &editors,
         pid_alive: &doctor::pid_alive,
+        tailscale: &tailscale,
+        paired_devices,
     });
 
     if json {

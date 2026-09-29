@@ -523,9 +523,19 @@ Found by using it on a real phone over Tailscale:
       no phone can open, with no warning. The dialog now says so.
 - [x] Phone home list sorted by status (attention, active, idle,
       stopped).
-- [ ] A userspace `tailscaled` doesn't survive a WSL restart, so the
-      tunnel silently disappears. This is a user-setup issue, but the docs
-      could mention it.
+- [x] A userspace `tailscaled` doesn't survive a WSL restart, so the
+      tunnel silently disappears. The guide's WSL section now says so, and
+      both the pairing dialog's setup view and `amf doctor` report a
+      daemon that isn't answering.
+- [x] Setup was hard for anyone but the author: copying the tailnet URL into
+      `config.json` by hand, and no guidance on locking it down. Now AMF
+      detects Tailscale (`src/tailscale.rs`) and uses the address it serves.
+      `t` in the pairing dialog runs `tailscale serve --bg`, and `s` shows
+      setup steps ticked off from a live probe, with `c` copying an access
+      policy. `amf doctor` has a `remote-access` check.
+      `remote_tailscale_cli`/`remote_tailscale_socket` cover non-standard
+      installs. An access policy can't be applied by AMF (it lives in the
+      admin console), so it's copy-paste plus a tag.
 - [ ] Still unverified end to end: a push triggered by a real agent,
       and answering a real Claude permission prompt from the phone.
 

@@ -15,7 +15,9 @@ A read-only report on what AMF is putting on the machine: agents running
 against your `max_concurrent_agents` limit, editor windows open alongside
 them, memory and swap, `amf-*` tmux sessions and worktrees with no matching
 feature, editors still running for features you've stopped, and any project
-still keeping its config at the legacy `.amf/config.json` path. `--json`
+still keeping its config at the legacy `.amf/config.json` path, and whether
+your phone can reach AMF Remote over HTTPS (with the next Tailscale step if
+not). `--json`
 emits the same findings for scripting. It changes nothing on the machine and
 always exits `0`.
 

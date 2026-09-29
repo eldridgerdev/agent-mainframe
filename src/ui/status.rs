@@ -981,7 +981,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::RemotePairing(state) => {
             let paired = matches!(state.status, crate::app::PairingDialogStatus::Paired { .. });
-            if paired {
+            if matches!(state.view, crate::app::PairingDialogView::Setup { .. }) {
+                Line::from(vec![
+                    Span::styled(" j/k", key_style()),
+                    Span::raw(" scroll  "),
+                    Span::styled("t", key_style()),
+                    Span::raw(" serve  "),
+                    Span::styled("c", key_style()),
+                    Span::raw(" copy policy  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back"),
+                ])
+            } else if paired {
                 Line::from(vec![
                     Span::styled(" Enter/Esc", key_style()),
                     Span::raw(" close"),
@@ -990,6 +1001,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(vec![
                     Span::styled(" r", key_style()),
                     Span::raw(" new code  "),
+                    Span::styled("s", key_style()),
+                    Span::raw(" setup  "),
                     Span::styled("Esc", key_style()),
                     Span::raw(" cancel"),
                 ])

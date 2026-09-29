@@ -40,6 +40,7 @@ pub(crate) mod remote_attention;
 pub mod remote_control;
 pub(crate) mod remote_push;
 pub(crate) mod remote_server;
+pub(crate) mod remote_tailscale;
 pub(crate) mod remote_todos;
 mod rename;
 pub(crate) mod resource_gate;
@@ -609,6 +610,15 @@ pub struct AppConfig {
     /// which only works on this machine or over `adb reverse`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_public_url: Option<String>,
+    /// The `tailscale` CLI AMF asks for this machine's tailnet address when
+    /// `remote_public_url` is unset (`crate::tailscale`). Unset means
+    /// `tailscale` on `PATH`, then the macOS app's bundled CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_tailscale_cli: Option<String>,
+    /// `tailscaled`'s socket, for a daemon not at its platform default —
+    /// typically a userspace `tailscaled --socket=…` under WSL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_tailscale_socket: Option<String>,
     /// MCP servers (e.g. an issue tracker) the plan interview's Claude
     /// passes may consult, read-only. Global scope only, deliberately: an MCP
     /// config names programs to run, so a repository's `amf.json` must not be
@@ -770,6 +780,8 @@ impl Default for AppConfig {
             review_prompt_budget_tokens: None,
             remote_bind: default_remote_bind(),
             remote_public_url: None,
+            remote_tailscale_cli: None,
+            remote_tailscale_socket: None,
             plan_interview_mcp: None,
         }
     }
@@ -1235,6 +1247,9 @@ pub struct App {
     /// Forgotten if the start fails or the request outlives
     /// `remote_server::PAIRING_REQUEST_WINDOW`.
     pub pairing_requested: Option<std::time::Instant>,
+    /// What the local Tailscale looks like, for the pairing QR's address
+    /// and its setup steps — see `app/remote_tailscale.rs`.
+    pub remote_tailscale: remote_tailscale::RemoteTailscaleState,
     /// Web Push to paired phones — see `app/remote_push.rs`.
     pub remote_push: remote_push::RemotePushState,
     /// The authorized-device table the server checks bearer tokens
@@ -2623,6 +2638,7 @@ impl App {
             remote_server: None,
             remote_server_addr: None,
             pairing_requested: None,
+            remote_tailscale: Default::default(),
             remote_push: Default::default(),
             remote_devices: Default::default(),
         };
@@ -2885,6 +2901,7 @@ impl App {
             remote_server: None,
             remote_server_addr: None,
             pairing_requested: None,
+            remote_tailscale: Default::default(),
             remote_push: Default::default(),
             remote_devices: Default::default(),
         }

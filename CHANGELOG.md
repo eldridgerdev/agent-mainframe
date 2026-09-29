@@ -10,6 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **AMF Remote finds your Tailscale address by itself.** When Tailscale
+  serves AMF on your tailnet, the pairing QR code uses that HTTPS address
+  automatically, with no need to copy it into `config.json`.
+- **Set up Tailscale from the pairing dialog.** Press `t` to share AMF on
+  your tailnet (tailnet only, never public). Press `s` for step-by-step
+  setup, from installing Tailscale to limiting access to your own devices;
+  each step is ticked off from what AMF sees on this computer, and `c` copies
+  a ready-made access policy.
+- **`amf doctor` checks phone access.** It reports whether a phone can reach
+  AMF Remote over HTTPS and, if not, the next step to take.
+- **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
+  and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
+  socket outside the usual places, such as a userspace daemon under WSL.
+
 ### Changed
 
 - **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
@@ -33,8 +49,7 @@ are tagged.
 
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
-  which a phone can't open. The dialog now says so and names the setting to
-  fix it.
+  which a phone can't open. The dialog now says so and offers the fix.
 - **Notifications and attention keep working after you rebuild or reinstall
   AMF.** Agent sessions started before the rebuild could lose every hook, so
   nothing reached the attention list or your phone. They now fall back to the

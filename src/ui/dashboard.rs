@@ -1985,7 +1985,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::RemotePairing(state) = &app.mode {
-        super::dialogs::draw_remote_pairing_dialog(frame, state, &app.throbber_state, &app.theme);
+        super::dialogs::draw_remote_pairing_dialog(frame, app, state);
     }
 
     draw_mode_context_bar(frame, &app.mode, &app.theme);

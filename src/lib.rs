@@ -54,6 +54,7 @@ mod remote_terminal;
 mod resources;
 mod review_batch;
 mod summary;
+mod tailscale;
 mod theme;
 mod tmux;
 mod tmux_observer;

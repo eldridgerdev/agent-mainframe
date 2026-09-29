@@ -1967,6 +1967,9 @@ pub struct RemotePairingState {
     /// configured. The dialog says so instead of showing a QR that can
     /// only fail.
     pub url_unreachable: bool,
+    /// Where `url` came from — shown under it, and what decides whether a
+    /// later Tailscale probe may replace it (`App::refresh_pairing_url`).
+    pub url_source: PairingUrlSource,
     /// The session view the dialog was opened over (`Ctrl+Space Q` from a
     /// session), restored on close — the same shape as the bookmark
     /// picker's `from_view`.
@@ -1977,6 +1980,22 @@ pub struct RemotePairingState {
 pub enum PairingDialogView {
     Pairing,
     Devices(RemoteDevicesListState),
+    /// Step-by-step Tailscale setup (`s`), scrolled by `scroll` lines.
+    Setup {
+        scroll: u16,
+    },
+}
+
+/// Where the pairing QR's address comes from, most explicit first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingUrlSource {
+    /// `remote_public_url` in config.json — never second-guessed.
+    Configured,
+    /// The HTTPS address `tailscale serve` answers on for AMF's port.
+    Tailscale,
+    /// The server's own bind address: fine on the LAN or over `adb
+    /// reverse`, never for install or push.
+    Direct,
 }
 
 /// The paired-devices list shown by pressing `v` in the pairing dialog.

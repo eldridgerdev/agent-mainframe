@@ -1980,9 +1980,13 @@ pub struct RemotePairingState {
 pub enum PairingDialogView {
     Pairing,
     Devices(RemoteDevicesListState),
-    /// Step-by-step Tailscale setup (`s`), scrolled by `scroll` lines.
+    /// Step-by-step Tailscale setup (`s`), scrolled by `scroll` rows.
+    /// `max_scroll` is written by the draw, the only place that knows how
+    /// many rows the wrapped steps take at the current size, so scrolling
+    /// stops at the last step instead of running on past it.
     Setup {
         scroll: u16,
+        max_scroll: std::cell::Cell<u16>,
     },
 }
 

@@ -18,8 +18,9 @@ are tagged.
 - **Set up Tailscale from the pairing dialog.** Press `t` to share AMF on
   your tailnet (tailnet only, never public). Press `s` for step-by-step
   setup, from installing Tailscale to limiting access to your own devices;
-  each step is ticked off from what AMF sees on this computer, and `c` copies
-  a ready-made access policy.
+  each step is ticked off from what AMF sees on this computer, `c` copies a
+  ready-made access policy, and the steps scroll with `j`/`k` or the mouse
+  wheel.
 - **`amf doctor` checks phone access.** It reports whether a phone can reach
   AMF Remote over HTTPS and, if not, the next step to take.
 - **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`

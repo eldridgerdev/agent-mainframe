@@ -389,7 +389,10 @@ impl App {
     /// fresh probe so each step's tick reflects this moment.
     pub fn open_pairing_setup_view(&mut self) {
         if let AppMode::RemotePairing(state) = &mut self.mode {
-            state.view = PairingDialogView::Setup { scroll: 0 };
+            state.view = PairingDialogView::Setup {
+                scroll: 0,
+                max_scroll: Default::default(),
+            };
             self.probe_tailscale();
         }
     }
@@ -402,11 +405,14 @@ impl App {
         }
     }
 
+    /// Scroll the setup view by `delta` rows, within what the last draw
+    /// measured. `i32::MIN` / `i32::MAX` jump to the top / bottom.
     pub fn scroll_pairing_setup(&mut self, delta: i32) {
         if let AppMode::RemotePairing(state) = &mut self.mode
-            && let PairingDialogView::Setup { scroll } = &mut state.view
+            && let PairingDialogView::Setup { scroll, max_scroll } = &mut state.view
         {
-            *scroll = scroll.saturating_add_signed(delta as i16);
+            let target = i32::from(*scroll).saturating_add(delta);
+            *scroll = target.clamp(0, i32::from(max_scroll.get())) as u16;
         }
     }
 
@@ -1099,7 +1105,10 @@ pub(super) mod tests {
             let AppMode::RemotePairing(state) = &app.mode else {
                 unreachable!()
             };
-            assert!(matches!(state.view, PairingDialogView::Setup { scroll: 0 }));
+            assert!(matches!(
+                state.view,
+                PairingDialogView::Setup { scroll: 0, .. }
+            ));
         }
         assert!(
             app.remote_tailscale.probing,

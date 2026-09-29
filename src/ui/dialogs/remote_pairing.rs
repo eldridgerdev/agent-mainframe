@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 use crate::app::remote_tailscale::{RemoteTailscaleState, SetupStep, StepState};
@@ -25,8 +25,9 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
             draw_paired_devices_list(frame, list, theme);
             return;
         }
-        PairingDialogView::Setup { scroll } => {
-            draw_setup(frame, &app.pairing_setup_steps(), tailscale, *scroll, theme);
+        PairingDialogView::Setup { scroll, max_scroll } => {
+            let steps = app.pairing_setup_steps();
+            draw_setup(frame, &steps, tailscale, (*scroll, max_scroll), theme);
             return;
         }
         PairingDialogView::Pairing => {}
@@ -306,7 +307,7 @@ fn draw_setup(
     frame: &mut Frame,
     steps: &[SetupStep],
     tailscale: &RemoteTailscaleState,
-    scroll: u16,
+    (scroll, max_scroll): (u16, &std::cell::Cell<u16>),
     theme: &Theme,
 ) {
     let area = centered_rect(80, 85, frame.area());
@@ -367,16 +368,38 @@ fn draw_setup(
         muted,
     )));
 
-    let max_scroll = (lines.len() as u16).saturating_sub(body.height);
+    // Measure rows after wrapping (one column is kept for the scrollbar), so
+    // the last step is reachable and scrolling stops there.
+    let text_width = body.width.saturating_sub(1).max(1);
+    let total_rows: u16 = lines
+        .iter()
+        .map(|line| (line.width() as u16).div_ceil(text_width).max(1))
+        .sum();
+    let limit = total_rows.saturating_sub(body.height);
+    max_scroll.set(limit);
+    let offset = scroll.min(limit);
+    let [text_area, bar_area] =
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).areas(body);
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .scroll((scroll.min(max_scroll), 0)),
-        body,
+            .scroll((offset, 0)),
+        text_area,
     );
+    if limit > 0 {
+        let mut bar = ScrollbarState::new(usize::from(limit) + 1).position(usize::from(offset));
+        frame.render_stateful_widget(
+            Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓")),
+            bar_area,
+            &mut bar,
+        );
+    }
 
     let mut keys = vec![
-        ("j/k", "scroll"),
+        ("j/k/wheel", "scroll"),
         ("t", "tailscale serve"),
         ("c", "copy policy"),
     ];
@@ -606,6 +629,41 @@ mod tests {
         assert_eq!(fit_qr(&rows, 5).map(<[String]>::len), Some(4));
         assert_eq!(fit_qr(&rows, 3), None);
         assert_eq!(fit_qr(&[], 10), None);
+    }
+
+    /// Reported from real use: the walkthrough didn't scroll far enough to
+    /// read. The draw measures wrapped rows, and the keys stop there.
+    #[test]
+    fn the_setup_view_scrolls_to_its_last_step_and_no_further() {
+        let mut app = app();
+        app.remote_tailscale.status = Some(TailscaleStatus::NotInstalled);
+        app.open_pairing_setup_view();
+        let top = screen_sized(&app, 100, 24);
+        assert!(shows(&top, "1. Install Tailscale"));
+        assert!(!shows(&top, "amf doctor"), "the end starts out of view");
+        assert!(shows(&top, "↓"), "a scrollbar says there's more");
+
+        app.scroll_pairing_setup(i32::MAX);
+        let bottom = screen_sized(&app, 100, 24);
+        assert!(shows(&bottom, "amf doctor"));
+        assert!(!shows(&bottom, "1. Install Tailscale"));
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let PairingDialogView::Setup { scroll, max_scroll } = &state.view else {
+            unreachable!()
+        };
+        assert_eq!(*scroll, max_scroll.get(), "clamped to the end, not past it");
+
+        app.scroll_pairing_setup(-1);
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        let PairingDialogView::Setup { scroll, max_scroll } = &state.view else {
+            unreachable!()
+        };
+        assert_eq!(*scroll + 1, max_scroll.get(), "one step up moves at once");
     }
 
     #[test]

@@ -3147,6 +3147,10 @@ pub struct PlanInterviewState {
     pub critique: Option<String>,
     /// Explicit frontier model chosen for this plan's Expert review.
     pub expert_model: Option<String>,
+    /// Reasoning level picked with `expert_model`. Not persisted with the draft
+    /// (that would need a schema change on the shared `amf.db`), so a resumed
+    /// interview falls back to `review_reasoning_for(PlanPreflight)`.
+    pub expert_reasoning: Option<crate::headless::ReasoningLevel>,
     /// Single-select model picker shown before the Expert pre-call gate.
     pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
@@ -3352,6 +3356,7 @@ impl PlanInterviewState {
             investigation_token_estimate: 0,
             critique: None,
             expert_model: None,
+            expert_reasoning: None,
             expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
@@ -4139,6 +4144,7 @@ impl PlanInterviewState {
     fn clear_critique(&mut self) {
         self.critique = None;
         self.expert_model = None;
+        self.expert_reasoning = None;
         self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;

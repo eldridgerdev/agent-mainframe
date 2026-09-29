@@ -1,0 +1,67 @@
+# reasoning-level-picker: the AI Review model picker (`A` in an AiReview pane)
+# now carries a Reasoning row, cycled with h/l. Levels are per-harness: Claude
+# offers up to `max`, Codex stops at `xhigh`.
+#
+# Deterministic: seeds a completed review offline and never confirms a model
+# (confirming would start a real, paid headless run) — every pick backs out
+# with Esc.
+
+shot:dashboard
+
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:900
+key:c
+wait:500
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:300
+
+key:A
+wait:300
+key:Enter
+wait:600
+note:The Claude model picker now has a Reasoning row under the model list; with nothing chosen it reads Default, which passes no flag to the harness.
+expect:Reasoning
+expect:‹ Default ›
+expect:[h/l] level
+shot:claude-picker-default
+
+key:l
+key:l
+key:l
+wait:200
+note:Pressing l three times steps Default, low, medium, high on the same screen, with no extra step in the flow.
+expect:‹ high ›
+shot:claude-reasoning-high
+
+key:l
+key:l
+wait:200
+note:Claude accepts the full range, so the top of the list is max.
+expect:‹ max ›
+shot:claude-reasoning-max
+
+key:Escape
+wait:300
+key:j
+key:Enter
+wait:3500
+key:h
+wait:200
+note:Codex has no max level, so cycling backwards from Default wraps to xhigh instead of offering a value its CLI would reject.
+expect:Reasoning
+expect:‹ xhigh ›
+expect_not:‹ max ›
+shot:codex-reasoning-wraps-to-xhigh
+
+key:Escape
+wait:200
+key:Escape
+wait:200
+key:Escape
+wait:200
+shot:dashboard-final

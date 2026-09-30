@@ -42,6 +42,8 @@ use crate::project::AgentKind;
 /// overrides).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PromptId {
+    /// Implementation model and reasoning advice from attributed research.
+    ModelAnalysis,
     /// One adaptive plan-interview round (`app/plan_interview.rs`, no-tools).
     PlanInterviewRound,
     /// Synthesize the interview into the plan-mode markdown (no-tools).
@@ -102,7 +104,8 @@ pub enum PromptId {
 
 impl PromptId {
     /// Every registered prompt, in registry (and manager-list) order.
-    pub const ALL: [PromptId; 24] = [
+    pub const ALL: [PromptId; 25] = [
+        PromptId::ModelAnalysis,
         PromptId::PlanInterviewRound,
         PromptId::PlanInterviewSynthesis,
         PromptId::PlanInterviewCritique,
@@ -133,6 +136,7 @@ impl PromptId {
     /// `.amf/prompts/` file stem — do not change for an existing prompt.
     pub fn as_str(self) -> &'static str {
         match self {
+            PromptId::ModelAnalysis => "model_analysis.recommend",
             PromptId::PlanInterviewRound => "plan_interview.round",
             PromptId::PlanInterviewSynthesis => "plan_interview.synthesis",
             PromptId::PlanInterviewCritique => "plan_interview.critique",
@@ -221,7 +225,15 @@ pub fn spec(id: PromptId) -> &'static PromptSpec {
 
 const NO_HARNESS_VARIANTS: &[(AgentKind, &str)] = &[];
 
-static SPECS: [PromptSpec; 24] = [
+static SPECS: [PromptSpec; 25] = [
+    PromptSpec {
+        id: PromptId::ModelAnalysis,
+        title: "Implementation model advice",
+        summary: "Suggests supported effort tradeoffs for a reviewed implementation plan.",
+        placeholders: &["task_phase", "task_context", "eligible_options", "evidence"],
+        default_template: defaults::MODEL_ANALYSIS,
+        harness_variants: NO_HARNESS_VARIANTS,
+    },
     PromptSpec {
         id: PromptId::PlanInterviewRound,
         title: "Plan interview: adaptive round",

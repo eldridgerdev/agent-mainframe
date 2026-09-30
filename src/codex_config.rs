@@ -100,13 +100,16 @@ fn known_models_from_cli() -> Option<Vec<String>> {
 }
 
 fn known_models_from_catalog_value(value: &serde_json::Value) -> Option<Vec<String>> {
-    let models = value.get("models")?.as_array()?;
-    let mut models: Vec<String> = models
-        .iter()
-        .filter(|model| model.get("visibility").and_then(|v| v.as_str()) == Some("list"))
-        .filter_map(|model| model.get("slug").and_then(|slug| slug.as_str()))
-        .map(str::to_string)
-        .collect();
+    // The legacy picker needs names only. Reading a catalog does not prove
+    // account access, so its entries remain unverified for analyzer use.
+    let mut models: Vec<String> = crate::model_options::codex_catalog_models(
+        value,
+        crate::model_options::Availability::Unknown,
+    )
+    .ok()?
+    .into_iter()
+    .map(|model| model.model)
+    .collect();
     models.sort();
     models.dedup();
     Some(models)

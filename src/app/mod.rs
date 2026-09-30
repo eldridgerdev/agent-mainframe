@@ -23,6 +23,7 @@ mod handoff;
 mod hooks;
 pub(crate) mod issue_fixer;
 pub(crate) mod learning;
+pub(crate) mod model_analysis;
 mod navigation;
 mod notifications;
 mod opencode;
@@ -1108,6 +1109,7 @@ pub struct App {
     pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     pub(crate) review_question_work: review_questions::Work,
+    pub(crate) model_analysis_work: model_analysis::Work,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -1398,6 +1400,9 @@ impl App {
             | AppMode::AiReviewRunning(_) => true,
             // Animates the loading frame's throbber and elapsed-time display
             // while plan-interview AI work runs in the background.
+            AppMode::ModelAnalysis(state) => {
+                matches!(state.status, model_analysis::Status::Loading)
+            }
             AppMode::PlanInterview(state) => matches!(
                 state.phase,
                 PlanInterviewPhase::AiLoading
@@ -2566,6 +2571,7 @@ impl App {
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2828,6 +2834,7 @@ impl App {
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,

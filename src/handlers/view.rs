@@ -447,6 +447,11 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
         }
+        KeyCode::Char('B') => {
+            if let Err(e) = app.open_model_analysis() {
+                app.message = Some(e.to_string());
+            }
+        }
         KeyCode::Char('n') => {
             app.open_current_plan_from_view()?;
         }

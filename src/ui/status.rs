@@ -937,6 +937,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         // actions spend tokens — live in the dialog's own footer, which is the
         // only copy a user ever sees. This line exists to keep the match
         // exhaustive, not to duplicate them.
+        AppMode::ModelAnalysis(_) => {
+            Line::from(" ↑/↓ choose · Enter apply · r retry · Esc return to plan ")
+        }
         AppMode::PlanInterview(_) => Line::from(vec![
             Span::styled(" Esc", key_style()),
             Span::raw(" cancel plan interview"),

@@ -23,6 +23,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("l / \u{2192}", "Expand project/feature"),
         ("Enter", "Toggle expand / view or recover session"),
         ("s", "Add session (picker)"),
+        ("m", "Model / reasoning advice for selected agent session"),
         ("S", "Pick session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
@@ -176,6 +177,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / PgUp/PgDn", "Scroll the rendered plan"),
         ("e", "Edit raw plan markdown"),
         (
+            "m",
+            "Model / reasoning advice for the new feature's initial agent",
+        ),
+        (
             "a",
             "Expert review with an explicit frontier model, or re-open one already held (uses tokens for a new review)",
         ),
@@ -261,6 +266,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
+        ("B", "Model / reasoning advice for this agent session"),
         ("n", "Open current plan"),
         (
             "F",

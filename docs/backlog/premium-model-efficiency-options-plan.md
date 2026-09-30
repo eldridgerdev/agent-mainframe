@@ -432,6 +432,27 @@ construction. Cross-cutting changes can eliminate most reuse.
 
 ## OPT-07: Reasoning effort by task stage
 
+### Implemented foundation
+
+Model and reasoning advice is implemented for new Full/Quick Plan review and
+existing Claude Code/Codex agent sessions. Plan-review selections apply to the
+initial implementation launch; existing-session advice leaves changing settings
+to the harness's model picker. Choices require verified account access, supported
+effort levels and fresh, attributable provider research. Task-specific quality,
+time and token totals remain unknown. See the
+[capability and evidence contract](../development/model-reasoning-analyzer.md).
+
+- [x] Offer on-demand advice at plan review and in existing agent sessions.
+- [x] Validate available model/effort combinations and research provenance.
+- [x] Apply a selected setting to the initial implementation launch.
+- [ ] Add persistent stage-specific profiles for presets and workflows.
+- [ ] Verify a control boundary for applying changes to running harnesses.
+- [ ] Define comparable outcome evidence before using history or opt-in trials.
+
+The advice workflow does not complete the broader routing and evaluation work
+below. Paid trials, additional launch entry points, and OpenCode/Pi recommendations
+remain deferred until their evidence and capability contracts are established.
+
 ### Behavior and implementation shape
 
 Add model and effort settings to feature presets, sessions, and workflow

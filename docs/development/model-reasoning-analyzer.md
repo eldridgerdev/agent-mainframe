@@ -2,7 +2,8 @@
 
 Inventory and first-release implementation checked on 2026-09-29, with Claude
 Code discovery and research added on 2026-09-30, against
-`AMF_PLAN.md`. Live application to existing sessions remains outside the
+`AMF_PLAN.md`. The headless inventory includes the subsequent reasoning-picker
+integration from main. Live application to existing sessions remains outside the
 verified launch scope.
 
 ## Configuration and availability
@@ -69,8 +70,8 @@ inspection fail closed. The entire probe, including cancellable binary readiness
 `TmuxOps::launch_claude` accepts `extra_args`, quoted individually by
 `TmuxManager`; this can carry `--model <id>` and `--effort <level>` without
 editing settings files. Existing permission, review, Chrome, Remote Control,
-hook and resume arguments must be preserved. Headless calls accept `model`
-but not effort.
+hook and resume arguments must be preserved. Headless calls accept model and
+reasoning through `ModelSel`; the analyzer leaves its runner's settings unspecified.
 
 Sources: [Claude model configuration](https://code.claude.com/docs/en/model-config),
 [CLI reference](https://code.claude.com/docs/en/cli-reference).
@@ -122,9 +123,9 @@ The installed interactive CLI advertises `--model` but no `--variant`;
 These interfaces must not be mixed without checking the installed version.
 Current `TmuxOps::launch_opencode[_with_session]` accepts no extra arguments;
 therefore **no explicit model or variant is currently applicable through AMF's
-interactive launch boundary**. HeadlessRunner passes an explicit model but has
-no separate variant parameter. Extending these seams belongs to the launch
-integration task, with effective provider/variant discovery required first.
+interactive launch boundary**. HeadlessRunner can pass an explicit model and
+reasoning as `--variant`, but this is not effective provider/variant discovery.
+Extending interactive launch requires that discovery contract first.
 
 Sources: [OpenCode CLI](https://opencode.ai/docs/cli/),
 [server providers](https://opencode.ai/docs/server/),
@@ -159,8 +160,8 @@ Sources: [Pi CLI](https://github.com/earendil-works/pi/blob/main/packages/coding
 | `Feature` / `FeatureSession` | Persist harness/session kind and resume/token source identity; no explicit model/reasoning history | Do not treat defaults or older sessions as historical model evidence |
 | `finish_feature_launch_*` / `ensure_feature_running_*` | Build harness-specific startup args and start saved sessions | Revalidate the transient selection immediately before initial launch; preserve rollback, mode flags and resume behavior |
 | `launch_agent_session_window` and session restart | Claude/Codex extra arguments; OpenCode/Pi fixed launch signatures | Apply selected arguments only to the shipped initial-agent path through `TmuxOps` |
-| `HeadlessRunner` | All four accept `model`; no reasoning argument; restricted/read-only contracts differ | Analyzer runner selection/fallback respects configuration and never recursively calls analysis |
-| Existing Expert/AI Review model pickers | Manual Default/Custom/preset selections | Keep separate from evidence-backed eligibility; they are not proof of account access |
+| `HeadlessRunner` | All four accept `model`; Claude/Codex/OpenCode accept explicit reasoning through `ModelSel`; restricted/read-only contracts differ | Analyzer runner selection/fallback respects configuration, leaves its runner's settings unspecified and never recursively calls analysis |
+| Existing Expert/AI Review model pickers | Manual model and harness-supported reasoning selections | Keep separate from evidence-backed eligibility; they are not proof of account access |
 
 ## Implemented eligibility boundary
 
@@ -182,8 +183,9 @@ a newly constructed set rejects changed configuration, unavailable harnesses,
 removed levels and changed launch support. Interactive arguments are returned
 only after revalidation and only for a supported path; no process or settings
 write occurs in this module. Claude/Codex use their existing extra-argument seam.
-OpenCode/Pi interactive overrides and headless reasoning overrides remain
-excluded until their launch seams are implemented.
+OpenCode/Pi interactive overrides remain excluded until their launch seams are
+implemented. Analyzer selections target interactive implementation, not headless
+runner settings.
 
 The Codex name picker reuses the catalog parser while keeping parsed access
 unknown for analyzer purposes. The plan-review workflow uses live discovery

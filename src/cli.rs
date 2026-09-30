@@ -2151,8 +2151,55 @@ mod tests {
         Cli, Commands, cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm,
     };
     use clap::Parser;
+    use std::collections::BTreeSet;
     use std::fs;
     use tempfile::TempDir;
+
+    fn schema_keys(help: &str) -> BTreeSet<String> {
+        help.lines()
+            .filter_map(|l| l.strip_prefix("    \""))
+            .filter_map(|l| l.split_once("\":").map(|(k, _)| k.to_string()))
+            .collect()
+    }
+
+    fn json_keys(value: &serde_json::Value) -> BTreeSet<String> {
+        value.as_object().unwrap().keys().cloned().collect()
+    }
+
+    /// The help text is hand-written, so pin its field list to the request
+    /// struct (via its serialized `Default`) and to the shipped template.
+    #[test]
+    fn automation_help_schemas_match_request_structs_and_templates() {
+        use crate::automation::{
+            CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
+        };
+        let cases = [
+            (
+                "create-project",
+                super::CREATE_PROJECT_SCHEMA,
+                serde_json::to_value(CreateProjectRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-project.template.json"),
+            ),
+            (
+                "create-feature",
+                super::CREATE_FEATURE_SCHEMA,
+                serde_json::to_value(CreateFeatureRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-feature.template.json"),
+            ),
+            (
+                "create-batch-features",
+                super::CREATE_BATCH_FEATURES_SCHEMA,
+                serde_json::to_value(CreateBatchFeaturesRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-batch-features.template.json"),
+            ),
+        ];
+        for (name, help, default, template) in cases {
+            let documented = schema_keys(help);
+            assert_eq!(documented, json_keys(&default), "{name}: help vs struct");
+            let template: serde_json::Value = serde_json::from_str(template).unwrap();
+            assert_eq!(documented, json_keys(&template), "{name}: help vs template");
+        }
+    }
 
     fn write_settings(dir: &TempDir, json: &str) -> std::path::PathBuf {
         let path = dir.path().join("settings.json");

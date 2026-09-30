@@ -763,7 +763,9 @@ impl App {
                 if let Err(error) = start {
                     if created && prepared.model_selection.is_some() {
                         let session = self.store.projects[pi].features[fi].tmux_session.clone();
-                        self.tmux.kill_session(&session)?;
+                        // Best effort: a failed cleanup must not replace the
+                        // launch error the user needs to act on.
+                        let _ = self.tmux.kill_session(&session);
                     }
                     let retry = if prepared.model_selection.is_some() {
                         "retry with r in model advice"

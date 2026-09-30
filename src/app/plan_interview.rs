@@ -2725,6 +2725,7 @@ impl App {
         if pending.prepared.model_selection.is_some() {
             return self.validate_model_plan_launch(pending);
         }
+        self.mode = AppMode::Normal;
         self.resume_validated_plan_launch(pending)
     }
 

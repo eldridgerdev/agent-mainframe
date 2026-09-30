@@ -597,10 +597,9 @@ impl App {
                 };
                 let validated = selection
                     .filter(|selection| {
-                        matches!(&self.mode,AppMode::ModelAnalysis(s) if s.apply.is_none())
-                            || research_notes().iter().any(|n| {
-                                n.applies(&selection.choice, (self.model_analysis_work.now)())
-                            })
+                        research_notes()
+                            .iter()
+                            .any(|n| n.applies(&selection.choice, (self.model_analysis_work.now)()))
                     })
                     .ok_or_else(|| anyhow::anyhow!("missing selected setting"))
                     .and_then(|s| options.revalidate(&s.choice))

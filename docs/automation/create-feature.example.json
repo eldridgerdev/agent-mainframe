@@ -6,7 +6,6 @@
   "review": true,
   "use_worktree": true,
   "enable_chrome": false,
-  "enable_notes": true,
   "hook_choice": null,
   "dry_run": false
 }

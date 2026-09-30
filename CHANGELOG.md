@@ -10,7 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **`amf automation` help now documents the request JSON.** `-h` / `--help` on
+  `create-project`, `create-feature`, and `create-batch-features` lists every
+  field with its type, default, and allowed values (agents and modes), plus a
+  minimal example, so you no longer need a dry run to discover the schema.
+
+### Fixed
+
+- **Automation example and template JSON no longer include `enable_notes`.**
+  AMF never read that field. The `create-feature` template now lists
+  `plan_mode` and `create_terminal`.
 
 ## [v0.48.0] - 2026-09-28
 

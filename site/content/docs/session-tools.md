@@ -56,10 +56,13 @@ Claude Code's own Remote Control (research preview, v2.1.51+) bridges a
 session to claude.ai/code and the Claude mobile app. When it's active, AMF
 shows a `[remote ●]` badge on the session. `Ctrl+Space`, then `c` copies the
 session's claude.ai URL when Claude has printed it as visible text;
-`Ctrl+Space`, then `Shift+O` opens it. `Ctrl+Space`, then `Shift+C` sends
-`/rc` to the pane to toggle Remote Control on or off — this is Claude's own
-slash command, sent directly rather than through AMF. Remote Control is
-Claude-only and unavailable on z.ai / third-party-provider sessions.
+`Ctrl+Space`, then `Shift+O` opens it. To turn it on or off, type Claude's
+own `/rc` in the session. Remote Control is Claude-only and unavailable on
+z.ai / third-party-provider sessions.
+
+In a session, `Ctrl+Space`, then `Shift+C` and `Shift+Q` belong to AMF's own
+phone companion instead: they turn its server on or off and show the pairing
+QR code, exactly as on the dashboard.
 
 ## Icons for custom sessions
 

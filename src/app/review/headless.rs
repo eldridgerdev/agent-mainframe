@@ -91,7 +91,12 @@ impl App {
             return;
         }
         let model = self.config.review_model_for(ReviewAction::Walkthrough);
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        let reasoning = self.config.review_reasoning_for(ReviewAction::Walkthrough);
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.walkthrough_child = Some(child);
@@ -201,6 +206,7 @@ impl App {
             return;
         }
         let model = self.config.review_model_for(ReviewAction::CoReview);
+        let reasoning = self.config.review_reasoning_for(ReviewAction::CoReview);
 
         // Oversized file: review it hunk-slice by hunk-slice on a worker thread
         // rather than sending the single truncated prompt. `review_prompt_budget`
@@ -227,7 +233,7 @@ impl App {
                     &thread_workdir,
                     &file,
                     &template,
-                    thread_model.as_deref(),
+                    crate::headless::ModelSel::new(thread_model.as_deref(), reasoning),
                 ));
             });
             if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -238,7 +244,11 @@ impl App {
             return;
         }
 
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 self.message = Some(format!("AI co-review running on {path}…"));
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -453,12 +463,19 @@ impl App {
         let model = self
             .config
             .review_model_for(ReviewAction::ChangesetOverview);
+        let reasoning = self
+            .config
+            .review_reasoning_for(ReviewAction::ChangesetOverview);
         // The pre-call gate has been cleared, so the user has committed to this
         // pass: open the modal either way. On success it shows "generating…";
         // on a spawn failure it shows the error, rather than the viewer just
         // swallowing the keypress. (A *cancelled* pre-call returns above,
         // before this, so it still leaves no half-open modal.)
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 self.message = Some("Changeset overview running…".to_string());
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -1638,7 +1655,7 @@ fn run_batched_co_review(
     workdir: &Path,
     file: &crate::diff::DiffFile,
     template: &str,
-    model: Option<&str>,
+    model: crate::headless::ModelSel<'_>,
 ) -> std::result::Result<(String, usize), String> {
     let Some(section) = crate::diff_split::SplitDiff::parse(&file.patch)
         .files

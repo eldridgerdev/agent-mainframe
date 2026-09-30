@@ -260,6 +260,7 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
             Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
+            Constraint::Length(u16::from(!pick.reasoning_levels.is_empty())),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -307,16 +308,20 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
         );
     }
     let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    if let Some(line) = super::ai_review::reasoning_line(pick, theme) {
+        frame.render_widget(Paragraph::new(line), chunks[3]);
+    }
+    let reasoning_hint = super::ai_review::reasoning_hint(pick);
     let hint = if pick.editing_custom {
-        "  [⏎] use this model   [esc] back to list"
+        "  [⏎] use this model   [esc] back to list".to_string()
     } else if custom_selected {
-        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+        format!("  [j/k] choose  [⏎] type model{reasoning_hint}  [esc] cancel")
     } else {
-        "  [j/k] choose   [⏎] continue   [esc] cancel"
+        format!("  [j/k] choose  [⏎] continue{reasoning_hint}  [esc] cancel")
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
+        chunks[4],
     );
 }
 

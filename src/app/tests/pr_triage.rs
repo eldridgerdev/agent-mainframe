@@ -1057,6 +1057,8 @@ fn ai_review_model_picker_backs_through_custom_editor_and_rebuilds_for_new_harne
             selected: 2,
             custom_input: "claude-custom".to_string(),
             editing_custom: true,
+            reasoning_levels: &[],
+            reasoning: None,
         });
     }
 
@@ -1138,6 +1140,8 @@ fn ai_review_harness_pick_reconfirm_after_backing_out_does_not_reseed_stale_mode
             selected: 0,
             custom_input: String::new(),
             editing_custom: false,
+            reasoning_levels: &[],
+            reasoning: None,
         });
     }
 
@@ -1220,6 +1224,8 @@ fn ai_review_harness_pick_survives_multi_hop_navigation() {
             selected: 1,
             custom_input: String::new(),
             editing_custom: false,
+            reasoning_levels: &[],
+            reasoning: None,
         });
     }
 

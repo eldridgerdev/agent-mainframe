@@ -277,6 +277,7 @@ pub(super) fn run_review_memory_bootstrap(
     memory_scope: MemoryScope,
     entries: Vec<PrListEntry>,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     // The resolved `review_memory.bootstrap` template (built-in or override),
     // rendered here once the PR history is gathered on this worker thread.
     template: String,
@@ -313,7 +314,7 @@ pub(super) fn run_review_memory_bootstrap(
         &AgentKind::Claude,
         &workdir,
         &prompt,
-        model.as_deref(),
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
         false,
     )
     .and_then(|output| {
@@ -350,6 +351,7 @@ pub(super) fn run_review_memory_compact(
     workdir: PathBuf,
     memory_path: PathBuf,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     // The resolved `review_memory.compact` template (built-in or override),
     // rendered here once the doc is read on this worker thread.
     template: String,
@@ -385,7 +387,7 @@ pub(super) fn run_review_memory_compact(
         &AgentKind::Claude,
         &workdir,
         &prompt,
-        model.as_deref(),
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
         false,
     )
     .map(|output| {
@@ -922,6 +924,7 @@ impl App {
         );
 
         let model = self.config.review_model_for(ReviewAction::ReviewMemory);
+        let reasoning = self.config.review_reasoning_for(ReviewAction::ReviewMemory);
         let (template, _) = self.resolve_headless_template(
             crate::prompts::PromptId::ReviewMemoryBootstrap,
             &AgentKind::Claude,
@@ -948,6 +951,7 @@ impl App {
                 scope,
                 entries,
                 model,
+                reasoning,
                 template,
                 tx,
             );
@@ -1181,6 +1185,7 @@ impl App {
         );
 
         let model = self.config.review_model_for(ReviewAction::ReviewMemory);
+        let reasoning = self.config.review_reasoning_for(ReviewAction::ReviewMemory);
         let (template, _) = self.resolve_headless_template(
             crate::prompts::PromptId::ReviewMemoryCompact,
             &AgentKind::Claude,
@@ -1216,7 +1221,14 @@ impl App {
         let thread_workdir = workdir.clone();
         let thread_memory_path = memory_path.clone();
         std::thread::spawn(move || {
-            run_review_memory_compact(thread_workdir, thread_memory_path, model, template, tx);
+            run_review_memory_compact(
+                thread_workdir,
+                thread_memory_path,
+                model,
+                reasoning,
+                template,
+                tx,
+            );
         });
 
         self.review_memory_compact_pending = Some(CompactRunState {

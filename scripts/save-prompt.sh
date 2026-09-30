@@ -11,7 +11,10 @@ if [ "${AMF_ACTIVE:-}" != "1" ]; then
     exit 0
 fi
 
-"${AMF_BIN:-amf}" notify \
+# $AMF_BIN names the amf that started this session. A rebuilt or deleted
+# build leaves it pointing at nothing, so fall back to `amf` on PATH.
+[ -x "${AMF_BIN:-}" ] || AMF_BIN=amf
+"$AMF_BIN" notify \
     --type prompt-submit \
     --require prompt \
     --fallback-write-field prompt latest-prompt.txt >/dev/null 2>&1

@@ -9,6 +9,8 @@ From the phone you can:
 
 - see every feature, and which ones need you (the same list as the desk's `i`
   view)
+- collapse or expand projects on the dashboard; the app remembers your choice
+  on this device, and features needing attention stay visible at the top
 - get a push notification when an agent needs you, and tap it to go straight
   to that agent
 - open any session's terminal, read it (with scrollback), and type into it —
@@ -28,8 +30,8 @@ session.
 
 ### 1. Start the server
 
-On the dashboard press `Ctrl+Space C`. The server starts only when you ask
-for it and stops when you press it again or quit AMF.
+Press `Ctrl+Space C` — on the dashboard or inside any session. The server
+starts only when you ask for it and stops when you press it again or quit AMF.
 
 By default it listens on `127.0.0.1:47800` — this computer only. To reach it
 from a phone, put it behind a tunnel (next step).
@@ -62,7 +64,8 @@ Other tunnels (cloudflared, ngrok) work the same way: point them at
 
 ### 3. Pair your phone
 
-Press `Ctrl+Space Q` to open the pairing dialog and scan the QR code with the
+Press `Ctrl+Space Q` (dashboard or session; it starts the server if it's off)
+to open the pairing dialog and scan the QR code with the
 phone's camera. The page opens with the one-time code filled in; tap **Pair**.
 Codes last five minutes and work once.
 

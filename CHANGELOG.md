@@ -10,18 +10,68 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Collapse projects in AMF Remote's dashboard.** Tap a project heading to
+  hide or show its features. Each heading shows the feature count, and your
+  choices are remembered on this device across refreshes and reloads. Features
+  needing attention stay visible at the top even when their project is collapsed.
+- **Choose a reasoning level alongside the model.** The AI Review (`A`) and
+  Expert plan review model pickers have a new Reasoning row: press `h` / `l`
+  (or ←/→) to step from Default through the levels your harness supports.
+  Claude offers low to max, Codex low to xhigh, and OpenCode minimal, high and
+  max; Pi has no reasoning control yet, so the row is hidden. Default sends
+  nothing, so the harness keeps its own level.
+- **Set a default reasoning level in config.** `review_reasoning` and per-action
+  `review_reasonings` mirror `review_model` / `review_models` and also apply to
+  Final Review passes and review memory. Expert plan review never inherits the
+  shared default.
+- **AI reviews record the level they ran at** in their attribution line
+  (for example `model opus · reasoning high`).
+
 ### Changed
 
 - **`amf automation` help now documents the request JSON.** `-h` / `--help` on
   `create-project`, `create-feature`, and `create-batch-features` lists every
   field with its type, default, and allowed values (agents and modes), plus a
   minimal example, so you no longer need a dry run to discover the schema.
+- **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
+  server on or off) and `leader+Q` (show the pairing QR code) now work from a
+  session view as well as the dashboard, and closing the QR code returns you
+  to the session you were in. Both keys are listed in the dashboard's leader
+  menu.
+- **`leader+Q` starts the server for you.** If the phone server is off, it
+  starts it and shows the QR code as soon as it is ready, instead of asking
+  you to press `leader+C` first.
+- **The phone's feature list is sorted by status.** Within each project,
+  features that need you come first, then active, idle, and stopped ones.
+- **A paused Expert plan review resumes with the config level, not the one you
+  picked.** The model is restored with the draft but the reasoning level is not.
+
+### Removed
+
+- **`leader+C` in a session no longer sends Claude's `/rc`.** That key now
+  belongs to AMF Remote. `leader+c` and `leader+O` still copy and open the
+  claude.ai link.
 
 ### Fixed
 
 - **Automation example and template JSON no longer include `enable_notes`.**
   AMF never read that field. The `create-feature` template now lists
   `plan_mode` and `create_terminal`.
+- **The pairing QR code warns when a phone can't reach it.** Without
+  `remote_public_url` set, the QR pointed at this computer's local address,
+  which a phone can't open. The dialog now says so and names the setting to
+  fix it.
+- **Notifications and attention keep working after you rebuild or reinstall
+  AMF.** Agent sessions started before the rebuild could lose every hook, so
+  nothing reached the attention list or your phone. They now fall back to the
+  `amf` on your `PATH`.
+
+### Migration
+
+- To turn Claude's own Remote Control on or off, type `/rc` in the session
+  instead of pressing `leader+C`.
 
 ## [v0.48.0] - 2026-09-28
 

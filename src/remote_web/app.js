@@ -8,6 +8,7 @@ const CREDENTIAL_KEY = "amf-remote-credential";
 const TERM_MODE_KEY = "amf-remote-term-mode";
 const TERM_WRAP_KEY = "amf-remote-term-wrap";
 const TERM_FONT_KEY = "amf-remote-term-font";
+const COLLAPSED_PROJECTS_KEY = "amf-remote-collapsed-projects";
 const HISTORY_LINES = 2000;
 const POLL_MS = 3000;
 const XTERM_VERSION = "5.5.0";
@@ -277,6 +278,17 @@ async function pair(event) {
 
 // ---- Home ----------------------------------------------------------------
 
+function loadCollapsedProjects() {
+  try {
+    const names = JSON.parse(storageGet(COLLAPSED_PROJECTS_KEY));
+    return new Set(Array.isArray(names) ? names.filter((name) => typeof name === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+const collapsedProjects = loadCollapsedProjects();
+
 function showHome() {
   showView("home");
   refreshPush();
@@ -299,6 +311,15 @@ function featureItem(feature, { showProject, href }) {
     navigate(href ?? `#/f/${encodeURIComponent(feature.feature_id)}`));
   return li;
 }
+
+// Home-list order within a project: anything waiting on you, then what's
+// running, then what isn't. Sort is stable, so ties keep the desk's order.
+const STATUS_RANK = { active: 1, idle: 2, stopped: 3 };
+function statusRank(feature) {
+  return feature.needs_attention ? 0 : (STATUS_RANK[feature.status] ?? 2);
+}
+
+let lastProjectsSignature = null;
 
 function renderHome() {
   const all = features();
@@ -323,15 +344,61 @@ function renderHome() {
     if (!byProject.has(feature.project_name)) byProject.set(feature.project_name, []);
     byProject.get(feature.project_name).push(feature);
   }
+  // Polling rebuilds the rows; keep keyboard focus on the same project.
+  const focusedProject = document.activeElement?.classList.contains("project-toggle")
+    ? document.activeElement.dataset.project : null;
+  // Forget collapse preferences for projects that no longer exist.
+  if (snapshot) {
+    const pruned = [...collapsedProjects].filter((name) => !byProject.has(name));
+    if (pruned.length) {
+      for (const name of pruned) collapsedProjects.delete(name);
+      storageSet(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsedProjects]));
+    }
+  }
+  // Rebuilding every poll drops focus and makes assistive tech re-announce the
+  // controls, so leave the DOM alone when nothing shown has changed. Collapse
+  // state is excluded: clicks already update the DOM and the set directly.
+  const signature = JSON.stringify([...byProject]);
+  if (signature === lastProjectsSignature) {
+    $("status-empty").hidden = all.length > 0;
+    return;
+  }
+  lastProjectsSignature = signature;
+  let focusedToggle = null;
   const groups = [];
+  let groupIndex = 0;
   for (const [name, list] of byProject) {
     if (list.length === 0) continue;
-    groups.push(el("h3", null, name));
+    const group = el("section", "project-group");
+    const heading = el("h3", "project-heading");
+    const toggle = el("button", "project-toggle");
+    toggle.type = "button";
+    toggle.dataset.project = name;
+    const chevron = el("span", "project-chevron", "›");
+    chevron.setAttribute("aria-hidden", "true");
+    const count = el("span", "badge", `${list.length} feature${list.length === 1 ? "" : "s"}`);
+    toggle.append(chevron, el("span", "project-name", name), count);
     const ul = el("ul", "list");
+    ul.id = `project-features-${groupIndex++}`;
+    ul.hidden = collapsedProjects.has(name);
+    toggle.setAttribute("aria-controls", ul.id);
+    toggle.setAttribute("aria-expanded", String(!ul.hidden));
+    toggle.addEventListener("click", () => {
+      ul.hidden = !ul.hidden;
+      toggle.setAttribute("aria-expanded", String(!ul.hidden));
+      if (ul.hidden) collapsedProjects.add(name);
+      else collapsedProjects.delete(name);
+      storageSet(COLLAPSED_PROJECTS_KEY, JSON.stringify([...collapsedProjects]));
+    });
+    if (name === focusedProject) focusedToggle = toggle;
+    list.sort((a, b) => statusRank(a) - statusRank(b));
     ul.append(...list.map((f) => featureItem(f, { showProject: false })));
-    groups.push(ul);
+    heading.append(toggle);
+    group.append(heading, ul);
+    groups.push(group);
   }
   $("projects").replaceChildren(...groups);
+  focusedToggle?.focus({ preventScroll: true });
   $("status-empty").hidden = all.length > 0;
 }
 

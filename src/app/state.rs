@@ -1963,6 +1963,15 @@ pub struct RemotePairingState {
     /// the same dialog, not a new destination — `Esc` from the devices list
     /// returns to `Pairing`, and only `Esc` from `Pairing` closes the dialog.
     pub view: PairingDialogView,
+    /// Set when `url` is an address no phone can open — the server's own
+    /// loopback or wildcard bind, because no `remote_public_url` is
+    /// configured. The dialog says so instead of showing a QR that can
+    /// only fail.
+    pub url_unreachable: bool,
+    /// The session view the dialog was opened over (`Ctrl+Space Q` from a
+    /// session), restored on close — the same shape as the bookmark
+    /// picker's `from_view`.
+    pub from_view: Option<ViewState>,
 }
 
 /// The `RemotePairing` dialog's current sub-screen.
@@ -3140,6 +3149,14 @@ pub struct PlanInterviewState {
     pub critique: Option<String>,
     /// Explicit frontier model chosen for this plan's Expert review.
     pub expert_model: Option<String>,
+    /// Reasoning level picked with `expert_model`. Not persisted with the draft
+    /// (that would need a schema change on the shared `amf.db`), so a resumed
+    /// interview falls back to `review_reasoning_for(PlanPreflight)`.
+    pub expert_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// The picker was confirmed this session, so `expert_reasoning` is
+    /// authoritative even when `None` (an explicit "Default"). False for a
+    /// resumed draft, where the config level applies instead.
+    pub expert_reasoning_picked: bool,
     /// Single-select model picker shown before the Expert pre-call gate.
     pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
@@ -3345,6 +3362,8 @@ impl PlanInterviewState {
             investigation_token_estimate: 0,
             critique: None,
             expert_model: None,
+            expert_reasoning: None,
+            expert_reasoning_picked: false,
             expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
@@ -4132,6 +4151,8 @@ impl PlanInterviewState {
     fn clear_critique(&mut self) {
         self.critique = None;
         self.expert_model = None;
+        self.expert_reasoning = None;
+        self.expert_reasoning_picked = false;
         self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;

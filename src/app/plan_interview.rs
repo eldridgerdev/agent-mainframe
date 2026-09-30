@@ -52,6 +52,9 @@ impl App {
     /// Open the explicit model picker that gates every Expert plan review.
     pub(crate) fn open_plan_expert_model_picker(&mut self) {
         let configured = self.config.review_model_for(ReviewAction::PlanPreflight);
+        let reasoning_default = self
+            .config
+            .review_reasoning_for(ReviewAction::PlanPreflight);
         let (preferred, resolved) = match &self.mode {
             AppMode::PlanInterview(state) => {
                 (state.preferred_harness.clone(), state.ai_harness.clone())
@@ -84,12 +87,19 @@ impl App {
                     (None, Some(configured)) => (rows.len() - 1, configured),
                     (None, None) => (frontier_default.unwrap_or(0), String::new()),
                 };
-                state.expert_model_pick = Some(AiModelPickState {
+                state.expert_model_pick = Some(AiModelPickState::new(
+                    harness
+                        .as_ref()
+                        .expect("rows are only built for a resolved harness"),
                     rows,
                     selected,
                     custom_input,
-                    editing_custom: false,
-                });
+                    if state.expert_reasoning_picked {
+                        state.expert_reasoning
+                    } else {
+                        reasoning_default
+                    },
+                ));
             }
         }
         if harness.is_none() {
@@ -144,6 +154,36 @@ impl App {
         self.message = None;
     }
 
+    /// `←`/`→` (`h`/`l`) in the Expert picker: step the reasoning level.
+    pub(crate) fn plan_expert_reasoning_cycle(&mut self, delta: isize) {
+        if let AppMode::PlanInterview(state) = &mut self.mode
+            && let Some(pick) = &mut state.expert_model_pick
+        {
+            pick.cycle_reasoning(delta);
+        }
+    }
+
+    /// The level an Expert review pass runs at: the picker's choice (even
+    /// "Default"), else, when none was made, the
+    /// `plan_preflight` config entry (a resumed draft has the model but not
+    /// the level — see `PlanInterviewState::expert_reasoning`), dropped when
+    /// the harness cannot express it.
+    fn expert_reasoning_for(&self, harness: &AgentKind) -> Option<crate::headless::ReasoningLevel> {
+        let picked = match &self.mode {
+            AppMode::PlanInterview(state) if state.expert_reasoning_picked => {
+                Some(state.expert_reasoning)
+            }
+            _ => None,
+        };
+        // An explicit pick is authoritative, including "Default" (`None`).
+        picked
+            .unwrap_or_else(|| {
+                self.config
+                    .review_reasoning_for(ReviewAction::PlanPreflight)
+            })
+            .filter(|level| crate::headless::ReasoningLevel::supported_for(harness).contains(level))
+    }
+
     pub(crate) fn confirm_plan_expert_model_picker(&mut self) -> Result<()> {
         let (row, editing_custom) = match &self.mode {
             AppMode::PlanInterview(state) => {
@@ -187,6 +227,11 @@ impl App {
         };
         self.message = None;
         if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.expert_reasoning = state
+                .expert_model_pick
+                .as_ref()
+                .and_then(|pick| pick.reasoning);
+            state.expert_reasoning_picked = true;
             state.expert_model = Some(model);
             state.expert_model_pick = None;
         }
@@ -1383,12 +1428,13 @@ impl App {
             self.message = Some(notice.clone());
         }
         let prompt = guarded.prompt;
+        let reasoning = self.expert_reasoning_for(&harness);
         let token_estimate = estimate_tokens(&prompt);
 
         if !self.precall_gate_with_model(
             crate::app::precall::PrecallAction::PlanCritique,
             &harness,
-            Some(&model),
+            Some(model.as_str()),
             &prompt,
         ) {
             return Ok(());
@@ -1407,9 +1453,12 @@ impl App {
         self.log_info(
             "plan_interview",
             format!(
-                "starting Expert plan review with {} model {} (~{token_estimate} tokens{})",
+                "starting Expert plan review with {} model {}{} (~{token_estimate} tokens{})",
                 harness.display_name(),
                 model,
+                reasoning
+                    .map(|level| format!(" reasoning {}", level.slug()))
+                    .unwrap_or_default(),
                 log_suffix
             ),
         );
@@ -1422,11 +1471,17 @@ impl App {
                     &harness,
                     &workdir,
                     &prompt,
-                    Some(&model),
+                    crate::headless::ModelSel::new(Some(model.as_str()), reasoning),
                     mcp.as_ref(),
                 )
             } else {
-                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
+                HeadlessRunner::run(
+                    &harness,
+                    &workdir,
+                    &prompt,
+                    crate::headless::ModelSel::new(Some(model.as_str()), reasoning),
+                    true,
+                )
             };
             let _ = tx.send(result);
         });
@@ -1523,10 +1578,11 @@ impl App {
             tool_note,
         );
         let token_estimate = estimate_tokens(&prompt);
+        let reasoning = self.expert_reasoning_for(&harness);
         if !self.precall_gate_with_model(
             crate::app::precall::PrecallAction::PlanCritiqueFollowup,
             &harness,
-            Some(&model),
+            Some(model.as_str()),
             &prompt,
         ) {
             return Ok(());
@@ -1544,11 +1600,17 @@ impl App {
                     &harness,
                     &workdir,
                     &prompt,
-                    Some(&model),
+                    crate::headless::ModelSel::new(Some(model.as_str()), reasoning),
                     mcp.as_ref(),
                 )
             } else {
-                HeadlessRunner::run(&harness, &workdir, &prompt, Some(&model), true)
+                HeadlessRunner::run(
+                    &harness,
+                    &workdir,
+                    &prompt,
+                    crate::headless::ModelSel::new(Some(model.as_str()), reasoning),
+                    true,
+                )
             };
             let _ = tx.send(result);
         });

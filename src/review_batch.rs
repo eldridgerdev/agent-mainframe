@@ -156,6 +156,7 @@ pub struct HeadlessBatchRunner {
     harness: AgentKind,
     workdir: PathBuf,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     render_prompt: BatchPromptRenderer,
     render_hunk_prompt: HunkPromptRenderer,
 }
@@ -172,9 +173,16 @@ impl HeadlessBatchRunner {
             harness,
             workdir,
             model,
+            reasoning: None,
             render_prompt,
             render_hunk_prompt,
         }
+    }
+
+    /// Run every slice at this reasoning level (`None`: the harness default).
+    pub fn with_reasoning(mut self, reasoning: Option<crate::headless::ReasoningLevel>) -> Self {
+        self.reasoning = reasoning;
+        self
     }
 
     fn run(&self, prompt: &str) -> Result<String> {
@@ -185,7 +193,7 @@ impl HeadlessBatchRunner {
             &self.harness,
             &self.workdir,
             prompt,
-            self.model.as_deref(),
+            crate::headless::ModelSel::new(self.model.as_deref(), self.reasoning),
             false,
         )
     }
@@ -452,6 +460,7 @@ pub struct HeadlessSynthesisRunner {
     harness: AgentKind,
     workdir: PathBuf,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     render_synthesis: SynthesisPromptRenderer,
     render_summary: SynthesisPromptRenderer,
 }
@@ -468,9 +477,16 @@ impl HeadlessSynthesisRunner {
             harness,
             workdir,
             model,
+            reasoning: None,
             render_synthesis,
             render_summary,
         }
+    }
+
+    /// Run every synthesis pass at this reasoning level (`None`: the harness default).
+    pub fn with_reasoning(mut self, reasoning: Option<crate::headless::ReasoningLevel>) -> Self {
+        self.reasoning = reasoning;
+        self
     }
 
     fn run(&self, prompt: &str) -> Result<String> {
@@ -478,7 +494,7 @@ impl HeadlessSynthesisRunner {
             &self.harness,
             &self.workdir,
             prompt,
-            self.model.as_deref(),
+            crate::headless::ModelSel::new(self.model.as_deref(), self.reasoning),
             true,
         )
     }

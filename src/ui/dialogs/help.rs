@@ -67,11 +67,11 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("Ctrl+Space c", "Config wizard"),
         (
             "Ctrl+Space C",
-            "Toggle Remote Control companion-app server (on-demand)",
+            "Turn the AMF Remote (phone) server on / off — also in a session",
         ),
         (
             "Ctrl+Space Q",
-            "Pair a device with the Remote Control companion app (v: paired devices)",
+            "Pair a phone with AMF Remote; starts the server if needed (v: devices)",
         ),
         ("Ctrl+Space m", "Compact review memory"),
         ("?", "Toggle this help"),

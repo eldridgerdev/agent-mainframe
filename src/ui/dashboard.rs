@@ -32,6 +32,8 @@ const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("M", "Remove bookmark"),
     ("1-9", "Jump to bookmark"),
     ("r", "Refresh statuses"),
+    ("C", "AMF Remote server on / off"),
+    ("Q", "Pair a phone (QR)"),
 ];
 
 /// The ambient `[PR #N · M open]` badge span shown in the top-right corner
@@ -2816,6 +2818,7 @@ mod tests {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -2983,6 +2986,7 @@ mod tests {
                 harness_pick_origin: None,
                 model: None,
                 model_picked: false,
+                reasoning: None,
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,

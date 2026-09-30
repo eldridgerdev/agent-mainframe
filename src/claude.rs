@@ -178,20 +178,27 @@ impl ClaudeLauncher {
     /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
     /// on a cheaper model than whatever the interactive session uses,
     /// independent of the feature's own harness/model.
-    pub fn spawn_headless(
+    pub fn spawn_headless<'a>(
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<crate::headless::ModelSel<'a>>,
     ) -> Result<crate::headless::LeasedChild> {
+        let sel = model.into();
         let binary = Self::resolve_binary();
         let mut args = vec![
             "-p".to_string(),
             "--output-format".to_string(),
             "text".to_string(),
         ];
-        if let Some(model) = model {
+        if let Some(model) = sel.model {
             args.push("--model".to_string());
             args.push(model.to_string());
+        }
+        if let Some(level) = sel.reasoning {
+            args.extend(crate::headless::reasoning_args(
+                &crate::project::AgentKind::Claude,
+                level,
+            ));
         }
         let mut child = Command::new(&binary)
             .args(&args)

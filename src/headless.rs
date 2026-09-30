@@ -412,15 +412,15 @@ impl HeadlessRunner {
     /// carries all the context it needs and expects a plain text answer, not
     /// a repo-exploring agent run. Codex is always sandboxed read-only
     /// already.
-    pub fn run(
+    pub fn run<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
         restricted: bool,
     ) -> Result<String> {
         let spec = command_for(harness, restricted);
-        run_command(harness, &spec, workdir, prompt, model)
+        run_command(harness, &spec, workdir, prompt, model.into())
     }
 
     /// Run a repository-aware pass with tools constrained to read-only access.
@@ -428,23 +428,23 @@ impl HeadlessRunner {
     /// interview work receives all context in its prompt and needs no tools,
     /// while directed plan feedback may explicitly ask the agent to locate or
     /// verify code before revising the draft.
-    pub fn run_read_only(
+    pub fn run_read_only<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
     ) -> Result<String> {
         let spec = read_only_command_for(harness)?;
-        run_command(harness, &spec, workdir, prompt, model)
+        run_command(harness, &spec, workdir, prompt, model.into())
     }
 
     /// Review questions have their own cancellation token and deadline. The
     /// command's capabilities, rather than its prompt, enforce read-only access.
-    pub(crate) fn run_review_question(
+    pub(crate) fn run_review_question<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
         cancelled: &std::sync::atomic::AtomicBool,
         timeout: std::time::Duration,
     ) -> Result<String> {
@@ -453,14 +453,22 @@ impl HeadlessRunner {
             headless_command_is_read_only(harness, &spec),
             "Unsupported read-only harness"
         );
-        run_cancellable_command(harness, &spec, workdir, prompt, model, cancelled, timeout)
+        run_cancellable_command(
+            harness,
+            &spec,
+            workdir,
+            prompt,
+            model.into(),
+            cancelled,
+            timeout,
+        )
     }
 
-    pub(crate) fn run_review_comment_draft(
+    pub(crate) fn run_review_comment_draft<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
         cancelled: &std::sync::atomic::AtomicBool,
         timeout: std::time::Duration,
     ) -> Result<String> {
@@ -474,7 +482,15 @@ impl HeadlessRunner {
             headless_command_is_read_only(harness, &spec),
             "Unsupported restricted drafting harness"
         );
-        run_cancellable_command(harness, &spec, workdir, prompt, model, cancelled, timeout)
+        run_cancellable_command(
+            harness,
+            &spec,
+            workdir,
+            prompt,
+            model.into(),
+            cancelled,
+            timeout,
+        )
     }
 
     /// [`Self::run_read_only`], plus the user's MCP tools when `mcp` is set
@@ -482,11 +498,11 @@ impl HeadlessRunner {
     /// that can still load MCP servers and claude.ai connectors (see
     /// [`claude_mcp_read_only_args`]). Any other harness, or `None`, is plain
     /// `run_read_only`.
-    pub fn run_read_only_with_mcp(
+    pub fn run_read_only_with_mcp<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
         mcp: Option<&HeadlessMcp>,
     ) -> Result<String> {
         let Some(mcp) = mcp.filter(|_| *harness == AgentKind::Claude) else {
@@ -503,7 +519,7 @@ impl HeadlessRunner {
             claude_mcp_args_are_read_only(&extra),
             "MCP headless command is not read-only: {extra:?}"
         );
-        run_command_with_args(harness, &spec, &extra, workdir, prompt, model)
+        run_command_with_args(harness, &spec, &extra, workdir, prompt, model.into())
     }
 
     /// The **strictly read-only** entry the PR-triage "Investigate" flow uses
@@ -522,7 +538,7 @@ impl HeadlessRunner {
             "investigation headless command for {harness:?} is not read-only: {:?}",
             spec.args
         );
-        run_command(harness, &spec, workdir, prompt, None)
+        run_command(harness, &spec, workdir, prompt, ModelSel::default())
     }
 
     /// Run a headless pass while reporting sanitized provider activity.
@@ -531,15 +547,15 @@ impl HeadlessRunner {
     /// are reduced to the same sanitized activity/usage contract here; raw
     /// reasoning, commands, tool arguments, and prompt content never leave
     /// this module.
-    pub fn run_with_progress(
+    pub fn run_with_progress<'a>(
         harness: &AgentKind,
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<ModelSel<'a>>,
         on_progress: impl Fn(HeadlessProgress) + Send + 'static,
     ) -> Result<String> {
         let spec = command_for(harness, false);
-        run_jsonl_command(harness, &spec, workdir, prompt, model, on_progress)
+        run_jsonl_command(harness, &spec, workdir, prompt, model.into(), on_progress)
     }
 
     /// Pick the engine for a plan interview.
@@ -739,6 +755,93 @@ fn select_interview_harness_with(
         .find(|harness| is_available(harness))
 }
 
+/// How hard a headless run should think, as one vocabulary over four
+/// harnesses that each spell it differently. Not every harness accepts every
+/// level: [`ReasoningLevel::supported_for`] is the verified set, and
+/// [`reasoning_args`] drops a level the harness cannot express rather than
+/// passing a value its CLI would reject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningLevel {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
+}
+
+impl ReasoningLevel {
+    /// The levels a harness's headless CLI accepts, weakest first. Verified
+    /// against `claude --help` (`--effort`: low, medium, high, xhigh, max),
+    /// the Codex config key `model_reasoning_effort`, and `opencode run
+    /// --help` (`--variant`: "e.g., high, max, minimal"). Pi has no verified
+    /// flag, so it offers none.
+    pub fn supported_for(harness: &AgentKind) -> &'static [ReasoningLevel] {
+        use ReasoningLevel::*;
+        match harness {
+            AgentKind::Claude => &[Low, Medium, High, XHigh, Max],
+            AgentKind::Codex => &[Low, Medium, High, XHigh],
+            AgentKind::Opencode => &[Minimal, High, Max],
+            AgentKind::Pi => &[],
+        }
+    }
+
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// The model and reasoning level a headless run was asked for. Every entry
+/// point takes `impl Into<ModelSel>`, so a caller with only a model (an
+/// `Option<&str>`) is unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelSel<'a> {
+    pub model: Option<&'a str>,
+    pub reasoning: Option<ReasoningLevel>,
+}
+
+impl<'a> ModelSel<'a> {
+    pub fn new(model: Option<&'a str>, reasoning: Option<ReasoningLevel>) -> Self {
+        Self { model, reasoning }
+    }
+}
+
+impl<'a> From<Option<&'a str>> for ModelSel<'a> {
+    fn from(model: Option<&'a str>) -> Self {
+        Self {
+            model,
+            reasoning: None,
+        }
+    }
+}
+
+/// The CLI args that request `level` from `harness`, or none when the harness
+/// cannot express it.
+pub fn reasoning_args(harness: &AgentKind, level: ReasoningLevel) -> Vec<String> {
+    if !ReasoningLevel::supported_for(harness).contains(&level) {
+        return Vec::new();
+    }
+    let slug = level.slug();
+    match harness {
+        AgentKind::Claude => vec!["--effort".to_string(), slug.to_string()],
+        AgentKind::Codex => vec![
+            "-c".to_string(),
+            format!("model_reasoning_effort=\"{slug}\""),
+        ],
+        AgentKind::Opencode => vec!["--variant".to_string(), slug.to_string()],
+        AgentKind::Pi => Vec::new(),
+    }
+}
+
 /// Harnesses whose headless CLI accepts `--model <name>`.
 fn supports_model_flag(harness: &AgentKind) -> bool {
     match harness {
@@ -749,8 +852,8 @@ fn supports_model_flag(harness: &AgentKind) -> bool {
 /// `spec.args`, then an optional `--model <name>` (only for harnesses where
 /// [`supports_model_flag`] holds), then `spec.trailing` — e.g. Codex's `-`
 /// stdin marker must stay last.
-fn assemble_args(harness: &AgentKind, spec: &HeadlessCommand, model: Option<&str>) -> Vec<String> {
-    assemble_args_with(harness, spec, &[], model)
+fn assemble_args(harness: &AgentKind, spec: &HeadlessCommand, sel: ModelSel<'_>) -> Vec<String> {
+    assemble_args_with(harness, spec, &[], sel)
 }
 
 /// [`assemble_args`] with runtime-built `extra` args (e.g. a user's MCP
@@ -759,15 +862,18 @@ fn assemble_args_with(
     harness: &AgentKind,
     spec: &HeadlessCommand,
     extra: &[String],
-    model: Option<&str>,
+    sel: ModelSel<'_>,
 ) -> Vec<String> {
     let mut args: Vec<String> = spec.args.iter().map(|arg| arg.to_string()).collect();
     args.extend(extra.iter().cloned());
-    if let Some(model) = model
+    if let Some(model) = sel.model
         && supports_model_flag(harness)
     {
         args.push("--model".to_string());
         args.push(model.to_string());
+    }
+    if let Some(level) = sel.reasoning {
+        args.extend(reasoning_args(harness, level));
     }
     args.extend(spec.trailing.iter().map(|arg| arg.to_string()));
     args
@@ -778,9 +884,9 @@ fn run_command(
     spec: &HeadlessCommand,
     workdir: &Path,
     prompt: &str,
-    model: Option<&str>,
+    sel: ModelSel<'_>,
 ) -> Result<String> {
-    run_command_with_args(harness, spec, &[], workdir, prompt, model)
+    run_command_with_args(harness, spec, &[], workdir, prompt, sel)
 }
 
 fn run_cancellable_command(
@@ -788,14 +894,14 @@ fn run_cancellable_command(
     spec: &HeadlessCommand,
     workdir: &Path,
     prompt: &str,
-    model: Option<&str>,
+    sel: ModelSel<'_>,
     cancelled: &std::sync::atomic::AtomicBool,
     timeout: std::time::Duration,
 ) -> Result<String> {
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::Ordering;
     anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
-    let args = assemble_args_with(harness, spec, &[], model);
+    let args = assemble_args_with(harness, spec, &[], sel);
     let child = Command::new(&spec.binary)
         .args(&args)
         .envs(spec.envs.iter().copied())
@@ -917,13 +1023,13 @@ fn run_command_with_args(
     extra: &[String],
     workdir: &Path,
     prompt: &str,
-    model: Option<&str>,
+    sel: ModelSel<'_>,
 ) -> Result<String> {
     // Held for the whole run so the concurrency gate sees headless work.
     // Taken here rather than at each call site: every path out of this
     // function — spawn failure, `?`, cancellation, panic — releases it.
     let _lease = crate::resources::limits::HeadlessLease::acquire();
-    let args = assemble_args_with(harness, spec, extra, model);
+    let args = assemble_args_with(harness, spec, extra, sel);
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
@@ -994,13 +1100,13 @@ fn run_jsonl_command(
     spec: &HeadlessCommand,
     workdir: &Path,
     prompt: &str,
-    model: Option<&str>,
+    sel: ModelSel<'_>,
     on_progress: impl Fn(HeadlessProgress) + Send + 'static,
 ) -> Result<String> {
     // See `run_command`: one lease per in-flight headless run, released on
     // every exit path including cancellation.
     let _lease = crate::resources::limits::HeadlessLease::acquire();
-    let args = assemble_jsonl_args(harness, spec, model);
+    let args = assemble_jsonl_args(harness, spec, sel);
 
     let mut child = Command::new(&spec.binary)
         .args(&args)
@@ -1123,9 +1229,9 @@ fn run_jsonl_command(
 fn assemble_jsonl_args(
     harness: &AgentKind,
     spec: &HeadlessCommand,
-    model: Option<&str>,
+    sel: ModelSel<'_>,
 ) -> Vec<String> {
-    let mut args = assemble_args(harness, spec, model);
+    let mut args = assemble_args(harness, spec, sel);
     match harness {
         AgentKind::Claude => {
             if let Some(format) = args
@@ -1869,7 +1975,7 @@ mod tests {
                 &spec,
                 dir.path(),
                 "find the unchanged helper",
-                None,
+                ModelSel::default(),
                 &std::sync::atomic::AtomicBool::new(false),
                 std::time::Duration::from_secs(5),
             )
@@ -1927,7 +2033,7 @@ mod tests {
             &spec,
             Path::new("/tmp"),
             "question",
-            None,
+            ModelSel::default(),
             &std::sync::atomic::AtomicBool::new(false),
             std::time::Duration::from_millis(50),
         );
@@ -1945,7 +2051,7 @@ mod tests {
             &spec,
             Path::new("/tmp"),
             "question",
-            None,
+            ModelSel::default(),
             &cancelled,
             std::time::Duration::from_secs(5),
         );
@@ -1978,7 +2084,7 @@ mod tests {
                 &spec,
                 Path::new("/tmp"),
                 "question",
-                None,
+                ModelSel::default(),
                 &std::sync::atomic::AtomicBool::new(false),
                 std::time::Duration::from_secs(5),
             )
@@ -2008,7 +2114,7 @@ mod tests {
             &spec,
             std::path::Path::new("/tmp"),
             "prompt",
-            None,
+            ModelSel::default(),
         );
         assert!(result.is_err(), "spawn of a missing binary must fail");
         assert_eq!(wait_for_in_flight(base), base);
@@ -2292,8 +2398,14 @@ mod tests {
             trailing: vec![],
             envs: vec![],
         };
-        let output = run_command(&AgentKind::Codex, &spec, Path::new("/tmp"), "hello", None)
-            .expect("fake headless command should succeed");
+        let output = run_command(
+            &AgentKind::Codex,
+            &spec,
+            Path::new("/tmp"),
+            "hello",
+            ModelSel::default(),
+        )
+        .expect("fake headless command should succeed");
         assert_eq!(output, "received:hello");
     }
 
@@ -2313,7 +2425,7 @@ mod tests {
             &spec,
             Path::new("/tmp"),
             &prompt,
-            None,
+            ModelSel::default(),
         )
         .unwrap_err()
         .to_string();
@@ -2338,7 +2450,7 @@ mod tests {
                 &spec,
                 Path::new("/tmp"),
                 "hello",
-                None,
+                ModelSel::default(),
                 |_| {},
             )
             .unwrap_err();
@@ -2358,10 +2470,74 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_level_maps_to_each_harness_flag() {
+        use ReasoningLevel::*;
+        assert_eq!(
+            reasoning_args(&AgentKind::Claude, XHigh),
+            ["--effort", "xhigh"]
+        );
+        assert_eq!(
+            reasoning_args(&AgentKind::Codex, High),
+            ["-c", "model_reasoning_effort=\"high\""]
+        );
+        assert_eq!(
+            reasoning_args(&AgentKind::Opencode, Max),
+            ["--variant", "max"]
+        );
+    }
+
+    #[test]
+    fn reasoning_level_a_harness_cannot_express_is_dropped() {
+        use ReasoningLevel::*;
+        assert!(reasoning_args(&AgentKind::Codex, Max).is_empty());
+        assert!(reasoning_args(&AgentKind::Claude, Minimal).is_empty());
+        assert!(reasoning_args(&AgentKind::Pi, High).is_empty());
+    }
+
+    #[test]
+    fn assemble_args_keeps_reasoning_before_trailing_stdin_marker() {
+        let spec = command_for(&AgentKind::Codex, false);
+        let args = assemble_args(
+            &AgentKind::Codex,
+            &spec,
+            ModelSel::new(Some("gpt-5.5"), Some(ReasoningLevel::High)),
+        );
+        let tail: Vec<&str> = args
+            .iter()
+            .rev()
+            .take(5)
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                "--model",
+                "gpt-5.5",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+                "-"
+            ]
+        );
+    }
+
+    #[test]
+    fn reasoning_level_serializes_as_its_slug() {
+        for level in ReasoningLevel::supported_for(&AgentKind::Claude) {
+            let json = serde_json::to_string(level).unwrap();
+            assert_eq!(json, format!("\"{}\"", level.slug()));
+            assert_eq!(
+                serde_json::from_str::<ReasoningLevel>(&json).unwrap(),
+                *level
+            );
+        }
+    }
+
+    #[test]
     fn assemble_args_inserts_model_before_trailing_stdin_marker() {
         let spec = command_for(&AgentKind::Codex, false);
         assert_eq!(
-            assemble_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
+            assemble_args(&AgentKind::Codex, &spec, Some("gpt-5.5").into()),
             [
                 "exec",
                 "--sandbox",
@@ -2381,7 +2557,7 @@ mod tests {
     fn codex_json_args_keep_json_and_model_before_stdin_marker() {
         let spec = command_for(&AgentKind::Codex, false);
         assert_eq!(
-            assemble_jsonl_args(&AgentKind::Codex, &spec, Some("gpt-5.5")),
+            assemble_jsonl_args(&AgentKind::Codex, &spec, Some("gpt-5.5").into()),
             [
                 "exec",
                 "--sandbox",
@@ -2404,7 +2580,7 @@ mod tests {
             assemble_jsonl_args(
                 &AgentKind::Claude,
                 &command_for(&AgentKind::Claude, false),
-                Some("sonnet")
+                Some("sonnet").into()
             ),
             [
                 "-p",
@@ -2419,12 +2595,16 @@ mod tests {
             assemble_jsonl_args(
                 &AgentKind::Opencode,
                 &command_for(&AgentKind::Opencode, false),
-                None
+                ModelSel::default()
             ),
             ["run", "--format", "json"]
         );
         assert_eq!(
-            assemble_jsonl_args(&AgentKind::Pi, &command_for(&AgentKind::Pi, false), None),
+            assemble_jsonl_args(
+                &AgentKind::Pi,
+                &command_for(&AgentKind::Pi, false),
+                ModelSel::default()
+            ),
             ["-p", "--no-session", "--mode", "json"]
         );
     }
@@ -2433,7 +2613,7 @@ mod tests {
     fn assemble_args_applies_model_flag_for_pi() {
         let spec = command_for(&AgentKind::Pi, false);
         assert_eq!(
-            assemble_args(&AgentKind::Pi, &spec, Some("some-model")),
+            assemble_args(&AgentKind::Pi, &spec, Some("some-model").into()),
             ["-p", "--no-session", "--model", "some-model"]
         );
     }
@@ -2442,7 +2622,7 @@ mod tests {
     fn assemble_args_is_unchanged_when_no_model_requested() {
         let spec = command_for(&AgentKind::Claude, false);
         assert_eq!(
-            assemble_args(&AgentKind::Claude, &spec, None),
+            assemble_args(&AgentKind::Claude, &spec, ModelSel::default()),
             ["-p", "--output-format", "text"]
         );
     }
@@ -2530,7 +2710,7 @@ mod tests {
     #[test]
     fn codex_required_flags_cover_everything_the_headless_command_passes() {
         let spec = command_for(&AgentKind::Codex, false);
-        let args = assemble_jsonl_args(&AgentKind::Codex, &spec, None);
+        let args = assemble_jsonl_args(&AgentKind::Codex, &spec, ModelSel::default());
         for flag in CODEX_EXEC_REQUIRED_FLAGS {
             assert!(
                 args.iter().any(|arg| arg == flag),
@@ -3105,7 +3285,7 @@ mod tests {
                 &AgentKind::Codex,
                 &spec,
                 &["--extra".to_string()],
-                Some("m")
+                Some("m").into()
             ),
             ["exec", "--extra", "--model", "m", "-"]
         );

@@ -304,7 +304,14 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
     let model = app
         .config
         .review_model_for(crate::app::ReviewAction::DiffExplain);
-    match ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+    let reasoning = app
+        .config
+        .review_reasoning_for(crate::app::ReviewAction::DiffExplain);
+    match ClaudeLauncher::spawn_headless(
+        &workdir,
+        &prompt,
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
+    ) {
         Ok(child) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
                 state.explanation = None;

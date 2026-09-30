@@ -396,6 +396,9 @@ pub struct AiReviewState {
     /// Whether the model has been picked (or auto-skipped, e.g. for Pi) yet
     /// this pane visit.
     pub model_picked: bool,
+    /// Reasoning level chosen alongside `model`; `None` is the harness default.
+    /// Meaningful only once `model_picked`, like `model`.
+    pub reasoning: Option<crate::headless::ReasoningLevel>,
     /// Single-select picker shown once per pane, right after the harness.
     pub model_pick: Option<AiModelPickState>,
     /// When `Some`, the selected finding's body is open for editing (`e`).
@@ -874,6 +877,49 @@ pub struct AiModelPickState {
     /// True while keystrokes go to `custom_input` (opened by `⏎`/`e` on the
     /// `Custom` row); false in the plain list-navigation view.
     pub editing_custom: bool,
+    /// Levels the harness under choice accepts (`ReasoningLevel::supported_for`);
+    /// empty when it has none, which hides the reasoning row.
+    pub reasoning_levels: &'static [crate::headless::ReasoningLevel],
+    /// Highlighted level; `None` is "Default" — pass nothing.
+    pub reasoning: Option<crate::headless::ReasoningLevel>,
+}
+
+impl AiModelPickState {
+    /// A picker for `harness`. `reasoning` seeds the level row (e.g. from
+    /// `AppConfig::review_reasoning`) and is discarded if the harness cannot
+    /// express it.
+    pub fn new(
+        harness: &AgentKind,
+        rows: Vec<ModelPickRow>,
+        selected: usize,
+        custom_input: String,
+        reasoning: Option<crate::headless::ReasoningLevel>,
+    ) -> Self {
+        let reasoning_levels = crate::headless::ReasoningLevel::supported_for(harness);
+        Self {
+            rows,
+            selected,
+            custom_input,
+            editing_custom: false,
+            reasoning_levels,
+            reasoning: reasoning.filter(|level| reasoning_levels.contains(level)),
+        }
+    }
+
+    /// Step the level row through `Default` then each supported level,
+    /// wrapping. A no-op when the harness has no levels.
+    pub fn cycle_reasoning(&mut self, delta: isize) {
+        if self.reasoning_levels.is_empty() {
+            return;
+        }
+        let slots = self.reasoning_levels.len() as isize + 1;
+        let current = self
+            .reasoning
+            .and_then(|level| self.reasoning_levels.iter().position(|l| *l == level))
+            .map_or(0, |index| index as isize + 1);
+        let next = (current + delta).rem_euclid(slots);
+        self.reasoning = (next > 0).then(|| self.reasoning_levels[next as usize - 1]);
+    }
 }
 
 /// Single-select picker shown by `R` before the reply dialog itself: choose

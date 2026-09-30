@@ -473,7 +473,10 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.copy_remote_control_url()?;
         }
         KeyCode::Char('C') => {
-            app.toggle_remote_control_in_view()?;
+            app.toggle_remote_server();
+        }
+        KeyCode::Char('Q') => {
+            app.start_pairing();
         }
         KeyCode::Char('O') => {
             app.open_remote_control_url()?;
@@ -1147,22 +1150,62 @@ mod tests {
         }
     }
 
+    /// Drain server events until `done` holds or two seconds pass.
+    fn poll_remote_server_until(app: &mut App, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !done(app) && std::time::Instant::now() < deadline {
+            app.poll_remote_server_bg();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
-    fn leader_toggle_remote_control_blocked_by_zai_does_not_send() {
+    fn leader_c_in_a_session_toggles_amfs_server_not_claudes_rc() {
         let repo = TempDir::new().unwrap();
+        // No send expectations on the mock: typing `/rc` into the pane
+        // would panic the test.
         let mut app = app_for_viewing_repo(repo.path());
-        // z.ai sessions can't use Remote Control; the toggle must short
-        // circuit before sending anything to tmux. The MockTmuxOps has no
-        // send expectations, so any tmux send here would panic the test.
-        app.config.zai = Some(crate::app::ZaiPlanConfig {
-            plan: "coding".to_string(),
-            ..Default::default()
-        });
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('C')), 20).unwrap();
 
+        assert!(app.remote_server.is_some());
         assert!(matches!(&app.mode, AppMode::Viewing(_)));
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('C')), 20).unwrap();
+        poll_remote_server_until(&mut app, |app| app.remote_server.is_none());
+        assert!(app.remote_server.is_none());
+    }
+
+    #[test]
+    fn leader_q_in_a_session_pairs_and_returns_to_the_session() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('Q')), 20).unwrap();
+        poll_remote_server_until(&mut app, |app| {
+            matches!(app.mode, AppMode::RemotePairing(_))
+        });
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("expected the pairing dialog once the server was listening");
+        };
+        assert_eq!(
+            state.from_view.as_ref().map(|view| view.session.as_str()),
+            Some("amf-feature")
+        );
+
+        app.regenerate_pairing_code();
+        app.cancel_pairing();
+        match &app.mode {
+            AppMode::Viewing(view) => assert_eq!(view.session, "amf-feature"),
+            _ => panic!("closing the dialog should return to the session"),
+        }
+
+        app.toggle_remote_server();
+        poll_remote_server_until(&mut app, |app| app.remote_server.is_none());
     }
 
     #[test]

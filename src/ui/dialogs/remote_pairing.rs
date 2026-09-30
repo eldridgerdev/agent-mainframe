@@ -120,6 +120,23 @@ pub fn draw_remote_pairing_dialog(
         ))
         .alignment(Alignment::Center),
     );
+    if state.url_unreachable {
+        let warning = Style::default().fg(theme.warning.to_color());
+        lines.push(
+            Line::from(Span::styled(
+                "⚠ A phone can't open this address (only over USB with adb reverse).",
+                warning,
+            ))
+            .alignment(Alignment::Center),
+        );
+        lines.push(
+            Line::from(Span::styled(
+                "Set remote_public_url in config.json to your tunnel's HTTPS URL.",
+                warning,
+            ))
+            .alignment(Alignment::Center),
+        );
+    }
     lines.push(Line::from(""));
 
     let already_paired = matches!(state.status, PairingDialogStatus::Paired { .. });

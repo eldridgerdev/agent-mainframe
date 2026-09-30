@@ -68,6 +68,10 @@ pub struct AiReviewAttribution {
     /// Model the run used; `None` means the harness's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Reasoning level requested for the run; `None` means the harness's own
+    /// default, or a level it could not express.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<crate::headless::ReasoningLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +102,7 @@ impl AiReviewAttribution {
     pub fn from_run(
         harness: &AgentKind,
         model: Option<&str>,
+        reasoning: Option<crate::headless::ReasoningLevel>,
         usage: Option<&crate::headless::HeadlessUsage>,
         pricing: &crate::token_tracking::TokenPricingConfig,
         elapsed: std::time::Duration,
@@ -133,6 +138,9 @@ impl AiReviewAttribution {
         Self {
             harness: Some(harness.display_name().to_string()),
             model: model.map(str::to_string),
+            reasoning: reasoning.filter(|level| {
+                crate::headless::ReasoningLevel::supported_for(harness).contains(level)
+            }),
             input_tokens: usage.and_then(|usage| usage.input_tokens),
             output_tokens: usage.and_then(|usage| usage.output_tokens),
             cached_tokens: usage.and_then(|usage| usage.cached_tokens),
@@ -166,6 +174,9 @@ impl AiReviewAttribution {
             ),
             format!("model {}", self.model_label()),
         ];
+        if let Some(reasoning) = &self.reasoning {
+            parts.push(format!("reasoning {}", reasoning.slug()));
+        }
         if let (Some(input), Some(output)) = (self.input_tokens, self.output_tokens) {
             parts.push(format!(
                 "~{} in / ~{} out",
@@ -414,6 +425,9 @@ impl AiReviewFixCostKey {
 /// over the PR diff. `Reviewing` fires once with a token estimate right
 /// before the paid call; structured harness activity and usage may follow;
 /// `Done` fires exactly once at the end.
+// One short-lived message per run: `Done` carries the whole outcome, so the size
+// gap between variants is by design and boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum AiReviewProgress {
     Reviewing {
         token_estimate: usize,
@@ -1006,6 +1020,21 @@ fn merge_codex_preset_rows(pick: &mut AiModelPickState, models: Vec<String>) {
     }
 }
 
+/// Same rule as [`model_for_ai_review_run`], for the reasoning level: once the
+/// picker has run its choice is authoritative (`None` = "Default"), before that
+/// the configured level applies.
+fn reasoning_for_ai_review_run(
+    picked: Option<crate::headless::ReasoningLevel>,
+    model_picked: bool,
+    configured: Option<crate::headless::ReasoningLevel>,
+) -> Option<crate::headless::ReasoningLevel> {
+    if model_picked {
+        picked
+    } else {
+        picked.or(configured)
+    }
+}
+
 fn model_for_ai_review_run(
     picked: Option<&str>,
     model_picked: bool,
@@ -1155,6 +1184,7 @@ fn run_batched_ai_pr_review(
     memory: &str,
     skill: Option<&str>,
     model: Option<&str>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     templates: &BatchReviewTemplates,
     tx: &std::sync::mpsc::Sender<AiReviewProgress>,
 ) -> Option<Result<AiReviewOutcome>> {
@@ -1178,7 +1208,8 @@ fn run_batched_ai_pr_review(
                 &hunk_slice_context(slice, file_path, hunk_label),
             )
         }),
-    );
+    )
+    .with_reasoning(reasoning);
 
     let synth_tpl = templates.synthesis.clone();
     let summary_tpl = templates.summary.clone();
@@ -1195,7 +1226,8 @@ fn run_batched_ai_pr_review(
                 &findings_summary_context(label, findings),
             )
         }),
-    );
+    )
+    .with_reasoning(reasoning);
 
     let progress_tx = tx.clone();
     let mut on_progress = move |progress: crate::review_batch::BatchProgress| {
@@ -1284,6 +1316,7 @@ fn run_ai_pr_review(
     memory: String,
     skill: Option<String>,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     pricing: crate::token_tracking::TokenPricingConfig,
     // The `pr_review.ai_review` template, resolved on the UI thread (built-in
     // default or a feature/project/global override). The diff is only fetched
@@ -1322,6 +1355,7 @@ fn run_ai_pr_review(
             &memory,
             skill.as_deref(),
             model.as_deref(),
+            reasoning,
             &batch_templates,
             &tx,
         )
@@ -1330,6 +1364,7 @@ fn run_ai_pr_review(
             outcome.attribution = AiReviewAttribution::from_run(
                 &harness,
                 model.as_deref(),
+                reasoning,
                 None,
                 &pricing,
                 started_at.elapsed(),
@@ -1347,7 +1382,7 @@ fn run_ai_pr_review(
         &harness,
         &workdir,
         &prompt,
-        model.as_deref(),
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
         move |progress| {
             let progress = match progress {
                 crate::headless::HeadlessProgress::Activity(message) => {
@@ -1372,6 +1407,7 @@ fn run_ai_pr_review(
         outcome.attribution = AiReviewAttribution::from_run(
             &harness,
             model.as_deref(),
+            reasoning,
             usage.as_ref(),
             &pricing,
             started_at.elapsed(),
@@ -1395,6 +1431,7 @@ fn run_ai_pr_review(
                 &memory,
                 skill.as_deref(),
                 model.as_deref(),
+                reasoning,
                 &batch_templates,
                 &tx,
             ) {
@@ -1402,6 +1439,7 @@ fn run_ai_pr_review(
                     outcome.attribution = AiReviewAttribution::from_run(
                         &harness,
                         model.as_deref(),
+                        reasoning,
                         None,
                         &pricing,
                         started_at.elapsed(),
@@ -1509,6 +1547,7 @@ impl App {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -2078,12 +2117,13 @@ impl App {
                 (None, None) => (0, String::new()),
             };
             if let AppMode::AiReview(state) = &mut self.mode {
-                state.model_pick = Some(AiModelPickState {
+                state.model_pick = Some(AiModelPickState::new(
+                    &harness,
                     rows,
                     selected,
                     custom_input,
-                    editing_custom: false,
-                });
+                    self.config.review_reasoning_for(ReviewAction::PrReview),
+                ));
             }
             return;
         }
@@ -2121,14 +2161,23 @@ impl App {
                 .review_model_for(ReviewAction::PrReview)
                 .as_deref(),
         );
+        let reasoning = reasoning_for_ai_review_run(
+            origin.reasoning,
+            origin.model_picked,
+            self.config.review_reasoning_for(ReviewAction::PrReview),
+        )
+        .filter(|level| crate::headless::ReasoningLevel::supported_for(&harness).contains(level));
         self.log_info(
             "pr_review",
             format!(
-                "starting AI review of PR #{number} with {}{}",
+                "starting AI review of PR #{number} with {}{}{}",
                 harness.display_name(),
                 model
                     .as_deref()
                     .map(|m| format!(" (model: {m})"))
+                    .unwrap_or_default(),
+                reasoning
+                    .map(|level| format!(" (reasoning: {})", level.slug()))
                     .unwrap_or_default()
             ),
         );
@@ -2210,6 +2259,7 @@ impl App {
                 memory,
                 skill,
                 model,
+                reasoning,
                 pricing,
                 template,
                 batch_templates,
@@ -2286,6 +2336,7 @@ impl App {
             state.harness = Some(chosen.clone());
             state.harness_pick = None;
             state.model = None;
+            state.reasoning = None;
             state.model_picked = false;
             state.model_pick = None;
         }
@@ -2295,12 +2346,13 @@ impl App {
         ));
         if harness_changed {
             if let AppMode::AiReview(state) = &mut self.mode {
-                state.model_pick = Some(AiModelPickState {
-                    rows: model_pick_rows(&chosen, true),
-                    selected: 0,
-                    custom_input: String::new(),
-                    editing_custom: false,
-                });
+                state.model_pick = Some(AiModelPickState::new(
+                    &chosen,
+                    model_pick_rows(&chosen, true),
+                    0,
+                    String::new(),
+                    None,
+                ));
             }
             return;
         }
@@ -2355,6 +2407,16 @@ impl App {
     /// `esc`: while typing a custom model, back out to the row list without
     /// losing what's typed so far; from the row list, return to the harness
     /// picker with the current harness highlighted.
+    /// `←`/`→` (`h`/`l`): step the reasoning level. Independent of the model
+    /// row, so the pair is chosen on one screen.
+    pub fn ai_review_reasoning_pick_cycle(&mut self, delta: isize) {
+        if let AppMode::AiReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.model_pick
+        {
+            pick.cycle_reasoning(delta);
+        }
+    }
+
     pub fn ai_review_model_pick_cancel(&mut self) {
         let (workdir, current_harness) = match &mut self.mode {
             AppMode::AiReview(state) => {
@@ -2446,6 +2508,10 @@ impl App {
             return;
         };
         let editing_custom = matches!(&self.mode, AppMode::AiReview(state) if state.model_pick.as_ref().is_some_and(|p| p.editing_custom));
+        let chosen_reasoning = match &self.mode {
+            AppMode::AiReview(state) => state.model_pick.as_ref().and_then(|p| p.reasoning),
+            _ => None,
+        };
 
         let chosen: Option<String> = match row {
             ModelPickRow::Default => None,
@@ -2473,12 +2539,17 @@ impl App {
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.model = chosen.clone();
+            state.reasoning = chosen_reasoning;
             state.model_picked = true;
             state.model_pick = None;
         }
-        self.push_toast_success(match &chosen {
+        let model_note = match &chosen {
             Some(model) => format!("AI reviews will use model: {model}"),
             None => "AI reviews will use the harness's default model".to_string(),
+        };
+        self.push_toast_success(match chosen_reasoning {
+            Some(level) => format!("{model_note} · reasoning: {}", level.slug()),
+            None => model_note,
         });
         self.begin_ai_pr_review();
     }
@@ -3629,6 +3700,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let attribution = AiReviewAttribution::from_run(
             &AgentKind::Claude,
             Some("sonnet"),
+            None,
             Some(&usage),
             &crate::token_tracking::TokenPricingConfig::default(),
             std::time::Duration::from_secs(3),
@@ -3646,6 +3718,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         };
         let attribution = AiReviewAttribution::from_run(
             &AgentKind::Opencode,
+            None,
             None,
             Some(&usage),
             &crate::token_tracking::TokenPricingConfig::default(),
@@ -3776,6 +3849,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let cost_with_cache = AiReviewAttribution::from_run(
             &AgentKind::Codex,
             None,
+            None,
             Some(&with_cache),
             &pricing,
             std::time::Duration::ZERO,
@@ -3783,6 +3857,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         .estimated_cost;
         let cost_without_cache = AiReviewAttribution::from_run(
             &AgentKind::Codex,
+            None,
             None,
             Some(&without_cache),
             &pricing,

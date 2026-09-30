@@ -7,6 +7,5 @@
   "mode": "vibe",
   "review": true,
   "enable_chrome": false,
-  "enable_notes": true,
   "dry_run": false
 }

@@ -31,6 +31,10 @@ are tagged.
 
 ### Changed
 
+- **`amf automation` help now documents the request JSON.** `-h` / `--help` on
+  `create-project`, `create-feature`, and `create-batch-features` lists every
+  field with its type, default, and allowed values (agents and modes), plus a
+  minimal example, so you no longer need a dry run to discover the schema.
 - **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
   server on or off) and `leader+Q` (show the pairing QR code) now work from a
   session view as well as the dashboard, and closing the QR code returns you
@@ -52,6 +56,9 @@ are tagged.
 
 ### Fixed
 
+- **Automation example and template JSON no longer include `enable_notes`.**
+  AMF never read that field. The `create-feature` template now lists
+  `plan_mode` and `create_terminal`.
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
   which a phone can't open. The dialog now says so and names the setting to

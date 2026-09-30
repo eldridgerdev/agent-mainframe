@@ -4,9 +4,10 @@
   "agent": "codex",
   "mode": "vibe",
   "review": false,
+  "plan_mode": false,
+  "create_terminal": false,
   "use_worktree": true,
   "enable_chrome": false,
-  "enable_notes": true,
   "hook_choice": null,
   "dry_run": false
 }

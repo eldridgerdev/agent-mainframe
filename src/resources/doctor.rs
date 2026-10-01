@@ -17,6 +17,7 @@ use crate::project::{ProjectStatus, ProjectStore};
 use crate::resources::limits::{ActiveHarness, LiveHarnesses, active_harness_sessions};
 use crate::resources::mem::MemorySnapshot;
 use crate::resources::procs;
+use crate::tailscale::{self, TailscaleCli, TailscaleStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -136,6 +137,10 @@ pub struct Inputs<'a> {
     pub editors: &'a [LaunchedEditor],
     /// Liveness probe, injectable so tests need no real processes.
     pub pid_alive: &'a dyn Fn(i64) -> bool,
+    /// What the local Tailscale reported, for the AMF Remote check.
+    pub tailscale: &'a TailscaleStatus,
+    /// Phones paired with AMF Remote and not revoked.
+    pub paired_devices: usize,
 }
 
 /// Run every check.
@@ -150,6 +155,7 @@ pub fn diagnose(inputs: &Inputs<'_>) -> Report {
     findings.push(check_orphan_worktrees(inputs));
     findings.push(check_stale_editors(inputs));
     findings.push(check_legacy_project_config(inputs));
+    findings.push(check_remote_access(inputs));
     Report { findings }
 }
 
@@ -510,6 +516,158 @@ fn check_legacy_project_config(inputs: &Inputs<'_>) -> Finding {
     .with_advice(advice)
 }
 
+/// Can a phone reach AMF Remote over HTTPS? Mirrors the pairing dialog's
+/// setup steps (`app/remote_tailscale.rs`), one finding with the next step
+/// as advice. AMF Remote is optional, so an unfinished setup is only a
+/// notice, and someone who hasn't paired a phone and has no Tailscale is
+/// told nothing is set up. The one warning is a setup that looks finished
+/// but can't work: AMF is served, yet no other device can reach it.
+fn check_remote_access(inputs: &Inputs<'_>) -> Finding {
+    const ID: &str = "remote-access";
+    let config = inputs.config;
+    let port = tailscale::bind_port(&config.remote_bind);
+    let cli = TailscaleCli::new(
+        config.remote_tailscale_cli.as_deref(),
+        config.remote_tailscale_socket.as_deref(),
+    );
+    let serve_cmd = cli.display_command(&format!("serve --bg {port}"));
+    let serve_url = inputs.tailscale.serve_url();
+    let untagged =
+        matches!(inputs.tailscale, TailscaleStatus::Running(node) if !node.tagged_for_amf);
+    let lock_down = format!(
+        "limit it to your own devices: tag this computer {} and add the policy in docs/remote-control.md",
+        tailscale::ACCESS_TAG
+    );
+
+    if let Some(url) = config
+        .remote_public_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        if !url.starts_with("https://") {
+            return Finding::new(
+                ID,
+                Severity::Notice,
+                format!("AMF Remote pairs phones at {url}, which isn't HTTPS"),
+            )
+            .with_advice(
+                "phones can pair but can't install AMF Remote or get notifications without HTTPS",
+            );
+        }
+        if let Some(serve_url) =
+            serve_url.filter(|serve| serve.trim_end_matches('/') != url.trim_end_matches('/'))
+        {
+            return Finding::new(
+                ID,
+                Severity::Notice,
+                format!(
+                    "remote_public_url ({url}) differs from what Tailscale serves ({serve_url})"
+                ),
+            )
+            .with_advice(
+                "remove remote_public_url to use Tailscale's address automatically, or correct it",
+            );
+        }
+        if let TailscaleStatus::Running(node) = inputs.tailscale
+            && node.isolated()
+            && serve_url.is_some()
+        {
+            return isolated_finding(url);
+        }
+        let finding = Finding::new(
+            ID,
+            Severity::Ok,
+            format!("AMF Remote pairs phones at {url}"),
+        );
+        return if untagged {
+            finding.with_advice(lock_down)
+        } else {
+            finding
+        };
+    }
+
+    match inputs.tailscale {
+        TailscaleStatus::Running(node) if node.serve_url.is_some() && node.isolated() => {
+            isolated_finding(node.serve_url.as_deref().unwrap_or_default())
+        }
+        TailscaleStatus::Running(node) => match (&node.serve_url, node.https_enabled) {
+            (Some(url), _) => {
+                let finding =
+                    Finding::new(ID, Severity::Ok, format!("AMF Remote reachable over Tailscale at {url}"));
+                if untagged { finding.with_advice(lock_down) } else { finding }
+            }
+            (None, false) => Finding::new(
+                ID,
+                Severity::Notice,
+                "Tailscale is running, but HTTPS certificates are off for your tailnet",
+            )
+            .with_advice(format!(
+                "enable MagicDNS and HTTPS Certificates at {}, then: {serve_cmd}",
+                tailscale::ADMIN_DNS_URL
+            )),
+            (None, true) => Finding::new(
+                ID,
+                Severity::Notice,
+                format!("Tailscale is running, but isn't serving AMF Remote's port {port}"),
+            )
+            .with_advice(format!(
+                "{serve_cmd} — or press t in the pairing dialog (Ctrl+Space Q)"
+            )),
+        },
+        TailscaleStatus::NeedsLogin => Finding::new(
+            ID,
+            Severity::Notice,
+            "Tailscale is installed but not signed in",
+        )
+        .with_advice(cli.display_command("up")),
+        TailscaleStatus::Stopped => Finding::new(ID, Severity::Notice, "Tailscale is switched off")
+            .with_advice(cli.display_command("up")),
+        TailscaleStatus::Unavailable(why) => Finding::new(
+            ID,
+            Severity::Notice,
+            "Tailscale is installed but didn't answer",
+        )
+        .with_detail(vec![why.clone()])
+        .with_advice(
+            "start Tailscale (its app, or the tailscaled service); if tailscaled uses its \
+             own --socket, set remote_tailscale_socket to it",
+        ),
+        TailscaleStatus::NotInstalled if inputs.paired_devices == 0 => Finding::new(
+            ID,
+            Severity::Ok,
+            "AMF Remote (phone access) isn't set up — optional",
+        ),
+        TailscaleStatus::NotInstalled => Finding::new(
+            ID,
+            Severity::Notice,
+            format!(
+                "{} phone(s) paired, but no HTTPS address: the pairing QR points at this machine only",
+                inputs.paired_devices
+            ),
+        )
+        .with_advice(format!(
+            "install Tailscale ({}) or set remote_public_url; see docs/remote-control.md",
+            tailscale::DOWNLOAD_URL
+        )),
+    }
+}
+
+/// Served, but Tailscale shows no other device that may reach this computer:
+/// no phone is signed in, or the access policy shuts them all out.
+fn isolated_finding(url: &str) -> Finding {
+    Finding::new(
+        "remote-access",
+        Severity::Warn,
+        format!("AMF Remote is served at {url}, but no other device on your tailnet can reach this computer"),
+    )
+    .with_advice(format!(
+        "sign in on your phone with the same Tailscale account (log out and back in if it already says connected); \
+         if you limited access, the policy needs a grant from your devices to {}:443",
+        tailscale::ACCESS_TAG
+    ))
+}
+
 pub fn detect_wsl() -> bool {
     std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|release| {
@@ -624,6 +782,8 @@ mod tests {
         editors: Vec<LaunchedEditor>,
         memory: Option<MemorySnapshot>,
         is_wsl: bool,
+        tailscale: TailscaleStatus,
+        paired_devices: usize,
     }
 
     impl Fixture {
@@ -637,6 +797,8 @@ mod tests {
                 editors: Vec::new(),
                 memory: Some(snapshot(8000, 2048, 2048)),
                 is_wsl: false,
+                tailscale: TailscaleStatus::NotInstalled,
+                paired_devices: 0,
             }
         }
 
@@ -651,6 +813,8 @@ mod tests {
                 worktrees: &self.worktrees,
                 editors: &self.editors,
                 pid_alive: alive,
+                tailscale: &self.tailscale,
+                paired_devices: self.paired_devices,
             })
         }
     }
@@ -887,6 +1051,116 @@ mod tests {
         let report = fixture.run(&|_| true);
         assert_eq!(finding(&report, "editors").severity, Severity::Warn);
         assert_eq!(finding(&report, "editors-open").severity, Severity::Ok);
+    }
+
+    fn tailnet(https: bool, serve: Option<&str>, tagged: bool) -> TailscaleStatus {
+        TailscaleStatus::Running(crate::tailscale::TailnetNode {
+            dns_name: "pc.tail1.ts.net".into(),
+            https_enabled: https,
+            tagged_for_amf: tagged,
+            serve_url: serve.map(str::to_string),
+            peers: 1,
+        })
+    }
+
+    #[test]
+    fn remote_access_is_quiet_when_nobody_uses_it() {
+        let report = Fixture::new().run(&|_| false);
+        assert_eq!(finding(&report, "remote-access").severity, Severity::Ok);
+    }
+
+    #[test]
+    fn remote_access_names_the_next_tailscale_step() {
+        let mut fixture = Fixture::new();
+        fixture.tailscale = tailnet(false, None, false);
+        let off = finding(&fixture.run(&|_| false), "remote-access").clone();
+        assert_eq!(off.severity, Severity::Notice);
+        assert!(off.advice.unwrap().contains("HTTPS Certificates"));
+
+        fixture.tailscale = tailnet(true, None, false);
+        let unserved = finding(&fixture.run(&|_| false), "remote-access").clone();
+        assert!(
+            unserved
+                .advice
+                .unwrap()
+                .contains("tailscale serve --bg 47800")
+        );
+
+        fixture.tailscale = tailnet(true, Some("https://pc.tail1.ts.net"), false);
+        let served = finding(&fixture.run(&|_| false), "remote-access").clone();
+        assert_eq!(served.severity, Severity::Ok);
+        assert!(served.summary.contains("https://pc.tail1.ts.net"));
+        assert!(served.advice.unwrap().contains("tag:amf"));
+
+        fixture.tailscale = tailnet(true, Some("https://pc.tail1.ts.net"), true);
+        let locked = finding(&fixture.run(&|_| false), "remote-access").clone();
+        assert_eq!(locked.advice, None);
+    }
+
+    #[test]
+    fn remote_access_warns_when_no_device_can_reach_this_computer() {
+        let mut fixture = Fixture::new();
+        let mut isolated = tailnet(true, Some("https://pc.tail1.ts.net"), true);
+        if let TailscaleStatus::Running(node) = &mut isolated {
+            node.peers = 0;
+        }
+        fixture.tailscale = isolated;
+        let report = fixture.run(&|_| false);
+        let remote = finding(&report, "remote-access");
+        assert_eq!(remote.severity, Severity::Warn);
+        assert!(remote.summary.contains("no other device"));
+
+        fixture.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        let report = fixture.run(&|_| false);
+        assert_eq!(
+            finding(&report, "remote-access").severity,
+            Severity::Warn,
+            "a configured URL pointing at the same tailnet address is just as unreachable"
+        );
+    }
+
+    #[test]
+    fn remote_access_flags_a_public_url_tailscale_disagrees_with() {
+        let mut fixture = Fixture::new();
+        fixture.config.remote_public_url = Some("https://old.tail1.ts.net".into());
+        fixture.tailscale = tailnet(true, Some("https://pc.tail1.ts.net"), false);
+        let report = fixture.run(&|_| false);
+        let remote = finding(&report, "remote-access");
+        assert_eq!(remote.severity, Severity::Notice);
+        assert!(remote.summary.contains("differs"));
+
+        fixture.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        let report = fixture.run(&|_| false);
+        let agreed = finding(&report, "remote-access");
+        assert_eq!(agreed.severity, Severity::Ok);
+        assert!(
+            agreed.advice.as_deref().unwrap().contains("tag:amf"),
+            "a configured URL still gets the lock-down reminder"
+        );
+
+        fixture.config.remote_public_url = Some("http://192.168.0.2:47800".into());
+        let report = fixture.run(&|_| false);
+        assert!(
+            finding(&report, "remote-access")
+                .summary
+                .contains("isn't HTTPS")
+        );
+    }
+
+    #[test]
+    fn remote_access_speaks_up_for_a_paired_phone_with_no_address() {
+        let mut fixture = Fixture::new();
+        fixture.paired_devices = 1;
+        let report = fixture.run(&|_| false);
+        let remote = finding(&report, "remote-access");
+        assert_eq!(remote.severity, Severity::Notice);
+        assert!(
+            remote
+                .advice
+                .as_deref()
+                .unwrap()
+                .contains("tailscale.com/download")
+        );
     }
 
     #[test]

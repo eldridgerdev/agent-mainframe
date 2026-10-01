@@ -12,6 +12,25 @@ are tagged.
 
 ### Added
 
+- **AMF Remote finds your Tailscale address by itself.** When Tailscale
+  serves AMF on your tailnet, the pairing QR code uses that HTTPS address
+  automatically, with no need to copy it into `config.json`.
+- **Set up Tailscale from the pairing dialog.** Press `t` to share AMF on
+  your tailnet (tailnet only, never public). Press `s` for step-by-step
+  setup, from installing Tailscale to limiting access to your own devices;
+  each step is ticked off from what AMF sees on this computer, `c` copies a
+  ready-made access policy, and the steps scroll with `j`/`k` or the mouse
+  wheel.
+- **`amf doctor` checks phone access.** It reports whether a phone can reach
+  AMF Remote over HTTPS and, if not, the next step to take.
+- **A warning when no device can reach AMF.** If Tailscale serves AMF but no
+  other device on your tailnet may connect (the phone isn't signed in, or an
+  access policy shuts it out), the pairing dialog, its setup steps and
+  `amf doctor` now say so, instead of showing everything as done.
+- **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
+  and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
+  socket outside the usual places, such as a `tailscaled` you start
+  yourself.
 - **Get advice for an Expert plan review.** Press `m` in the Expert model picker
   to compare verified settings for the reviewer and its draft-plan context.
   Return to the picker to choose model and effort before starting the review.
@@ -89,6 +108,10 @@ are tagged.
 
 ### Fixed
 
+- **The pairing dialog no longer hides everything under the QR code.** On
+  shorter terminals the QR filled the dialog, cutting off the pairing code,
+  the address, and the keys. The dialog now fits its content, and shows
+  everything but the QR when the terminal is too short for both.
 - **TODO model choices survive unrelated list changes.** Reordering items,
   adding another TODO or editing the list scratchpad keeps a valid choice.
 
@@ -97,8 +120,7 @@ are tagged.
   `plan_mode` and `create_terminal`.
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
-  which a phone can't open. The dialog now says so and names the setting to
-  fix it.
+  which a phone can't open. The dialog now says so and offers the fix.
 - **Notifications and attention keep working after you rebuild or reinstall
   AMF.** Agent sessions started before the rebuild could lose every hook, so
   nothing reached the attention list or your phone. They now fall back to the

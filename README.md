@@ -846,7 +846,8 @@ examples, dry runs, and response formats.
   machine: agents against your limit, editor windows open alongside them,
   memory and swap, `amf-*` tmux sessions and worktrees with no matching
   feature, editors still running for features you stopped, and any project
-  still keeping config at the legacy `.amf/config.json` path. `--json` emits
+  still keeping config at the legacy `.amf/config.json` path, and whether a
+  phone can reach AMF Remote over HTTPS. `--json` emits
   the same findings for scripting. It changes nothing and always exits `0`.
 - Press `D` on the dashboard to view AMF's debug log. The same log is available
   at `~/.local/state/amf/debug.log`.

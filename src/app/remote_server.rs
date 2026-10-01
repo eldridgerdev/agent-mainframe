@@ -15,7 +15,7 @@ use crate::remote_server::{
 use crate::remote_terminal::PaneTarget;
 
 use super::{
-    App, AppMode, PairingDialogStatus, PairingDialogView, RemoteDevicesListState,
+    App, AppMode, PairingDialogStatus, PairingDialogView, PairingUrlSource, RemoteDevicesListState,
     RemotePairingState, ViewState,
 };
 
@@ -65,14 +65,39 @@ pub struct AuthorizedDevicesCache {
     load_failing: bool,
 }
 
-/// What the pairing QR encodes: the PWA's own URL with the code, so a phone
-/// camera opens the pairing page pre-filled. The configured public URL when
-/// there is one (the tunnel's), else the bind address.
-fn pairing_url(public_url: Option<&str>, addr: SocketAddr, code: &str) -> String {
-    match public_url.map(str::trim).filter(|url| !url.is_empty()) {
-        Some(url) => format!("{}/?code={code}", url.trim_end_matches('/')),
-        None => format!("http://{addr}/?code={code}"),
+/// The address the pairing QR sends a phone to, and where it came from:
+/// the configured public URL (the user's own tunnel), else the HTTPS
+/// address Tailscale serves AMF on, else the bind address.
+fn pairing_base(
+    public_url: Option<&str>,
+    tailscale_url: Option<&str>,
+    addr: SocketAddr,
+) -> (String, PairingUrlSource) {
+    if let Some(url) = public_url.map(str::trim).filter(|url| !url.is_empty()) {
+        return (
+            url.trim_end_matches('/').to_string(),
+            PairingUrlSource::Configured,
+        );
     }
+    if let Some(url) = tailscale_url {
+        return (
+            url.trim_end_matches('/').to_string(),
+            PairingUrlSource::Tailscale,
+        );
+    }
+    (format!("http://{addr}"), PairingUrlSource::Direct)
+}
+
+/// What the QR encodes: the PWA's own URL with the code, so a phone camera
+/// opens the pairing page pre-filled.
+fn pairing_url(base: &str, code: &str) -> String {
+    format!("{base}/?code={code}")
+}
+
+/// A bind address no phone can open: this machine's loopback, or the
+/// wildcard, which isn't an address at all.
+fn phone_cannot_open(source: PairingUrlSource, addr: SocketAddr) -> bool {
+    source == PairingUrlSource::Direct && (addr.ip().is_loopback() || addr.ip().is_unspecified())
 }
 
 impl App {
@@ -139,9 +164,10 @@ impl App {
     pub fn poll_remote_server_bg(&mut self) -> bool {
         // Drain into a `Vec` first so the borrow of `self.remote_server`
         // ends before we call back into `self` (log/toast) below.
+        let tailscale = self.poll_tailscale_bg();
         let events: Vec<RemoteServerEvent> = match &self.remote_server {
             Some(handle) => handle.rx.try_iter().collect(),
-            None => return false,
+            None => return tailscale,
         };
 
         let changed = !events.is_empty();
@@ -151,6 +177,7 @@ impl App {
                     self.log_info("remote_server", format!("Listening on {addr}"));
                     self.push_toast_info(format!("Remote-control server listening on {addr}"));
                     self.remote_server_addr = Some(addr);
+                    self.probe_tailscale();
                 }
                 RemoteServerEvent::Stopped { error } => {
                     match error {
@@ -206,7 +233,7 @@ impl App {
             }
         }
 
-        pairing_opened || paired || seen || pushed || acted || changed
+        tailscale || pairing_opened || paired || seen || pushed || acted || changed
     }
 
     /// Open the pairing dialog with a fresh one-time code. Pressing it is
@@ -224,7 +251,10 @@ impl App {
             return;
         };
         match self.take_pairing_host() {
-            Some(view) => self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view)),
+            Some(view) => {
+                self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view));
+                self.probe_tailscale();
+            }
             None => self.push_toast_info("Close this dialog, then Ctrl+Space Q to pair"),
         }
     }
@@ -257,6 +287,7 @@ impl App {
         };
         self.pairing_requested = None;
         self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view));
+        self.probe_tailscale();
         true
     }
 
@@ -296,15 +327,8 @@ impl App {
         from_view: Option<ViewState>,
     ) -> RemotePairingState {
         let code = remote_server::generate_pairing_code();
-        let public_url = self.config.remote_public_url.as_deref();
-        let url_unreachable = public_url.is_none_or(|url| url.trim().is_empty())
-            && (addr.ip().is_loopback() || addr.ip().is_unspecified());
-        let qr_payload = pairing_url(public_url, addr, &code);
-        let url = qr_payload
-            .split_once("/?code=")
-            .map_or(qr_payload.as_str(), |(base, _)| base)
-            .to_string();
-        let qr_lines = crate::qr::render_qr_lines(&qr_payload).unwrap_or_default();
+        let (url, url_source) = self.pairing_target(addr);
+        let qr_lines = crate::qr::render_qr_lines(&pairing_url(&url, &code)).unwrap_or_default();
         RemotePairingState {
             code,
             url,
@@ -314,8 +338,90 @@ impl App {
             locked: false,
             status: PairingDialogStatus::Waiting,
             view: PairingDialogView::Pairing,
-            url_unreachable,
+            url_unreachable: phone_cannot_open(url_source, addr),
+            url_source,
             from_view,
+        }
+    }
+
+    /// Open the dialog against `addr` without a running server, for render
+    /// and handler tests outside this module.
+    #[cfg(test)]
+    pub(crate) fn open_pairing_dialog_for_test(&mut self, addr: SocketAddr) {
+        self.remote_server_addr = Some(addr);
+        self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, None));
+    }
+
+    fn pairing_target(&self, addr: SocketAddr) -> (String, PairingUrlSource) {
+        pairing_base(
+            self.config.remote_public_url.as_deref(),
+            self.remote_tailscale
+                .status
+                .as_ref()
+                .and_then(|status| status.serve_url()),
+            addr,
+        )
+    }
+
+    /// Re-point an open dialog's QR when a Tailscale probe changes the
+    /// answer — `t` just started serving, or the user ran `tailscale serve`
+    /// in another terminal. The code is kept: only where the phone is sent
+    /// changes.
+    pub(super) fn refresh_pairing_url(&mut self) {
+        let Some(addr) = self.remote_server_addr else {
+            return;
+        };
+        let (url, url_source) = self.pairing_target(addr);
+        let AppMode::RemotePairing(state) = &mut self.mode else {
+            return;
+        };
+        if state.url == url {
+            return;
+        }
+        state.qr_lines =
+            crate::qr::render_qr_lines(&pairing_url(&url, &state.code)).unwrap_or_default();
+        state.url_unreachable = phone_cannot_open(url_source, addr);
+        state.url_source = url_source;
+        state.url = url;
+    }
+
+    /// `s` in the pairing dialog: the Tailscale setup walkthrough, with a
+    /// fresh probe so each step's tick reflects this moment.
+    pub fn open_pairing_setup_view(&mut self) {
+        if let AppMode::RemotePairing(state) = &mut self.mode {
+            state.view = PairingDialogView::Setup {
+                scroll: 0,
+                max_scroll: Default::default(),
+            };
+            self.probe_tailscale();
+        }
+    }
+
+    pub fn close_pairing_setup_view(&mut self) {
+        if let AppMode::RemotePairing(state) = &mut self.mode
+            && matches!(state.view, PairingDialogView::Setup { .. })
+        {
+            state.view = PairingDialogView::Pairing;
+        }
+    }
+
+    /// Scroll the setup view by `delta` rows, within what the last draw
+    /// measured. `i32::MIN` / `i32::MAX` jump to the top / bottom.
+    pub fn scroll_pairing_setup(&mut self, delta: i32) {
+        if let AppMode::RemotePairing(state) = &mut self.mode
+            && let PairingDialogView::Setup { scroll, max_scroll } = &mut state.view
+        {
+            let target = i32::from(*scroll).saturating_add(delta);
+            *scroll = target.clamp(0, i32::from(max_scroll.get())) as u16;
+        }
+    }
+
+    /// `c` in the setup view: copy the AMF access policy for pasting into
+    /// Tailscale's access controls.
+    pub fn copy_tailscale_access_policy(&mut self) {
+        match crate::app::util::copy_to_clipboard(crate::tailscale::ACCESS_POLICY) {
+            Ok(()) => self.push_toast_success("Copied the AMF access policy"),
+            Err(e) => self.push_toast_error(format!("Clipboard error: {e}")),
         }
     }
 
@@ -876,20 +982,145 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn pairing_url_prefers_the_public_url() {
+    fn pairing_base_prefers_config_then_tailscale_then_the_bind_address() {
         let addr: SocketAddr = "127.0.0.1:47800".parse().unwrap();
+        let ts = Some("https://pc.tail1.ts.net");
         assert_eq!(
-            pairing_url(None, addr, "123456"),
-            "http://127.0.0.1:47800/?code=123456"
+            pairing_base(Some("https://tunnel.test/"), ts, addr),
+            ("https://tunnel.test".into(), PairingUrlSource::Configured)
         );
         assert_eq!(
-            pairing_url(Some("https://pc.tail1.ts.net/"), addr, "123456"),
+            pairing_base(Some("  "), ts, addr),
+            (
+                "https://pc.tail1.ts.net".into(),
+                PairingUrlSource::Tailscale
+            )
+        );
+        assert_eq!(
+            pairing_base(None, None, addr),
+            ("http://127.0.0.1:47800".into(), PairingUrlSource::Direct)
+        );
+        assert_eq!(
+            pairing_url("https://pc.tail1.ts.net", "123456"),
             "https://pc.tail1.ts.net/?code=123456"
         );
+    }
+
+    fn serving(url: Option<&str>) -> crate::tailscale::TailscaleStatus {
+        crate::tailscale::TailscaleStatus::Running(crate::tailscale::TailnetNode {
+            dns_name: "pc.tail1.ts.net".into(),
+            https_enabled: true,
+            tagged_for_amf: false,
+            serve_url: url.map(str::to_string),
+            peers: 1,
+        })
+    }
+
+    #[test]
+    fn a_tailscale_probe_repoints_an_open_dialog_and_keeps_the_code() {
+        let mut app = test_app();
+        let code = open_pairing_dialog(&mut app);
+        {
+            let AppMode::RemotePairing(state) = &app.mode else {
+                unreachable!()
+            };
+            assert_eq!(state.url_source, PairingUrlSource::Direct);
+            assert!(state.url_unreachable);
+        }
+
+        app.feed_tailscale_probe(serving(Some("https://pc.tail1.ts.net")));
+        assert!(app.poll_remote_server_bg());
+
+        let AppMode::RemotePairing(state) = &app.mode else {
+            panic!("dialog should still be open");
+        };
+        assert_eq!(state.url, "https://pc.tail1.ts.net");
+        assert_eq!(state.url_source, PairingUrlSource::Tailscale);
+        assert!(!state.url_unreachable);
+        assert_eq!(state.code, code);
+        assert!(!app.remote_tailscale.probing);
+    }
+
+    #[test]
+    fn a_configured_public_url_is_never_replaced_by_tailscale() {
+        let mut app = test_app();
+        app.config.remote_public_url = Some("https://tunnel.test".into());
+        open_pairing_dialog(&mut app);
+        app.feed_tailscale_probe(serving(Some("https://pc.tail1.ts.net")));
+        app.poll_remote_server_bg();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(state.url, "https://tunnel.test");
+        assert_eq!(state.url_source, PairingUrlSource::Configured);
+    }
+
+    #[test]
+    fn t_only_serves_once_tailscale_is_known_to_be_running() {
+        use crate::tailscale::{ServeOutcome, TailscaleStatus};
+        let mut app = test_app();
+        open_pairing_dialog(&mut app);
+
+        app.start_tailscale_serve(); // no probe yet
+        assert!(!app.remote_tailscale.serving);
+
+        app.remote_tailscale.status = Some(TailscaleStatus::NotInstalled);
+        app.start_tailscale_serve();
+        assert!(!app.remote_tailscale.serving);
+
+        app.remote_tailscale.status = Some(serving(None));
+        app.start_tailscale_serve();
+        assert!(app.remote_tailscale.serving);
+
+        let link = "https://login.tailscale.com/f/serve?node=abc".to_string();
+        app.feed_tailscale_serve(ServeOutcome::NeedsApproval(link.clone()));
+        app.poll_remote_server_bg();
+        assert!(!app.remote_tailscale.serving);
         assert_eq!(
-            pairing_url(Some("  "), addr, "123456"),
-            "http://127.0.0.1:47800/?code=123456"
+            app.remote_tailscale.serve_note,
+            Some(ServeOutcome::NeedsApproval(link))
         );
+
+        app.start_tailscale_serve();
+        assert_eq!(
+            app.remote_tailscale.serve_note, None,
+            "a retry clears the note"
+        );
+        app.feed_tailscale_serve(ServeOutcome::Serving);
+        app.poll_remote_server_bg();
+        assert_eq!(app.remote_tailscale.serve_note, None);
+        assert!(
+            app.remote_tailscale.probing,
+            "success re-probes what is served"
+        );
+    }
+
+    #[test]
+    fn the_setup_view_opens_scrolls_and_returns_to_the_code() {
+        let mut app = test_app();
+        open_pairing_dialog(&mut app);
+        app.open_pairing_setup_view();
+        app.scroll_pairing_setup(3);
+        app.scroll_pairing_setup(-5);
+        {
+            let AppMode::RemotePairing(state) = &app.mode else {
+                unreachable!()
+            };
+            assert!(matches!(
+                state.view,
+                PairingDialogView::Setup { scroll: 0, .. }
+            ));
+        }
+        assert!(
+            app.remote_tailscale.probing,
+            "opening setup re-checks Tailscale"
+        );
+        assert!(!app.pairing_setup_steps().is_empty());
+        app.close_pairing_setup_view();
+        let AppMode::RemotePairing(state) = &app.mode else {
+            unreachable!()
+        };
+        assert!(matches!(state.view, PairingDialogView::Pairing));
     }
 
     #[test]

@@ -523,9 +523,40 @@ Found by using it on a real phone over Tailscale:
       no phone can open, with no warning. The dialog now says so.
 - [x] Phone home list sorted by status (attention, active, idle,
       stopped).
-- [ ] A userspace `tailscaled` doesn't survive a WSL restart, so the
-      tunnel silently disappears. This is a user-setup issue, but the docs
-      could mention it.
+- [x] A userspace `tailscaled` doesn't survive a WSL restart, so the
+      tunnel silently disappears. The guide's WSL section now says so, and
+      both the pairing dialog's setup view and `amf doctor` report a
+      daemon that isn't answering.
+- [x] Setup was hard for anyone but the author: copying the tailnet URL into
+      `config.json` by hand, and no guidance on locking it down. Now AMF
+      detects Tailscale (`src/tailscale.rs`) and uses the address it serves.
+      `t` in the pairing dialog runs `tailscale serve --bg`, and `s` shows
+      setup steps ticked off from a live probe, with `c` copying an access
+      policy. `amf doctor` has a `remote-access` check.
+      `remote_tailscale_cli`/`remote_tailscale_socket` cover non-standard
+      installs. An access policy can't be applied by AMF (it lives in the
+      admin console), so it's copy-paste plus a tag.
+- [x] The pairing dialog was 70% of the screen, so on a ~43-row terminal the
+      QR filled it and clipped the code, the address and the keys. It now
+      sizes to its content, and the QR gives way first. A "New here? Press s"
+      line makes the setup walkthrough easy to find.
+- [x] The setup walkthrough showed a WSL-only block, couldn't scroll to its
+      end (it measured unwrapped lines), and told an already signed-in user
+      to run `tailscale up` when AMF simply couldn't see their CLI. It's now
+      platform-neutral and scrolls (keys, wheel, scrollbar), and steps it
+      can't check say why and are worded "if you haven't yet".
+- [x] Everything showed green while no device could reach AMF: the laptop
+      was tagged, the phone had been removed from the tailnet, and its app
+      still said "connected". The laptop's `status --json` showed no peers
+      and an empty packet filter. A served-but-isolated node is now a to-do
+      in the setup steps, a warning in the dialog, and a `warn` in `amf
+      doctor`. The fix on the phone was logging out and back in.
+- [ ] Re-pairing leaves a new device row each time, and the phone's push
+      subscription stays with the row it was made under. After today's
+      testing, five stale rows had to be revoked, and the phone had no push
+      subscription at all. Consider having a re-pair from the same browser
+      replace its old row and carry the subscription over, or at least have
+      the PWA offer "Turn on notifications" again after pairing.
 - [ ] Still unverified end to end: a push triggered by a real agent,
       and answering a real Claude permission prompt from the phone.
 

@@ -13,6 +13,31 @@ pub fn handle_remote_pairing_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::RemotePairing(state) if matches!(state.view, PairingDialogView::Devices(_))
     );
 
+    let in_setup_view = matches!(
+        &app.mode,
+        AppMode::RemotePairing(state) if matches!(state.view, PairingDialogView::Setup { .. })
+    );
+
+    if in_setup_view {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') | KeyCode::Char('?') => {
+                app.close_pairing_setup_view()
+            }
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_pairing_setup(-1),
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_pairing_setup(1),
+            KeyCode::PageUp => app.scroll_pairing_setup(-10),
+            KeyCode::PageDown | KeyCode::Char(' ') => app.scroll_pairing_setup(10),
+            KeyCode::Home | KeyCode::Char('g') => app.scroll_pairing_setup(i32::MIN),
+            KeyCode::End | KeyCode::Char('G') => app.scroll_pairing_setup(i32::MAX),
+            KeyCode::Char('t') => app.start_tailscale_serve(),
+            KeyCode::Char('c') => app.copy_tailscale_access_policy(),
+            KeyCode::Char('o') => app.open_tailscale_approval_link(),
+            KeyCode::Char('r') => app.probe_tailscale(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if in_devices_view {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.close_paired_devices_view(),
@@ -44,6 +69,15 @@ pub fn handle_remote_pairing_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('v') => {
             app.open_paired_devices_view();
+        }
+        KeyCode::Char('s') | KeyCode::Char('?') => {
+            app.open_pairing_setup_view();
+        }
+        KeyCode::Char('t') => {
+            app.start_tailscale_serve();
+        }
+        KeyCode::Char('o') => {
+            app.open_tailscale_approval_link();
         }
         _ => {}
     }

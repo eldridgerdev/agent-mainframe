@@ -2,7 +2,7 @@
 
 Inventory and first-release implementation checked on 2026-09-29, with Claude
 Code discovery and research added on 2026-09-30 and additional plan-review entry
-points on 2026-10-01, against
+points, including Expert review advice, on 2026-10-01, against
 `AMF_PLAN.md`. The headless inventory includes the subsequent reasoning-picker
 integration from main. Live application to existing sessions remains outside the
 verified launch scope.
@@ -162,7 +162,7 @@ Sources: [Pi CLI](https://github.com/earendil-works/pi/blob/main/packages/coding
 | `finish_feature_launch_*` / `ensure_feature_running_*` | Build harness-specific startup args and start saved sessions | Revalidate the transient selection immediately before initial launch; preserve rollback, mode flags and resume behavior |
 | `launch_agent_session_window` and session restart | Claude/Codex extra arguments; OpenCode/Pi fixed launch signatures | Apply selected arguments only to the shipped initial-agent path through `TmuxOps` |
 | `HeadlessRunner` | All four accept `model`; Claude/Codex/OpenCode accept explicit reasoning through `ModelSel`; restricted/read-only contracts differ | Analyzer runner selection/fallback respects configuration, leaves its runner's settings unspecified and never recursively calls analysis |
-| Existing Expert/AI Review model pickers | Manual model and harness-supported reasoning selections | Keep separate from evidence-backed eligibility; they are not proof of account access |
+| Expert/AI Review model pickers | Manual model and harness-supported reasoning selections | Expert picker `m` offers scoped advice, then returns to manual selection; picker rows alone are not proof of account access |
 
 ## Implemented eligibility boundary
 
@@ -185,8 +185,12 @@ removed levels and changed launch support. Interactive arguments are returned
 only after revalidation and only for a supported path; no process or settings
 write occurs in this module. Claude/Codex use their existing extra-argument seam.
 OpenCode/Pi interactive overrides remain excluded until their launch seams are
-implemented. Analyzer selections target interactive implementation, not headless
-runner settings.
+implemented. Initial-launch selections target interactive implementation.
+Expert-review advice uses the headless path: discovered per-model effort levels
+must also be expressible by `ReasoningLevel`/`ModelSel` for that harness. Unknown
+levels that the headless seam would drop are excluded. This does not establish
+OpenCode/Pi access; they still lack verified discovery. Advice never changes the
+analyzer runner's own settings.
 
 The Codex name picker reuses the catalog parser while keeping parsed access
 unknown for analyzer purposes. The plan-review workflow uses live discovery
@@ -220,7 +224,8 @@ analyzer score, aggregation or historical measurement is derived from them.
 | Host-feature TODO Plan review | Reviewed implementation plan and resolved host/TODO; accept writes a separate plan and starts a TODO session/composer | `m`, advice only for the host harness |
 | New-feature TODO Full/Quick Plan review | Reviewed implementation plan and prepared destination; accept creates feature and links TODO | `m`, selection applies to initial implementation launch |
 | Direct TODO spawn | Destination/reservation/composer without a reviewed plan | Deferred |
-| Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
+| Expert plan-review model picker | Draft plan, brief, answers, repository/reference context and resolved reviewer; separate headless critique | `m`, advice only for the reviewer; return to AMF picker |
+| AI/Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
 | Existing agent session | Feature name/summary and effective plan when present; advice for the current harness | Dashboard session `m` or pane leader `B`; view-only |
 
 A selection affects the initial implementation agent launch only. It returns to
@@ -229,8 +234,8 @@ Editing the plan invalidates the choice. Later independent sessions/restarts kee
 their existing configuration semantics. Cancellation launches no implementation.
 
 The `m` action also covers on-demand Full/Quick Plan review and TODO Plan
-review. Advice always targets **implementation of the reviewed plan**, not the
-interview or Expert review worker. Existing-feature and host-feature TODO plans
+review. Outside the Expert picker, advice targets **implementation of the
+reviewed plan**. Existing-feature and host-feature TODO plans
 are view-only, restricted to the destination feature's configured harness.
 Accepting an on-demand plan still writes it and offers the existing kickoff
 handoff. Accepting a host TODO plan still writes a separate TODO plan and starts
@@ -252,10 +257,25 @@ the same destination and only clean up the tmux session created by the attempt.
 No preference, observed effective setting, usage measurement or generated claim
 is persisted by this increment.
 
-Before-interview planning, direct TODO spawning and headless review entry points
-remain deferred. Their contexts and handoffs need planning/review-specific
-analyzer targets; interactive implementation arguments cannot configure those
-workers. Live session application, persistent requested/effective stage settings,
+The Expert model picker has its own `m` entry. Advice targets **review of the
+draft plan**, using the resolved reviewer harness rather than the implementation
+harness. It carries the brief, interview questions/answers and draft plan; the
+worker reads the same bounded repository context used by critique and bounded
+excerpts of explicitly attached reference documents. Reference excerpts are
+labelled when truncated, and full bounded-file fingerprints detect edits beyond
+the excerpts. Missing, invalid or oversized references fail closed. Reading
+references creates no staged copies or workflow state. Interview, TODO,
+destination, reviewer or configured-harness changes invalidate pending results;
+the worker rereads repository/reference context before returning advice.
+Cancellation restores the original picker, including its custom model buffer
+and selected effort. Custom-model typing keeps `m` as text. The dialog offers no
+Apply action: choose model/effort in the existing AMF picker and confirm review
+separately. No critique starts or preference is persisted through this advice.
+
+Before-interview planning, direct TODO spawning and AI/Final/PR review entry
+points remain deferred. They need planning or diff/head-specific targets;
+interactive implementation arguments cannot configure those workers. Live session
+application, persistent requested/effective stage settings,
 outcome attribution/comparability and OpenCode/Pi discovery/launch adapters remain
 separate capability work. Paid trials remain optional, explicitly opt-in work.
 

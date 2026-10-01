@@ -48,7 +48,6 @@ pub(crate) struct HarnessCapability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchPath {
     Interactive,
-    #[allow(dead_code)] // Explicit reasoning has no headless launch seam yet.
     Headless,
 }
 
@@ -62,11 +61,12 @@ impl LaunchPath {
         }
     }
 
-    fn supports_reasoning(self, harness: &AgentKind) -> bool {
+    fn supports_reasoning(self, harness: &AgentKind, level: &str) -> bool {
         match self {
             Self::Interactive => matches!(harness, AgentKind::Claude | AgentKind::Codex),
-            // HeadlessRunner currently accepts a model but no reasoning arg.
-            Self::Headless => false,
+            Self::Headless => crate::headless::ReasoningLevel::supported_for(harness)
+                .iter()
+                .any(|supported| supported.slug() == level),
         }
     }
 }
@@ -157,9 +157,9 @@ impl EligibleOptions {
                 }
                 let default = ModelChoice::new(&harness, &model.model, None);
                 choices.insert(default.id.clone(), default);
-                if cap.reasoning_flag && path.supports_reasoning(&harness) {
+                if cap.reasoning_flag {
                     for level in model.reasoning_levels.iter().flatten() {
-                        if valid_level(level) {
+                        if valid_level(level) && path.supports_reasoning(&harness, level) {
                             let choice = ModelChoice::new(&harness, &model.model, Some(level));
                             choices.insert(choice.id.clone(), choice);
                         }
@@ -385,14 +385,58 @@ mod tests {
     }
 
     #[test]
-    fn headless_paths_allow_models_but_exclude_explicit_reasoning_for_every_harness() {
+    fn headless_paths_intersect_discovered_levels_with_settings_amf_can_carry() {
         let caps: Vec<_> = AgentKind::ALL.into_iter().map(capability).collect();
         let eligible = options(&caps, LaunchPath::Headless);
-        assert_eq!(eligible.choices().len(), 4);
-        assert!(eligible.choices().iter().all(|c| c.reasoning().is_none()));
+        for harness in AgentKind::ALL {
+            let levels = eligible
+                .choices()
+                .iter()
+                .filter(|c| *c.harness() == harness)
+                .map(|c| c.reasoning())
+                .collect::<Vec<_>>();
+            let expected = match harness {
+                AgentKind::Claude | AgentKind::Codex => vec![None, Some("high"), Some("low")],
+                AgentKind::Opencode => vec![None, Some("high")],
+                AgentKind::Pi => vec![None],
+            };
+            assert_eq!(levels, expected, "{harness:?}");
+        }
         for choice in eligible.choices() {
             assert!(eligible.interactive_args(choice).is_err());
         }
+    }
+
+    #[test]
+    fn headless_effort_requires_model_metadata_and_an_expressible_level() {
+        let mut cap = capability(AgentKind::Codex);
+        cap.models[0].reasoning_levels =
+            Some(vec!["high".into(), "minimal".into(), "future-level".into()]);
+        let eligible = options(std::slice::from_ref(&cap), LaunchPath::Headless);
+        assert_eq!(eligible.choices().len(), 2);
+        assert!(
+            eligible
+                .choices()
+                .iter()
+                .any(|c| c.reasoning() == Some("high"))
+        );
+        cap.reasoning_flag = false;
+        assert_eq!(
+            options(std::slice::from_ref(&cap), LaunchPath::Headless)
+                .choices()
+                .len(),
+            1
+        );
+        cap.reasoning_flag = true;
+        cap.models[0].reasoning_levels = None;
+        assert_eq!(
+            options(std::slice::from_ref(&cap), LaunchPath::Headless)
+                .choices()
+                .len(),
+            1
+        );
+        cap.models[0].availability = Availability::Unknown;
+        assert!(options(&[cap], LaunchPath::Headless).choices().is_empty());
     }
 
     #[test]
@@ -408,7 +452,11 @@ mod tests {
                 );
             }
             cap.models[0].model = "provider/namespace/exact-model".into();
-            assert_eq!(options(&[cap], LaunchPath::Headless).choices().len(), 1);
+            let expected = if cap.harness == AgentKind::Pi { 1 } else { 2 };
+            assert_eq!(
+                options(&[cap], LaunchPath::Headless).choices().len(),
+                expected
+            );
         }
     }
 
@@ -533,7 +581,7 @@ mod tests {
         assert!(changed.revalidate(&selected).is_err());
         assert!(
             options(&[cap], LaunchPath::Headless)
-                .revalidate(&selected)
+                .interactive_args(&selected)
                 .is_err()
         );
     }

@@ -449,14 +449,16 @@ time and token totals remain unknown. See the
 - [x] Apply a selected setting to the initial implementation launch.
 - [x] Extend implementation advice to on-demand Full/Quick Plan and TODO Plan
   review, preserving destination scope, live TODO identity and existing handoffs.
+- [x] Offer reviewer-scoped advice from the Expert plan-review model picker;
+  use headless eligibility and return to manual selection without starting review.
 - [ ] Add persistent stage-specific profiles for presets and workflows.
 - [ ] Verify a control boundary for applying changes to running harnesses.
 - [ ] Define comparable outcome evidence before using history or opt-in trials.
 
 The advice workflow does not complete the broader routing and evaluation work
-below. Paid trials, before-interview planning, direct TODO spawning, headless review
-advice, and OpenCode/Pi recommendations remain deferred until their evidence and
-capability contracts are established.
+below. Paid trials, before-interview planning, direct TODO spawning, AI/Final/PR
+review advice, and OpenCode/Pi recommendations remain deferred until their
+evidence and capability contracts are established.
 
 ### Behavior and implementation shape
 

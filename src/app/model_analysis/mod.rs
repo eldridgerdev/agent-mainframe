@@ -42,6 +42,26 @@ pub(crate) struct Selection {
 pub(crate) fn fingerprint(plan: &str) -> String {
     format!("{:x}", Sha256::digest(plan.as_bytes()))
 }
+/// Fingerprint only what identifies the TODO and what the plan was made from.
+/// List timestamps, `sort_order`, the scratchpad, and edits to sibling items
+/// all churn without changing the target, and must not invalidate a selection.
+fn todo_snapshot(resolved: &crate::db::todos::ResolvedTodo) -> String {
+    let (todo, list) = (&resolved.todo, &resolved.list);
+    fingerprint(
+        &serde_json::json!({
+            "id": todo.id,
+            "list_id": todo.list_id,
+            "title": todo.title,
+            "body": todo.body,
+            "status": todo.work.status,
+            "agent_session_id": todo.work.agent_session_id,
+            "linked_feature_id": todo.linked_feature_id,
+            "scope": list.scope,
+            "host_feature_id": list.feature_id,
+        })
+        .to_string(),
+    )
+}
 
 #[derive(Debug)]
 pub(crate) enum Status {
@@ -70,6 +90,15 @@ struct Target {
     preferred: AgentKind,
     kind: TargetKind,
     todo: Option<TodoTarget>,
+    review: Option<ReviewTarget>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewTarget {
+    feature_name: String,
+    brief: String,
+    questions: Vec<crate::plan_interview::PlanQuestion>,
+    answers: Vec<Option<String>>,
+    attached_docs: Vec<PathBuf>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TodoTarget {
@@ -82,6 +111,7 @@ pub(crate) enum AdviceScope {
     ExistingSession,
     ExistingPlan,
     HostTodoPlan,
+    ExpertPlanReview,
 }
 #[derive(Debug, Clone, PartialEq)]
 enum TargetKind {
@@ -110,6 +140,9 @@ enum TargetKind {
 }
 impl Target {
     fn plan(&self) -> Option<(&PreparedFeatureLaunch, &str)> {
+        if self.review.is_some() {
+            return None;
+        }
         match &self.kind {
             TargetKind::Plan { prepared, plan, .. } => Some((prepared.as_ref(), plan)),
             TargetKind::Session { .. } | TargetKind::ReviewedPlan { .. } => None,
@@ -120,7 +153,59 @@ impl Target {
         matches!(self.kind, TargetKind::Session { .. })
     }
 
+    fn launch_path(&self) -> LaunchPath {
+        if self.review.is_some() {
+            LaunchPath::Headless
+        } else {
+            LaunchPath::Interactive
+        }
+    }
+
     fn task_context(&self) -> Result<(String, &'static str)> {
+        if let Some(review) = &self.review {
+            let plan = match &self.kind {
+                TargetKind::Plan { plan, .. } | TargetKind::ReviewedPlan { plan, .. } => plan,
+                TargetKind::Session { .. } => anyhow::bail!("invalid review target"),
+            };
+            let repository = crate::plan_interview::gather_repository_context(&self.workdir);
+            let input = crate::plan_interview::critique_input_json(
+                &review.feature_name,
+                plan,
+                &review.brief,
+                &review.questions,
+                &review.answers,
+                &repository,
+                &[],
+            );
+            let mut references = vec![];
+            for source in &review.attached_docs {
+                use std::io::Read;
+                crate::plan_interview::validate_attachment(source, &[])
+                    .map_err(|e| anyhow::anyhow!("review reference unavailable: {e}"))?;
+                let mut bytes = vec![];
+                std::fs::File::open(source)?
+                    .take(crate::plan_interview::ATTACHED_DOC_MAX_BYTES + 1)
+                    .read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() as u64 <= crate::plan_interview::ATTACHED_DOC_MAX_BYTES,
+                    "review reference grew beyond the attachment limit"
+                );
+                let body = std::str::from_utf8(&bytes)?;
+                references.push(serde_json::json!({
+                    "source": source,
+                    "fingerprint": fingerprint(body),
+                    "excerpt": body.chars().take(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS).collect::<String>(),
+                    "truncated": body.chars().count() > crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS,
+                }));
+            }
+            return Ok((
+                format!(
+                    "Review the draft plan for missing requirements, risks, correctness and verification before implementation.\nReview input: {input}\nRead-only reference excerpts: {}",
+                    serde_json::to_string(&references)?,
+                ),
+                "Expert plan review",
+            ));
+        }
         match &self.kind {
             TargetKind::Plan { plan, .. } | TargetKind::ReviewedPlan { plan, .. } => {
                 Ok((plan.clone(), "implementation"))
@@ -166,6 +251,9 @@ impl State {
     }
 
     pub(crate) fn scope(&self) -> AdviceScope {
+        if self.target.review.is_some() {
+            return AdviceScope::ExpertPlanReview;
+        }
         match &self.target.kind {
             TargetKind::Plan { .. } => AdviceScope::InitialLaunch,
             TargetKind::Session { .. } => AdviceScope::ExistingSession,
@@ -309,6 +397,7 @@ impl App {
             workdir: feature.workdir.clone(),
             preferred,
             todo: None,
+            review: None,
             kind: TargetKind::Session {
                 feature_id: feature.id.clone(),
                 session_id: session.id.clone(),
@@ -363,6 +452,28 @@ impl App {
             .filter(|p| !p.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("reviewed implementation plan is missing"))?;
         ensure!(s.workdir.is_dir(), "target workdir was removed");
+        let review = s
+            .expert_model_pick
+            .as_ref()
+            .map(|pick| -> Result<ReviewTarget> {
+                ensure!(
+                    !pick.editing_custom,
+                    "finish typing the custom review model first"
+                );
+                ensure!(
+                    s.ai_harness.as_ref().and_then(|h| h.as_ref()).is_some(),
+                    "review harness is unresolved"
+                );
+                Ok(ReviewTarget {
+                    feature_name: s.feature_name.clone(),
+                    brief: s.brief.clone(),
+                    questions: s.questions.clone(),
+                    answers: s.answers.clone(),
+                    attached_docs: s.attached_docs.clone(),
+                })
+            })
+            .transpose()?;
+        let reviewer = review.as_ref().and_then(|_| s.ai_harness.as_ref()?.clone());
         let todo = s
             .todo_origin
             .as_ref()
@@ -384,7 +495,7 @@ impl App {
                 );
                 Ok(TodoTarget {
                     origin: origin.clone(),
-                    snapshot: fingerprint(&serde_json::to_string(&(resolved.todo, resolved.list))?),
+                    snapshot: todo_snapshot(&resolved),
                 })
             })
             .transpose()?;
@@ -404,8 +515,9 @@ impl App {
                 project_id: project.id.clone(),
                 repo: project.repo.clone(),
                 workdir: prepared.workdir.clone(),
-                preferred: prepared.agent.clone(),
+                preferred: reviewer.unwrap_or_else(|| prepared.agent.clone()),
                 todo,
+                review,
                 kind: TargetKind::Plan {
                     prepared: Box::new(prepared),
                     interview_key: s.interview_key.clone(),
@@ -431,8 +543,9 @@ impl App {
             project_id: project.id.clone(),
             repo: project.repo.clone(),
             workdir: feature.workdir.clone(),
-            preferred: feature.agent.clone(),
+            preferred: reviewer.unwrap_or_else(|| feature.agent.clone()),
             todo,
+            review,
             kind: TargetKind::ReviewedPlan {
                 feature_id: feature.id.clone(),
                 interview_key: s.interview_key.clone(),
@@ -477,7 +590,7 @@ impl App {
         let setup = (|| -> Result<_> {
             ensure!(
                 self.model_target(&state.origin)? == target,
-                "implementation task changed; return to plan review"
+                "analysis task changed; return to plan review"
             );
             if let Some(id) = &state.saved_feature_id {
                 let (prepared, _) = target
@@ -562,7 +675,7 @@ impl App {
             let result = (|| -> Result<Outcome> {
                 let caps = discover(&target.workdir, &choice_allowed, &worker_cancel)?;
                 ensure!(!worker_cancel.load(Ordering::Relaxed), "analysis cancelled");
-                let options = EligibleOptions::new(&choice_allowed, &caps, LaunchPath::Interactive);
+                let options = EligibleOptions::new(&choice_allowed, &caps, target.launch_path());
                 if launch {
                     return Ok(Outcome::Validated(options));
                 }
@@ -575,7 +688,7 @@ impl App {
                     return Ok(Outcome::Advice(vec![]));
                 }
                 let (task_context, task_phase) = target.task_context()?;
-                let context = if target.is_session() {
+                let context = if target.is_session() || target.review.is_some() {
                     prompt_context_for_task(&task_context, task_phase, &options, &notes, now)?
                 } else {
                     prompt_context(&task_context, &options, &notes, now)?
@@ -589,10 +702,10 @@ impl App {
                     cancelled: worker_cancel.clone(),
                 })?;
                 ensure!(!worker_cancel.load(Ordering::Relaxed), "analysis cancelled");
-                if target.is_session() {
+                if target.is_session() || target.review.is_some() {
                     ensure!(
                         target.task_context()?.0 == task_context,
-                        "session task context changed during analysis; retry"
+                        "task context changed during analysis; retry"
                     );
                 }
                 Ok(Outcome::Advice(validate_response(

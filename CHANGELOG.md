@@ -12,6 +12,9 @@ are tagged.
 
 ### Added
 
+- **Get advice for an Expert plan review.** Press `m` in the Expert model picker
+  to compare verified settings for the reviewer and its draft-plan context.
+  Return to the picker to choose model and effort before starting the review.
 - **Get implementation advice while reviewing an existing feature or TODO plan.**
   Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
   to their initial agent; existing-feature and host-feature TODO plans offer

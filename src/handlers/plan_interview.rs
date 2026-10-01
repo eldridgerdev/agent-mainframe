@@ -37,6 +37,7 @@ pub fn handle_plan_interview_key(app: &mut App, key: KeyEvent) -> Result<()> {
             return Ok(());
         }
         match key.code {
+            KeyCode::Char('m') if key.modifiers.is_empty() => app.open_model_analysis()?,
             KeyCode::Esc => app.cancel_plan_expert_model_picker(),
             KeyCode::Enter => app.confirm_plan_expert_model_picker()?,
             KeyCode::Down | KeyCode::Char('j') => app.plan_expert_model_pick_move(1),

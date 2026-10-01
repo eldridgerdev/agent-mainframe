@@ -261,7 +261,7 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
             Constraint::Min(1),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
             Constraint::Length(u16::from(!pick.reasoning_levels.is_empty())),
-            Constraint::Length(1),
+            Constraint::Length(if pick.editing_custom { 1 } else { 2 }),
         ])
         .split(inner);
     let harness = interview_engine(state);
@@ -311,13 +311,20 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
     if let Some(line) = super::ai_review::reasoning_line(pick, theme) {
         frame.render_widget(Paragraph::new(line), chunks[3]);
     }
-    let reasoning_hint = super::ai_review::reasoning_hint(pick);
     let hint = if pick.editing_custom {
-        "  [⏎] use this model   [esc] back to list".to_string()
-    } else if custom_selected {
-        format!("  [j/k] choose  [⏎] type model{reasoning_hint}  [esc] cancel")
+        "Enter use model  Esc back to list".to_string()
     } else {
-        format!("  [j/k] choose  [⏎] continue{reasoning_hint}  [esc] cancel")
+        let action = if custom_selected {
+            "type model"
+        } else {
+            "continue"
+        };
+        let effort = if pick.reasoning_levels.is_empty() {
+            ""
+        } else {
+            "h/l effort  "
+        };
+        format!("j/k choose  Enter {action}  Esc cancel\n{effort}m model advice for this review")
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
@@ -1620,6 +1627,45 @@ mod tests {
     use crate::app::{App, AppMode};
     use crate::project::ProjectStore;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    #[test]
+    fn expert_picker_keeps_advice_and_cancel_visible() {
+        use crate::{app::AiModelPickState, headless::ReasoningLevel};
+        for (width, height) in [(80, 24), (120, 40)] {
+            let mut state =
+                PlanInterviewState::new("parser".into(), "feature".into(), vec![], None);
+            state.phase = PlanInterviewPhase::Review;
+            state.ai_harness = Some(Some(crate::project::AgentKind::Codex));
+            state.expert_model_pick = Some(AiModelPickState::new(
+                &crate::project::AgentKind::Codex,
+                vec![
+                    ModelPickRow::Preset("test-model".into()),
+                    ModelPickRow::Custom,
+                ],
+                0,
+                String::new(),
+                Some(ReasoningLevel::High),
+            ));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_expert_model_picker(frame, &state, &Theme::default()))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(width as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for expected in ["m model advice", "Esc cancel", "h/l effort", "test-model"] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected} at {width}x{height}"
+                );
+            }
+        }
+    }
 
     /// Renders the consent step the way a user meets it — through the whole
     /// dashboard, at a real terminal size — and returns what is on screen.

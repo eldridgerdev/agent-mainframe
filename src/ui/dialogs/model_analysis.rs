@@ -115,6 +115,10 @@ fn draw(frame: &mut Frame, view: AdviceView<'_>, theme: &Theme) {
             "TODO plan → implementation",
             "Advice only. Accept separately to start the TODO agent; use its model picker.",
         ),
+        AdviceScope::ExpertPlanReview => (
+            "Draft plan → Expert review",
+            "Advice only for the reviewer. Return to AMF's Expert picker to choose model and effort.",
+        ),
         AdviceScope::InitialLaunch => (
             "Plan → implementation",
             "Apply a setting, then accept the plan to start the agent.",
@@ -555,7 +559,11 @@ mod tests {
     }
     #[test]
     fn reviewed_existing_and_host_todo_plans_explain_their_view_only_scope() {
-        for scope in [AdviceScope::ExistingPlan, AdviceScope::HostTodoPlan] {
+        for scope in [
+            AdviceScope::ExistingPlan,
+            AdviceScope::HostTodoPlan,
+            AdviceScope::ExpertPlanReview,
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
             let status = ready();
             terminal
@@ -577,13 +585,17 @@ mod tests {
                 .unwrap();
             let text = contents(terminal.backend().buffer());
             assert!(text.contains("Advice only"));
-            assert!(text.contains("Accept"));
+            assert!(text.contains(if scope == AdviceScope::ExpertPlanReview {
+                "Expert picker"
+            } else {
+                "Accept"
+            }));
             assert!(!text.contains("Apply"));
             assert!(text.contains("Esc"));
-            assert!(text.contains(if scope == AdviceScope::HostTodoPlan {
-                "TODO plan → implementation"
-            } else {
-                "Reviewed plan → implementation"
+            assert!(text.contains(match scope {
+                AdviceScope::HostTodoPlan => "TODO plan → implementation",
+                AdviceScope::ExpertPlanReview => "Draft plan → Expert review",
+                _ => "Reviewed plan → implementation",
             }));
         }
     }

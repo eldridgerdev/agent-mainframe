@@ -125,3 +125,25 @@ expect:Setting applied to the initial implementation launch
 expect:Review · implement-parser
 expect:accept
 shot:todo-setting-applied
+
+key:a
+wait:200
+wait:500
+note:The Expert model picker now offers m advice for the review stage alongside manual model and effort controls. Opening this picker has not started a critique.
+expect:Choose Expert frontier model
+expect:m model advice for this review
+expect:h/l effort
+expect:Esc cancel
+shot:expert-picker-advice-entry
+key:m
+wait:200
+wait:2000
+note:Expert advice identifies the draft-plan review stage and directs the user back to AMF's Expert picker. It offers no Apply action and does not start a critique; discovery and model responses are deterministic fixtures.
+expect:Draft plan → Expert review
+expect:Advice only for the reviewer
+expect:Expert picker
+expect:gpt-6.1-sol
+expect_not:Apply
+shot:expert-plan-review-advice
+key:Escape
+wait:200

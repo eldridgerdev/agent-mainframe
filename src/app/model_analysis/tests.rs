@@ -1154,3 +1154,269 @@ fn todo_changed_while_resource_confirmation_is_open_cannot_launch() {
     assert!(matches!(app.mode, AppMode::PlanInterview(_)));
     assert!(app.store.projects[0].features.is_empty());
 }
+
+fn expert_fixture(existing: bool, quick: bool) -> (App, tempfile::TempDir) {
+    use crate::{
+        app::{AiModelPickState, ModelPickRow},
+        headless::ReasoningLevel,
+        plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource},
+    };
+    let (mut app, dir) = if existing {
+        reviewed_feature_fixture(quick)
+    } else {
+        fixture(MockTmuxOps::new())
+    };
+    let workdir = app.store.projects[0].repo.clone();
+    std::fs::write(
+        workdir.join("README.md"),
+        "Repository invariant: parse without panics.",
+    )
+    .unwrap();
+    let reference = workdir.join("reference.md");
+    std::fs::write(
+        &reference,
+        "Reference requirement: preserve Unicode boundaries.",
+    )
+    .unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Check the Unicode parser design".into();
+        state.questions = vec![PlanQuestion {
+            id: "compatibility".into(),
+            text: "Must existing callers work?".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: false,
+        }];
+        state.answers = vec![Some("Preserve all existing callers".into())];
+        state.attached_docs = vec![reference];
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        state.expert_model_pick = Some(AiModelPickState::new(
+            &AgentKind::Codex,
+            vec![
+                ModelPickRow::Preset("test-model".into()),
+                ModelPickRow::Custom,
+            ],
+            1,
+            "my-review-model".into(),
+            Some(ReasoningLevel::High),
+        ));
+    }
+    app.model_analysis_work.discover = discover_only_current_harness;
+    app.model_analysis_work.runner = expert_answer;
+    (app, dir)
+}
+
+fn expert_answer(input: &RunInput) -> Result<String> {
+    assert_eq!(input.context.get("task_phase"), Some("Expert plan review"));
+    let task = input.context.get("task_context").unwrap();
+    for expected in [
+        "draft_plan",
+        "Check the Unicode parser design",
+        "Preserve all existing callers",
+        "Repository invariant",
+        "Reference requirement",
+        "missing requirements, risks, correctness",
+    ] {
+        assert!(task.contains(expected), "missing {expected}");
+    }
+    answer(input)
+}
+
+fn advice_key(app: &mut App, code: crossterm::event::KeyCode) {
+    crate::handlers::handle_key(
+        app,
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        20,
+    )
+    .unwrap();
+}
+
+#[test]
+fn expert_advice_at_new_existing_quick_and_todo_plans_returns_to_unchanged_picker() {
+    use crate::headless::ReasoningLevel;
+    for (existing, quick, todo) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (true, false, true),
+    ] {
+        let (mut app, _dir) = expert_fixture(existing, quick);
+        if todo {
+            let host = app.store.projects[0]
+                .features
+                .first()
+                .map_or("source".into(), |f| f.id.clone());
+            attach_todo(&mut app, &host);
+        }
+        advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if s.scope() == AdviceScope::ExpertPlanReview
+            && s.target.launch_path() == LaunchPath::Headless && matches!(s.status, Status::Ready(_)))
+        );
+        assert!(
+            app.apply_model_analysis()
+                .unwrap_err()
+                .to_string()
+                .contains("view-only")
+        );
+        advice_key(&mut app, crossterm::event::KeyCode::Enter);
+        assert!(matches!(app.mode, AppMode::ModelAnalysis(_)));
+        advice_key(&mut app, crossterm::event::KeyCode::Esc);
+        let AppMode::PlanInterview(state) = &app.mode else {
+            panic!()
+        };
+        let pick = state.expert_model_pick.as_ref().unwrap();
+        assert_eq!(pick.selected, 1);
+        assert_eq!(pick.custom_input, "my-review-model");
+        assert_eq!(pick.reasoning, Some(ReasoningLevel::High));
+        assert!(state.expert_model.is_none());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert!(
+            state
+                .pending_launch
+                .as_ref()
+                .is_none_or(|p| p.model_selection.is_none())
+        );
+        assert!(app.plan_interview_critique_bg.is_none());
+        assert!(app.model_analysis_work.launch_args.is_none());
+    }
+}
+
+#[test]
+fn expert_advice_uses_resolved_reviewer_instead_of_implementation_harness() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    app.store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+    app.model_analysis_work.discover = discover_claude;
+    app.model_analysis_work.now = || "2026-09-30T12:00:00Z".parse().unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.ai_harness = Some(Some(AgentKind::Claude));
+    }
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    let AppMode::ModelAnalysis(state) = &app.mode else {
+        panic!()
+    };
+    let Status::Ready(choices) = &state.status else {
+        panic!("{:?}", state.status)
+    };
+    assert!(
+        choices
+            .iter()
+            .all(|r| *r.choice.harness() == AgentKind::Claude)
+    );
+    app.cancel_model_analysis();
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.pending_launch.as_ref().unwrap().agent == AgentKind::Codex)
+    );
+}
+
+#[test]
+fn expert_advice_rejects_changed_interview_reviewer_and_destination() {
+    for change in 0..8 {
+        let (mut app, _dir) = expert_fixture(false, false);
+        app.open_model_analysis().unwrap();
+        if let AppMode::ModelAnalysis(state) = &mut app.mode {
+            let AppMode::PlanInterview(interview) = state.origin.as_mut() else {
+                panic!()
+            };
+            match change {
+                0 => interview.brief.push_str("Changed"),
+                1 => interview.answers[0] = Some("Different contract".into()),
+                2 => interview.questions[0].text.push_str("Changed"),
+                3 => interview.attached_docs.clear(),
+                4 => interview.ai_harness = Some(Some(AgentKind::Claude)),
+                5 => {
+                    interview.expert_model_pick = None;
+                }
+                6 => interview.apply_synthesis("Different plan".into()),
+                _ => {
+                    app.store.projects[0].id = "another-project".into();
+                }
+            }
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+        assert!(app.plan_interview_critique_bg.is_none());
+    }
+}
+
+#[test]
+fn expert_advice_rejects_reference_and_repository_changes_during_analysis() {
+    for change in 0..3 {
+        let (mut app, _dir) = expert_fixture(false, false);
+        app.model_analysis_work.runner = match change {
+            0 => |input| {
+                std::fs::write(input.workdir.join("reference.md"), "Changed reference")?;
+                answer(input)
+            },
+            1 => |input| {
+                std::fs::write(input.workdir.join("README.md"), "Changed repository")?;
+                answer(input)
+            },
+            _ => |input| {
+                std::fs::remove_file(input.workdir.join("reference.md"))?;
+                answer(input)
+            },
+        };
+        app.open_model_analysis().unwrap();
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+    }
+}
+
+#[test]
+fn expert_advice_hashes_reference_content_beyond_its_displayed_excerpt() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    let reference = app.store.projects[0].repo.join("reference.md");
+    std::fs::write(
+        &reference,
+        format!(
+            "{}original",
+            "x".repeat(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS)
+        ),
+    )
+    .unwrap();
+    app.model_analysis_work.runner = |input| {
+        std::fs::write(
+            input.workdir.join("reference.md"),
+            format!(
+                "{}changed",
+                "x".repeat(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS)
+            ),
+        )?;
+        answer(input)
+    };
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(&s.status, Status::Error(e) if e.contains("task context changed")))
+    );
+}
+
+#[test]
+fn expert_custom_model_typing_keeps_m_as_text_and_cancel_restores_picker() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.expert_model_pick.as_mut().unwrap().editing_custom = true;
+    }
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.expert_model_pick.as_ref().unwrap().custom_input == "my-review-modelm")
+    );
+    advice_key(&mut app, crossterm::event::KeyCode::Esc);
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    app.cancel_model_analysis();
+    assert!(!app.model_analysis_work.pending());
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.expert_model_pick.is_some() && s.phase == PlanInterviewPhase::Review)
+    );
+    assert!(app.plan_interview_critique_bg.is_none());
+}

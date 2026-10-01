@@ -172,6 +172,250 @@ fn poll(app: &mut App) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
+struct PreparedSession(session_control::Request);
+impl session_control::Prepared for PreparedSession {
+    fn commit(self: Box<Self>, _: &AtomicBool) -> Result<()> {
+        std::fs::write(
+            self.0.workdir.join("applied-setting"),
+            format!(
+                "{}:{}",
+                self.0.choice.model(),
+                self.0.choice.reasoning().unwrap()
+            ),
+        )?;
+        Ok(())
+    }
+}
+fn prepare_session(
+    request: &session_control::Request,
+    _: &AtomicBool,
+) -> Result<Box<dyn session_control::Prepared>> {
+    assert_eq!(request.thread_id, "exact-thread");
+    std::fs::write(request.workdir.join("prepared-setting"), "ready")?;
+    Ok(Box::new(PreparedSession(request.clone())))
+}
+fn live_session_fixture() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = session_fixture(SessionKind::Codex);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_window_exists().return_const(true);
+    app.tmux = Box::new(tmux);
+    app.store.projects[0].features[0].sessions[0].set_token_usage_source_exact(
+        crate::token_tracking::TokenUsageSource {
+            provider: crate::token_tracking::TokenUsageProvider::Codex,
+            id: "exact-thread".into(),
+        },
+    );
+    app.model_analysis_work.prepare_session = prepare_session;
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    (app, dir)
+}
+fn wait_for_prepared(app: &App) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !app.store.projects[0].repo.join("prepared-setting").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn live_session_application_revalidates_and_applies_once_without_launching() {
+    let (mut app, _dir) = live_session_fixture();
+    let session_id = app.store.projects[0].features[0].sessions[0].id.clone();
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s) if s.can_apply_session()));
+    app.apply_model_analysis().unwrap();
+    app.apply_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .contains("verified for subsequent turns")
+    );
+    assert_eq!(
+        std::fs::read_to_string(app.store.projects[0].repo.join("applied-setting")).unwrap(),
+        "test-model:low"
+    );
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    assert_eq!(app.store.projects[0].features[0].sessions[0].id, session_id);
+    assert!(app.model_analysis_work.launch_args.is_none());
+}
+
+#[test]
+fn cancelling_prepared_live_application_drops_control_without_mutation() {
+    let (mut app, _dir) = live_session_fixture();
+    app.apply_model_analysis().unwrap();
+    wait_for_prepared(&app);
+    app.cancel_model_analysis();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(!app.store.projects[0].repo.join("applied-setting").exists());
+    assert!(!app.poll_model_analysis());
+}
+
+#[test]
+fn changed_task_conversation_or_deleted_target_prevents_prepared_update() {
+    for change in ["plan", "conversation", "deleted", "configuration"] {
+        let (mut app, _dir) = live_session_fixture();
+        app.apply_model_analysis().unwrap();
+        wait_for_prepared(&app);
+        match change {
+            "plan" => std::fs::write(
+                app.store.projects[0].repo.join("AMF_PLAN.md"),
+                "Changed task",
+            )
+            .unwrap(),
+            "conversation" => {
+                app.store.projects[0].features[0].sessions[0]
+                    .token_usage_source
+                    .as_mut()
+                    .unwrap()
+                    .id = "another-thread".into()
+            }
+            "deleted" => app.store.projects[0].features.clear(),
+            "configuration" => app.store.available_harnesses.clear(),
+            _ => unreachable!(),
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "{change}"
+        );
+        assert!(!app.store.projects[0].repo.join("applied-setting").exists());
+    }
+}
+
+#[test]
+fn stopped_window_and_inferred_conversation_are_advice_only() {
+    let (mut app, _dir) = live_session_fixture();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(false);
+    app.tmux = Box::new(tmux);
+    assert!(app.apply_model_analysis().is_err());
+    assert!(!app.model_analysis_work.pending());
+    app.cancel_model_analysis();
+    app.store.projects[0].features[0].sessions[0].token_usage_source_match =
+        Some(crate::project::TokenUsageSourceMatch::Inferred);
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s) if !s.can_apply_session()));
+    assert!(app.apply_model_analysis().is_err());
+}
+
+#[test]
+fn live_control_error_retries_analysis_without_repeating_mutation() {
+    struct FailedUpdate;
+    impl session_control::Prepared for FailedUpdate {
+        fn commit(self: Box<Self>, _: &AtomicBool) -> Result<()> {
+            anyhow::bail!("Update could not be verified; inspect the harness settings");
+        }
+    }
+    let (mut app, _dir) = live_session_fixture();
+    app.model_analysis_work.prepare_session = |_, _| Ok(Box::new(FailedUpdate));
+    app.apply_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if !s.committing && s.session_apply.is_none() && matches!(s.status, Status::Error(_)))
+    );
+    app.model_analysis_work.prepare_session =
+        |_, _| panic!("Retry must analyze, not repeat update");
+    app.retry_model_analysis();
+    poll(&mut app);
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Ready(_))));
+}
+
+#[test]
+fn committed_update_cannot_be_cancelled_or_retried_while_verification_is_pending() {
+    struct BlockingUpdate(session_control::Request);
+    impl session_control::Prepared for BlockingUpdate {
+        fn commit(self: Box<Self>, _: &AtomicBool) -> Result<()> {
+            std::fs::write(self.0.workdir.join("committing-setting"), "pending")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !self.0.workdir.join("release-setting").exists() {
+                ensure!(
+                    Instant::now() < deadline,
+                    "test did not release settings verification"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(())
+        }
+    }
+    let (mut app, _dir) = live_session_fixture();
+    app.model_analysis_work.prepare_session =
+        |request, _| Ok(Box::new(BlockingUpdate(request.clone())));
+    app.apply_model_analysis().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !matches!(&app.mode, AppMode::ModelAnalysis(s) if s.committing) {
+        assert!(Instant::now() < deadline);
+        app.poll_model_analysis();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let generation = app.model_analysis_work.next;
+    app.cancel_model_analysis();
+    app.retry_model_analysis();
+    app.apply_model_analysis().unwrap();
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s) if s.committing));
+    assert_eq!(app.model_analysis_work.next, generation);
+    std::fs::write(app.store.projects[0].repo.join("release-setting"), "done").unwrap();
+    poll(&mut app);
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn worker_disconnect_after_committing_unlocks_navigation_without_claiming_success() {
+    let (mut app, _dir) = live_session_fixture();
+    let (tx, rx) = mpsc::channel();
+    drop(tx);
+    app.model_analysis_work.job = Some(Job {
+        cancelled: Arc::new(AtomicBool::new(false)),
+        rx,
+    });
+    if let AppMode::ModelAnalysis(s) = &mut app.mode {
+        s.committing = true;
+    }
+    assert!(app.poll_model_analysis());
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if !s.committing && matches!(&s.status, Status::Error(e) if e.contains("inspect the harness settings")))
+    );
+    app.cancel_model_analysis();
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn plan_changes_beyond_prompt_limit_and_expired_research_prevent_live_application() {
+    for expired in [false, true] {
+        let (mut app, _dir) = live_session_fixture();
+        if !expired {
+            app.cancel_model_analysis();
+            std::fs::write(
+                app.store.projects[0].repo.join("AMF_PLAN.md"),
+                "x".repeat(25_000),
+            )
+            .unwrap();
+            app.open_model_analysis().unwrap();
+            poll(&mut app);
+        }
+        app.apply_model_analysis().unwrap();
+        wait_for_prepared(&app);
+        if expired {
+            app.model_analysis_work.now = || "2026-11-01T12:00:00Z".parse().unwrap();
+        } else {
+            std::fs::write(
+                app.store.projects[0].repo.join("AMF_PLAN.md"),
+                format!("{}changed", "x".repeat(25_000)),
+            )
+            .unwrap();
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_)))
+        );
+        assert!(!app.store.projects[0].repo.join("applied-setting").exists());
+    }
+}
 #[test]
 fn dashboard_session_advice_uses_effective_plan_and_cannot_change_running_harness() {
     let (mut app, _dir) = session_fixture(SessionKind::Codex);
@@ -456,7 +700,7 @@ fn disconnected_and_old_generations_cannot_replace_current_request() {
         generation: generation + 1,
         target: target.clone(),
         allowed: vec![AgentKind::Codex],
-        result: Ok(Outcome::Advice(vec![])),
+        result: Ok(Outcome::Advice(vec![], None)),
     })
     .unwrap();
     assert!(!app.poll_model_analysis());
@@ -465,7 +709,7 @@ fn disconnected_and_old_generations_cannot_replace_current_request() {
         generation,
         target,
         allowed: vec![AgentKind::Codex],
-        result: Ok(Outcome::Advice(vec![])),
+        result: Ok(Outcome::Advice(vec![], None)),
     })
     .unwrap();
     assert!(app.poll_model_analysis());

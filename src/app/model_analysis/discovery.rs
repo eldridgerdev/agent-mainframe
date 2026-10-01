@@ -229,7 +229,7 @@ fn discover_codex(workdir: &Path, cancelled: &AtomicBool) -> Result<Vec<HarnessC
     Ok(vec![capability_from_models(&models)?])
 }
 
-fn is_openai_config(value: &Value) -> bool {
+pub(super) fn is_openai_config(value: &Value) -> bool {
     let config = &value["config"];
     // Null is the typed API's default OpenAI provider, not a missing response.
     (matches!(config.get("model_provider"), Some(Value::Null))
@@ -240,7 +240,7 @@ fn is_openai_config(value: &Value) -> bool {
                 .is_some_and(|m| m.is_empty()))
 }
 
-fn capability_from_models(value: &Value) -> Result<HarnessCapability> {
+pub(super) fn capability_from_models(value: &Value) -> Result<HarnessCapability> {
     let rows = value["data"].as_array().context("missing Codex models")?;
     let models = rows
         .iter()

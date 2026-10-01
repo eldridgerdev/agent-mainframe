@@ -436,9 +436,10 @@ construction. Cross-cutting changes can eliminate most reuse.
 
 Model and reasoning advice is implemented for new Full/Quick Plan review and
 existing Claude Code/Codex agent sessions. Plan-review selections apply to the
-initial implementation launch; existing-session advice leaves changing settings
-to the harness's model picker. Choices require verified account access, supported
-effort levels and fresh, attributable provider research. Task-specific quality,
+initial implementation launch. Exactly identified, loaded Codex conversations
+on an existing shared daemon can apply model/effort in place for subsequent turns;
+other sessions use the harness's model picker. Choices require verified account
+access, supported effort levels and fresh, attributable provider research. Task-specific quality,
 time and token totals remain unknown. See the
 [capability and evidence contract](../development/model-reasoning-analyzer.md).
 
@@ -446,7 +447,8 @@ time and token totals remain unknown. See the
 - [x] Validate available model/effort combinations and research provenance.
 - [x] Apply a selected setting to the initial implementation launch.
 - [ ] Add persistent stage-specific profiles for presets and workflows.
-- [ ] Verify a control boundary for applying changes to running harnesses.
+- [x] Verify an in-place control boundary for loaded Codex daemon conversations.
+- [ ] Verify live application for Claude Code and other harnesses, and explicit restart/resume actions.
 - [ ] Define comparable outcome evidence before using history or opt-in trials.
 
 The advice workflow does not complete the broader routing and evaluation work

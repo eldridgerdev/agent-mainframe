@@ -3,8 +3,9 @@
 Inventory and first-release implementation checked on 2026-09-29, with Claude
 Code discovery and research added on 2026-09-30, against
 `AMF_PLAN.md`. The headless inventory includes the subsequent reasoning-picker
-integration from main. Live application to existing sessions remains outside the
-verified launch scope.
+integration from main. In-place Codex session application was verified on
+2026-10-01 against Codex 0.159.3's installed protocol and an isolated no-turn
+probe. Other harnesses retain view-only session advice.
 
 ## Configuration and availability
 
@@ -218,7 +219,7 @@ analyzer score, aggregation or historical measurement is derived from them.
 | On-demand plan for existing feature | Plan plus live-session continuity; no new implementation launch | Deferred |
 | TODO into host/new feature | Destination/reservation/rollback semantics | Deferred |
 | Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
-| Existing agent session | Feature name/summary and effective plan when present; advice for the current harness | Dashboard session `m` or pane leader `B`; view-only |
+| Existing agent session | Feature name/summary and effective plan when present; advice for the current harness | Dashboard session `m` or pane leader `B`; apply in place for exactly identified Codex daemon conversations, otherwise view-only |
 
 A selection affects the initial implementation agent launch only. It returns to
 plan review; accepting the plan still controls launch and resource confirmation.
@@ -229,11 +230,66 @@ For an existing session, the analyzer only offers settings for that session's
 verified harness. The worker reads the effective plan alongside feature name
 and summary, then checks that task context again before accepting a result.
 Changing or deleting the session, feature or configured harnesses invalidates
-pending advice. This path does not reconfigure or restart an active harness;
-interactive startup arguments cannot change a process that is already running.
-The session view directs the user to the harness's own model picker. Live
-application and the unidentified “all 3” existing-session actions remain
-separate work until AMF has a verified control boundary for them.
+pending advice. The entire effective plan is fingerprinted even when the prompt
+includes only its first 24,000 characters. In-place application uses the control
+boundary below; startup arguments cannot change an already-running process.
+Sessions without that boundary use their harness's own model picker. Explicit
+restart/resume and the unidentified “all 3” actions remain separate work.
+
+### In-place existing-session application
+
+Codex advice offers Enter to apply when AMF has an exact Codex conversation
+association, supplied by harness notifications or an explicit saved-session
+selection. Inferred transcript matches and unknown associations stay view-only.
+Application requires an existing tmux session/window and a loaded conversation
+on the running local shared daemon. `codex app-server proxy` connects without
+starting a daemon. AMF performs an HTTP Upgrade handshake and sends WebSocket
+text frames through this raw byte tunnel; it does not send JSONL to the proxy.
+Handshake, reads and writes obey cancellation and a 30-second deadline, with
+bounded buffering and frame sizes. A missing connection or unsupported protocol produces an
+error; AMF does not restart a harness, load a thread, send a user turn or modify
+user defaults to work around it.
+
+A preparation worker verifies the daemon's OpenAI authentication, provider
+configuration in the target workdir, absence of unverifiable managed requirements,
+picker catalog and exact model/effort eligibility. `thread/read` must return the
+exact conversation ID, matching canonical workdir, OpenAI provider, loaded
+idle/active status and effective model/effort fields. Main-loop acceptance checks
+the target/configuration again, the analyzed task fingerprint, research freshness
+and the tmux window before authorizing the update. Cancellation before that point
+drops the connection without sending a settings change.
+
+The commit worker repeats eligibility checks and live identity inspection on the
+same connection, rejects intervening native model/effort changes, and sends only
+`threadId`, `model` and `effort` to `thread/settings/update`. `thread/read` then
+must confirm the exact model/effort result. Permissions, service tier, collaboration
+mode, workdir and defaults are omitted from the update. Duplicate Enter presses
+cannot send another update. While an authorized update is being verified, Back
+and Retry wait for the bounded connection operation to finish; cancellation can
+no longer guarantee that settings were unchanged. An error after sending the
+update tells the user to inspect the harness settings. Retry performs a fresh
+analysis rather than replaying an unconfirmed mutation.
+
+The protocol's generated `ThreadSettingsUpdateParams` describes model and effort
+as overrides for subsequent turns, and its `Thread` reports current configured
+model and reasoning effort while loaded. Codex 0.159.3's isolated ephemeral
+conversation probe changed high to low and confirmed it with `thread/read`, with
+zero user turns. A second probe over a real proxy and isolated Unix control
+socket confirmed both the readback and settings notification, including the
+matching effort in collaboration settings. A further no-turn probe changed both
+model and effort in plan mode, preserving the mode, its developer instructions,
+permissions, workdir and service tier. These fields verify configuration, not per-turn performance or
+usage. The general [app-server documentation](https://learn.chatgpt.com/docs/app-server)
+documents loaded-thread reads; this experimental update method was verified from
+installed generated bindings and actual execution rather than assumed from the
+general documentation. Older or independently running CLIs may lack this boundary.
+
+Claude's interactive launcher has no verified external SDK-control connection.
+Its native effort picker distinguishes saving defaults with Enter from applying
+to the current session with `s` in supported versions; blindly submitting an
+`/effort` command could change defaults. See [Claude model configuration](https://code.claude.com/docs/en/model-config).
+Claude automatic application remains unavailable. OpenCode and Pi still lack
+verified analyzer discovery and application contracts.
 
 The advice dialog presents model, effort and focus in a highlighted settings
 table. The default view keeps tradeoffs and unknown measurements concise;

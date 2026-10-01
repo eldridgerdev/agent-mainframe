@@ -1,5 +1,6 @@
 //! Scoped model advice and the final pre-launch validation.
 mod discovery;
+mod session_control;
 #[cfg(test)]
 mod tests;
 
@@ -10,14 +11,14 @@ use super::{
 use crate::{
     headless::HeadlessRunner,
     model_evidence::{
-        Recommendation, prompt_context, prompt_context_for_task, render_analysis_prompt,
-        research_notes, validate_response,
+        Recommendation, ResearchNote, prompt_context, prompt_context_for_task,
+        render_analysis_prompt, research_notes, validate_response,
     },
     model_options::{EligibleOptions, HarnessCapability, LaunchPath, ModelChoice},
     project::{AgentKind, SessionKind},
     prompts::{PromptContext, PromptId},
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::{
@@ -58,6 +59,9 @@ pub struct State {
     pub(crate) show_sources: bool,
     launch: Option<PendingPlanLaunch>,
     apply: Option<Selection>,
+    session_apply: Option<SessionApplication>,
+    task_context: Option<String>,
+    committing: bool,
     saved_feature_id: Option<String>,
     generation: u64,
 }
@@ -85,6 +89,7 @@ enum TargetKind {
         feature_name: String,
         summary: Option<String>,
         selected_plan_path: Option<PathBuf>,
+        exact_conversation: Option<String>,
     },
 }
 impl Target {
@@ -120,6 +125,7 @@ impl Target {
                     let body = std::fs::read_to_string(plan.path())?;
                     context.push_str("\nCurrent plan:\n");
                     context.extend(body.chars().take(24_000));
+                    context.push_str(&format!("\nPlan fingerprint: {}", fingerprint(&body)));
                 }
                 Ok((context, "existing agent session"))
             }
@@ -139,12 +145,33 @@ fn session_agent(kind: &SessionKind) -> Option<AgentKind> {
 
 impl State {
     pub(crate) fn is_checking_setting(&self) -> bool {
-        self.launch.is_some() || self.apply.is_some()
+        self.launch.is_some() || self.apply.is_some() || self.session_apply.is_some()
     }
 
     pub(crate) fn is_existing_session(&self) -> bool {
         self.target.is_session()
     }
+
+    pub(crate) fn can_apply_session(&self) -> bool {
+        matches!(
+            &self.target.kind,
+            TargetKind::Session {
+                exact_conversation: Some(_),
+                ..
+            }
+        ) && self.target.preferred == AgentKind::Codex
+    }
+
+    pub(crate) fn is_committing(&self) -> bool {
+        self.committing
+    }
+}
+
+#[derive(Clone)]
+struct SessionApplication {
+    request: session_control::Request,
+    task_context: String,
+    evidence: Vec<ResearchNote>,
 }
 
 pub(crate) struct RunInput {
@@ -197,6 +224,8 @@ pub(crate) struct Work {
     next: u64,
     pub launch_args: Option<LaunchOverride>,
     pub now: fn() -> chrono::DateTime<Utc>,
+    prepare_session:
+        fn(&session_control::Request, &AtomicBool) -> Result<Box<dyn session_control::Prepared>>,
 }
 pub(crate) struct LaunchOverride {
     pub feature_id: String,
@@ -212,6 +241,7 @@ impl Default for Work {
             next: 0,
             launch_args: None,
             now: Utc::now,
+            prepare_session: session_control::prepare,
         }
     }
 }
@@ -231,8 +261,10 @@ struct Completion {
     result: Result<Outcome, String>,
 }
 enum Outcome {
-    Advice(Vec<Recommendation>),
+    Advice(Vec<Recommendation>, Option<String>),
     Validated(EligibleOptions),
+    SessionPrepared(Box<dyn session_control::Prepared>),
+    SessionApplied,
 }
 impl Work {
     pub fn pending(&self) -> bool {
@@ -244,6 +276,19 @@ impl Work {
 }
 
 impl App {
+    fn session_window_exists(&self, target: &Target) -> bool {
+        match &target.kind {
+            TargetKind::Session {
+                tmux_session,
+                window,
+                ..
+            } => {
+                self.tmux.session_exists(tmux_session)
+                    && self.tmux.window_exists(tmux_session, window)
+            }
+            _ => false,
+        }
+    }
     pub(crate) fn model_analysis_available(&self) -> bool {
         matches!(&self.mode,AppMode::PlanInterview(s) if s.phase==PlanInterviewPhase::Review && s.todo_origin.is_none() && s.pending_launch.as_ref().is_some_and(|p|p.todo_origin.is_none()))
     }
@@ -278,6 +323,16 @@ impl App {
                 feature_name: feature.name.clone(),
                 summary: feature.summary.clone(),
                 selected_plan_path: feature.selected_plan_path.clone(),
+                exact_conversation: session
+                    .token_usage_source
+                    .as_ref()
+                    .filter(|source| {
+                        source.provider == crate::token_tracking::TokenUsageProvider::Codex
+                            && session.token_usage_source_match
+                                == Some(crate::project::TokenUsageSourceMatch::Exact)
+                            && !source.id.trim().is_empty()
+                    })
+                    .map(|source| source.id.clone()),
             },
         })
     }
@@ -364,6 +419,9 @@ impl App {
             show_sources: false,
             launch: None,
             apply: None,
+            session_apply: None,
+            task_context: None,
+            committing: false,
             saved_feature_id: None,
             generation: 0,
         }));
@@ -371,6 +429,9 @@ impl App {
         Ok(())
     }
     pub(crate) fn cancel_model_analysis(&mut self) {
+        if matches!(&self.mode, AppMode::ModelAnalysis(s) if s.committing) {
+            return;
+        }
         self.model_analysis_work.cancel();
         if let AppMode::ModelAnalysis(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
             self.mode = *state.origin;
@@ -378,12 +439,16 @@ impl App {
         self.message = None;
     }
     pub(crate) fn retry_model_analysis(&mut self) {
+        if matches!(&self.mode, AppMode::ModelAnalysis(s) if s.committing) {
+            return;
+        }
         self.model_analysis_work.cancel();
         let AppMode::ModelAnalysis(state) = &self.mode else {
             return;
         };
         let target = state.target.clone();
         let launch = state.launch.is_some() || state.apply.is_some();
+        let session_apply = state.session_apply.clone();
         let setup = (|| -> Result<_> {
             ensure!(
                 self.model_target(&state.origin)? == target,
@@ -419,7 +484,7 @@ impl App {
                     .cloned()
                     .collect::<Vec<_>>()
             };
-            let notes = if launch {
+            let notes = if launch || session_apply.is_some() {
                 vec![]
             } else {
                 let db = self
@@ -466,10 +531,28 @@ impl App {
         let discover = self.model_analysis_work.discover;
         let runner = self.model_analysis_work.runner;
         let now_fn = self.model_analysis_work.now;
+        let prepare_session = self.model_analysis_work.prepare_session;
         let (tx, rx) = mpsc::channel();
         self.model_analysis_work.job = Some(Job { cancelled, rx });
         std::thread::spawn(move || {
             let result = (|| -> Result<Outcome> {
+                if let Some(application) = session_apply {
+                    ensure!(
+                        target.task_context()?.0 == application.task_context,
+                        "Session task changed; retry analysis"
+                    );
+                    ensure!(
+                        application
+                            .evidence
+                            .iter()
+                            .all(|n| n.applies(&application.request.choice, now_fn())),
+                        "Research expired; retry analysis"
+                    );
+                    return Ok(Outcome::SessionPrepared(prepare_session(
+                        &application.request,
+                        &worker_cancel,
+                    )?));
+                }
                 let caps = discover(&target.workdir, &choice_allowed, &worker_cancel)?;
                 ensure!(!worker_cancel.load(Ordering::Relaxed), "analysis cancelled");
                 let options = EligibleOptions::new(&choice_allowed, &caps, LaunchPath::Interactive);
@@ -482,7 +565,7 @@ impl App {
                     .iter()
                     .any(|c| notes.iter().any(|n| n.applies(c, now)))
                 {
-                    return Ok(Outcome::Advice(vec![]));
+                    return Ok(Outcome::Advice(vec![], None));
                 }
                 let (task_context, task_phase) = target.task_context()?;
                 let context = if target.is_session() {
@@ -505,12 +588,10 @@ impl App {
                         "session task context changed during analysis; retry"
                     );
                 }
-                Ok(Outcome::Advice(validate_response(
-                    &raw,
-                    &options,
-                    &notes,
-                    now_fn(),
-                )?))
+                Ok(Outcome::Advice(
+                    validate_response(&raw, &options, &notes, now_fn())?,
+                    target.is_session().then_some(task_context),
+                ))
             })()
             .map_err(|e| e.to_string());
             let _ = tx.send(Completion {
@@ -532,7 +613,11 @@ impl App {
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
                 self.model_analysis_work.cancel();
                 if let AppMode::ModelAnalysis(s) = &mut self.mode {
-                    s.status = Status::Error("Analyzer worker stopped; retry when ready".into());
+                    s.status = Status::Error(if s.committing {
+                        "Settings verification worker stopped; inspect the harness settings before retrying"
+                    } else { "Analyzer worker stopped; retry when ready" }.into());
+                    s.committing = false;
+                    s.session_apply = None;
                 }
                 return true;
             }
@@ -562,23 +647,34 @@ impl App {
                         f.id == *id && f.workdir == prepared.workdir && f.agent == prepared.agent
                     })
             });
+        let was_committing = state.committing;
         self.model_analysis_work.cancel();
+        if let AppMode::ModelAnalysis(s) = &mut self.mode {
+            s.committing = false;
+        }
         if !valid {
+            if was_committing {
+                self.log_warn("model", "Session target changed while verifying its settings update; inspect that conversation's settings".into());
+            }
             if let AppMode::ModelAnalysis(s) = &mut self.mode {
                 s.status = Status::Error(
-                    "Target or configured harnesses changed; return to plan review".into(),
+                    if was_committing { "Target changed while verifying the update; inspect the conversation's settings" }
+                    else { "Target or configured harnesses changed; return to the originating workflow" }.into(),
                 );
+                s.session_apply = None;
             }
             return true;
         }
         match completion.result {
             Err(e) => {
                 if let AppMode::ModelAnalysis(s) = &mut self.mode {
-                    s.status = Status::Error(e)
+                    s.status = Status::Error(e);
+                    s.session_apply = None;
                 }
             }
-            Ok(Outcome::Advice(choices)) => {
+            Ok(Outcome::Advice(choices, task_context)) => {
                 if let AppMode::ModelAnalysis(s) = &mut self.mode {
+                    s.task_context = task_context;
                     s.selected = 0;
                     s.status = if choices.is_empty() {
                         Status::Insufficient
@@ -586,6 +682,73 @@ impl App {
                         Status::Ready(choices)
                     }
                 }
+            }
+            Ok(Outcome::SessionPrepared(prepared)) => {
+                let checked = (|| -> Result<_> {
+                    let AppMode::ModelAnalysis(s) = &self.mode else {
+                        unreachable!()
+                    };
+                    let application = s
+                        .session_apply
+                        .as_ref()
+                        .context("Missing session selection")?;
+                    ensure!(
+                        s.target.task_context()?.0 == application.task_context,
+                        "Session task changed; retry analysis"
+                    );
+                    ensure!(
+                        self.session_window_exists(&s.target),
+                        "Session stopped or was removed; use its own model picker"
+                    );
+                    ensure!(
+                        application.evidence.iter().all(|n| n.applies(
+                            &application.request.choice,
+                            (self.model_analysis_work.now)()
+                        )),
+                        "Research expired; retry analysis"
+                    );
+                    Ok(())
+                })();
+                if let Err(e) = checked {
+                    if let AppMode::ModelAnalysis(s) = &mut self.mode {
+                        s.status = Status::Error(e.to_string());
+                        s.session_apply = None;
+                    }
+                } else {
+                    let AppMode::ModelAnalysis(s) = &mut self.mode else {
+                        unreachable!()
+                    };
+                    s.committing = true;
+                    let generation = s.generation;
+                    let target = completion.target;
+                    let allowed = completion.allowed;
+                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let worker_cancel = cancelled.clone();
+                    let (tx, rx) = mpsc::channel();
+                    self.model_analysis_work.job = Some(Job { cancelled, rx });
+                    std::thread::spawn(move || {
+                        let result = prepared
+                            .commit(&worker_cancel)
+                            .map(|_| Outcome::SessionApplied)
+                            .map_err(|e| format!("{e:#}"));
+                        let _ = tx.send(Completion {
+                            generation,
+                            target,
+                            allowed,
+                            result,
+                        });
+                    });
+                }
+            }
+            Ok(Outcome::SessionApplied) => {
+                let AppMode::ModelAnalysis(s) = std::mem::replace(&mut self.mode, AppMode::Normal)
+                else {
+                    unreachable!()
+                };
+                self.mode = *s.origin;
+                self.message = Some(
+                    "Model and effort verified for subsequent turns in this conversation.".into(),
+                );
             }
             Ok(Outcome::Validated(options)) => {
                 let selection = match &self.mode {
@@ -683,18 +846,13 @@ impl App {
         let AppMode::ModelAnalysis(s) = &self.mode else {
             return Ok(());
         };
-        if s.launch.is_some() || s.apply.is_some() {
+        if s.launch.is_some() || s.apply.is_some() || s.session_apply.is_some() {
             return Ok(());
         }
-        ensure!(
-            !s.target.is_session(),
-            "Advice for an existing session is view-only; use the harness's own model picker to change settings"
-        );
         ensure!(
             self.model_target(&s.origin)? == s.target,
             "implementation task changed"
         );
-        let (prepared, plan) = s.target.plan().expect("plan advice target");
         let Status::Ready(choices) = &s.status else {
             return Ok(());
         };
@@ -707,6 +865,41 @@ impl App {
                 .all(|n| n.applies(&r.choice, (self.model_analysis_work.now)())),
             "research expired; retry analysis"
         );
+        if s.target.is_session() {
+            ensure!(
+                s.can_apply_session(),
+                "Live application requires an exactly identified Codex conversation; use the harness's own model picker"
+            );
+            ensure!(
+                self.session_window_exists(&s.target),
+                "Session stopped or was removed"
+            );
+            let TargetKind::Session {
+                exact_conversation: Some(thread_id),
+                ..
+            } = &s.target.kind
+            else {
+                unreachable!()
+            };
+            let application = SessionApplication {
+                request: session_control::Request {
+                    thread_id: thread_id.clone(),
+                    workdir: s.target.workdir.clone(),
+                    choice: r.choice.clone(),
+                },
+                task_context: s
+                    .task_context
+                    .clone()
+                    .context("Missing analyzed session context; retry analysis")?,
+                evidence: r.evidence.clone(),
+            };
+            if let AppMode::ModelAnalysis(s) = &mut self.mode {
+                s.session_apply = Some(application);
+            }
+            self.retry_model_analysis();
+            return Ok(());
+        }
+        let (prepared, plan) = s.target.plan().expect("plan advice target");
         let selection = Selection {
             choice: r.choice.clone(),
             project_id: s.target.project_id.clone(),
@@ -752,6 +945,9 @@ impl App {
             show_sources: false,
             launch: Some(pending),
             apply: None,
+            session_apply: None,
+            task_context: None,
+            committing: false,
             saved_feature_id: None,
             generation: 0,
         }));

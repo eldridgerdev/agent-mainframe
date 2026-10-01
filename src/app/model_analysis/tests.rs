@@ -1036,6 +1036,49 @@ fn todo_selection_is_invalidated_between_application_and_acceptance() {
 }
 
 #[test]
+fn todo_target_ignores_list_churn_that_leaves_the_todo_unchanged() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    let before = app.model_target(&app.mode).unwrap();
+    let db = app.db.as_ref().unwrap();
+    db.add_todo(
+        &origin.list_id,
+        "Unrelated sibling",
+        None,
+        crate::db::todos::TodoPriority::Low,
+    )
+    .unwrap();
+    db.set_todo_carry_over(&origin.list_id, Some("left off here"))
+        .unwrap();
+    let mut todo = db.find_todo_by_id(&origin.todo_id).unwrap().unwrap();
+    todo.sort_order += 10;
+    db.update_todo(&todo).unwrap();
+    assert_eq!(app.model_target(&app.mode).unwrap(), before);
+    todo.body = Some("Changed after selection".into());
+    db.update_todo(&todo).unwrap();
+    assert_ne!(app.model_target(&app.mode).unwrap(), before);
+}
+
+#[test]
+fn plan_review_hides_model_advice_where_it_cannot_open() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    assert!(app.model_analysis_available());
+    attach_todo(&mut app, "source");
+    assert!(app.model_analysis_available());
+    app.db = None;
+    assert!(!app.model_analysis_available());
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+    assert!(app.message.as_deref().unwrap().contains("TODO database"));
+
+    let (mut app, _dir) = reviewed_feature_fixture(false);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.synthesized_plan = Some("  ".into());
+    }
+    assert!(!app.model_analysis_available());
+}
+
+#[test]
 fn cancelled_todo_advice_drops_late_results_without_changing_reservation() {
     let (mut app, _dir) = fixture(MockTmuxOps::new());
     let origin = attach_todo(&mut app, "source");

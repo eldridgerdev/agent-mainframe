@@ -1701,6 +1701,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    let model_advice = app.model_analysis_available();
     if let AppMode::PlanInterview(state) = &mut app.mode {
         super::dialogs::draw_plan_interview_dialog(
             frame,
@@ -1708,6 +1709,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.message.as_deref(),
             &app.theme,
             &app.throbber_state,
+            model_advice,
         );
         return;
     }

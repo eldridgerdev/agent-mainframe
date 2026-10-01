@@ -74,6 +74,9 @@ are tagged.
 
 ### Fixed
 
+- **TODO model choices survive unrelated list changes.** Reordering items,
+  adding another TODO or editing the list scratchpad keeps a valid choice.
+
 - **Automation example and template JSON no longer include `enable_notes`.**
   AMF never read that field. The `create-feature` template now lists
   `plan_mode` and `create_terminal`.

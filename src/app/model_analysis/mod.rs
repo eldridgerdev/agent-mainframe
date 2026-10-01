@@ -372,7 +372,28 @@ impl Work {
 
 impl App {
     pub(crate) fn model_analysis_available(&self) -> bool {
-        matches!(&self.mode, AppMode::PlanInterview(s) if s.phase == PlanInterviewPhase::Review)
+        self.model_analysis_unavailable_reason().is_none()
+    }
+    /// Why `m` cannot open plan-review advice right now, checked cheaply on
+    /// every frame so the hint is only offered where `model_target` can pass.
+    /// The same preconditions are re-checked (with the DB lookup) on open.
+    pub(crate) fn model_analysis_unavailable_reason(&self) -> Option<&'static str> {
+        let AppMode::PlanInterview(s) = &self.mode else {
+            return Some("model advice requires plan review or an agent session");
+        };
+        if s.phase != PlanInterviewPhase::Review {
+            return Some("model advice is available once the plan is ready for review");
+        }
+        if s.synthesized_plan
+            .as_deref()
+            .is_none_or(|p| p.trim().is_empty())
+        {
+            return Some("model advice needs a reviewed implementation plan");
+        }
+        if s.todo_origin.is_some() && self.db.is_none() {
+            return Some("model advice for a TODO plan needs the TODO database");
+        }
+        None
     }
     fn session_model_target(&self, pi: usize, fi: usize, si: usize) -> Result<Target> {
         let project = self

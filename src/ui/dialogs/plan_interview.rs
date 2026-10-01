@@ -31,6 +31,7 @@ pub fn draw_plan_interview_dialog(
     message: Option<&str>,
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
+    model_advice: bool,
 ) {
     // The whole review gate shares one frame size so moving between the plan,
     // its editor, and an agent review does not resize the dialog underfoot.
@@ -135,9 +136,9 @@ pub fn draw_plan_interview_dialog(
     }
 
     if state.phase == PlanInterviewPhase::Review {
-        draw_plan_review(frame, inner, state, message, theme);
+        draw_plan_review(frame, inner, state, message, theme, model_advice);
         if state.expert_model_pick.is_some() {
-            draw_expert_model_picker(frame, state, theme);
+            draw_expert_model_picker(frame, state, theme, model_advice);
         }
         return;
     }
@@ -241,7 +242,12 @@ pub fn draw_plan_interview_dialog(
     frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
 }
 
-fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme: &Theme) {
+fn draw_expert_model_picker(
+    frame: &mut Frame,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    model_advice: bool,
+) {
     let Some(pick) = state.expert_model_pick.as_ref() else {
         return;
     };
@@ -324,7 +330,12 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
         } else {
             "h/l effort  "
         };
-        format!("j/k choose  Enter {action}  Esc cancel\n{effort}m model advice for this review")
+        let advice = if model_advice {
+            "m model advice for this review"
+        } else {
+            ""
+        };
+        format!("j/k choose  Enter {action}  Esc cancel\n{effort}{advice}")
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
@@ -982,6 +993,7 @@ fn draw_plan_review(
     state: &mut PlanInterviewState,
     message: Option<&str>,
     theme: &Theme,
+    model_advice: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1030,7 +1042,7 @@ fn draw_plan_review(
                 .add_modifier(Modifier::ITALIC),
         ))
     };
-    let hints = Line::from(vec![
+    let mut hints = vec![
         hint("j/k", theme),
         Span::raw(" scroll  "),
         hint("e", theme),
@@ -1049,8 +1061,11 @@ fn draw_plan_review(
         Span::raw(" investigate  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
-        hint("m", theme),
-        Span::raw(" model advice  "),
+    ];
+    if model_advice {
+        hints.extend([hint("m", theme), Span::raw(" model advice  ")]);
+    }
+    hints.extend([
         hint("Enter", theme),
         Span::raw(" accept  "),
         hint("Ctrl+Q", theme),
@@ -1059,7 +1074,7 @@ fn draw_plan_review(
         Span::raw(" abort"),
     ]);
     frame.render_widget(
-        Paragraph::new(vec![context, hints])
+        Paragraph::new(vec![context, Line::from(hints)])
             .style(Style::default().bg(theme.effective_header_bg()))
             .wrap(Wrap { trim: false }),
         chunks[1],
@@ -1648,7 +1663,7 @@ mod tests {
             ));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal
-                .draw(|frame| draw_expert_model_picker(frame, &state, &Theme::default()))
+                .draw(|frame| draw_expert_model_picker(frame, &state, &Theme::default(), true))
                 .unwrap();
             let text = terminal
                 .backend()

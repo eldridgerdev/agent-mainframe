@@ -247,8 +247,9 @@ New-feature TODO plans can apply a selection through the same initial-launch
 boundary as other new plans, including fresh discovery after resource approval.
 Evidence is loaded for the resolved **destination project/repo**, even when the
 TODO originates in a global list or another project. Advice reads the live TODO
-and owning list from the DB and snapshots their data along with the resolved
-review target. Edits, completion, deletion, moves, list/host changes, destination
+and owning list from the DB and snapshots task content, work status/links and
+owner identity along with the resolved review target. Unrelated sibling edits,
+list timestamps/scratchpad changes and reordering do not invalidate the choice. Edits, completion, deletion, moves, list/host changes, destination
 changes and changed configuration reject pending results. The source snapshot
 also travels with a selection, so changing a TODO between application and plan
 acceptance invalidates it. Cancellation leaves the plan and reservation intact.
@@ -385,3 +386,16 @@ an isolated tmux socket with eight parallel threads; the existing live-GitHub te
 remained ignored by default. Mocked workflows verified source/destination
 isolation, stale TODO/feature rejection, resource-confirmation revalidation,
 initial launch arguments, TODO links and retry behavior. No paid trials ran.
+
+
+Expert-review expansion validation on 2026-10-01 used stable Rust 1.99. Focused
+model/analyzer and Expert-picker checks, plan/TODO suites and the locked build
+passed. The full parallel workspace suite passed 3,061 library tests and seven
+GUI tests; one existing live-GitHub test remained ignored by default. Additional
+coverage verifies reviewer/implementation separation, picker restoration,
+reference/repository edits (including changes beyond reference excerpts), custom
+model typing and TODO list changes unrelated to the selected task. Formatting
+and strict workspace/all-target Clippy passed with warnings denied; the two
+existing-main Rust 1.99 lint failures were fixed without suppressions. Seven
+asserted screenshot frames use isolated plans and mocked discovery/responses;
+no paid agents, critique runs or trials were launched by the scenario.

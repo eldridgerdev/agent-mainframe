@@ -80,6 +80,8 @@ fn handle_ai_model_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Esc | KeyCode::Char('q') => app.ai_review_model_pick_cancel(),
         KeyCode::Down | KeyCode::Char('j') => app.ai_review_model_pick_move(1),
         KeyCode::Up | KeyCode::Char('k') => app.ai_review_model_pick_move(-1),
+        KeyCode::Right | KeyCode::Char('l') => app.ai_review_reasoning_pick_cycle(1),
+        KeyCode::Left | KeyCode::Char('h') => app.ai_review_reasoning_pick_cycle(-1),
         KeyCode::Enter => app.ai_review_model_pick_confirm(),
         _ => {}
     }

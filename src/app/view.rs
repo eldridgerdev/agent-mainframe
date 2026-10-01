@@ -103,7 +103,42 @@ impl App {
             .and_then(|p| p.features.get(fi))
             .is_some_and(|feature| feature.status == ProjectStatus::Stopped);
 
-        if self.ensure_feature_running(pi, fi, intent)? == Started::Parked {
+        // Opening a session that was stopped individually means wanting it
+        // running again, whether or not the rest of its feature is up.
+        let stopped_target = target_si.filter(|&si| {
+            self.store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .and_then(|f| f.sessions.get(si))
+                .is_some_and(|s| s.stopped)
+        });
+        let started = match stopped_target {
+            Some(si) if !feature_was_stopped => {
+                if self.gate_launch(intent) == Started::Parked {
+                    Started::Parked
+                } else {
+                    // Nothing recreated means the feature's tmux session is
+                    // gone too, so the feature start has to include it.
+                    self.restart_stopped_session_window_unchecked(pi, fi, si)?;
+                    let target = self.session_id_at(pi, fi, si);
+                    self.ensure_feature_running_with_target(
+                        pi,
+                        fi,
+                        target.as_deref(),
+                        StartIntent::Approved,
+                    )?
+                }
+            }
+            // A parked start leaves the stop in place: the replay targets the
+            // session again on confirm, and a cancel keeps it stopped.
+            Some(si) => {
+                let target = self.session_id_at(pi, fi, si);
+                self.ensure_feature_running_with_target(pi, fi, target.as_deref(), intent)?
+            }
+            None => self.ensure_feature_running(pi, fi, intent)?,
+        };
+        if started == Started::Parked {
             // The confirmation dialog owns the screen now; it replays this
             // call if the user says yes.
             return Ok(());
@@ -122,19 +157,15 @@ impl App {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
 
+            // From the feature row, open its first agent that is actually
+            // running, then anything running, before settling for a stopped one.
             let si = target_si.unwrap_or_else(|| {
-                feature
-                    .sessions
+                let sessions = &feature.sessions;
+                sessions
                     .iter()
-                    .position(|s| {
-                        matches!(
-                            s.kind,
-                            SessionKind::Claude
-                                | SessionKind::Opencode
-                                | SessionKind::Codex
-                                | SessionKind::Pi
-                        )
-                    })
+                    .position(|s| s.kind.is_agent_harness() && s.runs_with_feature())
+                    .or_else(|| sessions.iter().position(|s| s.runs_with_feature()))
+                    .or_else(|| sessions.iter().position(|s| s.kind.is_agent_harness()))
                     .unwrap_or(0)
             });
 
@@ -1333,12 +1364,13 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        // Only cycle sessions with a live pane: native ones (TODOs) have none,
+        // and neither does one stopped individually.
         let tmux_indices: Vec<usize> = feature
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .filter(|(_, s)| s.runs_with_feature())
             .map(|(i, _)| i)
             .collect();
         if tmux_indices.len() <= 1 {
@@ -1387,12 +1419,13 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        // Only cycle sessions with a live pane: native ones (TODOs) have none,
+        // and neither does one stopped individually.
         let tmux_indices: Vec<usize> = feature
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .filter(|(_, s)| s.runs_with_feature())
             .map(|(i, _)| i)
             .collect();
         if tmux_indices.len() <= 1 {

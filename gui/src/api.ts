@@ -24,6 +24,8 @@ export interface FeatureSession {
   kind: string;
   label: string;
   tmux_window: string;
+  /** Stopped on its own while its feature runs; omitted when false. */
+  stopped?: boolean;
 }
 
 export interface Feature {
@@ -149,6 +151,20 @@ export interface StopFeatureResponse {
   message: string;
 }
 
+export interface StartSessionResponse {
+  session_id: string;
+  already_running: boolean;
+  message: string;
+}
+
+export interface StopSessionResponse {
+  session_id: string;
+  already_stopped: boolean;
+  /** It was the feature's last running session, so the feature stopped too. */
+  feature_stopped: boolean;
+  message: string;
+}
+
 export type NewSessionKind = AgentSlug | "terminal" | "nvim";
 
 export interface NewSessionOption {
@@ -221,6 +237,17 @@ export function stopFeature(
   target: FeatureTarget,
 ): Promise<StopFeatureResponse> {
   return invoke("stop_feature", { target });
+}
+
+export function startSession(
+  target: SessionTarget,
+  approved = false,
+): Promise<StartSessionResponse> {
+  return invoke("start_session", { target, approved });
+}
+
+export function stopSession(target: SessionTarget): Promise<StopSessionResponse> {
+  return invoke("stop_session", { target });
 }
 
 // Mirrors `gui_todos`'s Rust types (src/gui_todos.rs, src/db/todos.rs).

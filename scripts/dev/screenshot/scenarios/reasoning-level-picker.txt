@@ -1,0 +1,70 @@
+# reasoning-level-picker: the AI Review model picker (`A` in an AiReview pane)
+# now carries a Reasoning row, cycled with h/l. Levels are per-harness; Codex
+# stops at `xhigh` (Claude offers up to `max`, covered by unit tests).
+#
+# Codex only, like codex-model-picker-no-presets-note.txt: the capture runner
+# has no Claude install, so the flow must not depend on one.
+#
+# Deterministic: seeds a completed review offline and never confirms a model
+# (confirming would start a real, paid headless run) — every pick backs out
+# with Esc.
+
+shot:dashboard
+
+key:A
+wait:400
+key:j
+key:j
+key:Enter
+wait:900
+key:c
+wait:500
+
+run:AMF_BIN="$AMF_BIN" "$SCRIPT_DIR/seed-ai-review-fixture.sh" >/dev/null
+wait:300
+
+key:A
+wait:300
+key:j
+key:Enter
+wait:3500
+note:The Codex model picker now has a Reasoning row under the model list; with nothing chosen it reads Default, which passes no flag to the harness.
+expect:Reasoning
+expect:‹ Default ›
+expect:[h/l] level
+shot:codex-picker-default
+
+key:l
+key:l
+key:l
+wait:200
+note:Pressing l three times steps Default, low, medium, high on the same screen, with no extra step in the flow.
+expect:‹ high ›
+shot:codex-reasoning-high
+
+key:l
+wait:200
+note:xhigh is the top of Codex's range; it has no max level.
+expect:‹ xhigh ›
+expect_not:‹ max ›
+shot:codex-reasoning-xhigh
+
+key:l
+wait:200
+note:One more step wraps back to Default, which sends no reasoning flag.
+expect:‹ Default ›
+shot:codex-reasoning-wraps-to-default
+
+key:h
+wait:200
+note:Stepping backwards from Default wraps to xhigh rather than offering a value the harness would reject.
+expect:‹ xhigh ›
+shot:codex-reasoning-backwards
+
+key:Escape
+wait:200
+key:Escape
+wait:200
+key:Escape
+wait:200
+shot:dashboard-final

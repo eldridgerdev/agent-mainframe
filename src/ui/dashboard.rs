@@ -1696,6 +1696,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
+    if let AppMode::ModelAnalysis(state) = &app.mode {
+        super::dialogs::draw_model_analysis(frame, state, app.message.as_deref(), &app.theme);
+        return;
+    }
+
+    let model_advice = app.model_analysis_available();
     if let AppMode::PlanInterview(state) = &mut app.mode {
         super::dialogs::draw_plan_interview_dialog(
             frame,
@@ -1703,6 +1709,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.message.as_deref(),
             &app.theme,
             &app.throbber_state,
+            model_advice,
         );
         return;
     }
@@ -1746,6 +1753,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
             );
         }
+        AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
@@ -2002,7 +2010,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 branch,
                 ..
             } => draw_feature_context_bar(frame, project_name, branch, &app.theme),
-            crate::app::HookNext::StartFeature { pi, fi }
+            crate::app::HookNext::StartFeature { pi, fi, .. }
             | crate::app::HookNext::StopFeature { pi, fi } => {
                 if let Some(project) = app.store.projects.get(*pi)
                     && let Some(feature) = project.features.get(*fi)
@@ -2227,6 +2235,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -2252,6 +2261,7 @@ mod tests {
             pre_check: None,
             status_text: Some(status_text.into()),
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -2812,6 +2822,7 @@ mod tests {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -2979,6 +2990,7 @@ mod tests {
                 harness_pick_origin: None,
                 model: None,
                 model_picked: false,
+                reasoning: None,
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,
@@ -3367,6 +3379,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3479,6 +3492,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3591,6 +3605,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,

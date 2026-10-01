@@ -1748,6 +1748,7 @@ pub enum AppMode {
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
+    ModelAnalysis(Box<super::model_analysis::State>),
     DeletingProject(String),
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
@@ -2483,6 +2484,8 @@ pub enum HookNext {
     StartFeature {
         pi: usize,
         fi: usize,
+        /// The session row the start was requested from, launched on purpose.
+        session_id: Option<String>,
     },
     StopFeature {
         pi: usize,
@@ -2920,6 +2923,7 @@ impl CreateFeatureState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
+    pub(crate) model_selection: Option<super::model_analysis::Selection>,
     pub project_name: String,
     /// Separate display/persisted feature name for workflows whose branch is
     /// user-editable. Ordinary creation leaves this `None` and uses `branch`.
@@ -3170,6 +3174,14 @@ pub struct PlanInterviewState {
     pub critique: Option<String>,
     /// Explicit frontier model chosen for this plan's Expert review.
     pub expert_model: Option<String>,
+    /// Reasoning level picked with `expert_model`. Not persisted with the draft
+    /// (that would need a schema change on the shared `amf.db`), so a resumed
+    /// interview falls back to `review_reasoning_for(PlanPreflight)`.
+    pub expert_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// The picker was confirmed this session, so `expert_reasoning` is
+    /// authoritative even when `None` (an explicit "Default"). False for a
+    /// resumed draft, where the config level applies instead.
+    pub expert_reasoning_picked: bool,
     /// Single-select model picker shown before the Expert pre-call gate.
     pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
@@ -3375,6 +3387,8 @@ impl PlanInterviewState {
             investigation_token_estimate: 0,
             critique: None,
             expert_model: None,
+            expert_reasoning: None,
+            expert_reasoning_picked: false,
             expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
@@ -4162,6 +4176,8 @@ impl PlanInterviewState {
     fn clear_critique(&mut self) {
         self.critique = None;
         self.expert_model = None;
+        self.expert_reasoning = None;
+        self.expert_reasoning_picked = false;
         self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;
@@ -5380,6 +5396,7 @@ mod tests {
 
     fn prepared_launch(project_name: &str, branch: &str) -> PreparedFeatureLaunch {
         PreparedFeatureLaunch {
+            model_selection: None,
             project_name: project_name.into(),
             feature_name: None,
             branch: branch.into(),

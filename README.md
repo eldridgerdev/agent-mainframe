@@ -222,8 +222,8 @@ and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-inte
 | `Enter` | Open the selected session or expand/collapse an item |
 | `N` / `n` | Create a project / feature |
 | `s` | Add a session to a feature |
-| `c` | Start the selected feature |
-| `x` | Stop a feature, or remove the selected session |
+| `c` | Start the selected feature, or the selected stopped session |
+| `x` | Stop a feature or a single session. A stopped session stays listed (`■`) and stays stopped when its feature starts again |
 | `r` | Rename a feature or session |
 | `d` | Delete a project, feature, or session |
 | `/` | Search and jump |

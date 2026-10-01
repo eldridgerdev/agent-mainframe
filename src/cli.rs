@@ -218,12 +218,70 @@ impl PayloadArgs {
     }
 }
 
+const CREATE_PROJECT_SCHEMA: &str = "\
+Request JSON (all fields optional unless marked required):
+  {
+    \"path\":            string  (required) existing directory to register
+    \"project_name\":    string  (required) AMF-visible name; must not exist yet
+    \"preferred_agent\": \"claude\" | \"codex\" | \"opencode\" | \"pi\" | null
+    \"dry_run\":         bool    default false; validate only
+  }
+
+Example:
+  {\"path\": \"/home/me/code/my-repo\", \"project_name\": \"my-repo\"}
+
+Reads the file given by --file, or stdin when omitted or `-`.
+See docs/automation/README.md for responses.";
+
+const CREATE_FEATURE_SCHEMA: &str = "\
+Request JSON (all fields optional unless marked required):
+  {
+    \"project_name\":    string  (required) existing AMF project
+    \"branch\":          string  (required) branch / feature name
+    \"agent\":           \"claude\" | \"codex\" | \"opencode\" | \"pi\"   default \"claude\"
+    \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
+    \"review\":          bool    default false
+    \"plan_mode\":       bool    default false
+    \"create_terminal\": bool    default false
+    \"use_worktree\":    bool | null   null = project default
+    \"enable_chrome\":   bool    default false
+    \"hook_choice\":     string | null  option for an on_worktree_created hook
+    \"dry_run\":         bool    default false; validate only
+  }
+
+Example:
+  {\"project_name\": \"my-repo\", \"branch\": \"feature-1\", \"agent\": \"codex\"}
+
+Reads the file given by --file, or stdin when omitted or `-`.
+See docs/automation/README.md for responses.";
+
+const CREATE_BATCH_FEATURES_SCHEMA: &str = "\
+Request JSON (all fields optional unless marked required):
+  {
+    \"workspace_path\":  string  (required) path inside a git repository
+    \"project_name\":    string  (required) new AMF project; must not exist yet
+    \"feature_count\":   integer default 3
+    \"feature_prefix\":  string  default \"feature\"
+    \"agent\":           \"claude\" | \"codex\" | \"opencode\" | \"pi\"   default \"claude\"
+    \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
+    \"review\":          bool    default false
+    \"enable_chrome\":   bool    default false
+    \"dry_run\":         bool    default false; validate only
+  }
+
+Example:
+  {\"workspace_path\": \"/home/me/code/my-repo\", \"project_name\": \"my-batch\", \"feature_count\": 4}
+
+Reads the file given by --file, or stdin when omitted or `-`.
+See docs/automation/README.md for responses.";
+
 #[derive(Subcommand, Debug)]
 // The shared `Create` prefix is load-bearing: clap derives the public CLI
 // subcommand names (`create-project`, `create-feature`, …) from the variants.
 #[allow(clippy::enum_variant_names)]
 enum AutomationCommands {
     /// Create a single AMF project from JSON input
+    #[command(after_help = CREATE_PROJECT_SCHEMA)]
     CreateProject {
         /// Read request JSON from a file. Omit or pass `-` to read stdin.
         #[arg(long)]
@@ -236,6 +294,7 @@ enum AutomationCommands {
         timeout_ms: u64,
     },
     /// Create a single feature/worktree inside an existing AMF project from JSON input
+    #[command(after_help = CREATE_FEATURE_SCHEMA)]
     CreateFeature {
         /// Read request JSON from a file. Omit or pass `-` to read stdin.
         #[arg(long)]
@@ -248,6 +307,7 @@ enum AutomationCommands {
         timeout_ms: u64,
     },
     /// Create one project with many parallel feature worktrees from JSON input
+    #[command(after_help = CREATE_BATCH_FEATURES_SCHEMA)]
     CreateBatchFeatures {
         /// Read request JSON from a file. Omit or pass `-` to read stdin.
         #[arg(long)]
@@ -1294,6 +1354,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
+        if app.model_analysis_work.pending() && app.poll_model_analysis() {
+            force_redraw = true;
+        }
+
         if app.plan_interview_ai_bg.is_some() && app.poll_plan_interview_ai_bg() {
             force_redraw = true;
         }
@@ -2102,8 +2166,55 @@ mod tests {
         Cli, Commands, cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm,
     };
     use clap::Parser;
+    use std::collections::BTreeSet;
     use std::fs;
     use tempfile::TempDir;
+
+    fn schema_keys(help: &str) -> BTreeSet<String> {
+        help.lines()
+            .filter_map(|l| l.strip_prefix("    \""))
+            .filter_map(|l| l.split_once("\":").map(|(k, _)| k.to_string()))
+            .collect()
+    }
+
+    fn json_keys(value: &serde_json::Value) -> BTreeSet<String> {
+        value.as_object().unwrap().keys().cloned().collect()
+    }
+
+    /// The help text is hand-written, so pin its field list to the request
+    /// struct (via its serialized `Default`) and to the shipped template.
+    #[test]
+    fn automation_help_schemas_match_request_structs_and_templates() {
+        use crate::automation::{
+            CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
+        };
+        let cases = [
+            (
+                "create-project",
+                super::CREATE_PROJECT_SCHEMA,
+                serde_json::to_value(CreateProjectRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-project.template.json"),
+            ),
+            (
+                "create-feature",
+                super::CREATE_FEATURE_SCHEMA,
+                serde_json::to_value(CreateFeatureRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-feature.template.json"),
+            ),
+            (
+                "create-batch-features",
+                super::CREATE_BATCH_FEATURES_SCHEMA,
+                serde_json::to_value(CreateBatchFeaturesRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-batch-features.template.json"),
+            ),
+        ];
+        for (name, help, default, template) in cases {
+            let documented = schema_keys(help);
+            assert_eq!(documented, json_keys(&default), "{name}: help vs struct");
+            let template: serde_json::Value = serde_json::from_str(template).unwrap();
+            assert_eq!(documented, json_keys(&template), "{name}: help vs template");
+        }
+    }
 
     fn write_settings(dir: &TempDir, json: &str) -> std::path::PathBuf {
         let path = dir.path().join("settings.json");

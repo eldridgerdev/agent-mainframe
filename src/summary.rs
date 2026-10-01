@@ -25,7 +25,9 @@ impl SummaryManager {
     ) -> Result<String> {
         let content = TmuxManager::capture_pane(tmux_session, window)?;
 
-        summarize_content_with(&content, workdir, &agent, template, HeadlessRunner::run)
+        summarize_content_with(&content, workdir, &agent, template, |h, w, p, m, r| {
+            HeadlessRunner::run(h, w, p, m, r)
+        })
     }
 }
 

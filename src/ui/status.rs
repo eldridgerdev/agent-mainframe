@@ -95,14 +95,31 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 _ => false,
             };
             if on_session {
+                // Offer whichever of start/stop applies to this session —
+                // neither for one with no tmux window (TODOs), which `c` and
+                // `x` do nothing to.
+                let session_running = match app.selection {
+                    Selection::Session(pi, fi, si) => app.session_window_running(pi, fi, si),
+                    _ => None,
+                };
+                let start_stop = session_running.map(|running| {
+                    if running {
+                        ("x", " stop  ")
+                    } else {
+                        ("c", " start  ")
+                    }
+                });
                 let mut spans = filter_spans;
                 spans.extend(vec![
                     Span::styled(" Enter", key_style()),
                     Span::raw(" view  "),
                     Span::styled("r", key_style()),
                     Span::raw(" rename  "),
-                    Span::styled("x", key_style()),
-                    Span::raw(" remove  "),
+                ]);
+                if let Some((key, label)) = start_stop {
+                    spans.extend([Span::styled(key, key_style()), Span::raw(label)]);
+                }
+                spans.extend(vec![
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
                     Span::styled("s", key_style()),
@@ -937,6 +954,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         // actions spend tokens — live in the dialog's own footer, which is the
         // only copy a user ever sees. This line exists to keep the match
         // exhaustive, not to duplicate them.
+        AppMode::ModelAnalysis(_) => {
+            Line::from(" ↑/↓ choose · Enter apply · r retry · Esc return to plan ")
+        }
         AppMode::PlanInterview(_) => Line::from(vec![
             Span::styled(" Esc", key_style()),
             Span::raw(" cancel plan interview"),

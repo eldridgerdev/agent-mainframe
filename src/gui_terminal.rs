@@ -249,12 +249,15 @@ fn run_worker(
     }
 }
 
-// These use a real tmux server (whatever `TmuxManager::runtime()` resolves
-// to for this test binary -- there is no per-test-process socket isolation
-// available, see the module-level note below) rather than `MockTmuxOps`: a
-// mock cannot meaningfully stand in for a real PTY/control-mode client, and
-// this transport's entire job is the plumbing between them. Isolation comes
-// from a unique session name per test, not a dedicated server.
+// These use a real tmux server rather than `MockTmuxOps`: a mock cannot
+// meaningfully stand in for a real PTY/control-mode client, and this
+// transport's entire job is the plumbing between them. Under `cfg(test)`
+// `TmuxManager::runtime()` resolves to a throwaway per-process socket
+// (`TmuxRuntime::isolated_for_tests`), never the user's live AMF server --
+// this suite's control-client churn has crashed tmux 3.2a, and on the shared
+// server that took every real session down with it. Tests within one binary
+// still share that server; a unique session name per test isolates them from
+// each other.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,14 +302,9 @@ mod tests {
     }
 
     /// `TmuxManager::runtime()` caches its socket/binary choice in a
-    /// process-wide `OnceLock` on first use, so per-test `AMF_TMUX_SOCKET`
-    /// overrides (the pattern `src/tmux.rs`'s own unit tests use for testing
-    /// `detect_from_env` in isolation) cannot isolate a *live* tmux server
-    /// per test the way it can isolate that pure detection logic -- whichever
-    /// value was set when the first test in this binary touched tmux is what
-    /// every later test gets. A unique session name per test is what
-    /// actually isolates these tests from each other and from anything else
-    /// on that shared server.
+    /// process-wide `OnceLock` on first use, so every test in this binary
+    /// shares one (throwaway, per-process) tmux server. A unique session name
+    /// per test is what isolates these tests from each other on it.
     fn unique_session_name(label: &str) -> String {
         format!("amf-gui-terminal-test-{label}-{}", uuid::Uuid::new_v4())
     }

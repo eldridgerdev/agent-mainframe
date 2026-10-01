@@ -23,6 +23,7 @@ mod handoff;
 mod hooks;
 pub(crate) mod issue_fixer;
 pub(crate) mod learning;
+pub(crate) mod model_analysis;
 mod navigation;
 mod notifications;
 mod opencode;
@@ -537,6 +538,16 @@ pub struct AppConfig {
     /// setting.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_models: std::collections::BTreeMap<String, String>,
+    /// Default reasoning level for every review action, paired with
+    /// `review_model`. `None` (default) passes nothing, so the harness's own
+    /// level applies. A level the chosen harness cannot express is dropped
+    /// at dispatch (see `headless::reasoning_args`), never passed through.
+    /// Overridden per-action by `review_reasonings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// Per-action overrides of `review_reasoning`, keyed like `review_models`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_reasonings: std::collections::BTreeMap<String, crate::headless::ReasoningLevel>,
     /// Soft cap on how many agent-harness sessions may run at once across
     /// **all** projects (the store is machine-global, so the limit is too).
     /// Only agent harnesses count — terminals, editors, and TODOs sessions
@@ -768,6 +779,8 @@ impl Default for AppConfig {
             ai_review_skill: None,
             review_model: None,
             review_models: std::collections::BTreeMap::new(),
+            review_reasoning: None,
+            review_reasonings: std::collections::BTreeMap::new(),
             max_concurrent_agents: default_max_concurrent_agents(),
             low_memory_warn_mb: default_low_memory_warn_mb(),
             kill_editor_on_stop: true,
@@ -812,6 +825,21 @@ impl AppConfig {
             action_model
         } else {
             action_model.or_else(|| self.review_model.clone())
+        }
+    }
+
+    /// The reasoning level for a review action, resolved exactly like
+    /// [`Self::review_model_for`]: the per-action entry, else the shared
+    /// default (except Expert plan review, which never inherits one).
+    pub fn review_reasoning_for(
+        &self,
+        action: ReviewAction,
+    ) -> Option<crate::headless::ReasoningLevel> {
+        let action_level = self.review_reasonings.get(action.config_key()).copied();
+        if action == ReviewAction::PlanPreflight {
+            action_level
+        } else {
+            action_level.or(self.review_reasoning)
         }
     }
 
@@ -1120,6 +1148,7 @@ pub struct App {
     pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
     pub(crate) review_question_work: review_questions::Work,
+    pub(crate) model_analysis_work: model_analysis::Work,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -1419,6 +1448,9 @@ impl App {
             | AppMode::AiReviewRunning(_) => true,
             // Animates the loading frame's throbber and elapsed-time display
             // while plan-interview AI work runs in the background.
+            AppMode::ModelAnalysis(state) => {
+                matches!(state.status, model_analysis::Status::Loading)
+            }
             AppMode::PlanInterview(state) => matches!(
                 state.phase,
                 PlanInterviewPhase::AiLoading
@@ -2587,6 +2619,7 @@ impl App {
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2851,6 +2884,7 @@ impl App {
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
             review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,

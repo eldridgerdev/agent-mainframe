@@ -168,6 +168,27 @@ button.icon {
 }
 .badge.active, .badge.idle { color: var(--accent); border-color: var(--accent); }
 
+/* ---- Dashboard projects ----------------------------------------------- */
+
+.project-heading { margin: 8px 0 4px; }
+.project-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 0;
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+.project-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.project-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.project-toggle .badge { flex: none; font-weight: 400; text-transform: none; letter-spacing: normal; }
+.project-chevron { font-size: 22px; line-height: 1; }
+.project-toggle[aria-expanded="true"] .project-chevron { transform: rotate(90deg); }
+.project-group > .list[hidden] { display: none; }
+
 .conn { font-size: 12px; color: var(--muted); }
 .conn.bad { color: var(--danger); }
 

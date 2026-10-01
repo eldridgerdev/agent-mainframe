@@ -31,9 +31,57 @@ are tagged.
   and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
   socket outside the usual places, such as a `tailscaled` you start
   yourself.
+- **Get advice for an Expert plan review.** Press `m` in the Expert model picker
+  to compare verified settings for the reviewer and its draft-plan context.
+  Return to the picker to choose model and effort before starting the review.
+- **Get implementation advice while reviewing an existing feature or TODO plan.**
+  Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
+  to their initial agent; existing-feature and host-feature TODO plans offer
+  advice for settings you change in the harness's picker. Accepting the plan
+  remains a separate step.
+- **Get model and reasoning advice before implementation.** Press `m` while
+  reviewing a new Full or Quick Plan to compare available Claude Code and
+  Codex settings, then apply your choice to the initial implementation agent.
+- **Get advice for an open agent session.** Press `m` on its dashboard row or
+  `leader+B` in its pane. Recommendations use the feature and its plan; change
+  the setting in the harness's own model picker.
+- **Read the evidence behind a recommendation.** A compact model, effort and
+  focus table offers speed, balance and depth choices when supported. Press
+  `s` to inspect dated provider research. Account access and supported effort
+  levels are checked; task-specific quality, time and token totals stay unknown.
+- **Collapse projects in AMF Remote's dashboard.** Tap a project heading to
+  hide or show its features. Each heading shows the feature count, and your
+  choices are remembered on this device across refreshes and reloads. Features
+  needing attention stay visible at the top even when their project is collapsed.
+- **Choose a reasoning level alongside the model.** The AI Review (`A`) and
+  Expert plan review model pickers have a new Reasoning row: press `h` / `l`
+  (or ←/→) to step from Default through the levels your harness supports.
+  Claude offers low to max, Codex low to xhigh, and OpenCode minimal, high and
+  max; Pi has no reasoning control yet, so the row is hidden. Default sends
+  nothing, so the harness keeps its own level.
+- **Set a default reasoning level in config.** `review_reasoning` and per-action
+  `review_reasonings` mirror `review_model` / `review_models` and also apply to
+  Final Review passes and review memory. Expert plan review never inherits the
+  shared default.
+- **AI reviews record the level they ran at** in their attribution line
+  (for example `model opus · reasoning high`).
+- **Start and stop individual sessions, with icons to match.** Each session
+  row on the dashboard now shows `●` when it is running and `■` when it is
+  stopped. A feature with stopped sessions shows `[N stopped]` even when it is
+  collapsed. Stop a Claude or Codex session you are not using with `x` to free
+  its memory. It stays listed, and `c` or `Enter` on the row starts it again.
+- **The desktop app can start and stop single sessions too.** Session tabs
+  show whether each session is running. Use **Stop session** or **Start
+  session** in the feature header. A stopped session's tab offers to start it
+  instead of showing an empty terminal. The project page counts stopped
+  sessions next to each feature.
 
 ### Changed
 
+- **`amf automation` help now documents the request JSON.** `-h` / `--help` on
+  `create-project`, `create-feature`, and `create-batch-features` lists every
+  field with its type, default, and allowed values (agents and modes), plus a
+  minimal example, so you no longer need a dry run to discover the schema.
 - **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
   server on or off) and `leader+Q` (show the pairing QR code) now work from a
   session view as well as the dashboard, and closing the QR code returns you
@@ -44,6 +92,13 @@ are tagged.
   you to press `leader+C` first.
 - **The phone's feature list is sorted by status.** Within each project,
   features that need you come first, then active, idle, and stopped ones.
+- **A paused Expert plan review resumes with the config level, not the one you
+  picked.** The model is restored with the draft but the reasoning level is not.
+- **A stopped session stays stopped.** Starting its feature again, or
+  restarting AMF, starts every session except the ones you stopped yourself.
+  Stopping a feature still remembers which sessions were running, so starting
+  it brings back the same set. If every session was stopped, starting the
+  feature starts all of them.
 
 ### Removed
 
@@ -57,6 +112,12 @@ are tagged.
   shorter terminals the QR filled the dialog, cutting off the pairing code,
   the address, and the keys. The dialog now fits its content, and shows
   everything but the QR when the terminal is too short for both.
+- **TODO model choices survive unrelated list changes.** Reordering items,
+  adding another TODO or editing the list scratchpad keeps a valid choice.
+
+- **Automation example and template JSON no longer include `enable_notes`.**
+  AMF never read that field. The `create-feature` template now lists
+  `plan_mode` and `create_terminal`.
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
   which a phone can't open. The dialog now says so and offers the fix.
@@ -67,6 +128,7 @@ are tagged.
 
 ### Migration
 
+- No manual migration is required. AMF updates its database on first startup.
 - To turn Claude's own Remote Control on or off, type `/rc` in the session
   instead of pressing `leader+C`.
 

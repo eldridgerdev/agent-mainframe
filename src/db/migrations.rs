@@ -255,6 +255,11 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add Web Push subscriptions + VAPID key for Remote Control",
             MIGRATION_043,
         ),
+        ("Project model research provenance", MIGRATION_044),
+        (
+            "Persist an individually stopped feature session",
+            MIGRATION_045,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1141,6 +1146,24 @@ CREATE TABLE IF NOT EXISTS remote_push_vapid (
 );
 ";
 
+const MIGRATION_044: &str = "
+CREATE TABLE model_research (
+    project_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    PRIMARY KEY (project_id, repo, evidence_id)
+);
+";
+
+/// A session stopped on its own (`x` on its dashboard row) stays stopped
+/// across feature restarts and AMF restarts, so the flag lives with the
+/// session row rather than in memory. Defaults to running, which is what
+/// every existing session was.
+const MIGRATION_045: &str = "
+ALTER TABLE feature_sessions ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1183,7 +1206,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 45);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1222,7 +1245,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 43);
+        assert_eq!(version, 45);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1317,7 +1340,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 45);
     }
 
     #[test]
@@ -1649,6 +1672,41 @@ mod tests {
         assert_eq!(provenance, None);
     }
 
+    /// An existing v44 database's sessions all come through 045 as running —
+    /// nothing was ever stopped individually before the column existed.
+    #[test]
+    fn migration_045_defaults_existing_sessions_to_not_stopped() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE feature_sessions DROP COLUMN stopped;
+             DELETE FROM schema_version WHERE version >= 45;
+             INSERT INTO projects (id, name, repo, created_at)
+             VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
+             INSERT INTO features (
+                id, project_id, name, branch, workdir, status,
+                created_at, last_accessed
+             ) VALUES (
+                'feat-1', 'proj-1', 'existing', 'existing', '/tmp/project',
+                'idle', datetime('now'), datetime('now')
+             );
+             INSERT INTO feature_sessions (id, feature_id, kind, created_at)
+             VALUES ('sess-1', 'feat-1', 'codex', datetime('now'));",
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let stopped: i64 = conn
+            .query_row(
+                "SELECT stopped FROM feature_sessions WHERE id = 'sess-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stopped, 0);
+    }
+
     /// An existing v40 database, holding data, gains `pr_review_drafts`
     /// without losing anything. (v40 is produced by running every migration
     /// and then peeling off exactly what 041 adds.)
@@ -1661,6 +1719,8 @@ mod tests {
              DROP TABLE remote_push_subscriptions;
              DROP TABLE remote_push_vapid;
              DROP TABLE remote_devices;
+             DROP TABLE model_research;
+             ALTER TABLE feature_sessions DROP COLUMN stopped;
              DELETE FROM schema_version WHERE version >= 41;
              INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
              VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
@@ -1703,7 +1763,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 45);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1716,7 +1776,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 43);
+        assert_eq!(rows, 45);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1881,7 +1941,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 45);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

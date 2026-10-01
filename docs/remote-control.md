@@ -9,6 +9,8 @@ From the phone you can:
 
 - see every feature, and which ones need you (the same list as the desk's `i`
   view)
+- collapse or expand projects on the dashboard; the app remembers your choice
+  on this device, and features needing attention stay visible at the top
 - get a push notification when an agent needs you, and tap it to go straight
   to that agent
 - open any session's terminal, read it (with scrollback), and type into it —

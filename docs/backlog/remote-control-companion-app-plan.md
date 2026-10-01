@@ -560,6 +560,26 @@ Found by using it on a real phone over Tailscale:
 - [ ] Still unverified end to end: a push triggered by a real agent,
       and answering a real Claude permission prompt from the phone.
 
+### PWA dashboard follow-up — collapsible projects
+
+**Implemented (2026-09-28), pending release.** Project headings on the
+AMF Remote dashboard now toggle their feature lists and show feature counts.
+Projects start expanded; each device remembers collapsed projects across
+status refreshes, navigation and reloads. The needs-attention list stays
+visible above the project groups.
+
+- [x] Independent collapse/expand controls with touch and keyboard support.
+- [x] Preserve collapsed state and keyboard focus during status refreshes.
+- [x] Remember collapsed projects on this device, with safe fallbacks when
+      browser storage is unavailable or saved preferences are malformed.
+- [x] Update the PWA shell cache and the phone companion user guide.
+
+Verification: Chromium interaction checks passed for touch, keyboard,
+feature counts, attention visibility, refreshes, navigation, reloads,
+narrow layouts and storage fallbacks. The full parallel workspace suite
+passed on an isolated tmux socket (2,979 passed; one existing GitHub
+acceptance test ignored), as did formatting and strict all-target Clippy.
+
 ## Parallelization view
 
 - **Start immediately, in parallel**: Epic 1 (server skeleton), Epic 2

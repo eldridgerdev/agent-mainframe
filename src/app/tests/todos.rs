@@ -1255,6 +1255,7 @@ fn push_agent_session(app: &mut App, id: &str) -> String {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         });
     id.to_string()
 }
@@ -1893,6 +1894,7 @@ fn active_todo_completion_keybind_updates_db_and_retains_reference() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         });
     app.mode = AppMode::Viewing(ViewState::new(
         "my-project".into(),
@@ -2158,6 +2160,7 @@ fn request_todo_reference_completion_without_db_warns_instead_of_opening_dialog(
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         });
     app.mode = AppMode::Viewing(ViewState::new(
         "my-project".into(),

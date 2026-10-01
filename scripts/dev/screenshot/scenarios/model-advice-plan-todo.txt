@@ -1,0 +1,127 @@
+# Isolated plan/TODO model advice proof. All discovery and responses are mocked.
+shim:codex:model-advice-codex-fixture.py
+run:export PATH="$SCREENSHOT_PATH"
+run:python3 "$(dirname "$SCENARIO")/model-advice-seed.py" "$SHOT_ROOT" "$AMF_BIN"
+run:tmux respawn-pane -k -t "$SESSION" "$AMF_LAUNCH_COMMAND"
+wait:2000
+key:j
+wait:200
+key:P
+wait:200
+wait:500
+key:r
+wait:200
+wait:500
+note:An existing feature's reviewed plan now offers the m model advice entry point before acceptance.
+expect:parser-maintenance
+expect:model advice
+expect:accept
+shot:existing-plan-review
+key:m
+wait:200
+wait:2500
+note:Existing-feature advice shows implementation settings, explains the separate acceptance and harness-picker handoff, and has no Apply action. Model responses are deterministic screenshot fixtures.
+expect:Reviewed plan → implementation
+expect:Advice only
+expect:gpt-6.1-sol
+expect_not:Apply
+shot:existing-plan-advice
+key:Escape
+wait:200
+key:Escape
+wait:200
+key:y
+wait:200
+wait:500
+key:j
+wait:200
+key:Enter
+wait:200
+wait:500
+key:Enter
+wait:200
+key:j
+wait:200
+key:j
+wait:200
+key:Enter
+wait:200
+wait:300
+key:Enter
+wait:200
+wait:400
+key:r
+wait:200
+wait:400
+key:m
+wait:200
+wait:2000
+note:Host-feature TODO advice identifies the TODO implementation stage and explains that separate acceptance starts its own agent; settings are changed in its picker. Model responses are deterministic fixtures.
+expect:TODO plan → implementation
+expect:Advice only
+expect:TODO agent
+expect_not:Apply
+shot:host-todo-plan-advice
+key:Escape
+wait:200
+key:Escape
+wait:200
+key:y
+wait:200
+wait:500
+run:python3 -c 'import sqlite3,os; c=sqlite3.connect(os.environ["XDG_CONFIG_HOME"]+"/amf/amf.db"); c.execute("UPDATE todos SET status=? WHERE id=?",("not_started","proof-todo")); c.commit()'
+key:Enter
+wait:200
+wait:400
+key:Enter
+wait:200
+key:j
+wait:200
+key:j
+wait:200
+key:Enter
+wait:200
+wait:300
+key:j
+wait:200
+key:Enter
+wait:200
+wait:300
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+key:Enter
+wait:200
+wait:1200
+key:r
+wait:200
+wait:500
+key:m
+wait:200
+wait:2000
+note:A TODO planned into a new feature offers Apply for its initial implementation launch. The available model/effort rows and research are rendered by AMF using deterministic discovery and response fixtures.
+expect:Plan → implementation
+expect:Apply a setting
+expect:gpt-6.1-sol
+expect:Enter
+expect:Apply
+shot:new-feature-todo-advice
+key:Enter
+wait:200
+wait:1500
+note:Applying a setting returns to TODO plan review and explicitly scopes the setting to the initial implementation launch. The plan has not been accepted and no implementation agent has started.
+expect:Setting applied to the initial implementation launch
+expect:Review · implement-parser
+expect:accept
+shot:todo-setting-applied

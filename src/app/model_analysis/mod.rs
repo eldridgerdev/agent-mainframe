@@ -6,7 +6,7 @@ mod tests;
 
 use super::{
     App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PreparedFeatureLaunch,
-    Selection as DashboardSelection,
+    Selection as DashboardSelection, TodoPlanOrigin,
 };
 use crate::{
     headless::HeadlessRunner,
@@ -38,9 +38,30 @@ pub(crate) struct Selection {
     pub repo: PathBuf,
     pub plan_hash: String,
     pub feature_id: String,
+    todo: Option<TodoTarget>,
 }
 pub(crate) fn fingerprint(plan: &str) -> String {
     format!("{:x}", Sha256::digest(plan.as_bytes()))
+}
+/// Fingerprint only what identifies the TODO and what the plan was made from.
+/// List timestamps, `sort_order`, the scratchpad, and edits to sibling items
+/// all churn without changing the target, and must not invalidate a selection.
+fn todo_snapshot(resolved: &crate::db::todos::ResolvedTodo) -> String {
+    let (todo, list) = (&resolved.todo, &resolved.list);
+    fingerprint(
+        &serde_json::json!({
+            "id": todo.id,
+            "list_id": todo.list_id,
+            "title": todo.title,
+            "body": todo.body,
+            "status": todo.work.status,
+            "agent_session_id": todo.work.agent_session_id,
+            "linked_feature_id": todo.linked_feature_id,
+            "scope": list.scope,
+            "host_feature_id": list.feature_id,
+        })
+        .to_string(),
+    )
 }
 
 #[derive(Debug)]
@@ -72,6 +93,29 @@ struct Target {
     workdir: PathBuf,
     preferred: AgentKind,
     kind: TargetKind,
+    todo: Option<TodoTarget>,
+    review: Option<ReviewTarget>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReviewTarget {
+    feature_name: String,
+    brief: String,
+    questions: Vec<crate::plan_interview::PlanQuestion>,
+    answers: Vec<Option<String>>,
+    attached_docs: Vec<PathBuf>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoTarget {
+    origin: TodoPlanOrigin,
+    snapshot: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdviceScope {
+    InitialLaunch,
+    ExistingSession,
+    ExistingPlan,
+    HostTodoPlan,
+    ExpertPlanReview,
 }
 #[derive(Debug, Clone, PartialEq)]
 enum TargetKind {
@@ -79,6 +123,13 @@ enum TargetKind {
         prepared: Box<PreparedFeatureLaunch>,
         interview_key: String,
         plan: String,
+    },
+    ReviewedPlan {
+        feature_id: String,
+        interview_key: String,
+        plan: String,
+        feature_name: String,
+        mode: crate::project::VibeMode,
     },
     Session {
         feature_id: String,
@@ -94,9 +145,12 @@ enum TargetKind {
 }
 impl Target {
     fn plan(&self) -> Option<(&PreparedFeatureLaunch, &str)> {
+        if self.review.is_some() {
+            return None;
+        }
         match &self.kind {
             TargetKind::Plan { prepared, plan, .. } => Some((prepared.as_ref(), plan)),
-            TargetKind::Session { .. } => None,
+            TargetKind::Session { .. } | TargetKind::ReviewedPlan { .. } => None,
         }
     }
 
@@ -104,9 +158,63 @@ impl Target {
         matches!(self.kind, TargetKind::Session { .. })
     }
 
+    fn launch_path(&self) -> LaunchPath {
+        if self.review.is_some() {
+            LaunchPath::Headless
+        } else {
+            LaunchPath::Interactive
+        }
+    }
+
     fn task_context(&self) -> Result<(String, &'static str)> {
+        if let Some(review) = &self.review {
+            let plan = match &self.kind {
+                TargetKind::Plan { plan, .. } | TargetKind::ReviewedPlan { plan, .. } => plan,
+                TargetKind::Session { .. } => anyhow::bail!("invalid review target"),
+            };
+            let repository = crate::plan_interview::gather_repository_context(&self.workdir);
+            let input = crate::plan_interview::critique_input_json(
+                &review.feature_name,
+                plan,
+                &review.brief,
+                &review.questions,
+                &review.answers,
+                &repository,
+                &[],
+            );
+            let mut references = vec![];
+            for source in &review.attached_docs {
+                use std::io::Read;
+                crate::plan_interview::validate_attachment(source, &[])
+                    .map_err(|e| anyhow::anyhow!("review reference unavailable: {e}"))?;
+                let mut bytes = vec![];
+                std::fs::File::open(source)?
+                    .take(crate::plan_interview::ATTACHED_DOC_MAX_BYTES + 1)
+                    .read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() as u64 <= crate::plan_interview::ATTACHED_DOC_MAX_BYTES,
+                    "review reference grew beyond the attachment limit"
+                );
+                let body = std::str::from_utf8(&bytes)?;
+                references.push(serde_json::json!({
+                    "source": source,
+                    "fingerprint": fingerprint(body),
+                    "excerpt": body.chars().take(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS).collect::<String>(),
+                    "truncated": body.chars().count() > crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS,
+                }));
+            }
+            return Ok((
+                format!(
+                    "Review the draft plan for missing requirements, risks, correctness and verification before implementation.\nReview input: {input}\nRead-only reference excerpts: {}",
+                    serde_json::to_string(&references)?,
+                ),
+                "Expert plan review",
+            ));
+        }
         match &self.kind {
-            TargetKind::Plan { plan, .. } => Ok((plan.clone(), "implementation")),
+            TargetKind::Plan { plan, .. } | TargetKind::ReviewedPlan { plan, .. } => {
+                Ok((plan.clone(), "implementation"))
+            }
             TargetKind::Session {
                 feature_name,
                 summary,
@@ -148,6 +256,25 @@ impl State {
         self.launch.is_some() || self.apply.is_some() || self.session_apply.is_some()
     }
 
+    pub(crate) fn scope(&self) -> AdviceScope {
+        if self.target.review.is_some() {
+            return AdviceScope::ExpertPlanReview;
+        }
+        match &self.target.kind {
+            TargetKind::Plan { .. } => AdviceScope::InitialLaunch,
+            TargetKind::Session { .. } => AdviceScope::ExistingSession,
+            TargetKind::ReviewedPlan { .. } if self.target.todo.is_some() => {
+                AdviceScope::HostTodoPlan
+            }
+            TargetKind::ReviewedPlan { .. } => AdviceScope::ExistingPlan,
+        }
+    }
+
+    pub(crate) fn is_view_only(&self) -> bool {
+        self.target.plan().is_none() && !self.can_apply_session()
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_existing_session(&self) -> bool {
         self.target.is_session()
     }
@@ -290,7 +417,28 @@ impl App {
         }
     }
     pub(crate) fn model_analysis_available(&self) -> bool {
-        matches!(&self.mode,AppMode::PlanInterview(s) if s.phase==PlanInterviewPhase::Review && s.todo_origin.is_none() && s.pending_launch.as_ref().is_some_and(|p|p.todo_origin.is_none()))
+        self.model_analysis_unavailable_reason().is_none()
+    }
+    /// Why `m` cannot open plan-review advice right now, checked cheaply on
+    /// every frame so the hint is only offered where `model_target` can pass.
+    /// The same preconditions are re-checked (with the DB lookup) on open.
+    pub(crate) fn model_analysis_unavailable_reason(&self) -> Option<&'static str> {
+        let AppMode::PlanInterview(s) = &self.mode else {
+            return Some("model advice requires plan review or an agent session");
+        };
+        if s.phase != PlanInterviewPhase::Review {
+            return Some("model advice is available once the plan is ready for review");
+        }
+        if s.synthesized_plan
+            .as_deref()
+            .is_none_or(|p| p.trim().is_empty())
+        {
+            return Some("model advice needs a reviewed implementation plan");
+        }
+        if s.todo_origin.is_some() && self.db.is_none() {
+            return Some("model advice for a TODO plan needs the TODO database");
+        }
+        None
     }
     fn session_model_target(&self, pi: usize, fi: usize, si: usize) -> Result<Target> {
         let project = self
@@ -314,6 +462,8 @@ impl App {
             repo: project.repo.clone(),
             workdir: feature.workdir.clone(),
             preferred,
+            todo: None,
+            review: None,
             kind: TargetKind::Session {
                 feature_id: feature.id.clone(),
                 session_id: session.id.clone(),
@@ -369,41 +519,115 @@ impl App {
             };
         };
         ensure!(
-            s.phase == PlanInterviewPhase::Review && s.todo_origin.is_none(),
+            s.phase == PlanInterviewPhase::Review,
             "unsupported model advice entry point"
         );
-        let prepared = s
-            .pending_launch
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("no new feature launch"))?;
-        ensure!(
-            prepared.todo_origin.is_none(),
-            "TODO model advice is not supported"
-        );
-        let project = self
-            .store
-            .projects
-            .iter()
-            .find(|p| p.name == prepared.project_name)
-            .ok_or_else(|| anyhow::anyhow!("target project was deleted"))?;
         let plan = s
             .synthesized_plan
             .clone()
             .filter(|p| !p.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("reviewed implementation plan is missing"))?;
+        ensure!(s.workdir.is_dir(), "target workdir was removed");
+        let review = s
+            .expert_model_pick
+            .as_ref()
+            .map(|pick| -> Result<ReviewTarget> {
+                ensure!(
+                    !pick.editing_custom,
+                    "finish typing the custom review model first"
+                );
+                ensure!(
+                    s.ai_harness.as_ref().and_then(|h| h.as_ref()).is_some(),
+                    "review harness is unresolved"
+                );
+                Ok(ReviewTarget {
+                    feature_name: s.feature_name.clone(),
+                    brief: s.brief.clone(),
+                    questions: s.questions.clone(),
+                    answers: s.answers.clone(),
+                    attached_docs: s.attached_docs.clone(),
+                })
+            })
+            .transpose()?;
+        let reviewer = review.as_ref().and_then(|_| s.ai_harness.as_ref()?.clone());
+        let todo = s
+            .todo_origin
+            .as_ref()
+            .map(|origin| -> Result<TodoTarget> {
+                let resolved = self
+                    .db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TODO database unavailable"))?
+                    .resolve_todo_by_id(&origin.todo_id)?
+                    .ok_or_else(|| anyhow::anyhow!("target TODO was deleted"))?;
+                ensure!(
+                    resolved.todo.list_id == origin.list_id
+                        && resolved.todo.title == origin.todo_title,
+                    "target TODO moved or changed; return to plan review"
+                );
+                ensure!(
+                    resolved.todo.work.status != crate::db::todos::TodoStatus::Completed,
+                    "target TODO is completed"
+                );
+                Ok(TodoTarget {
+                    origin: origin.clone(),
+                    snapshot: todo_snapshot(&resolved),
+                })
+            })
+            .transpose()?;
+        if let Some(prepared) = s.pending_launch.clone() {
+            ensure!(
+                prepared.todo_origin == s.todo_origin,
+                "TODO launch origin changed"
+            );
+            let project = self
+                .store
+                .projects
+                .iter()
+                .find(|p| p.name == prepared.project_name)
+                .ok_or_else(|| anyhow::anyhow!("target project was deleted"))?;
+            ensure!(s.workdir == prepared.workdir, "target workdir changed");
+            return Ok(Target {
+                project_id: project.id.clone(),
+                repo: project.repo.clone(),
+                workdir: prepared.workdir.clone(),
+                preferred: reviewer.unwrap_or_else(|| prepared.agent.clone()),
+                todo,
+                review,
+                kind: TargetKind::Plan {
+                    prepared: Box::new(prepared),
+                    interview_key: s.interview_key.clone(),
+                    plan,
+                },
+            });
+        }
+        let feature_id = s
+            .todo_origin
+            .as_ref()
+            .map(|o| o.host_feature_id.as_str())
+            .unwrap_or(&s.interview_key);
+        let (pi, fi) = self
+            .feature_indices_by_id(feature_id)
+            .ok_or_else(|| anyhow::anyhow!("target feature was deleted"))?;
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
         ensure!(
-            s.workdir == prepared.workdir && prepared.workdir.is_dir(),
-            "target workdir changed or was removed"
+            s.workdir == feature.workdir,
+            "target feature workdir changed"
         );
         Ok(Target {
             project_id: project.id.clone(),
             repo: project.repo.clone(),
-            workdir: prepared.workdir.clone(),
-            preferred: prepared.agent.clone(),
-            kind: TargetKind::Plan {
-                prepared: Box::new(prepared),
+            workdir: feature.workdir.clone(),
+            preferred: reviewer.unwrap_or_else(|| feature.agent.clone()),
+            todo,
+            review,
+            kind: TargetKind::ReviewedPlan {
+                feature_id: feature.id.clone(),
                 interview_key: s.interview_key.clone(),
                 plan,
+                feature_name: feature.name.clone(),
+                mode: feature.mode.clone(),
             },
         })
     }
@@ -452,7 +676,7 @@ impl App {
         let setup = (|| -> Result<_> {
             ensure!(
                 self.model_target(&state.origin)? == target,
-                "implementation task changed; return to plan review"
+                "analysis task changed; return to plan review"
             );
             if let Some(id) = &state.saved_feature_id {
                 let (prepared, _) = target
@@ -555,7 +779,7 @@ impl App {
                 }
                 let caps = discover(&target.workdir, &choice_allowed, &worker_cancel)?;
                 ensure!(!worker_cancel.load(Ordering::Relaxed), "analysis cancelled");
-                let options = EligibleOptions::new(&choice_allowed, &caps, LaunchPath::Interactive);
+                let options = EligibleOptions::new(&choice_allowed, &caps, target.launch_path());
                 if launch {
                     return Ok(Outcome::Validated(options));
                 }
@@ -568,7 +792,7 @@ impl App {
                     return Ok(Outcome::Advice(vec![], None));
                 }
                 let (task_context, task_phase) = target.task_context()?;
-                let context = if target.is_session() {
+                let context = if target.is_session() || target.review.is_some() {
                     prompt_context_for_task(&task_context, task_phase, &options, &notes, now)?
                 } else {
                     prompt_context(&task_context, &options, &notes, now)?
@@ -582,10 +806,10 @@ impl App {
                     cancelled: worker_cancel.clone(),
                 })?;
                 ensure!(!worker_cancel.load(Ordering::Relaxed), "analysis cancelled");
-                if target.is_session() {
+                if target.is_session() || target.review.is_some() {
                     ensure!(
                         target.task_context()?.0 == task_context,
-                        "session task context changed during analysis; retry"
+                        "task context changed during analysis; retry"
                     );
                 }
                 Ok(Outcome::Advice(
@@ -850,6 +1074,10 @@ impl App {
             return Ok(());
         }
         ensure!(
+            !s.is_view_only(),
+            "This advice is view-only; use the harness's own model picker to change settings"
+        );
+        ensure!(
             self.model_target(&s.origin)? == s.target,
             "implementation task changed"
         );
@@ -905,6 +1133,7 @@ impl App {
             project_id: s.target.project_id.clone(),
             repo: s.target.repo.clone(),
             plan_hash: fingerprint(plan),
+            todo: s.target.todo.clone(),
             feature_id: prepared
                 .model_selection
                 .as_ref()
@@ -928,7 +1157,8 @@ impl App {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("missing selected setting"))?;
         ensure!(
-            selection.project_id == target.project_id
+            selection.todo == target.todo
+                && selection.project_id == target.project_id
                 && selection.repo == target.repo
                 && selection.plan_hash == fingerprint(&pending.plan)
                 && pending.plan == plan

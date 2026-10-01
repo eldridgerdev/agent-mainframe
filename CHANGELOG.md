@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **Get advice for an Expert plan review.** Press `m` in the Expert model picker
+  to compare verified settings for the reviewer and its draft-plan context.
+  Return to the picker to choose model and effort before starting the review.
+- **Get implementation advice while reviewing an existing feature or TODO plan.**
+  Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
+  to their initial agent; existing-feature and host-feature TODO plans offer
+  advice for settings you change in the harness's picker. Accepting the plan
+  remains a separate step.
 - **Get model and reasoning advice before implementation.** Press `m` while
   reviewing a new Full or Quick Plan to compare available Claude Code and
   Codex settings, then apply your choice to the initial implementation agent.
@@ -43,6 +51,10 @@ are tagged.
 
 ### Changed
 
+- **`amf automation` help now documents the request JSON.** `-h` / `--help` on
+  `create-project`, `create-feature`, and `create-batch-features` lists every
+  field with its type, default, and allowed values (agents and modes), plus a
+  minimal example, so you no longer need a dry run to discover the schema.
 - **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
   server on or off) and `leader+Q` (show the pairing QR code) now work from a
   session view as well as the dashboard, and closing the QR code returns you
@@ -64,6 +76,12 @@ are tagged.
 
 ### Fixed
 
+- **TODO model choices survive unrelated list changes.** Reordering items,
+  adding another TODO or editing the list scratchpad keeps a valid choice.
+
+- **Automation example and template JSON no longer include `enable_notes`.**
+  AMF never read that field. The `create-feature` template now lists
+  `plan_mode` and `create_terminal`.
 - **The pairing QR code warns when a phone can't reach it.** Without
   `remote_public_url` set, the QR pointed at this computer's local address,
   which a phone can't open. The dialog now says so and names the setting to

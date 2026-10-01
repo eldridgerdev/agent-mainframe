@@ -435,25 +435,34 @@ construction. Cross-cutting changes can eliminate most reuse.
 ### Implemented foundation
 
 Model and reasoning advice is implemented for new Full/Quick Plan review and
-existing Claude Code/Codex agent sessions. Plan-review selections apply to the
-initial implementation launch. Exactly identified, loaded Codex conversations
-on an existing shared daemon can apply model/effort in place for subsequent turns;
-other sessions use the harness's model picker. Choices require verified account
-access, supported effort levels and fresh, attributable provider research. Task-specific quality,
-time and token totals remain unknown. See the
+existing Claude Code/Codex agent sessions. It also covers on-demand feature
+plans and TODO Plan review. New-feature plan selections apply to the initial
+implementation launch (including TODO plans); on-demand and host-feature TODO
+plans offer advice only for their destination harness. Exactly identified, loaded
+Codex conversations on an existing shared daemon can apply model/effort in place
+for subsequent turns; other sessions use the harness's model picker. Choices
+require verified account access, supported effort levels and fresh, attributable
+provider research. Task-specific quality, time and token totals remain unknown.
+See the
 [capability and evidence contract](../development/model-reasoning-analyzer.md).
 
 - [x] Offer on-demand advice at plan review and in existing agent sessions.
 - [x] Validate available model/effort combinations and research provenance.
 - [x] Apply a selected setting to the initial implementation launch.
+- [x] Extend implementation advice to on-demand Full/Quick Plan and TODO Plan
+  review, preserving destination scope, live TODO identity and existing handoffs.
+- [x] Offer reviewer-scoped advice from the Expert plan-review model picker;
+  use headless eligibility and return to manual selection without starting review.
 - [ ] Add persistent stage-specific profiles for presets and workflows.
 - [x] Verify an in-place control boundary for loaded Codex daemon conversations.
-- [ ] Verify live application for Claude Code and other harnesses, and explicit restart/resume actions.
+- [ ] Verify live application for Claude Code and other harnesses, and explicit
+  restart/resume actions.
 - [ ] Define comparable outcome evidence before using history or opt-in trials.
 
 The advice workflow does not complete the broader routing and evaluation work
-below. Paid trials, additional launch entry points, and OpenCode/Pi recommendations
-remain deferred until their evidence and capability contracts are established.
+below. Paid trials, before-interview planning, direct TODO spawning, AI/Final/PR
+review advice, and OpenCode/Pi recommendations remain deferred until their
+evidence and capability contracts are established.
 
 ### Behavior and implementation shape
 
@@ -471,8 +480,9 @@ The headless model pickers (AI Review `A`, Expert plan review) and the
 `review_reasoning` / `review_reasonings` config now carry a per-run reasoning
 level (Claude `--effort`, Codex `model_reasoning_effort`, OpenCode `--variant`;
 Pi has no verified flag). A level a harness cannot express is dropped. Not yet
-covered: feature presets, interactive sessions, Pi, persisting the Expert level
-with a paused interview, and any evaluation of level against quality or cost.
+covered: feature presets, persistent interactive-session settings, Pi, persisting
+the Expert level with a paused interview, and any evaluation of level against
+quality or cost.
 
 ### Savings calculation
 

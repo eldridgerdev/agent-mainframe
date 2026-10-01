@@ -93,8 +93,11 @@ doc always says exactly what remains.
   _Backlog._ Planning reference for eight ways AMF could make Astra/Fable more
   affordable, with worked savings calculations, implementation boundaries,
   evaluation criteria, and dependencies for later feature plans. OPT-07 records
-  the implemented Claude Code/Codex model and reasoning advice foundation;
-  persistent stage profiles, live application and outcome evaluation remain open.
+  the implemented Claude Code/Codex advice for new, on-demand and TODO Plan
+  review, the Expert reviewer picker and existing agent sessions, including
+  in-place model/effort changes for exactly identified Codex daemon conversations.
+  Persistent stage profiles, other harnesses' live controls, explicit restart/resume
+  and outcome evaluation remain open.
 
 - [Project config location](project-config-location-plan.md) — _Shipped._
   Moved hand-authored project config out of the generated

@@ -1,7 +1,8 @@
 # Model and reasoning analyzer: capability inventory
 
 Inventory and first-release implementation checked on 2026-09-29, with Claude
-Code discovery and research added on 2026-09-30, against
+Code discovery and research added on 2026-09-30 and additional plan-review entry
+points, including Expert review advice, on 2026-10-01, against
 `AMF_PLAN.md`. The headless inventory includes the subsequent reasoning-picker
 integration from main. In-place Codex session application was verified on
 2026-10-01 against Codex 0.159.3's installed protocol and an isolated no-turn
@@ -162,7 +163,7 @@ Sources: [Pi CLI](https://github.com/earendil-works/pi/blob/main/packages/coding
 | `finish_feature_launch_*` / `ensure_feature_running_*` | Build harness-specific startup args and start saved sessions | Revalidate the transient selection immediately before initial launch; preserve rollback, mode flags and resume behavior |
 | `launch_agent_session_window` and session restart | Claude/Codex extra arguments; OpenCode/Pi fixed launch signatures | Apply selected arguments only to the shipped initial-agent path through `TmuxOps` |
 | `HeadlessRunner` | All four accept `model`; Claude/Codex/OpenCode accept explicit reasoning through `ModelSel`; restricted/read-only contracts differ | Analyzer runner selection/fallback respects configuration, leaves its runner's settings unspecified and never recursively calls analysis |
-| Existing Expert/AI Review model pickers | Manual model and harness-supported reasoning selections | Keep separate from evidence-backed eligibility; they are not proof of account access |
+| Expert/AI Review model pickers | Manual model and harness-supported reasoning selections | Expert picker `m` offers scoped advice, then returns to manual selection; picker rows alone are not proof of account access |
 
 ## Implemented eligibility boundary
 
@@ -185,8 +186,12 @@ removed levels and changed launch support. Interactive arguments are returned
 only after revalidation and only for a supported path; no process or settings
 write occurs in this module. Claude/Codex use their existing extra-argument seam.
 OpenCode/Pi interactive overrides remain excluded until their launch seams are
-implemented. Analyzer selections target interactive implementation, not headless
-runner settings.
+implemented. Initial-launch selections target interactive implementation.
+Expert-review advice uses the headless path: discovered per-model effort levels
+must also be expressible by `ReasoningLevel`/`ModelSel` for that harness. Unknown
+levels that the headless seam would drop are excluded. This does not establish
+OpenCode/Pi access; they still lack verified discovery. Advice never changes the
+analyzer runner's own settings.
 
 The Codex name picker reuses the catalog parser while keeping parsed access
 unknown for analyzer purposes. The plan-review workflow uses live discovery
@@ -216,15 +221,67 @@ analyzer score, aggregation or historical measurement is derived from them.
 | --- | --- | --- |
 | New feature full/Quick Plan review | Reviewed plan, project identity, workdir, deferred launch; advice targets implementation | `m`, optional |
 | Before interview | Brief only; targets planning, separate headless configuration | Deferred |
-| On-demand plan for existing feature | Plan plus live-session continuity; no new implementation launch | Deferred |
-| TODO into host/new feature | Destination/reservation/rollback semantics | Deferred |
-| Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
+| On-demand Full/Quick Plan review | Reviewed implementation plan and stable feature destination; accept writes plan and offers a kickoff handoff | `m`, advice only for the feature harness |
+| Host-feature TODO Plan review | Reviewed implementation plan and resolved host/TODO; accept writes a separate plan and starts a TODO session/composer | `m`, advice only for the host harness |
+| New-feature TODO Full/Quick Plan review | Reviewed implementation plan and prepared destination; accept creates feature and links TODO | `m`, selection applies to initial implementation launch |
+| Direct TODO spawn | Destination/reservation/composer without a reviewed plan | Deferred |
+| Expert plan-review model picker | Draft plan, brief, answers, repository/reference context and resolved reviewer; separate headless critique | `m`, advice only for the reviewer; return to AMF picker |
+| AI/Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
 | Existing agent session | Feature name/summary and effective plan when present; advice for the current harness | Dashboard session `m` or pane leader `B`; apply in place for exactly identified Codex daemon conversations, otherwise view-only |
 
-A selection affects the initial implementation agent launch only. It returns to
-plan review; accepting the plan still controls launch and resource confirmation.
+A new-feature plan selection affects the initial implementation agent launch
+only. It returns to plan review; accepting the plan still controls launch and resource confirmation.
 Editing the plan invalidates the choice. Later independent sessions/restarts keep
 their existing configuration semantics. Cancellation launches no implementation.
+
+The `m` action also covers on-demand Full/Quick Plan review and TODO Plan
+review. Outside the Expert picker, advice targets **implementation of the
+reviewed plan**. Existing-feature and host-feature TODO plans
+are view-only, restricted to the destination feature's configured harness.
+Accepting an on-demand plan still writes it and offers the existing kickoff
+handoff. Accepting a host TODO plan still writes a separate TODO plan and starts
+its own session/composer, using the existing reservation and rollback behavior.
+The dialog explains these scopes and offers no Apply action for either path.
+The user changes the harness setting with its own picker.
+
+New-feature TODO plans can apply a selection through the same initial-launch
+boundary as other new plans, including fresh discovery after resource approval.
+Evidence is loaded for the resolved **destination project/repo**, even when the
+TODO originates in a global list or another project. Advice reads the live TODO
+and owning list from the DB and snapshots task content, work status/links and
+owner identity along with the resolved review target. Unrelated sibling edits,
+list timestamps/scratchpad changes and reordering do not invalidate the choice.
+Edits, completion, deletion, moves, list/host changes, destination changes and
+changed configuration reject pending results. The source snapshot also travels
+with a selection, so changing a TODO between application and plan acceptance
+invalidates it. Cancellation leaves the plan and reservation intact.
+Successful launch retains existing TODO feature/session links; retries preserve
+the same destination and only clean up the tmux session created by the attempt.
+No preference, observed effective setting, usage measurement or generated claim
+is persisted by this increment.
+
+The Expert model picker has its own `m` entry. Advice targets **review of the
+draft plan**, using the resolved reviewer harness rather than the implementation
+harness. It carries the brief, interview questions/answers and draft plan; the
+worker reads the same bounded repository context used by critique and bounded
+excerpts of explicitly attached reference documents. Reference excerpts are
+labelled when truncated, and full bounded-file fingerprints detect edits beyond
+the excerpts. Missing, invalid or oversized references fail closed. Reading
+references creates no staged copies or workflow state. Interview, TODO,
+destination, reviewer or configured-harness changes invalidate pending results;
+the worker rereads repository/reference context before returning advice.
+Cancellation restores the original picker, including its custom model buffer
+and selected effort. Custom-model typing keeps `m` as text. The dialog offers no
+Apply action: choose model/effort in the existing AMF picker and confirm review
+separately. No critique starts or preference is persisted through this advice.
+
+Before-interview planning, direct TODO spawning and AI/Final/PR review entry
+points remain deferred. They need planning or diff/head-specific targets;
+interactive implementation arguments cannot configure those workers. Live
+application for other harnesses, explicit restart/resume, persistent
+requested/effective stage settings,
+outcome attribution/comparability and OpenCode/Pi discovery/launch adapters remain
+separate capability work. Paid trials remain optional, explicitly opt-in work.
 
 For an existing session, the analyzer only offers settings for that session's
 verified harness. The worker reads the effective plan alongside feature name
@@ -246,9 +303,9 @@ on the running local shared daemon. `codex app-server proxy` connects without
 starting a daemon. AMF performs an HTTP Upgrade handshake and sends WebSocket
 text frames through this raw byte tunnel; it does not send JSONL to the proxy.
 Handshake, reads and writes obey cancellation and a 30-second deadline, with
-bounded buffering and frame sizes. A missing connection or unsupported protocol produces an
-error; AMF does not restart a harness, load a thread, send a user turn or modify
-user defaults to work around it.
+bounded buffering and frame sizes. A missing connection or unsupported protocol
+produces an error; AMF does not restart a harness, load a thread, send a user turn
+or modify user defaults to work around it.
 
 A preparation worker verifies the daemon's OpenAI authentication, provider
 configuration in the target workdir, absence of unverifiable managed requirements,
@@ -278,8 +335,8 @@ zero user turns. A second probe over a real proxy and isolated Unix control
 socket confirmed both the readback and settings notification, including the
 matching effort in collaboration settings. A further no-turn probe changed both
 model and effort in plan mode, preserving the mode, its developer instructions,
-permissions, workdir and service tier. These fields verify configuration, not per-turn performance or
-usage. The general [app-server documentation](https://learn.chatgpt.com/docs/app-server)
+permissions, workdir and service tier. These fields verify configuration, not
+per-turn performance or usage. The general [app-server documentation](https://learn.chatgpt.com/docs/app-server)
 documents loaded-thread reads; this experimental update method was verified from
 installed generated bindings and actual execution rather than assumed from the
 general documentation. Older or independently running CLIs may lack this boundary.
@@ -353,10 +410,11 @@ answer. DB failures are analysis errors, not insufficient evidence.
 The v1 discovery adapter owns a bounded, cancellable Codex app-server process
 without creating threads or turns. It initializes, reads account authentication,
 requests picker-visible `model/list` with per-model efforts, reads effective
-provider configuration, and checks managed requirements. Protocol errors are errors; custom providers, unauthenticated
-accounts and managed requirements that this adapter cannot verify yield no
-eligible options. Large paginated catalogs fail closed. Cached catalogs and
-bundled catalogs are never promoted. See the official
+provider configuration, and checks managed requirements. Protocol errors are
+errors; custom providers, unauthenticated accounts and managed requirements
+that this adapter cannot verify yield no eligible options. Large paginated
+catalogs fail closed. Cached catalogs and bundled catalogs are never promoted.
+See the official
 [app-server protocol](https://learn.chatgpt.com/docs/app-server). The Claude
 adapter described above also verifies access and effective effort caps. A
 failed harness probe does not suppress verified choices from another configured
@@ -377,3 +435,24 @@ initial agent. Other sessions use their usual settings. Launch retries use a
 stable feature ID and clean up only tmux sessions this attempt created; they do
 not recreate a worktree or another feature row. Deleting or changing a saved
 retry target invalidates that retry. Returning to review preserves the plan.
+
+Plan-review expansion validation on 2026-10-01 passed 101 focused model/analyzer
+checks plus plan, TODO, feature-session and PR-review suites (74/107/87/93 tests).
+The locked build, full workspace suite, formatting and strict workspace/all-target
+Clippy passed. The full suite passed 3,051 library tests plus seven GUI tests on
+an isolated tmux socket with eight parallel threads; the existing live-GitHub test
+remained ignored by default. Mocked workflows verified source/destination
+isolation, stale TODO/feature rejection, resource-confirmation revalidation,
+initial launch arguments, TODO links and retry behavior. No paid trials ran.
+
+Expert-review expansion validation on 2026-10-01 used stable Rust 1.99. Focused
+model/analyzer and Expert-picker checks, plan/TODO suites and the locked build
+passed. The full parallel workspace suite passed 3,061 library tests and seven
+GUI tests; one existing live-GitHub test remained ignored by default. Additional
+coverage verifies reviewer/implementation separation, picker restoration,
+reference/repository edits (including changes beyond reference excerpts), custom
+model typing and TODO list changes unrelated to the selected task. Formatting
+and strict workspace/all-target Clippy passed with warnings denied; the two
+existing-main Rust 1.99 lint failures were fixed without suppressions. Seven
+asserted screenshot frames use isolated plans and mocked discovery/responses;
+no paid agents, critique runs or trials were launched by the scenario.

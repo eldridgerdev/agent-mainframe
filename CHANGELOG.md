@@ -33,6 +33,11 @@ are tagged.
   stopped. A feature with stopped sessions shows `[N stopped]` even when it is
   collapsed. Stop a Claude or Codex session you are not using with `x` to free
   its memory. It stays listed, and `c` or `Enter` on the row starts it again.
+- **The desktop app can start and stop single sessions too.** Session tabs
+  show whether each session is running. Use **Stop session** or **Start
+  session** in the feature header. A stopped session's tab offers to start it
+  instead of showing an empty terminal. The project page counts stopped
+  sessions next to each feature.
 
 ### Changed
 

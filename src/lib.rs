@@ -42,6 +42,8 @@ mod hook_payload;
 mod http_client;
 mod ipc;
 mod markdown;
+mod model_evidence;
+mod model_options;
 mod perf;
 mod pi;
 mod plan_interview;

@@ -255,6 +255,7 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add Web Push subscriptions + VAPID key for Remote Control",
             MIGRATION_043,
         ),
+        ("Project model research provenance", MIGRATION_044),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1141,6 +1142,16 @@ CREATE TABLE IF NOT EXISTS remote_push_vapid (
 );
 ";
 
+const MIGRATION_044: &str = "
+CREATE TABLE model_research (
+    project_id TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    PRIMARY KEY (project_id, repo, evidence_id)
+);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1183,7 +1194,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 44);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1222,7 +1233,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 43);
+        assert_eq!(version, 44);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1317,7 +1328,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 44);
     }
 
     #[test]
@@ -1661,6 +1672,7 @@ mod tests {
              DROP TABLE remote_push_subscriptions;
              DROP TABLE remote_push_vapid;
              DROP TABLE remote_devices;
+             DROP TABLE model_research;
              DELETE FROM schema_version WHERE version >= 41;
              INSERT INTO unsent_prompts (id, workdir, label, body, created_at)
              VALUES ('p1', '/tmp/w', 'label', 'kept across the migration', '2026-09-25T00:00:00Z');",
@@ -1703,7 +1715,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 44);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1716,7 +1728,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 43);
+        assert_eq!(rows, 44);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1881,7 +1893,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 43);
+        assert_eq!(version, 44);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old

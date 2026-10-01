@@ -92,7 +92,9 @@ doc always says exactly what remains.
 - [Premium-model efficiency options](premium-model-efficiency-options-plan.md) —
   _Backlog._ Planning reference for eight ways AMF could make Astra/Fable more
   affordable, with worked savings calculations, implementation boundaries,
-  evaluation criteria, and dependencies for later feature plans.
+  evaluation criteria, and dependencies for later feature plans. OPT-07 records
+  the implemented Claude Code/Codex model and reasoning advice foundation;
+  persistent stage profiles, live application and outcome evaluation remain open.
 
 - [Project config location](project-config-location-plan.md) — _Shipped._
   Moved hand-authored project config out of the generated

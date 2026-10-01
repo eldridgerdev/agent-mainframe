@@ -31,6 +31,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("E", "Headless prompt overrides"),
     ("d", "Diff viewer (all changes / commit)"),
     ("m", "Markdown viewer"),
+    ("B", "Model / reasoning advice"),
     ("n", "Open current plan"),
     ("F", "Fresh context"),
     ("b", "Show / hide sidebar"),

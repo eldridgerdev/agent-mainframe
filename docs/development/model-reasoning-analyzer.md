@@ -302,13 +302,17 @@ Application requires an existing tmux session/window and a loaded conversation
 on the running local shared daemon. `codex app-server proxy` connects without
 starting a daemon. AMF performs an HTTP Upgrade handshake and sends WebSocket
 text frames through this raw byte tunnel; it does not send JSONL to the proxy.
-Handshake, reads and writes obey cancellation and a 30-second deadline, with
-bounded buffering and frame sizes. A missing connection or unsupported protocol
+Handshake, reads and writes obey cancellation and a 30-second deadline per phase
+(preparation, the commit's pre-update checks, and post-update verification each
+get a fresh one), with bounded buffering and frame sizes. A missing connection or unsupported protocol
 produces an error; AMF does not restart a harness, load a thread, send a user turn
 or modify user defaults to work around it.
 
-A preparation worker verifies the daemon's OpenAI authentication, provider
-configuration in the target workdir, absence of unverifiable managed requirements,
+A preparation worker verifies the daemon's OpenAI authentication, the provider
+configuration it reports for the target workdir (`config/read`; an environment
+override such as `OPENAI_BASE_URL` in the daemon's own process is not visible
+there, and AMF's environment says nothing about it), absence of unverifiable
+managed requirements,
 picker catalog and exact model/effort eligibility. `thread/read` must return the
 exact conversation ID, matching canonical workdir, OpenAI provider, loaded
 idle/active status and effective model/effort fields. Main-loop acceptance checks
@@ -324,7 +328,10 @@ mode, workdir and defaults are omitted from the update. Duplicate Enter presses
 cannot send another update. While an authorized update is being verified, Back
 and Retry wait for the bounded connection operation to finish; cancellation can
 no longer guarantee that settings were unchanged. An error after sending the
-update tells the user to inspect the harness settings. Retry performs a fresh
+update tells the user to inspect the harness settings; one raised before it says
+the settings were not changed. If the target changes while the commit runs, the
+reported outcome still distinguishes applied, unchanged and unknown. Codex
+JSON-RPC rejections carry the daemon's error message and code. Retry performs a fresh
 analysis rather than replaying an unconfirmed mutation.
 
 The protocol's generated `ThreadSettingsUpdateParams` describes model and effort

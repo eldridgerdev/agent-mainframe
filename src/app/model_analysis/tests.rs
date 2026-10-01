@@ -327,6 +327,92 @@ fn live_control_error_retries_analysis_without_repeating_mutation() {
 }
 
 #[test]
+fn failed_retry_setup_drops_the_prepared_selection_instead_of_replaying_it() {
+    let (mut app, _dir) = live_session_fixture();
+    app.apply_model_analysis().unwrap();
+    wait_for_prepared(&app);
+    let conversation = |app: &mut App, id: &str| {
+        app.store.projects[0].features[0].sessions[0]
+            .token_usage_source
+            .as_mut()
+            .unwrap()
+            .id = id.into()
+    };
+    conversation(&mut app, "another-thread");
+    app.retry_model_analysis();
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if s.session_apply.is_none() && !s.committing && !s.is_checking_setting() && matches!(s.status, Status::Error(_)))
+    );
+    conversation(&mut app, "exact-thread");
+    app.model_analysis_work.prepare_session =
+        |_, _| panic!("Retry must analyze, not replay the earlier selection");
+    app.retry_model_analysis();
+    poll(&mut app);
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Ready(_))));
+    assert!(!app.store.projects[0].repo.join("applied-setting").exists());
+}
+
+#[test]
+fn target_change_during_commit_reports_what_happened_to_the_conversation() {
+    // Blocks until released, then reports the outcome named in `commit-outcome`.
+    struct ScriptedUpdate(session_control::Request);
+    impl session_control::Prepared for ScriptedUpdate {
+        fn commit(self: Box<Self>, _: &AtomicBool) -> Result<()> {
+            let dir = &self.0.workdir;
+            std::fs::write(dir.join("committing-setting"), "pending")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !dir.join("release-setting").exists() {
+                ensure!(Instant::now() < deadline, "test did not release commit");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            match std::fs::read_to_string(dir.join("commit-outcome"))?.as_str() {
+                "applied" => Ok(()),
+                "unchanged" => {
+                    Err(anyhow::anyhow!("Session settings changed")
+                        .context(session_control::NotSent))
+                }
+                _ => anyhow::bail!("Update was sent, but its result could not be verified"),
+            }
+        }
+    }
+    for (outcome, expected) in [
+        ("applied", "were updated and verified"),
+        (
+            "unchanged",
+            "Settings were not changed: Session settings changed",
+        ),
+        (
+            "unknown",
+            "inspect the conversation's settings (Update was sent",
+        ),
+    ] {
+        let (mut app, _dir) = live_session_fixture();
+        let repo = app.store.projects[0].repo.clone();
+        std::fs::write(repo.join("commit-outcome"), outcome).unwrap();
+        app.model_analysis_work.prepare_session =
+            |request, _| Ok(Box::new(ScriptedUpdate(request.clone())));
+        app.apply_model_analysis().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !matches!(&app.mode, AppMode::ModelAnalysis(s) if s.committing) {
+            assert!(Instant::now() < deadline);
+            app.poll_model_analysis();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.store.projects[0].features[0].sessions[0]
+            .token_usage_source
+            .as_mut()
+            .unwrap()
+            .id = "another-thread".into();
+        std::fs::write(repo.join("release-setting"), "done").unwrap();
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if !s.committing && s.session_apply.is_none() && matches!(&s.status, Status::Error(e) if e.contains(expected))),
+            "{outcome}"
+        );
+    }
+}
+
+#[test]
 fn committed_update_cannot_be_cancelled_or_retried_while_verification_is_pending() {
     struct BlockingUpdate(session_control::Request);
     impl session_control::Prepared for BlockingUpdate {

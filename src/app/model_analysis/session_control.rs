@@ -31,6 +31,22 @@ pub(super) trait Prepared: Send {
     fn commit(self: Box<Self>, cancelled: &AtomicBool) -> Result<()>;
 }
 
+/// Context on a commit error raised before `thread/settings/update` was sent:
+/// the conversation's settings are known to be unchanged. Any commit error
+/// without it may have followed the update, so its outcome is unknown.
+#[derive(Debug)]
+pub(super) struct NotSent;
+impl std::fmt::Display for NotSent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Settings were not changed")
+    }
+}
+
+/// Budget for each phase of a connection: preparing, checking before the
+/// update, and verifying after it. A slow earlier phase must not leave the
+/// post-update verification too little time to confirm what happened.
+const PHASE_BUDGET: Duration = Duration::from_secs(30);
+
 pub(super) fn prepare(request: &Request, cancelled: &AtomicBool) -> Result<Box<dyn Prepared>> {
     ensure!(!cancelled.load(Ordering::Relaxed), "application cancelled");
     let child = Command::new("codex")
@@ -48,6 +64,8 @@ pub(super) fn prepare(request: &Request, cancelled: &AtomicBool) -> Result<Box<d
 trait Protocol: Send {
     fn call(&mut self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value>;
     fn initialized(&mut self) -> Result<()>;
+    /// Starts a fresh [`PHASE_BUDGET`] for the calls that follow.
+    fn restart_deadline(&mut self);
 }
 
 struct Settings<P> {
@@ -96,8 +114,11 @@ fn validate_eligibility(
         json!({"includeLayers":false,"cwd":request.workdir}),
         cancelled,
     )?;
+    // Only what the daemon reports is checked here. An environment override
+    // such as OPENAI_BASE_URL set where the daemon started is invisible to
+    // config/read, and AMF's own environment says nothing about that process.
     ensure!(
-        discovery::is_openai_config(&config) && std::env::var_os("OPENAI_BASE_URL").is_none(),
+        discovery::is_openai_config(&config),
         "Running daemon uses unverified provider configuration"
     );
     let models = rpc.call(
@@ -150,20 +171,30 @@ fn read_thread(
 
 impl<P: Protocol> Prepared for Settings<P> {
     fn commit(mut self: Box<Self>, cancelled: &AtomicBool) -> Result<()> {
+        // Preparation and the main-loop handoff may have used most of the
+        // connection's first budget.
+        self.rpc.restart_deadline();
         // Repeat policy/catalog checks on the same connection, then reject a
         // native-picker change that happened while AMF was validating its target.
-        validate_eligibility(&mut self.rpc, &self.request, cancelled)?;
-        let current = read_thread(&mut self.rpc, &self.request, cancelled)?;
-        ensure!(
-            current["model"] == self.before["model"]
-                && current["reasoningEffort"] == self.before["reasoningEffort"],
-            "Session settings changed; retry analysis before applying"
-        );
-        ensure!(!cancelled.load(Ordering::Relaxed), "application cancelled");
+        (|| -> Result<()> {
+            validate_eligibility(&mut self.rpc, &self.request, cancelled)?;
+            let current = read_thread(&mut self.rpc, &self.request, cancelled)?;
+            ensure!(
+                current["model"] == self.before["model"]
+                    && current["reasoningEffort"] == self.before["reasoningEffort"],
+                "Session settings changed; retry analysis before applying"
+            );
+            ensure!(!cancelled.load(Ordering::Relaxed), "application cancelled");
+            Ok(())
+        })()
+        .context(NotSent)?;
         // Exactly these fields change. No service tier, permission, collaboration,
         // working-directory or user-default writes are included.
         self.rpc.call("thread/settings/update", json!({"threadId":self.request.thread_id,"model":self.request.choice.model(),"effort":self.request.choice.reasoning()}), cancelled)
             .context("Update could not be confirmed; inspect the harness settings before retrying")?;
+        // Verification gets its own budget: timing out here is the one outcome
+        // where nobody knows whether the change happened.
+        self.rpc.restart_deadline();
         let after = read_thread(&mut self.rpc, &self.request, cancelled)
             .context("Update was sent, but its result could not be verified; inspect the harness settings before retrying")?;
         ensure!(
@@ -278,7 +309,7 @@ fn would_block(error: &tungstenite::Error) -> bool {
 }
 impl<S: Read + Write> Rpc<S> {
     fn connect_stream(io: S, cancelled: &AtomicBool) -> Result<Self> {
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + PHASE_BUDGET;
         check_wait(deadline, cancelled)?;
         let config = tungstenite::protocol::WebSocketConfig::default()
             .max_message_size(Some(4 * 1024 * 1024))
@@ -339,10 +370,13 @@ impl<S: Read + Write + Send> Protocol for Rpc<S> {
                     if value["id"] != id {
                         continue;
                     }
-                    ensure!(
-                        value.get("error").is_none(),
-                        "Codex rejected the settings request ({method})"
-                    );
+                    if let Some(error) = value.get("error") {
+                        anyhow::bail!(
+                            "Codex rejected the settings request ({method}): {} (code {})",
+                            error["message"].as_str().unwrap_or("no message"),
+                            error["code"]
+                        );
+                    }
                     return value
                         .get("result")
                         .cloned()
@@ -361,6 +395,9 @@ impl<S: Read + Write + Send> Protocol for Rpc<S> {
             &AtomicBool::new(false),
         )
     }
+    fn restart_deadline(&mut self) {
+        self.deadline = Instant::now() + PHASE_BUDGET;
+    }
 }
 
 #[cfg(test)]
@@ -375,6 +412,7 @@ mod tests {
         catalogs: usize,
         applied: bool,
     }
+    const RESTART: &str = "<restart deadline>";
     struct Fake {
         trace: Arc<Mutex<Trace>>,
         workdir: PathBuf,
@@ -383,6 +421,10 @@ mod tests {
     impl Protocol for Fake {
         fn initialized(&mut self) -> Result<()> {
             Ok(())
+        }
+        fn restart_deadline(&mut self) {
+            let mut trace = self.trace.lock().unwrap();
+            trace.calls.push((RESTART.into(), Value::Null));
         }
         fn call(&mut self, method: &str, params: Value, cancelled: &AtomicBool) -> Result<Value> {
             ensure!(!cancelled.load(Ordering::Relaxed), "application cancelled");
@@ -492,6 +534,16 @@ mod tests {
         );
         assert_eq!(trace.reads, 3);
         assert_eq!(trace.catalogs, 2);
+        // Commit and post-update verification each get a fresh budget.
+        let methods: Vec<_> = trace.calls.iter().map(|(m, _)| m.as_str()).collect();
+        let commit = methods.iter().rposition(|m| *m == "account/read").unwrap();
+        let update = methods
+            .iter()
+            .position(|m| *m == "thread/settings/update")
+            .unwrap();
+        assert_eq!(methods[commit - 1], RESTART);
+        assert_eq!(methods[update + 1], RESTART);
+        assert_eq!(methods.iter().filter(|m| **m == RESTART).count(), 2);
         assert!(!trace.calls.iter().any(|(m, _)| m == "thread/start"
             || m == "thread/resume"
             || m.starts_with("turn/")
@@ -523,7 +575,8 @@ mod tests {
             let (rpc, request, trace, _dir) = fixture(fault);
             let cancel = AtomicBool::new(false);
             let prepared = prepare_with(rpc, request, &cancel).unwrap();
-            assert!(prepared.commit(&cancel).is_err());
+            let error = prepared.commit(&cancel).unwrap_err();
+            assert!(error.downcast_ref::<NotSent>().is_some(), "{fault}");
             assert!(
                 !trace
                     .lock()
@@ -541,7 +594,8 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let prepared = prepare_with(rpc, request, &cancel).unwrap();
         cancel.store(true, Ordering::Relaxed);
-        assert!(prepared.commit(&cancel).is_err());
+        let error = prepared.commit(&cancel).unwrap_err();
+        assert!(error.downcast_ref::<NotSent>().is_some());
         assert!(!trace.lock().unwrap().applied);
         let (rpc, request, trace, _dir) = fixture("");
         drop(prepare_with(rpc, request, &AtomicBool::new(false)).unwrap());
@@ -558,6 +612,7 @@ mod tests {
                 .commit(&cancel)
                 .unwrap_err();
             assert!(format!("{error:#}").contains("inspect the harness settings"));
+            assert!(error.downcast_ref::<NotSent>().is_none(), "{fault}");
             assert_eq!(
                 trace
                     .lock()
@@ -629,12 +684,20 @@ mod tests {
         );
         drop(rpc);
         server.join().unwrap();
-        for reply in ["not-json", r#"{"id":1,"error":{"code":-32601}}"#] {
+        for (reply, expected) in [
+            ("not-json", None),
+            (
+                r#"{"id":1,"error":{"code":-32601,"message":"Method not found"}}"#,
+                Some("(thread/read): Method not found (code -32601)"),
+            ),
+        ] {
             let (mut rpc, server) = websocket_pair(vec![reply]);
-            assert!(
-                rpc.call("thread/read", json!({}), &AtomicBool::new(false))
-                    .is_err()
-            );
+            let error = rpc
+                .call("thread/read", json!({}), &AtomicBool::new(false))
+                .unwrap_err();
+            if let Some(expected) = expected {
+                assert!(error.to_string().contains(expected), "{error}");
+            }
             drop(rpc);
             server.join().unwrap();
         }

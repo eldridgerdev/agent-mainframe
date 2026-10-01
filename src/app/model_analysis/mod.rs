@@ -392,6 +392,9 @@ enum Outcome {
     Validated(EligibleOptions),
     SessionPrepared(Box<dyn session_control::Prepared>),
     SessionApplied,
+    /// The commit stopped before sending the update, so the conversation's
+    /// settings are known to be unchanged; carries why it stopped.
+    SessionUnchanged(String),
 }
 impl Work {
     pub fn pending(&self) -> bool {
@@ -738,8 +741,12 @@ impl App {
         let (allowed, choice_allowed, notes, templates) = match setup {
             Ok(v) => v,
             Err(e) => {
+                // A stale selection would make the next Retry prepare and commit
+                // it again instead of running the fresh analysis Retry promises.
                 if let AppMode::ModelAnalysis(s) = &mut self.mode {
-                    s.status = Status::Error(e.to_string())
+                    s.status = Status::Error(e.to_string());
+                    s.session_apply = None;
+                    s.committing = false;
                 };
                 return;
             }
@@ -877,20 +884,32 @@ impl App {
             s.committing = false;
         }
         if !valid {
-            if was_committing {
-                self.log_warn("model", "Session target changed while verifying its settings update; inspect that conversation's settings".into());
-            }
+            // A commit's result still says what happened to the conversation,
+            // even though the target it was checked against has moved on.
+            let message = match (&completion.result, was_committing) {
+                (_, false) => {
+                    "Target or configured harnesses changed; return to the originating workflow"
+                        .into()
+                }
+                (Ok(Outcome::SessionApplied), true) => "Model and effort were updated and verified, but the target changed meanwhile; return to the originating workflow".into(),
+                (Ok(Outcome::SessionUnchanged(e)), true) => format!("Target changed. {e}"),
+                (Err(e), true) => {
+                    self.log_warn("model", format!("Session target changed while verifying its settings update; inspect that conversation's settings: {e}"));
+                    format!("Target changed while verifying the update; inspect the conversation's settings ({e})")
+                }
+                (Ok(_), true) => {
+                    "Target changed while verifying the update; inspect the conversation's settings"
+                        .into()
+                }
+            };
             if let AppMode::ModelAnalysis(s) = &mut self.mode {
-                s.status = Status::Error(
-                    if was_committing { "Target changed while verifying the update; inspect the conversation's settings" }
-                    else { "Target or configured harnesses changed; return to the originating workflow" }.into(),
-                );
+                s.status = Status::Error(message);
                 s.session_apply = None;
             }
             return true;
         }
         match completion.result {
-            Err(e) => {
+            Err(e) | Ok(Outcome::SessionUnchanged(e)) => {
                 if let AppMode::ModelAnalysis(s) = &mut self.mode {
                     s.status = Status::Error(e);
                     s.session_apply = None;
@@ -951,10 +970,13 @@ impl App {
                     let (tx, rx) = mpsc::channel();
                     self.model_analysis_work.job = Some(Job { cancelled, rx });
                     std::thread::spawn(move || {
-                        let result = prepared
-                            .commit(&worker_cancel)
-                            .map(|_| Outcome::SessionApplied)
-                            .map_err(|e| format!("{e:#}"));
+                        let result = match prepared.commit(&worker_cancel) {
+                            Ok(()) => Ok(Outcome::SessionApplied),
+                            Err(e) if e.downcast_ref::<session_control::NotSent>().is_some() => {
+                                Ok(Outcome::SessionUnchanged(format!("{e:#}")))
+                            }
+                            Err(e) => Err(format!("{e:#}")),
+                        };
                         let _ = tx.send(Completion {
                             generation,
                             target,

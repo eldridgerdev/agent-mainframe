@@ -306,15 +306,33 @@ impl App {
             return Ok(());
         }
 
+        // The session the picked transcript resumes into runs even if it was
+        // stopped individually; the other stopped sessions stay stopped.
+        let resume_target = target_session_id.map(str::to_string).or_else(|| {
+            feature
+                .sessions
+                .iter()
+                .find(|session| session.kind == SessionKind::Codex)
+                .map(|session| session.id.clone())
+        });
+        feature.prepare_sessions_for_start(resume_target.as_deref());
+        let first_window = feature
+            .first_start_window()
+            .unwrap_or(&feature.sessions[0].tmux_window)
+            .to_string();
+
         self.tmux.create_session_with_window(
             &feature.tmux_session,
-            &feature.sessions[0].tmux_window,
+            &first_window,
             &feature.workdir,
         )?;
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
-        for session in &feature.sessions[1..] {
+        for session in feature
+            .sessions_to_start()
+            .filter(|session| session.tmux_window != first_window)
+        {
             self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
@@ -324,8 +342,7 @@ impl App {
 
         let tmux_session = feature.tmux_session.clone();
         let windows: Vec<String> = feature
-            .sessions
-            .iter()
+            .sessions_to_start()
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -335,7 +352,13 @@ impl App {
             &windows,
         )?;
 
-        for session in &mut feature.sessions {
+        // `sessions_to_start`, mutably: a method borrowing all of `feature`
+        // would lock out the fields the loop reads.
+        for session in feature
+            .sessions
+            .iter_mut()
+            .filter(|s| s.runs_with_feature())
+        {
             match session.kind {
                 SessionKind::Codex => {
                     let codex_args =
@@ -417,7 +440,7 @@ impl App {
         }
 
         self.tmux
-            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+            .select_window(&feature.tmux_session, &first_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();

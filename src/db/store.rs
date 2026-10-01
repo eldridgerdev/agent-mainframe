@@ -374,7 +374,7 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
         "SELECT id, kind, label, tmux_window, claude_session_id,
                 token_usage_source, token_usage_source_match,
                 created_at, command, on_stop, pre_check,
-                todo_id, todo_launched_from_menu
+                todo_id, todo_launched_from_menu, stopped
          FROM feature_sessions WHERE feature_id = ?1
          ORDER BY sort_order ASC, rowid ASC",
     )?;
@@ -407,6 +407,7 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 pre_check: row.get(10)?,
                 status_text: None,
                 token_usage: None,
+                stopped: row.get::<_, i64>(13)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -632,9 +633,9 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         claude_session_id, token_usage_source,
                         token_usage_source_match, created_at,
                         command, on_stop, pre_check, todo_id,
-                        todo_launched_from_menu, sort_order
+                        todo_launched_from_menu, sort_order, stopped
                     ) VALUES (
-                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15
+                        ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
                     )",
                     params![
                         session.id,
@@ -659,6 +660,7 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                             .is_some_and(|reference| reference.launched_from_todo_menu)
                             as i32,
                         si as i64,
+                        session.stopped as i32,
                     ],
                 )?;
             }
@@ -750,6 +752,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: true,
         };
 
         let feature = Feature {
@@ -883,6 +886,10 @@ mod tests {
             })
         );
         assert!(ls.status_text.is_none()); // transient — never persisted
+        assert!(
+            ls.stopped,
+            "an individual session stop must survive a reload"
+        );
     }
 
     #[test]

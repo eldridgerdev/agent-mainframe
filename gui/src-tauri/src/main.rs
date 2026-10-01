@@ -274,6 +274,31 @@ fn stop_feature(
     Ok(response)
 }
 
+#[tauri::command]
+fn start_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+    approved: bool,
+) -> Result<agent_mainframe::gui_contract::StartSessionResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.start_session(target, approved)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn stop_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<agent_mainframe::gui_contract::StopSessionResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.stop_session(target)?;
+    emit_workspace_changed(&app, &gui.snapshot());
+    Ok(response)
+}
+
 #[derive(Serialize)]
 struct AttachTerminalResponse {
     key: String,
@@ -624,6 +649,8 @@ fn main() {
             saved_agent_sessions,
             recover_session,
             stop_feature,
+            start_session,
+            stop_session,
             attach_terminal,
             terminal_input,
             terminal_submit_prompt,

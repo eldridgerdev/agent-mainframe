@@ -1064,6 +1064,25 @@ impl App {
         self.ensure_feature_running_with_launch_override(pi, fi, None, None, intent)
     }
 
+    /// [`Self::ensure_feature_running`], launching `session_id` on purpose
+    /// (the row the user pressed start on): it runs even if it was stopped
+    /// individually, and `max_agent_autostart_sessions` never skips its agent.
+    /// Its stop flag is cleared only once the start really proceeds, so a
+    /// parked or already-running start leaves it as it was.
+    pub(crate) fn ensure_feature_running_with_target(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        session_id: Option<&str>,
+        intent: StartIntent,
+    ) -> Result<Started> {
+        let target = session_id.map(|session_id| LaunchTarget {
+            session_id: session_id.to_string(),
+            resume: None,
+        });
+        self.ensure_feature_running_with_launch_override(pi, fi, target, None, intent)
+    }
+
     pub(crate) fn ensure_feature_running_for_recovery(
         &mut self,
         pi: usize,
@@ -1076,7 +1095,10 @@ impl App {
         self.ensure_feature_running_with_launch_override(
             pi,
             fi,
-            Some((session_id, resume_id)),
+            Some(LaunchTarget {
+                session_id,
+                resume: Some(resume_id),
+            }),
             Some(created_session),
             intent,
         )
@@ -1102,7 +1124,7 @@ impl App {
         &mut self,
         pi: usize,
         fi: usize,
-        launch_override: Option<(String, Option<String>)>,
+        launch_override: Option<LaunchTarget>,
         created_session: Option<&mut bool>,
         intent: StartIntent,
     ) -> Result<Started> {
@@ -1171,9 +1193,19 @@ impl App {
             return Ok(Started::Yes);
         }
 
+        feature.prepare_sessions_for_start(
+            launch_override
+                .as_ref()
+                .map(|target| target.session_id.as_str()),
+        );
+        let first_window = feature
+            .first_start_window()
+            .unwrap_or(&feature.sessions[0].tmux_window)
+            .to_string();
+
         self.tmux.create_session_with_window(
             &feature.tmux_session,
-            &feature.sessions[0].tmux_window,
+            &first_window,
             &feature.workdir,
         )?;
         if let Some(created_session) = created_session {
@@ -1184,7 +1216,11 @@ impl App {
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
-        for session in &feature.sessions[1..] {
+        // Sessions stopped individually stay stopped: no window, no harness.
+        for session in feature
+            .sessions_to_start()
+            .filter(|session| session.tmux_window != first_window)
+        {
             self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
@@ -1194,9 +1230,7 @@ impl App {
 
         let tmux_session = feature.tmux_session.clone();
         let windows: Vec<String> = feature
-            .sessions
-            .iter()
-            .filter(|session| session.kind.is_tmux_backed())
+            .sessions_to_start()
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -1223,20 +1257,20 @@ impl App {
         let max_agent_autostart_sessions = self.config.max_agent_autostart_sessions;
         let unlimited_agent_autostart = max_agent_autostart_sessions == 0;
         let mut launched_agent_sessions = 0usize;
-        for session in &feature.sessions {
+        for session in feature.sessions_to_start() {
             if !analyzer_args.is_empty()
                 && session.kind.is_agent_harness()
                 && session.id != feature.sessions[0].id
             {
                 continue;
             }
-            let is_launch_target = launch_override
+            let launch_target = launch_override
                 .as_ref()
-                .is_some_and(|(session_id, _)| session_id == &session.id);
-            let target_resume_id = launch_override
-                .as_ref()
-                .filter(|(session_id, _)| session_id == &session.id)
-                .and_then(|(_, resume_id)| resume_id.clone());
+                .filter(|target| target.session_id == session.id);
+            let is_launch_target = launch_target.is_some();
+            // `Some` only for a target launched on a chosen conversation;
+            // everything else resumes as saved.
+            let resume_override = launch_target.and_then(|target| target.resume.clone());
 
             if session.kind.is_agent_harness()
                 && !is_launch_target
@@ -1260,11 +1294,8 @@ impl App {
             match session.kind {
                 SessionKind::Claude => {
                     launched_agent_sessions += 1;
-                    let resume_id = if is_launch_target {
-                        target_resume_id
-                    } else {
-                        session.claude_session_id.clone()
-                    };
+                    let resume_id =
+                        resume_override.unwrap_or_else(|| session.claude_session_id.clone());
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
@@ -1279,12 +1310,12 @@ impl App {
                 }
                 SessionKind::Opencode => {
                     launched_agent_sessions += 1;
-                    if is_launch_target {
+                    if let Some(resume_id) = resume_override {
                         self.tmux.launch_opencode_with_session(
                             &feature.tmux_session,
                             &session.tmux_window,
                             &session.id,
-                            target_resume_id,
+                            resume_id,
                         )?;
                     } else {
                         self.tmux.launch_opencode(
@@ -1326,7 +1357,7 @@ impl App {
                         &feature.tmux_session,
                         &session.tmux_window,
                         &session.id,
-                        target_resume_id,
+                        resume_override.flatten(),
                         codex_args,
                     )?;
                 }
@@ -1394,7 +1425,7 @@ impl App {
         }
 
         self.tmux
-            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+            .select_window(&feature.tmux_session, &first_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();
@@ -1456,6 +1487,18 @@ impl App {
     /// `on_start` hook (prompting first when it has a prompt) and brings the
     /// tmux session up.
     pub(crate) fn begin_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
+        // `c` on a session row starts that session with its feature, even
+        // one stopped individually. The selection is still the row here when
+        // this replays from the resource confirmation. Its stop flag is left
+        // alone until the start proceeds, so cancelling the `on_start` picker
+        // below keeps the stop.
+        let target = match self.selection {
+            Selection::Session(spi, sfi, si) if (spi, sfi) == (pi, fi) => {
+                self.session_id_at(pi, fi, si)
+            }
+            _ => None,
+        };
+
         // If on_start has a prompt, show the picker first.
         let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start
@@ -1473,13 +1516,17 @@ impl App {
                 workdir,
                 prompt.title.clone(),
                 prompt.options.clone(),
-                HookNext::StartFeature { pi, fi },
+                HookNext::StartFeature {
+                    pi,
+                    fi,
+                    session_id: target,
+                },
             );
             return Ok(());
         }
 
         // `start_feature` gated this start before parking or proceeding.
-        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+        self.ensure_feature_running_with_target(pi, fi, target.as_deref(), StartIntent::Approved)?;
 
         // Fire on_start lifecycle hook (plain script) if configured.
         if let Some(ref cfg) = on_start {
@@ -1502,8 +1549,14 @@ impl App {
 
     /// Inner start logic called after a hook prompt is confirmed. The gate
     /// ran back in `start_feature`, before the prompt was raised.
-    pub fn do_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
-        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+    /// `session_id` is the session row the start was requested from, if any.
+    pub fn do_start_feature(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        session_id: Option<&str>,
+    ) -> Result<()> {
+        self.ensure_feature_running_with_target(pi, fi, session_id, StartIntent::Approved)?;
         let name = self
             .store
             .projects
@@ -2377,6 +2430,16 @@ impl App {
 
         Ok(())
     }
+}
+
+/// A session a feature start launches on purpose: it runs even if it was
+/// stopped individually, and `max_agent_autostart_sessions` never skips it.
+pub(crate) struct LaunchTarget {
+    session_id: String,
+    /// The conversation to launch it on. `None` resumes whatever the session
+    /// saved; `Some` (recovery) replaces that, `Some(None)` meaning a fresh
+    /// conversation.
+    resume: Option<Option<String>>,
 }
 
 #[cfg(test)]

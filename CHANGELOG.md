@@ -46,6 +46,16 @@ are tagged.
   shared default.
 - **AI reviews record the level they ran at** in their attribution line
   (for example `model opus · reasoning high`).
+- **Start and stop individual sessions, with icons to match.** Each session
+  row on the dashboard now shows `●` when it is running and `■` when it is
+  stopped. A feature with stopped sessions shows `[N stopped]` even when it is
+  collapsed. Stop a Claude or Codex session you are not using with `x` to free
+  its memory. It stays listed, and `c` or `Enter` on the row starts it again.
+- **The desktop app can start and stop single sessions too.** Session tabs
+  show whether each session is running. Use **Stop session** or **Start
+  session** in the feature header. A stopped session's tab offers to start it
+  instead of showing an empty terminal. The project page counts stopped
+  sessions next to each feature.
 
 ### Changed
 
@@ -65,6 +75,11 @@ are tagged.
   features that need you come first, then active, idle, and stopped ones.
 - **A paused Expert plan review resumes with the config level, not the one you
   picked.** The model is restored with the draft but the reasoning level is not.
+- **A stopped session stays stopped.** Starting its feature again, or
+  restarting AMF, starts every session except the ones you stopped yourself.
+  Stopping a feature still remembers which sessions were running, so starting
+  it brings back the same set. If every session was stopped, starting the
+  feature starts all of them.
 
 ### Removed
 

@@ -1195,6 +1195,7 @@ fn store_with_single_agent_session(
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -1350,6 +1351,7 @@ fn sync_session_status_shows_agent_token_usage() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -1705,6 +1707,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -1840,6 +1843,7 @@ fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -1948,6 +1952,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let second = FeatureSession {
         id: "codex-sess-2".to_string(),
@@ -2053,6 +2058,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),

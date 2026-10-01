@@ -729,7 +729,7 @@ impl App {
                     .sessions
                     .iter()
                     .map(|session| {
-                        let live = running && session.kind.is_tmux_backed();
+                        let live = running && session.runs_with_feature();
                         if live {
                             pane_targets.insert(
                                 session.id.clone(),

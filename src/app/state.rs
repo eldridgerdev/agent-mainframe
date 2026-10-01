@@ -2461,6 +2461,8 @@ pub enum HookNext {
     StartFeature {
         pi: usize,
         fi: usize,
+        /// The session row the start was requested from, launched on purpose.
+        session_id: Option<String>,
     },
     StopFeature {
         pi: usize,

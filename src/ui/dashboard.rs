@@ -1696,6 +1696,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
+    if let AppMode::ModelAnalysis(state) = &app.mode {
+        super::dialogs::draw_model_analysis(frame, state, app.message.as_deref(), &app.theme);
+        return;
+    }
+
+    let model_advice = app.model_analysis_available();
     if let AppMode::PlanInterview(state) = &mut app.mode {
         super::dialogs::draw_plan_interview_dialog(
             frame,
@@ -1703,6 +1709,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.message.as_deref(),
             &app.theme,
             &app.throbber_state,
+            model_advice,
         );
         return;
     }
@@ -1746,6 +1753,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
             );
         }
+        AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);

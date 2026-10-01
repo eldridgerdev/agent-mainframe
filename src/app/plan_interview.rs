@@ -2677,7 +2677,6 @@ impl App {
                 return Ok(());
             }
 
-            self.mode = AppMode::Normal;
             self.resume_accepted_plan_launch(pending)
         } else if let Some(origin) = todo_origin {
             // A TODO planned into its host feature. The plan is on disk beside
@@ -2723,6 +2722,17 @@ impl App {
     /// The resource check has either passed or been explicitly confirmed, so
     /// creation and startup bypass the creation-time toast gate exactly once.
     pub(crate) fn resume_accepted_plan_launch(&mut self, pending: PendingPlanLaunch) -> Result<()> {
+        if pending.prepared.model_selection.is_some() {
+            return self.validate_model_plan_launch(pending);
+        }
+        self.mode = AppMode::Normal;
+        self.resume_validated_plan_launch(pending)
+    }
+
+    pub(crate) fn resume_validated_plan_launch(
+        &mut self,
+        pending: PendingPlanLaunch,
+    ) -> Result<()> {
         let PendingPlanLaunch {
             prepared,
             interview_key,
@@ -2736,6 +2746,14 @@ impl App {
             .unwrap_or_else(|| branch.clone());
         let todo_origin = prepared.todo_origin.clone();
 
+        if prepared.model_selection.is_some() {
+            let saved_plan = fs::read_to_string(prepared.workdir.join(PLAN_FILE_NAME))
+                .context("the accepted plan file is unavailable; return to plan review")?;
+            anyhow::ensure!(
+                saved_plan == plan,
+                "the accepted plan file changed; return to plan review before launching"
+            );
+        }
         self.finish_feature_launch_resource_approved(prepared)?;
         self.finalize_plan_interview_transcript(
             &interview_key,

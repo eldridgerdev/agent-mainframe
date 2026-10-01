@@ -145,6 +145,11 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('s') => {
             app.open_session_picker()?;
         }
+        KeyCode::Char('m') => {
+            if let Err(e) = app.open_model_analysis() {
+                app.message = Some(e.to_string());
+            }
+        }
         KeyCode::Char('S') => {
             // `S` stays on the saved-transcript picker even for a stopped
             // feature: the pickers start the feature themselves, and they are

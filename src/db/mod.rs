@@ -3,6 +3,7 @@ mod debug_log;
 pub mod editors;
 pub mod learning;
 mod migrations;
+pub(crate) mod model_evidence;
 pub mod plan_interviews;
 pub mod pr_comment_triage;
 pub mod pr_investigations;

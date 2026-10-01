@@ -1078,6 +1078,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
     });
 
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".to_string(),
         feature_name: None,
         branch: "coached".to_string(),
@@ -1456,6 +1457,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
 
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".to_string(),
         feature_name: None,
         branch: "diffy".to_string(),
@@ -1524,6 +1526,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
     app.store_path = tmp.path().to_path_buf();
 
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".to_string(),
         feature_name: None,
         branch: "diffy-opencode".to_string(),

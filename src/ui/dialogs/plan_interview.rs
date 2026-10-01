@@ -1042,18 +1042,8 @@ fn draw_plan_review(
         Span::raw(" investigate  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
-        Span::raw(
-            if state.todo_origin.is_none()
-                && state
-                    .pending_launch
-                    .as_ref()
-                    .is_some_and(|p| p.todo_origin.is_none())
-            {
-                "m model advice  "
-            } else {
-                ""
-            },
-        ),
+        hint("m", theme),
+        Span::raw(" model advice  "),
         hint("Enter", theme),
         Span::raw(" accept  "),
         hint("Ctrl+Q", theme),

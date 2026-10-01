@@ -178,7 +178,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Edit raw plan markdown"),
         (
             "m",
-            "Model / reasoning advice for the new feature's initial agent",
+            "Model / reasoning advice for implementing the reviewed plan",
         ),
         (
             "a",

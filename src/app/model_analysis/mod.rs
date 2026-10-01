@@ -5,7 +5,7 @@ mod tests;
 
 use super::{
     App, AppMode, PendingPlanLaunch, PlanInterviewPhase, PreparedFeatureLaunch,
-    Selection as DashboardSelection,
+    Selection as DashboardSelection, TodoPlanOrigin,
 };
 use crate::{
     headless::HeadlessRunner,
@@ -37,6 +37,7 @@ pub(crate) struct Selection {
     pub repo: PathBuf,
     pub plan_hash: String,
     pub feature_id: String,
+    todo: Option<TodoTarget>,
 }
 pub(crate) fn fingerprint(plan: &str) -> String {
     format!("{:x}", Sha256::digest(plan.as_bytes()))
@@ -68,6 +69,19 @@ struct Target {
     workdir: PathBuf,
     preferred: AgentKind,
     kind: TargetKind,
+    todo: Option<TodoTarget>,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoTarget {
+    origin: TodoPlanOrigin,
+    snapshot: String,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdviceScope {
+    InitialLaunch,
+    ExistingSession,
+    ExistingPlan,
+    HostTodoPlan,
 }
 #[derive(Debug, Clone, PartialEq)]
 enum TargetKind {
@@ -75,6 +89,13 @@ enum TargetKind {
         prepared: Box<PreparedFeatureLaunch>,
         interview_key: String,
         plan: String,
+    },
+    ReviewedPlan {
+        feature_id: String,
+        interview_key: String,
+        plan: String,
+        feature_name: String,
+        mode: crate::project::VibeMode,
     },
     Session {
         feature_id: String,
@@ -91,7 +112,7 @@ impl Target {
     fn plan(&self) -> Option<(&PreparedFeatureLaunch, &str)> {
         match &self.kind {
             TargetKind::Plan { prepared, plan, .. } => Some((prepared.as_ref(), plan)),
-            TargetKind::Session { .. } => None,
+            TargetKind::Session { .. } | TargetKind::ReviewedPlan { .. } => None,
         }
     }
 
@@ -101,7 +122,9 @@ impl Target {
 
     fn task_context(&self) -> Result<(String, &'static str)> {
         match &self.kind {
-            TargetKind::Plan { plan, .. } => Ok((plan.clone(), "implementation")),
+            TargetKind::Plan { plan, .. } | TargetKind::ReviewedPlan { plan, .. } => {
+                Ok((plan.clone(), "implementation"))
+            }
             TargetKind::Session {
                 feature_name,
                 summary,
@@ -142,6 +165,22 @@ impl State {
         self.launch.is_some() || self.apply.is_some()
     }
 
+    pub(crate) fn scope(&self) -> AdviceScope {
+        match &self.target.kind {
+            TargetKind::Plan { .. } => AdviceScope::InitialLaunch,
+            TargetKind::Session { .. } => AdviceScope::ExistingSession,
+            TargetKind::ReviewedPlan { .. } if self.target.todo.is_some() => {
+                AdviceScope::HostTodoPlan
+            }
+            TargetKind::ReviewedPlan { .. } => AdviceScope::ExistingPlan,
+        }
+    }
+
+    pub(crate) fn is_view_only(&self) -> bool {
+        self.target.plan().is_none()
+    }
+
+    #[cfg(test)]
     pub(crate) fn is_existing_session(&self) -> bool {
         self.target.is_session()
     }
@@ -245,7 +284,7 @@ impl Work {
 
 impl App {
     pub(crate) fn model_analysis_available(&self) -> bool {
-        matches!(&self.mode,AppMode::PlanInterview(s) if s.phase==PlanInterviewPhase::Review && s.todo_origin.is_none() && s.pending_launch.as_ref().is_some_and(|p|p.todo_origin.is_none()))
+        matches!(&self.mode, AppMode::PlanInterview(s) if s.phase == PlanInterviewPhase::Review)
     }
     fn session_model_target(&self, pi: usize, fi: usize, si: usize) -> Result<Target> {
         let project = self
@@ -269,6 +308,7 @@ impl App {
             repo: project.repo.clone(),
             workdir: feature.workdir.clone(),
             preferred,
+            todo: None,
             kind: TargetKind::Session {
                 feature_id: feature.id.clone(),
                 session_id: session.id.clone(),
@@ -314,41 +354,91 @@ impl App {
             };
         };
         ensure!(
-            s.phase == PlanInterviewPhase::Review && s.todo_origin.is_none(),
+            s.phase == PlanInterviewPhase::Review,
             "unsupported model advice entry point"
         );
-        let prepared = s
-            .pending_launch
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("no new feature launch"))?;
-        ensure!(
-            prepared.todo_origin.is_none(),
-            "TODO model advice is not supported"
-        );
-        let project = self
-            .store
-            .projects
-            .iter()
-            .find(|p| p.name == prepared.project_name)
-            .ok_or_else(|| anyhow::anyhow!("target project was deleted"))?;
         let plan = s
             .synthesized_plan
             .clone()
             .filter(|p| !p.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("reviewed implementation plan is missing"))?;
+        ensure!(s.workdir.is_dir(), "target workdir was removed");
+        let todo = s
+            .todo_origin
+            .as_ref()
+            .map(|origin| -> Result<TodoTarget> {
+                let resolved = self
+                    .db
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TODO database unavailable"))?
+                    .resolve_todo_by_id(&origin.todo_id)?
+                    .ok_or_else(|| anyhow::anyhow!("target TODO was deleted"))?;
+                ensure!(
+                    resolved.todo.list_id == origin.list_id
+                        && resolved.todo.title == origin.todo_title,
+                    "target TODO moved or changed; return to plan review"
+                );
+                ensure!(
+                    resolved.todo.work.status != crate::db::todos::TodoStatus::Completed,
+                    "target TODO is completed"
+                );
+                Ok(TodoTarget {
+                    origin: origin.clone(),
+                    snapshot: fingerprint(&serde_json::to_string(&(resolved.todo, resolved.list))?),
+                })
+            })
+            .transpose()?;
+        if let Some(prepared) = s.pending_launch.clone() {
+            ensure!(
+                prepared.todo_origin == s.todo_origin,
+                "TODO launch origin changed"
+            );
+            let project = self
+                .store
+                .projects
+                .iter()
+                .find(|p| p.name == prepared.project_name)
+                .ok_or_else(|| anyhow::anyhow!("target project was deleted"))?;
+            ensure!(s.workdir == prepared.workdir, "target workdir changed");
+            return Ok(Target {
+                project_id: project.id.clone(),
+                repo: project.repo.clone(),
+                workdir: prepared.workdir.clone(),
+                preferred: prepared.agent.clone(),
+                todo,
+                kind: TargetKind::Plan {
+                    prepared: Box::new(prepared),
+                    interview_key: s.interview_key.clone(),
+                    plan,
+                },
+            });
+        }
+        let feature_id = s
+            .todo_origin
+            .as_ref()
+            .map(|o| o.host_feature_id.as_str())
+            .unwrap_or(&s.interview_key);
+        let (pi, fi) = self
+            .feature_indices_by_id(feature_id)
+            .ok_or_else(|| anyhow::anyhow!("target feature was deleted"))?;
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
         ensure!(
-            s.workdir == prepared.workdir && prepared.workdir.is_dir(),
-            "target workdir changed or was removed"
+            s.workdir == feature.workdir,
+            "target feature workdir changed"
         );
         Ok(Target {
             project_id: project.id.clone(),
             repo: project.repo.clone(),
-            workdir: prepared.workdir.clone(),
-            preferred: prepared.agent.clone(),
-            kind: TargetKind::Plan {
-                prepared: Box::new(prepared),
+            workdir: feature.workdir.clone(),
+            preferred: feature.agent.clone(),
+            todo,
+            kind: TargetKind::ReviewedPlan {
+                feature_id: feature.id.clone(),
                 interview_key: s.interview_key.clone(),
                 plan,
+                feature_name: feature.name.clone(),
+                mode: feature.mode.clone(),
             },
         })
     }
@@ -687,8 +777,8 @@ impl App {
             return Ok(());
         }
         ensure!(
-            !s.target.is_session(),
-            "Advice for an existing session is view-only; use the harness's own model picker to change settings"
+            !s.is_view_only(),
+            "This advice is view-only; use the harness's own model picker to change settings"
         );
         ensure!(
             self.model_target(&s.origin)? == s.target,
@@ -712,6 +802,7 @@ impl App {
             project_id: s.target.project_id.clone(),
             repo: s.target.repo.clone(),
             plan_hash: fingerprint(plan),
+            todo: s.target.todo.clone(),
             feature_id: prepared
                 .model_selection
                 .as_ref()
@@ -735,7 +826,8 @@ impl App {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("missing selected setting"))?;
         ensure!(
-            selection.project_id == target.project_id
+            selection.todo == target.todo
+                && selection.project_id == target.project_id
                 && selection.repo == target.repo
                 && selection.plan_hash == fingerprint(&pending.plan)
                 && pending.plan == plan

@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Get implementation advice while reviewing an existing feature or TODO plan.**
+  Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
+  to their initial agent; existing-feature and host-feature TODO plans offer
+  advice for settings you change in the harness's picker. Accepting the plan
+  remains a separate step.
 - **Get model and reasoning advice before implementation.** Press `m` while
   reviewing a new Full or Quick Plan to compare available Claude Code and
   Codex settings, then apply your choice to the initial implementation agent.

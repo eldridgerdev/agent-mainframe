@@ -1,7 +1,8 @@
 # Model and reasoning analyzer: capability inventory
 
 Inventory and first-release implementation checked on 2026-09-29, with Claude
-Code discovery and research added on 2026-09-30, against
+Code discovery and research added on 2026-09-30 and additional plan-review entry
+points on 2026-10-01, against
 `AMF_PLAN.md`. The headless inventory includes the subsequent reasoning-picker
 integration from main. Live application to existing sessions remains outside the
 verified launch scope.
@@ -215,8 +216,10 @@ analyzer score, aggregation or historical measurement is derived from them.
 | --- | --- | --- |
 | New feature full/Quick Plan review | Reviewed plan, project identity, workdir, deferred launch; advice targets implementation | `m`, optional |
 | Before interview | Brief only; targets planning, separate headless configuration | Deferred |
-| On-demand plan for existing feature | Plan plus live-session continuity; no new implementation launch | Deferred |
-| TODO into host/new feature | Destination/reservation/rollback semantics | Deferred |
+| On-demand Full/Quick Plan review | Reviewed implementation plan and stable feature destination; accept writes plan and offers a kickoff handoff | `m`, advice only for the feature harness |
+| Host-feature TODO Plan review | Reviewed implementation plan and resolved host/TODO; accept writes a separate plan and starts a TODO session/composer | `m`, advice only for the host harness |
+| New-feature TODO Full/Quick Plan review | Reviewed implementation plan and prepared destination; accept creates feature and links TODO | `m`, selection applies to initial implementation launch |
+| Direct TODO spawn | Destination/reservation/composer without a reviewed plan | Deferred |
 | Final/PR review | Diff/head and review task; separate worker/launch | Deferred |
 | Existing agent session | Feature name/summary and effective plan when present; advice for the current harness | Dashboard session `m` or pane leader `B`; view-only |
 
@@ -224,6 +227,37 @@ A selection affects the initial implementation agent launch only. It returns to
 plan review; accepting the plan still controls launch and resource confirmation.
 Editing the plan invalidates the choice. Later independent sessions/restarts keep
 their existing configuration semantics. Cancellation launches no implementation.
+
+The `m` action also covers on-demand Full/Quick Plan review and TODO Plan
+review. Advice always targets **implementation of the reviewed plan**, not the
+interview or Expert review worker. Existing-feature and host-feature TODO plans
+are view-only, restricted to the destination feature's configured harness.
+Accepting an on-demand plan still writes it and offers the existing kickoff
+handoff. Accepting a host TODO plan still writes a separate TODO plan and starts
+its own session/composer, using the existing reservation and rollback behavior.
+The dialog explains these scopes and offers no Apply action for either path.
+The user changes the harness setting with its own picker.
+
+New-feature TODO plans can apply a selection through the same initial-launch
+boundary as other new plans, including fresh discovery after resource approval.
+Evidence is loaded for the resolved **destination project/repo**, even when the
+TODO originates in a global list or another project. Advice reads the live TODO
+and owning list from the DB and snapshots their data along with the resolved
+review target. Edits, completion, deletion, moves, list/host changes, destination
+changes and changed configuration reject pending results. The source snapshot
+also travels with a selection, so changing a TODO between application and plan
+acceptance invalidates it. Cancellation leaves the plan and reservation intact.
+Successful launch retains existing TODO feature/session links; retries preserve
+the same destination and only clean up the tmux session created by the attempt.
+No preference, observed effective setting, usage measurement or generated claim
+is persisted by this increment.
+
+Before-interview planning, direct TODO spawning and headless review entry points
+remain deferred. Their contexts and handoffs need planning/review-specific
+analyzer targets; interactive implementation arguments cannot configure those
+workers. Live session application, persistent requested/effective stage settings,
+outcome attribution/comparability and OpenCode/Pi discovery/launch adapters remain
+separate capability work. Paid trials remain optional, explicitly opt-in work.
 
 For an existing session, the analyzer only offers settings for that session's
 verified harness. The worker reads the effective plan alongside feature name
@@ -321,3 +355,13 @@ initial agent. Other sessions use their usual settings. Launch retries use a
 stable feature ID and clean up only tmux sessions this attempt created; they do
 not recreate a worktree or another feature row. Deleting or changing a saved
 retry target invalidates that retry. Returning to review preserves the plan.
+
+
+Plan-review expansion validation on 2026-10-01 passed 101 focused model/analyzer
+checks plus plan, TODO, feature-session and PR-review suites (74/107/87/93 tests).
+The locked build, full workspace suite, formatting and strict workspace/all-target
+Clippy passed. The full suite passed 3,051 library tests plus seven GUI tests on
+an isolated tmux socket with eight parallel threads; the existing live-GitHub test
+remained ignored by default. Mocked workflows verified source/destination
+isolation, stale TODO/feature rejection, resource-confirmation revalidation,
+initial launch arguments, TODO links and retry behavior. No paid trials ran.

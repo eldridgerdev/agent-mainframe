@@ -1,5 +1,5 @@
 use crate::{
-    app::model_analysis::{State, Status},
+    app::model_analysis::{AdviceScope, State, Status},
     model_evidence::{Priority, Recommendation},
     theme::Theme,
 };
@@ -19,7 +19,7 @@ struct AdviceView<'a> {
     selected: usize,
     scroll: u16,
     show_sources: bool,
-    existing_session: bool,
+    scope: AdviceScope,
     checking_setting: bool,
     message: Option<&'a str>,
 }
@@ -32,7 +32,7 @@ pub fn draw_model_analysis(frame: &mut Frame, state: &State, message: Option<&st
             selected: state.selected,
             scroll: state.scroll,
             show_sources: state.show_sources,
-            existing_session: state.is_existing_session(),
+            scope: state.scope(),
             checking_setting: state.is_checking_setting(),
             message,
         },
@@ -102,16 +102,23 @@ fn draw(frame: &mut Frame, view: AdviceView<'_>, theme: &Theme) {
         ])
         .split(inner);
     let muted = Style::default().fg(theme.text_muted.to_color());
-    let (phase, scope) = if view.existing_session {
-        (
+    let (phase, scope) = match view.scope {
+        AdviceScope::ExistingSession => (
             "Existing session",
             "Advice for this harness. Change settings in its own model picker.",
-        )
-    } else {
-        (
+        ),
+        AdviceScope::ExistingPlan => (
+            "Reviewed plan → implementation",
+            "Advice only. Accept the plan separately; change settings in the harness's picker.",
+        ),
+        AdviceScope::HostTodoPlan => (
+            "TODO plan → implementation",
+            "Advice only. Accept separately to start the TODO agent; use its model picker.",
+        ),
+        AdviceScope::InitialLaunch => (
             "Plan → implementation",
             "Apply a setting, then accept the plan to start the agent.",
-        )
+        ),
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -321,7 +328,7 @@ fn draw_status(frame: &mut Frame, area: Rect, view: &AdviceView<'_>, theme: &The
         ),
         Status::Loading => (
             "Analyzing this task…",
-            if view.existing_session {
+            if view.scope == AdviceScope::ExistingSession {
                 "A configured agent evaluates feature context and any current plan using verified options and provider research."
             } else {
                 "A configured agent evaluates the reviewed plan using verified model options and provider research."
@@ -369,7 +376,7 @@ fn footer(view: &AdviceView<'_>, width: u16, theme: &Theme) -> Vec<Line<'static>
     let mut first = vec![Span::styled("Esc", key), Span::styled(" Back   ", text)];
     if matches!(view.status, Status::Ready(_)) {
         first.extend([Span::styled("↑/↓", key), Span::styled(" Choose   ", text)]);
-        if !view.existing_session {
+        if view.scope == AdviceScope::InitialLaunch {
             first.extend([Span::styled("Enter", key), Span::styled(" Apply   ", text)]);
         }
     }
@@ -467,7 +474,11 @@ mod tests {
                         selected,
                         scroll,
                         show_sources: sources,
-                        existing_session: session,
+                        scope: if session {
+                            AdviceScope::ExistingSession
+                        } else {
+                            AdviceScope::InitialLaunch
+                        },
                         checking_setting: false,
                         message: None,
                     },
@@ -541,5 +552,39 @@ mod tests {
         let text = contents(&render(46, 18, false, 0, false, 2));
         assert!(text.contains(choices[2].choice.model()));
         assert!(text.contains("›"));
+    }
+    #[test]
+    fn reviewed_existing_and_host_todo_plans_explain_their_view_only_scope() {
+        for scope in [AdviceScope::ExistingPlan, AdviceScope::HostTodoPlan] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 28)).unwrap();
+            let status = ready();
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        AdviceView {
+                            status: &status,
+                            selected: 0,
+                            scroll: 0,
+                            show_sources: false,
+                            scope,
+                            checking_setting: false,
+                            message: None,
+                        },
+                        &Theme::default(),
+                    )
+                })
+                .unwrap();
+            let text = contents(terminal.backend().buffer());
+            assert!(text.contains("Advice only"));
+            assert!(text.contains("Accept"));
+            assert!(!text.contains("Apply"));
+            assert!(text.contains("Esc"));
+            assert!(text.contains(if scope == AdviceScope::HostTodoPlan {
+                "TODO plan → implementation"
+            } else {
+                "Reviewed plan → implementation"
+            }));
+        }
     }
 }

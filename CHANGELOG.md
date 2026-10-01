@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **Get advice for an Expert plan review.** Press `m` in the Expert model picker
+  to compare verified settings for the reviewer and its draft-plan context.
+  Return to the picker to choose model and effort before starting the review.
+- **Get implementation advice while reviewing an existing feature or TODO plan.**
+  Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
+  to their initial agent; existing-feature and host-feature TODO plans offer
+  advice for settings you change in the harness's picker. Accepting the plan
+  remains a separate step.
 - **Get model and reasoning advice before implementation.** Press `m` while
   reviewing a new Full or Quick Plan to compare available Claude Code and
   Codex settings, then apply your choice to the initial implementation agent.
@@ -65,6 +73,9 @@ are tagged.
   claude.ai link.
 
 ### Fixed
+
+- **TODO model choices survive unrelated list changes.** Reordering items,
+  adding another TODO or editing the list scratchpad keeps a valid choice.
 
 - **Automation example and template JSON no longer include `enable_notes`.**
   AMF never read that field. The `create-feature` template now lists

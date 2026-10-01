@@ -554,6 +554,15 @@ fn resource_confirmation_restores_review_before_fresh_eligibility_check() {
 }
 #[test]
 fn selected_setting_reaches_execution_and_confirm_is_idempotent() {
+    selected_launch(false);
+}
+
+#[test]
+fn todo_selected_setting_reaches_execution_once_and_retains_todo_links() {
+    selected_launch(true);
+}
+
+fn selected_launch(from_todo: bool) {
     let mut tmux = MockTmuxOps::new();
     let alive = Arc::new(AtomicBool::new(false));
     let exists = alive.clone();
@@ -576,6 +585,7 @@ fn selected_setting_reaches_execution_and_confirm_is_idempotent() {
         .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window().returning(|_, _| Ok(()));
     let (mut app, _dir) = fixture(tmux);
+    let todo = from_todo.then(|| attach_todo(&mut app, "source-feature"));
     // Advice may switch the originally prepared harness as well as settings.
     if let AppMode::PlanInterview(state) = &mut app.mode {
         let prepared = state.pending_launch.as_mut().unwrap();
@@ -599,6 +609,26 @@ fn selected_setting_reaches_execution_and_confirm_is_idempotent() {
         "Codex 1"
     );
     assert!(app.model_analysis_work.launch_args.is_none());
+    if let Some(origin) = todo {
+        let todo = app
+            .db
+            .as_ref()
+            .unwrap()
+            .find_todo_by_id(&origin.todo_id)
+            .unwrap()
+            .unwrap();
+        let feature = &app.store.projects[0].features[0];
+        assert_eq!(todo.linked_feature_id.as_deref(), Some(feature.id.as_str()));
+        assert_eq!(
+            todo.work.agent_session_id.as_deref(),
+            Some(feature.sessions[0].id.as_str())
+        );
+        assert_eq!(todo.work.status, crate::db::todos::TodoStatus::InProgress);
+        assert_eq!(
+            feature.sessions[0].todo_reference.as_ref().unwrap().todo_id,
+            origin.todo_id
+        );
+    }
 }
 
 #[test]
@@ -660,6 +690,15 @@ fn eligibility_is_rechecked_after_selection() {
 }
 #[test]
 fn launch_failure_retries_same_feature_and_settings() {
+    retry_failed_launch(false);
+}
+
+#[test]
+fn todo_launch_failure_retains_reservation_and_retries_same_destination() {
+    retry_failed_launch(true);
+}
+
+fn retry_failed_launch(from_todo: bool) {
     let mut tmux = MockTmuxOps::new();
     let alive = Arc::new(AtomicBool::new(false));
     let exists = alive.clone();
@@ -691,6 +730,7 @@ fn launch_failure_retries_same_feature_and_settings() {
     });
     tmux.expect_select_window().returning(|_, _| Ok(()));
     let (mut app, _dir) = fixture(tmux);
+    let todo = from_todo.then(|| attach_todo(&mut app, "source"));
     app.open_model_analysis().unwrap();
     poll(&mut app);
     app.apply_model_analysis().unwrap();
@@ -701,11 +741,33 @@ fn launch_failure_retries_same_feature_and_settings() {
     assert!(matches!(&app.mode,AppMode::ModelAnalysis(s) if matches!(&s.status,Status::Error(_))));
     assert_eq!(app.store.projects[0].features.len(), 1);
     let id = app.store.projects[0].features[0].id.clone();
+    if let Some(origin) = &todo {
+        let todo = app
+            .db
+            .as_ref()
+            .unwrap()
+            .find_todo_by_id(&origin.todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(todo.work.status, crate::db::todos::TodoStatus::InProgress);
+        assert!(todo.linked_feature_id.is_none());
+        assert!(todo.work.agent_session_id.is_none());
+    }
     app.retry_model_analysis();
     poll(&mut app);
     assert_eq!(app.store.projects[0].features.len(), 1);
     assert_eq!(app.store.projects[0].features[0].id, id);
     assert_eq!(count.load(Ordering::Relaxed), 2);
+    if let Some(origin) = &todo {
+        let todo = app
+            .db
+            .as_ref()
+            .unwrap()
+            .find_todo_by_id(&origin.todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(todo.linked_feature_id.as_deref(), Some(id.as_str()));
+    }
 }
 
 #[test]
@@ -742,4 +804,662 @@ fn changed_plan_file_during_launch_validation_does_not_start_an_agent() {
         matches!(&app.mode,AppMode::ModelAnalysis(s) if matches!(&s.status,Status::Error(e) if e.contains("plan file changed")))
     );
     assert!(app.store.projects[0].features.is_empty());
+}
+
+fn attach_todo(app: &mut App, host: &str) -> TodoPlanOrigin {
+    use crate::db::todos::{TodoPriority, TodoScope, TodoStatus};
+    let db = app.db.as_ref().unwrap();
+    // A global source deliberately differs from the resolved destination project.
+    let list = db
+        .load_or_create_todo_list(&TodoScope::Global, None)
+        .unwrap();
+    let mut todo = db
+        .add_todo(
+            &list.id,
+            "Implement parser",
+            Some("Check Unicode"),
+            TodoPriority::Med,
+        )
+        .unwrap();
+    todo.work.status = TodoStatus::InProgress;
+    db.update_todo(&todo).unwrap();
+    let origin = TodoPlanOrigin {
+        todo_id: todo.id,
+        list_id: list.id,
+        todo_title: todo.title,
+        host_feature_id: host.into(),
+    };
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.todo_origin = Some(origin.clone());
+        if let Some(prepared) = &mut state.pending_launch {
+            prepared.todo_origin = Some(origin.clone());
+        }
+    }
+    origin
+}
+
+fn reviewed_feature_fixture(quick: bool) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = session_fixture(SessionKind::Codex);
+    let feature = &app.store.projects[0].features[0];
+    let mut state = if quick {
+        PlanInterviewState::for_feature_quick(
+            feature.name.clone(),
+            feature.id.clone(),
+            feature.workdir.clone(),
+            AgentKind::Claude,
+        )
+    } else {
+        PlanInterviewState::for_feature(
+            feature.name.clone(),
+            feature.id.clone(),
+            vec![],
+            feature.workdir.clone(),
+            AgentKind::Claude,
+        )
+    };
+    // Planning runner preference is not the implementation harness identity.
+    state.apply_synthesis("Reviewed task: handle Unicode parser boundaries.".into());
+    app.mode = AppMode::PlanInterview(state);
+    app.model_analysis_work.discover = discover_only_current_harness;
+    app.model_analysis_work.runner = reviewed_plan_answer;
+    (app, dir)
+}
+
+fn reviewed_plan_answer(input: &RunInput) -> Result<String> {
+    assert_eq!(input.context.get("task_phase"), Some("implementation"));
+    assert!(
+        input
+            .context
+            .get("task_context")
+            .unwrap()
+            .contains("Reviewed task:")
+    );
+    assert_eq!(input.preferred, AgentKind::Codex);
+    answer(input)
+}
+
+#[test]
+fn existing_full_and_quick_plan_review_offer_view_only_implementation_advice() {
+    for quick in [false, true] {
+        let (mut app, _dir) = reviewed_feature_fixture(quick);
+        assert!(app.model_analysis_available());
+        crate::handlers::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('m'),
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            20,
+        )
+        .unwrap();
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if s.scope() == AdviceScope::ExistingPlan && matches!(s.status, Status::Ready(_)))
+        );
+        assert!(
+            app.apply_model_analysis()
+                .unwrap_err()
+                .to_string()
+                .contains("view-only")
+        );
+        app.cancel_model_analysis();
+        assert!(
+            matches!(&app.mode, AppMode::PlanInterview(s) if s.pending_launch.is_none() && s.synthesized_plan.as_ref().unwrap().contains("Reviewed task:"))
+        );
+        assert!(!app.store.projects[0].repo.join("AMF_PLAN.md").exists());
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+}
+
+#[test]
+fn host_todo_plan_advice_keeps_the_existing_plan_and_reservation_untouched() {
+    let (mut app, _dir) = reviewed_feature_fixture(false);
+    let host = app.store.projects[0].features[0].id.clone();
+    let origin = attach_todo(&mut app, &host);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.interview_key = crate::plan_interview::todo_interview_key(&origin.todo_id);
+    }
+    let db = app.db.as_ref().unwrap();
+    let before = db.find_todo_by_id(&origin.todo_id).unwrap().unwrap();
+    let plan = app.store.projects[0].repo.join("AMF_PLAN.md");
+    std::fs::write(&plan, "Existing feature plan").unwrap();
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if s.scope() == AdviceScope::HostTodoPlan && matches!(s.status, Status::Ready(_)))
+    );
+    assert!(app.apply_model_analysis().is_err());
+    app.cancel_model_analysis();
+    let after = app
+        .db
+        .as_ref()
+        .unwrap()
+        .find_todo_by_id(&origin.todo_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+    assert_eq!(
+        std::fs::read_to_string(plan).unwrap(),
+        "Existing feature plan"
+    );
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.todo_origin.as_ref() == Some(&origin))
+    );
+}
+
+#[test]
+fn existing_plan_advice_rejects_changed_plan_feature_harness_and_destination() {
+    for change in 0..6 {
+        let (mut app, _dir) = reviewed_feature_fixture(false);
+        app.open_model_analysis().unwrap();
+        match change {
+            0 => {
+                if let AppMode::ModelAnalysis(s) = &mut app.mode
+                    && let AppMode::PlanInterview(p) = s.origin.as_mut()
+                {
+                    p.apply_synthesis("Changed implementation task".into());
+                }
+            }
+            1 => app.store.projects[0].features.clear(),
+            2 => app.store.projects[0].features[0].agent = AgentKind::Claude,
+            3 => app.store.projects[0].id = "other-project".into(),
+            4 => app.store.projects[0].features[0].workdir = PathBuf::from("/removed"),
+            _ => app.store.available_harnesses.clear(),
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+        assert!(app.model_analysis_work.launch_args.is_none());
+    }
+}
+
+#[test]
+fn todo_plan_advice_rejects_deleted_edited_completed_or_moved_source() {
+    for change in 0..4 {
+        let (mut app, _dir) = fixture(MockTmuxOps::new());
+        let origin = attach_todo(&mut app, "source");
+        app.open_model_analysis().unwrap();
+        let db = app.db.as_ref().unwrap();
+        if change == 0 {
+            db.delete_todo(&origin.todo_id).unwrap();
+        } else if change == 3 {
+            let list = db
+                .load_or_create_todo_list(
+                    &crate::db::todos::TodoScope::Project {
+                        project_id: app.store.projects[0].id.clone(),
+                    },
+                    None,
+                )
+                .unwrap();
+            db.move_todo(&origin.todo_id, &list.id).unwrap();
+        } else {
+            let mut todo = db.find_todo_by_id(&origin.todo_id).unwrap().unwrap();
+            if change == 1 {
+                todo.body = Some("Different implementation".into());
+            } else {
+                todo.work.status = crate::db::todos::TodoStatus::Completed;
+            }
+            db.update_todo(&todo).unwrap();
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+        assert!(app.store.projects[0].features.is_empty());
+    }
+}
+
+#[test]
+fn todo_selection_is_invalidated_between_application_and_acceptance() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    app.apply_model_analysis().unwrap();
+    poll(&mut app);
+    let db = app.db.as_ref().unwrap();
+    let mut todo = db.find_todo_by_id(&origin.todo_id).unwrap().unwrap();
+    todo.body = Some("Changed after selection".into());
+    db.update_todo(&todo).unwrap();
+    assert!(
+        app.complete_plan_interview_with_resource_approval(true)
+            .is_err()
+    );
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+    assert!(app.store.projects[0].features.is_empty());
+}
+
+#[test]
+fn todo_target_ignores_list_churn_that_leaves_the_todo_unchanged() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    let before = app.model_target(&app.mode).unwrap();
+    let db = app.db.as_ref().unwrap();
+    db.add_todo(
+        &origin.list_id,
+        "Unrelated sibling",
+        None,
+        crate::db::todos::TodoPriority::Low,
+    )
+    .unwrap();
+    db.set_todo_carry_over(&origin.list_id, Some("left off here"))
+        .unwrap();
+    let mut todo = db.find_todo_by_id(&origin.todo_id).unwrap().unwrap();
+    todo.sort_order += 10;
+    db.update_todo(&todo).unwrap();
+    assert_eq!(app.model_target(&app.mode).unwrap(), before);
+    todo.body = Some("Changed after selection".into());
+    db.update_todo(&todo).unwrap();
+    assert_ne!(app.model_target(&app.mode).unwrap(), before);
+}
+
+#[test]
+fn plan_review_hides_model_advice_where_it_cannot_open() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    assert!(app.model_analysis_available());
+    attach_todo(&mut app, "source");
+    assert!(app.model_analysis_available());
+    app.db = None;
+    assert!(!app.model_analysis_available());
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+    assert!(app.message.as_deref().unwrap().contains("TODO database"));
+
+    let (mut app, _dir) = reviewed_feature_fixture(false);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.synthesized_plan = Some("  ".into());
+    }
+    assert!(!app.model_analysis_available());
+}
+
+#[test]
+fn cancelled_todo_advice_drops_late_results_without_changing_reservation() {
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    app.open_model_analysis().unwrap();
+    let cancelled = app
+        .model_analysis_work
+        .job
+        .as_ref()
+        .unwrap()
+        .cancelled
+        .clone();
+    app.cancel_model_analysis();
+    assert!(cancelled.load(Ordering::Relaxed));
+    assert!(!app.poll_model_analysis());
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.todo_origin.as_ref() == Some(&origin))
+    );
+    let todo = app
+        .db
+        .as_ref()
+        .unwrap()
+        .find_todo_by_id(&origin.todo_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(todo.work.status, crate::db::todos::TodoStatus::InProgress);
+    assert!(todo.work.agent_session_id.is_none());
+    assert!(todo.linked_feature_id.is_none());
+}
+
+#[test]
+fn todo_advice_uses_destination_project_research_instead_of_source_project() {
+    use crate::db::todos::TodoScope;
+    let (mut app, dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    let source_repo = dir.path().join("source-repo");
+    std::fs::create_dir(&source_repo).unwrap();
+    let source = Project::new(
+        "source-project".into(),
+        source_repo.clone(),
+        false,
+        AgentKind::Claude,
+    );
+    let source_id = source.id.clone();
+    let destination_id = app.store.projects[0].id.clone();
+    let destination_repo = app.store.projects[0].repo.clone();
+    let db = app.db.as_ref().unwrap();
+    let source_list = db
+        .load_or_create_todo_list(
+            &TodoScope::Project {
+                project_id: source_id.clone(),
+            },
+            None,
+        )
+        .unwrap();
+    db.move_todo(&origin.todo_id, &source_list.id).unwrap();
+    if let AppMode::PlanInterview(s) = &mut app.mode {
+        s.todo_origin.as_mut().unwrap().list_id = source_list.id.clone();
+        s.pending_launch
+            .as_mut()
+            .unwrap()
+            .todo_origin
+            .as_mut()
+            .unwrap()
+            .list_id = source_list.id;
+    }
+    app.store.projects.push(source);
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if s.target.project_id == destination_id && s.target.repo == destination_repo && matches!(s.status, Status::Ready(_)))
+    );
+    let db = app.db.as_ref().unwrap();
+    assert!(
+        !db.load_model_research(&destination_id, &destination_repo)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        db.load_model_research(&source_id, &source_repo)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn todo_changed_while_resource_confirmation_is_open_cannot_launch() {
+    use crate::app::{PendingStart, ResourceConfirmState};
+    let (mut app, _dir) = fixture(MockTmuxOps::new());
+    let origin = attach_todo(&mut app, "source");
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    app.apply_model_analysis().unwrap();
+    poll(&mut app);
+    let AppMode::PlanInterview(state) = std::mem::replace(&mut app.mode, AppMode::Normal) else {
+        panic!()
+    };
+    let pending = PendingPlanLaunch {
+        prepared: state.pending_launch.clone().unwrap(),
+        interview_key: state.interview_key.clone(),
+        plan: state.synthesized_plan.clone().unwrap(),
+    };
+    app.mode = AppMode::ConfirmResourceStart(Box::new(ResourceConfirmState {
+        pending: PendingStart::PlannedFeature(Box::new(pending)),
+        plan_interview: Some(state),
+        from_view: None,
+        over_limit: None,
+        low_memory: None,
+        open_editors: vec![],
+    }));
+    app.db
+        .as_ref()
+        .unwrap()
+        .delete_todo(&origin.todo_id)
+        .unwrap();
+    assert!(app.confirm_pending_start().is_err());
+    assert!(matches!(app.mode, AppMode::PlanInterview(_)));
+    assert!(app.store.projects[0].features.is_empty());
+}
+
+fn expert_fixture(existing: bool, quick: bool) -> (App, tempfile::TempDir) {
+    use crate::{
+        app::{AiModelPickState, ModelPickRow},
+        headless::ReasoningLevel,
+        plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource},
+    };
+    let (mut app, dir) = if existing {
+        reviewed_feature_fixture(quick)
+    } else {
+        fixture(MockTmuxOps::new())
+    };
+    let workdir = app.store.projects[0].repo.clone();
+    std::fs::write(
+        workdir.join("README.md"),
+        "Repository invariant: parse without panics.",
+    )
+    .unwrap();
+    let reference = workdir.join("reference.md");
+    std::fs::write(
+        &reference,
+        "Reference requirement: preserve Unicode boundaries.",
+    )
+    .unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.brief = "Check the Unicode parser design".into();
+        state.questions = vec![PlanQuestion {
+            id: "compatibility".into(),
+            text: "Must existing callers work?".into(),
+            kind: PlanQuestionKind::FreeText,
+            source: QuestionSource::Builtin,
+            optional: false,
+        }];
+        state.answers = vec![Some("Preserve all existing callers".into())];
+        state.attached_docs = vec![reference];
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        state.expert_model_pick = Some(AiModelPickState::new(
+            &AgentKind::Codex,
+            vec![
+                ModelPickRow::Preset("test-model".into()),
+                ModelPickRow::Custom,
+            ],
+            1,
+            "my-review-model".into(),
+            Some(ReasoningLevel::High),
+        ));
+    }
+    app.model_analysis_work.discover = discover_only_current_harness;
+    app.model_analysis_work.runner = expert_answer;
+    (app, dir)
+}
+
+fn expert_answer(input: &RunInput) -> Result<String> {
+    assert_eq!(input.context.get("task_phase"), Some("Expert plan review"));
+    let task = input.context.get("task_context").unwrap();
+    for expected in [
+        "draft_plan",
+        "Check the Unicode parser design",
+        "Preserve all existing callers",
+        "Repository invariant",
+        "Reference requirement",
+        "missing requirements, risks, correctness",
+    ] {
+        assert!(task.contains(expected), "missing {expected}");
+    }
+    answer(input)
+}
+
+fn advice_key(app: &mut App, code: crossterm::event::KeyCode) {
+    crate::handlers::handle_key(
+        app,
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        20,
+    )
+    .unwrap();
+}
+
+#[test]
+fn expert_advice_at_new_existing_quick_and_todo_plans_returns_to_unchanged_picker() {
+    use crate::headless::ReasoningLevel;
+    for (existing, quick, todo) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (false, false, true),
+        (true, false, true),
+    ] {
+        let (mut app, _dir) = expert_fixture(existing, quick);
+        if todo {
+            let host = app.store.projects[0]
+                .features
+                .first()
+                .map_or("source".into(), |f| f.id.clone());
+            attach_todo(&mut app, &host);
+        }
+        advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if s.scope() == AdviceScope::ExpertPlanReview
+            && s.target.launch_path() == LaunchPath::Headless && matches!(s.status, Status::Ready(_)))
+        );
+        assert!(
+            app.apply_model_analysis()
+                .unwrap_err()
+                .to_string()
+                .contains("view-only")
+        );
+        advice_key(&mut app, crossterm::event::KeyCode::Enter);
+        assert!(matches!(app.mode, AppMode::ModelAnalysis(_)));
+        advice_key(&mut app, crossterm::event::KeyCode::Esc);
+        let AppMode::PlanInterview(state) = &app.mode else {
+            panic!()
+        };
+        let pick = state.expert_model_pick.as_ref().unwrap();
+        assert_eq!(pick.selected, 1);
+        assert_eq!(pick.custom_input, "my-review-model");
+        assert_eq!(pick.reasoning, Some(ReasoningLevel::High));
+        assert!(state.expert_model.is_none());
+        assert_eq!(state.phase, PlanInterviewPhase::Review);
+        assert!(
+            state
+                .pending_launch
+                .as_ref()
+                .is_none_or(|p| p.model_selection.is_none())
+        );
+        assert!(app.plan_interview_critique_bg.is_none());
+        assert!(app.model_analysis_work.launch_args.is_none());
+    }
+}
+
+#[test]
+fn expert_advice_uses_resolved_reviewer_instead_of_implementation_harness() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    app.store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+    app.model_analysis_work.discover = discover_claude;
+    app.model_analysis_work.now = || "2026-09-30T12:00:00Z".parse().unwrap();
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.ai_harness = Some(Some(AgentKind::Claude));
+    }
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    let AppMode::ModelAnalysis(state) = &app.mode else {
+        panic!()
+    };
+    let Status::Ready(choices) = &state.status else {
+        panic!("{:?}", state.status)
+    };
+    assert!(
+        choices
+            .iter()
+            .all(|r| *r.choice.harness() == AgentKind::Claude)
+    );
+    app.cancel_model_analysis();
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.pending_launch.as_ref().unwrap().agent == AgentKind::Codex)
+    );
+}
+
+#[test]
+fn expert_advice_rejects_changed_interview_reviewer_and_destination() {
+    for change in 0..8 {
+        let (mut app, _dir) = expert_fixture(false, false);
+        app.open_model_analysis().unwrap();
+        if let AppMode::ModelAnalysis(state) = &mut app.mode {
+            let AppMode::PlanInterview(interview) = state.origin.as_mut() else {
+                panic!()
+            };
+            match change {
+                0 => interview.brief.push_str("Changed"),
+                1 => interview.answers[0] = Some("Different contract".into()),
+                2 => interview.questions[0].text.push_str("Changed"),
+                3 => interview.attached_docs.clear(),
+                4 => interview.ai_harness = Some(Some(AgentKind::Claude)),
+                5 => {
+                    interview.expert_model_pick = None;
+                }
+                6 => interview.apply_synthesis("Different plan".into()),
+                _ => {
+                    app.store.projects[0].id = "another-project".into();
+                }
+            }
+        }
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+        assert!(app.plan_interview_critique_bg.is_none());
+    }
+}
+
+#[test]
+fn expert_advice_rejects_reference_and_repository_changes_during_analysis() {
+    for change in 0..3 {
+        let (mut app, _dir) = expert_fixture(false, false);
+        app.model_analysis_work.runner = match change {
+            0 => |input| {
+                std::fs::write(input.workdir.join("reference.md"), "Changed reference")?;
+                answer(input)
+            },
+            1 => |input| {
+                std::fs::write(input.workdir.join("README.md"), "Changed repository")?;
+                answer(input)
+            },
+            _ => |input| {
+                std::fs::remove_file(input.workdir.join("reference.md"))?;
+                answer(input)
+            },
+        };
+        app.open_model_analysis().unwrap();
+        poll(&mut app);
+        assert!(
+            matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(s.status, Status::Error(_))),
+            "change {change}"
+        );
+    }
+}
+
+#[test]
+fn expert_advice_hashes_reference_content_beyond_its_displayed_excerpt() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    let reference = app.store.projects[0].repo.join("reference.md");
+    std::fs::write(
+        &reference,
+        format!(
+            "{}original",
+            "x".repeat(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS)
+        ),
+    )
+    .unwrap();
+    app.model_analysis_work.runner = |input| {
+        std::fs::write(
+            input.workdir.join("reference.md"),
+            format!(
+                "{}changed",
+                "x".repeat(crate::plan_interview::MODEL_INPUT_FIELD_MAX_CHARS)
+            ),
+        )?;
+        answer(input)
+    };
+    app.open_model_analysis().unwrap();
+    poll(&mut app);
+    assert!(
+        matches!(&app.mode, AppMode::ModelAnalysis(s) if matches!(&s.status, Status::Error(e) if e.contains("task context changed")))
+    );
+}
+
+#[test]
+fn expert_custom_model_typing_keeps_m_as_text_and_cancel_restores_picker() {
+    let (mut app, _dir) = expert_fixture(false, false);
+    if let AppMode::PlanInterview(state) = &mut app.mode {
+        state.expert_model_pick.as_mut().unwrap().editing_custom = true;
+    }
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.expert_model_pick.as_ref().unwrap().custom_input == "my-review-modelm")
+    );
+    advice_key(&mut app, crossterm::event::KeyCode::Esc);
+    advice_key(&mut app, crossterm::event::KeyCode::Char('m'));
+    app.cancel_model_analysis();
+    assert!(!app.model_analysis_work.pending());
+    assert!(
+        matches!(&app.mode, AppMode::PlanInterview(s) if s.expert_model_pick.is_some() && s.phase == PlanInterviewPhase::Review)
+    );
+    assert!(app.plan_interview_critique_bg.is_none());
 }

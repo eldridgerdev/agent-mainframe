@@ -390,6 +390,28 @@ impl TmuxRuntime {
         Self::state_dir().join("managed-tmux.sock")
     }
 
+    /// Points a test binary at a tmux server of its own. Without this, tests
+    /// that drive real tmux (the `gui_terminal` control-client suite) share
+    /// whatever server `detect` resolves to -- the user's live AMF socket by
+    /// default, and also when run from inside an AMF session, which exports
+    /// `AMF_TMUX_SOCKET` -- so a tmux crash they trigger takes the user's
+    /// sessions with it (tmux 3.2a segfaults under that suite's control-client
+    /// churn). That is also why `AMF_TMUX_SOCKET` is deliberately not honored
+    /// here. The socket is per process, so concurrent `cargo test` runs don't
+    /// share one either; the server exits on its own once the last test
+    /// session is killed.
+    #[cfg(test)]
+    fn isolated_for_tests(self) -> Self {
+        let socket = std::env::temp_dir()
+            .join(format!("amf-test-tmux-{}", std::process::id()))
+            .join("tmux.sock");
+        Self {
+            socket: Some(socket),
+            manages_private_socket: true,
+            ..self
+        }
+    }
+
     fn launch_path_override(&self) -> Option<OsString> {
         Self::prepend_binary_dir_to_path(&self.binary)
     }
@@ -559,7 +581,13 @@ impl TmuxManager {
 
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
-        RUNTIME.get_or_init(TmuxRuntime::detect)
+        RUNTIME.get_or_init(|| {
+            #[cfg(not(test))]
+            let runtime = TmuxRuntime::detect();
+            #[cfg(test)]
+            let runtime = TmuxRuntime::detect().isolated_for_tests();
+            runtime
+        })
     }
 
     pub(crate) fn command() -> Command {

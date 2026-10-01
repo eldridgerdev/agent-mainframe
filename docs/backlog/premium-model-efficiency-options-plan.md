@@ -440,8 +440,8 @@ plans and TODO Plan review. New-feature plan selections apply to the initial
 implementation launch (including TODO plans); on-demand and host-feature TODO
 plans offer advice only for their destination harness. Existing-session advice
 leaves changing settings to the harness's model picker. Choices require verified
-account access, supported effort levels and fresh, attributable provider research. Task-specific quality,
-time and token totals remain unknown. See the
+account access, supported effort levels and fresh, attributable provider
+research. Task-specific quality, time and token totals remain unknown. See the
 [capability and evidence contract](../development/model-reasoning-analyzer.md).
 
 - [x] Offer on-demand advice at plan review and in existing agent sessions.

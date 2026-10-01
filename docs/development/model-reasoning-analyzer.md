@@ -249,10 +249,11 @@ Evidence is loaded for the resolved **destination project/repo**, even when the
 TODO originates in a global list or another project. Advice reads the live TODO
 and owning list from the DB and snapshots task content, work status/links and
 owner identity along with the resolved review target. Unrelated sibling edits,
-list timestamps/scratchpad changes and reordering do not invalidate the choice. Edits, completion, deletion, moves, list/host changes, destination
-changes and changed configuration reject pending results. The source snapshot
-also travels with a selection, so changing a TODO between application and plan
-acceptance invalidates it. Cancellation leaves the plan and reservation intact.
+list timestamps/scratchpad changes and reordering do not invalidate the choice.
+Edits, completion, deletion, moves, list/host changes, destination changes and
+changed configuration reject pending results. The source snapshot also travels
+with a selection, so changing a TODO between application and plan acceptance
+invalidates it. Cancellation leaves the plan and reservation intact.
 Successful launch retains existing TODO feature/session links; retries preserve
 the same destination and only clean up the tmux session created by the attempt.
 No preference, observed effective setting, usage measurement or generated claim
@@ -352,10 +353,11 @@ answer. DB failures are analysis errors, not insufficient evidence.
 The v1 discovery adapter owns a bounded, cancellable Codex app-server process
 without creating threads or turns. It initializes, reads account authentication,
 requests picker-visible `model/list` with per-model efforts, reads effective
-provider configuration, and checks managed requirements. Protocol errors are errors; custom providers, unauthenticated
-accounts and managed requirements that this adapter cannot verify yield no
-eligible options. Large paginated catalogs fail closed. Cached catalogs and
-bundled catalogs are never promoted. See the official
+provider configuration, and checks managed requirements. Protocol errors are
+errors; custom providers, unauthenticated accounts and managed requirements
+that this adapter cannot verify yield no eligible options. Large paginated
+catalogs fail closed. Cached catalogs and bundled catalogs are never promoted.
+See the official
 [app-server protocol](https://learn.chatgpt.com/docs/app-server). The Claude
 adapter described above also verifies access and effective effort caps. A
 failed harness probe does not suppress verified choices from another configured
@@ -377,7 +379,6 @@ stable feature ID and clean up only tmux sessions this attempt created; they do
 not recreate a worktree or another feature row. Deleting or changing a saved
 retry target invalidates that retry. Returning to review preserves the plan.
 
-
 Plan-review expansion validation on 2026-10-01 passed 101 focused model/analyzer
 checks plus plan, TODO, feature-session and PR-review suites (74/107/87/93 tests).
 The locked build, full workspace suite, formatting and strict workspace/all-target
@@ -386,7 +387,6 @@ an isolated tmux socket with eight parallel threads; the existing live-GitHub te
 remained ignored by default. Mocked workflows verified source/destination
 isolation, stale TODO/feature rejection, resource-confirmation revalidation,
 initial launch arguments, TODO links and retry behavior. No paid trials ran.
-
 
 Expert-review expansion validation on 2026-10-01 used stable Rust 1.99. Focused
 model/analyzer and Expert-picker checks, plan/TODO suites and the locked build

@@ -350,7 +350,13 @@ impl App {
             &windows,
         )?;
 
-        for session in feature.sessions.iter_mut().filter(|s| !s.stopped) {
+        // `sessions_to_start`, mutably: a method borrowing all of `feature`
+        // would lock out the fields the loop reads.
+        for session in feature
+            .sessions
+            .iter_mut()
+            .filter(|s| s.runs_with_feature())
+        {
             match session.kind {
                 SessionKind::Claude => {
                     let resume_id = if target_session_id.is_none_or(|id| id == session.id) {

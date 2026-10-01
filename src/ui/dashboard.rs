@@ -2002,7 +2002,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 branch,
                 ..
             } => draw_feature_context_bar(frame, project_name, branch, &app.theme),
-            crate::app::HookNext::StartFeature { pi, fi }
+            crate::app::HookNext::StartFeature { pi, fi, .. }
             | crate::app::HookNext::StopFeature { pi, fi } => {
                 if let Some(project) = app.store.projects.get(*pi)
                     && let Some(feature) = project.features.get(*fi)

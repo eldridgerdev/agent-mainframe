@@ -10,7 +10,7 @@ use crate::app::{
     App, AppMode, ConfigWizardStep, DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
 };
 use crate::editor::VimMode;
-use crate::project::{ProjectStatus, SessionKind};
+use crate::project::SessionKind;
 use crate::theme::Theme;
 use crate::usage::Model;
 
@@ -95,32 +95,31 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 _ => false,
             };
             if on_session {
-                // Offer whichever of start/stop applies to this session.
+                // Offer whichever of start/stop applies to this session —
+                // neither for one with no tmux window (TODOs), which `c` and
+                // `x` do nothing to.
                 let session_running = match app.selection {
-                    Selection::Session(pi, fi, si) => app
-                        .store
-                        .projects
-                        .get(pi)
-                        .and_then(|p| p.features.get(fi))
-                        .is_some_and(|f| {
-                            f.status != ProjectStatus::Stopped
-                                && f.sessions.get(si).is_some_and(|s| s.runs_with_feature())
-                        }),
-                    _ => false,
+                    Selection::Session(pi, fi, si) => app.session_window_running(pi, fi, si),
+                    _ => None,
                 };
-                let (start_stop_key, start_stop_label) = if session_running {
-                    ("x", " stop  ")
-                } else {
-                    ("c", " start  ")
-                };
+                let start_stop = session_running.map(|running| {
+                    if running {
+                        ("x", " stop  ")
+                    } else {
+                        ("c", " start  ")
+                    }
+                });
                 let mut spans = filter_spans;
                 spans.extend(vec![
                     Span::styled(" Enter", key_style()),
                     Span::raw(" view  "),
                     Span::styled("r", key_style()),
                     Span::raw(" rename  "),
-                    Span::styled(start_stop_key, key_style()),
-                    Span::raw(start_stop_label),
+                ]);
+                if let Some((key, label)) = start_stop {
+                    spans.extend([Span::styled(key, key_style()), Span::raw(label)]);
+                }
+                spans.extend(vec![
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
                     Span::styled("s", key_style()),

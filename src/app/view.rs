@@ -118,23 +118,23 @@ impl App {
                 if self.gate_launch(intent) == Started::Parked {
                     Started::Parked
                 } else {
-                    if !self.restart_stopped_session_window_unchecked(pi, fi, si)? {
-                        // Nothing recreated — the feature's tmux session is
-                        // gone too — so let the feature start include it.
-                        self.set_session_stopped(pi, fi, si, false);
-                    }
-                    self.ensure_feature_running(pi, fi, StartIntent::Approved)?
+                    // Nothing recreated means the feature's tmux session is
+                    // gone too, so the feature start has to include it.
+                    self.restart_stopped_session_window_unchecked(pi, fi, si)?;
+                    let target = self.session_id_at(pi, fi, si);
+                    self.ensure_feature_running_with_target(
+                        pi,
+                        fi,
+                        target.as_deref(),
+                        StartIntent::Approved,
+                    )?
                 }
             }
+            // A parked start leaves the stop in place: the replay targets the
+            // session again on confirm, and a cancel keeps it stopped.
             Some(si) => {
-                self.set_session_stopped(pi, fi, si, false);
-                let started = self.ensure_feature_running(pi, fi, intent)?;
-                if started == Started::Parked {
-                    // Not started yet: the replay clears it again on confirm,
-                    // and a cancel leaves the stop in place.
-                    self.set_session_stopped(pi, fi, si, true);
-                }
-                started
+                let target = self.session_id_at(pi, fi, si);
+                self.ensure_feature_running_with_target(pi, fi, target.as_deref(), intent)?
             }
             None => self.ensure_feature_running(pi, fi, intent)?,
         };

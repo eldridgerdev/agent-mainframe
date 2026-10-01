@@ -592,10 +592,13 @@ impl Feature {
         }
     }
 
-    /// The sessions a feature start creates windows for, in order: every one
-    /// not stopped individually.
+    /// The sessions a feature start creates windows for and launches, in
+    /// order: every one that [runs with the feature](FeatureSession::runs_with_feature).
+    /// Every start path (the plain start and the three resume pickers) filters
+    /// on that one predicate, so they cannot disagree about which sessions
+    /// come up.
     pub fn sessions_to_start(&self) -> impl Iterator<Item = &FeatureSession> {
-        self.sessions.iter().filter(|s| !s.stopped)
+        self.sessions.iter().filter(|s| s.runs_with_feature())
     }
 
     /// The window a feature start opens its tmux session with: the first

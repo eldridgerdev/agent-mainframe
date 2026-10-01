@@ -1700,6 +1700,29 @@ impl App {
         Ok(())
     }
 
+    /// The id of the session at `(pi, fi, si)`, if there is one.
+    pub(crate) fn session_id_at(&self, pi: usize, fi: usize, si: usize) -> Option<String> {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.get(si))
+            .map(|s| s.id.clone())
+    }
+
+    /// Whether `(pi, fi, si)`'s window is up, as the dashboard reckons it
+    /// (the feature running and the session not stopped individually) — or
+    /// `None` for a session with no window at all (TODOs), which the
+    /// single-session `c` / `x` do nothing to.
+    pub(crate) fn session_window_running(&self, pi: usize, fi: usize, si: usize) -> Option<bool> {
+        let feature = self.store.projects.get(pi)?.features.get(fi)?;
+        let session = feature.sessions.get(si)?;
+        session
+            .kind
+            .is_tmux_backed()
+            .then(|| feature.status != ProjectStatus::Stopped && session.runs_with_feature())
+    }
+
     /// Set `(pi, fi, si)`'s individual-stop flag in memory; the caller saves.
     pub(crate) fn set_session_stopped(&mut self, pi: usize, fi: usize, si: usize, stopped: bool) {
         if let Some(session) = self

@@ -1356,11 +1356,12 @@ impl GuiHandle {
             self.app
                 .restart_stopped_session_window_unchecked(pi, fi, si)?;
         } else {
-            self.app.set_session_stopped(pi, fi, si, false);
-            if let Err(error) = self
-                .app
-                .ensure_feature_running(pi, fi, StartIntent::Approved)
-            {
+            if let Err(error) = self.app.ensure_feature_running_with_target(
+                pi,
+                fi,
+                Some(&target.session_id),
+                StartIntent::Approved,
+            ) {
                 self.app.set_session_stopped(pi, fi, si, was_flagged);
                 return Err(GuiError::from(error));
             }
@@ -1757,12 +1758,14 @@ mod tests {
         tmux.expect_create_window()
             .times(1)
             .returning(|_, _, _| Ok(()));
+        // Both launch under the default one-agent autostart cap: the session
+        // asked for is not the one the cap skips.
         tmux.expect_launch_claude()
             .times(2)
             .returning(|_, _, _, _, _| Ok(()));
         tmux.expect_select_window().returning(|_, _| Ok(()));
         let mut gui = handle(store_with_two_sessions(ProjectStatus::Stopped, true), tmux);
-        gui.app.config.max_agent_autostart_sessions = 0;
+        assert_eq!(gui.app.config.max_agent_autostart_sessions, 1);
         let target = session_target(&gui, 1);
 
         let response = gui.start_session(target, true).unwrap();

@@ -394,7 +394,7 @@ fn prune_duplicate_findings(doc: &str, other: &str) -> String {
             section = Some((line.to_string(), Vec::new(), false));
             continue;
         }
-        let duplicate = trimmed.strip_prefix("- ").is_some_and(&is_duplicate);
+        let duplicate = trimmed.strip_prefix("- ").is_some_and(is_duplicate);
         match &mut section {
             Some((_, body, kept_bullet)) => {
                 if duplicate {

@@ -1071,9 +1071,19 @@ impl App {
             return Ok(Started::Yes);
         }
 
+        feature.prepare_sessions_for_start(
+            launch_override
+                .as_ref()
+                .map(|(session_id, _)| session_id.as_str()),
+        );
+        let first_window = feature
+            .first_start_window()
+            .unwrap_or(&feature.sessions[0].tmux_window)
+            .to_string();
+
         self.tmux.create_session_with_window(
             &feature.tmux_session,
-            &feature.sessions[0].tmux_window,
+            &first_window,
             &feature.workdir,
         )?;
         if let Some(created_session) = created_session {
@@ -1084,7 +1094,11 @@ impl App {
         self.tmux
             .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
-        for session in &feature.sessions[1..] {
+        // Sessions stopped individually stay stopped: no window, no harness.
+        for session in feature
+            .sessions_to_start()
+            .filter(|session| session.tmux_window != first_window)
+        {
             self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
@@ -1096,7 +1110,7 @@ impl App {
         let windows: Vec<String> = feature
             .sessions
             .iter()
-            .filter(|session| session.kind.is_tmux_backed())
+            .filter(|session| session.runs_with_feature())
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -1123,7 +1137,7 @@ impl App {
         let max_agent_autostart_sessions = self.config.max_agent_autostart_sessions;
         let unlimited_agent_autostart = max_agent_autostart_sessions == 0;
         let mut launched_agent_sessions = 0usize;
-        for session in &feature.sessions {
+        for session in feature.sessions_to_start() {
             let is_launch_target = launch_override
                 .as_ref()
                 .is_some_and(|(session_id, _)| session_id == &session.id);
@@ -1283,7 +1297,7 @@ impl App {
         }
 
         self.tmux
-            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+            .select_window(&feature.tmux_session, &first_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();
@@ -1345,6 +1359,15 @@ impl App {
     /// `on_start` hook (prompting first when it has a prompt) and brings the
     /// tmux session up.
     pub(crate) fn begin_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
+        // `c` on a session row starts that session with its feature, even
+        // one stopped individually. The selection is still the row here when
+        // this replays from the resource confirmation.
+        if let Selection::Session(spi, sfi, si) = self.selection
+            && (spi, sfi) == (pi, fi)
+        {
+            self.set_session_stopped(pi, fi, si, false);
+        }
+
         // If on_start has a prompt, show the picker first.
         let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start

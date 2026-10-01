@@ -127,6 +127,7 @@ pub(super) fn make_session(label: &str, status_text: Option<&str>) -> FeatureSes
         pre_check: None,
         status_text: status_text.map(str::to_string),
         token_usage: None,
+        stopped: false,
     }
 }
 
@@ -208,6 +209,7 @@ pub(super) fn store_with_custom_session(
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -277,6 +279,7 @@ pub(super) fn store_with_codex_session(
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),

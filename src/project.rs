@@ -191,6 +191,14 @@ pub struct FeatureSession {
     pub on_stop: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_check: Option<String>,
+    /// Stopped on its own (`x` on the session row) while its feature kept
+    /// running. Persisted so the stop is a lasting choice: starting the
+    /// feature again launches every session *except* these, which stay on the
+    /// dashboard as a record until they are started individually. A feature-
+    /// level stop never sets it, so stop-then-start restores the same set of
+    /// sessions that was running.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
     #[serde(skip)]
     pub status_text: Option<String>,
     #[serde(skip)]
@@ -216,6 +224,13 @@ pub enum TokenUsageSourceMatch {
 }
 
 impl FeatureSession {
+    /// Whether this session gets a live tmux window while its feature runs:
+    /// it has one at all (not a native TODOs overlay) and was not stopped
+    /// individually.
+    pub fn runs_with_feature(&self) -> bool {
+        self.kind.is_tmux_backed() && !self.stopped
+    }
+
     pub fn set_token_usage_source_exact(&mut self, source: TokenUsageSource) {
         self.token_usage_source = Some(source);
         self.token_usage_source_match = Some(TokenUsageSourceMatch::Exact);
@@ -554,6 +569,43 @@ impl<'de> Deserialize<'de> for Feature {
 }
 
 impl Feature {
+    /// Settle which sessions a start of this feature's tmux session will
+    /// bring up, before any window is created.
+    ///
+    /// `target` is a session the caller is launching on purpose (a recovery,
+    /// a resumed transcript, the row the user pressed start on), so it runs
+    /// even if it was stopped individually. And when every tmux-backed
+    /// session was stopped individually, starting the feature can only mean
+    /// starting them, so the flags are cleared rather than bringing up a
+    /// tmux session with nothing in it.
+    pub fn prepare_sessions_for_start(&mut self, target: Option<&str>) {
+        if let Some(target) = target
+            && let Some(session) = self.sessions.iter_mut().find(|s| s.id == target)
+        {
+            session.stopped = false;
+        }
+        let has_tmux_session = self.sessions.iter().any(|s| s.kind.is_tmux_backed());
+        if has_tmux_session && !self.sessions.iter().any(FeatureSession::runs_with_feature) {
+            for session in &mut self.sessions {
+                session.stopped = false;
+            }
+        }
+    }
+
+    /// The sessions a feature start creates windows for, in order: every one
+    /// not stopped individually.
+    pub fn sessions_to_start(&self) -> impl Iterator<Item = &FeatureSession> {
+        self.sessions.iter().filter(|s| !s.stopped)
+    }
+
+    /// The window a feature start opens its tmux session with: the first
+    /// session it will start.
+    pub fn first_start_window(&self) -> Option<&str> {
+        self.sessions_to_start()
+            .next()
+            .map(|s| s.tmux_window.as_str())
+    }
+
     /// The feature's TODOs session, if it has one.
     ///
     /// One per **feature**, not one per project: each checkout has its own
@@ -765,6 +817,7 @@ impl Feature {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -802,6 +855,7 @@ impl Feature {
             pre_check,
             status_text: None,
             token_usage: None,
+            stopped: false,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -1232,6 +1286,7 @@ impl ProjectStore {
                                 pre_check: None,
                                 status_text: None,
                                 token_usage: None,
+                                stopped: false,
                             },
                             FeatureSession {
                                 id: Uuid::new_v4().to_string(),
@@ -1248,6 +1303,7 @@ impl ProjectStore {
                                 pre_check: None,
                                 status_text: None,
                                 token_usage: None,
+                                stopped: false,
                             },
                         ];
                         Feature {
@@ -1621,6 +1677,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -1725,6 +1782,7 @@ mod tests {
                         pre_check: None,
                         status_text: None,
                         token_usage: None,
+                        stopped: false,
                     }],
                     collapsed: true,
                     mode: VibeMode::Vibeless,
@@ -1791,6 +1849,7 @@ mod tests {
                                 pre_check: None,
                                 status_text: None,
                                 token_usage: None,
+                                stopped: false,
                             },
                             FeatureSession {
                                 id: "session-2".to_string(),
@@ -1807,6 +1866,7 @@ mod tests {
                                 pre_check: None,
                                 status_text: None,
                                 token_usage: None,
+                                stopped: false,
                             },
                         ],
                         collapsed: false,

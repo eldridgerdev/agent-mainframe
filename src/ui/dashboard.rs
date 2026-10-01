@@ -2227,6 +2227,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -2252,6 +2253,7 @@ mod tests {
             pre_check: None,
             status_text: Some(status_text.into()),
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -3369,6 +3371,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3481,6 +3484,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3593,6 +3597,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,

@@ -1664,57 +1664,101 @@ impl App {
         Ok(())
     }
 
+    /// Set `(pi, fi, si)`'s individual-stop flag in memory; the caller saves.
+    pub(crate) fn set_session_stopped(&mut self, pi: usize, fi: usize, si: usize, stopped: bool) {
+        if let Some(session) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+            .and_then(|f| f.sessions.get_mut(si))
+        {
+            session.stopped = stopped;
+        }
+    }
+
     /// Stop an individual session: kill its tmux window, but keep it in
     /// `feature.sessions` so it stays in the list and can be restarted. This
     /// is `x`'s behavior on a `Selection::Session` — distinct from `d`
     /// (`remove_session`), which deletes the record for good.
     ///
-    /// A feature's *only* session is indistinguishable from the feature
-    /// itself, so that case is handed off to [`Self::stop_feature`] (which
+    /// The stop is persisted on the session (`FeatureSession::stopped`), so
+    /// the session also stays down when its feature is next started; `c` on
+    /// the row brings it back. On a stopped feature this only records that
+    /// choice — there is no window to kill.
+    ///
+    /// Stopping the feature's last running session is indistinguishable from
+    /// stopping the feature itself (killing the last window ends the tmux
+    /// session), so that case is handed off to [`Self::stop_feature`] (which
     /// already accepts a `Session` selection) rather than reimplementing its
-    /// lifecycle hook, editor cleanup, etc. here.
+    /// lifecycle hook, editor cleanup, etc. here. It leaves the session
+    /// unflagged, so starting the feature again brings back what was last
+    /// running.
     pub fn stop_session(&mut self) -> Result<()> {
         let (pi, fi, si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, *si),
             _ => return Ok(()),
         };
 
-        let is_only_session = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .map(|f| f.sessions.len() <= 1)
-            .unwrap_or(true);
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return Ok(());
+        };
+        let Some(session) = feature.sessions.get(si) else {
+            return Ok(());
+        };
+        if !session.kind.is_tmux_backed() {
+            return Ok(());
+        }
+        let feature_stopped = feature.status == ProjectStatus::Stopped;
+        if session.stopped {
+            self.message = Some(format!("'{}' is already stopped", session.label));
+            return Ok(());
+        }
 
-        if is_only_session {
+        if feature_stopped {
+            let label = session.label.clone();
+            let has_other_runnable = feature
+                .sessions
+                .iter()
+                .enumerate()
+                .any(|(i, other)| i != si && other.runs_with_feature());
+            if !has_other_runnable {
+                // Flagging it would leave nothing to start, which a feature
+                // start answers by starting everything — so the flag would
+                // not hold. Say so rather than appear to accept it.
+                self.message = Some(format!(
+                    "'{}' is the feature's only session that would start; the feature is already stopped",
+                    label
+                ));
+                return Ok(());
+            }
+            self.set_session_stopped(pi, fi, si, true);
+            self.save()?;
+            self.message = Some(format!(
+                "'{}' will stay stopped when the feature starts (c on it to start it)",
+                label
+            ));
+            return Ok(());
+        }
+
+        let is_last_running = !feature
+            .sessions
+            .iter()
+            .enumerate()
+            .any(|(i, other)| i != si && other.runs_with_feature());
+        if is_last_running {
             return self.stop_feature();
         }
 
-        let (tmux_session, workdir, window, label, is_custom, on_stop, session_id, is_tmux_backed) = {
-            let feature = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
-                Some(f) => f,
-                None => return Ok(()),
-            };
-            let session = match feature.sessions.get(si) {
-                Some(s) => s,
-                None => return Ok(()),
-            };
-            (
-                feature.tmux_session.clone(),
-                feature.workdir.clone(),
-                session.tmux_window.clone(),
-                session.label.clone(),
-                session.kind == SessionKind::Custom,
-                session.on_stop.clone(),
-                session.id.clone(),
-                session.kind.is_tmux_backed(),
-            )
-        };
-
-        if !is_tmux_backed {
-            return Ok(());
-        }
+        let (tmux_session, workdir, window, label, is_custom, on_stop, session_id) = (
+            feature.tmux_session.clone(),
+            feature.workdir.clone(),
+            session.tmux_window.clone(),
+            session.label.clone(),
+            session.kind == SessionKind::Custom,
+            session.on_stop.clone(),
+            session.id.clone(),
+        );
 
         if self.tmux.session_exists(&tmux_session)
             && self.tmux.window_exists(&tmux_session, &window)
@@ -1755,6 +1799,8 @@ impl App {
                 let _ = db.delete_session_status(&session_id);
             }
         }
+
+        self.set_session_stopped(pi, fi, si, true);
 
         self.save()?;
         self.message = Some(format!("Stopped '{}'", label));
@@ -1860,9 +1906,16 @@ impl App {
             return Ok(false);
         };
 
-        if !session.kind.is_tmux_backed()
-            || self.tmux.window_exists(&tmux_session, &session.tmux_window)
-        {
+        if !session.kind.is_tmux_backed() {
+            return Ok(false);
+        }
+        if self.tmux.window_exists(&tmux_session, &session.tmux_window) {
+            // Up after all (recreated from outside AMF): the flag is what is
+            // stale, not the window.
+            if session.stopped {
+                self.set_session_stopped(pi, fi, si, false);
+                self.save()?;
+            }
             return Ok(false);
         }
 
@@ -1946,6 +1999,8 @@ impl App {
                 }
             }
         }
+
+        self.set_session_stopped(pi, fi, si, false);
 
         self.save()?;
         self.message = Some(format!("Restarted '{}'", session.label));

@@ -627,6 +627,7 @@ fn a_waiting_session_still_counts_toward_dormancy_and_the_agent_gate() {
             status_text: None,
             token_usage: None,
             created_at: Utc::now(),
+            stopped: false,
         });
 
     // Agent gate: the harness is running, so it is counted.

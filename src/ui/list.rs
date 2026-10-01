@@ -536,6 +536,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default().fg(theme.warning.to_color()),
                     ));
                     line_spans.push(Span::styled(badge, Style::default().fg(muted)));
+                    // Sessions stopped individually stay on the dashboard, so
+                    // say how many when the feature row is collapsed over them.
+                    let stopped_sessions = feature.sessions.iter().filter(|s| s.stopped).count();
+                    if stopped_sessions > 0 {
+                        line_spans.push(Span::styled(
+                            format!(" [{} stopped]", stopped_sessions),
+                            Style::default().fg(theme.status_stopped.to_color()),
+                        ));
+                    }
                     if has_pending_input {
                         line_spans.push(Span::styled(
                             " ?",
@@ -664,12 +673,30 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         }
                     };
 
+                    // Running vs stopped, per session — the same glyphs the
+                    // feature row uses. A native session (TODOs) has no
+                    // process to be either, so it gets blank space instead.
+                    let session_running =
+                        feature.status != ProjectStatus::Stopped && session.runs_with_feature();
+                    let state_icon = if !session.kind.is_tmux_backed() {
+                        Span::raw("  ")
+                    } else if session_running {
+                        Span::styled("● ", Style::default().fg(theme.status_active.to_color()))
+                    } else {
+                        Span::styled("■ ", Style::default().fg(theme.status_stopped.to_color()))
+                    };
+
+                    let label_color = if session.stopped {
+                        theme.text_muted.to_color()
+                    } else {
+                        theme.text.to_color()
+                    };
                     let name_style = if is_selected {
                         Style::default()
-                            .fg(theme.text.to_color())
+                            .fg(label_color)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(theme.text.to_color())
+                        Style::default().fg(label_color)
                     };
 
                     let context_indicator = session
@@ -684,6 +711,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         .flatten();
                     let prefix_width = UnicodeWidthStr::width(vert)
                         + UnicodeWidthStr::width(branch)
+                        + UnicodeWidthStr::width(state_icon.content.as_ref())
                         + UnicodeWidthStr::width(kind_icon.content.as_ref());
                     let row_width = usize::from(area.width.saturating_sub(2));
                     let (display_label, show_context_indicator) = fit_session_label(
@@ -695,6 +723,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     let mut main_spans = vec![
                         Span::styled(vert, Style::default().fg(muted)),
                         Span::styled(branch, Style::default().fg(muted)),
+                        state_icon,
                         kind_icon,
                         Span::styled(display_label, name_style),
                     ];
@@ -820,6 +849,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage,
+            stopped: false,
         }
     }
 
@@ -1191,6 +1221,38 @@ mod tests {
                 band != ContextBand::Normal
             );
         }
+    }
+
+    #[test]
+    fn session_rows_show_whether_each_session_is_running() {
+        let mut stopped = session(SessionKind::Codex, "Codex 1", None);
+        stopped.stopped = true;
+        let rendered = render_feature_row_configured(
+            vec![session(SessionKind::Claude, "Claude 1", None), stopped],
+            None,
+            |app| app.store.projects[0].features[0].collapsed = false,
+        );
+
+        assert!(rendered.contains("● * Claude 1"), "{rendered}");
+        assert!(rendered.contains("■ * Codex 1"), "{rendered}");
+        // Still visible on the feature row when it is collapsed over them.
+        assert!(rendered.contains("[1 stopped]"), "{rendered}");
+    }
+
+    #[test]
+    fn every_session_of_a_stopped_feature_shows_stopped() {
+        let rendered = render_feature_row_configured(
+            vec![session(SessionKind::Claude, "Claude 1", None)],
+            None,
+            |app| {
+                let feature = &mut app.store.projects[0].features[0];
+                feature.collapsed = false;
+                feature.status = ProjectStatus::Stopped;
+            },
+        );
+
+        assert!(rendered.contains("■ * Claude 1"), "{rendered}");
+        assert!(!rendered.contains("stopped]"), "{rendered}");
     }
 
     #[test]

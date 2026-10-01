@@ -1721,6 +1721,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         },
         crate::project::FeatureSession {
             id: "terminal-session".to_string(),
@@ -1737,6 +1738,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         },
     ];
 

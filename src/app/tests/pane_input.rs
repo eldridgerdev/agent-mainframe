@@ -739,6 +739,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }],
     );
     let mut app = App::new_for_test(
@@ -1274,6 +1275,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),

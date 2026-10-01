@@ -400,6 +400,11 @@ fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 );
             }
         }
+        KeyCode::Char('m') if key.modifiers.is_empty() && app.model_analysis_available() => {
+            if let Err(e) = app.open_model_analysis() {
+                app.message = Some(e.to_string());
+            }
+        }
         KeyCode::Char('e') if key.modifiers.is_empty() => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.begin_plan_edit();

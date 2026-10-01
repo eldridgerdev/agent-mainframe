@@ -144,6 +144,7 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     let store_file = NamedTempFile::new().unwrap();
     app.store_path = store_file.path().to_path_buf();
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".into(),
         feature_name: None,
         branch: "planned-feature".into(),
@@ -714,6 +715,7 @@ fn plan_interview_app_for_agent(
         app.db = Some(crate::db::AmfDb::open(db_path).unwrap());
     }
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".into(),
         feature_name: None,
         branch: "planned-feature".into(),
@@ -2362,6 +2364,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
     assert!(matches!(app.mode, AppMode::Normal));
 
     app.finish_feature_launch(PreparedFeatureLaunch {
+        model_selection: None,
         project_name: "my-project".into(),
         feature_name: None,
         branch: "planned-feature".into(),

@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Get model and reasoning advice before implementation.** Press `m` while
+  reviewing a new Full or Quick Plan to compare available Claude Code and
+  Codex settings, then apply your choice to the initial implementation agent.
+- **Get advice for an open agent session.** Press `m` on its dashboard row or
+  `leader+B` in its pane. Recommendations use the feature and its plan; change
+  the setting in the harness's own model picker.
+- **Read the evidence behind a recommendation.** A compact model, effort and
+  focus table offers speed, balance and depth choices when supported. Press
+  `s` to inspect dated provider research. Account access and supported effort
+  levels are checked; task-specific quality, time and token totals stay unknown.
 - **Collapse projects in AMF Remote's dashboard.** Tap a project heading to
   hide or show its features. Each heading shows the feature count, and your
   choices are remembered on this device across refreshes and reloads. Features
@@ -70,6 +80,7 @@ are tagged.
 
 ### Migration
 
+- No manual migration is required. AMF updates its database on first startup.
 - To turn Claude's own Remote Control on or off, type `/rc` in the session
   instead of pressing `leader+C`.
 

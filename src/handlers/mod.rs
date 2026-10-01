@@ -16,6 +16,7 @@ mod hooks;
 mod input;
 mod issue_fixer;
 mod learning;
+mod model_analysis;
 mod mouse;
 mod normal;
 mod picker;
@@ -132,6 +133,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::PlanInterviewAttachDoc(_) => handle_plan_interview_attach_doc_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
         AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
+        AppMode::ModelAnalysis(_) => model_analysis::handle_model_analysis_key(app, key),
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),

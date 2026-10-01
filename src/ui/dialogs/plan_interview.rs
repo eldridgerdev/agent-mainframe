@@ -993,7 +993,19 @@ fn draw_plan_review(
         theme,
     );
 
-    let context = if let Some(message) = message {
+    let selected_model = state
+        .pending_launch
+        .as_ref()
+        .and_then(|p| p.model_selection.as_ref())
+        .map(|s| {
+            format!(
+                "Initial implementation: {} / {} / {}",
+                s.choice.harness().display_name(),
+                s.choice.model(),
+                s.choice.reasoning().unwrap_or("default")
+            )
+        });
+    let context = if let Some(message) = message.or(selected_model.as_deref()) {
         let color = if message.starts_with("Error:") {
             theme.danger.to_color()
         } else {
@@ -1030,6 +1042,18 @@ fn draw_plan_review(
         Span::raw(" investigate  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
+        Span::raw(
+            if state.todo_origin.is_none()
+                && state
+                    .pending_launch
+                    .as_ref()
+                    .is_some_and(|p| p.todo_origin.is_none())
+            {
+                "m model advice  "
+            } else {
+                ""
+            },
+        ),
         hint("Enter", theme),
         Span::raw(" accept  "),
         hint("Ctrl+Q", theme),

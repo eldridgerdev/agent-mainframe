@@ -141,6 +141,65 @@ pub(crate) const AI_ATTRIBUTION_FOOTER: &str = "— drafted by AI via AMF";
 /// footer identifies their origin without turning them into follow-up replies.
 pub(crate) const AI_REVIEW_ATTRIBUTION_FOOTER: &str = "— AI review via AMF";
 
+/// Leave AMF's posted usage summary out of fix prompts, even when the review
+/// was posted under a human GitHub account. Match the generated paragraph so
+/// feedback that merely discusses usage or quotes its heading stays intact.
+fn strip_review_usage(body: &str) -> Cow<'_, str> {
+    let trimmed = body.trim_end();
+    let (core, footer) = match trimmed.strip_suffix(AI_REVIEW_ATTRIBUTION_FOOTER) {
+        Some(core) => (core.trim_end(), Some(AI_REVIEW_ATTRIBUTION_FOOTER)),
+        None => (trimmed, None),
+    };
+    // Current reviews use a collapsed details block; older ones used a
+    // Markdown heading. Both contain the same deterministic metric list.
+    let (feedback, metrics) = if let Some(core) = core.strip_suffix("\n\n</details>") {
+        let Some((before, metrics)) = core.rsplit_once("</summary>\n\n") else {
+            return Cow::Borrowed(body);
+        };
+        let opening = "<details>\n<summary>AI review usage · ";
+        let Some((feedback, summary)) = before
+            .rsplit_once(&format!("\n\n{opening}"))
+            .or_else(|| before.strip_prefix(opening).map(|summary| ("", summary)))
+        else {
+            return Cow::Borrowed(body);
+        };
+        if summary.contains('\n') {
+            return Cow::Borrowed(body);
+        }
+        (feedback, metrics)
+    } else {
+        let (feedback, usage) = core.rsplit_once("\n\n").unwrap_or(("", core));
+        let Some(metrics) = usage.strip_prefix("### AI review usage\n") else {
+            return Cow::Borrowed(body);
+        };
+        (feedback, metrics)
+    };
+    let mut lines = metrics.lines();
+    if ![
+        "- Harness: ",
+        "- Model: ",
+        "- Elapsed: ",
+        "- Input tokens: ",
+        "- Output tokens: ",
+        "- Cached tokens: ",
+        "- Total tokens: ",
+        "- Estimated cost: ",
+    ]
+    .into_iter()
+    .all(|label| lines.next().is_some_and(|line| line.starts_with(label)))
+        || lines.next().is_some()
+    {
+        return Cow::Borrowed(body);
+    }
+    match footer {
+        Some(footer) if !feedback.trim_end().is_empty() => {
+            Cow::Owned(format!("{}\n\n{footer}", feedback.trim_end()))
+        }
+        Some(footer) => Cow::Borrowed(footer),
+        None => Cow::Borrowed(feedback.trim_end()),
+    }
+}
+
 /// Which agent session AMF asked for a reply draft, captured at fix injection
 /// and persisted with the draft (`db::pr_comment_triage::begin_reply_draft`).
 ///
@@ -868,7 +927,7 @@ impl PrComment {
 
     /// Assemble the minimal "fix" prompt for this comment: a single instruction
     /// line, the `file:line` pointer, the (bot-stripped) comment text, and the
-    /// GitHub-provided diff hunk.
+    /// GitHub-provided diff hunk. Posted AI review usage is omitted.
     ///
     /// Deliberately carries **no file contents** — the agent already has the
     /// repo checked out and opens what it needs. This minimal context is the
@@ -920,10 +979,11 @@ impl PrComment {
             out.push('\n');
         }
 
+        let text = self.agent_text();
         out.push_str(&format!(
             "Comment (@{}): {}\n",
             self.author,
-            self.agent_text().trim()
+            strip_review_usage(&text).trim()
         ));
 
         match self.prompt_hunk() {

@@ -368,6 +368,10 @@ pub fn draw_ai_review(
     finding_fix_costs: &[Option<String>],
 ) {
     let area = frame.area();
+    if state.questions.open {
+        super::review_questions::draw(frame, &mut state.questions, theme);
+        return;
+    }
     // A sub-header line naming the harness/model that produced the current
     // findings and what the run cost. Absent until a run completes for this
     // head SHA (or for a legacy cache row with no attribution).
@@ -462,7 +466,7 @@ pub fn draw_ai_review(
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix   space mark   B fix marked   s skip   e edit   {ai_action}   W post   esc/q close"
+            " j/k move   f fix   space mark   B fix marked   s skip   e edit   Q ask AI   {ai_action}   W post   esc/q close"
         ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
@@ -589,6 +593,37 @@ const NO_CODEX_MODELS_NOTE: &str = "No Codex models recorded yet. Open Codex's o
     once, or add a [tui.model_availability_nux] table to ~/.codex/config.toml, and presets will \
     show up here. Custom still accepts any model name in the meantime.";
 
+/// The picker's reasoning row: `Reasoning  ‹ high ›`, or `Default` when no
+/// level is chosen. `None` when the harness has no levels to offer, so the
+/// row (and its key hint) never promises a choice that does nothing.
+pub(super) fn reasoning_line(pick: &AiModelPickState, theme: &Theme) -> Option<Line<'static>> {
+    if pick.reasoning_levels.is_empty() {
+        return None;
+    }
+    let value = pick.reasoning.map_or("Default", |level| level.slug());
+    Some(Line::from(vec![
+        Span::styled(
+            "  Reasoning  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled(
+            format!("‹ {value} ›"),
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]))
+}
+
+/// Hint fragment for the reasoning row, empty when the row is hidden.
+pub(super) fn reasoning_hint(pick: &AiModelPickState) -> &'static str {
+    if pick.reasoning_levels.is_empty() {
+        ""
+    } else {
+        "  [h/l] level"
+    }
+}
+
 fn draw_ai_model_pick(
     frame: &mut Frame,
     pick: &AiModelPickState,
@@ -618,6 +653,7 @@ fn draw_ai_model_pick(
             Constraint::Min(1),
             Constraint::Length(if show_no_codex_models_note { 4 } else { 0 }),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
+            Constraint::Length(u16::from(!pick.reasoning_levels.is_empty())),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -665,16 +701,25 @@ fn draw_ai_model_pick(
             chunks[3],
         );
     }
+    if let Some(line) = reasoning_line(pick, theme) {
+        frame.render_widget(Paragraph::new(line), chunks[4]);
+    }
     let hints = if pick.editing_custom {
-        "  [⏎] use this model   [esc] back to list"
+        "  [⏎] use this model   [esc] back to list".to_string()
     } else if custom_selected {
-        "  [j/k] choose   [⏎] type a model   [esc] harness"
+        format!(
+            "  [j/k] choose   [⏎] type a model{}   [esc] harness",
+            reasoning_hint(pick)
+        )
     } else {
-        "  [j/k] choose   [⏎] confirm   [esc] harness"
+        format!(
+            "  [j/k] choose   [⏎] confirm{}   [esc] harness",
+            reasoning_hint(pick)
+        )
     };
     frame.render_widget(
         Paragraph::new(hints).style(Style::default().fg(theme.primary.to_color())),
-        chunks[4],
+        chunks[5],
     );
 }
 
@@ -813,6 +858,7 @@ mod tests {
     fn running_pane_renders_live_activity_elapsed_time_and_usage() {
         let mut state = AiReviewRunState {
             origin: AiReviewState {
+                questions: Default::default(),
                 workdir: PathBuf::from("/tmp/review"),
                 pr: crate::github::PrRef {
                     number: 473,
@@ -834,6 +880,7 @@ mod tests {
                 harness_pick_origin: None,
                 model: None,
                 model_picked: true,
+                reasoning: None,
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,
@@ -894,6 +941,7 @@ mod tests {
         attribution: Option<crate::app::ai_review::AiReviewAttribution>,
     ) -> AiReviewState {
         AiReviewState {
+            questions: Default::default(),
             workdir: PathBuf::from("/tmp/review"),
             pr: crate::github::PrRef {
                 number: 12,
@@ -915,6 +963,7 @@ mod tests {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -988,6 +1037,8 @@ mod tests {
             selected: 0,
             custom_input: String::new(),
             editing_custom: false,
+            reasoning_levels: &[],
+            reasoning: None,
         });
         let rendered = render_pane(&mut state);
         assert!(
@@ -1013,6 +1064,8 @@ mod tests {
             selected: 0,
             custom_input: String::new(),
             editing_custom: false,
+            reasoning_levels: &[],
+            reasoning: None,
         });
         let rendered = render_pane(&mut state);
         assert!(
@@ -1030,6 +1083,8 @@ mod tests {
             selected: 0,
             custom_input: String::new(),
             editing_custom: false,
+            reasoning_levels: &[],
+            reasoning: None,
         });
         let rendered = render_pane(&mut state);
         assert!(

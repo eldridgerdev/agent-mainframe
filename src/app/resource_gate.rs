@@ -346,7 +346,10 @@ impl App {
             return Ok(());
         };
         let ResourceConfirmState {
-            pending, from_view, ..
+            pending,
+            from_view,
+            plan_interview,
+            ..
         } = *state;
 
         let result = match pending {
@@ -383,7 +386,12 @@ impl App {
             PendingStart::SwitchViewToFeature { pi, fi } => {
                 self.switch_view_to_feature_approved(pi, fi)
             }
-            PendingStart::PlannedFeature(pending) => self.resume_accepted_plan_launch(*pending),
+            PendingStart::PlannedFeature(pending) => {
+                if let Some(interview) = plan_interview {
+                    self.mode = AppMode::PlanInterview(interview);
+                }
+                self.resume_accepted_plan_launch(*pending)
+            }
         };
 
         // Returning to the view the start came from is what the ungated path

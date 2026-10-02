@@ -34,8 +34,9 @@ impl App {
                 let entries: Vec<SwitcherEntry> = feature
                     .sessions
                     .iter()
-                    // Native sessions (TODOs) have no tmux window to switch to.
-                    .filter(|s| s.kind.is_tmux_backed())
+                    // Native sessions (TODOs) have no tmux window to switch to,
+                    // and an individually stopped session has lost its window.
+                    .filter(|s| s.runs_with_feature())
                     .map(|s| {
                         let cfg = self
                             .active_extension

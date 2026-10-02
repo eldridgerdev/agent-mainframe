@@ -127,6 +127,7 @@ pub(super) fn make_session(label: &str, status_text: Option<&str>) -> FeatureSes
         pre_check: None,
         status_text: status_text.map(str::to_string),
         token_usage: None,
+        stopped: false,
     }
 }
 
@@ -208,6 +209,7 @@ pub(super) fn store_with_custom_session(
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -277,6 +279,7 @@ pub(super) fn store_with_codex_session(
         pre_check: None,
         status_text: None,
         token_usage: None,
+        stopped: false,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -477,6 +480,7 @@ pub(super) fn sample_ai_review_state(
     pr: crate::github::PrRef,
 ) -> crate::app::AiReviewState {
     crate::app::AiReviewState {
+        questions: Default::default(),
         workdir,
         pr,
         findings: Vec::new(),
@@ -491,6 +495,7 @@ pub(super) fn sample_ai_review_state(
         harness_pick_origin: None,
         model: None,
         model_picked: false,
+        reasoning: None,
         model_pick: None,
         finding_editor: None,
         post_confirm: None,

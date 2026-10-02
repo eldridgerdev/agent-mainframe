@@ -23,6 +23,39 @@ use uuid::Uuid;
 use crate::debug::{LogLevel, log_to_file};
 use crate::traits::TmuxOps;
 
+/// The path hooks should run as `$AMF_BIN`, given `current_exe()`.
+///
+/// On Linux `current_exe()` reads `/proc/self/exe`, which reports a binary
+/// replaced while AMF runs (every `cargo build` of a dev checkout) or
+/// deleted with its worktree as `<path> (deleted)`. Baking that into a
+/// session's environment breaks every hook for the session's lifetime,
+/// silently: the scripts swallow the failure. Strip the marker and use the
+/// path if a binary sits there again (the rebuilt one); otherwise return
+/// `None` so the scripts fall back to `amf` on `PATH`.
+///
+/// "A binary sits there" is the scripts' own `[ -x ]` test, so a path this
+/// accepts is never one they would then discard. Whatever sits at the path
+/// is trusted to be amf: it is where this very process was started from, and
+/// confirming more would mean running it.
+fn usable_cli_binary(exe: PathBuf) -> Option<PathBuf> {
+    let path = match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => exe,
+    };
+    is_executable_file(&path).then_some(path)
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
+}
+
 pub struct TmuxManager;
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -357,6 +390,28 @@ impl TmuxRuntime {
         Self::state_dir().join("managed-tmux.sock")
     }
 
+    /// Points a test binary at a tmux server of its own. Without this, tests
+    /// that drive real tmux (the `gui_terminal` control-client suite) share
+    /// whatever server `detect` resolves to -- the user's live AMF socket by
+    /// default, and also when run from inside an AMF session, which exports
+    /// `AMF_TMUX_SOCKET` -- so a tmux crash they trigger takes the user's
+    /// sessions with it (tmux 3.2a segfaults under that suite's control-client
+    /// churn). That is also why `AMF_TMUX_SOCKET` is deliberately not honored
+    /// here. The socket is per process, so concurrent `cargo test` runs don't
+    /// share one either; the server exits on its own once the last test
+    /// session is killed.
+    #[cfg(test)]
+    fn isolated_for_tests(self) -> Self {
+        let socket = std::env::temp_dir()
+            .join(format!("amf-test-tmux-{}", std::process::id()))
+            .join("tmux.sock");
+        Self {
+            socket: Some(socket),
+            manages_private_socket: true,
+            ..self
+        }
+    }
+
     fn launch_path_override(&self) -> Option<OsString> {
         Self::prepend_binary_dir_to_path(&self.binary)
     }
@@ -520,13 +575,19 @@ impl TmuxManager {
     fn cli_binary() -> Option<PathBuf> {
         match Self::cli_binary_override().get() {
             Some(path) => path.clone(),
-            None => std::env::current_exe().ok(),
+            None => std::env::current_exe().ok().and_then(usable_cli_binary),
         }
     }
 
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
-        RUNTIME.get_or_init(TmuxRuntime::detect)
+        RUNTIME.get_or_init(|| {
+            #[cfg(not(test))]
+            let runtime = TmuxRuntime::detect();
+            #[cfg(test)]
+            let runtime = TmuxRuntime::detect().isolated_for_tests();
+            runtime
+        })
     }
 
     pub(crate) fn command() -> Command {
@@ -2014,6 +2075,31 @@ impl TmuxManager {
         }
     }
 
+    /// Size and cursor of a window's active pane:
+    /// `(cols, rows, cursor_x, cursor_y, cursor_visible)`.
+    pub fn pane_geometry(session: &str, window: &str) -> Result<(u16, u16, u16, u16, bool)> {
+        let target = format!("{}:{}", session, window);
+        let output = Self::command()
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{pane_width} #{pane_height} #{cursor_x} #{cursor_y} #{cursor_flag}",
+            ])
+            .output()
+            .context("Failed to get pane geometry")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<u16> = stdout
+            .split_whitespace()
+            .filter_map(|part| part.parse().ok())
+            .collect();
+        match parts[..] {
+            [cols, rows, x, y, flag] => Ok((cols, rows, x, y, flag != 0)),
+            _ => bail!("tmux did not return pane geometry for {target}"),
+        }
+    }
+
     /// Get the current size (cols, rows) of a window's active pane.
     pub fn pane_size(session: &str, window: &str) -> Result<(u16, u16)> {
         let target = format!("{}:{}", session, window);
@@ -2402,6 +2488,33 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn a_rebuilt_or_deleted_binary_never_becomes_a_dead_amf_bin() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("amf");
+        fs::write(&exe, "").unwrap();
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", exe.display()));
+
+        // Not executable: the scripts' `[ -x ]` would discard it, so omit it
+        // here too rather than set an AMF_BIN nothing will run.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(super::usable_cli_binary(exe.clone()), None);
+            fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // A live binary is used as-is.
+        assert_eq!(super::usable_cli_binary(exe.clone()), Some(exe.clone()));
+        // Rebuilt in place: `/proc/self/exe` says "(deleted)", but the path
+        // holds the new binary.
+        assert_eq!(super::usable_cli_binary(deleted.clone()), Some(exe.clone()));
+        // Gone for good (worktree removed): omit it, so hooks use PATH.
+        fs::remove_file(&exe).unwrap();
+        assert_eq!(super::usable_cli_binary(deleted), None);
+        assert_eq!(super::usable_cli_binary(exe), None);
+    }
 
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();

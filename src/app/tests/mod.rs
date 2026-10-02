@@ -11,6 +11,7 @@ mod plans;
 mod pr_triage;
 mod prompts_configuration;
 mod resources;
+mod review_questions;
 mod startup_navigation;
 mod status_sidebar;
 mod store_sync;

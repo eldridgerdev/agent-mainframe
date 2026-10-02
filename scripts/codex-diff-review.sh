@@ -21,7 +21,10 @@ fi
 
 WORKDIR="${1:-$PWD}"
 SESSION_ID="${AMF_SESSION:-}"
-AMF_CMD="${AMF_BIN:-amf}"
+# $AMF_BIN names the amf that started this session. A rebuilt or deleted
+# build leaves it pointing at nothing, so fall back to `amf` on PATH.
+[ -x "${AMF_BIN:-}" ] || AMF_BIN=amf
+AMF_CMD="$AMF_BIN"
 
 # inotifywait and git are genuine external requirements of this watcher; it
 # exits quietly rather than half-working when either is absent.

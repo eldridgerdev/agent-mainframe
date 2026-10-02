@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::app::{App, AppMode};
 use crate::claude::ClaudeLauncher;
 
-const PATCH_SCROLL_STEP: usize = 1;
 const PATCH_PAGE_STEP: usize = 20;
 
 fn diff_review_uses_new_file_presentation(app: &App) -> bool {
@@ -25,6 +24,8 @@ fn hold_active(app: &App) -> bool {
 }
 
 pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Ctrl+J/K jump further than j/k, matching the final-review diff viewer.
+    let step = super::diff::scroll_step(&key);
     if matches!(
         &app.mode,
         AppMode::DiffReviewPrompt(state) if state.explanation_child.is_some()
@@ -75,10 +76,10 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if hold_active(app) {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+                app.diff_review_scroll_patch_down(step);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+                app.diff_review_scroll_patch_up(step);
             }
             KeyCode::PageDown => {
                 app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);
@@ -129,10 +130,10 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('j') | KeyCode::Down => {
-            app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+            app.diff_review_scroll_patch_down(step);
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+            app.diff_review_scroll_patch_up(step);
         }
         KeyCode::PageDown => {
             app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);
@@ -303,7 +304,14 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
     let model = app
         .config
         .review_model_for(crate::app::ReviewAction::DiffExplain);
-    match ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+    let reasoning = app
+        .config
+        .review_reasoning_for(crate::app::ReviewAction::DiffExplain);
+    match ClaudeLauncher::spawn_headless(
+        &workdir,
+        &prompt,
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
+    ) {
         Ok(child) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
                 state.explanation = None;

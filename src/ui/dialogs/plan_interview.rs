@@ -31,6 +31,7 @@ pub fn draw_plan_interview_dialog(
     message: Option<&str>,
     theme: &Theme,
     throbber_state: &throbber_widgets_tui::ThrobberState,
+    model_advice: bool,
 ) {
     // The whole review gate shares one frame size so moving between the plan,
     // its editor, and an agent review does not resize the dialog underfoot.
@@ -135,9 +136,9 @@ pub fn draw_plan_interview_dialog(
     }
 
     if state.phase == PlanInterviewPhase::Review {
-        draw_plan_review(frame, inner, state, message, theme);
+        draw_plan_review(frame, inner, state, message, theme, model_advice);
         if state.expert_model_pick.is_some() {
-            draw_expert_model_picker(frame, state, theme);
+            draw_expert_model_picker(frame, state, theme, model_advice);
         }
         return;
     }
@@ -241,7 +242,12 @@ pub fn draw_plan_interview_dialog(
     frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[3]);
 }
 
-fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme: &Theme) {
+fn draw_expert_model_picker(
+    frame: &mut Frame,
+    state: &PlanInterviewState,
+    theme: &Theme,
+    model_advice: bool,
+) {
     let Some(pick) = state.expert_model_pick.as_ref() else {
         return;
     };
@@ -260,7 +266,8 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
             Constraint::Length(3),
             Constraint::Min(1),
             Constraint::Length(if pick.editing_custom { 2 } else { 0 }),
-            Constraint::Length(1),
+            Constraint::Length(u16::from(!pick.reasoning_levels.is_empty())),
+            Constraint::Length(if pick.editing_custom { 1 } else { 2 }),
         ])
         .split(inner);
     let harness = interview_engine(state);
@@ -307,16 +314,32 @@ fn draw_expert_model_picker(frame: &mut Frame, state: &PlanInterviewState, theme
         );
     }
     let custom_selected = matches!(pick.rows.get(pick.selected), Some(ModelPickRow::Custom));
+    if let Some(line) = super::ai_review::reasoning_line(pick, theme) {
+        frame.render_widget(Paragraph::new(line), chunks[3]);
+    }
     let hint = if pick.editing_custom {
-        "  [⏎] use this model   [esc] back to list"
-    } else if custom_selected {
-        "  [j/k] choose   [⏎] type a model   [esc] cancel"
+        "Enter use model  Esc back to list".to_string()
     } else {
-        "  [j/k] choose   [⏎] continue   [esc] cancel"
+        let action = if custom_selected {
+            "type model"
+        } else {
+            "continue"
+        };
+        let effort = if pick.reasoning_levels.is_empty() {
+            ""
+        } else {
+            "h/l effort  "
+        };
+        let advice = if model_advice {
+            "m model advice for this review"
+        } else {
+            ""
+        };
+        format!("j/k choose  Enter {action}  Esc cancel\n{effort}{advice}")
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(theme.primary.to_color())),
-        chunks[3],
+        chunks[4],
     );
 }
 
@@ -970,6 +993,7 @@ fn draw_plan_review(
     state: &mut PlanInterviewState,
     message: Option<&str>,
     theme: &Theme,
+    model_advice: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -988,7 +1012,19 @@ fn draw_plan_review(
         theme,
     );
 
-    let context = if let Some(message) = message {
+    let selected_model = state
+        .pending_launch
+        .as_ref()
+        .and_then(|p| p.model_selection.as_ref())
+        .map(|s| {
+            format!(
+                "Initial implementation: {} / {} / {}",
+                s.choice.harness().display_name(),
+                s.choice.model(),
+                s.choice.reasoning().unwrap_or("default")
+            )
+        });
+    let context = if let Some(message) = message.or(selected_model.as_deref()) {
         let color = if message.starts_with("Error:") {
             theme.danger.to_color()
         } else {
@@ -1006,7 +1042,7 @@ fn draw_plan_review(
                 .add_modifier(Modifier::ITALIC),
         ))
     };
-    let hints = Line::from(vec![
+    let mut hints = vec![
         hint("j/k", theme),
         Span::raw(" scroll  "),
         hint("e", theme),
@@ -1025,6 +1061,11 @@ fn draw_plan_review(
         Span::raw(" investigate  "),
         hint("r", theme),
         Span::raw(" regenerate  "),
+    ];
+    if model_advice {
+        hints.extend([hint("m", theme), Span::raw(" model advice  ")]);
+    }
+    hints.extend([
         hint("Enter", theme),
         Span::raw(" accept  "),
         hint("Ctrl+Q", theme),
@@ -1033,7 +1074,7 @@ fn draw_plan_review(
         Span::raw(" abort"),
     ]);
     frame.render_widget(
-        Paragraph::new(vec![context, hints])
+        Paragraph::new(vec![context, Line::from(hints)])
             .style(Style::default().bg(theme.effective_header_bg()))
             .wrap(Wrap { trim: false }),
         chunks[1],
@@ -1601,6 +1642,45 @@ mod tests {
     use crate::app::{App, AppMode};
     use crate::project::ProjectStore;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    #[test]
+    fn expert_picker_keeps_advice_and_cancel_visible() {
+        use crate::{app::AiModelPickState, headless::ReasoningLevel};
+        for (width, height) in [(80, 24), (120, 40)] {
+            let mut state =
+                PlanInterviewState::new("parser".into(), "feature".into(), vec![], None);
+            state.phase = PlanInterviewPhase::Review;
+            state.ai_harness = Some(Some(crate::project::AgentKind::Codex));
+            state.expert_model_pick = Some(AiModelPickState::new(
+                &crate::project::AgentKind::Codex,
+                vec![
+                    ModelPickRow::Preset("test-model".into()),
+                    ModelPickRow::Custom,
+                ],
+                0,
+                String::new(),
+                Some(ReasoningLevel::High),
+            ));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_expert_model_picker(frame, &state, &Theme::default(), true))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(width as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for expected in ["m model advice", "Esc cancel", "h/l effort", "test-model"] {
+                assert!(
+                    text.contains(expected),
+                    "missing {expected} at {width}x{height}"
+                );
+            }
+        }
+    }
 
     /// Renders the consent step the way a user meets it — through the whole
     /// dashboard, at a real terminal size — and returns what is on screen.

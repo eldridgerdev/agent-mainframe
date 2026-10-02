@@ -13,7 +13,7 @@ Keep them current as the staged GUI scope grows.
 
 | Status | GUI workflow |
 | --- | --- |
-| Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, stopping, starting and closing a single session (stop keeps the record; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
+| Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
 | Limited | VS Code and configured custom sessions still require the TUI session picker. |
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |

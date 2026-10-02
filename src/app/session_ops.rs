@@ -45,6 +45,42 @@ fn kind_label(kind: &SessionKind) -> &'static str {
     }
 }
 
+/// What [`App::stop_session_at`] did, each carrying the session's label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionStop {
+    /// The window was killed and the stop recorded.
+    Stopped(String),
+    /// The feature is stopped; the stop was recorded for its next start.
+    Recorded(String),
+    /// Already stopped individually; nothing changed.
+    AlreadyStopped(String),
+    /// The feature is stopped and this is the only session its start would
+    /// bring up; refused, since a start would clear the flag again.
+    OnlyRunnable(String),
+    /// The feature's last running session: stopping it means stopping the
+    /// feature, which the caller does its own way. Nothing changed yet.
+    StopsFeature,
+    /// No such session, or one with no window to stop (a TODOs overlay).
+    NotStoppable,
+}
+
+impl SessionStop {
+    /// The user-facing sentence for an outcome that is final on its own.
+    pub(crate) fn message(&self) -> Option<String> {
+        match self {
+            Self::Stopped(label) => Some(format!("Stopped '{label}'")),
+            Self::Recorded(label) => Some(format!(
+                "'{label}' will stay stopped when the feature starts"
+            )),
+            Self::AlreadyStopped(label) => Some(format!("'{label}' is already stopped")),
+            Self::OnlyRunnable(label) => Some(format!(
+                "'{label}' is the feature's only session that would start; the feature is already stopped"
+            )),
+            Self::StopsFeature | Self::NotStoppable => None,
+        }
+    }
+}
+
 fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
     match kind {
         SessionKind::Claude => Some(AgentKind::Claude),
@@ -1670,13 +1706,54 @@ impl App {
         Ok(())
     }
 
+    /// The id of the session at `(pi, fi, si)`, if there is one.
+    pub(crate) fn session_id_at(&self, pi: usize, fi: usize, si: usize) -> Option<String> {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .and_then(|f| f.sessions.get(si))
+            .map(|s| s.id.clone())
+    }
+
+    /// Whether `(pi, fi, si)`'s window is up, as the dashboard reckons it
+    /// (the feature running and the session not stopped individually) — or
+    /// `None` for a session with no window at all (TODOs), which the
+    /// single-session `c` / `x` do nothing to.
+    pub(crate) fn session_window_running(&self, pi: usize, fi: usize, si: usize) -> Option<bool> {
+        let feature = self.store.projects.get(pi)?.features.get(fi)?;
+        let session = feature.sessions.get(si)?;
+        session
+            .kind
+            .is_tmux_backed()
+            .then(|| feature.status != ProjectStatus::Stopped && session.runs_with_feature())
+    }
+
+    /// Set `(pi, fi, si)`'s individual-stop flag in memory; the caller saves.
+    pub(crate) fn set_session_stopped(&mut self, pi: usize, fi: usize, si: usize, stopped: bool) {
+        if let Some(session) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+            .and_then(|f| f.sessions.get_mut(si))
+        {
+            session.stopped = stopped;
+        }
+    }
+
     /// Stop an individual session: kill its tmux window, but keep it in
     /// `feature.sessions` so it stays in the list and can be restarted. This
     /// is `x`'s behavior on a `Selection::Session` — distinct from `d`
     /// (`remove_session`), which deletes the record for good.
     ///
-    /// A feature's *only* session is indistinguishable from the feature
-    /// itself, so that case is handed off to [`Self::stop_feature`] (which
+    /// The stop is persisted on the session (`FeatureSession::stopped`), so
+    /// the session also stays down when its feature is next started; `c` on
+    /// the row brings it back. See [`Self::stop_session_at`] for the cases.
+    ///
+    /// Stopping the feature's last running session is indistinguishable from
+    /// stopping the feature itself (killing the last window ends the tmux
+    /// session), so that case is handed off to [`Self::stop_feature`] (which
     /// already accepts a `Session` selection) rather than reimplementing its
     /// lifecycle hook, editor cleanup, etc. here.
     pub fn stop_session(&mut self) -> Result<()> {
@@ -1685,42 +1762,82 @@ impl App {
             _ => return Ok(()),
         };
 
-        let is_only_session = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .map(|f| f.sessions.len() <= 1)
-            .unwrap_or(true);
-
-        if is_only_session {
-            return self.stop_feature();
+        match self.stop_session_at(pi, fi, si)? {
+            SessionStop::StopsFeature => self.stop_feature(),
+            SessionStop::NotStoppable => Ok(()),
+            SessionStop::Recorded(label) => {
+                self.message = Some(format!(
+                    "'{label}' will stay stopped when the feature starts (c on it to start it)"
+                ));
+                Ok(())
+            }
+            outcome => {
+                self.message = outcome.message();
+                Ok(())
+            }
         }
+    }
 
-        let (tmux_session, workdir, window, label, is_custom, on_stop, session_id, is_tmux_backed) = {
-            let feature = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
-                Some(f) => f,
-                None => return Ok(()),
-            };
-            let session = match feature.sessions.get(si) {
-                Some(s) => s,
-                None => return Ok(()),
-            };
-            (
-                feature.tmux_session.clone(),
-                feature.workdir.clone(),
-                session.tmux_window.clone(),
-                session.label.clone(),
-                session.kind == SessionKind::Custom,
-                session.on_stop.clone(),
-                session.id.clone(),
-                session.kind.is_tmux_backed(),
-            )
+    /// The front-end-neutral half of a single-session stop, shared by the
+    /// TUI's `x` and the GUI. Kills the window and records the stop, or says
+    /// why it didn't.
+    ///
+    /// - On a stopped feature there is no window; the stop is only recorded,
+    ///   so the session stays down when the feature next starts. Unless it is
+    ///   the only session that would start: a feature start answers "nothing
+    ///   to start" by starting everything, so that flag would not hold.
+    /// - On a running feature whose last running session this is, nothing is
+    ///   touched and [`SessionStop::StopsFeature`] hands the decision back:
+    ///   the TUI runs its full `stop_feature` (hooks and all), the GUI its
+    ///   hook-less `do_stop_feature`. The session is left unflagged, so
+    ///   starting the feature again brings back what was last running.
+    pub(crate) fn stop_session_at(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<SessionStop> {
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return Ok(SessionStop::NotStoppable);
         };
-
-        if !is_tmux_backed {
-            return Ok(());
+        let Some(session) = feature.sessions.get(si) else {
+            return Ok(SessionStop::NotStoppable);
+        };
+        if !session.kind.is_tmux_backed() {
+            return Ok(SessionStop::NotStoppable);
         }
+        let label = session.label.clone();
+        if session.stopped {
+            return Ok(SessionStop::AlreadyStopped(label));
+        }
+
+        let has_other_runnable = feature
+            .sessions
+            .iter()
+            .enumerate()
+            .any(|(i, other)| i != si && other.runs_with_feature());
+
+        if feature.status == ProjectStatus::Stopped {
+            if !has_other_runnable {
+                return Ok(SessionStop::OnlyRunnable(label));
+            }
+            self.set_session_stopped(pi, fi, si, true);
+            self.save()?;
+            return Ok(SessionStop::Recorded(label));
+        }
+
+        if !has_other_runnable {
+            return Ok(SessionStop::StopsFeature);
+        }
+
+        let (tmux_session, workdir, window, is_custom, on_stop, session_id) = (
+            feature.tmux_session.clone(),
+            feature.workdir.clone(),
+            session.tmux_window.clone(),
+            session.kind == SessionKind::Custom,
+            session.on_stop.clone(),
+            session.id.clone(),
+        );
 
         if self.tmux.session_exists(&tmux_session)
             && self.tmux.window_exists(&tmux_session, &window)
@@ -1762,10 +1879,10 @@ impl App {
             }
         }
 
+        self.set_session_stopped(pi, fi, si, true);
         self.save()?;
-        self.message = Some(format!("Stopped '{}'", label));
 
-        Ok(())
+        Ok(SessionStop::Stopped(label))
     }
 
     /// Recreate the tmux window for a single session that was stopped
@@ -1880,9 +1997,16 @@ impl App {
             return Ok(false);
         };
 
-        if !session.kind.is_tmux_backed()
-            || self.tmux.window_exists(&tmux_session, &session.tmux_window)
-        {
+        if !session.kind.is_tmux_backed() {
+            return Ok(false);
+        }
+        if self.tmux.window_exists(&tmux_session, &session.tmux_window) {
+            // Up after all (recreated from outside AMF): the flag is what is
+            // stale, not the window.
+            if session.stopped {
+                self.set_session_stopped(pi, fi, si, false);
+                self.save()?;
+            }
             return Ok(false);
         }
 
@@ -1966,6 +2090,8 @@ impl App {
                 }
             }
         }
+
+        self.set_session_stopped(pi, fi, si, false);
 
         self.save()?;
         self.message = Some(format!("Restarted '{}'", session.label));

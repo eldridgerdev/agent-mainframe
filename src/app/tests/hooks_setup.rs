@@ -1260,6 +1260,84 @@ fn inherited_diff_review_script_exits_for_a_different_git_root() {
     );
 }
 
+/// Every hook script that runs `amf notify` must fall back to `amf` on `PATH`
+/// when `$AMF_BIN` can't be run -- unset, empty, pointing at nothing (a
+/// deleted worktree), or not executable -- and use `$AMF_BIN` when it can.
+#[cfg(unix)]
+#[test]
+fn hook_scripts_fall_back_to_amf_on_path_when_amf_bin_is_unusable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("calls.log");
+    let write_recorder = |path: &std::path::Path, mode: u32| {
+        std::fs::write(
+            path,
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$AMF_TEST_LOG\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let path_dir = dir.path().join("bin");
+    std::fs::create_dir(&path_dir).unwrap();
+    let path_amf = path_dir.join("amf");
+    write_recorder(&path_amf, 0o755);
+    let session_amf = dir.path().join("session-amf");
+    write_recorder(&session_amf, 0o755);
+    let not_executable = dir.path().join("not-executable-amf");
+    write_recorder(&not_executable, 0o644);
+    let missing = dir.path().join("deleted-worktree/amf");
+
+    let path_env = format!(
+        "{}:{}",
+        path_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let cases: [(&str, Option<&std::path::Path>, &std::path::Path); 5] = [
+        ("unset", None, &path_amf),
+        ("empty", Some(std::path::Path::new("")), &path_amf),
+        ("missing", Some(&missing), &path_amf),
+        ("not executable", Some(&not_executable), &path_amf),
+        ("usable", Some(&session_amf), &session_amf),
+    ];
+    let scripts = [
+        "attention.sh",
+        "clear-notify.sh",
+        "notify.sh",
+        "save-prompt.sh",
+        "thinking-start.sh",
+        "thinking-stop.sh",
+        "tool-start.sh",
+        "tool-stop.sh",
+    ];
+    let scripts_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts");
+
+    for script in scripts {
+        for (label, amf_bin, expected) in &cases {
+            let _ = std::fs::remove_file(&log);
+            let mut command = std::process::Command::new("bash");
+            command
+                .arg(scripts_dir.join(script))
+                .env("AMF_ACTIVE", "1")
+                .env("AMF_TEST_LOG", &log)
+                .env("PATH", &path_env)
+                .stdin(std::process::Stdio::null());
+            match amf_bin {
+                Some(value) => command.env("AMF_BIN", value),
+                None => command.env_remove("AMF_BIN"),
+            };
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{script} ({label}) must exit 0");
+            let calls = std::fs::read_to_string(&log).unwrap_or_default();
+            assert_eq!(
+                calls.lines().collect::<Vec<_>>(),
+                vec![expected.to_str().unwrap()],
+                "{script} with AMF_BIN {label} ran the wrong amf"
+            );
+        }
+    }
+}
+
 #[test]
 fn vibeless_permissions_include_edit_and_write() {
     let workdir = TempDir::new().unwrap();
@@ -1643,6 +1721,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         },
         crate::project::FeatureSession {
             id: "terminal-session".to_string(),
@@ -1659,6 +1738,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         },
     ];
 

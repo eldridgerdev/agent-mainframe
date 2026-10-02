@@ -17,6 +17,7 @@ mod hooks;
 mod issue_fixer;
 mod learning;
 mod markdown;
+mod model_analysis;
 mod plan_interview;
 mod plan_interview_attach;
 mod pr_review;
@@ -24,9 +25,11 @@ mod precall;
 mod project;
 mod prompt_library;
 mod prompt_overrides;
+mod remote_pairing;
 mod resource_gate;
 mod review_destination;
 mod review_harness;
+mod review_questions;
 mod search;
 mod session;
 mod theme;
@@ -55,6 +58,7 @@ pub use hooks::{
 pub use issue_fixer::{draw_issue_browser, draw_issue_duplicate_warning, draw_issue_setup};
 pub use learning::draw_learning_view;
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
+pub use model_analysis::draw_model_analysis;
 pub use plan_interview::draw_plan_interview_dialog;
 pub use plan_interview_attach::draw_plan_interview_attach_doc_dialog;
 pub use pr_review::{
@@ -69,6 +73,7 @@ pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
 pub use prompt_overrides::draw_prompt_overrides;
+pub use remote_pairing::draw_remote_pairing_dialog;
 pub use resource_gate::draw_resource_confirm_dialog;
 pub use review_destination::{
     draw_review_destination_pick, draw_review_feature_setup, draw_review_integrate,

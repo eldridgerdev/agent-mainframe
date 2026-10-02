@@ -17,6 +17,20 @@ impl ClaudeLauncher {
     /// --version. Falls back to "claude" (PATH lookup) if the versions
     /// directory doesn't exist or all candidates fail.
     pub fn resolve_binary() -> String {
+        Self::resolve_binary_with(|path| {
+            Command::new(path)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+    }
+
+    /// Reuse launch's candidate order with a caller-owned readiness check.
+    /// Background discovery can impose cancellation/deadlines on that check.
+    pub(crate) fn resolve_binary_with(mut available: impl FnMut(&Path) -> bool) -> String {
         let Some(home) = dirs::home_dir() else {
             return "claude".to_string();
         };
@@ -38,14 +52,7 @@ impl ClaudeLauncher {
         candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.0));
 
         for (_, path) in candidates {
-            let ok = Command::new(&path)
-                .arg("--version")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if ok {
+            if available(&path) {
                 return path.to_string_lossy().into_owned();
             }
         }
@@ -171,20 +178,27 @@ impl ClaudeLauncher {
     /// single-purpose pass (a per-file walkthrough, an AI co-review) can run
     /// on a cheaper model than whatever the interactive session uses,
     /// independent of the feature's own harness/model.
-    pub fn spawn_headless(
+    pub fn spawn_headless<'a>(
         workdir: &Path,
         prompt: &str,
-        model: Option<&str>,
+        model: impl Into<crate::headless::ModelSel<'a>>,
     ) -> Result<crate::headless::LeasedChild> {
+        let sel = model.into();
         let binary = Self::resolve_binary();
         let mut args = vec![
             "-p".to_string(),
             "--output-format".to_string(),
             "text".to_string(),
         ];
-        if let Some(model) = model {
+        if let Some(model) = sel.model {
             args.push("--model".to_string());
             args.push(model.to_string());
+        }
+        if let Some(level) = sel.reasoning {
+            args.extend(crate::headless::reasoning_args(
+                &crate::project::AgentKind::Claude,
+                level,
+            ));
         }
         let mut child = Command::new(&binary)
             .args(&args)

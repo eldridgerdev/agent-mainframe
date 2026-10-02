@@ -264,6 +264,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }
     }
 

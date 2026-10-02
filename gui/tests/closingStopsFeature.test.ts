@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { Feature, FeatureSession } from "../src/api";
-import { closingStopsFeature } from "../src/sessions";
+import { closingStopsFeature } from "../src/SessionControls";
 
 const session = (id: string, kind = "terminal"): FeatureSession => ({ id, kind, label: id, tmux_window: id });
 
@@ -34,4 +34,10 @@ it("warns for a running feature's only session, whatever its kind", () => {
 
 it("never warns for a feature that is already stopped", () => {
   expect(closingStopsFeature(feature([session("only")], "stopped"), "only", [])).toBe(false);
+});
+
+it("counts a tab stopped on its own as not running, even before the snapshot lists it", () => {
+  const f = feature([session("live"), { ...session("flagged"), stopped: true }]);
+
+  expect(closingStopsFeature(f, "live", [])).toBe(true);
 });

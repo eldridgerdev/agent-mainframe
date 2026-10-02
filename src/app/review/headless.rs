@@ -91,7 +91,12 @@ impl App {
             return;
         }
         let model = self.config.review_model_for(ReviewAction::Walkthrough);
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        let reasoning = self.config.review_reasoning_for(ReviewAction::Walkthrough);
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.walkthrough_child = Some(child);
@@ -201,6 +206,7 @@ impl App {
             return;
         }
         let model = self.config.review_model_for(ReviewAction::CoReview);
+        let reasoning = self.config.review_reasoning_for(ReviewAction::CoReview);
 
         // Oversized file: review it hunk-slice by hunk-slice on a worker thread
         // rather than sending the single truncated prompt. `review_prompt_budget`
@@ -227,7 +233,7 @@ impl App {
                     &thread_workdir,
                     &file,
                     &template,
-                    thread_model.as_deref(),
+                    crate::headless::ModelSel::new(thread_model.as_deref(), reasoning),
                 ));
             });
             if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -238,7 +244,11 @@ impl App {
             return;
         }
 
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 self.message = Some(format!("AI co-review running on {path}…"));
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -453,12 +463,19 @@ impl App {
         let model = self
             .config
             .review_model_for(ReviewAction::ChangesetOverview);
+        let reasoning = self
+            .config
+            .review_reasoning_for(ReviewAction::ChangesetOverview);
         // The pre-call gate has been cleared, so the user has committed to this
         // pass: open the modal either way. On success it shows "generating…";
         // on a spawn failure it shows the error, rather than the viewer just
         // swallowing the keypress. (A *cancelled* pre-call returns above,
         // before this, so it still leaves no half-open modal.)
-        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt, model.as_deref()) {
+        match crate::claude::ClaudeLauncher::spawn_headless(
+            &workdir,
+            &prompt,
+            crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        ) {
             Ok(child) => {
                 self.message = Some("Changeset overview running…".to_string());
                 if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -1511,22 +1528,34 @@ pub(super) fn build_pr_review(
     let body = general_feedback.trim().to_string();
 
     // Whole-file rejections carry the same conventional-comments severity
-    // tag as line comments, with a filler line when the reviewer left no
-    // feedback text (mirrors the old body-dump's bare "needs revision").
+    // tag as line comments. A rejection with no feedback text is usually the
+    // implicit verdict a line or file comment sets, and those comments already
+    // say what needs revising — so it posts nothing of its own. Only a bare
+    // rejection that is the file's sole signal gets a filler line. Check the
+    // inline comments actually built, not the raw sections: a line comment
+    // dropped as outside the diff says nothing on the PR.
+    let has_other_comments = |file: &str| {
+        comments
+            .iter()
+            .any(|c: &crate::github::PrReviewComment| c.path == file)
+            || file_comment_sections.iter().any(|(path, _)| path == file)
+    };
     let mut file_comments: Vec<crate::github::PrFileComment> = rejected
         .iter()
-        .map(|(file, feedback, severity)| {
+        .filter_map(|(file, feedback, severity)| {
             let feedback = feedback.trim();
             let tag = severity.label();
-            let body = if feedback.is_empty() {
-                format!("**[{tag}]** Needs revision.")
-            } else {
+            let body = if !feedback.is_empty() {
                 format!("**[{tag}]** {feedback}")
+            } else if has_other_comments(file) {
+                return None;
+            } else {
+                format!("**[{tag}]** Needs revision.")
             };
-            crate::github::PrFileComment {
+            Some(crate::github::PrFileComment {
                 path: file.clone(),
                 body,
-            }
+            })
         })
         .collect();
     file_comments.extend(file_comment_sections.iter().map(|(file, comment)| {
@@ -1626,7 +1655,7 @@ fn run_batched_co_review(
     workdir: &Path,
     file: &crate::diff::DiffFile,
     template: &str,
-    model: Option<&str>,
+    model: crate::headless::ModelSel<'_>,
 ) -> std::result::Result<(String, usize), String> {
     let Some(section) = crate::diff_split::SplitDiff::parse(&file.patch)
         .files

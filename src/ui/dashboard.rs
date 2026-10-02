@@ -32,6 +32,8 @@ const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("M", "Remove bookmark"),
     ("1-9", "Jump to bookmark"),
     ("r", "Refresh statuses"),
+    ("C", "AMF Remote server on / off"),
+    ("Q", "Pair a phone (QR)"),
 ];
 
 /// The ambient `[PR #N · M open]` badge span shown in the top-right corner
@@ -1694,6 +1696,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
+    if let AppMode::ModelAnalysis(state) = &app.mode {
+        super::dialogs::draw_model_analysis(frame, state, app.message.as_deref(), &app.theme);
+        return;
+    }
+
+    let model_advice = app.model_analysis_available();
     if let AppMode::PlanInterview(state) = &mut app.mode {
         super::dialogs::draw_plan_interview_dialog(
             frame,
@@ -1701,6 +1709,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.message.as_deref(),
             &app.theme,
             &app.throbber_state,
+            model_advice,
         );
         return;
     }
@@ -1744,6 +1753,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
             );
         }
+        AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
@@ -1982,6 +1992,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_context_settings_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::RemotePairing(state) = &app.mode {
+        super::dialogs::draw_remote_pairing_dialog(frame, app, state);
+    }
+
     draw_mode_context_bar(frame, &app.mode, &app.theme);
     match &app.mode {
         AppMode::DeletingFeatureInProgress(state) => {
@@ -1996,7 +2010,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 branch,
                 ..
             } => draw_feature_context_bar(frame, project_name, branch, &app.theme),
-            crate::app::HookNext::StartFeature { pi, fi }
+            crate::app::HookNext::StartFeature { pi, fi, .. }
             | crate::app::HookNext::StopFeature { pi, fi } => {
                 if let Some(project) = app.store.projects.get(*pi)
                     && let Some(feature) = project.features.get(*fi)
@@ -2221,6 +2235,7 @@ mod tests {
             pre_check: None,
             status_text: None,
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -2246,6 +2261,7 @@ mod tests {
             pre_check: None,
             status_text: Some(status_text.into()),
             token_usage: None,
+            stopped: false,
         }
     }
 
@@ -2791,6 +2807,7 @@ mod tests {
             head_ref: "main".to_string(),
         };
         let origin = crate::app::AiReviewState {
+            questions: Default::default(),
             workdir: feature.workdir.clone(),
             pr,
             findings: Vec::new(),
@@ -2805,6 +2822,7 @@ mod tests {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -2957,6 +2975,7 @@ mod tests {
         app.ai_review_run.set_receiver_for_test(Some(rx));
         app.ai_review_run
             .set_origin_for_test(Some(crate::app::AiReviewState {
+                questions: Default::default(),
                 workdir,
                 pr,
                 findings: Vec::new(),
@@ -2971,6 +2990,7 @@ mod tests {
                 harness_pick_origin: None,
                 model: None,
                 model_picked: false,
+                reasoning: None,
                 model_pick: None,
                 finding_editor: None,
                 post_confirm: None,
@@ -3359,6 +3379,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3471,6 +3492,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -3583,6 +3605,7 @@ mod tests {
                 pre_check: None,
                 status_text: None,
                 token_usage: None,
+                stopped: false,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,

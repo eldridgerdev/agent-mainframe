@@ -262,7 +262,11 @@ rather than a dedicated page each.
       URL, `Shift+O` open URL, `Shift+C` send `/rc` to toggle — confirmed
       in `src/handlers/view.rs` and `src/app/view.rs`). Landed as a new
       section in `session-tools.md` rather than `keybindings.md`, to keep
-      it with the rest of Epic 5's session-surface content.
+      it with the rest of Epic 5's session-surface content. **Superseded
+      (2026-09-28):** the `/rc` toggle is gone — in a session `Shift+C` now
+      toggles AMF's own remote-control server and `Shift+Q` opens pairing;
+      `c` / `Shift+O` are unchanged. `session-tools.md` documents the
+      current keys.
 - [x] Steering prompt coaching — turned out to be more than "constraints
       attachable to a prompt": it's a live-scored task-prompt editor
       (`src/app/steering.rs`'s five checks — file scope, acceptance

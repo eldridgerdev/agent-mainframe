@@ -23,6 +23,7 @@ mod handoff;
 mod hooks;
 pub(crate) mod issue_fixer;
 pub(crate) mod learning;
+pub(crate) mod model_analysis;
 mod navigation;
 mod notifications;
 mod opencode;
@@ -35,12 +36,19 @@ pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
 pub(crate) mod prompt_overrides;
+pub(crate) mod remote_actions;
+pub(crate) mod remote_attention;
 pub mod remote_control;
+pub(crate) mod remote_push;
+pub(crate) mod remote_server;
+pub(crate) mod remote_tailscale;
+pub(crate) mod remote_todos;
 mod rename;
 pub(crate) mod resource_gate;
 pub(crate) mod review;
 pub(crate) mod review_destination;
 pub(crate) mod review_memory;
+pub(crate) mod review_questions;
 mod search;
 mod session_config;
 pub(crate) mod session_ops;
@@ -64,6 +72,7 @@ mod tests;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
@@ -529,6 +538,16 @@ pub struct AppConfig {
     /// setting.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub review_models: std::collections::BTreeMap<String, String>,
+    /// Default reasoning level for every review action, paired with
+    /// `review_model`. `None` (default) passes nothing, so the harness's own
+    /// level applies. A level the chosen harness cannot express is dropped
+    /// at dispatch (see `headless::reasoning_args`), never passed through.
+    /// Overridden per-action by `review_reasonings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// Per-action overrides of `review_reasoning`, keyed like `review_models`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub review_reasonings: std::collections::BTreeMap<String, crate::headless::ReasoningLevel>,
     /// Soft cap on how many agent-harness sessions may run at once across
     /// **all** projects (the store is machine-global, so the limit is too).
     /// Only agent harnesses count — terminals, editors, and TODOs sessions
@@ -589,12 +608,38 @@ pub struct AppConfig {
     /// `amf.json` `review_prompt_budget_tokens` overrides this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_prompt_budget_tokens: Option<usize>,
+    /// Where the Remote Control server listens (`host:port`). Loopback by
+    /// default: reaching it from a phone goes through a tunnel the user runs
+    /// (`tailscale serve`, cloudflared, …), and a fixed port is what lets
+    /// that tunnel survive toggling the server. `0.0.0.0:<port>` exposes it
+    /// on the LAN instead (plain HTTP, so no install or push there).
+    #[serde(default = "default_remote_bind")]
+    pub remote_bind: String,
+    /// The URL a phone uses to reach the Remote Control server, e.g.
+    /// `https://my-pc.tailnet.ts.net`. The pairing QR encodes it so a scan
+    /// opens the right page; unset, the QR falls back to the bind address,
+    /// which only works on this machine or over `adb reverse`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_public_url: Option<String>,
+    /// The `tailscale` CLI AMF asks for this machine's tailnet address when
+    /// `remote_public_url` is unset (`crate::tailscale`). Unset means
+    /// `tailscale` on `PATH`, then the macOS app's bundled CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_tailscale_cli: Option<String>,
+    /// `tailscaled`'s socket, for a daemon not at its platform default —
+    /// one the user starts themselves with its own `--socket`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_tailscale_socket: Option<String>,
     /// MCP servers (e.g. an issue tracker) the plan interview's Claude
     /// passes may consult, read-only. Global scope only, deliberately: an MCP
     /// config names programs to run, so a repository's `amf.json` must not be
     /// able to supply one. See [`crate::headless::HeadlessMcpConfig`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_interview_mcp: Option<crate::headless::HeadlessMcpConfig>,
+}
+
+pub(crate) fn default_remote_bind() -> String {
+    "127.0.0.1:47800".to_string()
 }
 
 /// The distinct headless review call sites that each read `review_model`
@@ -734,6 +779,8 @@ impl Default for AppConfig {
             ai_review_skill: None,
             review_model: None,
             review_models: std::collections::BTreeMap::new(),
+            review_reasoning: None,
+            review_reasonings: std::collections::BTreeMap::new(),
             max_concurrent_agents: default_max_concurrent_agents(),
             low_memory_warn_mb: default_low_memory_warn_mb(),
             kill_editor_on_stop: true,
@@ -744,6 +791,10 @@ impl Default for AppConfig {
             context_warning_percent: default_context_warning_percent(),
             context_critical_percent: default_context_critical_percent(),
             review_prompt_budget_tokens: None,
+            remote_bind: default_remote_bind(),
+            remote_public_url: None,
+            remote_tailscale_cli: None,
+            remote_tailscale_socket: None,
             plan_interview_mcp: None,
         }
     }
@@ -774,6 +825,21 @@ impl AppConfig {
             action_model
         } else {
             action_model.or_else(|| self.review_model.clone())
+        }
+    }
+
+    /// The reasoning level for a review action, resolved exactly like
+    /// [`Self::review_model_for`]: the per-action entry, else the shared
+    /// default (except Expert plan review, which never inherits one).
+    pub fn review_reasoning_for(
+        &self,
+        action: ReviewAction,
+    ) -> Option<crate::headless::ReasoningLevel> {
+        let action_level = self.review_reasonings.get(action.config_key()).copied();
+        if action == ReviewAction::PlanPreflight {
+            action_level
+        } else {
+            action_level.or(self.review_reasoning)
         }
     }
 
@@ -1081,6 +1147,8 @@ pub struct App {
     /// memory-add dialog (`s`). See `app::pr_review::pr_review_start_memory_ai_summary`.
     pub memory_ai_summary_bg: Option<Receiver<pr_review::MemoryAiSummaryDone>>,
     pub(crate) ai_review_run: pr_review::runtime::AiReviewRun,
+    pub(crate) review_question_work: review_questions::Work,
+    pub(crate) model_analysis_work: model_analysis::Work,
     /// The mode to restore when the AI Review pane closes (`esc`/`q`),
     /// stashed by `open_ai_review_from_triage` so returning from a review
     /// started inside PR Triage lands back in that same pane rather than the
@@ -1189,6 +1257,33 @@ pub struct App {
     view_display_frozen_until: Option<Instant>,
     pub(crate) harness_check_tx: Sender<HarnessCheckResult>,
     harness_check_rx: Receiver<HarnessCheckResult>,
+    /// The Remote Control companion-app server: `Some` exactly while it is
+    /// running, on a dedicated thread with its own tokio runtime. Toggled
+    /// on/off by the user only — never started automatically — per the
+    /// on-demand server-lifecycle decision in
+    /// `docs/backlog/remote-control-companion-app-plan.md`. Drained every
+    /// main-loop tick by `poll_remote_server_bg` like the other `poll_*_bg`
+    /// background jobs.
+    pub remote_server: Option<crate::remote_server::RemoteServerHandle>,
+    /// The server's actual bound address, set on `Started` and cleared on
+    /// `Stopped` (`poll_remote_server_bg`). `None` while the server is
+    /// starting up or not running — `start_pairing` needs this to build the
+    /// pairing QR when no `remote_public_url` is configured.
+    pub remote_server_addr: Option<SocketAddr>,
+    /// When `Ctrl+Space Q` was pressed while the server was off or still
+    /// starting: the pairing dialog opens once it is listening and the
+    /// dashboard or a session view is on screen (`poll_remote_server_bg`).
+    /// Forgotten if the start fails or the request outlives
+    /// `remote_server::PAIRING_REQUEST_WINDOW`.
+    pub pairing_requested: Option<std::time::Instant>,
+    /// What the local Tailscale looks like, for the pairing QR's address
+    /// and its setup steps — see `app/remote_tailscale.rs`.
+    pub remote_tailscale: remote_tailscale::RemoteTailscaleState,
+    /// Web Push to paired phones — see `app/remote_push.rs`.
+    pub remote_push: remote_push::RemotePushState,
+    /// The authorized-device table the server checks bearer tokens
+    /// against — see `app/remote_server.rs`.
+    pub remote_devices: remote_server::AuthorizedDevicesCache,
 }
 
 pub(crate) struct HarnessCheckResult {
@@ -1315,6 +1410,12 @@ impl App {
     }
 
     pub(crate) fn has_visible_animation(&self) -> bool {
+        if self
+            .review_questions()
+            .is_some_and(|q| q.open && q.request.is_some())
+        {
+            return true;
+        }
         let base = match &self.mode {
             AppMode::Normal => self.has_dashboard_animation(),
             AppMode::RunningHook(state) => state.child.is_some(),
@@ -1347,6 +1448,9 @@ impl App {
             | AppMode::AiReviewRunning(_) => true,
             // Animates the loading frame's throbber and elapsed-time display
             // while plan-interview AI work runs in the background.
+            AppMode::ModelAnalysis(state) => {
+                matches!(state.status, model_analysis::Status::Loading)
+            }
             AppMode::PlanInterview(state) => matches!(
                 state.phase,
                 PlanInterviewPhase::AiLoading
@@ -2514,6 +2618,8 @@ impl App {
             review_memory_compact_pending: None,
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
+            review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2562,6 +2668,12 @@ impl App {
             view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
+            remote_server: None,
+            remote_server_addr: None,
+            pairing_requested: None,
+            remote_tailscale: Default::default(),
+            remote_push: Default::default(),
+            remote_devices: Default::default(),
         };
 
         match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
@@ -2771,6 +2883,8 @@ impl App {
             review_memory_compact_pending: None,
             memory_ai_summary_bg: None,
             ai_review_run: pr_review::runtime::AiReviewRun::default(),
+            review_question_work: Default::default(),
+            model_analysis_work: Default::default(),
             ai_review_return_to: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
@@ -2818,6 +2932,12 @@ impl App {
             view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
+            remote_server: None,
+            remote_server_addr: None,
+            pairing_requested: None,
+            remote_tailscale: Default::default(),
+            remote_push: Default::default(),
+            remote_devices: Default::default(),
         }
     }
 

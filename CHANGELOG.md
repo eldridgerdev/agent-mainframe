@@ -12,6 +12,175 @@ are tagged.
 
 ### Added
 
+- **AMF Remote finds your Tailscale address by itself.** When Tailscale
+  serves AMF on your tailnet, the pairing QR code uses that HTTPS address
+  automatically, with no need to copy it into `config.json`.
+- **Set up Tailscale from the pairing dialog.** Press `t` to share AMF on
+  your tailnet (tailnet only, never public). Press `s` for step-by-step
+  setup, from installing Tailscale to limiting access to your own devices;
+  each step is ticked off from what AMF sees on this computer, `c` copies a
+  ready-made access policy, and the steps scroll with `j`/`k` or the mouse
+  wheel.
+- **`amf doctor` checks phone access.** It reports whether a phone can reach
+  AMF Remote over HTTPS and, if not, the next step to take.
+- **A warning when no device can reach AMF.** If Tailscale serves AMF but no
+  other device on your tailnet may connect (the phone isn't signed in, or an
+  access policy shuts it out), the pairing dialog, its setup steps and
+  `amf doctor` now say so, instead of showing everything as done.
+- **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
+  and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
+  socket outside the usual places, such as a `tailscaled` you start
+  yourself.
+- **Get advice for an Expert plan review.** Press `m` in the Expert model picker
+  to compare verified settings for the reviewer and its draft-plan context.
+  Return to the picker to choose model and effort before starting the review.
+- **Get implementation advice while reviewing an existing feature or TODO plan.**
+  Press `m` at Full/Quick Plan review. New-feature TODO plans can apply a choice
+  to their initial agent; existing-feature and host-feature TODO plans offer
+  advice for settings you change in the harness's picker. Accepting the plan
+  remains a separate step.
+- **Get model and reasoning advice before implementation.** Press `m` while
+  reviewing a new Full or Quick Plan to compare available Claude Code and
+  Codex settings, then apply your choice to the initial implementation agent.
+- **Get advice for an open agent session.** Press `m` on its dashboard row or
+  `leader+B` in its pane. Recommendations use the feature and its plan; change
+  the setting in the harness's own model picker.
+- **Read the evidence behind a recommendation.** A compact model, effort and
+  focus table offers speed, balance and depth choices when supported. Press
+  `s` to inspect dated provider research. Account access and supported effort
+  levels are checked; task-specific quality, time and token totals stay unknown.
+- **Collapse projects in AMF Remote's dashboard.** Tap a project heading to
+  hide or show its features. Each heading shows the feature count, and your
+  choices are remembered on this device across refreshes and reloads. Features
+  needing attention stay visible at the top even when their project is collapsed.
+- **Choose a reasoning level alongside the model.** The AI Review (`A`) and
+  Expert plan review model pickers have a new Reasoning row: press `h` / `l`
+  (or ←/→) to step from Default through the levels your harness supports.
+  Claude offers low to max, Codex low to xhigh, and OpenCode minimal, high and
+  max; Pi has no reasoning control yet, so the row is hidden. Default sends
+  nothing, so the harness keeps its own level.
+- **Set a default reasoning level in config.** `review_reasoning` and per-action
+  `review_reasonings` mirror `review_model` / `review_models` and also apply to
+  Final Review passes and review memory. Expert plan review never inherits the
+  shared default.
+- **AI reviews record the level they ran at** in their attribution line
+  (for example `model opus · reasoning high`).
+- **Start and stop individual sessions, with icons to match.** Each session
+  row on the dashboard now shows `●` when it is running and `■` when it is
+  stopped. A feature with stopped sessions shows `[N stopped]` even when it is
+  collapsed. Stop a Claude or Codex session you are not using with `x` to free
+  its memory. It stays listed, and `c` or `Enter` on the row starts it again.
+- **The desktop app can start and stop single sessions too.** Session tabs
+  show whether each session is running. Use **Stop session** or **Start
+  session** in the feature header. A stopped session's tab offers to start it
+  instead of showing an empty terminal. The project page counts stopped
+  sessions next to each feature.
+
+### Changed
+
+- **`amf automation` help now documents the request JSON.** `-h` / `--help` on
+  `create-project`, `create-feature`, and `create-batch-features` lists every
+  field with its type, default, and allowed values (agents and modes), plus a
+  minimal example, so you no longer need a dry run to discover the schema.
+- **AMF Remote's keys work inside a session too.** `leader+C` (turn the phone
+  server on or off) and `leader+Q` (show the pairing QR code) now work from a
+  session view as well as the dashboard, and closing the QR code returns you
+  to the session you were in. Both keys are listed in the dashboard's leader
+  menu.
+- **`leader+Q` starts the server for you.** If the phone server is off, it
+  starts it and shows the QR code as soon as it is ready, instead of asking
+  you to press `leader+C` first.
+- **The phone's feature list is sorted by status.** Within each project,
+  features that need you come first, then active, idle, and stopped ones.
+- **A paused Expert plan review resumes with the config level, not the one you
+  picked.** The model is restored with the draft but the reasoning level is not.
+- **A stopped session stays stopped.** Starting its feature again, or
+  restarting AMF, starts every session except the ones you stopped yourself.
+  Stopping a feature still remembers which sessions were running, so starting
+  it brings back the same set. If every session was stopped, starting the
+  feature starts all of them.
+
+### Removed
+
+- **`leader+C` in a session no longer sends Claude's `/rc`.** That key now
+  belongs to AMF Remote. `leader+c` and `leader+O` still copy and open the
+  claude.ai link.
+
+### Fixed
+
+- **The pairing dialog no longer hides everything under the QR code.** On
+  shorter terminals the QR filled the dialog, cutting off the pairing code,
+  the address, and the keys. The dialog now fits its content, and shows
+  everything but the QR when the terminal is too short for both.
+- **TODO model choices survive unrelated list changes.** Reordering items,
+  adding another TODO or editing the list scratchpad keeps a valid choice.
+
+- **Automation example and template JSON no longer include `enable_notes`.**
+  AMF never read that field. The `create-feature` template now lists
+  `plan_mode` and `create_terminal`.
+- **The pairing QR code warns when a phone can't reach it.** Without
+  `remote_public_url` set, the QR pointed at this computer's local address,
+  which a phone can't open. The dialog now says so and offers the fix.
+- **Notifications and attention keep working after you rebuild or reinstall
+  AMF.** Agent sessions started before the rebuild could lose every hook, so
+  nothing reached the attention list or your phone. They now fall back to the
+  `amf` on your `PATH`.
+
+### Migration
+
+- No manual migration is required. AMF updates its database on first startup.
+- To turn Claude's own Remote Control on or off, type `/rc` in the session
+  instead of pressing `leader+C`.
+
+## [v0.48.0] - 2026-09-28
+
+### Added
+
+- **Use AMF from your phone with AMF Remote.** Pair an installable web app to
+  see which features need attention, receive push notifications, and read or
+  type into the same agent terminals as your computer. You can start and stop
+  features, manage sessions and TODOs, review changes, and use your prompt
+  library from the phone.
+- **Remote access starts when you ask for it.** Use `leader+C` to toggle the
+  server and `leader+Q` to pair a device by QR code. Each device can be revoked
+  independently. HTTPS through a tunnel such as Tailscale enables phone access,
+  installation, and notifications; see [AMF Remote setup](https://github.com/eldridgerdev/agent-mainframe/blob/v0.48.0/docs/remote-control.md).
+- **Ask AI questions while reviewing code.** Press `Q` in Final Review,
+  manual PR review (`G`), or AI PR review (`W`) to ask about the selected code
+  or find reusable helpers elsewhere in the repository. Send with `Ctrl+S`;
+  the pre-call notice lets you inspect or edit the prompt before continuing.
+  Questions run read-only, preserve your review position, and support
+  follow-ups until the review closes. PR questions require a clean checkout at
+  the reviewed head.
+- **Turn an answer into an editable review comment.** Choose `i` for an
+  inline draft or `g` for general feedback, edit the text, then open the existing
+  comment editor with `Ctrl+S`. Existing comments are preserved, and
+  publishing remains an explicit review action.
+- **`Ctrl+J` / `Ctrl+K` jump 10 lines in the diff viewer.** They cover ground
+  faster than `j` / `k`: they scroll the patch, the expanded notes, and the
+  help, history, and overview panels, and move the line cursor in cursor mode.
+  They scroll as smoothly as `j` / `k` when held.
+- **The mouse wheel scrolls the diff viewer.** It scrolls the patch, or the
+  panel or note that is open on top of it, without moving your line cursor.
+  It does nothing over prompts and pickers, so a stray scroll can't change a
+  choice.
+
+### Fixed
+
+- **PR Triage omits AI review usage stats from fix prompts.** Single-comment
+  and combined fixes send the review feedback and code context without the
+  review's harness, model, token counts, elapsed time, or cost summary.
+
+### Migration
+
+- No manual migration is required. AMF updates its database on first startup.
+- Phone access is optional. Set up an HTTPS tunnel and `remote_public_url`
+  before pairing a phone; the server is off until you enable it.
+
+## [v0.47.0] - 2026-09-26
+
+### Added
+
 - **Review a teammate's pull request in AMF's diff viewer.** Press `G` on a
   project row (or `Tab` in the PR picker) to see every open pull request in
   the repository, including your own and drafts. `Enter` opens one in the same
@@ -32,6 +201,9 @@ are tagged.
   tells you plainly when GitHub wouldn't accept a choice (such as approving
   your own pull request). Comments that can't sit on the diff go in the
   summary. If posting fails, your draft is kept and you can retry.
+- **Start another session from a feature page in the desktop app.** A new
+  **New session** button starts a Claude, Codex, OpenCode, or Pi agent, a
+  terminal, or Neovim, with an optional name, and opens it in a new tab.
 
 ### Changed
 
@@ -41,10 +213,31 @@ are tagged.
   and 80% used, like the dashboard's. Before, the box showed the percentage left
   (`5h  62% left · 3h`), so it was the reverse of the dashboard's number.
 
+- **The usage summary on AMF's AI review (`W`) is now collapsed on GitHub.**
+  The review's own summary comes first, followed by one line with the
+  harness, model, tokens, and estimated cost. Expand that line to see every
+  metric, including elapsed time and cached and total tokens.
+
+### Fixed
+
+- **Holding `j`/`k` in the diff viewer now scrolls smoothly.** Large files no
+  longer stutter or keep scrolling after you let go, so you can read the diff
+  while it moves. This applies to the final review and to pull request reviews.
+- **Posting a review no longer adds a bare "Needs revision." comment** to every
+  file you had already commented on. The note is still posted for a file you
+  marked as needing revision without leaving any other comment.
+- **The desktop app recovers its sessions after tmux exits.** Feature pages
+  show whether sessions are really running, and restarting a feature offers
+  to bring back its saved agents, instead of leaving the page disconnected.
+- **Agent sessions started from the desktop app no longer open a new app
+  window each time the agent thinks or runs a tool.**
+
 ### Migration
 
 - No migration is required. The review needs an authenticated `gh`, as PR
   Triage does. AMF updates its database the first time it starts.
+- Desktop-app sessions started before upgrading can still open extra windows
+  until they are restarted.
 
 ## [v0.46.0] - 2026-09-24
 

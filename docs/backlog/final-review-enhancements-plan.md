@@ -22,8 +22,10 @@
   cursored line, the `?` help overlay, and the fix for the footer bug that
   overlay turned up (the review footer's second hint row was silently clipped
   by the first row's wrapping). Mouse support is the last
-  viewer-ergonomics item; the AI co-review
-  and workflow items are not yet started. Three Cost follow-ups remain:
+  viewer-ergonomics item. Reviewer questions and editable answer-to-comment
+  conversion are now implemented across Final Review and manual/AI PR review;
+  the other AI co-review and workflow items remain in backlog. Three Cost
+  follow-ups remain:
   cumulative final-review workflow accounting, best-effort attribution of
   review-note generation cost, and measuring the most token-efficient way to
   dispatch review fixes.
@@ -366,7 +368,7 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   dashboard's help-overlay pattern with review-specific groupings.
 - **Mouse support in the diff viewer.** `handlers/mouse.rs` already
   handles the dashboard; add click-to-select in the file list,
-  wheel-scroll in the patch, and click-to-place the comment cursor.
+  wheel-scroll in the patch (done), and click-to-place the comment cursor.
 
 #### AI co-review upgrades
 
@@ -386,24 +388,17 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   shows one file's diff in isolation, so it can't catch "renamed here
   but not there". Include the changeset's file list plus the other
   files' hunk headers (still bounded) to raise finding quality.
-- **Ask the AI a question in-line, without leaving the review.** The
-  co-reviewer (`A`) and walkthrough (`w`) are one-shot: the reviewer
-  can't ask a follow-up ("why is this safe?", "does this handle the
-  empty case?") while forming a verdict. Add a key to type a free-form
-  question about the current file (or a `v`-selected span), fire it
-  headless with the file's diff as context (reuse the
-  `spawn_headless`/poll machinery and the diff-truncation from
-  `build_walkthrough_prompt`), and show the answer **without rejecting
-  the file or leaving the screen** — no losing your place in the diff.
-  Two candidate presentations: (a) a modal answer dialog over the
-  viewer (dismiss to return to exactly where you were), or (b) split
-  the developer-notes panel into two boxes — the note/walkthrough on
-  the left, the AI answer on the right — so question and diff stay
-  visible together. Keep it reviewer-triggered and per-file so token
-  cost stays bounded, and consider threading follow-ups (append to the
-  same answer box) rather than one-shot. Pairs with the notes-panel
-  plumbing that already renders markdown + the agent replies-back
-  section (`draw_notes_panel`, `src/ui/dialogs/diff.rs`).
+- **Ask the AI a question in-line, without leaving the review (implemented).**
+  `Q` opens a question/answer overlay in Final Review, manual PR review (`G`),
+  and AI PR review (`W`). File/line selection focuses the question while
+  read-only repository discovery can find unchanged helpers outside the diff.
+  Repository-backed questions stop if the accessible checkout does not match
+  the reviewed code. Follow-ups stay in memory until the review closes;
+  cancellation, retries, and late results remain owned by their original
+  review/request. `Esc` preserves the review position. Explicit `i`/`g`
+  conversion creates editable inline/general drafts and transfers them to the
+  existing comment workflow after context and anchor validation. It never
+  publishes automatically. Durable chat history is outside this release.
 
 #### Workflow & entry points
 
@@ -1280,8 +1275,13 @@ Viewer:
       leaves the mode. See also
       `docs/screenshots/final-review-help-overlay/01-review-footer-help-hint.png`,
       the frame the bug was originally spotted in.
-- [ ] Mouse support in the diff viewer (file list, patch scroll,
-      comment cursor)
+- [x] Mouse-wheel scrolling in the diff viewer. The wheel scrolls whatever
+      is showing — an open overlay or the comment editor, the expanded notes,
+      else the patch — without moving the line cursor, and is ignored over
+      prompts and pickers so a stray notch can't change a choice. Shipped
+      alongside `Ctrl+J/K` (10 lines per press, cursor included).
+- [ ] Mouse clicks in the diff viewer (select in the file list,
+      click-to-place the comment cursor)
 
 AI co-review:
 
@@ -1291,10 +1291,13 @@ AI co-review:
       (`<line>|<severity>|<comment>` + optional fenced replacement)
 - [ ] Cross-file context for the co-reviewer (changeset file list +
       hunk headers in the prompt)
-- [ ] Ask the AI a question in-line without leaving the review —
-      free-form follow-up on the current file / span, answered headless
-      and shown in a modal dialog or a second notes box (AI answer on
-      the right); reviewer-triggered + per-file for bounded cost
+- [x] Ask the AI a question in-line without leaving the review — `Q` supports
+      review-scoped follow-ups and read-only repository discovery in Final
+      Review and both PR review surfaces. `i`/`g` explicitly converts answers
+      into editable inline/general comments; anchors and checkout alignment
+      are validated, and publication stays explicit. All 19 question workflow
+      tests and three headless capability/lifecycle tests pass; a live Codex
+      acceptance run found an unchanged reusable helper outside the diff.
 
 Workflow:
 

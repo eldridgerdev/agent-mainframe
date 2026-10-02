@@ -222,8 +222,8 @@ and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-inte
 | `Enter` | Open the selected session or expand/collapse an item |
 | `N` / `n` | Create a project / feature |
 | `s` | Add a session to a feature |
-| `c` | Start the selected feature |
-| `x` | Stop a feature, or remove the selected session |
+| `c` | Start the selected feature, or the selected stopped session |
+| `x` | Stop a feature or a single session. A stopped session stays listed (`■`) and stays stopped when its feature starts again |
 | `r` | Rename a feature or session |
 | `d` | Delete a project, feature, or session |
 | `/` | Search and jump |
@@ -451,6 +451,29 @@ the diff, such as outdated ones, are included in the summary instead of being
 dropped. The walkthrough, AI co-review, and changeset-overview passes, and the
 keys that need a local checkout (`E`, `b`, `t`, `X`), aren't available in this
 mode.
+
+### Ask questions during review
+
+Press `Q` in Final Review, manual PR review (`G`), or AI PR review (`W`) to ask
+about the reviewed code. `Ctrl+S` sends a question (`Ctrl+Enter` also works in
+terminals that report it); `Ctrl+H` changes the harness. As with AMF's other
+AI calls, a notice first shows which prompt will run and lets you view or edit it
+(`review.question`, and `review.question_draft` for comment drafts). While a
+request runs, the overlay shows a spinner, the harness, and the elapsed time. The AI can inspect repository code beyond the selected file or lines,
+including unchanged helpers. PR questions require a clean local checkout at the
+reviewed PR head. If that checkout is unavailable, AMF explains the mismatch and
+keeps the review and question intact.
+
+After an answer, `e` starts a follow-up, `r` retries, `[`/`]` browse the
+conversation, and `j`/`k` scroll the answer. `Esc` returns to the same review
+position; a running question continues while the overlay is closed. `Ctrl+X`
+cancels its request. Conversation history clears when the review closes.
+
+Use `i` to draft an inline comment at the question's selected diff line, or `g`
+to draft a general review comment. Edit the generated text, then `Ctrl+S`
+opens the existing comment editor. `Esc` discards the generated draft. Existing
+comments are preserved, changed code invalidates old draft anchors, and posting
+still requires the review's explicit submit action.
 
 ### Reuse prompts and track TODOs
 
@@ -823,7 +846,8 @@ examples, dry runs, and response formats.
   machine: agents against your limit, editor windows open alongside them,
   memory and swap, `amf-*` tmux sessions and worktrees with no matching
   feature, editors still running for features you stopped, and any project
-  still keeping config at the legacy `.amf/config.json` path. `--json` emits
+  still keeping config at the legacy `.amf/config.json` path, and whether a
+  phone can reach AMF Remote over HTTPS. `--json` emits
   the same findings for scripting. It changes nothing and always exits `0`.
 - Press `D` on the dashboard to view AMF's debug log. The same log is available
   at `~/.local/state/amf/debug.log`.

@@ -7,6 +7,7 @@ import {
   NewSessionOption,
   CreateFeatureRequest,
   Feature,
+  FeatureSession,
   FeatureTarget,
   GuiError,
   HarnessInfo,
@@ -55,7 +56,13 @@ import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
-import { closingStopsFeature } from "./sessions";
+import {
+  SessionStartStopButton,
+  SessionStateDot,
+  closingStopsFeature,
+  sessionRunning,
+  stoppedSessionCount,
+} from "./SessionControls";
 import {
   ApprovalDialog,
   EmptyState,
@@ -582,19 +589,14 @@ export default function App() {
   });
 
   /** Start a stopped tab -- the TUI's `Enter` on a session row: offer to
-   * resume its saved conversation when it has one. In a stopped feature this
-   * starts the feature around that session. */
-  async function beginSessionStart(target: SessionTarget, featureStopped: boolean) {
+   * resume its saved conversation when it has one. In a stopped feature the
+   * backend starts the feature around that session. */
+  async function beginSessionStart(target: SessionTarget) {
     setRecoveryChecking(true);
     try {
       const option = await sessionRecoveryOption(target);
       if (option) {
         setRecoveryDialog({ target, option, sessions: null, loading: false, selectedId: null });
-      } else if (featureStopped) {
-        startFeatureMutation.mutate({
-          target: { project_id: target.project_id, feature_id: target.feature_id },
-          approved: false,
-        });
       } else {
         startSessionMutation.mutate({ target, approved: false });
       }
@@ -604,6 +606,21 @@ export default function App() {
       setRecoveryChecking(false);
     }
   }
+
+  const sessionLifecycle = (projectId: string, feature: Feature) => (session: FeatureSession) => {
+    const target = { project_id: projectId, feature_id: feature.id, session_id: session.id };
+    return {
+      starting: recoveryChecking
+        || (startSessionMutation.isPending
+          && startSessionMutation.variables?.target.session_id === session.id)
+        || (recoverSessionMutation.isPending
+          && recoverSessionMutation.variables?.target.session_id === session.id),
+      stopping: stopSessionMutation.isPending
+        && stopSessionMutation.variables?.session_id === session.id,
+      onStart: () => void beginSessionStart(target),
+      onStop: () => stopSessionMutation.mutate(target),
+    };
+  };
 
   const removeSessionMutation = useMutation({
     mutationFn: removeSession,
@@ -855,18 +872,7 @@ export default function App() {
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
-            sessionStarting={recoveryChecking || startSessionMutation.isPending
-              || recoverSessionMutation.isPending}
-            onStartSession={(session) => void beginSessionStart({
-              project_id: selectedProject.id,
-              feature_id: selectedFeature.id,
-              session_id: session.id,
-            }, selectedFeature.status === "stopped")}
-            onStopSession={(session) => stopSessionMutation.mutate({
-              project_id: selectedProject.id,
-              feature_id: selectedFeature.id,
-              session_id: session.id,
-            })}
+            sessionLifecycle={sessionLifecycle(selectedProject.id, selectedFeature)}
             onCloseSession={(session) => setCloseSessionDialog({
               target: {
                 project_id: selectedProject.id,
@@ -1056,6 +1062,18 @@ export default function App() {
         />
       )}
 
+      {pendingSessionStart && (
+        <ApprovalDialog
+          label="Approve session start"
+          title="Start another agent?"
+          message={pendingSessionStart.message}
+          confirmLabel="Start anyway"
+          busy={startSessionMutation.isPending}
+          onConfirm={() => startSessionMutation.mutate({ target: pendingSessionStart.target, approved: true })}
+          onCancel={() => setPendingSessionStart(null)}
+        />
+      )}
+
       {recoveryDialog && (
         <RecoveryDialog
           option={recoveryDialog.option}
@@ -1114,21 +1132,6 @@ export default function App() {
           busy={deleteFeatureMutation.isPending}
           onConfirm={(todos) => requestDeleteFeature(deleteFeatureDialog.target, todos)}
           onClose={() => setDeleteFeatureDialog(null)}
-        />
-      )}
-
-      {pendingSessionStart && (
-        <ApprovalDialog
-          label="Approve session start"
-          title="Start another agent?"
-          message={pendingSessionStart.message}
-          confirmLabel="Start anyway"
-          busy={startSessionMutation.isPending}
-          onConfirm={() => startSessionMutation.mutate({
-            target: pendingSessionStart.target,
-            approved: true,
-          })}
-          onCancel={() => setPendingSessionStart(null)}
         />
       )}
 
@@ -1317,6 +1320,12 @@ function ProjectView({
                             {feature.sessions.length} session{feature.sessions.length === 1 ? "" : "s"}
                           </>
                         )}
+                        {stoppedSessionCount(feature) > 0 && (
+                          <>
+                            <span className="dot-sep" />
+                            {stoppedSessionCount(feature)} stopped
+                          </>
+                        )}
                       </span>
                     </span>
                   </button>
@@ -1345,9 +1354,7 @@ function FeatureView({
   onNewSession,
   newSessionLoading,
   stoppedSessionIds,
-  sessionStarting,
-  onStartSession,
-  onStopSession,
+  sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
   starting,
@@ -1374,10 +1381,9 @@ function FeatureView({
   onNewSession: () => void;
   newSessionLoading: boolean;
   stoppedSessionIds: string[];
-  sessionStarting: boolean;
-  onStartSession: (session: Feature["sessions"][number]) => void;
-  onStopSession: (session: Feature["sessions"][number]) => void;
-  onCloseSession: (session: Feature["sessions"][number]) => void;
+  /** Start/stop for one session, leaving the rest of the feature alone. */
+  sessionLifecycle: (session: FeatureSession) => Lifecycle;
+  onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
   draft: Draft | null;
   onDraftChange: (text: string) => void;
@@ -1403,8 +1409,10 @@ function FeatureView({
     session_id: activeTab,
   };
   const activeDraft = target && draft?.key === sessionKey(target) ? draft : null;
-  const isSessionStopped = (id: string) => !isStopped && stoppedSessionIds.includes(id);
+  const isRunning = (session: FeatureSession) => sessionRunning(feature, session, stoppedSessionIds);
   const activeSession = sessions.find((session) => session.id === activeTab);
+  const activeSessionRunning = activeSession !== undefined && isRunning(activeSession);
+  const activeLifecycle = activeSession && sessionLifecycle(activeSession);
 
   return (
     <div className="page page-fill">
@@ -1443,6 +1451,13 @@ function FeatureView({
                 { label: "Quick Plan", icon: "zap", hint: "Fast", onSelect: () => onPlan(true) },
               ]}
             />
+            {activeSession && !isStopped && (
+              <SessionStartStopButton
+                label={activeSession.label}
+                running={activeSessionRunning}
+                {...sessionLifecycle(activeSession)}
+              />
+            )}
             <StartStopButton
               status={feature.status}
               starting={starting}
@@ -1471,12 +1486,12 @@ function FeatureView({
               className={[
                 "tab",
                 activeTab === session.id && "tab-active",
-                isSessionStopped(session.id) && "tab-stopped",
+                !isStopped && !isRunning(session) && "tab-stopped",
               ].filter(Boolean).join(" ")}
               onClick={() => onTab(session.id)}
-              title={isSessionStopped(session.id) ? `${session.kind} (stopped)` : session.kind}
+              title={`${session.kind} — ${isRunning(session) ? "running" : "stopped"}`}
             >
-              <Icon name="terminal" size={14} />
+              <SessionStateDot running={isRunning(session)} />
               {session.label}
             </button>
             <span className="tab-close">
@@ -1484,15 +1499,15 @@ function FeatureView({
                 label={`${session.label} actions`}
                 className="btn btn-ghost btn-icon btn-sm"
                 items={[
-                  isStopped || isSessionStopped(session.id)
-                    ? {
+                  isRunning(session)
+                    ? { label: "Stop session", icon: "stop", onSelect: sessionLifecycle(session).onStop }
+                    : {
                       label: "Start session",
                       icon: "play",
-                      disabled: sessionStarting || starting,
+                      disabled: sessionLifecycle(session).starting || starting,
                       hint: isStopped ? "Starts the feature" : undefined,
-                      onSelect: () => onStartSession(session),
-                    }
-                    : { label: "Stop session", icon: "stop", onSelect: () => onStopSession(session) },
+                      onSelect: sessionLifecycle(session).onStart,
+                    },
                   { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
                 ]}
               />
@@ -1525,33 +1540,35 @@ function FeatureView({
             title="This feature is stopped"
             action={
               <button className="btn btn-primary"
-                onClick={() => (activeSession ? onStartSession(activeSession) : onStart())}
-                disabled={starting || sessionStarting}>
-                {starting || sessionStarting ? <Spinner /> : <Icon name="play" size={12} />}
-                {starting || sessionStarting ? "Starting…" : "Start feature"}
+                onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
+                disabled={starting || activeLifecycle?.starting}>
+                {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
+                {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
               </button>
             }
           >
             Starting it from this tab offers to resume this session's saved conversation, if it has one.
           </EmptyState>
         )}
-        {target && !isStopped && activeSession && isSessionStopped(activeSession.id) && (
+        {target && !isStopped && activeSession && activeLifecycle && !activeSessionRunning && (
           <EmptyState
             icon="terminal"
             title={`${activeSession.label} is stopped`}
             action={
-              <button className="btn btn-primary" onClick={() => onStartSession(activeSession)}
-                disabled={sessionStarting}>
-                {sessionStarting ? <Spinner /> : <Icon name="play" size={12} />}
-                {sessionStarting ? "Starting…" : "Start session"}
-              </button>
+              <SessionStartStopButton
+                label={activeSession.label}
+                running={false}
+                {...activeLifecycle}
+              />
             }
           >
-            The rest of the feature is still running. Starting an agent session
-            offers to resume its saved conversation when there is one.
+            {activeSession.stopped
+              ? "It stays stopped when the feature starts, until you start it here. "
+              : "The rest of the feature is still running. "}
+            Starting an agent session offers to resume its saved conversation when there is one.
           </EmptyState>
         )}
-        {target && !isStopped && !(activeSession && isSessionStopped(activeSession.id)) && (
+        {target && !isStopped && (activeSessionRunning || !activeSession) && (
           <div className="session">
             <TerminalPane key={sessionKey(target)} target={target} />
             {activeDraft && (

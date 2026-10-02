@@ -68,6 +68,10 @@ pub struct AiReviewAttribution {
     /// Model the run used; `None` means the harness's default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Reasoning level requested for the run; `None` means the harness's own
+    /// default, or a level it could not express.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<crate::headless::ReasoningLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +102,7 @@ impl AiReviewAttribution {
     pub fn from_run(
         harness: &AgentKind,
         model: Option<&str>,
+        reasoning: Option<crate::headless::ReasoningLevel>,
         usage: Option<&crate::headless::HeadlessUsage>,
         pricing: &crate::token_tracking::TokenPricingConfig,
         elapsed: std::time::Duration,
@@ -133,6 +138,9 @@ impl AiReviewAttribution {
         Self {
             harness: Some(harness.display_name().to_string()),
             model: model.map(str::to_string),
+            reasoning: reasoning.filter(|level| {
+                crate::headless::ReasoningLevel::supported_for(harness).contains(level)
+            }),
             input_tokens: usage.and_then(|usage| usage.input_tokens),
             output_tokens: usage.and_then(|usage| usage.output_tokens),
             cached_tokens: usage.and_then(|usage| usage.cached_tokens),
@@ -166,6 +174,9 @@ impl AiReviewAttribution {
             ),
             format!("model {}", self.model_label()),
         ];
+        if let Some(reasoning) = &self.reasoning {
+            parts.push(format!("reasoning {}", reasoning.slug()));
+        }
         if let (Some(input), Some(output)) = (self.input_tokens, self.output_tokens) {
             parts.push(format!(
                 "~{} in / ~{} out",
@@ -182,6 +193,12 @@ impl AiReviewAttribution {
     /// Deterministic Markdown appended only to the overall GitHub review
     /// body. Each metric is independently reported or called unavailable, so
     /// a partial harness event can never masquerade as a zero-token run.
+    ///
+    /// Rendered as a collapsed `<details>` block so the metadata doesn't
+    /// crowd the review's actual summary: the `<summary>` line carries the
+    /// compact [`Self::plain_label`] and expanding it shows every metric. The
+    /// blank lines inside the block are required for GitHub to render the
+    /// list as Markdown rather than raw text.
     pub fn usage_summary(&self) -> String {
         let token = |value: Option<u64>| {
             value
@@ -193,7 +210,8 @@ impl AiReviewAttribution {
             .map(format_elapsed)
             .unwrap_or_else(|| "unavailable".to_string());
         format!(
-            "### AI review usage\n\
+            "{AI_REVIEW_USAGE_OPEN}{}</summary>\n\
+             \n\
              - Harness: {}\n\
              - Model: {}\n\
              - Elapsed: {elapsed}\n\
@@ -201,7 +219,10 @@ impl AiReviewAttribution {
              - Output tokens: {}\n\
              - Cached tokens: {}\n\
              - Total tokens: {}\n\
-             - Estimated cost: {}",
+             - Estimated cost: {}\n\
+             \n\
+             </details>",
+            escape_summary_html(&self.plain_label()),
             self.harness.as_deref().unwrap_or("unavailable"),
             self.model_label(),
             token(self.input_tokens),
@@ -211,6 +232,18 @@ impl AiReviewAttribution {
             self.estimated_cost.as_deref().unwrap_or("unavailable"),
         )
     }
+}
+
+/// Opening of the collapsible usage block, up to where the compact label
+/// starts. [`strip_ai_review_attribution`] recognizes the block by it.
+const AI_REVIEW_USAGE_OPEN: &str = "<details>\n<summary>AI review usage · ";
+
+/// The `<summary>` line is raw HTML, so a model name like `a<b>` would
+/// otherwise be parsed as a tag and swallow the rest of the label.
+fn escape_summary_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn format_elapsed(elapsed_ms: u64) -> String {
@@ -288,17 +321,22 @@ fn strip_ai_review_attribution(body: &str) -> &str {
     let footer = super::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
     let trimmed = body.trim_end();
     let core = trimmed.strip_suffix(footer).map_or(trimmed, str::trim_end);
-    // The usage block is always its own trailing paragraph, separated by a
-    // blank line (see `append_ai_review_attribution`), so only a heading that
-    // actually *starts* that last paragraph counts as the real block — not
-    // one a finding's own text merely mentions or quotes somewhere earlier.
-    // Mirrors the previous line-anchored disclosure check, one level up
-    // (paragraph instead of line).
-    match core.rsplit_once("\n\n") {
-        Some((head, last)) if last.trim_start().starts_with("### AI review usage") => {
-            head.trim_end()
-        }
-        _ if core.trim_start().starts_with("### AI review usage") => "",
+    // The usage block is always the trailing `<details>` element, opened
+    // after a blank line (see `append_ai_review_attribution`), so only an
+    // opening that starts a paragraph *and* whose element runs to the end of
+    // the body counts as the real block — not one a finding's own text merely
+    // mentions or quotes somewhere earlier.
+    if !core.ends_with("</details>") {
+        return core;
+    }
+    // An empty summary seeds a body that is *only* the usage block, so it
+    // opens at the very start rather than after a blank line.
+    let block_start = core
+        .rfind(&format!("\n\n{AI_REVIEW_USAGE_OPEN}"))
+        .map(|i| i + 2)
+        .or_else(|| core.starts_with(AI_REVIEW_USAGE_OPEN).then_some(0));
+    match block_start {
+        Some(start) if !core[start..].contains("\n</details>\n") => core[..start].trim_end(),
         _ => core,
     }
 }
@@ -387,6 +425,9 @@ impl AiReviewFixCostKey {
 /// over the PR diff. `Reviewing` fires once with a token estimate right
 /// before the paid call; structured harness activity and usage may follow;
 /// `Done` fires exactly once at the end.
+// One short-lived message per run: `Done` carries the whole outcome, so the size
+// gap between variants is by design and boxing it would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum AiReviewProgress {
     Reviewing {
         token_estimate: usize,
@@ -771,7 +812,7 @@ fn resolve_ai_review_location(
 
 /// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
 /// a small window around an already-resolved source coordinate).
-fn diff_hunk_for_location(
+pub(super) fn diff_hunk_for_location(
     files: &[crate::diff::DiffFile],
     path: &str,
     side: crate::diff::DiffSide,
@@ -979,6 +1020,21 @@ fn merge_codex_preset_rows(pick: &mut AiModelPickState, models: Vec<String>) {
     }
 }
 
+/// Same rule as [`model_for_ai_review_run`], for the reasoning level: once the
+/// picker has run its choice is authoritative (`None` = "Default"), before that
+/// the configured level applies.
+fn reasoning_for_ai_review_run(
+    picked: Option<crate::headless::ReasoningLevel>,
+    model_picked: bool,
+    configured: Option<crate::headless::ReasoningLevel>,
+) -> Option<crate::headless::ReasoningLevel> {
+    if model_picked {
+        picked
+    } else {
+        picked.or(configured)
+    }
+}
+
 fn model_for_ai_review_run(
     picked: Option<&str>,
     model_picked: bool,
@@ -1128,6 +1184,7 @@ fn run_batched_ai_pr_review(
     memory: &str,
     skill: Option<&str>,
     model: Option<&str>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     templates: &BatchReviewTemplates,
     tx: &std::sync::mpsc::Sender<AiReviewProgress>,
 ) -> Option<Result<AiReviewOutcome>> {
@@ -1151,7 +1208,8 @@ fn run_batched_ai_pr_review(
                 &hunk_slice_context(slice, file_path, hunk_label),
             )
         }),
-    );
+    )
+    .with_reasoning(reasoning);
 
     let synth_tpl = templates.synthesis.clone();
     let summary_tpl = templates.summary.clone();
@@ -1168,7 +1226,8 @@ fn run_batched_ai_pr_review(
                 &findings_summary_context(label, findings),
             )
         }),
-    );
+    )
+    .with_reasoning(reasoning);
 
     let progress_tx = tx.clone();
     let mut on_progress = move |progress: crate::review_batch::BatchProgress| {
@@ -1257,6 +1316,7 @@ fn run_ai_pr_review(
     memory: String,
     skill: Option<String>,
     model: Option<String>,
+    reasoning: Option<crate::headless::ReasoningLevel>,
     pricing: crate::token_tracking::TokenPricingConfig,
     // The `pr_review.ai_review` template, resolved on the UI thread (built-in
     // default or a feature/project/global override). The diff is only fetched
@@ -1295,6 +1355,7 @@ fn run_ai_pr_review(
             &memory,
             skill.as_deref(),
             model.as_deref(),
+            reasoning,
             &batch_templates,
             &tx,
         )
@@ -1303,6 +1364,7 @@ fn run_ai_pr_review(
             outcome.attribution = AiReviewAttribution::from_run(
                 &harness,
                 model.as_deref(),
+                reasoning,
                 None,
                 &pricing,
                 started_at.elapsed(),
@@ -1320,7 +1382,7 @@ fn run_ai_pr_review(
         &harness,
         &workdir,
         &prompt,
-        model.as_deref(),
+        crate::headless::ModelSel::new(model.as_deref(), reasoning),
         move |progress| {
             let progress = match progress {
                 crate::headless::HeadlessProgress::Activity(message) => {
@@ -1345,6 +1407,7 @@ fn run_ai_pr_review(
         outcome.attribution = AiReviewAttribution::from_run(
             &harness,
             model.as_deref(),
+            reasoning,
             usage.as_ref(),
             &pricing,
             started_at.elapsed(),
@@ -1368,6 +1431,7 @@ fn run_ai_pr_review(
                 &memory,
                 skill.as_deref(),
                 model.as_deref(),
+                reasoning,
                 &batch_templates,
                 &tx,
             ) {
@@ -1375,6 +1439,7 @@ fn run_ai_pr_review(
                     outcome.attribution = AiReviewAttribution::from_run(
                         &harness,
                         model.as_deref(),
+                        reasoning,
                         None,
                         &pricing,
                         started_at.elapsed(),
@@ -1467,6 +1532,7 @@ impl App {
             None => (Vec::new(), None, None, None),
         };
         self.mode = AppMode::AiReview(AiReviewState {
+            questions: Default::default(),
             workdir,
             pr,
             findings,
@@ -1481,6 +1547,7 @@ impl App {
             harness_pick_origin: None,
             model: None,
             model_picked: false,
+            reasoning: None,
             model_pick: None,
             finding_editor: None,
             post_confirm: None,
@@ -1574,6 +1641,8 @@ impl App {
     /// running, isn't aborted — [`Self::poll_ai_pr_review_bg`] still surfaces
     /// the result via the pending run origin.
     pub fn close_ai_review(&mut self) {
+        self.cancel_review_question();
+        self.ai_review_run.clear_question_history();
         match self.ai_review_return_to.take() {
             Some(return_to) => self.mode = *return_to,
             None => self.mode = AppMode::Normal,
@@ -2048,12 +2117,13 @@ impl App {
                 (None, None) => (0, String::new()),
             };
             if let AppMode::AiReview(state) = &mut self.mode {
-                state.model_pick = Some(AiModelPickState {
+                state.model_pick = Some(AiModelPickState::new(
+                    &harness,
                     rows,
                     selected,
                     custom_input,
-                    editing_custom: false,
-                });
+                    self.config.review_reasoning_for(ReviewAction::PrReview),
+                ));
             }
             return;
         }
@@ -2065,6 +2135,7 @@ impl App {
     /// picker can pause before the paid pass without duplicating lifecycle
     /// setup.
     pub(crate) fn begin_ai_pr_review(&mut self) {
+        self.cancel_review_question();
         let mut origin = match &self.mode {
             AppMode::AiReview(state) => state.clone(),
             _ => return,
@@ -2090,14 +2161,23 @@ impl App {
                 .review_model_for(ReviewAction::PrReview)
                 .as_deref(),
         );
+        let reasoning = reasoning_for_ai_review_run(
+            origin.reasoning,
+            origin.model_picked,
+            self.config.review_reasoning_for(ReviewAction::PrReview),
+        )
+        .filter(|level| crate::headless::ReasoningLevel::supported_for(&harness).contains(level));
         self.log_info(
             "pr_review",
             format!(
-                "starting AI review of PR #{number} with {}{}",
+                "starting AI review of PR #{number} with {}{}{}",
                 harness.display_name(),
                 model
                     .as_deref()
                     .map(|m| format!(" (model: {m})"))
+                    .unwrap_or_default(),
+                reasoning
+                    .map(|level| format!(" (reasoning: {})", level.slug()))
                     .unwrap_or_default()
             ),
         );
@@ -2179,6 +2259,7 @@ impl App {
                 memory,
                 skill,
                 model,
+                reasoning,
                 pricing,
                 template,
                 batch_templates,
@@ -2255,6 +2336,7 @@ impl App {
             state.harness = Some(chosen.clone());
             state.harness_pick = None;
             state.model = None;
+            state.reasoning = None;
             state.model_picked = false;
             state.model_pick = None;
         }
@@ -2264,12 +2346,13 @@ impl App {
         ));
         if harness_changed {
             if let AppMode::AiReview(state) = &mut self.mode {
-                state.model_pick = Some(AiModelPickState {
-                    rows: model_pick_rows(&chosen, true),
-                    selected: 0,
-                    custom_input: String::new(),
-                    editing_custom: false,
-                });
+                state.model_pick = Some(AiModelPickState::new(
+                    &chosen,
+                    model_pick_rows(&chosen, true),
+                    0,
+                    String::new(),
+                    None,
+                ));
             }
             return;
         }
@@ -2324,6 +2407,16 @@ impl App {
     /// `esc`: while typing a custom model, back out to the row list without
     /// losing what's typed so far; from the row list, return to the harness
     /// picker with the current harness highlighted.
+    /// `←`/`→` (`h`/`l`): step the reasoning level. Independent of the model
+    /// row, so the pair is chosen on one screen.
+    pub fn ai_review_reasoning_pick_cycle(&mut self, delta: isize) {
+        if let AppMode::AiReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.model_pick
+        {
+            pick.cycle_reasoning(delta);
+        }
+    }
+
     pub fn ai_review_model_pick_cancel(&mut self) {
         let (workdir, current_harness) = match &mut self.mode {
             AppMode::AiReview(state) => {
@@ -2415,6 +2508,10 @@ impl App {
             return;
         };
         let editing_custom = matches!(&self.mode, AppMode::AiReview(state) if state.model_pick.as_ref().is_some_and(|p| p.editing_custom));
+        let chosen_reasoning = match &self.mode {
+            AppMode::AiReview(state) => state.model_pick.as_ref().and_then(|p| p.reasoning),
+            _ => None,
+        };
 
         let chosen: Option<String> = match row {
             ModelPickRow::Default => None,
@@ -2442,12 +2539,17 @@ impl App {
 
         if let AppMode::AiReview(state) = &mut self.mode {
             state.model = chosen.clone();
+            state.reasoning = chosen_reasoning;
             state.model_picked = true;
             state.model_pick = None;
         }
-        self.push_toast_success(match &chosen {
+        let model_note = match &chosen {
             Some(model) => format!("AI reviews will use model: {model}"),
             None => "AI reviews will use the harness's default model".to_string(),
+        };
+        self.push_toast_success(match chosen_reasoning {
+            Some(level) => format!("{model_note} · reasoning: {}", level.slug()),
+            None => model_note,
         });
         self.begin_ai_pr_review();
     }
@@ -3541,7 +3643,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let body = append_ai_review_attribution("finding text", Some(&attribution));
         assert_eq!(
             body,
-            "finding text\n\n### AI review usage\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n— AI review via AMF"
+            "finding text\n\n<details>\n<summary>AI review usage · harness claude · model sonnet · ~12.3k in / ~4.5k out · est. $0.10</summary>\n\n- Harness: claude\n- Model: sonnet\n- Elapsed: 2m 05s\n- Input tokens: 12.3k\n- Output tokens: 4.5k\n- Cached tokens: 3.2k\n- Total tokens: 20.0k\n- Estimated cost: $0.10\n\n</details>\n\n— AI review via AMF"
         );
     }
 
@@ -3598,6 +3700,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let attribution = AiReviewAttribution::from_run(
             &AgentKind::Claude,
             Some("sonnet"),
+            None,
             Some(&usage),
             &crate::token_tracking::TokenPricingConfig::default(),
             std::time::Duration::from_secs(3),
@@ -3615,6 +3718,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         };
         let attribution = AiReviewAttribution::from_run(
             &AgentKind::Opencode,
+            None,
             None,
             Some(&usage),
             &crate::token_tracking::TokenPricingConfig::default(),
@@ -3666,8 +3770,8 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             ..sample_attribution()
         };
         let body = ensure_ai_review_attribution(&seeded, Some(&repriced));
-        assert_eq!(body.matches("### AI review usage").count(), 1);
-        assert!(body.ends_with("Estimated cost: $0.20\n\n— AI review via AMF"));
+        assert_eq!(body.matches("AI review usage").count(), 1);
+        assert!(body.ends_with("Estimated cost: $0.20\n\n</details>\n\n— AI review via AMF"));
     }
 
     #[test]
@@ -3675,11 +3779,52 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         // A finding that merely quotes or discusses the heading text (not as
         // its own trailing paragraph) must not be truncated as if it were the
         // real deterministic usage block.
-        let body = "Findings should avoid emitting a literal \"### AI review usage\" \
-                     heading inside generated text.\n\n— AI review via AMF";
+        let body = "Findings should avoid emitting a literal \"<summary>AI review usage · \" \
+                     line inside generated text.\n\n— AI review via AMF";
         assert_eq!(
             strip_ai_review_attribution(body),
             body.strip_suffix("\n\n— AI review via AMF").unwrap()
+        );
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_keeps_an_earlier_quoted_usage_block() {
+        // A summary that quotes a whole usage block, followed by more of the
+        // user's own text in a later `<details>`, must keep everything: only
+        // a usage block running to the end of the body is the seeded one.
+        let body = "Quoted:\n\n<details>\n<summary>AI review usage · x</summary>\n\n- a\n\n</details>\n\n\
+                    <details>\n<summary>Notes</summary>\n\nmine\n\n</details>";
+        assert_eq!(strip_ai_review_attribution(body), body);
+    }
+
+    #[test]
+    fn strip_ai_review_attribution_keeps_user_details_after_a_leading_usage_block() {
+        // An empty summary seeds a body that is only the usage block; a
+        // `<details>` the user adds after it must survive, and the seeded
+        // block alone must still be stripped.
+        let seeded = append_ai_review_attribution("", Some(&sample_attribution()));
+        assert_eq!(strip_ai_review_attribution(&seeded), "");
+        let footer = crate::app::pr_review::AI_REVIEW_ATTRIBUTION_FOOTER;
+        let core = seeded.trim_end().strip_suffix(footer).unwrap().trim_end();
+        let edited = format!("{core}\n\n<details>\n<summary>Notes</summary>\n\nmine\n\n</details>");
+        assert_eq!(strip_ai_review_attribution(&edited), edited);
+    }
+
+    #[test]
+    fn usage_summary_is_collapsible_and_escapes_the_summary_label() {
+        let attribution = AiReviewAttribution {
+            model: Some("a<b>&c".to_string()),
+            ..sample_attribution()
+        };
+        let summary = attribution.usage_summary();
+        assert!(summary.starts_with("<details>\n<summary>AI review usage · "));
+        assert!(summary.contains("model a&lt;b&gt;&amp;c · "));
+        assert!(summary.ends_with("\n\n</details>"));
+        let body = append_ai_review_attribution("Summary.", Some(&attribution));
+        assert_eq!(
+            strip_ai_review_attribution(&body),
+            "Summary.",
+            "the seeded block strips cleanly even with an escaped label"
         );
     }
 
@@ -3704,6 +3849,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         let cost_with_cache = AiReviewAttribution::from_run(
             &AgentKind::Codex,
             None,
+            None,
             Some(&with_cache),
             &pricing,
             std::time::Duration::ZERO,
@@ -3711,6 +3857,7 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
         .estimated_cost;
         let cost_without_cache = AiReviewAttribution::from_run(
             &AgentKind::Codex,
+            None,
             None,
             Some(&without_cache),
             &pricing,

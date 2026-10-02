@@ -449,6 +449,8 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   white-space: nowrap;
 }
 .tab:hover { color: var(--text); }
+/* Before .tab-active, so the selected tab stays readable even when stopped. */
+.tab-stopped { color: var(--text-faint); }
 .tab-active { color: var(--text); border-bottom-color: var(--accent); }
 
 .tab-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }

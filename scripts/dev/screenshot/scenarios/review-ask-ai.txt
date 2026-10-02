@@ -1,0 +1,128 @@
+# Offline visual proof for Final Review, manual PR review, and AI PR review.
+# The command shims return fixture answers and PR metadata; no paid model or
+# GitHub write is used. The fixture has a changed caller and unchanged helper.
+shim:codex:../review-question-fixture.py
+shim:gh:../review-question-fixture.py
+shim:git:../review-question-fixture.py
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" "$SHOT_ROOT" "$AMF_BIN" "$SESSION"
+wait:2000
+key:j|wait:200
+key:Enter|wait:400
+key:j|wait:200
+key:j|wait:200
+key:Enter|wait:1500
+key:C-Space|wait:200
+key:f|wait:1800
+# Save an existing local general comment before generating another draft.
+key:f|wait:200
+text:Existing review note: keep the public API unchanged.
+key:Tab|wait:250
+key:c|wait:200
+key:Q|wait:250
+text:Can we reuse an existing helper for this normalization?
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Can we reuse an existing helper for this normalization?"
+note:Final Review accepts a question without leaving the selected diff line; history belongs to this review.
+expect:Ask AI
+expect:Can we reuse an existing helper for this normalization?
+expect:history clears when this review closes
+shot:final-review-question
+# CSI-u preserves Ctrl+Enter through tmux versions without a C-Enter key name.
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+wait:250
+note:The question runs asynchronously while cancellation and returning to the review remain available.
+expect:Request in progress
+expect:Ctrl+X
+shot:question-in-progress
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "outside the displayed diff"
+note:The deterministic answer references an unchanged helper outside the diff and states its search coverage.
+expect:src/helpers.rs:1-3
+expect:outside the displayed diff
+expect:Final Review
+shot:final-review-answer
+key:Escape|wait:250
+note:Closing the question overlay returns to the same reviewed file and line cursor.
+expect:src/caller.rs
+expect:line cursor @ 2
+expect:ask AI
+expect_not:Ask AI
+shot:review-position-preserved
+key:Q|wait:200
+key:i
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Editable Inline comment draft"
+key:End
+key:Enter
+text:Please reuse it here.
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Please reuse it here."
+note:Explicit inline conversion produces editable local text; the added sentence proves it can be changed before handoff.
+expect:Editable Inline comment draft
+expect:Please reuse it here.
+expect:Drafting and answering never publish
+shot:editable-inline-draft
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Line Comment"
+note:The inline draft opens in the existing review comment editor at the original selection, awaiting the reviewer's action.
+expect:Please reuse it here.
+expect:src/caller.rs
+expect_not:Ask AI
+shot:existing-inline-comment-editor
+key:Escape|wait:300
+key:Q|wait:200
+key:g
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Editable General comment draft"
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "General Feedback"
+note:General conversion opens the existing feedback editor and preserves the earlier general review note.
+expect:Existing review note: keep the public API unchanged.
+expect:Could we reuse
+expect_not:Ask AI
+shot:general-comment-preserves-draft
+key:Escape|wait:300
+# Exit line-cursor mode, pause review, and leave the session view.
+key:Escape|wait:200
+key:Escape|wait:200
+key:C-Space|wait:200
+key:q|wait:400
+# Move back to the project row and use G's manual Review tab.
+key:k|key:k|key:k|wait:200
+key:G|wait:1500
+key:Enter|wait:1800
+key:Q|wait:200
+text:Can we reuse an existing helper for this normalization?
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "outside the displayed diff"
+note:Manual PR review uses the same question interface, grounded in the matching pinned PR checkout.
+expect:PR #42
+expect:src/helpers.rs:1-3
+expect:Ask AI
+shot:manual-pr-review-answer
+key:Escape|wait:200
+key:Escape|wait:200
+key:Escape|wait:200
+# Existing automation seam opens a deterministic completed AI PR review.
+run:"$AMF_BIN" automation seed-ai-review --file "$SHOT_ROOT/ai-review.json"
+wait:800
+key:Q|wait:200
+text:Can we reuse an existing helper for this normalization?
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "outside the displayed diff"
+note:AI PR review also supports repository questions, with its own temporary conversation and the selected finding's context.
+expect:review-demo/helper-reuse PR #42
+expect:src/helpers.rs:1-3
+expect:Ask AI
+shot:ai-pr-review-answer
+key:i
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Editable Inline comment draft"
+run:tmux send-keys -l -t "$SESSION" $'\033[13;5u'
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "Edit finding"
+note:An AI PR inline draft opens the existing finding editor, ready for further editing before explicit posting.
+expect:Could we reuse
+expect:Edit finding
+expect_not:Ask AI
+shot:ai-pr-inline-comment-editor
+key:Escape|wait:300
+run:python3 "$SCRIPT_DIR/review-question-fixture.py" wait "$SESSION" "AI Review · PR #42"
+note:The editable draft remains a local AI PR finding at the selected caller line, awaiting explicit posting.
+expect:src/caller.rs
+expect:Could we reuse
+expect_not:Ask AI
+shot:ai-pr-draft-destination

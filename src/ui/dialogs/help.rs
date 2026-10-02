@@ -23,6 +23,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("l / \u{2192}", "Expand project/feature"),
         ("Enter", "Toggle expand / view or recover session"),
         ("s", "Add session (picker)"),
+        ("m", "Model / reasoning advice for selected agent session"),
         ("S", "Pick session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
@@ -49,8 +50,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
             "t",
             "Companion review feature: land its commits on the source branch",
         ),
-        ("c", "Start feature (create tmux)"),
-        ("x", "Stop feature / session"),
+        ("c", "Start feature / stopped session"),
+        ("x", "Stop feature / session (session stays listed)"),
         ("r", "Rename session/feature"),
         ("R", "Refresh statuses"),
         ("V", "Check pending diff review"),
@@ -64,6 +65,14 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("I", "On a TODOs row: start the next TODO"),
         ("/", "Search and jump to item"),
         ("Ctrl+Space c", "Config wizard"),
+        (
+            "Ctrl+Space C",
+            "Turn the AMF Remote (phone) server on / off — also in a session",
+        ),
+        (
+            "Ctrl+Space Q",
+            "Pair a phone with AMF Remote; starts the server if needed (v: devices)",
+        ),
         ("Ctrl+Space m", "Compact review memory"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
@@ -168,6 +177,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("j/k / PgUp/PgDn", "Scroll the rendered plan"),
         ("e", "Edit raw plan markdown"),
         (
+            "m",
+            "Model / reasoning advice for implementing the reviewed plan",
+        ),
+        (
             "a",
             "Expert review with an explicit frontier model, or re-open one already held (uses tokens for a new review)",
         ),
@@ -253,6 +266,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer (all changes / commit)"),
         ("m", "Markdown file picker/viewer"),
+        ("B", "Model / reasoning advice for this agent session"),
         ("n", "Open current plan"),
         (
             "F",

@@ -16,6 +16,7 @@ mod hooks;
 mod input;
 mod issue_fixer;
 mod learning;
+mod model_analysis;
 mod mouse;
 mod normal;
 mod picker;
@@ -25,7 +26,9 @@ mod pr_review;
 mod precall;
 mod prompt_library;
 mod prompt_overrides;
+mod remote_pairing;
 mod review_destination;
+mod review_questions;
 mod search;
 mod skill_picker;
 mod todos;
@@ -49,7 +52,10 @@ pub use dialog::{
     handle_resource_confirm_key, handle_session_config_key, handle_steering_prompt_key,
     handle_stopped_session_dialog_key, handle_theme_picker_key,
 };
-pub use diff::{handle_diff_picker_key, handle_diff_viewer_key, handle_review_harness_pick_key};
+pub use diff::{
+    handle_diff_picker_key, handle_diff_viewer_key, handle_diff_viewer_wheel,
+    handle_review_harness_pick_key,
+};
 pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
 pub use feature_creation::handle_create_feature_key;
@@ -88,6 +94,7 @@ pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,
 };
 pub use prompt_overrides::handle_prompt_overrides_key;
+pub use remote_pairing::handle_remote_pairing_key;
 pub use review_destination::{
     handle_review_destination_pick_key, handle_review_feature_setup_key,
     handle_review_integrate_key,
@@ -103,6 +110,10 @@ pub use view::handle_view_key;
 
 pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     use crate::app::AppMode;
+
+    if app.review_questions().is_some_and(|q| q.open) {
+        return review_questions::handle(app, key);
+    }
 
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
@@ -122,6 +133,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::PlanInterviewAttachDoc(_) => handle_plan_interview_attach_doc_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
         AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
+        AppMode::ModelAnalysis(_) => model_analysis::handle_model_analysis_key(app, key),
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
@@ -201,5 +213,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
         AppMode::ReviewIntegrate(_) => handle_review_integrate_key(app, key.code),
         AppMode::ContextSettings(_) => handle_context_settings_key(app, key),
+        AppMode::RemotePairing(_) => handle_remote_pairing_key(app, key),
     }
 }

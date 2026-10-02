@@ -21,7 +21,7 @@ harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
 
 **Prompt registry** (`src/prompts/`): the single home for every headless
 prompt AMF sends (see "Editable Headless Prompts" below). `mod.rs` holds
-`PromptId` (22 stable ids), `PromptSpec` (title/summary/placeholders/
+`PromptId` (24 stable ids), `PromptSpec` (title/summary/placeholders/
 `default_template`/`harness_variants`), and `resolve_template_layered` /
 `resolve_prompt_layered`. `defaults.rs` is the built-in template text moved
 out of the call sites. `resolve.rs` has `PromptContext` +
@@ -496,19 +496,22 @@ registry that the user can view and override. See
 `docs/backlog/editable-prompts-call-site-inventory.md` for the call-site map
 and `AMF_PLAN.md` for the design decisions.
 
-- **Registry (`src/prompts/`).** `PromptId::ALL` is the 22 stable ids
+- **Registry (`src/prompts/`).** `PromptId::ALL` is the 24 stable ids
   (`plan_interview.round`/`.synthesis`/`.critique`/`.directed_revision`/
-  `.investigation`/`.investigation_merge`, `learning.answer`,
+  `.investigation`/`.investigation_merge`/`.quick_round`/`.quick_synthesis`,
+  `learning.answer`,
   `review.walkthrough`/`.co_review`/`.changeset_overview`/`.diff_explain`,
+  `review.question`/`.question_draft` (review questions,
+  `app/review_questions/`),
   `pr_review.ai_review`, `review_memory.bootstrap`/`.compact`/`.ai_summary`,
   `session.summary`, and the batched-review set
   `review.batch`/`.hunk_split`/`.synthesis`/`.findings_summary`). `defaults.rs`
-  holds the built-in text. The 6
+  holds the built-in text. The 8
   plan-interview templates keep a single `{{interview_input}}` token carrying
   the exact JSON payload the models see today (the drift-guard test
-  `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins them to the
-  `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
-  can't be `concat!`-ed); the other 14 use granular tokens.
+  `plan_interview_defaults_stay_in_sync_with_the_tuned_prose` pins the six
+  full-mode ones to the `plan_interview::*_PROMPT` prose, which is duplicated because a `const`
+  can't be `concat!`-ed); the other 16 use granular tokens.
 - **Interpolation is unvalidated.** `render_template` substitutes `{{name}}`
   from a `PromptContext`; a token with no value — declared or not — is left
   literally, and substituted values are never re-scanned. An override may drop
@@ -550,6 +553,33 @@ and `AMF_PLAN.md` for the design decisions.
   synthesis) can't leave a stale clearance. **Automated** runs
   (`learning.answer`, `session.summary`) call `announce_headless_run` — a
   toast, never the modal — so a queued batch can't deadlock.
+
+### Reasoning level (headless runs)
+
+Wherever AMF lets you pick a headless model, it also lets you pick how hard
+the model thinks.
+
+- **One vocabulary, per-harness flags.** `headless::ReasoningLevel`
+  (`minimal`..`max`) maps through `reasoning_args`: Claude `--effort`, Codex
+  `-c model_reasoning_effort="…"`, OpenCode `--variant`. Pi has no verified flag,
+  so it offers none. `ReasoningLevel::supported_for(harness)` is the verified
+  set; a level the harness cannot express is **dropped, never passed through**
+  (Codex has no `max`; Claude has no `minimal`).
+- **`ModelSel`** (`model` + `reasoning`) is what every `HeadlessRunner` entry and
+  `ClaudeLauncher::spawn_headless` accept via `impl Into<ModelSel>`, so a
+  caller with only a model (`Option<&str>`) is unchanged.
+- **Pickers.** The AI Review (`A`) and Expert plan review model pickers carry
+  `AiModelPickState::{reasoning_levels, reasoning}`; `h`/`l` (or ←/→) cycle
+  Default → each level on the same screen. The row is hidden for a harness
+  with no levels. Expert reasoning is **not persisted** with the interview
+  draft (it would need a migration on the shared `amf.db`); a resumed draft
+  falls back to the `plan_preflight` config entry.
+- **Config.** `review_reasoning` / `review_reasonings` mirror `review_model` /
+  `review_models` (`AppConfig::review_reasoning_for`; Expert plan review never
+  inherits the shared default). Applies to the picker seed, Final Review
+  (walkthrough, co-review, overview, diff explain) and review memory.
+- **Attribution** records the level (`AiReviewAttribution::reasoning`) only when
+  the harness could use it.
 
 ### Batched Review of Oversized Diffs
 

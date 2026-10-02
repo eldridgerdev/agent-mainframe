@@ -7,7 +7,7 @@ members = ["gui/src-tauri"]
 
 [package]
 name = "agent-mainframe"
-version = "0.46.0"
+version = "0.48.0"
 edition = "2024"
 description = "Terminal dashboard for running many AI coding agents in parallel — each on its own branch, in its own tmux session"
 license = "MIT"
@@ -83,7 +83,26 @@ tempfile = "3"
 libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 notify = "8.2.0"
+# Dedicated async runtime for the Remote Control companion-app server
+# (docs/backlog/remote-control-companion-app-plan.md, Epic 1). Runs only on
+# its own thread, started/stopped by an explicit user toggle — the rest of
+# AMF stays synchronous.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+axum = { version = "0.8", features = ["ws"] }
+# Pairing (Epic 4): rendering the pairing QR in the terminal. Token hashing
+# (`src/db/remote_devices.rs` never sees a plaintext token) reuses the `sha2`
+# dependency above.
+qrcode = { version = "0.14", default-features = false }
+# Web Push for the Remote Control PWA: payload encryption only. The crate's
+# `vapid` feature would pull in jwt-simple (RSA, Ed25519, P-384, ML-DSA, …) to
+# make one ES256 signature; `src/remote_push.rs` signs it with `p256` instead.
+web-push-native = { version = "0.5", default-features = false }
+p256 = { version = "0.13", features = ["ecdsa"] }
+base64ct = { version = "1", features = ["alloc"] }
 
 [dev-dependencies]
 mockall = "0.13"
 pretty_assertions = "1"
+# A blocking WebSocket client for the Remote Control terminal-socket tests;
+# already in the tree through axum's `ws` feature.
+tungstenite = "0.29"

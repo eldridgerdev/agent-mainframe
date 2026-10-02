@@ -172,6 +172,7 @@ impl App {
                 .unwrap_or_default();
 
         let prepared = PreparedFeatureLaunch {
+            model_selection: None,
             project_name,
             feature_name,
             branch,
@@ -366,9 +367,9 @@ impl App {
                     Some(choice),
                 );
             }
-            HookNext::StartFeature { pi, fi } => {
+            HookNext::StartFeature { pi, fi, session_id } => {
                 self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));
-                self.do_start_feature(pi, fi)?;
+                self.do_start_feature(pi, fi, session_id.as_deref())?;
             }
             HookNext::StopFeature { pi, fi } => {
                 self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));

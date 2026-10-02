@@ -560,6 +560,92 @@ fn fix_prompt_strips_bot_boilerplate() {
 }
 
 #[test]
+fn single_and_combined_fix_prompts_omit_posted_review_usage() {
+    let attribution = crate::app::ai_review::AiReviewAttribution {
+        harness: Some("codex".into()),
+        model: Some("review-model".into()),
+        reasoning: None,
+        input_tokens: Some(12_300),
+        output_tokens: Some(4_500),
+        cached_tokens: Some(3_200),
+        total_tokens: Some(20_000),
+        elapsed_ms: Some(125_000),
+        estimated_cost: Some("$0.10".into()),
+    };
+    let legacy_usage = "### AI review usage\n\
+        - Harness: codex\n\
+        - Model: review-model\n\
+        - Elapsed: 2m 05s\n\
+        - Input tokens: 12.3k\n\
+        - Output tokens: 4.5k\n\
+        - Cached tokens: 3.2k\n\
+        - Total tokens: 20.0k\n\
+        - Estimated cost: $0.10";
+    let feedback = "Guard this behind the lock.\n\nKeep the early return.";
+    // AMF posts through the user's GitHub account, so usage removal must be
+    // independent of GitHub's bot flag and the comment's kind.
+    for usage in [attribution.usage_summary(), legacy_usage.to_string()] {
+        let body = format!("{feedback}\n\n{usage}\n\n{AI_REVIEW_ATTRIBUTION_FOOTER}");
+        for is_bot in [false, true] {
+            let comment = inline_comment(&body, is_bot);
+            let summary = PrComment {
+                id: 2,
+                kind: CommentKind::ReviewSummary {
+                    state: "CHANGES_REQUESTED".into(),
+                },
+                path: None,
+                line: None,
+                diff_hunk: None,
+                ..comment.clone()
+            };
+            let all = [comment.clone(), summary.clone()];
+            for prompt in [
+                comment.fix_prompt(),
+                summary.fix_prompt(),
+                combined_fix_prompt(&[&comment, &summary], &all),
+            ] {
+                assert!(prompt.contains(feedback));
+                assert!(prompt.contains(AI_REVIEW_ATTRIBUTION_FOOTER));
+                assert!(!prompt.contains("AI review usage"));
+                assert!(!prompt.contains("review-model"));
+                assert!(!prompt.contains("$0.10"));
+            }
+            assert!(comment.fix_prompt().contains("File: src/app/sync.rs:42"));
+            assert!(comment.fix_prompt().contains("+ self.sync();"));
+            // The fetched comment and other consumers retain the full body.
+            assert_eq!(comment.body, body);
+            if !is_bot {
+                assert_eq!(comment.agent_text(), body);
+            }
+        }
+    }
+}
+
+#[test]
+fn fix_prompt_omits_unavailable_review_usage_without_a_footer() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    let comment = inline_comment(&format!("Please add a test.\n\n{usage}\n"), false);
+    assert_eq!(
+        comment.fix_prompt(),
+        inline_comment("Please add a test.", false).fix_prompt()
+    );
+}
+
+#[test]
+fn fix_prompt_preserves_feedback_about_usage() {
+    let usage = crate::app::ai_review::AiReviewAttribution::default().usage_summary();
+    for body in [
+        "Fix the usage stats: input tokens and estimated cost are wrong.".to_string(),
+        "The heading should be `### AI review usage`.".to_string(),
+        "### AI review usage\nThis counter is wrong; please fix it.".to_string(),
+        format!("Preserve this example:\n\n```markdown\n{usage}\n```"),
+        format!("Preserve this example:\n\n```markdown\n\n{usage}\n\n```"),
+    ] {
+        assert!(inline_comment(&body, false).fix_prompt().contains(&body));
+    }
+}
+
+#[test]
 fn combined_fix_prompt_numbers_comments_under_one_preamble() {
     let mut a = inline_comment("Guard this behind the lock.", false);
     a.path = Some("src/a.rs".into());
@@ -1630,4 +1716,138 @@ fn reply_effective_agent_drafted_drops_once_the_user_edits_the_draft() {
 fn reply_effective_agent_drafted_false_without_a_draft() {
     let reply = reply_state(false, "", "Done.");
     assert!(!reply_effective_agent_drafted(&reply));
+}
+
+mod reasoning_level {
+    use crate::app::ReviewAction;
+    use crate::app::ai_review::AiReviewAttribution;
+    use crate::app::pr_review::state::{AiModelPickState, ModelPickRow};
+    use crate::headless::ReasoningLevel::{self, High, Low, Max, XHigh};
+    use crate::project::AgentKind;
+
+    fn pick(harness: &AgentKind, seed: Option<ReasoningLevel>) -> AiModelPickState {
+        AiModelPickState::new(harness, vec![ModelPickRow::Default], 0, String::new(), seed)
+    }
+
+    #[test]
+    fn cycling_steps_through_default_then_each_level_and_wraps() {
+        let mut state = pick(&AgentKind::Codex, None);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            state.cycle_reasoning(1);
+            seen.push(state.reasoning);
+        }
+        assert_eq!(
+            seen,
+            [
+                Some(Low),
+                Some(ReasoningLevel::Medium),
+                Some(High),
+                Some(XHigh),
+                None
+            ]
+        );
+        state.cycle_reasoning(-1);
+        assert_eq!(
+            state.reasoning,
+            Some(XHigh),
+            "backwards from Default wraps to the top"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_levels_offers_none_and_ignores_cycling() {
+        let mut state = pick(&AgentKind::Pi, Some(High));
+        assert!(state.reasoning_levels.is_empty());
+        assert_eq!(
+            state.reasoning, None,
+            "a seed the harness cannot express is dropped"
+        );
+        state.cycle_reasoning(1);
+        assert_eq!(state.reasoning, None);
+    }
+
+    #[test]
+    fn seeding_a_level_the_harness_lacks_falls_back_to_default() {
+        assert_eq!(pick(&AgentKind::Codex, Some(Max)).reasoning, None);
+        assert_eq!(pick(&AgentKind::Claude, Some(Max)).reasoning, Some(Max));
+    }
+
+    #[test]
+    fn per_action_level_beats_the_shared_default() {
+        let mut config = crate::app::AppConfig {
+            review_reasoning: Some(Low),
+            ..Default::default()
+        };
+        config
+            .review_reasonings
+            .insert("co_review".to_string(), High);
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::CoReview),
+            Some(High)
+        );
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::Walkthrough),
+            Some(Low)
+        );
+    }
+
+    #[test]
+    fn expert_plan_review_never_inherits_the_shared_default() {
+        let mut config = crate::app::AppConfig {
+            review_reasoning: Some(Max),
+            ..Default::default()
+        };
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::PlanPreflight),
+            None
+        );
+        config
+            .review_reasonings
+            .insert("plan_preflight".to_string(), High);
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::PlanPreflight),
+            Some(High)
+        );
+    }
+
+    #[test]
+    fn attribution_names_the_level_only_when_the_harness_could_use_it() {
+        let pricing = crate::token_tracking::TokenPricingConfig::default();
+        let elapsed = std::time::Duration::from_secs(1);
+        let used = AiReviewAttribution::from_run(
+            &AgentKind::Claude,
+            Some("opus"),
+            Some(High),
+            None,
+            &pricing,
+            elapsed,
+        );
+        assert!(used.plain_label().contains("model opus · reasoning high"));
+        let unsupported = AiReviewAttribution::from_run(
+            &AgentKind::Pi,
+            None,
+            Some(High),
+            None,
+            &pricing,
+            elapsed,
+        );
+        assert_eq!(unsupported.reasoning, None);
+        assert!(!unsupported.plain_label().contains("reasoning"));
+    }
+
+    #[test]
+    fn config_round_trips_and_stays_absent_by_default() {
+        let json = serde_json::to_string(&crate::app::AppConfig::default()).unwrap();
+        assert!(!json.contains("review_reasoning"));
+        let config: crate::app::AppConfig = serde_json::from_str(
+            r#"{"review_reasoning":"xhigh","review_reasonings":{"co_review":"low"}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.review_reasoning, Some(XHigh));
+        assert_eq!(
+            config.review_reasoning_for(ReviewAction::CoReview),
+            Some(Low)
+        );
+    }
 }

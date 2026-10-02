@@ -20,8 +20,8 @@ use agent_mainframe::automation::{
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
     NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
-    StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse, TodoDeleteChoice,
-    WorkspaceSnapshot,
+    StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
+    TodoDeleteChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
@@ -281,7 +281,7 @@ fn start_session(
     state: State<AppState>,
     target: SessionTarget,
     approved: bool,
-) -> Result<StartFeatureResponse, GuiError> {
+) -> Result<StartSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_session(target, approved)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());

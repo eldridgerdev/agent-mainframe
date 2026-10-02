@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::db::plan_interviews::{PlanInterviewRecord, PlanInterviewStage};
+use crate::db::remote_devices::RemoteDevice;
 use crate::editor::TextEditor;
 use crate::extension::{
     ConfiguredPlanQuestion, CustomSessionConfig, FeaturePreset, LifecycleHooks,
@@ -151,7 +152,7 @@ impl ViewState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PendingInput {
     pub session_id: String,
     pub cwd: String,
@@ -1747,6 +1748,7 @@ pub enum AppMode {
     CreatingFeature(CreateFeatureState),
     #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
+    ModelAnalysis(Box<super::model_analysis::State>),
     DeletingProject(String),
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
@@ -1880,12 +1882,139 @@ pub enum AppMode {
     Dormant(DormantViewState),
     /// Global context-window/severity settings (`w` on the dashboard).
     ContextSettings(ContextSettingsState),
+    /// Pairing a phone to the Remote Control companion app: a one-time code
+    /// (shown as a QR + digits) that `App::process_pairing_exchange`
+    /// validates against `POST /pair/exchange` requests relayed from the
+    /// server thread (`docs/backlog/remote-control-companion-app-plan.md`,
+    /// Epic 4). This struct *is* the pending-pairing state — there is no
+    /// separate copy on `App`, so closing the dialog (which drops it)
+    /// invalidates the code.
+    RemotePairing(RemotePairingState),
+}
+
+impl AppMode {
+    /// The mode this one stashed to restore verbatim on exit, if any — a
+    /// sub-mode opened over an overlay (e.g. `TodoImplementChoice` over
+    /// `Todos`) keeps that overlay alive inside it.
+    pub fn stashed_mode(&self) -> Option<&AppMode> {
+        match self {
+            AppMode::TodoImplementChoice(state) => Some(&state.origin),
+            AppMode::TodoSpawnTarget(state) => Some(&state.origin),
+            AppMode::PromptEditor(state) => Some(&state.return_to),
+            AppMode::SkillPicker(state) => Some(&state.return_to),
+            AppMode::PromptPrecall(pending) => Some(&pending.prior_mode),
+            AppMode::SyntaxLanguagePicker(state) => state.return_to.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this mode is, or has stashed underneath it, the TODOs
+    /// overlay — whose in-memory panes will be restored as they are.
+    pub fn holds_todos_overlay(&self) -> bool {
+        let mut mode = Some(self);
+        while let Some(current) = mode {
+            if matches!(current, AppMode::Todos(_)) {
+                return true;
+            }
+            mode = current.stashed_mode();
+        }
+        false
+    }
 }
 
 /// The view to return to plus the stable TODO identity to complete.
 pub struct TodoReferenceCompletionState {
     pub view: ViewState,
     pub todo_id: String,
+}
+
+/// UI status for the active `RemotePairing` dialog.
+pub enum PairingDialogStatus {
+    /// No exchange attempt has resolved yet.
+    Waiting,
+    /// A device successfully paired; `Esc`/`Enter` closes the dialog.
+    Paired { device_name: String },
+    /// The most recent attempt failed, or the code expired/locked out —
+    /// human-readable, shown directly, and cleared by `r` regenerating.
+    Failed(String),
+}
+
+pub struct RemotePairingState {
+    /// The current one-time code. Also embedded in `qr_payload`.
+    pub code: String,
+    /// The URL the QR encodes, minus the code: `AppConfig::remote_public_url`
+    /// when set, else `http://<addr>`. Shown under the QR so the address can
+    /// be typed when a camera isn't handy.
+    pub url: String,
+    /// Pre-rendered half-block QR glyphs (`crate::qr::render_qr_lines`),
+    /// one `String` per row. Empty when encoding failed (shouldn't happen
+    /// for this payload shape) — the dialog falls back to the digits alone.
+    pub qr_lines: Vec<String>,
+    pub expires_at: Instant,
+    /// Failed exchange attempts against `code` so far.
+    pub attempts: u32,
+    /// Set once `attempts` hits the cap — the code is dead even if it
+    /// hasn't expired yet; only `r` (a fresh code) recovers.
+    pub locked: bool,
+    pub status: PairingDialogStatus,
+    /// Which sub-screen of the dialog is showing — the pairing code itself,
+    /// or the paired-devices list (`v`) with per-device revoke. Lives here
+    /// rather than as a separate `AppMode` because it's a view toggle on
+    /// the same dialog, not a new destination — `Esc` from the devices list
+    /// returns to `Pairing`, and only `Esc` from `Pairing` closes the dialog.
+    pub view: PairingDialogView,
+    /// Set when `url` is an address no phone can open — the server's own
+    /// loopback or wildcard bind, because no `remote_public_url` is
+    /// configured. The dialog says so instead of showing a QR that can
+    /// only fail.
+    pub url_unreachable: bool,
+    /// Where `url` came from — shown under it, and what decides whether a
+    /// later Tailscale probe may replace it (`App::refresh_pairing_url`).
+    pub url_source: PairingUrlSource,
+    /// The session view the dialog was opened over (`Ctrl+Space Q` from a
+    /// session), restored on close — the same shape as the bookmark
+    /// picker's `from_view`.
+    pub from_view: Option<ViewState>,
+}
+
+/// The `RemotePairing` dialog's current sub-screen.
+pub enum PairingDialogView {
+    Pairing,
+    Devices(RemoteDevicesListState),
+    /// Step-by-step Tailscale setup (`s`), scrolled by `scroll` rows.
+    /// `max_scroll` is written by the draw, the only place that knows how
+    /// many rows the wrapped steps take at the current size, so scrolling
+    /// stops at the last step instead of running on past it.
+    Setup {
+        scroll: u16,
+        max_scroll: std::cell::Cell<u16>,
+    },
+}
+
+/// Where the pairing QR's address comes from, most explicit first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairingUrlSource {
+    /// `remote_public_url` in config.json — never second-guessed.
+    Configured,
+    /// The HTTPS address `tailscale serve` answers on for AMF's port.
+    Tailscale,
+    /// The server's own bind address: fine on the LAN or over `adb
+    /// reverse`, never for install or push.
+    Direct,
+}
+
+/// The paired-devices list shown by pressing `v` in the pairing dialog.
+pub struct RemoteDevicesListState {
+    /// Loaded once on `v` — every paired device, most recently paired
+    /// first (`AmfDb::list_remote_devices`'s own ordering). Revoking
+    /// updates this copy directly rather than reloading, so the cursor
+    /// position is stable across a revoke.
+    pub devices: Vec<RemoteDevice>,
+    pub selected: usize,
+    /// Set by a first `d` press on a revocable row; a second `d` while set
+    /// performs the revoke. Any other key clears it — mirrors the prompt
+    /// overrides manager's `confirm_clear` (`app/prompt_overrides.rs`).
+    pub confirm_revoke: bool,
 }
 
 /// Pending dispatch of a finished review's feedback to a freshly-spun-up
@@ -2355,6 +2484,8 @@ pub enum HookNext {
     StartFeature {
         pi: usize,
         fi: usize,
+        /// The session row the start was requested from, launched on purpose.
+        session_id: Option<String>,
     },
     StopFeature {
         pi: usize,
@@ -2792,6 +2923,7 @@ impl CreateFeatureState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedFeatureLaunch {
+    pub(crate) model_selection: Option<super::model_analysis::Selection>,
     pub project_name: String,
     /// Separate display/persisted feature name for workflows whose branch is
     /// user-editable. Ordinary creation leaves this `None` and uses `branch`.
@@ -3042,6 +3174,14 @@ pub struct PlanInterviewState {
     pub critique: Option<String>,
     /// Explicit frontier model chosen for this plan's Expert review.
     pub expert_model: Option<String>,
+    /// Reasoning level picked with `expert_model`. Not persisted with the draft
+    /// (that would need a schema change on the shared `amf.db`), so a resumed
+    /// interview falls back to `review_reasoning_for(PlanPreflight)`.
+    pub expert_reasoning: Option<crate::headless::ReasoningLevel>,
+    /// The picker was confirmed this session, so `expert_reasoning` is
+    /// authoritative even when `None` (an explicit "Default"). False for a
+    /// resumed draft, where the config level applies instead.
+    pub expert_reasoning_picked: bool,
     /// Single-select model picker shown before the Expert pre-call gate.
     pub expert_model_pick: Option<AiModelPickState>,
     /// Durable lifecycle state for the explicitly requested Expert review.
@@ -3247,6 +3387,8 @@ impl PlanInterviewState {
             investigation_token_estimate: 0,
             critique: None,
             expert_model: None,
+            expert_reasoning: None,
+            expert_reasoning_picked: false,
             expert_model_pick: None,
             critique_status: None,
             preflight_fingerprint: None,
@@ -4034,6 +4176,8 @@ impl PlanInterviewState {
     fn clear_critique(&mut self) {
         self.critique = None;
         self.expert_model = None;
+        self.expert_reasoning = None;
+        self.expert_reasoning_picked = false;
         self.expert_model_pick = None;
         self.critique_status = None;
         self.preflight_fingerprint = None;
@@ -5252,6 +5396,7 @@ mod tests {
 
     fn prepared_launch(project_name: &str, branch: &str) -> PreparedFeatureLaunch {
         PreparedFeatureLaunch {
+            model_selection: None,
             project_name: project_name.into(),
             feature_name: None,
             branch: branch.into(),

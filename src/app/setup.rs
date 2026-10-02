@@ -1246,9 +1246,35 @@ pub fn ensure_notification_hooks(
     ensure_amf_skills(workdir, agent);
 }
 
+const PLAN_BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
+const PLAN_END: &str = "<!-- AMF:plan-instructions:end -->";
+const PLAN_IGNORE_BEGIN: &str = "# AMF:plan-instructions:begin";
+const PLAN_IGNORE_END: &str = "# AMF:plan-instructions:end";
+const REVIEW_BEGIN: &str = "<!-- AMF:review-instructions:begin -->";
+const REVIEW_END: &str = "<!-- AMF:review-instructions:end -->";
+
+/// Every marker-delimited block AMF writes into a checkout. Add a new one here
+/// when adding a managed block, or review questions will treat a checkout AMF
+/// itself touched as having local changes.
+const MANAGED_BLOCKS: [(&str, &str); 3] = [
+    (PLAN_BEGIN, PLAN_END),
+    (PLAN_IGNORE_BEGIN, PLAN_IGNORE_END),
+    (REVIEW_BEGIN, REVIEW_END),
+];
+
+/// `s` without any AMF-managed block — what the file would be had AMF never
+/// touched it (up to trailing whitespace, which AMF normalises on write).
+pub fn strip_amf_managed_blocks(s: &str) -> String {
+    MANAGED_BLOCKS
+        .iter()
+        .fold(s.to_string(), |acc, (begin, end)| {
+            strip_between_markers(&acc, begin, end)
+        })
+}
+
 pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled: bool) {
-    const BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
-    const END: &str = "<!-- AMF:plan-instructions:end -->";
+    const BEGIN: &str = PLAN_BEGIN;
+    const END: &str = PLAN_END;
     const BLOCK: &str = concat!(
         "<!-- AMF:plan-instructions:begin -->\n\n",
         "## Plan Mode\n\n",
@@ -1258,8 +1284,8 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
         "checkboxes and notes current as work progresses.\n\n",
         "<!-- AMF:plan-instructions:end -->\n",
     );
-    const AGENTS_IGNORE_BEGIN: &str = "# AMF:plan-instructions:begin";
-    const AGENTS_IGNORE_END: &str = "# AMF:plan-instructions:end";
+    const AGENTS_IGNORE_BEGIN: &str = PLAN_IGNORE_BEGIN;
+    const AGENTS_IGNORE_END: &str = PLAN_IGNORE_END;
 
     let uses_claude_local = matches!(agent, AgentKind::Claude);
     let md_path = workdir.join(if uses_claude_local {
@@ -1350,8 +1376,8 @@ pub fn strip_between_markers(s: &str, begin: &str, end: &str) -> String {
 }
 
 pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
-    const BEGIN: &str = "<!-- AMF:review-instructions:begin -->";
-    const END: &str = "<!-- AMF:review-instructions:end -->";
+    const BEGIN: &str = REVIEW_BEGIN;
+    const END: &str = REVIEW_END;
     const BLOCK: &str = concat!(
         "<!-- AMF:review-instructions:begin -->\n\n",
         "## Review Mode\n\n",

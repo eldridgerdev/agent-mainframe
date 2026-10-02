@@ -103,7 +103,42 @@ impl App {
             .and_then(|p| p.features.get(fi))
             .is_some_and(|feature| feature.status == ProjectStatus::Stopped);
 
-        if self.ensure_feature_running(pi, fi, intent)? == Started::Parked {
+        // Opening a session that was stopped individually means wanting it
+        // running again, whether or not the rest of its feature is up.
+        let stopped_target = target_si.filter(|&si| {
+            self.store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .and_then(|f| f.sessions.get(si))
+                .is_some_and(|s| s.stopped)
+        });
+        let started = match stopped_target {
+            Some(si) if !feature_was_stopped => {
+                if self.gate_launch(intent) == Started::Parked {
+                    Started::Parked
+                } else {
+                    // Nothing recreated means the feature's tmux session is
+                    // gone too, so the feature start has to include it.
+                    self.restart_stopped_session_window_unchecked(pi, fi, si)?;
+                    let target = self.session_id_at(pi, fi, si);
+                    self.ensure_feature_running_with_target(
+                        pi,
+                        fi,
+                        target.as_deref(),
+                        StartIntent::Approved,
+                    )?
+                }
+            }
+            // A parked start leaves the stop in place: the replay targets the
+            // session again on confirm, and a cancel keeps it stopped.
+            Some(si) => {
+                let target = self.session_id_at(pi, fi, si);
+                self.ensure_feature_running_with_target(pi, fi, target.as_deref(), intent)?
+            }
+            None => self.ensure_feature_running(pi, fi, intent)?,
+        };
+        if started == Started::Parked {
             // The confirmation dialog owns the screen now; it replays this
             // call if the user says yes.
             return Ok(());
@@ -122,19 +157,15 @@ impl App {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
 
+            // From the feature row, open its first agent that is actually
+            // running, then anything running, before settling for a stopped one.
             let si = target_si.unwrap_or_else(|| {
-                feature
-                    .sessions
+                let sessions = &feature.sessions;
+                sessions
                     .iter()
-                    .position(|s| {
-                        matches!(
-                            s.kind,
-                            SessionKind::Claude
-                                | SessionKind::Opencode
-                                | SessionKind::Codex
-                                | SessionKind::Pi
-                        )
-                    })
+                    .position(|s| s.kind.is_agent_harness() && s.runs_with_feature())
+                    .or_else(|| sessions.iter().position(|s| s.runs_with_feature()))
+                    .or_else(|| sessions.iter().position(|s| s.kind.is_agent_harness()))
                     .unwrap_or(0)
             });
 
@@ -620,36 +651,6 @@ impl App {
             Ok(()) => self.push_toast_success("Opened Remote Control URL"),
             Err(e) => self.push_toast_error(format!("Open failed: {e}")),
         }
-        Ok(())
-    }
-
-    /// Toggle Remote Control on the focused Claude session by sending `/rc`.
-    /// Sent straight to the tmux pane (bypassing the AMF composer), mirroring
-    /// how the compose path submits slash commands.
-    pub fn toggle_remote_control_in_view(&mut self) -> Result<()> {
-        let (session, window) = match &self.mode {
-            AppMode::Viewing(v) if v.session_kind == SessionKind::Claude => {
-                (v.session.clone(), v.window.clone())
-            }
-            AppMode::Viewing(_) => {
-                self.push_toast_warning("Remote Control: not a Claude session");
-                return Ok(());
-            }
-            _ => return Ok(()),
-        };
-
-        if let Some(reason) =
-            crate::claude::ClaudeLauncher::remote_control_block_reason(self.config.zai.is_some())
-        {
-            self.push_toast_warning(format!("Remote Control {reason}"));
-            return Ok(());
-        }
-
-        // Clear any leftover input so `/rc` cannot merge with typed text.
-        self.tmux.send_key_name(&session, &window, "C-u")?;
-        self.tmux.send_literal(&session, &window, "/rc")?;
-        self.tmux.send_key_name(&session, &window, "Enter")?;
-        self.push_toast_info("Sent /rc to toggle Remote Control");
         Ok(())
     }
 
@@ -1363,12 +1364,13 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        // Only cycle sessions with a live pane: native ones (TODOs) have none,
+        // and neither does one stopped individually.
         let tmux_indices: Vec<usize> = feature
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .filter(|(_, s)| s.runs_with_feature())
             .map(|(i, _)| i)
             .collect();
         if tmux_indices.len() <= 1 {
@@ -1417,12 +1419,13 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        // Only cycle sessions with a live pane: native ones (TODOs) have none,
+        // and neither does one stopped individually.
         let tmux_indices: Vec<usize> = feature
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .filter(|(_, s)| s.runs_with_feature())
             .map(|(i, _)| i)
             .collect();
         if tmux_indices.len() <= 1 {

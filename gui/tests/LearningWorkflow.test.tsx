@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import App from "../src/App";
@@ -22,9 +22,10 @@ it("opens Learning from a feature and gates the editing handoff before showing a
   const learning: LearningView = {
     workflow_id: "workflow", revision: 3, target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
     scope: "repo_tree", is_git: false, entries: [], content_path: null, content: [], content_line_labels: [], content_error: null,
-    anchor: "this whole project", harness: "claude", harnesses: ["claude"], level: "newcomer", history_saved: true,
+    anchor: "this whole project", selection: null, hunks: [], starters: [], can_keep_todo: true, harness: "claude", harnesses: ["claude"], level: "newcomer", history_saved: true,
     error: null, notice: null, qa: [{ id: "answer", parent_id: null, question: "Explain the project", answer: "An answer", anchor: "this whole project",
-      status: "answered", intent: "explain", harness: "claude", run_mode: "this file only", error: null, drift: null, spawned_session_id: null }],
+      status: "answered", intent: "explain", harness: "claude", run_mode: "this file only", error: null, drift: null, spawned_session_id: null,
+      todo_id: null, todo_seed: null }],
   };
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     switch (command) {
@@ -37,7 +38,8 @@ it("opens Learning from a feature and gates the editing handoff before showing a
       case "learning_launch_agent": {
         if (!(args as { approved: boolean }).approved) throw { kind: "needs_approval", message: "Too many agents" };
         snapshot.projects[0].features[0].sessions.push({ id: "agent", label: "Learning agent", kind: "claude", tmux_window: "claude" });
-        return { target: { project_id: "project", feature_id: "feature", session_id: "agent" }, draft_prompt: "Editable learning seed" };
+        return { target: { project_id: "project", feature_id: "feature", session_id: "agent" }, draft_prompt: "Editable learning seed",
+          notice: null, info: null, start_required: false };
       }
       default: throw new Error(`Unexpected command: ${command}`);
     }
@@ -59,5 +61,52 @@ it("opens Learning from a feature and gates the editing handoff before showing a
   expect(draft.value).toBe("Editable learning seed");
   expect(screen.queryByRole("dialog", { name: "Learning", exact: true })).toBeNull();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_submit_prompt")).toBe(false);
+  client.clear();
+});
+
+it("starts a stopped linked editing session through the tab's own start instead of opening another", async () => {
+  const snapshot: WorkspaceSnapshot = {
+    projects: [{ id: "project", name: "demo", repo: "/demo", is_git: false,
+      features: [{ id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo", is_worktree: false,
+        status: "stopped", agent: "claude", mode: "vibeless",
+        sessions: [{ id: "agent", label: "Learning agent", kind: "claude", tmux_window: "claude" }] }] }],
+    snapshot_at: "2026-10-01T00:00:00Z", stopped_session_ids: ["agent"],
+  };
+  const learning: LearningView = {
+    workflow_id: "workflow", revision: 3, target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
+    scope: "repo_tree", is_git: false, entries: [], content_path: null, content: [], content_line_labels: [], content_error: null,
+    anchor: "this whole project", selection: null, hunks: [], starters: [], can_keep_todo: true, harness: "claude",
+    harnesses: ["claude"], level: "newcomer", history_saved: true, error: null, notice: null,
+    qa: [{ id: "answer", parent_id: null, question: "Explain the project", answer: "An answer", anchor: "this whole project",
+      status: "answered", intent: "explain", harness: "claude", run_mode: "this file only", error: null, drift: null,
+      spawned_session_id: "agent", todo_id: null, todo_seed: null }],
+  };
+  const target = { project_id: "project", feature_id: "feature", session_id: "agent" };
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    switch (command) {
+      case "get_snapshot": return snapshot;
+      case "supported_harnesses": return [{ slug: "claude", display_name: "Claude" }];
+      case "supported_modes": return [{ slug: "vibeless", display_name: "Vibeless", description: "" }];
+      case "plan_snapshot": return { active: null, draft: null };
+      case "learning_begin": return learning;
+      case "learning_snapshot": return learning;
+      case "learning_launch_agent":
+        return { target, draft_prompt: "Editable learning seed", notice: null,
+          info: "'Learning agent' is stopped; start it to continue that conversation.", start_required: true };
+      case "session_recovery_option": return null;
+      case "start_session": return { session_id: "agent", already_running: false, message: "Started" };
+      default: throw new Error(`Unexpected command: ${command}`);
+    }
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Learning", exact: true }));
+  await screen.findByRole("dialog", { name: "Learning", exact: true });
+  fireEvent.click(screen.getByRole("button", { name: "Return to editing agent" }));
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("start_session", { target, approved: false }));
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("session_recovery_option", { target });
+  expect(await screen.findByText(/is stopped; start it/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "add_session")).toBe(false);
   client.clear();
 });

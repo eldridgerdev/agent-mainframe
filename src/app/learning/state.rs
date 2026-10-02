@@ -666,8 +666,8 @@ pub struct LearningActionEditor {
     /// fix — which is most of why this dialog exists at all.
     pub title: TextEditor,
     /// The note's body: where the question was anchored, what was asked, and an
-    /// excerpt of the answer. Shown but not edited here, so what gets written
-    /// is never a surprise.
+    /// excerpt of the answer. Shown but not edited in the TUI, so what gets
+    /// written is never a surprise; the GUI form makes it editable.
     pub body: String,
     /// Refusal raised by a key pressed *in* the dialog (an emptied title). Kept
     /// here rather than on the overlay because the dialog covers the overlay's

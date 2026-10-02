@@ -527,7 +527,12 @@ export interface LearningAnswer {
   error: string | null;
   drift: string | null;
   spawned_session_id: string | null;
+  /** The TODO this answer was kept as, while that item still exists. */
+  todo_id: string | null;
+  todo_seed: { title: string; notes: string } | null;
 }
+export interface LearningStarter { text: string; intent: "explain" | "action" }
+export interface LearningHunk { index: number; start: number; end: number }
 export interface LearningView {
   workflow_id: string;
   revision: number;
@@ -541,6 +546,11 @@ export interface LearningView {
   content_line_labels: string[];
   content_error: string | null;
   anchor: string;
+  /** 1-based inclusive rows of `content` under a line or hunk anchor. */
+  selection: [number, number] | null;
+  hunks: LearningHunk[];
+  starters: LearningStarter[];
+  can_keep_todo: boolean;
   harness: AgentSlug;
   harnesses: AgentSlug[];
   level: "newcomer" | "familiar";
@@ -553,10 +563,19 @@ export type LearningAction =
   | { kind: "select_entry"; key: string }
   | { kind: "toggle_scope" | "refresh" | "project_anchor" | "file_anchor" | "close" }
   | { kind: "lines_anchor"; start: number; end: number }
+  | { kind: "hunk_anchor"; index: number }
   | { kind: "settings"; harness: AgentSlug; level: string }
   | { kind: "ask"; question: string; intent: string; parent_id: string | null }
-  | { kind: "deep_dive"; qa_id: string };
-export interface LearningHandoff { target: SessionTarget; draft_prompt: string; notice: string | null }
+  | { kind: "deep_dive" | "relabel_intent"; qa_id: string }
+  | { kind: "keep_todo"; qa_id: string; title: string; notes: string };
+export interface LearningHandoff {
+  target: SessionTarget;
+  draft_prompt: string;
+  notice: string | null;
+  info: string | null;
+  /** The linked session still exists but is stopped; start it instead of opening another. */
+  start_required: boolean;
+}
 export const learningBegin = (target: FeatureTarget): Promise<LearningView> =>
   invoke("learning_begin", { target });
 export const learningSnapshot = (): Promise<LearningView | null> => invoke("learning_snapshot");

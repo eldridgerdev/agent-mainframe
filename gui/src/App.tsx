@@ -385,7 +385,11 @@ export default function App() {
     if (!learning || learningActionPending.current) return false;
     learningActionPending.current = true;
     setLearningBusy(true);
-    try { setLearning(await learningAct(learning, action)); return true; }
+    try {
+      setLearning(await learningAct(learning, action));
+      if (action.kind === "keep_todo") void queryClient.invalidateQueries({ queryKey: ["todos"] });
+      return true;
+    }
     catch (err) { reportError(err); return false; }
     finally { learningActionPending.current = false; setLearningBusy(false); }
   }
@@ -399,6 +403,10 @@ export default function App() {
       setLearning(null); setLearningApproval(null);
       openSession(handoff.target, handoff.draft_prompt);
       if (handoff.notice) pushToast({ tone: "error", title: "Learning", message: handoff.notice });
+      if (handoff.info) pushToast({ tone: "info", title: "Learning", message: handoff.info });
+      // A stopped linked session goes through the tab's own start, which
+      // offers to resume its saved conversation.
+      if (handoff.start_required) void beginSessionStart(handoff.target);
       void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
     } catch (err) {
       const error = asGuiError(err);

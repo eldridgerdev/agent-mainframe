@@ -38,6 +38,32 @@ pub struct LearningAnswerView {
     pub error: Option<String>,
     pub drift: Option<String>,
     pub spawned_session_id: Option<String>,
+    /// The TODO this answer was kept as, when that item still exists.
+    pub todo_id: Option<String>,
+    /// Editable starting point for keeping an answered row as a TODO.
+    pub todo_seed: Option<LearningTodoSeed>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningTodoSeed {
+    pub title: String,
+    pub notes: String,
+}
+
+/// A preset question that fits the current anchor. Picking one fills the
+/// question form; it is never asked on its own.
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningStarter {
+    pub text: String,
+    pub intent: String,
+}
+
+/// One hunk of the displayed diff, as 1-based rows of `LearningView::content`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LearningHunk {
+    pub index: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +80,14 @@ pub struct LearningView {
     pub content_line_labels: Vec<String>,
     pub content_error: Option<String>,
     pub anchor: String,
+    /// 1-based inclusive rows of `content` the anchor covers, for a line or
+    /// hunk anchor.
+    pub selection: Option<(usize, usize)>,
+    /// Hunks of the displayed diff; empty outside branch-changes scope.
+    pub hunks: Vec<LearningHunk>,
+    pub starters: Vec<LearningStarter>,
+    /// Whether a TODO list is reachable (keeping needs the database).
+    pub can_keep_todo: bool,
     pub harness: AgentKind,
     pub harnesses: Vec<AgentKind>,
     pub level: String,
@@ -77,6 +111,9 @@ pub enum LearningAction {
         start: usize,
         end: usize,
     },
+    HunkAnchor {
+        index: usize,
+    },
     Settings {
         harness: AgentKind,
         level: String,
@@ -89,6 +126,14 @@ pub enum LearningAction {
     DeepDive {
         qa_id: String,
     },
+    RelabelIntent {
+        qa_id: String,
+    },
+    KeepTodo {
+        qa_id: String,
+        title: String,
+        notes: String,
+    },
     Close,
 }
 
@@ -96,7 +141,14 @@ pub enum LearningAction {
 pub struct LearningHandoff {
     pub target: SessionTarget,
     pub draft_prompt: String,
+    /// A partial failure worth an error notice.
     pub notice: Option<String>,
+    /// What happened to the answer's linked session, when it was not simply
+    /// reused.
+    pub info: Option<String>,
+    /// The linked session still exists but is stopped: the GUI starts it
+    /// through its usual resume/pick/clear flow instead of opening another.
+    pub start_required: bool,
 }
 
 fn entry_key(entry: &LearningListEntry) -> String {
@@ -188,6 +240,49 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
     let AppMode::Learning(s) = &app.mode else {
         unreachable!()
     };
+    // A kept item deleted from the TODO list no longer counts as kept, so
+    // the row offers keeping it again.
+    let kept_todo = |todo_id: &Option<String>| {
+        todo_id.clone().filter(|id| {
+            app.db
+                .as_ref()
+                .and_then(|db| db.find_todo_by_id(id).ok().flatten())
+                .is_some()
+        })
+    };
+    let selection = matches!(
+        s.anchor,
+        LearningAnchor::Lines { .. } | LearningAnchor::Hunk { .. }
+    )
+    .then(|| s.selected_span())
+    .map(|(start, end)| (start + 1, end + 1));
+    let hunks = if s.hunk_selection_available() {
+        s.selected_diff_file()
+            .map(|file| {
+                (0..file.hunk_start_indices().len())
+                    .filter_map(|index| {
+                        crate::app::learning::hunk_span(file, index).map(|(start, end)| {
+                            LearningHunk {
+                                index,
+                                start: start + 1,
+                                end: end + 1,
+                            }
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let starters = crate::app::learning::starter_questions_for(s.anchor)
+        .into_iter()
+        .filter_map(|i| crate::app::learning::STARTER_QUESTIONS.get(i))
+        .map(|q| LearningStarter {
+            text: q.text.into(),
+            intent: q.intent.as_str().into(),
+        })
+        .collect();
     Ok(Some(LearningView {
         workflow_id,
         revision,
@@ -257,6 +352,10 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
         },
         content_error: s.content_error.clone(),
         anchor: s.anchor.describe(s.content_path.as_deref()),
+        selection,
+        hunks,
+        starters,
+        can_keep_todo: app.db.is_some(),
         harness: s.harness.clone(),
         harnesses: AgentKind::ALL.to_vec(),
         level: s.level.as_str().into(),
@@ -279,16 +378,49 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
                     .drift_for(&q.id)
                     .map(|d| d.describe(q.anchor.line_range_for_display())),
                 spawned_session_id: q.spawned_session_id.clone(),
+                todo_id: kept_todo(&q.todo_id),
+                todo_seed: q.answer.as_ref().map(|_| LearningTodoSeed {
+                    title: crate::app::learning::todo_title_seed(q),
+                    notes: crate::app::learning::todo_body(q, s.drift_for(&q.id)),
+                }),
             })
             .collect(),
-        error: s.error.as_ref().map(|error| {
-            error
-                .replace("Press the scope key", "Switch the file scope")
-                .replace(" (F)", "")
-                .replace(" (D on the dashboard)", "")
-        }),
-        notice: s.notice.clone(),
+        error: s.error.as_deref().map(gui_wording),
+        notice: s.notice.as_deref().map(gui_wording),
     }))
+}
+
+/// The shared banners name TUI keys; the GUI has buttons instead.
+fn gui_wording(text: &str) -> String {
+    text.replace("Press the scope key", "Switch the file scope")
+        .replace(" (F)", "")
+        .replace(" (D on the dashboard)", "")
+}
+
+/// Point the history cursor at `qa_id` for the engines that act on it.
+fn select_qa(app: &mut crate::app::App, qa_id: &str) -> GuiResult<()> {
+    let AppMode::Learning(s) = &mut app.mode else {
+        unreachable!()
+    };
+    let index =
+        s.qa.iter()
+            .position(|q| q.id == qa_id)
+            .ok_or_else(|| GuiError::not_found("Question was removed"))?;
+    s.select_qa(index);
+    Ok(())
+}
+
+/// Take the banner a shared engine raised instead of acting, as a conflict.
+fn engine_refusal(app: &mut crate::app::App, fallback: &str) -> GuiError {
+    let AppMode::Learning(s) = &mut app.mode else {
+        unreachable!()
+    };
+    GuiError::conflict(
+        s.error
+            .take()
+            .map(|error| gui_wording(&error))
+            .unwrap_or_else(|| fallback.into()),
+    )
 }
 
 pub fn act(
@@ -421,6 +553,22 @@ pub fn act(
                 app.learning_ask_at(&question, intent, None, None);
             }
         }
+        LearningAction::HunkAnchor { index } => {
+            let AppMode::Learning(s) = &mut app.mode else {
+                unreachable!()
+            };
+            let start = s
+                .selected_diff_file()
+                .filter(|_| s.hunk_selection_available())
+                .and_then(|file| crate::app::learning::hunk_span(file, index))
+                .map(|(start, _)| start)
+                .ok_or_else(|| {
+                    GuiError::conflict("That hunk is no longer in the diff; refresh Learning")
+                })?;
+            s.cursor_line = start;
+            s.selection_anchor = None;
+            app.learning_select_hunk();
+        }
         LearningAction::DeepDive { qa_id } => {
             let AppMode::Learning(s) = &mut app.mode else {
                 unreachable!()
@@ -431,9 +579,93 @@ pub fn act(
                     .ok_or_else(|| GuiError::not_found("Question was removed"))?;
             app.learning_deep_dive();
         }
+        LearningAction::RelabelIntent { qa_id } => {
+            select_qa(app, &qa_id)?;
+            if app.learning_relabel_intent().is_none() {
+                return Err(engine_refusal(app, "The question could not be re-filed"));
+            }
+        }
+        LearningAction::KeepTodo {
+            qa_id,
+            title,
+            notes,
+        } => keep_todo(gui, &qa_id, title, notes)?,
     }
     gui.learning_context.as_mut().unwrap().revision += 1;
     snapshot(gui)
+}
+
+/// Keep an answer as a TODO with the title and notes the user edited, through
+/// the TUI's confirmation engine (TODOs session, scope, link back).
+fn keep_todo(gui: &mut GuiHandle, qa_id: &str, title: String, notes: String) -> GuiResult<()> {
+    if title.trim().is_empty() {
+        return Err(GuiError::conflict(
+            "Give it a title first — this is what you'll see later.",
+        ));
+    }
+    if gui.app_for_workflow().db.is_none() {
+        return Err(GuiError::conflict(
+            "AMF can't reach its database, so there's no TODO list to add to.",
+        ));
+    }
+    let app = gui.app_for_workflow();
+    let AppMode::Learning(s) = &app.mode else {
+        unreachable!()
+    };
+    let qa =
+        s.qa.iter()
+            .find(|q| q.id == qa_id)
+            .cloned()
+            .ok_or_else(|| GuiError::not_found("Question was removed"))?;
+    if qa.answer.is_none() {
+        return Err(GuiError::conflict(
+            "Wait for an answer before keeping it as a TODO",
+        ));
+    }
+    let replacing_deleted = match &qa.todo_id {
+        Some(todo_id) => {
+            if gui.db()?.find_todo_by_id(todo_id)?.is_some() {
+                return Err(GuiError::conflict(
+                    "You already kept that one — it's on the TODO list.",
+                ));
+            }
+            true
+        }
+        None => false,
+    };
+    let app = gui.app_for_workflow();
+    select_qa(app, qa_id)?;
+    let AppMode::Learning(s) = &mut app.mode else {
+        unreachable!()
+    };
+    s.action_editor = Some(crate::app::LearningActionEditor {
+        qa_id: qa_id.into(),
+        title: crate::editor::TextEditor::new(title),
+        body: notes,
+        error: None,
+        scroll: 0,
+        sync_to_cursor: true,
+    });
+    if app.learning_confirm_action().is_none() {
+        let AppMode::Learning(s) = &mut app.mode else {
+            unreachable!()
+        };
+        let refusal = s.action_editor.take().and_then(|editor| editor.error);
+        return Err(match refusal {
+            Some(error) => GuiError::conflict(error),
+            None => engine_refusal(app, "The TODO could not be added"),
+        });
+    }
+    if replacing_deleted {
+        let AppMode::Learning(s) = &mut app.mode else {
+            unreachable!()
+        };
+        if s.error.is_none() {
+            s.notice =
+                Some("The item this was kept as had been deleted — this added a new one.".into());
+        }
+    }
+    Ok(())
 }
 
 /// Crossing into editing uses the existing GUI resource gate and session
@@ -456,20 +688,26 @@ pub fn launch_agent(
             .find(|q| q.id == qa_id)
             .cloned()
             .ok_or_else(|| GuiError::not_found("Question was removed"))?;
-    if qa.answer.is_none() {
+    // A failed row may still be handed over -- the seed says the first
+    // attempt failed. Only a run still in flight is refused, so two agents are
+    // never set on one question.
+    if qa.status.is_in_flight() {
         return Err(GuiError::conflict(
-            "Wait for an answer before opening an editing agent",
+            "That answer is still generating — you can hand it to an editing agent once it arrives.",
         ));
     }
     let draft_prompt = crate::app::learning::escalation_seed(&qa, s.drift_for(qa_id));
+    let mut replacing_removed = false;
     if let Some(session_id) = &qa.spawned_session_id {
         let f = &app.store.projects[s.pi].features[s.fi];
-        if let Some(session) = f.sessions.iter().find(|v| &v.id == session_id)
-            && app.tmux.session_exists(&f.tmux_session)
-            && app
-                .tmux
-                .window_exists(&f.tmux_session, &session.tmux_window)
-        {
+        if let Some(session) = f.sessions.iter().find(|v| &v.id == session_id) {
+            // A surviving record is the conversation the link promised, even
+            // when it or its feature is stopped: hand it back for the GUI's
+            // ordinary start (with its resume choice) rather than open another.
+            let live = app.tmux.session_exists(&f.tmux_session)
+                && app
+                    .tmux
+                    .window_exists(&f.tmux_session, &session.tmux_window);
             let handoff = LearningHandoff {
                 target: SessionTarget {
                     project_id: target.project_id,
@@ -478,12 +716,22 @@ pub fn launch_agent(
                 },
                 draft_prompt,
                 notice: None,
+                info: (!live).then(|| {
+                    format!(
+                        "'{}' is stopped; start it to continue that conversation.",
+                        session.label
+                    )
+                }),
+                start_required: !live,
             };
-            gui.resolve_session_target(&handoff.target)?;
+            if live {
+                gui.resolve_session_target(&handoff.target)?;
+            }
             gui.app_for_workflow().close_learning_mode();
             gui.learning_context = None;
             return Ok(handoff);
         }
+        replacing_removed = true;
     }
     let kind = match app.store.projects[s.pi].features[s.fi].agent {
         AgentKind::Claude => SessionKind::Claude,
@@ -521,6 +769,9 @@ pub fn launch_agent(
         target: response.target,
         draft_prompt,
         notice,
+        info: replacing_removed
+            .then(|| "The session that answer opened is gone — this is a new one.".into()),
+        start_required: false,
     })
 }
 
@@ -835,8 +1086,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn branch_reader_rows_capture_the_displayed_diff_and_deep_dives_are_deduplicated() {
+    /// A git checkout whose feature branch changes README.md from `base` to
+    /// `changed`, opened in branch-changes scope on that file.
+    fn branch_fixture(base: &str, changed: &str) -> (tempfile::TempDir, GuiHandle, LearningView) {
         let (dir, mut gui, target) = fixture(MockTmuxOps::new());
         let git = |args: &[&str]| {
             let output = std::process::Command::new("git")
@@ -851,13 +1103,14 @@ mod tests {
             );
         };
         std::fs::write(dir.path().join(".gitignore"), "learning.db*\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), base).unwrap();
         git(&["init", "--initial-branch=main"]);
         git(&["config", "user.name", "AMF Test"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["add", "README.md", "other.rs"]);
         git(&["commit", "-m", "initial"]);
         git(&["checkout", "-b", "feature"]);
-        std::fs::write(dir.path().join("README.md"), "first\nchanged\nthird\n").unwrap();
+        std::fs::write(dir.path().join("README.md"), changed).unwrap();
         let writer = AmfDb::open(&dir.path().join("learning.db")).unwrap();
         let mut store = writer.load_store().unwrap();
         store.projects[0].is_git = true;
@@ -872,6 +1125,13 @@ mod tests {
                 key: "file:README.md".into(),
             },
         );
+        (dir, gui, view)
+    }
+
+    #[test]
+    fn branch_reader_rows_capture_the_displayed_diff_and_deep_dives_are_deduplicated() {
+        let (_dir, mut gui, view) =
+            branch_fixture("first\nsecond\nthird\n", "first\nchanged\nthird\n");
         let added = view
             .content
             .iter()
@@ -910,5 +1170,226 @@ mod tests {
             2,
             "repeated deep dives reuse the existing run"
         );
+    }
+
+    fn answered(gui: &mut GuiHandle) -> (LearningView, String) {
+        let target = gui.app_for_workflow().store.projects[0].features[0]
+            .id
+            .clone();
+        let project_id = gui.app_for_workflow().store.projects[0].id.clone();
+        let view = begin(
+            gui,
+            FeatureTarget {
+                project_id,
+                feature_id: target,
+            },
+        )
+        .unwrap();
+        let view = ask(gui, &view);
+        let qa_id = view.qa[0].id.clone();
+        deliver(gui, &qa_id);
+        (snapshot(gui).unwrap().unwrap(), qa_id)
+    }
+
+    #[test]
+    fn hunks_anchor_their_whole_span_and_starters_follow_the_anchor() {
+        // Edits far enough apart to stay separate hunks.
+        let base = (1..=12).map(|n| format!("{n}\n")).collect::<String>();
+        let changed = (1..=12)
+            .map(|n| match n {
+                2 => "two\n".to_string(),
+                11 => "eleven\n".to_string(),
+                n => format!("{n}\n"),
+            })
+            .collect::<String>();
+        let (_dir, mut gui, view) = branch_fixture(&base, &changed);
+        assert_eq!(view.hunks.len(), 2, "{:?}", view.content);
+
+        let second = view.hunks[1].clone();
+        let view = apply(&mut gui, &view, LearningAction::HunkAnchor { index: 1 });
+        assert_eq!(view.selection, Some((second.start, second.end)));
+        let AppMode::Learning(s) = &gui.app_for_workflow().mode else {
+            panic!()
+        };
+        assert_eq!(s.anchor, LearningAnchor::Hunk { index: 1 });
+        assert!(
+            view.starters
+                .iter()
+                .any(|q| q.text == "Explain this line by line."),
+            "a hunk is offered the line-level presets"
+        );
+
+        let error = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            LearningAction::HunkAnchor { index: 7 },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+
+        let view = apply(&mut gui, &view, LearningAction::ProjectAnchor);
+        assert!(view.selection.is_none());
+        assert!(view.starters.iter().all(|q| q.text.contains("project")));
+    }
+
+    #[test]
+    fn hunks_are_only_offered_for_a_diff() {
+        let (_dir, mut gui, target) = fixture(MockTmuxOps::new());
+        let view = begin(&mut gui, target).unwrap();
+        let view = apply(
+            &mut gui,
+            &view,
+            LearningAction::SelectEntry {
+                key: "file:README.md".into(),
+            },
+        );
+        assert!(view.hunks.is_empty());
+        let error = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            LearningAction::HunkAnchor { index: 0 },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+    }
+
+    #[test]
+    fn relabelling_persists_and_reports_without_rewriting_the_answer() {
+        let (_dir, mut gui, _) = fixture(MockTmuxOps::new());
+        let (view, qa_id) = answered(&mut gui);
+        let view = apply(
+            &mut gui,
+            &view,
+            LearningAction::RelabelIntent {
+                qa_id: qa_id.clone(),
+            },
+        );
+        assert_eq!(view.qa[0].intent, "action");
+        assert_eq!(view.qa[0].answer.as_deref(), Some("An explanation."));
+        let notice = view.notice.unwrap();
+        assert!(notice.contains("Re-filed as a change request"));
+        assert!(!notice.contains("(F)"), "{notice}");
+        let db = gui.db().unwrap();
+        let session = db
+            .load_or_create_learning_session(
+                &view.target.project_id,
+                &view.target.feature_id,
+                "Demo",
+                &AgentKind::Claude,
+                LearningLevel::Newcomer,
+            )
+            .unwrap();
+        assert_eq!(
+            db.learning_qa(&session.id).unwrap()[0].intent,
+            LearningQaIntent::Action
+        );
+    }
+
+    #[test]
+    fn keeping_an_answer_writes_the_edited_todo_once_and_replaces_a_deleted_one() {
+        let (_dir, mut gui, _) = fixture(MockTmuxOps::new());
+        let (view, qa_id) = answered(&mut gui);
+        assert!(view.can_keep_todo);
+        let seed = view.qa[0].todo_seed.clone().unwrap();
+        assert!(seed.notes.contains("What does this do?"));
+
+        let keep = |title: &str| LearningAction::KeepTodo {
+            qa_id: qa_id.clone(),
+            title: title.into(),
+            notes: "My own notes".into(),
+        };
+        let error = act(&mut gui, &view.workflow_id, view.revision, keep("  ")).unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+
+        let view = apply(&mut gui, &view, keep("Read the parser"));
+        let todo_id = view.qa[0].todo_id.clone().expect("linked to the new TODO");
+        let todo = gui
+            .db()
+            .unwrap()
+            .find_todo_by_id(&todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(todo.title, "Read the parser");
+        assert_eq!(todo.body.as_deref(), Some("My own notes"));
+        assert!(
+            gui.app_for_workflow().store.projects[0].features[0].has_todos_session(),
+            "the list is reachable from the dashboard"
+        );
+
+        let error = act(&mut gui, &view.workflow_id, view.revision, keep("Again")).unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert!(error.message.contains("already kept"));
+
+        gui.db().unwrap().delete_todo(&todo_id).unwrap();
+        let view = snapshot(&mut gui).unwrap().unwrap();
+        assert!(
+            view.qa[0].todo_id.is_none(),
+            "a deleted item no longer counts"
+        );
+        let view = apply(&mut gui, &view, keep("Read it again"));
+        let replacement = view.qa[0].todo_id.clone().unwrap();
+        assert_ne!(replacement, todo_id);
+        assert!(view.notice.unwrap().contains("had been deleted"));
+    }
+
+    #[test]
+    fn a_stopped_linked_session_is_handed_back_for_starting_not_duplicated() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(false);
+        tmux.expect_create_window().never();
+        tmux.expect_launch_claude().never();
+        let (_dir, mut gui, _) = fixture(tmux);
+        let session_id = gui.app_for_workflow().store.projects[0].features[0]
+            .add_session(SessionKind::Claude)
+            .id
+            .clone();
+        let (view, qa_id) = answered(&mut gui);
+        let AppMode::Learning(s) = &mut gui.app_for_workflow().mode else {
+            panic!()
+        };
+        s.qa[0].spawned_session_id = Some(session_id.clone());
+
+        let handoff =
+            launch_agent(&mut gui, &view.workflow_id, view.revision, &qa_id, false).unwrap();
+        assert!(handoff.start_required);
+        assert_eq!(handoff.target.session_id, session_id);
+        assert!(handoff.info.unwrap().contains("is stopped"));
+        assert!(snapshot(&mut gui).unwrap().is_none());
+        assert_eq!(
+            gui.app_for_workflow().store.projects[0].features[0]
+                .sessions
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_removed_linked_session_is_replaced_and_says_so() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_list_panes().returning(Vec::new);
+        tmux.expect_create_window()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        let (_dir, mut gui, _) = fixture(tmux);
+        gui.app_for_workflow().config.low_memory_warn_mb = 0;
+        let (view, qa_id) = answered(&mut gui);
+        let AppMode::Learning(s) = &mut gui.app_for_workflow().mode else {
+            panic!()
+        };
+        s.qa[0].spawned_session_id = Some("removed-session".into());
+        s.qa[0].status = crate::app::LearningQaStatus::Failed;
+        s.qa[0].answer = None;
+
+        let handoff =
+            launch_agent(&mut gui, &view.workflow_id, view.revision, &qa_id, true).unwrap();
+        assert!(!handoff.start_required);
+        assert_ne!(handoff.target.session_id, "removed-session");
+        assert!(handoff.info.unwrap().contains("is gone"));
     }
 }

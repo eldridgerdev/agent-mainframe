@@ -18,8 +18,10 @@ Keep them current as the staged GUI scope grows.
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |
 | Limited | Creation-time planning with any `on_worktree_created` hook, and ordinary or direct TODO creation with a choice-prompting worktree hook, still need the TUI wizard. Script-only hooks run in ordinary and direct TODO creation. |
-| Limited | Deleting a feature that hosted the project TODO list keeps the list on the first surviving feature (the TUI's `Esc` choice) rather than asking. |
-| Planned | Learning, supervised edits, PR triage, final review, diff review, settings and the other workflows listed below. |
+| Available | Deleting a feature that hosts the project TODO list asks which surviving feature should keep it, or whether to delete the list and its TODOs. The GUI collects this choice before deletion; Cancel leaves the feature and both lists untouched. |
+| Available | Learning on a feature: repository file tree or branch changes, file/line/project questions, persisted answers, follow-ups, deep dives, harness and reading-level selection, anchor-drift notices, and explicit editing-agent handoff with resource approval and an unsent draft. |
+| Limited | Learning starter questions, hunk selection, editable keep-as-TODO notes, intent relabelling and recovery of a stopped linked editing session still require the TUI. Native desktop Learning interactions and paid-harness runs are not yet validated. |
+| Planned | Supervised edits, PR triage, final review, standalone diff review, settings and the other workflows listed below. |
 
 The Linux development build and automated suites pass, and the GUI has been
 run under WSL2/WSLg during development, which is where attaching a terminal

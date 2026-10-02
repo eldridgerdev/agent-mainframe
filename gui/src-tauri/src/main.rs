@@ -21,8 +21,9 @@ use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
     NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
     StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
-    TodoDeleteChoice, WorkspaceSnapshot,
+    TodoDeleteChoice, TodoHostChoice, WorkspaceSnapshot,
 };
+use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
@@ -318,9 +319,10 @@ fn delete_feature(
     state: State<AppState>,
     target: FeatureTarget,
     todos: Option<TodoDeleteChoice>,
+    todo_host: Option<TodoHostChoice>,
 ) -> Result<DeleteFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
-    let response = gui.delete_feature(target, todos)?;
+    let response = gui.delete_feature(target, todos, todo_host)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
@@ -646,6 +648,49 @@ fn plan_act(
     Ok(result)
 }
 
+#[tauri::command]
+fn learning_begin(state: State<AppState>, target: FeatureTarget) -> Result<LearningView, GuiError> {
+    gui_learning::begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+fn learning_snapshot(state: State<AppState>) -> Result<Option<LearningView>, GuiError> {
+    gui_learning::snapshot(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+
+#[tauri::command]
+fn learning_act(
+    state: State<AppState>,
+    workflow_id: String,
+    revision: u64,
+    action: LearningAction,
+) -> Result<Option<LearningView>, GuiError> {
+    gui_learning::act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        action,
+    )
+}
+
+#[tauri::command]
+fn learning_launch_agent(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    workflow_id: String,
+    revision: u64,
+    qa_id: String,
+    approved: bool,
+) -> Result<LearningHandoff, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui_learning::launch_agent(&mut gui, &workflow_id, revision, &qa_id, approved)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -693,6 +738,10 @@ fn main() {
             todo_reorder,
             todo_launch_agent,
             todo_launch_new_feature,
+            learning_begin,
+            learning_snapshot,
+            learning_act,
+            learning_launch_agent,
             plan_begin,
             plan_begin_todo_host,
             plan_begin_creation,

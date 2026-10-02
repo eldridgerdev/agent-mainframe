@@ -172,7 +172,8 @@ The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
-and Full and Quick Plan interviews. Continue to use `amf` for workflows
+Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
+editing-agent handoff. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -187,6 +188,29 @@ If tmux exits unexpectedly, the GUI shows the affected features as stopped.
 Start a feature to recreate its tmux session; when a saved Claude, Codex, or
 OpenCode session is available, the GUI offers to resume it, start fresh, or
 choose another saved session.
+
+**Delete feature** asks what to do with unfinished worktree TODOs. If the feature
+also hosts the project TODO list, choose a surviving feature to keep that list
+or explicitly delete the list and all its TODOs. Both choices are collected
+before deletion starts; **Cancel** leaves the feature and lists untouched.
+The first surviving feature is selected by default. Deleting the last feature
+drops a project list hosted by it, matching the TUI.
+
+Use **Learning** on a feature page to browse its files or branch changes and
+ask about the project, a file, or a selected range (click, then Shift-click).
+Choose an answering harness and reading level; answers and follow-ups share
+the TUI's Learning history. **Deep dive** lets the answering agent read the
+repository. Codex always uses its read-only repository sandbox. Reading and
+asking questions do not open an editing session. **Open editing agent** starts
+an agent only when explicitly selected, asks for resource approval when needed,
+and opens an editable prompt that you can review before sending. Closing
+Learning leaves pending answers running while AMF stays open. Unsent questions
+are preserved across refreshes and require explicit discard on close.
+
+Starter questions, hunk selection, keeping an answer as a TODO, intent
+relabelling and restarting a stopped linked editing session remain TUI workflows.
+Learning command and component tests use mocked harness execution; native desktop
+Learning interactions and paid-harness runs have not been validated yet.
 
 ## Checks
 

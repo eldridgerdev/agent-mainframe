@@ -14,6 +14,7 @@
 pub mod automation;
 pub mod cli;
 pub mod gui_contract;
+pub mod gui_learning;
 pub mod gui_plans;
 pub mod gui_terminal;
 pub mod gui_todos;

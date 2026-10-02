@@ -8,6 +8,7 @@
 //! the Learning DB module; follow-ups delegate to existing TODO/session APIs.
 
 mod follow_up;
+pub(crate) use follow_up::{escalation_seed, learning_session_label};
 mod lifecycle;
 mod navigation;
 mod workers;

@@ -959,3 +959,23 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .md code { font-family: var(--mono); font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--surface-3); }
 .md pre { margin: 0 0 10px; padding: 10px 12px; border-radius: 6px; background: var(--surface-3); overflow-x: auto; }
 .md pre code { padding: 0; background: none; }
+
+/* Learning reader: bounded panes keep file and answer history accessible. */
+.learning-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.learning-controls .field { margin: 0; }
+.learning-reader { display: grid; grid-template-columns: minmax(150px, 28%) minmax(0, 1fr); height: 340px; margin-top: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.learning-files { overflow: auto; border-right: 1px solid var(--border); }
+.learning-file { display: flex; gap: 6px; align-items: center; width: 100%; padding: 7px 8px; background: transparent; border: 0; text-align: left; color: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.learning-file:hover { background: var(--surface-2); }
+.learning-content { min-width: 0; display: flex; flex-direction: column; }
+.learning-code-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px; }
+.learning-code { overflow: auto; flex: 1; }
+.learning-line { display: flex; width: max-content; min-width: 100%; background: transparent; border: 0; padding: 0 8px; text-align: left; color: inherit; cursor: pointer; }
+.learning-line code { white-space: pre; font-size: 12px; line-height: 20px; }
+.learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; opacity: .5; font-family: monospace; }
+.learning-line:hover, .learning-line-selected { background: var(--surface-2); }
+.learning-question { margin: 12px 0; }
+.learning-history { display: grid; grid-template-columns: minmax(150px, 28%) minmax(0, 1fr); gap: 16px; }
+.learning-history nav { max-height: 300px; overflow: auto; }
+.learning-history section { max-height: 400px; overflow: auto; }
+@media (max-width: 680px) { .learning-reader, .learning-history { grid-template-columns: 1fr; } .learning-files { max-height: 110px; } }

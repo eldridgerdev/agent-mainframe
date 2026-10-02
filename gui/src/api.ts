@@ -206,16 +206,30 @@ export function removeSession(target: SessionTarget): Promise<RemoveSessionRespo
 /** What happens to a deleted worktree's unfinished TODOs. */
 export type TodoDeleteChoice = "move_to_project" | "move_to_global" | "delete";
 
+export interface TodoHostPrompt {
+  list_id: string;
+  todo_count: number;
+  candidates: { feature_id: string; name: string }[];
+}
+
+export interface TodoHostChoice {
+  list_id: string;
+  /** Null explicitly deletes the project TODO list. */
+  feature_id: string | null;
+}
+
 export type DeleteFeatureResponse =
   | { status: "deleted"; feature_id: string; message: string }
   /** Nothing was touched; resend with a `TodoDeleteChoice`. */
-  | { status: "needs_todo_disposition"; unfinished: number };
+  | { status: "needs_todo_disposition"; unfinished: number }
+  | { status: "needs_todo_host"; prompt: TodoHostPrompt };
 
 export function deleteFeature(
   target: FeatureTarget,
   todos: TodoDeleteChoice | null,
+  todoHost: TodoHostChoice | null,
 ): Promise<DeleteFeatureResponse> {
-  return invoke("delete_feature", { target, todos });
+  return invoke("delete_feature", { target, todos, todoHost });
 }
 
 export interface SessionRecoveryOption {
@@ -482,3 +496,61 @@ export function planAct(
 ): Promise<PlanStatus> {
   return invoke("plan_act", { expectedStep, action, input });
 }
+
+export interface LearningEntry {
+  key: string;
+  label: string;
+  kind: "header" | "project" | "dir" | "file";
+  depth: number;
+  expanded: boolean;
+}
+export interface LearningAnswer {
+  id: string;
+  parent_id: string | null;
+  question: string;
+  answer: string | null;
+  anchor: string;
+  status: "pending" | "running" | "answered" | "failed";
+  intent: "explain" | "action";
+  run_mode: string;
+  harness: AgentSlug;
+  error: string | null;
+  drift: string | null;
+  spawned_session_id: string | null;
+}
+export interface LearningView {
+  workflow_id: string;
+  revision: number;
+  target: FeatureTarget;
+  feature_name: string;
+  scope: "repo_tree" | "branch_changes";
+  is_git: boolean;
+  entries: LearningEntry[];
+  content_path: string | null;
+  content: string[];
+  content_line_labels: string[];
+  content_error: string | null;
+  anchor: string;
+  harness: AgentSlug;
+  harnesses: AgentSlug[];
+  level: "newcomer" | "familiar";
+  history_saved: boolean;
+  qa: LearningAnswer[];
+  error: string | null;
+  notice: string | null;
+}
+export type LearningAction =
+  | { kind: "select_entry"; key: string }
+  | { kind: "toggle_scope" | "refresh" | "project_anchor" | "file_anchor" | "close" }
+  | { kind: "lines_anchor"; start: number; end: number }
+  | { kind: "settings"; harness: AgentSlug; level: string }
+  | { kind: "ask"; question: string; intent: string; parent_id: string | null }
+  | { kind: "deep_dive"; qa_id: string };
+export interface LearningHandoff { target: SessionTarget; draft_prompt: string; notice: string | null }
+export const learningBegin = (target: FeatureTarget): Promise<LearningView> =>
+  invoke("learning_begin", { target });
+export const learningSnapshot = (): Promise<LearningView | null> => invoke("learning_snapshot");
+export const learningAct = (view: LearningView, action: LearningAction): Promise<LearningView | null> =>
+  invoke("learning_act", { workflowId: view.workflow_id, revision: view.revision, action });
+export const learningLaunchAgent = (view: LearningView, qaId: string, approved: boolean): Promise<LearningHandoff> =>
+  invoke("learning_launch_agent", { workflowId: view.workflow_id, revision: view.revision, qaId, approved });

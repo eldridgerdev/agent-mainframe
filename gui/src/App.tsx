@@ -2,6 +2,12 @@ import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  LearningView,
+  LearningAction,
+  learningBegin,
+  learningSnapshot,
+  learningAct,
+  learningLaunchAgent,
   AgentSlug,
   NewSessionKind,
   NewSessionOption,
@@ -22,6 +28,8 @@ import {
   SessionRecoveryChoice,
   SessionRecoveryOption,
   TodoDeleteChoice,
+  TodoHostChoice,
+  TodoHostPrompt,
   WorkspaceSnapshot,
   asGuiError,
   addSession,
@@ -52,6 +60,7 @@ import {
 } from "./api";
 import TerminalPane from "./TerminalPane";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
@@ -132,6 +141,10 @@ export default function App() {
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
   const [pendingSessionByFeature, setPendingSessionByFeature] = useState<Record<string, string>>({});
+  const [learning, setLearning] = useState<LearningView | null>(null);
+  const [learningBusy, setLearningBusy] = useState(false);
+  const learningActionPending = useRef(false);
+  const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sendingPrompt, setSendingPrompt] = useState(false);
   const [planMinimized, setPlanMinimized] = useState(false);
@@ -195,6 +208,7 @@ export default function App() {
     featureName: string;
     isWorktree: boolean;
     unfinished: number | null;
+    todoHost?: TodoHostPrompt;
   } | null>(null);
   const deleteFeatureInFlight = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -338,6 +352,58 @@ export default function App() {
       return next;
     }), PENDING_SESSION_GRACE_MS);
     if (draftPrompt !== undefined) setDraft({ key: sessionKey(target), text: draftPrompt });
+  }
+
+  useEffect(() => {
+    if (!learning || learningBusy) return;
+    let cancelled = false;
+    const workflowId = learning.workflow_id;
+    const timer = window.setInterval(() => {
+      void learningSnapshot().then((next) => {
+        if (cancelled) return;
+        setLearning((current) => {
+          if (current?.workflow_id !== workflowId) return current;
+          if (!next) return null;
+          return next.workflow_id === current.workflow_id && next.revision >= current.revision ? next : current;
+        });
+      }).catch(() => { /* Explicit actions report deleted/stale targets. */ });
+    }, 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [learning?.workflow_id, learningBusy]);
+
+  async function beginLearning(target: FeatureTarget) {
+    if (learningActionPending.current) return;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try { setLearning(await learningBegin(target)); }
+    catch (err) { reportError(err); }
+    finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
+  async function actLearning(action: LearningAction): Promise<boolean> {
+    if (!learning || learningActionPending.current) return false;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try { setLearning(await learningAct(learning, action)); return true; }
+    catch (err) { reportError(err); return false; }
+    finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
+  async function launchLearning(qaId: string, approved = false) {
+    if (!learning || learningActionPending.current) return;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try {
+      const handoff = await learningLaunchAgent(learning, qaId, approved);
+      setLearning(null); setLearningApproval(null);
+      openSession(handoff.target, handoff.draft_prompt);
+      if (handoff.notice) pushToast({ tone: "error", title: "Learning", message: handoff.notice });
+      void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+    } catch (err) {
+      const error = asGuiError(err);
+      if (error.kind === "needs_approval") setLearningApproval({ qaId, message: error.message });
+      else { setLearningApproval(null); reportError(err); }
+    } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
   function updatePlan(status: PlanStatus) {
@@ -644,14 +710,18 @@ export default function App() {
   }
 
   const deleteFeatureMutation = useMutation({
-    mutationFn: ({ target, todos }: { target: FeatureTarget; todos: TodoDeleteChoice | null }) =>
-      deleteFeature(target, todos),
+    mutationFn: ({ target, todos, todoHost }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null }) =>
+      deleteFeature(target, todos, todoHost),
     onSettled: () => {
       deleteFeatureInFlight.current = false;
     },
     onSuccess: (response, { target }) => {
       if (response.status === "needs_todo_disposition") {
         setDeleteFeatureDialog((current) => current && { ...current, unfinished: response.unfinished });
+        return;
+      }
+      if (response.status === "needs_todo_host") {
+        setDeleteFeatureDialog((current) => current && { ...current, todoHost: response.prompt });
         return;
       }
       setDeleteFeatureDialog(null);
@@ -671,10 +741,10 @@ export default function App() {
     },
   });
 
-  function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null) {
+  function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
-    deleteFeatureMutation.mutate({ target, todos });
+    deleteFeatureMutation.mutate({ target, todos, todoHost });
   }
 
   const stopFeatureMutation = useMutation({
@@ -808,6 +878,18 @@ export default function App() {
         )}
       </aside>
 
+      {learning && (
+        <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
+          onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
+          onClose={() => void actLearning({ kind: "close" })} />
+      )}
+      {learningApproval && (
+        <ApprovalDialog label="Approve Learning agent" title="Start editing agent?"
+          message={learningApproval.message} confirmLabel="Start anyway" busy={learningBusy}
+          onConfirm={() => void launchLearning(learningApproval.qaId, true)}
+          onCancel={() => setLearningApproval(null)} />
+      )}
+
       <main className="main">
         {view?.kind === "todos" && (
           <div className="page">
@@ -869,6 +951,8 @@ export default function App() {
               { project_id: selectedProject.id, feature_id: selectedFeature.id },
               quick,
             )}
+            onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            learningBusy={learningBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
@@ -1129,8 +1213,9 @@ export default function App() {
           featureName={deleteFeatureDialog.featureName}
           isWorktree={deleteFeatureDialog.isWorktree}
           unfinished={deleteFeatureDialog.unfinished}
+          todoHost={deleteFeatureDialog.todoHost}
           busy={deleteFeatureMutation.isPending}
-          onConfirm={(todos) => requestDeleteFeature(deleteFeatureDialog.target, todos)}
+          onConfirm={(todos, todoHost) => requestDeleteFeature(deleteFeatureDialog.target, todos, todoHost)}
           onClose={() => setDeleteFeatureDialog(null)}
         />
       )}
@@ -1351,6 +1436,8 @@ function FeatureView({
   onTab,
   onBack,
   onPlan,
+  onLearning,
+  learningBusy,
   onNewSession,
   newSessionLoading,
   stoppedSessionIds,
@@ -1378,6 +1465,8 @@ function FeatureView({
   onTab: (tab: string) => void;
   onBack: () => void;
   onPlan: (quick: boolean) => void;
+  onLearning: () => void;
+  learningBusy: boolean;
   onNewSession: () => void;
   newSessionLoading: boolean;
   stoppedSessionIds: string[];
@@ -1440,6 +1529,9 @@ function FeatureView({
           <>
             <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
               {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
+            </button>
+            <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
+              <Icon name="file" size={12} /> Learning
             </button>
             <Menu
               label="Plan"

@@ -55,6 +55,7 @@ import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
+import { closingStopsFeature } from "./sessions";
 import {
   ApprovalDialog,
   EmptyState,
@@ -873,7 +874,11 @@ export default function App() {
                 session_id: session.id,
               },
               label: session.label,
-              last: selectedFeature.sessions.length === 1,
+              last: closingStopsFeature(
+                selectedFeature,
+                session.id,
+                workspace.data?.stopped_session_ids ?? [],
+              ),
             })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
@@ -1091,7 +1096,7 @@ export default function App() {
           label="Close session"
           title={`Close ${closeSessionDialog.label}?`}
           message={closeSessionDialog.last
-            ? "This kills its tmux window and removes the session. It is the feature's last session, so the feature stops too."
+            ? "This kills its tmux window and removes the session. It is the feature's last running session, so the feature stops too."
             : "This kills its tmux window and removes the session."}
           confirmLabel="Close session"
           busy={removeSessionMutation.isPending}
@@ -1522,8 +1527,8 @@ function FeatureView({
               <button className="btn btn-primary"
                 onClick={() => (activeSession ? onStartSession(activeSession) : onStart())}
                 disabled={starting || sessionStarting}>
-                {starting ? <Spinner /> : <Icon name="play" size={12} />}
-                {starting ? "Starting…" : "Start feature"}
+                {starting || sessionStarting ? <Spinner /> : <Icon name="play" size={12} />}
+                {starting || sessionStarting ? "Starting…" : "Start feature"}
               </button>
             }
           >

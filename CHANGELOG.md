@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Choose worktree setup options in the desktop app.** New-feature and TODO
+  launch forms now show the project's setup choices before creating a worktree.
+  Choices work with direct starts and Full or Quick planning. Setup finishes
+  before the interview; cancelling the interview keeps the worktree without
+  launching an agent.
 - **AMF Remote finds your Tailscale address by itself.** When Tailscale
   serves AMF on your tailnet, the pairing QR code uses that HTTPS address
   automatically, with no need to copy it into `config.json`.
@@ -108,6 +113,9 @@ are tagged.
 
 ### Fixed
 
+- **Missing or invalid setup choices no longer leave an unwanted worktree.**
+  Desktop and automation creation requests reject them before creating a
+  checkout or claiming a TODO.
 - **The pairing dialog no longer hides everything under the QR code.** On
   shorter terminals the QR filled the dialog, cutting off the pairing code,
   the address, and the keys. The dialog now fits its content, and shows

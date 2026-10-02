@@ -18,7 +18,8 @@ use crate::app::{
     TodoPlanOrigin,
 };
 use crate::automation::{
-    CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
+    AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
+    CreateProjectResponse,
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
@@ -86,6 +87,10 @@ impl From<anyhow::Error> for GuiError {
         // `Internal` -- the chain, not just the outermost message, so a
         // caller adding `.context(...)` on the way up does not hide it.
         //
+        // A missing or unknown worktree-hook answer is the user's to fix, and
+        // is typed (`WorktreeHookChoiceError`) so it lands as `Conflict` from
+        // every path that checks it.
+        //
         // Every other `bail!` in those two calls -- validation failures
         // ("Project name cannot be empty") and name/branch conflicts
         // ("Project '...' already exists") alike -- has no typed error on
@@ -95,6 +100,12 @@ impl From<anyhow::Error> for GuiError {
         if err
             .chain()
             .any(|cause| cause.to_string() == crate::app::SAVE_CONFLICT_MESSAGE)
+        {
+            return Self::conflict(err.to_string());
+        }
+        if err
+            .chain()
+            .any(|cause| cause.is::<crate::app::WorktreeHookChoiceError>())
         {
             return Self::conflict(err.to_string());
         }
@@ -458,28 +469,26 @@ impl GuiHandle {
         request: CreateFeatureRequest,
     ) -> GuiResult<CreateFeatureResponse> {
         self.refresh_snapshot()?;
-        if let Some(project) = self.app.store.find_project(&request.project_name) {
-            let use_worktree = request.use_worktree.unwrap_or(!project.features.is_empty());
-            if use_worktree
-                && crate::extension::merge_project_extension_config(
-                    &self.app.config.extension,
-                    &project.repo,
-                )
-                .lifecycle_hooks
-                .on_worktree_created
-                .as_ref()
-                .and_then(|hook| hook.prompt())
-                .is_some()
-            {
-                // The automation method can ask for a hook choice only after
-                // it has created the worktree. Until the GUI supports that
-                // detour, reject before a failed request leaves one behind.
-                return Err(GuiError::conflict(
-                    "This project's worktree hook needs the TUI creation wizard for now",
-                ));
-            }
-        }
         Ok(self.app.create_feature_from_request(&request)?)
+    }
+
+    /// Preview the project-configured prompt without creating a worktree.
+    pub fn worktree_hook_prompt(
+        &mut self,
+        project_id: &str,
+    ) -> GuiResult<Option<AutomationHookPrompt>> {
+        self.refresh_snapshot()?;
+        let project = self
+            .app
+            .store
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| GuiError::not_found("Project was deleted; refresh and retry"))?;
+        Ok(project
+            .is_git
+            .then(|| self.app.worktree_hook_prompt_for_repo(&project.repo))
+            .flatten())
     }
 
     fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
@@ -1211,22 +1220,9 @@ impl GuiHandle {
                 "New TODO features require a git repository",
             ));
         }
-        // Automation checks a prompted hook's choice after creating the
-        // worktree. Reject before that side effect until the GUI can ask.
-        if crate::extension::merge_project_extension_config(
-            &self.app.config.extension,
-            &project.repo,
-        )
-        .lifecycle_hooks
-        .on_worktree_created
-        .as_ref()
-        .and_then(|hook| hook.prompt())
-        .is_some()
-        {
-            return Err(GuiError::conflict(
-                "This project's worktree hook needs the TUI creation wizard for now",
-            ));
-        }
+        self.app
+            .validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
+            .map_err(GuiError::from)?;
         let project_id = project.id.clone();
         let resolved = self
             .db()?
@@ -4232,8 +4228,157 @@ mod tests {
 
         let error = gui.create_feature(request).unwrap_err();
         assert_eq!(error.kind, GuiErrorKind::Conflict);
-        assert!(error.message.contains("TUI creation wizard"));
+        assert!(error.message.contains("requires a choice"));
         assert!(gui.app.store.projects[0].features.is_empty());
+    }
+
+    fn prompting_worktree_hook(script: &str) -> ExtensionConfig {
+        ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::WithPrompt {
+                    script: script.into(),
+                    prompt: HookPrompt {
+                        title: "Choose stack".into(),
+                        options: vec!["node".into(), "rust & tools".into()],
+                    },
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn worktree_hook_preview_uses_project_overrides_and_rejects_stale_projects() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, _, _) = todo_new_feature_fixture(root.path(), MockTmuxOps::new(), None);
+        gui.app.config.extension = prompting_worktree_hook("exit 0");
+        let repo = &gui.app.store.projects[0].repo;
+        std::fs::write(
+            repo.join("amf.json"),
+            serde_json::json!({
+                "lifecycle_hooks": { "on_worktree_created": {
+                    "script": "exit 0", "prompt": { "title": "Local choice", "options": ["local"] }
+                } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let prompt = gui.worktree_hook_prompt(PROJECT_ID).unwrap().unwrap();
+        assert_eq!(prompt.title, "Local choice");
+        assert_eq!(prompt.options, ["local"]);
+        assert_eq!(
+            gui.worktree_hook_prompt("deleted-project")
+                .unwrap_err()
+                .kind,
+            GuiErrorKind::NotFound
+        );
+        assert!(gui.app.store.projects[0].features.is_empty());
+    }
+
+    #[test]
+    fn todo_hook_choice_is_validated_before_reservation_or_creation() {
+        for choice in [None, Some("removed option")] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut gui, mut request, todo_id) =
+                todo_new_feature_fixture(root.path(), MockTmuxOps::new(), None);
+            gui.app.config.extension = prompting_worktree_hook("exit 0");
+            request.hook_choice = choice.map(str::to_string);
+            let error = gui
+                .launch_todo_in_new_feature(&todo_id, request, true)
+                .unwrap_err();
+            assert_eq!(error.kind, GuiErrorKind::Conflict);
+            let todo = gui
+                .db()
+                .unwrap()
+                .find_todo_by_id(&todo_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(todo.work.status, crate::db::todos::TodoStatus::NotStarted);
+            assert!(todo.work.agent_session_id.is_none());
+            assert!(gui.app.store.projects[0].features.is_empty());
+        }
+    }
+
+    fn new_hook_agent_tmux() -> MockTmuxOps {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let created = Arc::new(AtomicBool::new(false));
+        let seen = created.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .times(1)
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_list_sessions().returning(|| Ok(vec![]));
+        tmux
+    }
+
+    #[test]
+    fn ordinary_creation_runs_a_prompting_hook_with_the_exact_choice() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, _) =
+            todo_new_feature_fixture(root.path(), new_hook_agent_tmux(), Some(true));
+        let repo = gui.app.store.projects[0].repo.clone();
+        let workdir = repo.join(".worktrees/todo-work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        gui.app.config.extension =
+            prompting_worktree_hook("printf '%s' \"$AMF_HOOK_CHOICE\" > hook-choice");
+        request.hook_choice = Some("rust & tools".into());
+        // The real shell hook runs; the agent launch is mocked.
+        let response = gui.create_feature(request).unwrap();
+        assert_eq!(response.worktree_hook_succeeded, Some(true));
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+            "rust & tools"
+        );
+        assert_eq!(gui.app.store.projects[0].features.len(), 1);
+    }
+
+    #[test]
+    fn todo_creation_runs_the_chosen_hook_and_keeps_the_launch_association() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, todo_id) =
+            todo_new_feature_fixture(root.path(), new_hook_agent_tmux(), Some(true));
+        let workdir = gui.app.store.projects[0].repo.join(".worktrees/todo-work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        gui.app.config.extension =
+            prompting_worktree_hook("printf '%s' \"$AMF_HOOK_CHOICE\" > hook-choice");
+        request.hook_choice = Some("rust & tools".into());
+        let response = gui
+            .launch_todo_in_new_feature(&todo_id, request, false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+            "rust & tools"
+        );
+        let todo = gui
+            .db()
+            .unwrap()
+            .find_todo_by_id(&todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            todo.work.agent_session_id.as_deref(),
+            Some(response.target.session_id.as_str())
+        );
+        assert_eq!(
+            todo.linked_feature_id.as_deref(),
+            Some(response.target.feature_id.as_str())
+        );
+        assert!(response.draft_prompt.contains("Improve the API"));
     }
 
     #[test]

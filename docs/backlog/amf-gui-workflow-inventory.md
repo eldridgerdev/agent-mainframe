@@ -17,11 +17,15 @@ Keep them current as the staged GUI scope grows.
 | Limited | VS Code and configured custom sessions still require the TUI session picker. |
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |
-| Limited | Creation-time planning with any `on_worktree_created` hook, and ordinary or direct TODO creation with a choice-prompting worktree hook, still need the TUI wizard. Script-only hooks run in ordinary and direct TODO creation. |
+| Available | Script-only and choice-prompting `on_worktree_created` hooks during ordinary creation, direct TODO creation, Full/Quick creation-time planning and TODO planning. The creation forms load project-specific options before submission; missing or invalid choices are rejected before creating a checkout or reserving a TODO. Hooks finish before the interview opens; cancelling that interview keeps the already-created worktree without launching its agent. |
 | Available | Deleting a feature that hosts the project TODO list asks which surviving feature should keep it, or whether to delete the list and its TODOs. The GUI collects this choice before deletion; Cancel leaves the feature and both lists untouched. |
 | Available | Learning on a feature: repository file tree or branch changes, file/line/project questions, persisted answers, follow-ups, deep dives, harness and reading-level selection, anchor-drift notices, and explicit editing-agent handoff with resource approval and an unsent draft. |
 | Limited | Learning starter questions, hunk selection, editable keep-as-TODO notes, intent relabelling and recovery of a stopped linked editing session still require the TUI. Native desktop Learning interactions and paid-harness runs are not yet validated. |
 | Planned | Supervised edits, PR triage, final review, standalone diff review, settings and the other workflows listed below. |
+
+Worktree-hook choices have automated coverage for creation, TODO launches,
+Full/Quick planning, lookup retry, and cancellation. Native desktop interaction
+checks for these choices remain open.
 
 The Linux development build and automated suites pass, and the GUI has been
 run under WSL2/WSLg during development, which is where attaching a terminal

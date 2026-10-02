@@ -47,12 +47,12 @@ impl HeadlessLease {
 
 impl Drop for HeadlessLease {
     fn drop(&mut self) {
-        // `fetch_update` rather than `fetch_sub` so a hypothetical unbalanced
+        // `try_update` rather than `fetch_sub` so a hypothetical unbalanced
         // release can never wrap the counter around to usize::MAX and lock the
         // gate on forever.
         let _ = self
             .counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 Some(current.saturating_sub(1))
             });
     }

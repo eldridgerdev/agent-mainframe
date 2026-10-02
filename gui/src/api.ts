@@ -132,6 +132,15 @@ export interface CreateFeatureResponse {
   message: string;
 }
 
+export interface WorktreeHookPrompt {
+  title: string;
+  options: string[];
+}
+
+export function worktreeHookPrompt(projectId: string): Promise<WorktreeHookPrompt | null> {
+  return invoke("worktree_hook_prompt", { projectId });
+}
+
 export interface FeatureTarget {
   project_id: string;
   feature_id: string;

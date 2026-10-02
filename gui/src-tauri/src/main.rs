@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use agent_mainframe::automation::{
-    CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
+    AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
+    CreateProjectResponse,
 };
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
@@ -32,6 +33,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<GuiHandle>);
+
+#[tauri::command]
+fn worktree_hook_prompt(
+    state: State<AppState>,
+    project_id: String,
+) -> Result<Option<AutomationHookPrompt>, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .worktree_hook_prompt(&project_id)
+}
 
 /// Live terminal attachments, keyed deterministically by `feature_id:session_id`
 /// (not a generated id) so attaching to the same session twice -- the
@@ -713,6 +726,7 @@ fn main() {
             get_snapshot,
             create_project,
             create_feature,
+            worktree_hook_prompt,
             start_feature,
             new_session_options,
             add_session,

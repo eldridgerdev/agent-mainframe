@@ -74,7 +74,10 @@ impl App {
         }
     }
 
-    fn worktree_hook_prompt_for_repo(&self, project_repo: &Path) -> Option<AutomationHookPrompt> {
+    pub(crate) fn worktree_hook_prompt_for_repo(
+        &self,
+        project_repo: &Path,
+    ) -> Option<AutomationHookPrompt> {
         let ext = merge_project_extension_config(&self.config.extension, project_repo);
         ext.lifecycle_hooks
             .on_worktree_created
@@ -84,6 +87,31 @@ impl App {
                 title: prompt.title.clone(),
                 options: prompt.options.clone(),
             })
+    }
+
+    /// Validate before creating a checkout or reserving a TODO. Dry-run
+    /// callers can still discover the prompt without supplying an answer.
+    pub(crate) fn validate_worktree_hook_choice(
+        &self,
+        project_repo: &Path,
+        choice: Option<&str>,
+    ) -> Result<()> {
+        if let Some(prompt) = self.worktree_hook_prompt_for_repo(project_repo) {
+            let choice = choice.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Worktree hook requires a choice; choose from [{}]",
+                    prompt.options.join(", ")
+                )
+            })?;
+            if !prompt.options.iter().any(|option| option == choice) {
+                bail!(
+                    "Invalid hook_choice '{}'; expected one of [{}]",
+                    choice,
+                    prompt.options.join(", ")
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn create_project_from_request(
@@ -262,6 +290,9 @@ impl App {
             ));
         }
 
+        if use_worktree {
+            self.validate_worktree_hook_choice(&project_repo, request.hook_choice.as_deref())?;
+        }
         let final_workdir = if use_worktree {
             let worktree_name = worktree_name(&request.project_name, &request.branch);
             let workdir = self

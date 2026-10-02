@@ -175,6 +175,44 @@ fn create_feature_automation_rejects_codex_vibeless_mode() {
 }
 
 #[test]
+fn create_feature_automation_validates_hook_choices_before_worktree_creation() {
+    for choice in [None, Some("removed-option")] {
+        let workspace = TempDir::new().unwrap();
+        let repo = workspace.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        // Mock worktree creation has no expectation: either request must be
+        // rejected before creating a checkout or persisting a feature.
+        let mut app = App::new_for_test(
+            store_with_empty_project(repo, true),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.config.extension = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::WithPrompt {
+                    script: "exit 0".into(),
+                    prompt: HookPrompt {
+                        title: "Choose stack".into(),
+                        options: vec!["rust".into()],
+                    },
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let request = CreateFeatureRequest {
+            project_name: "automation-project".into(),
+            branch: "feature-1".into(),
+            use_worktree: Some(true),
+            hook_choice: choice.map(str::to_string),
+            ..Default::default()
+        };
+        assert!(app.create_feature_from_request(&request).is_err());
+        assert!(app.store.projects[0].features.is_empty());
+    }
+}
+
+#[test]
 fn create_feature_automation_creates_and_starts_feature() {
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("repo");

@@ -196,6 +196,15 @@ before deletion starts; **Cancel** leaves the feature and lists untouched.
 The first surviving feature is selected by default. Deleting the last feature
 drops a project list hosted by it, matching the TUI.
 
+When a project's worktree setup asks for an option, **New feature** and the
+TODO's new-feature form show that choice before creation. Choose an option to
+continue; a failed lookup offers **Retry**. The configured script receives the
+choice through `AMF_HOOK_CHOICE`. This works with direct starts, Full and Quick
+Plan, and TODO planning. Setup runs before the interview opens; cancelling the
+interview keeps the worktree and its setup changes, without saving a plan or
+launching an agent. A failed setup still allows planning to continue and shows
+a notice.
+
 Use **Learning** on a feature page to browse its files or branch changes and
 ask about the project, a file, or a selected range (click, then Shift-click).
 Choose an answering harness and reading level; answers and follow-ups share

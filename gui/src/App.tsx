@@ -65,6 +65,7 @@ import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
+import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
   SessionStateDot,
@@ -423,7 +424,11 @@ export default function App() {
     setPlanBusy(true);
     try {
       await queryClient.cancelQueries({ queryKey: PLAN_KEY });
-      updatePlan(await start());
+      const status = await start();
+      updatePlan(status);
+      if (status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
       setPlanMinimized(false);
       return true;
     } catch (err) {
@@ -1041,6 +1046,7 @@ export default function App() {
 
       {createFeatureProject && (
         <CreateFeatureForm
+          projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
           agents={harnesses.data ?? []}
           modes={modes.data ?? []}
@@ -1788,7 +1794,8 @@ function CreateProjectForm({
 
 type PlanKind = "none" | "quick" | "full";
 
-function CreateFeatureForm({
+export function CreateFeatureForm({
+  projectId,
   projectName,
   agents,
   modes,
@@ -1798,6 +1805,7 @@ function CreateFeatureForm({
   onCancel,
   onSubmit,
 }: {
+  projectId: string;
   projectName: string;
   agents: HarnessInfo[];
   modes: ModeInfo[];
@@ -1805,7 +1813,7 @@ function CreateFeatureForm({
   defaultUseWorktree: boolean;
   pending: boolean;
   onCancel: () => void;
-  onSubmit: (request: Omit<CreateFeatureRequest, "project_name"> & { hook_choice: null }, planKind: PlanKind) => void;
+  onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind) => void;
 }) {
   const [branch, setBranch] = useState("");
   const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
@@ -1813,6 +1821,7 @@ function CreateFeatureForm({
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
+  const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
     <Modal
@@ -1820,22 +1829,26 @@ function CreateFeatureForm({
       title="New feature"
       subtitle={`in ${projectName}`}
       onClose={onCancel}
-      onSubmit={() => onSubmit({
-        branch: branch.trim(),
-        agent,
-        mode,
-        review: false,
-        plan_mode: planKind !== "none",
-        create_terminal: false,
-        use_worktree: useWorktree,
-        enable_chrome: false,
-        hook_choice: null,
-        dry_run: false,
-      }, planKind)}
+      dismissable={!pending}
+      onSubmit={() => {
+        if (pending || !hook.ready || !branch.trim()) return;
+        onSubmit({
+          branch: branch.trim(),
+          agent,
+          mode,
+          review: false,
+          plan_mode: planKind !== "none",
+          create_terminal: false,
+          use_worktree: useWorktree,
+          enable_chrome: false,
+          hook_choice: hook.choice || null,
+          dry_run: false,
+        }, planKind);
+      }}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !branch.trim()}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim()}>
             {pending && <Spinner />}
             {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
           </button>
@@ -1897,6 +1910,7 @@ function CreateFeatureForm({
             hint="Gives the feature its own checkout so agents don't collide."
           />
         )}
+        <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>
   );
@@ -1934,6 +1948,7 @@ export function TodoNewFeatureForm({
     ? agent : (agents[0]?.slug ?? agent);
   const selectedMode = modes.some((candidate) => candidate.slug === mode)
     ? mode : (modes[0]?.slug ?? mode);
+  const hook = useWorktreeHookChoice(project?.id, !!project);
 
   return (
     <Modal
@@ -1941,8 +1956,9 @@ export function TodoNewFeatureForm({
       title={kind === "plan" ? "Plan in a new feature" : "Start in a new feature"}
       subtitle={todoTitle}
       onClose={onCancel}
+      dismissable={!pending}
       onSubmit={() => {
-        if (!project || !branch.trim()) return;
+        if (pending || !project || !branch.trim() || !hook.ready) return;
         onSubmit({
           project_name: project.name,
           branch: branch.trim(),
@@ -1953,14 +1969,14 @@ export function TodoNewFeatureForm({
           create_terminal: false,
           use_worktree: true,
           enable_chrome: false,
-          hook_choice: null,
+          hook_choice: hook.choice || null,
           dry_run: false,
         });
       }}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim()}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim() || !hook.ready}>
             {pending && <Spinner />}
             {kind === "plan" ? "Start plan" : "Create and start"}
           </button>
@@ -1969,7 +1985,7 @@ export function TodoNewFeatureForm({
     >
       <p className="muted small modal-lead">
         {kind === "plan"
-          ? "The worktree and agent launch wait until you accept the plan."
+          ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
           : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}
       </p>
       <div className="form-stack">
@@ -2001,6 +2017,7 @@ export function TodoNewFeatureForm({
             </select>
           </Field>
         </div>
+        <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>
   );

@@ -18,9 +18,10 @@ use agent_mainframe::automation::{
     CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
 };
 use agent_mainframe::gui_contract::{
-    AddSessionResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle, NewSessionOption,
-    SessionTarget, StartFeatureResponse, StopFeatureResponse, TodoAgentLaunchResponse,
-    WorkspaceSnapshot,
+    AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
+    NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
+    StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
+    TodoDeleteChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
@@ -167,7 +168,7 @@ fn create_project(
 ) -> Result<CreateProjectResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.create_project(request)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -179,7 +180,7 @@ fn create_feature(
 ) -> Result<CreateFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.create_feature(request)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -192,7 +193,7 @@ fn start_feature(
 ) -> Result<StartFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_feature_with_approval(target, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -219,7 +220,7 @@ fn add_session(
 ) -> Result<AddSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.add_session(target, kind, label, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -258,7 +259,7 @@ fn recover_session(
 ) -> Result<StartFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.recover_session(target, choice, picked_id, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -270,7 +271,7 @@ fn stop_feature(
 ) -> Result<StopFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.stop_feature(target)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -280,10 +281,10 @@ fn start_session(
     state: State<AppState>,
     target: SessionTarget,
     approved: bool,
-) -> Result<agent_mainframe::gui_contract::StartSessionResponse, GuiError> {
+) -> Result<StartSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_session(target, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -292,10 +293,35 @@ fn stop_session(
     app: tauri::AppHandle,
     state: State<AppState>,
     target: SessionTarget,
-) -> Result<agent_mainframe::gui_contract::StopSessionResponse, GuiError> {
+) -> Result<StopSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.stop_session(target)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn remove_session(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<RemoveSessionResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.remove_session(target)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn delete_feature(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    todos: Option<TodoDeleteChoice>,
+) -> Result<DeleteFeatureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.delete_feature(target, todos)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -531,7 +557,7 @@ fn todo_launch_agent(
 ) -> Result<TodoAgentLaunchResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.launch_todo_agent(&todo_id, target, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -545,7 +571,7 @@ fn todo_launch_new_feature(
 ) -> Result<TodoAgentLaunchResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.launch_todo_in_new_feature(&todo_id, request, approved)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
 
@@ -616,7 +642,7 @@ fn plan_act(
 ) -> Result<PlanStatus, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let result = gui_plans::act(&mut gui, &expected_step, action, input)?;
-    emit_workspace_changed(&app, &gui.snapshot());
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(result)
 }
 
@@ -645,12 +671,14 @@ fn main() {
             start_feature,
             new_session_options,
             add_session,
+            start_session,
+            stop_session,
+            remove_session,
+            delete_feature,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,
             stop_feature,
-            start_session,
-            stop_session,
             attach_terminal,
             terminal_input,
             terminal_submit_prompt,

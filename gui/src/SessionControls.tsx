@@ -2,9 +2,28 @@ import type { Feature, FeatureSession } from "./api";
 import { Icon, Spinner, StatusDot } from "./ui";
 
 /** A session has a live terminal only while its feature runs and it was not
- *  stopped on its own. TODOs have no terminal and never count. */
-export function sessionRunning(feature: Feature, session: FeatureSession): boolean {
-  return feature.status !== "stopped" && session.kind !== "todos" && !session.stopped;
+ *  stopped on its own. TODOs have no terminal and never count. Pass the
+ *  snapshot's `stopped_session_ids` to also count a session whose window is
+ *  gone without being flagged (a tab held back by another tab's resume, or a
+ *  window closed outside AMF). */
+export function sessionRunning(
+  feature: Feature,
+  session: FeatureSession,
+  stoppedSessionIds: string[] = [],
+): boolean {
+  return feature.status !== "stopped" && session.kind !== "todos" && !session.stopped
+    && !stoppedSessionIds.includes(session.id);
+}
+
+/** Whether closing this session takes its running feature down with it. The
+ *  backend stops the feature outright when it is the only session, whatever
+ *  its kind; otherwise killing the last running window ends the tmux session. */
+export function closingStopsFeature(feature: Feature, sessionId: string, stoppedSessionIds: string[]): boolean {
+  if (feature.status === "stopped") return false;
+  if (feature.sessions.length === 1) return true;
+  const running = (session: FeatureSession) => sessionRunning(feature, session, stoppedSessionIds);
+  return feature.sessions.some((session) => session.id === sessionId && running(session))
+    && !feature.sessions.some((session) => session.id !== sessionId && running(session));
 }
 
 /** How many of a feature's sessions were stopped on their own. */

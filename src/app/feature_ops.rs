@@ -1061,7 +1061,7 @@ impl App {
         fi: usize,
         intent: StartIntent,
     ) -> Result<Started> {
-        self.ensure_feature_running_with_launch_override(pi, fi, None, None, intent)
+        self.ensure_feature_running_with_launch_override(pi, fi, None, false, None, intent)
     }
 
     /// [`Self::ensure_feature_running`], launching `session_id` on purpose
@@ -1080,15 +1080,15 @@ impl App {
             session_id: session_id.to_string(),
             resume: None,
         });
-        self.ensure_feature_running_with_launch_override(pi, fi, target, None, intent)
+        self.ensure_feature_running_with_launch_override(pi, fi, target, false, None, intent)
     }
 
+    /// Start a stopped feature for one session's recovery.
     pub(crate) fn ensure_feature_running_for_recovery(
         &mut self,
         pi: usize,
         fi: usize,
-        session_id: String,
-        resume_id: Option<String>,
+        launch: RecoveryLaunch,
         created_session: &mut bool,
         intent: StartIntent,
     ) -> Result<Started> {
@@ -1096,9 +1096,10 @@ impl App {
             pi,
             fi,
             Some(LaunchTarget {
-                session_id,
-                resume: Some(resume_id),
+                session_id: launch.session_id,
+                resume: Some(launch.resume_id),
             }),
+            launch.only_this_agent,
             Some(created_session),
             intent,
         )
@@ -1115,6 +1116,7 @@ impl App {
             pi,
             fi,
             None,
+            false,
             Some(created_session),
             intent,
         )
@@ -1125,6 +1127,7 @@ impl App {
         pi: usize,
         fi: usize,
         launch_override: Option<LaunchTarget>,
+        only_launch_target_agent: bool,
         created_session: Option<&mut bool>,
         intent: StartIntent,
     ) -> Result<Started> {
@@ -1198,8 +1201,20 @@ impl App {
                 .as_ref()
                 .map(|target| target.session_id.as_str()),
         );
+        // A per-tab recovery leaves the feature's other agents windowless (not
+        // an idle shell), so they read as stopped until each is recovered.
+        let held_back = |session: &crate::project::FeatureSession| {
+            only_launch_target_agent
+                && session.kind.is_agent_harness()
+                && launch_override
+                    .as_ref()
+                    .is_some_and(|target| target.session_id != session.id)
+        };
         let first_window = feature
-            .first_start_window()
+            .sessions_to_start()
+            .find(|session| !held_back(session))
+            .map(|session| session.tmux_window.as_str())
+            .or_else(|| feature.first_start_window())
             .unwrap_or(&feature.sessions[0].tmux_window)
             .to_string();
 
@@ -1219,7 +1234,7 @@ impl App {
         // Sessions stopped individually stay stopped: no window, no harness.
         for session in feature
             .sessions_to_start()
-            .filter(|session| session.tmux_window != first_window)
+            .filter(|session| session.tmux_window != first_window && !held_back(session))
         {
             self.tmux.create_window(
                 &feature.tmux_session,
@@ -1231,6 +1246,7 @@ impl App {
         let tmux_session = feature.tmux_session.clone();
         let windows: Vec<String> = feature
             .sessions_to_start()
+            .filter(|session| !held_back(session))
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -1271,6 +1287,10 @@ impl App {
             // `Some` only for a target launched on a chosen conversation;
             // everything else resumes as saved.
             let resume_override = launch_target.and_then(|target| target.resume.clone());
+
+            if held_back(session) {
+                continue;
+            }
 
             if session.kind.is_agent_harness()
                 && !is_launch_target
@@ -2430,6 +2450,18 @@ impl App {
 
         Ok(())
     }
+}
+
+/// Which session a recovery start is for, and how it comes back.
+pub(crate) struct RecoveryLaunch {
+    pub session_id: String,
+    /// `None` starts a fresh conversation.
+    pub resume_id: Option<String>,
+    /// Launch no other agent session and give none of them a window, so each
+    /// stays stopped until it is recovered on its own (the GUI's per-tab
+    /// resume). The TUI passes `false` and brings every session up as an
+    /// ordinary start would.
+    pub only_this_agent: bool,
 }
 
 /// A session a feature start launches on purpose: it runs even if it was

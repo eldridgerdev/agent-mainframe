@@ -654,6 +654,7 @@ fn main() {
     }
     // After the PATH adoption above, which the `amf` lookup reads.
     agent_mainframe::gui_contract::use_cli_for_session_hooks();
+    agent_mainframe::gui_contract::use_configured_tmux_server();
     tauri::Builder::default()
         .setup(|app| {
             let db_path = agent_mainframe::project::db_path();

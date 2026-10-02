@@ -8,8 +8,45 @@ use crate::automation::{
     CreateBatchFeaturesResponse, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
     CreateProjectResponse, SeedAiReviewRequest, SeedAiReviewResponse,
 };
-use crate::extension::merge_project_extension_config;
+use crate::extension::{HookPrompt, merge_project_extension_config};
 use crate::project::{normalized_feature_name, tmux_session_name, worktree_name};
+
+/// A missing or unknown answer to the project's `on_worktree_created`
+/// prompt. Typed so callers can report it as the user's to fix
+/// (`GuiError::conflict`) rather than as an internal failure.
+#[derive(Debug)]
+pub(crate) struct WorktreeHookChoiceError(String);
+
+impl std::fmt::Display for WorktreeHookChoiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for WorktreeHookChoiceError {}
+
+/// The one place the hook-choice rule lives: a prompted hook needs one of its
+/// options; an unprompted hook (or none) takes no choice, so `None`.
+fn checked_hook_choice<'a>(
+    prompt: Option<&HookPrompt>,
+    choice: Option<&'a str>,
+) -> std::result::Result<Option<&'a str>, WorktreeHookChoiceError> {
+    let Some(prompt) = prompt else {
+        return Ok(None);
+    };
+    let options = prompt.options.join(", ");
+    let choice = choice.ok_or_else(|| {
+        WorktreeHookChoiceError(format!(
+            "Worktree hook requires a choice; choose from [{options}]"
+        ))
+    })?;
+    if !prompt.options.iter().any(|option| option == choice) {
+        return Err(WorktreeHookChoiceError(format!(
+            "Invalid hook_choice '{choice}'; expected one of [{options}]"
+        )));
+    }
+    Ok(Some(choice))
+}
 
 impl App {
     fn planned_batch_feature_results(
@@ -96,21 +133,9 @@ impl App {
         project_repo: &Path,
         choice: Option<&str>,
     ) -> Result<()> {
-        if let Some(prompt) = self.worktree_hook_prompt_for_repo(project_repo) {
-            let choice = choice.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Worktree hook requires a choice; choose from [{}]",
-                    prompt.options.join(", ")
-                )
-            })?;
-            if !prompt.options.iter().any(|option| option == choice) {
-                bail!(
-                    "Invalid hook_choice '{}'; expected one of [{}]",
-                    choice,
-                    prompt.options.join(", ")
-                );
-            }
-        }
+        let ext = merge_project_extension_config(&self.config.extension, project_repo);
+        let hook = ext.lifecycle_hooks.on_worktree_created.as_ref();
+        checked_hook_choice(hook.and_then(|hook| hook.prompt()), choice)?;
         Ok(())
     }
 
@@ -290,60 +315,40 @@ impl App {
             ));
         }
 
-        if use_worktree {
-            self.validate_worktree_hook_choice(&project_repo, request.hook_choice.as_deref())?;
-        }
+        // Read the hook once and validate the choice against it before the
+        // checkout exists; the hook that runs below is this same one, so the
+        // choice cannot go stale between the check and the run.
+        let worktree_hook = if use_worktree {
+            merge_project_extension_config(&self.config.extension, &project_repo)
+                .lifecycle_hooks
+                .on_worktree_created
+        } else {
+            None
+        };
+        let hook_choice = checked_hook_choice(
+            worktree_hook.as_ref().and_then(|hook| hook.prompt()),
+            request.hook_choice.as_deref(),
+        )?;
         let final_workdir = if use_worktree {
             let worktree_name = worktree_name(&request.project_name, &request.branch);
             let workdir = self
                 .worktree
                 .create(&project_repo, &worktree_name, &request.branch)?;
 
-            let ext = merge_project_extension_config(&self.config.extension, &project_repo);
-            if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
+            if let Some(ref hook_cfg) = worktree_hook {
                 hook_ran = true;
-                let prompt = hook_cfg.prompt();
-                if let Some(prompt_cfg) = prompt {
-                    let choice = request.hook_choice.as_deref().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Worktree hook requires a choice; provide `hook_choice` from [{}]",
-                            prompt_cfg.options.join(", ")
-                        )
-                    })?;
-                    if !prompt_cfg.options.iter().any(|option| option == choice) {
-                        bail!(
-                            "Invalid hook_choice '{}'; expected one of [{}]",
-                            choice,
-                            prompt_cfg.options.join(", ")
-                        );
-                    }
-                    let (success, detail) =
-                        Self::run_worktree_hook_sync(hook_cfg.script(), &workdir, Some(choice));
-                    hook_succeeded = Some(success);
-                    if !success {
-                        self.log_warn(
-                            "automation",
-                            format!(
-                                "Worktree hook failed for feature '{}': {}",
-                                request.branch,
-                                detail.unwrap_or_else(|| "unknown error".to_string())
-                            ),
-                        );
-                    }
-                } else {
-                    let (success, detail) =
-                        Self::run_worktree_hook_sync(hook_cfg.script(), &workdir, None);
-                    hook_succeeded = Some(success);
-                    if !success {
-                        self.log_warn(
-                            "automation",
-                            format!(
-                                "Worktree hook failed for feature '{}': {}",
-                                request.branch,
-                                detail.unwrap_or_else(|| "unknown error".to_string())
-                            ),
-                        );
-                    }
+                let (success, detail) =
+                    Self::run_worktree_hook_sync(hook_cfg.script(), &workdir, hook_choice);
+                hook_succeeded = Some(success);
+                if !success {
+                    self.log_warn(
+                        "automation",
+                        format!(
+                            "Worktree hook failed for feature '{}': {}",
+                            request.branch,
+                            detail.unwrap_or_else(|| "unknown error".to_string())
+                        ),
+                    );
                 }
             }
 

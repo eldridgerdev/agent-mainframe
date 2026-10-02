@@ -87,6 +87,10 @@ impl From<anyhow::Error> for GuiError {
         // `Internal` -- the chain, not just the outermost message, so a
         // caller adding `.context(...)` on the way up does not hide it.
         //
+        // A missing or unknown worktree-hook answer is the user's to fix, and
+        // is typed (`WorktreeHookChoiceError`) so it lands as `Conflict` from
+        // every path that checks it.
+        //
         // Every other `bail!` in those two calls -- validation failures
         // ("Project name cannot be empty") and name/branch conflicts
         // ("Project '...' already exists") alike -- has no typed error on
@@ -96,6 +100,12 @@ impl From<anyhow::Error> for GuiError {
         if err
             .chain()
             .any(|cause| cause.to_string() == crate::app::SAVE_CONFLICT_MESSAGE)
+        {
+            return Self::conflict(err.to_string());
+        }
+        if err
+            .chain()
+            .any(|cause| cause.is::<crate::app::WorktreeHookChoiceError>())
         {
             return Self::conflict(err.to_string());
         }
@@ -459,14 +469,6 @@ impl GuiHandle {
         request: CreateFeatureRequest,
     ) -> GuiResult<CreateFeatureResponse> {
         self.refresh_snapshot()?;
-        if let Some(project) = self.app.store.find_project(&request.project_name) {
-            let use_worktree = request.use_worktree.unwrap_or(!project.features.is_empty());
-            if use_worktree && !request.dry_run {
-                self.app
-                    .validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
-                    .map_err(|error| GuiError::conflict(error.to_string()))?;
-            }
-        }
         Ok(self.app.create_feature_from_request(&request)?)
     }
 
@@ -1220,7 +1222,7 @@ impl GuiHandle {
         }
         self.app
             .validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
-            .map_err(|error| GuiError::conflict(error.to_string()))?;
+            .map_err(GuiError::from)?;
         let project_id = project.id.clone();
         let resolved = self
             .db()?

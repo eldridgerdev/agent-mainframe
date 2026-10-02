@@ -50,6 +50,10 @@ pub struct PlanStatus {
     pub active: Option<PlanView>,
     pub precall: Option<PrecallView>,
     pub message: Option<String>,
+    /// A failed `on_worktree_created` hook, reported once by the begin call
+    /// that ran it. Kept out of `message` (`app.message`, which outlives the
+    /// call) so reopening the same interview does not repeat the warning.
+    pub hook_warning: Option<String>,
     pub handoff: Option<PlanHandoff>,
 }
 
@@ -205,6 +209,7 @@ fn status_of(app: &App) -> PlanStatus {
             _ => None,
         },
         message: app.message.clone(),
+        hook_warning: None,
         handoff: None,
     }
 }
@@ -290,7 +295,7 @@ fn begin_feature_creation_core(
     let use_worktree = request.use_worktree.unwrap_or(!project.features.is_empty());
     if use_worktree {
         app.validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
-            .map_err(|error| GuiError::conflict(error.to_string()))?;
+            .map_err(GuiError::from)?;
     }
     app.selection = Selection::Project(pi);
     app.start_create_feature();
@@ -320,16 +325,19 @@ fn begin_feature_creation_core(
         state.todo_origin = Some(origin);
         app.pending_todo_plan_brief = Some(seed);
     }
-    if let Err(error) = app
+    let hook_warning = match app
         .create_feature()
         .and_then(|()| finish_worktree_hook(app, request.hook_choice.as_deref()))
     {
-        app.pending_todo_plan_brief = None;
-        if !matches!(&app.mode, AppMode::PlanInterview(_)) {
-            app.mode = AppMode::Normal;
+        Ok(warning) => warning,
+        Err(error) => {
+            app.pending_todo_plan_brief = None;
+            if !matches!(&app.mode, AppMode::PlanInterview(_)) {
+                app.mode = AppMode::Normal;
+            }
+            return Err(GuiError::from(error));
         }
-        return Err(GuiError::from(error));
-    }
+    };
     if !matches!(&app.mode, AppMode::PlanInterview(_)) {
         app.pending_todo_plan_brief = None;
         let message = app
@@ -343,7 +351,9 @@ fn begin_feature_creation_core(
         app.mode = AppMode::Normal;
         return Err(GuiError::conflict(message));
     }
-    Ok(status_of(app))
+    let mut status = status_of(app);
+    status.hook_warning = hook_warning;
+    Ok(status)
 }
 
 /// Run the `on_worktree_created` hook that `create_feature` just started
@@ -352,8 +362,8 @@ fn begin_feature_creation_core(
 /// TUI's event loop polls and the user dismisses; the GUI has neither, so the
 /// hook is waited on here -- blocking, as `GuiHandle::create_feature`'s
 /// automation path already runs the same hook synchronously. A no-op in any
-/// other mode.
-fn finish_worktree_hook(app: &mut App, choice: Option<&str>) -> anyhow::Result<()> {
+/// other mode. Returns the warning for a failed hook when planning continues.
+fn finish_worktree_hook(app: &mut App, choice: Option<&str>) -> anyhow::Result<Option<String>> {
     if let AppMode::HookPrompt(state) = &mut app.mode {
         state.selected = choice
             .and_then(|choice| state.options.iter().position(|option| option == choice))
@@ -381,12 +391,9 @@ fn finish_worktree_hook(app: &mut App, choice: Option<&str>) -> anyhow::Result<(
                     format!("Worktree setup failed; planning can continue. {detail}")
                 });
                 app.complete_running_hook()?;
-                if matches!(app.mode, AppMode::PlanInterview(_)) && warning.is_some() {
-                    app.message = warning;
-                }
-                return Ok(());
+                return Ok(warning.filter(|_| matches!(app.mode, AppMode::PlanInterview(_))));
             }
-            _ => return Ok(()),
+            _ => return Ok(None),
         }
     }
 }
@@ -1528,8 +1535,20 @@ mod tests {
         gui.app_for_workflow().config.extension = config;
         request.hook_choice = Some("node".into());
         let status = begin_feature_creation(&mut gui, &request, false).unwrap();
-        assert!(status.message.unwrap().contains("Worktree setup failed"));
+        assert!(
+            status
+                .hook_warning
+                .unwrap()
+                .contains("Worktree setup failed")
+        );
         let view = status.active.unwrap();
+        // Reopening the live interview reports the hook failure only once.
+        let target = FeatureTarget {
+            project_id: "project-1".into(),
+            feature_id: view.interview_key.clone(),
+        };
+        let reopened = begin(&mut gui, &target, false).unwrap();
+        assert!(reopened.hook_warning.is_none());
         act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
         assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
         assert!(!workdir.join("AMF_PLAN.md").exists());

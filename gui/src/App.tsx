@@ -426,8 +426,8 @@ export default function App() {
       await queryClient.cancelQueries({ queryKey: PLAN_KEY });
       const status = await start();
       updatePlan(status);
-      if (status.active && status.message) {
-        pushToast({ tone: "info", title: "Plan", message: status.message });
+      if (status.hook_warning) {
+        pushToast({ tone: "info", title: "Plan", message: status.hook_warning });
       }
       setPlanMinimized(false);
       return true;

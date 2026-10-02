@@ -447,6 +447,7 @@ export interface PlanStatus {
   active: PlanView | null;
   precall: PrecallView | null;
   message: string | null;
+  hook_warning: string | null;
   handoff: PlanHandoff | null;
 }
 

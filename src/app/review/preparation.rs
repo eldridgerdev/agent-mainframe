@@ -62,6 +62,12 @@ pub(super) struct ReviewProgress {
     pub(super) applied_suggestions: Vec<String>,
     #[serde(default)]
     pub(super) selected_file: usize,
+    /// file path -> fingerprint of the patch each approval was given against,
+    /// so a resumed review drops an approval whose patch has since changed.
+    /// Defaulted so older progress files load unchanged (their approvals have
+    /// no recorded patch and are kept, as before).
+    #[serde(default)]
+    pub(super) approved_fingerprints: std::collections::HashMap<String, String>,
 }
 
 impl ReviewProgress {
@@ -76,13 +82,58 @@ impl ReviewProgress {
             apply_suggestions_on_finish: state.apply_suggestions_on_finish,
             applied_suggestions: state.applied_suggestions.clone(),
             selected_file: state.selected_file,
+            approved_fingerprints: state
+                .files
+                .iter()
+                .filter(|file| {
+                    matches!(
+                        state.decisions.get(&file.path),
+                        Some(ReviewDecision::Approve)
+                    )
+                })
+                .map(|file| (file.path.clone(), file_fingerprint(file)))
+                .collect(),
         }
     }
 }
 
 /// Path of the saved review-progress file for a feature workdir.
-pub(super) fn review_progress_path(workdir: &Path) -> PathBuf {
+pub(crate) fn review_progress_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("final-review-progress.json")
+}
+
+/// Validate saved progress before an interface opens an editable review. The
+/// TUI's best-effort loader remains available for its existing open path.
+/// A missing file, or a `.claude` that is not a directory, is no progress.
+pub(crate) fn checked_review_progress(workdir: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(review_progress_path(workdir)) {
+        Ok(bytes) => {
+            serde_json::from_slice::<ReviewProgress>(&bytes)?;
+            Ok(Some(bytes))
+        }
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Review bookkeeping AMF writes into `.claude/` during a round, including a
+/// staging file a crash left behind mid-save. Never a file to review, even
+/// when the repository does not ignore `.claude/`.
+pub(crate) fn is_review_bookkeeping_path(path: &str) -> bool {
+    const PROGRESS: &str = ".claude/final-review-progress.json";
+    const SNAPSHOT: &str = ".claude/final-review-snapshot.json";
+    path == PROGRESS
+        || path == SNAPSHOT
+        || path
+            .strip_prefix(".claude/.final-review-progress.json.")
+            .is_some_and(|rest| rest.ends_with(".tmp"))
 }
 
 /// Best-effort load of any saved review progress for `workdir`.
@@ -212,40 +263,45 @@ impl App {
     /// progress is never lost — the only exit from the review viewer finishes
     /// it, but an AMF quit/crash mid-review would otherwise discard everything.
     pub fn persist_review_progress(&mut self) {
+        if self.defer_review_progress_persist {
+            return;
+        }
+        if let Err(err) = self.try_persist_review_progress() {
+            self.log_warn(
+                "review",
+                format!("failed to persist review progress: {err}"),
+            );
+        }
+    }
+
+    /// Fallible counterpart for interfaces that must show whether a save
+    /// succeeded before allowing the reviewer to leave. Returns the bytes
+    /// written to the progress file, so the caller can tell its own save from
+    /// a later one by another interface; `None` when nothing was written there.
+    pub(crate) fn try_persist_review_progress(&mut self) -> Result<Option<Vec<u8>>> {
         // Refresh each comment's re-anchor snippet against the live diff first,
         // so whatever we persist can be re-located after a later refresh.
         self.recapture_anchor_contexts();
         let AppMode::DiffViewer(state) = &self.mode else {
-            return;
+            return Ok(None);
         };
         if !state.review {
-            return;
+            return Ok(None);
         }
         // A PR review never writes into the checkout it runs git in: its
         // draft goes to the database instead.
         if state.is_pr_review() {
             let _ = self.persist_pr_review_draft();
-            return;
+            return Ok(None);
         }
         let progress = ReviewProgress::of(state);
         let path = review_progress_path(&state.workdir);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        match serde_json::to_string_pretty(&progress) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
-                    self.log_warn(
-                        "review",
-                        format!("failed to persist review progress: {err}"),
-                    );
-                }
-            }
-            Err(err) => self.log_warn(
-                "review",
-                format!("failed to serialize review progress: {err}"),
-            ),
-        }
+        let json = serde_json::to_string_pretty(&progress)?;
+        write_review_notes_atomic(&path, &json)?;
+        Ok(Some(json.into_bytes()))
     }
 
     /// When the open viewer is a PR review, refuse the action with `reason`
@@ -493,10 +549,23 @@ impl App {
                 .collect();
             return;
         };
+        // An approval applies to the patch it was given against: one whose
+        // file changed while the review was paused is dropped, not resumed.
+        let current: std::collections::HashMap<&str, &crate::diff::DiffFile> =
+            state.files.iter().map(|f| (f.path.as_str(), f)).collect();
+        let approved_fingerprints = progress.approved_fingerprints;
         state.decisions = progress
             .decisions
             .into_iter()
-            .filter(|(path, _)| known.contains(path.as_str()))
+            .filter(|(path, decision)| {
+                let Some(file) = current.get(path.as_str()) else {
+                    return false;
+                };
+                !matches!(decision, ReviewDecision::Approve)
+                    || approved_fingerprints
+                        .get(path)
+                        .is_none_or(|saved| *saved == file_fingerprint(file))
+            })
             .collect();
         state.auto_rejected = progress
             .auto_rejected
@@ -1073,7 +1142,20 @@ pub(super) fn write_review_notes_atomic(path: &Path, content: &str) -> Result<()
     use anyhow::Context as _;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut staged = tempfile::NamedTempFile::new_in(parent)
+    // Name the staging file after its target so a copy a crash leaves behind is
+    // recognisable (see `is_review_bookkeeping_path`), and give it the mode a
+    // plain write would: the existing file's, or the umask default when new.
+    let prefix = format!(
+        ".{}.",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let existing = std::fs::metadata(path).ok().map(|meta| meta.permissions());
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(&prefix).suffix(".tmp");
+    #[cfg(unix)]
+    builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o666));
+    let mut staged = builder
+        .tempfile_in(parent)
         .with_context(|| format!("failed to stage {}", path.display()))?;
     staged
         .write_all(content.as_bytes())
@@ -1082,6 +1164,14 @@ pub(super) fn write_review_notes_atomic(path: &Path, content: &str) -> Result<()
         .as_file()
         .sync_all()
         .with_context(|| format!("failed to sync {}", path.display()))?;
+    if let Some(permissions) = existing {
+        // Set explicitly: unlike the creation mode, this is not narrowed by
+        // the umask, so the replacement keeps exactly the old file's mode.
+        staged
+            .as_file()
+            .set_permissions(permissions)
+            .with_context(|| format!("failed to stage {}", path.display()))?;
+    }
     staged
         .persist(path)
         .map_err(|err| err.error)

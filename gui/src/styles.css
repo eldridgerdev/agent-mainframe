@@ -644,6 +644,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .modal-sm { max-width: 420px; }
 .modal-md { max-width: 520px; }
 .modal-lg { max-width: 820px; }
+.modal-xl { max-width: 1280px; }
 .modal-form { display: flex; flex-direction: column; min-height: 0; flex: 1; }
 .modal-header {
   display: flex;
@@ -959,3 +960,60 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .md code { font-family: var(--mono); font-size: 12px; padding: 1px 5px; border-radius: 4px; background: var(--surface-3); }
 .md pre { margin: 0 0 10px; padding: 10px 12px; border-radius: 6px; background: var(--surface-3); overflow-x: auto; }
 .md pre code { padding: 0; background: none; }
+
+/* Learning reader: bounded panes keep file and answer history accessible. */
+.learning-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.learning-controls .field { margin: 0; }
+.learning-reader { display: grid; grid-template-columns: minmax(150px, 28%) minmax(0, 1fr); height: 340px; margin-top: 12px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.learning-files { overflow: auto; border-right: 1px solid var(--border); }
+.learning-file { display: flex; gap: 6px; align-items: center; width: 100%; padding: 7px 8px; background: transparent; border: 0; text-align: left; color: inherit; cursor: pointer; overflow-wrap: anywhere; }
+.learning-file:hover { background: var(--surface-2); }
+.learning-content { min-width: 0; display: flex; flex-direction: column; }
+.learning-code-header { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px; }
+.learning-code { overflow: auto; flex: 1; }
+.learning-line { display: flex; width: max-content; min-width: 100%; background: transparent; border: 0; padding: 0 8px; text-align: left; color: inherit; cursor: pointer; }
+.learning-line code { white-space: pre; font-size: 12px; line-height: 20px; }
+.learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; opacity: .5; font-family: monospace; }
+.learning-line:hover, .learning-line-selected { background: var(--surface-2); }
+.learning-hunk { display: block; width: 100%; margin-top: 4px; padding: 2px 8px; border: 0; border-top: 1px dashed var(--border); background: transparent; color: var(--text-muted); font-size: 11px; text-align: left; cursor: pointer; }
+.learning-hunk:hover { background: var(--surface-2); }
+.learning-starters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.learning-question { margin: 12px 0; }
+.learning-history { display: grid; grid-template-columns: minmax(150px, 28%) minmax(0, 1fr); gap: 16px; }
+.learning-history nav { max-height: 300px; overflow: auto; }
+.learning-history section { max-height: 400px; overflow: auto; }
+@media (max-width: 680px) { .learning-reader, .learning-history { grid-template-columns: 1fr; } .learning-files { max-height: 110px; } }
+
+.diff-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.diff-controls .field { margin: 0; min-width: 0; }
+.diff-controls select { max-width: 320px; }
+.diff-summary { margin: 12px 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.diff-reader { display: grid; grid-template-columns: minmax(140px, 25%) minmax(0, 1fr); height: 440px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.diff-files { overflow: auto; border-right: 1px solid var(--border); }
+.diff-file { display: flex; flex-direction: column; width: 100%; padding: 8px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.diff-file small { color: var(--text-muted); }
+.diff-file:hover, .diff-file-selected { background: var(--surface-2); }
+.diff-content { min-width: 0; display: flex; flex-direction: column; }
+.diff-file-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; overflow-wrap: anywhere; font-size: 12px; }
+.diff-code { overflow: auto; flex: 1; position: relative; }
+.diff-code > p, .diff-code > pre { padding: 8px; }
+.diff-hunk-header { padding: 4px 8px; color: var(--text-muted); background: var(--surface-2); white-space: pre; font-family: monospace; font-size: 12px; }
+.diff-lines { border-collapse: collapse; width: 100%; font-size: 12px; line-height: 20px; }
+.diff-number { color: var(--text-muted); min-width: 32px; padding: 0 6px; text-align: right; user-select: none; }
+.diff-text { padding: 0 8px; white-space: pre; vertical-align: top; }
+.diff-split .diff-text { min-width: 200px; width: 50%; }
+.diff-added { background: rgba(46, 160, 67, .16); }
+.diff-removed { background: rgba(248, 81, 73, .16); }
+.diff-marker { color: var(--text-muted); font-style: italic; }
+@media (max-width: 680px) { .diff-reader { grid-template-columns: 1fr; } .diff-files { max-height: 120px; border-bottom: 1px solid var(--border); } }
+.diff-metadata { padding: 6px 8px; font-size: 12px; }
+.diff-metadata summary { cursor: pointer; color: var(--text-muted); }
+
+.review-editor, .review-note, .review-confirm {
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.review-editor textarea { width: 100%; }
+.review-editor button, .review-confirm button { margin-right: 8px; }

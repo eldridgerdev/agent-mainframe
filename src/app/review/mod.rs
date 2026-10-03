@@ -10,7 +10,10 @@ mod tests;
 pub use comments::resolve_editor_command;
 pub(crate) use pr_drafts::draft_comment_count;
 pub(crate) use pr_submit::submission_counts;
-pub(crate) use preparation::{FINAL_REVIEW_SESSION_LABEL, archive_review_notes, load_review_notes};
+pub(crate) use preparation::{
+    FINAL_REVIEW_SESSION_LABEL, archive_review_notes, checked_review_progress,
+    is_review_bookkeeping_path, load_review_notes, review_progress_path,
+};
 pub(crate) use progression::compute_search_matches;
 
 pub(crate) mod state;

@@ -8,9 +8,12 @@
 //! the Learning DB module; follow-ups delegate to existing TODO/session APIs.
 
 mod follow_up;
+pub(crate) use follow_up::{escalation_seed, learning_session_label, todo_body, todo_title_seed};
 mod lifecycle;
 mod navigation;
+pub(crate) use navigation::hunk_span;
 mod workers;
+pub(crate) use workers::starter_questions_for;
 
 #[cfg(test)]
 pub(crate) mod tests;

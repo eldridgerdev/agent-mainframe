@@ -18,7 +18,8 @@ use crate::app::{
     TodoPlanOrigin,
 };
 use crate::automation::{
-    CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
+    AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
+    CreateProjectResponse,
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
@@ -86,6 +87,10 @@ impl From<anyhow::Error> for GuiError {
         // `Internal` -- the chain, not just the outermost message, so a
         // caller adding `.context(...)` on the way up does not hide it.
         //
+        // A missing or unknown worktree-hook answer is the user's to fix, and
+        // is typed (`WorktreeHookChoiceError`) so it lands as `Conflict` from
+        // every path that checks it.
+        //
         // Every other `bail!` in those two calls -- validation failures
         // ("Project name cannot be empty") and name/branch conflicts
         // ("Project '...' already exists") alike -- has no typed error on
@@ -95,6 +100,12 @@ impl From<anyhow::Error> for GuiError {
         if err
             .chain()
             .any(|cause| cause.to_string() == crate::app::SAVE_CONFLICT_MESSAGE)
+        {
+            return Self::conflict(err.to_string());
+        }
+        if err
+            .chain()
+            .any(|cause| cause.is::<crate::app::WorktreeHookChoiceError>())
         {
             return Self::conflict(err.to_string());
         }
@@ -130,7 +141,7 @@ pub struct WorkspaceSnapshot {
 /// (a UUID) is already unambiguous: it catches a caller acting on a stale
 /// snapshot from the wrong project with `NotFound` instead of silently
 /// hitting an unrelated project's feature of the same id-typo class.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FeatureTarget {
     pub project_id: String,
     pub feature_id: String,
@@ -196,6 +207,26 @@ impl From<TodoDeleteChoice> for TodoDeleteDisposition {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TodoHostCandidate {
+    pub feature_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TodoHostPrompt {
+    pub list_id: String,
+    pub todo_count: usize,
+    pub candidates: Vec<TodoHostCandidate>,
+}
+
+/// A null feature ID explicitly deletes the project list and its items.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TodoHostChoice {
+    pub list_id: String,
+    pub feature_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeleteFeatureResponse {
     Deleted {
@@ -206,6 +237,10 @@ pub enum DeleteFeatureResponse {
     /// TODOs, and the caller must resend with a [`TodoDeleteChoice`].
     NeedsTodoDisposition {
         unfinished: usize,
+    },
+    /// Nothing was touched: choose a surviving host or delete the project list.
+    NeedsTodoHost {
+        prompt: TodoHostPrompt,
     },
 }
 
@@ -284,12 +319,16 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     app: App,
+    pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
+    pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
 }
 
 impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            learning_context: None,
+            review_context: None,
         })
     }
 
@@ -300,7 +339,11 @@ impl GuiHandle {
     /// are not descendants of this module.
     #[cfg(test)]
     pub(crate) fn from_app(app: App) -> Self {
-        Self { app }
+        Self {
+            app,
+            learning_context: None,
+            review_context: None,
+        }
     }
 
     pub fn snapshot(&self) -> WorkspaceSnapshot {
@@ -316,6 +359,7 @@ impl GuiHandle {
     /// by this GUI process; an open TUI has its own process and cannot emit
     /// those events into this window.
     pub fn refresh_snapshot(&mut self) -> GuiResult<WorkspaceSnapshot> {
+        self.app.poll_learning_answers_bg();
         if let Some(db) = &self.app.db {
             let current = db.current_store_version().map_err(GuiError::from)?;
             if self.app.store_version != Some(current) {
@@ -428,28 +472,26 @@ impl GuiHandle {
         request: CreateFeatureRequest,
     ) -> GuiResult<CreateFeatureResponse> {
         self.refresh_snapshot()?;
-        if let Some(project) = self.app.store.find_project(&request.project_name) {
-            let use_worktree = request.use_worktree.unwrap_or(!project.features.is_empty());
-            if use_worktree
-                && crate::extension::merge_project_extension_config(
-                    &self.app.config.extension,
-                    &project.repo,
-                )
-                .lifecycle_hooks
-                .on_worktree_created
-                .as_ref()
-                .and_then(|hook| hook.prompt())
-                .is_some()
-            {
-                // The automation method can ask for a hook choice only after
-                // it has created the worktree. Until the GUI supports that
-                // detour, reject before a failed request leaves one behind.
-                return Err(GuiError::conflict(
-                    "This project's worktree hook needs the TUI creation wizard for now",
-                ));
-            }
-        }
         Ok(self.app.create_feature_from_request(&request)?)
+    }
+
+    /// Preview the project-configured prompt without creating a worktree.
+    pub fn worktree_hook_prompt(
+        &mut self,
+        project_id: &str,
+    ) -> GuiResult<Option<AutomationHookPrompt>> {
+        self.refresh_snapshot()?;
+        let project = self
+            .app
+            .store
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| GuiError::not_found("Project was deleted; refresh and retry"))?;
+        Ok(project
+            .is_git
+            .then(|| self.app.worktree_hook_prompt_for_repo(&project.repo))
+            .flatten())
     }
 
     fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
@@ -892,9 +934,9 @@ impl GuiHandle {
         })
     }
 
-    /// Narrow crate-internal bridge for the GUI plan adapter. The App type
+    /// Narrow crate-internal bridge for GUI workflow adapters. The App type
     /// remains absent from every public GUI contract signature.
-    pub(crate) fn app_for_plan(&mut self) -> &mut App {
+    pub(crate) fn app_for_workflow(&mut self) -> &mut App {
         &mut self.app
     }
 
@@ -1181,22 +1223,9 @@ impl GuiHandle {
                 "New TODO features require a git repository",
             ));
         }
-        // Automation checks a prompted hook's choice after creating the
-        // worktree. Reject before that side effect until the GUI can ask.
-        if crate::extension::merge_project_extension_config(
-            &self.app.config.extension,
-            &project.repo,
-        )
-        .lifecycle_hooks
-        .on_worktree_created
-        .as_ref()
-        .and_then(|hook| hook.prompt())
-        .is_some()
-        {
-            return Err(GuiError::conflict(
-                "This project's worktree hook needs the TUI creation wizard for now",
-            ));
-        }
+        self.app
+            .validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
+            .map_err(GuiError::from)?;
         let project_id = project.id.clone();
         let resolved = self
             .db()?
@@ -1679,7 +1708,9 @@ impl GuiHandle {
     /// The TUI's feature delete: kill the tmux session, remove the worktree
     /// (`--force`; the branch stays), and drop the feature. A worktree list
     /// with open TODOs is settled first, and nothing is touched until the
-    /// caller has chosen what happens to them.
+    /// caller has chosen what happens to them. If this feature hosts the
+    /// project list, also collect its surviving host or delete-list choice
+    /// before applying the worktree disposition or starting deletion.
     ///
     /// Runs the TUI's staged deletion to completion before returning, the
     /// way `create_feature` runs worktree creation.
@@ -1687,6 +1718,7 @@ impl GuiHandle {
         &mut self,
         target: FeatureTarget,
         todos: Option<TodoDeleteChoice>,
+        todo_host: Option<TodoHostChoice>,
     ) -> GuiResult<DeleteFeatureResponse> {
         self.refresh_snapshot()?;
         let (pi, fi) = self.locate(&target)?;
@@ -1710,22 +1742,52 @@ impl GuiHandle {
             ));
         }
 
-        if let Some(disposition) = self
+        let disposition = self
             .app
-            .pending_todo_disposition(&project_name, &feature_name)
+            .pending_todo_disposition(&project_name, &feature_name);
+        if let Some(disposition) = &disposition
+            && todos.is_none()
         {
-            let Some(choice) = todos else {
-                return Ok(DeleteFeatureResponse::NeedsTodoDisposition {
-                    unfinished: disposition.unfinished,
+            return Ok(DeleteFeatureResponse::NeedsTodoDisposition {
+                unfinished: disposition.unfinished,
+            });
+        }
+        let mut host_prompt = self.todo_host_prompt(pi, fi)?;
+        if todos == Some(TodoDeleteChoice::MoveToProject)
+            && let (Some(prompt), Some(disposition)) = (&mut host_prompt, &disposition)
+        {
+            prompt.todo_count += disposition.unfinished;
+        }
+        match (&host_prompt, &todo_host) {
+            (Some(prompt), None) => {
+                return Ok(DeleteFeatureResponse::NeedsTodoHost {
+                    prompt: prompt.clone(),
                 });
-            };
+            }
+            (Some(prompt), Some(choice))
+                if choice.list_id == prompt.list_id
+                    && choice.feature_id.as_ref().is_none_or(|id| {
+                        prompt
+                            .candidates
+                            .iter()
+                            .any(|candidate| &candidate.feature_id == id)
+                    }) => {}
+            (None, None) => {}
+            _ => {
+                return Err(GuiError::conflict(
+                    "The project TODO list or its destination changed. Reopen Delete feature to choose again",
+                ));
+            }
+        }
+        // Collect both answers before moving or deleting any TODOs.
+        if let (Some(disposition), Some(choice)) = (disposition, todos) {
             self.app
                 .apply_todo_disposition(&disposition, choice.into())?;
         }
 
         self.app.message = None;
         self.app.mode = AppMode::DeletingFeature(project_name, feature_name.clone());
-        let result = self.run_feature_deletion(&feature_name);
+        let result = self.run_feature_deletion(&feature_name, todo_host.as_ref());
         // Never leave the shared engine parked in a TUI dialog.
         self.app.mode = AppMode::Normal;
         let message = result?;
@@ -1735,7 +1797,45 @@ impl GuiHandle {
         })
     }
 
-    fn run_feature_deletion(&mut self, feature_name: &str) -> GuiResult<String> {
+    fn todo_host_prompt(&self, pi: usize, fi: usize) -> GuiResult<Option<TodoHostPrompt>> {
+        let Some(db) = &self.app.db else {
+            return Ok(None);
+        };
+        let project = &self.app.store.projects[pi];
+        let scope = crate::db::todos::TodoScope::Project {
+            project_id: project.id.clone(),
+        };
+        let Some(list) = db.todo_list(&scope)? else {
+            return Ok(None);
+        };
+        if list.feature_id.as_deref() != Some(&project.features[fi].id) {
+            return Ok(None);
+        }
+        let candidates: Vec<_> = project
+            .features
+            .iter()
+            .filter(|feature| feature.id != project.features[fi].id)
+            .map(|feature| TodoHostCandidate {
+                feature_id: feature.id.clone(),
+                name: feature.name.clone(),
+            })
+            .collect();
+        // The TUI drops an orphaned project list when no features survive.
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(TodoHostPrompt {
+            todo_count: db.todos(&list.id)?.len(),
+            list_id: list.id,
+            candidates,
+        }))
+    }
+
+    fn run_feature_deletion(
+        &mut self,
+        feature_name: &str,
+        todo_host: Option<&TodoHostChoice>,
+    ) -> GuiResult<String> {
         self.app.delete_feature()?;
         loop {
             match &self.app.mode {
@@ -1775,11 +1875,15 @@ impl GuiHandle {
             .message
             .take()
             .unwrap_or_else(|| format!("Deleted feature '{feature_name}'"));
-        // The deleted feature hosted the project's TODO list. The TUI asks;
-        // its `Esc` keeps the list on the first surviving feature, which is
-        // the choice that loses nothing.
-        if matches!(self.app.mode, AppMode::TodosHostReassign(_)) {
-            self.app.cancel_todos_host_reassign()?;
+        if let AppMode::TodosHostReassign(state) = &mut self.app.mode {
+            let choice = todo_host.filter(|choice| choice.list_id == state.list_id)
+                .ok_or_else(|| GuiError::conflict("Feature deleted; the project TODO list changed during deletion. Its TODOs were kept"))?;
+            state.selected = match &choice.feature_id {
+                Some(id) => state.candidates.iter().position(|(_, feature_id)| feature_id == id)
+                    .ok_or_else(|| GuiError::conflict("Feature deleted; the chosen TODO host disappeared. Its TODOs were kept"))?,
+                None => state.candidates.len(),
+            };
+            self.app.confirm_todos_host_reassign()?;
             if let Some(rehomed) = self.app.message.take() {
                 message = format!("Deleted feature '{feature_name}'. {rehomed}");
             }
@@ -1960,6 +2064,8 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            learning_context: None,
+            review_context: None,
         }
     }
 
@@ -1977,7 +2083,11 @@ mod tests {
         let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
         app.db = Some(db);
         app.store_version = Some(version);
-        GuiHandle { app }
+        GuiHandle {
+            app,
+            learning_context: None,
+            review_context: None,
+        }
     }
 
     fn prepend_project_elsewhere(db_path: &std::path::Path) {
@@ -3192,7 +3302,7 @@ mod tests {
             "amf-gui-contract-test-no-such-session".to_string();
         let mut gui = handle(store, MockTmuxOps::new());
 
-        let response = gui.delete_feature(target(), None).unwrap();
+        let response = gui.delete_feature(target(), None, None).unwrap();
 
         assert!(matches!(response, DeleteFeatureResponse::Deleted { .. }));
         assert!(gui.app.store.projects[0].features.is_empty());
@@ -3221,7 +3331,7 @@ mod tests {
             .unwrap();
         let mut gui = handle_loading_from(db, MockTmuxOps::new());
 
-        let response = gui.delete_feature(target(), None).unwrap();
+        let response = gui.delete_feature(target(), None, None).unwrap();
 
         assert!(matches!(
             response,
@@ -3230,6 +3340,268 @@ mod tests {
         assert_eq!(gui.app.store.projects[0].features.len(), 1);
         let db = gui.app.db.as_ref().unwrap();
         assert_eq!(db.todos(&list.id).unwrap().len(), 1);
+    }
+
+    fn deletion_host_fixture(db: crate::db::AmfDb) -> (GuiHandle, String) {
+        use crate::db::todos::{TodoPriority, TodoScope};
+
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].features[0].tmux_session =
+            format!("amf-gui-delete-test-{}", uuid::Uuid::new_v4());
+        for (id, name) in [("first-host", "First"), ("second-host", "Second")] {
+            let mut survivor = store.projects[0].features[0].clone();
+            survivor.id = id.to_string();
+            survivor.name = name.to_string();
+            survivor.tmux_session = format!("amf-gui-delete-test-{}", uuid::Uuid::new_v4());
+            store.projects[0].features.push(survivor);
+        }
+        db.save_store(&store).unwrap();
+        let list = db
+            .load_or_create_todo_list(
+                &TodoScope::Project {
+                    project_id: PROJECT_ID.to_string(),
+                },
+                Some(FEATURE_ID),
+            )
+            .unwrap();
+        db.add_todo(&list.id, "Keep this", Some("notes"), TodoPriority::High)
+            .unwrap();
+        (handle_loading_from(db, MockTmuxOps::new()), list.id)
+    }
+
+    #[test]
+    fn deleting_a_project_todo_host_collects_a_choice_without_mutation() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (mut gui, list_id) =
+            deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+        let version = gui.app.store_version;
+        let response = gui.delete_feature(target(), None, None).unwrap();
+        let DeleteFeatureResponse::NeedsTodoHost { prompt } = response else {
+            panic!("expected host choice");
+        };
+        assert_eq!(prompt.list_id, list_id);
+        assert_eq!(prompt.todo_count, 1);
+        assert_eq!(
+            prompt
+                .candidates
+                .iter()
+                .map(|candidate| candidate.feature_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first-host", "second-host"]
+        );
+        assert_eq!(gui.app.store.projects[0].features.len(), 3);
+        assert_eq!(gui.app.store_version, version);
+        assert!(matches!(gui.app.mode, AppMode::Normal));
+        assert_eq!(
+            gui.app.db.as_ref().unwrap().todos(&list_id).unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn deleting_a_todo_host_applies_the_explicit_keep_or_delete_choice() {
+        use crate::db::todos::TodoScope;
+        for feature_id in [Some("second-host"), None] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let (mut gui, list_id) =
+                deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+            let response = gui
+                .delete_feature(
+                    target(),
+                    None,
+                    Some(TodoHostChoice {
+                        list_id: list_id.clone(),
+                        feature_id: feature_id.map(str::to_string),
+                    }),
+                )
+                .unwrap();
+            assert!(matches!(response, DeleteFeatureResponse::Deleted { .. }));
+            assert_eq!(gui.app.store.projects[0].features.len(), 2);
+            assert!(matches!(gui.app.mode, AppMode::Normal));
+            let db = gui.app.db.as_ref().unwrap();
+            let list = db
+                .todo_list(&TodoScope::Project {
+                    project_id: PROJECT_ID.to_string(),
+                })
+                .unwrap();
+            if let Some(id) = feature_id {
+                assert_eq!(list.unwrap().feature_id.as_deref(), Some(id));
+                let todos = db.todos(&list_id).unwrap();
+                assert_eq!(todos.len(), 1);
+                assert_eq!(todos[0].body.as_deref(), Some("notes"));
+            } else {
+                assert!(list.is_none());
+                assert!(db.todos(&list_id).unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn deleting_with_a_stale_todo_host_choice_touches_nothing() {
+        use crate::db::todos::TodoScope;
+        for stale in ["destination", "list", "host"] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let (mut gui, list_id) =
+                deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+            let writer = crate::db::AmfDb::open(file.path()).unwrap();
+            let mut choice = TodoHostChoice {
+                list_id: list_id.clone(),
+                feature_id: Some("second-host".to_string()),
+            };
+            match stale {
+                "destination" => {
+                    let mut store = writer.load_store().unwrap();
+                    store.projects[0]
+                        .features
+                        .retain(|feature| feature.id != "second-host");
+                    writer.save_store(&store).unwrap();
+                }
+                "list" => {
+                    writer.delete_todo_list(&list_id).unwrap();
+                    writer
+                        .create_todo_list(
+                            &TodoScope::Project {
+                                project_id: PROJECT_ID.to_string(),
+                            },
+                            Some(FEATURE_ID),
+                        )
+                        .unwrap();
+                    choice.feature_id = None; // stale delete must not remove the new list
+                }
+                "host" => {
+                    writer
+                        .set_todo_list_host_feature(&list_id, "first-host")
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let error = gui
+                .delete_feature(target(), None, Some(choice))
+                .unwrap_err();
+            assert_eq!(error.kind, GuiErrorKind::Conflict);
+            assert!(
+                gui.app.store.projects[0]
+                    .features
+                    .iter()
+                    .any(|feature| feature.id == FEATURE_ID)
+            );
+            assert!(
+                writer
+                    .todo_list(&TodoScope::Project {
+                        project_id: PROJECT_ID.to_string()
+                    })
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(matches!(gui.app.mode, AppMode::Normal));
+        }
+    }
+
+    #[test]
+    fn todo_host_choice_follows_ids_after_an_external_reorder_and_rename() {
+        use crate::db::todos::TodoScope;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (mut gui, list_id) =
+            deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+        assert!(matches!(
+            gui.delete_feature(target(), None, None).unwrap(),
+            DeleteFeatureResponse::NeedsTodoHost { .. }
+        ));
+        let writer = crate::db::AmfDb::open(file.path()).unwrap();
+        let mut store = writer.load_store().unwrap();
+        store.projects[0].features[2].name = "Renamed second".to_string();
+        store.projects[0].features.swap(1, 2);
+        writer.save_store(&store).unwrap();
+        gui.delete_feature(
+            target(),
+            None,
+            Some(TodoHostChoice {
+                list_id,
+                feature_id: Some("second-host".to_string()),
+            }),
+        )
+        .unwrap();
+        let list = writer
+            .todo_list(&TodoScope::Project {
+                project_id: PROJECT_ID.to_string(),
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(list.feature_id.as_deref(), Some("second-host"));
+    }
+
+    #[test]
+    fn deleting_the_last_feature_or_a_non_host_needs_no_host_choice() {
+        use crate::db::todos::TodoScope;
+        for last_feature in [false, true] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let (mut gui, list_id) =
+                deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+            if last_feature {
+                gui.app.store.projects[0].features.truncate(1);
+                gui.app.save().unwrap();
+            } else {
+                gui.app
+                    .db
+                    .as_ref()
+                    .unwrap()
+                    .set_todo_list_host_feature(&list_id, "second-host")
+                    .unwrap();
+            }
+            assert!(matches!(
+                gui.delete_feature(target(), None, None).unwrap(),
+                DeleteFeatureResponse::Deleted { .. }
+            ));
+            let db = gui.app.db.as_ref().unwrap();
+            let list = db
+                .todo_list(&TodoScope::Project {
+                    project_id: PROJECT_ID.to_string(),
+                })
+                .unwrap();
+            assert_eq!(list.is_none(), last_feature);
+            if let Some(list) = list {
+                assert_eq!(list.feature_id.as_deref(), Some("second-host"));
+                assert_eq!(db.todos(&list_id).unwrap().len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn host_choice_is_collected_before_worktree_todos_are_moved() {
+        use crate::db::todos::{TodoPriority, TodoScope};
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let (mut gui, project_list_id) =
+            deletion_host_fixture(crate::db::AmfDb::open(file.path()).unwrap());
+        gui.app.store.projects[0].features[0].is_worktree = true;
+        gui.app.save().unwrap();
+        let db = gui.app.db.as_ref().unwrap();
+        let worktree_list = db
+            .load_or_create_todo_list(
+                &TodoScope::Worktree {
+                    project_id: PROJECT_ID.to_string(),
+                    workdir: "/tmp/test-workdir".to_string(),
+                },
+                Some(FEATURE_ID),
+            )
+            .unwrap();
+        db.add_todo(&worktree_list.id, "Worktree task", None, TodoPriority::Med)
+            .unwrap();
+
+        assert!(matches!(
+            gui.delete_feature(target(), None, None).unwrap(),
+            DeleteFeatureResponse::NeedsTodoDisposition { unfinished: 1 }
+        ));
+        let response = gui
+            .delete_feature(target(), Some(TodoDeleteChoice::MoveToProject), None)
+            .unwrap();
+        let DeleteFeatureResponse::NeedsTodoHost { prompt } = response else {
+            panic!("expected host choice");
+        };
+        assert_eq!(prompt.todo_count, 2);
+        let db = gui.app.db.as_ref().unwrap();
+        assert_eq!(db.todos(&worktree_list.id).unwrap().len(), 1);
+        assert_eq!(db.todos(&project_list_id).unwrap().len(), 1);
+        assert_eq!(gui.app.store.projects[0].features.len(), 3);
     }
 
     #[test]
@@ -3559,7 +3931,11 @@ mod tests {
         );
         app.db = Some(db);
         app.store_version = None;
-        GuiHandle { app }
+        GuiHandle {
+            app,
+            learning_context: None,
+            review_context: None,
+        }
     }
 
     #[test]
@@ -3749,7 +4125,11 @@ mod tests {
         app.config.max_concurrent_agents = 8;
         app.config.low_memory_warn_mb = 0;
         (
-            GuiHandle { app },
+            GuiHandle {
+                app,
+                learning_context: None,
+                review_context: None,
+            },
             CreateFeatureRequest {
                 project_name: "demo".into(),
                 branch: "todo-work".into(),
@@ -3866,8 +4246,157 @@ mod tests {
 
         let error = gui.create_feature(request).unwrap_err();
         assert_eq!(error.kind, GuiErrorKind::Conflict);
-        assert!(error.message.contains("TUI creation wizard"));
+        assert!(error.message.contains("requires a choice"));
         assert!(gui.app.store.projects[0].features.is_empty());
+    }
+
+    fn prompting_worktree_hook(script: &str) -> ExtensionConfig {
+        ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::WithPrompt {
+                    script: script.into(),
+                    prompt: HookPrompt {
+                        title: "Choose stack".into(),
+                        options: vec!["node".into(), "rust & tools".into()],
+                    },
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn worktree_hook_preview_uses_project_overrides_and_rejects_stale_projects() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, _, _) = todo_new_feature_fixture(root.path(), MockTmuxOps::new(), None);
+        gui.app.config.extension = prompting_worktree_hook("exit 0");
+        let repo = &gui.app.store.projects[0].repo;
+        std::fs::write(
+            repo.join("amf.json"),
+            serde_json::json!({
+                "lifecycle_hooks": { "on_worktree_created": {
+                    "script": "exit 0", "prompt": { "title": "Local choice", "options": ["local"] }
+                } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let prompt = gui.worktree_hook_prompt(PROJECT_ID).unwrap().unwrap();
+        assert_eq!(prompt.title, "Local choice");
+        assert_eq!(prompt.options, ["local"]);
+        assert_eq!(
+            gui.worktree_hook_prompt("deleted-project")
+                .unwrap_err()
+                .kind,
+            GuiErrorKind::NotFound
+        );
+        assert!(gui.app.store.projects[0].features.is_empty());
+    }
+
+    #[test]
+    fn todo_hook_choice_is_validated_before_reservation_or_creation() {
+        for choice in [None, Some("removed option")] {
+            let root = tempfile::tempdir().unwrap();
+            let (mut gui, mut request, todo_id) =
+                todo_new_feature_fixture(root.path(), MockTmuxOps::new(), None);
+            gui.app.config.extension = prompting_worktree_hook("exit 0");
+            request.hook_choice = choice.map(str::to_string);
+            let error = gui
+                .launch_todo_in_new_feature(&todo_id, request, true)
+                .unwrap_err();
+            assert_eq!(error.kind, GuiErrorKind::Conflict);
+            let todo = gui
+                .db()
+                .unwrap()
+                .find_todo_by_id(&todo_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(todo.work.status, crate::db::todos::TodoStatus::NotStarted);
+            assert!(todo.work.agent_session_id.is_none());
+            assert!(gui.app.store.projects[0].features.is_empty());
+        }
+    }
+
+    fn new_hook_agent_tmux() -> MockTmuxOps {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let created = Arc::new(AtomicBool::new(false));
+        let seen = created.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .times(1)
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .times(1)
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_list_sessions().returning(|| Ok(vec![]));
+        tmux
+    }
+
+    #[test]
+    fn ordinary_creation_runs_a_prompting_hook_with_the_exact_choice() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, _) =
+            todo_new_feature_fixture(root.path(), new_hook_agent_tmux(), Some(true));
+        let repo = gui.app.store.projects[0].repo.clone();
+        let workdir = repo.join(".worktrees/todo-work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        gui.app.config.extension =
+            prompting_worktree_hook("printf '%s' \"$AMF_HOOK_CHOICE\" > hook-choice");
+        request.hook_choice = Some("rust & tools".into());
+        // The real shell hook runs; the agent launch is mocked.
+        let response = gui.create_feature(request).unwrap();
+        assert_eq!(response.worktree_hook_succeeded, Some(true));
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+            "rust & tools"
+        );
+        assert_eq!(gui.app.store.projects[0].features.len(), 1);
+    }
+
+    #[test]
+    fn todo_creation_runs_the_chosen_hook_and_keeps_the_launch_association() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, todo_id) =
+            todo_new_feature_fixture(root.path(), new_hook_agent_tmux(), Some(true));
+        let workdir = gui.app.store.projects[0].repo.join(".worktrees/todo-work");
+        std::fs::create_dir_all(&workdir).unwrap();
+        gui.app.config.extension =
+            prompting_worktree_hook("printf '%s' \"$AMF_HOOK_CHOICE\" > hook-choice");
+        request.hook_choice = Some("rust & tools".into());
+        let response = gui
+            .launch_todo_in_new_feature(&todo_id, request, false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+            "rust & tools"
+        );
+        let todo = gui
+            .db()
+            .unwrap()
+            .find_todo_by_id(&todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            todo.work.agent_session_id.as_deref(),
+            Some(response.target.session_id.as_str())
+        );
+        assert_eq!(
+            todo.linked_feature_id.as_deref(),
+            Some(response.target.feature_id.as_str())
+        );
+        assert!(response.draft_prompt.contains("Improve the API"));
     }
 
     #[test]

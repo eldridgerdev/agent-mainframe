@@ -1,0 +1,6 @@
+# Real native GUI, isolated Git checkout/database, no live or paid agents.
+# The helper asserts every GUI state and the saved progress before capture.
+note:The isolated TUI confirms the capture harness is ready before the native Final Review scenario runs.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-review.sh" "$OUT_DIR"

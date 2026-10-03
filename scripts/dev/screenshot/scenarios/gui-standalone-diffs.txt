@@ -1,0 +1,6 @@
+# Real native GUI, isolated Git checkout/database, no live or paid agents.
+# The helper asserts every GUI frame before writing its PNG and caption.
+note:The isolated TUI confirms the capture harness is ready before the native GUI scenario runs.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

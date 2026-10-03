@@ -1205,7 +1205,7 @@ pub fn hunk_index_for_line(hunk_starts: &[usize], line: usize) -> Option<usize> 
 }
 
 /// The `(first, last)` addressable-line indices of hunk `index`.
-pub(super) fn hunk_span(file: &DiffFile, index: usize) -> Option<(usize, usize)> {
+pub(crate) fn hunk_span(file: &DiffFile, index: usize) -> Option<(usize, usize)> {
     let starts = file.hunk_start_indices();
     let start = *starts.get(index)?;
     let end = starts

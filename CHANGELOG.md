@@ -12,6 +12,22 @@ are tagged.
 
 ### Added
 
+- **Review changes in the desktop app.** Open **Final Review** on a Git
+  feature, even while stopped, to approve, reject or skip files, undo verdicts,
+  leave comments and overall feedback, and read developer notes and saved
+  line comments. Pause and resume the same review in either interface.
+  Unsaved drafts require an explicit discard; failed saves offer a retry, or
+  closing without saving when the save cannot succeed. Finishing and sending feedback still use the TUI.
+- **Browse Git changes in the desktop app.** Open **Changes** on a feature,
+  even while it is stopped, to view all current changes or one feature commit.
+  Switch between unified and side-by-side layouts, filter files, jump between
+  hunks, expand context, ignore whitespace, or choose another base ref.
+  Binary files and renames are clearly identified; **Refresh** reloads changes.
+- **Choose worktree setup options in the desktop app.** New-feature and TODO
+  launch forms now show the project's setup choices before creating a worktree.
+  Choices work with direct starts and Full or Quick planning. Setup finishes
+  before the interview; cancelling the interview keeps the worktree without
+  launching an agent.
 - **AMF Remote finds your Tailscale address by itself.** When Tailscale
   serves AMF on your tailnet, the pairing QR code uses that HTTPS address
   automatically, with no need to copy it into `config.json`.
@@ -108,6 +124,20 @@ are tagged.
 
 ### Fixed
 
+- **Desktop reviews refuse verdicts on changed files.** Refresh to see the
+  latest patch; its outdated approval is cleared. Saved progress changed in
+  another interface requires an explicit reload before editing.
+- **Resuming a paused review drops approvals of files that changed.** In
+  either interface, an approval only resumes if the file's patch is the one
+  that was approved. Progress saved by earlier versions resumes as before.
+- **Saving review progress keeps the file's permissions,** and an interrupted
+  save no longer shows up as a file to review.
+- **The desktop app sees sessions started in the TUI.** Both interfaces use
+  the configured tmux server, so running sessions no longer appear stopped
+  because the desktop app looked at a different server.
+- **Missing or invalid setup choices no longer leave an unwanted worktree.**
+  Desktop and automation creation requests reject them before creating a
+  checkout or claiming a TODO.
 - **The pairing dialog no longer hides everything under the QR code.** On
   shorter terminals the QR filled the dialog, cutting off the pairing code,
   the address, and the keys. The dialog now fits its content, and shows

@@ -364,7 +364,7 @@ impl App {
     /// Eager rather than on-selection, deliberately: the point of the marker is
     /// to be there *before* the user reads a row and believes its line numbers.
     /// The cost is one read per distinct file in the history, deduped below.
-    pub(super) fn learning_check_anchor_drift(&mut self) {
+    pub(crate) fn learning_check_anchor_drift(&mut self) {
         let (workdir, rows) = match &self.mode {
             AppMode::Learning(state) => (state.workdir.clone(), state.qa.clone()),
             _ => return,

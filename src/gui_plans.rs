@@ -50,6 +50,10 @@ pub struct PlanStatus {
     pub active: Option<PlanView>,
     pub precall: Option<PrecallView>,
     pub message: Option<String>,
+    /// A failed `on_worktree_created` hook, reported once by the begin call
+    /// that ran it. Kept out of `message` (`app.message`, which outlives the
+    /// call) so reopening the same interview does not repeat the warning.
+    pub hook_warning: Option<String>,
     pub handoff: Option<PlanHandoff>,
 }
 
@@ -205,6 +209,7 @@ fn status_of(app: &App) -> PlanStatus {
             _ => None,
         },
         message: app.message.clone(),
+        hook_warning: None,
         handoff: None,
     }
 }
@@ -214,7 +219,7 @@ fn status_of(app: &App) -> PlanStatus {
 /// replacing the first interview's unsaved editor state.
 pub fn begin(gui: &mut GuiHandle, target: &FeatureTarget, quick: bool) -> GuiResult<PlanStatus> {
     gui.refresh_snapshot()?;
-    let app = gui.app_for_plan();
+    let app = gui.app_for_workflow();
     let existing = match &app.mode {
         AppMode::PlanInterview(state) => Some(state),
         AppMode::PromptPrecall(pending) => match pending.prior_mode.as_ref() {
@@ -255,17 +260,15 @@ pub fn begin(gui: &mut GuiHandle, target: &FeatureTarget, quick: bool) -> GuiRes
 }
 
 /// Enter the existing feature-creation wizard's deferred launch path with
-/// explicit GUI form values. A worktree hook that prompts for a choice is
-/// rejected before a worktree is created until that prompt has a GUI adapter;
-/// a plain hook runs to completion here (see `finish_worktree_hook`), the
-/// same rule `GuiHandle::create_feature` applies.
+/// explicit GUI form values. Validate the hook choice before creating a
+/// worktree, then run the hook through the wizard's own continuation.
 pub fn begin_feature_creation(
     gui: &mut GuiHandle,
     request: &CreateFeatureRequest,
     quick: bool,
 ) -> GuiResult<PlanStatus> {
     gui.refresh_snapshot()?;
-    begin_feature_creation_core(gui.app_for_plan(), request, quick, None)
+    begin_feature_creation_core(gui.app_for_workflow(), request, quick, None)
 }
 
 fn begin_feature_creation_core(
@@ -290,17 +293,9 @@ fn begin_feature_creation_core(
         .ok_or_else(|| GuiError::not_found("Project was deleted; refresh and retry"))?;
     let project = &app.store.projects[pi];
     let use_worktree = request.use_worktree.unwrap_or(!project.features.is_empty());
-    if use_worktree
-        && crate::extension::merge_project_extension_config(&app.config.extension, &project.repo)
-            .lifecycle_hooks
-            .on_worktree_created
-            .as_ref()
-            .and_then(|hook| hook.prompt())
-            .is_some()
-    {
-        return Err(GuiError::conflict(
-            "This project's worktree hook needs the TUI creation wizard for now",
-        ));
+    if use_worktree {
+        app.validate_worktree_hook_choice(&project.repo, request.hook_choice.as_deref())
+            .map_err(GuiError::from)?;
     }
     app.selection = Selection::Project(pi);
     app.start_create_feature();
@@ -330,16 +325,19 @@ fn begin_feature_creation_core(
         state.todo_origin = Some(origin);
         app.pending_todo_plan_brief = Some(seed);
     }
-    if let Err(error) = app
+    let hook_warning = match app
         .create_feature()
-        .and_then(|()| finish_worktree_hook(app))
+        .and_then(|()| finish_worktree_hook(app, request.hook_choice.as_deref()))
     {
-        app.pending_todo_plan_brief = None;
-        if !matches!(&app.mode, AppMode::PlanInterview(_)) {
-            app.mode = AppMode::Normal;
+        Ok(warning) => warning,
+        Err(error) => {
+            app.pending_todo_plan_brief = None;
+            if !matches!(&app.mode, AppMode::PlanInterview(_)) {
+                app.mode = AppMode::Normal;
+            }
+            return Err(GuiError::from(error));
         }
-        return Err(GuiError::from(error));
-    }
+    };
     if !matches!(&app.mode, AppMode::PlanInterview(_)) {
         app.pending_todo_plan_brief = None;
         let message = app
@@ -353,25 +351,49 @@ fn begin_feature_creation_core(
         app.mode = AppMode::Normal;
         return Err(GuiError::conflict(message));
     }
-    Ok(status_of(app))
+    let mut status = status_of(app);
+    status.hook_warning = hook_warning;
+    Ok(status)
 }
 
-/// Run a plain `on_worktree_created` hook that `create_feature` just started
+/// Run the `on_worktree_created` hook that `create_feature` just started
 /// to completion, then take the wizard's own continuation into the plan
 /// interview. The wizard starts the hook in `AppMode::RunningHook`, which the
 /// TUI's event loop polls and the user dismisses; the GUI has neither, so the
 /// hook is waited on here -- blocking, as `GuiHandle::create_feature`'s
 /// automation path already runs the same hook synchronously. A no-op in any
-/// other mode.
-fn finish_worktree_hook(app: &mut App) -> anyhow::Result<()> {
+/// other mode. Returns the warning for a failed hook when planning continues.
+fn finish_worktree_hook(app: &mut App, choice: Option<&str>) -> anyhow::Result<Option<String>> {
+    if let AppMode::HookPrompt(state) = &mut app.mode {
+        state.selected = choice
+            .and_then(|choice| state.options.iter().position(|option| option == choice))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Worktree hook choices changed during creation; reopen the form to choose again"
+                )
+            })?;
+        app.confirm_hook_prompt()?;
+    }
     loop {
         app.poll_running_hook()?;
         match &app.mode {
             AppMode::RunningHook(state) if state.child.is_some() => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            AppMode::RunningHook(_) => return app.complete_running_hook(),
-            _ => return Ok(()),
+            AppMode::RunningHook(state) => {
+                let warning = (state.success != Some(true)).then(|| {
+                    let detail = state
+                        .output
+                        .lines()
+                        .rev()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("No successful exit status");
+                    format!("Worktree setup failed; planning can continue. {detail}")
+                });
+                app.complete_running_hook()?;
+                return Ok(warning.filter(|_| matches!(app.mode, AppMode::PlanInterview(_))));
+            }
+            _ => return Ok(None),
         }
     }
 }
@@ -390,7 +412,7 @@ pub fn begin_todo_in_new_feature(
         .resolve_todo_by_id(todo_id)
         .map_err(GuiError::from)?
         .ok_or_else(|| GuiError::not_found("TODO was deleted; refresh and retry"))?;
-    let app = gui.app_for_plan();
+    let app = gui.app_for_workflow();
     let pi = app
         .store
         .projects
@@ -445,7 +467,7 @@ pub fn begin_todo_in_host(
         .resolve_todo_by_id(todo_id)
         .map_err(GuiError::from)?
         .ok_or_else(|| GuiError::not_found("TODO was deleted; refresh and retry"))?;
-    let app = gui.app_for_plan();
+    let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -512,7 +534,7 @@ pub fn begin_todo_in_host(
 /// requests this only while the Plan Interview panel is mounted; results
 /// remain owned by the shared `App` state machine.
 pub fn poll(gui: &mut GuiHandle) -> PlanStatus {
-    let app = gui.app_for_plan();
+    let app = gui.app_for_workflow();
     app.poll_plan_interview_ai_bg();
     app.poll_plan_interview_synthesis_bg();
     app.poll_plan_interview_critique_bg();
@@ -606,7 +628,7 @@ pub fn act(
     action: PlanAction,
     input: Option<PlanInput>,
 ) -> GuiResult<PlanStatus> {
-    let app = gui.app_for_plan();
+    let app = gui.app_for_workflow();
     let current = status_of(app);
     let Some(view) = current.active else {
         return Err(GuiError::conflict("Plan interview is no longer open"));
@@ -988,9 +1010,9 @@ mod tests {
 
     fn todo_fixture(workdir: &Path, tmux: MockTmuxOps) -> (GuiHandle, FeatureTarget, String) {
         let (mut gui, target) = fixture_with_tmux(workdir, tmux);
-        gui.app_for_plan().store.projects[0].features[0].status = ProjectStatus::Active;
+        gui.app_for_workflow().store.projects[0].features[0].status = ProjectStatus::Active;
         let db = crate::db::AmfDb::open(&workdir.join("amf.db")).unwrap();
-        db.save_store(&gui.app_for_plan().store).unwrap();
+        db.save_store(&gui.app_for_workflow().store).unwrap();
         let list = db
             .create_todo_list(
                 &TodoScope::Project {
@@ -1007,8 +1029,8 @@ mod tests {
                 crate::db::todos::TodoPriority::Med,
             )
             .unwrap();
-        gui.app_for_plan().store_version = Some(db.current_store_version().unwrap());
-        gui.app_for_plan().db = Some(db);
+        gui.app_for_workflow().store_version = Some(db.current_store_version().unwrap());
+        gui.app_for_workflow().db = Some(db);
         (gui, target, todo.id)
     }
 
@@ -1095,7 +1117,7 @@ mod tests {
         assert!(ended.active.is_none());
         assert!(!dir.path().join("AMF_PLAN.md").exists());
         assert_eq!(
-            gui.app_for_plan().store.projects[0].features[0].status,
+            gui.app_for_workflow().store.projects[0].features[0].status,
             ProjectStatus::Stopped
         );
     }
@@ -1129,7 +1151,7 @@ mod tests {
         let (mut gui, target) = fixture(dir.path());
         let brief = begin(&mut gui, &target, true).unwrap().active.unwrap();
         let harness = AgentKind::default();
-        assert!(!gui.app_for_plan().precall_gate(
+        assert!(!gui.app_for_workflow().precall_gate(
             PrecallAction::PlanSynthesis,
             &harness,
             "Preview text",
@@ -1193,7 +1215,7 @@ mod tests {
             .unwrap()
             .active
             .unwrap();
-        let app = gui.app_for_plan();
+        let app = gui.app_for_workflow();
         app.config.max_concurrent_agents = 1;
         app.config.low_memory_warn_mb = 0;
         let AppMode::PlanInterview(state) = &mut app.mode else {
@@ -1230,7 +1252,7 @@ mod tests {
         tmux.expect_select_window().returning(|_, _| Ok(()));
         let (mut gui, target, todo_id) = todo_fixture(dir.path(), tmux);
         begin_todo_in_host(&mut gui, &todo_id, &target).unwrap();
-        let app = gui.app_for_plan();
+        let app = gui.app_for_workflow();
         app.config.max_concurrent_agents = 8;
         app.config.low_memory_warn_mb = 0;
         let AppMode::PlanInterview(state) = &mut app.mode else {
@@ -1245,7 +1267,7 @@ mod tests {
         let handoff = result.handoff.expect("TODO launch hands a session to GUI");
         assert_eq!(handoff.target.feature_id, target.feature_id);
         assert!(handoff.draft_prompt.contains("first unchecked task"));
-        assert!(matches!(gui.app_for_plan().mode, AppMode::Normal));
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
         let todo = gui
             .db()
             .unwrap()
@@ -1298,11 +1320,11 @@ mod tests {
                 .active
                 .unwrap();
             assert_eq!(view.kind, if quick { "quick" } else { "full" });
-            assert!(gui.app_for_plan().store.projects[0].features.is_empty());
+            assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
 
             let cancelled = act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
             assert!(cancelled.active.is_none());
-            assert!(gui.app_for_plan().store.projects[0].features.is_empty());
+            assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
             assert!(!dir.path().join("AMF_PLAN.md").exists());
         }
     }
@@ -1373,7 +1395,10 @@ mod tests {
 
         assert_eq!(view.kind, "full");
         assert!(worktree_dir.join("hook-ran").exists());
-        assert!(matches!(gui.app_for_plan().mode, AppMode::PlanInterview(_)));
+        assert!(matches!(
+            gui.app_for_workflow().mode,
+            AppMode::PlanInterview(_)
+        ));
     }
 
     #[test]
@@ -1405,7 +1430,128 @@ mod tests {
         let error = begin_feature_creation(&mut gui, &worktree_plan_request(), false).unwrap_err();
 
         assert_eq!(error.kind, GuiErrorKind::Conflict);
-        assert!(error.message.contains("TUI creation wizard"));
+        assert!(error.message.contains("requires a choice"));
+    }
+
+    fn prompted_hook_config() -> crate::extension::ExtensionConfig {
+        use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+        ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_worktree_created: Some(HookConfig::WithPrompt {
+                    script: "printf '%s' \"$AMF_HOOK_CHOICE\" > hook-choice".into(),
+                    prompt: HookPrompt {
+                        title: "Choose stack".into(),
+                        options: vec!["node".into(), "rust & tools".into()],
+                    },
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn prompted_hooks_continue_full_and_quick_plans_and_cancel_without_launch() {
+        for quick in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut gui, mut request, todo_id, workdir) =
+                todo_new_feature_fixture(dir.path(), MockTmuxOps::new());
+            gui.app_for_workflow().config.extension = prompted_hook_config();
+            request.hook_choice = Some("rust & tools".into());
+            let view = begin_feature_creation(&mut gui, &request, quick)
+                .unwrap()
+                .active
+                .unwrap();
+            assert_eq!(view.kind, if quick { "quick" } else { "full" });
+            assert_eq!(
+                std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+                "rust & tools"
+            );
+            act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
+            assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
+            assert!(
+                gui.db().unwrap().load_store().unwrap().projects[0]
+                    .features
+                    .is_empty()
+            );
+            assert!(!workdir.join("AMF_PLAN.md").exists());
+            assert_eq!(
+                gui.db()
+                    .unwrap()
+                    .find_todo_by_id(&todo_id)
+                    .unwrap()
+                    .unwrap()
+                    .work
+                    .status,
+                TodoStatus::NotStarted
+            );
+        }
+    }
+
+    #[test]
+    fn prompted_todo_plan_preserves_its_brief_and_unclaimed_todo_on_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, todo_id, workdir) =
+            todo_new_feature_fixture(dir.path(), MockTmuxOps::new());
+        gui.app_for_workflow().config.extension = prompted_hook_config();
+        request.hook_choice = Some("rust & tools".into());
+        let view = begin_todo_in_new_feature(&mut gui, &todo_id, &request)
+            .unwrap()
+            .active
+            .unwrap();
+        assert!(view.editor_text.contains("Improve the API"));
+        assert!(view.editor_text.contains("Keep existing calls working"));
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("hook-choice")).unwrap(),
+            "rust & tools"
+        );
+        act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
+        let todo = gui
+            .db()
+            .unwrap()
+            .find_todo_by_id(&todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(todo.work.status, TodoStatus::NotStarted);
+        assert!(todo.work.agent_session_id.is_none());
+        assert!(todo.linked_feature_id.is_none());
+        assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
+        assert!(!workdir.join("AMF_PLAN.md").exists());
+    }
+
+    #[test]
+    fn a_failed_prompted_hook_reports_its_output_and_keeps_planning_deferred() {
+        use crate::extension::HookConfig;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, mut request, _, workdir) =
+            todo_new_feature_fixture(dir.path(), MockTmuxOps::new());
+        let mut config = prompted_hook_config();
+        let Some(HookConfig::WithPrompt { script, .. }) =
+            &mut config.lifecycle_hooks.on_worktree_created
+        else {
+            unreachable!()
+        };
+        *script = "echo 'setup problem' >&2; exit 7".into();
+        gui.app_for_workflow().config.extension = config;
+        request.hook_choice = Some("node".into());
+        let status = begin_feature_creation(&mut gui, &request, false).unwrap();
+        assert!(
+            status
+                .hook_warning
+                .unwrap()
+                .contains("Worktree setup failed")
+        );
+        let view = status.active.unwrap();
+        // Reopening the live interview reports the hook failure only once.
+        let target = FeatureTarget {
+            project_id: "project-1".into(),
+            feature_id: view.interview_key.clone(),
+        };
+        let reopened = begin(&mut gui, &target, false).unwrap();
+        assert!(reopened.hook_warning.is_none());
+        act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
+        assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
+        assert!(!workdir.join("AMF_PLAN.md").exists());
     }
 
     #[test]
@@ -1444,8 +1590,8 @@ mod tests {
             Box::new(tmux),
             Box::new(MockWorktreeOps::new()),
         ));
-        gui.app_for_plan().config.max_concurrent_agents = 8;
-        gui.app_for_plan().config.low_memory_warn_mb = 0;
+        gui.app_for_workflow().config.max_concurrent_agents = 8;
+        gui.app_for_workflow().config.low_memory_warn_mb = 0;
         let request = CreateFeatureRequest {
             project_name: "demo".into(),
             branch: "planned-work".into(),
@@ -1460,7 +1606,7 @@ mod tests {
             dry_run: false,
         };
         begin_feature_creation(&mut gui, &request, false).unwrap();
-        let app = gui.app_for_plan();
+        let app = gui.app_for_workflow();
         let AppMode::PlanInterview(state) = &mut app.mode else {
             panic!("expected interview");
         };
@@ -1472,12 +1618,12 @@ mod tests {
         assert!(result.active.is_none());
         let handoff = result.handoff.expect("new agent has an editable kickoff");
         assert!(handoff.draft_prompt.contains("first unchecked task"));
-        assert_eq!(gui.app_for_plan().store.projects[0].features.len(), 1);
+        assert_eq!(gui.app_for_workflow().store.projects[0].features.len(), 1);
         assert_eq!(
             handoff.target.feature_id,
-            gui.app_for_plan().store.projects[0].features[0].id
+            gui.app_for_workflow().store.projects[0].features[0].id
         );
-        assert!(matches!(gui.app_for_plan().mode, AppMode::Normal));
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
         assert!(
             std::fs::read_to_string(dir.path().join("AMF_PLAN.md"))
                 .unwrap()
@@ -1496,13 +1642,13 @@ mod tests {
             .unwrap();
         assert!(view.editor_text.contains("Improve the API"));
         assert!(view.editor_text.contains("Keep existing calls working"));
-        assert!(gui.app_for_plan().store.projects[0].features.is_empty());
+        assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
 
         let cancelled = act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();
         assert!(cancelled.active.is_none());
         assert!(worktree_dir.exists());
         assert!(!worktree_dir.join("AMF_PLAN.md").exists());
-        assert!(gui.app_for_plan().store.projects[0].features.is_empty());
+        assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
         let todo = gui
             .db()
             .unwrap()
@@ -1536,7 +1682,7 @@ mod tests {
         tmux.expect_list_sessions().returning(|| Ok(vec![]));
         let (mut gui, request, todo_id, worktree_dir) = todo_new_feature_fixture(dir.path(), tmux);
         begin_todo_in_new_feature(&mut gui, &todo_id, &request).unwrap();
-        let app = gui.app_for_plan();
+        let app = gui.app_for_workflow();
         app.config.max_concurrent_agents = 8;
         app.config.low_memory_warn_mb = 0;
         let AppMode::PlanInterview(state) = &mut app.mode else {
@@ -1549,7 +1695,9 @@ mod tests {
         let result = act(&mut gui, &step, PlanAction::Accept, None).unwrap();
         let handoff = result.handoff.expect("new TODO feature has an agent");
         assert!(handoff.draft_prompt.contains("first unchecked task"));
-        let feature_id = gui.app_for_plan().store.projects[0].features[0].id.clone();
+        let feature_id = gui.app_for_workflow().store.projects[0].features[0]
+            .id
+            .clone();
         assert_eq!(feature_id, handoff.target.feature_id);
         let todo = gui
             .db()
@@ -1588,8 +1736,8 @@ mod tests {
             Box::new(tmux),
             Box::new(MockWorktreeOps::new()),
         ));
-        gui.app_for_plan().config.max_concurrent_agents = 1;
-        gui.app_for_plan().config.low_memory_warn_mb = 0;
+        gui.app_for_workflow().config.max_concurrent_agents = 1;
+        gui.app_for_workflow().config.low_memory_warn_mb = 0;
         let request = CreateFeatureRequest {
             project_name: "demo".into(),
             branch: "planned-work".into(),
@@ -1604,7 +1752,7 @@ mod tests {
             dry_run: false,
         };
         begin_feature_creation(&mut gui, &request, false).unwrap();
-        let app = gui.app_for_plan();
+        let app = gui.app_for_workflow();
         let AppMode::PlanInterview(state) = &mut app.mode else {
             panic!("expected interview");
         };
@@ -1615,6 +1763,6 @@ mod tests {
         let warning = act(&mut gui, &step, PlanAction::Accept, None).unwrap_err();
         assert_eq!(warning.kind, GuiErrorKind::NeedsApproval);
         assert!(!dir.path().join("AMF_PLAN.md").exists());
-        assert!(gui.app_for_plan().store.projects[0].features.is_empty());
+        assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
     }
 }

@@ -172,7 +172,8 @@ The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
-and Full and Quick Plan interviews. Continue to use `amf` for workflows
+Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
+editing-agent handoff, plus standalone Git diffs. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -187,6 +188,66 @@ If tmux exits unexpectedly, the GUI shows the affected features as stopped.
 Start a feature to recreate its tmux session; when a saved Claude, Codex, or
 OpenCode session is available, the GUI offers to resume it, start fresh, or
 choose another saved session.
+
+**Delete feature** asks what to do with unfinished worktree TODOs. If the feature
+also hosts the project TODO list, choose a surviving feature to keep that list
+or explicitly delete the list and all its TODOs. Both choices are collected
+before deletion starts; **Cancel** leaves the feature and lists untouched.
+The first surviving feature is selected by default. Deleting the last feature
+drops a project list hosted by it, matching the TUI.
+
+When a project's worktree setup asks for an option, **New feature** and the
+TODO's new-feature form show that choice before creation. Choose an option to
+continue; a failed lookup offers **Retry**. The configured script receives the
+choice through `AMF_HOOK_CHOICE`. This works with direct starts, Full and Quick
+Plan, and TODO planning. Setup runs before the interview opens; cancelling the
+interview keeps the worktree and its setup changes, without saving a plan or
+launching an agent. A failed setup still allows planning to continue and shows
+a notice.
+
+Use **Learning** on a feature page to browse its files or branch changes and
+ask about the project, a file, or a selected range (click, then Shift-click).
+Choose an answering harness and reading level; answers and follow-ups share
+the TUI's Learning history. **Deep dive** lets the answering agent read the
+repository. Codex always uses its read-only repository sandbox. Reading and
+asking questions do not open an editing session. **Open editing agent** starts
+an agent only when explicitly selected, asks for resource approval when needed,
+and opens an editable prompt that you can review before sending. Closing
+Learning leaves pending answers running while AMF stays open. Unsent questions
+are preserved across refreshes and require explicit discard on close.
+
+Learning also offers starter questions, hunk selection, keeping an answer as an
+editable TODO, intent relabelling and restarting a stopped linked editing session.
+Learning command and component tests use mocked harness execution; native desktop
+Learning interactions and paid-harness runs have not been validated yet.
+
+Use **Changes** on a Git feature to browse all current changes (committed,
+staged, unstaged and untracked) or one commit from the feature's history.
+The viewer works while the feature is stopped. Filter files, jump between hunks,
+switch unified/side-by-side layouts, ignore whitespace, expand context, or
+choose a different base ref for current changes. **Refresh** reloads Git's
+current contents. Native WSLg captures verify opening from a stopped feature, switching layouts
+and context, selecting a commit and displaying a binary notice through real
+Rust IPC. Other native interactions and macOS remain unvalidated. Command
+tests use isolated Git repositories; component tests mock the IPC calls.
+
+Use **Final Review** on a Git feature to approve, reject or skip files, undo a
+verdict, write whole-file comments with severity, resolve/reopen comments, and
+save overall feedback. Developer notes and saved line threads/suggestions are
+shown alongside unified or side-by-side diffs. **Pause review** preserves progress
+in the same format the TUI resumes; reopening either interface continues it.
+Unsaved form edits require explicit discard before leaving, and failed saves
+retain edits with **Retry save**, or **Close without saving** when the save
+cannot succeed. **Refresh changes** reloads the diff and clears
+approvals and verdict-undo entries for changed patches, and reopening a paused
+review drops approvals whose patch changed meanwhile; **Reload
+saved review** adopts progress changed in another interface. Edit a given review
+in one interface at a time; detected external saves block edits until reload.
+Line-thread editing, walkthroughs, AI questions/co-review, suggestion application,
+finish checks and sending feedback remain in the TUI. Native WSLg captures verify opening on a stopped feature, notes and saved line
+threads, verdict/comment persistence, split layout, unsaved-draft protection,
+pause/reopen, changed-patch rejection and approval invalidation after refresh.
+Remaining native interactions and macOS validation are open.
 
 ## Checks
 

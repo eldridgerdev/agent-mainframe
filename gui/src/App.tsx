@@ -2,6 +2,16 @@ import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ReviewAction,
+  ReviewView,
+  reviewBegin,
+  reviewAct,
+  LearningView,
+  LearningAction,
+  learningBegin,
+  learningSnapshot,
+  learningAct,
+  learningLaunchAgent,
   AgentSlug,
   NewSessionKind,
   NewSessionOption,
@@ -22,6 +32,8 @@ import {
   SessionRecoveryChoice,
   SessionRecoveryOption,
   TodoDeleteChoice,
+  TodoHostChoice,
+  TodoHostPrompt,
   WorkspaceSnapshot,
   asGuiError,
   addSession,
@@ -51,11 +63,15 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import TerminalPane from "./TerminalPane";
+import DiffPanel from "./DiffPanel";
+import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
+import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
   SessionStateDot,
@@ -132,6 +148,10 @@ export default function App() {
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
   const [pendingSessionByFeature, setPendingSessionByFeature] = useState<Record<string, string>>({});
+  const [learning, setLearning] = useState<LearningView | null>(null);
+  const [learningBusy, setLearningBusy] = useState(false);
+  const learningActionPending = useRef(false);
+  const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sendingPrompt, setSendingPrompt] = useState(false);
   const [planMinimized, setPlanMinimized] = useState(false);
@@ -189,12 +209,18 @@ export default function App() {
     target: SessionTarget;
     message: string;
   } | null>(null);
+  const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
+  const [review, setReview] = useState<ReviewView | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const reviewPending = useRef(false);
   const [deleteFeatureDialog, setDeleteFeatureDialog] = useState<{
     target: FeatureTarget;
     projectName: string;
     featureName: string;
     isWorktree: boolean;
     unfinished: number | null;
+    todoHost?: TodoHostPrompt;
   } | null>(null);
   const deleteFeatureInFlight = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -340,6 +366,90 @@ export default function App() {
     if (draftPrompt !== undefined) setDraft({ key: sessionKey(target), text: draftPrompt });
   }
 
+  useEffect(() => {
+    if (!learning || learningBusy) return;
+    let cancelled = false;
+    const workflowId = learning.workflow_id;
+    const timer = window.setInterval(() => {
+      void learningSnapshot().then((next) => {
+        if (cancelled) return;
+        setLearning((current) => {
+          if (current?.workflow_id !== workflowId) return current;
+          if (!next) return null;
+          return next.workflow_id === current.workflow_id && next.revision >= current.revision ? next : current;
+        });
+      }).catch(() => { /* Explicit actions report deleted/stale targets. */ });
+    }, 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [learning?.workflow_id, learningBusy]);
+
+  async function beginLearning(target: FeatureTarget) {
+    if (learningActionPending.current) return;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try { setLearning(await learningBegin(target)); }
+    catch (err) { reportError(err); }
+    finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
+  async function beginReview(target: FeatureTarget) {
+    if (reviewPending.current) return;
+    reviewPending.current = true;
+    setReviewBusy(true);
+    setReviewError(null);
+    try { setReview(await reviewBegin(target)); }
+    catch (err) { reportError(err); }
+    finally { reviewPending.current = false; setReviewBusy(false); }
+  }
+
+  async function actReview(action: ReviewAction): Promise<boolean> {
+    if (!review || reviewPending.current) return false;
+    reviewPending.current = true;
+    setReviewBusy(true);
+    setReviewError(null);
+    try {
+      const next = await reviewAct(review, action);
+      setReview(next);
+      // A failed pause returns the retained review with its save error.
+      return !(action.kind === "pause" && next !== null);
+    } catch (err) { setReviewError(asGuiError(err).message); return false; }
+    finally { reviewPending.current = false; setReviewBusy(false); }
+  }
+
+  async function actLearning(action: LearningAction): Promise<boolean> {
+    if (!learning || learningActionPending.current) return false;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try {
+      setLearning(await learningAct(learning, action));
+      if (action.kind === "keep_todo") void queryClient.invalidateQueries({ queryKey: ["todos"] });
+      return true;
+    }
+    catch (err) { reportError(err); return false; }
+    finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
+  async function launchLearning(qaId: string, approved = false) {
+    if (!learning || learningActionPending.current) return;
+    learningActionPending.current = true;
+    setLearningBusy(true);
+    try {
+      const handoff = await learningLaunchAgent(learning, qaId, approved);
+      setLearning(null); setLearningApproval(null);
+      openSession(handoff.target, handoff.draft_prompt);
+      if (handoff.notice) pushToast({ tone: "error", title: "Learning", message: handoff.notice });
+      if (handoff.info) pushToast({ tone: "info", title: "Learning", message: handoff.info });
+      // A stopped linked session goes through the tab's own start, which
+      // offers to resume its saved conversation.
+      if (handoff.start_required) void beginSessionStart(handoff.target);
+      void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+    } catch (err) {
+      const error = asGuiError(err);
+      if (error.kind === "needs_approval") setLearningApproval({ qaId, message: error.message });
+      else { setLearningApproval(null); reportError(err); }
+    } finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
     if (status.handoff) {
@@ -357,7 +467,11 @@ export default function App() {
     setPlanBusy(true);
     try {
       await queryClient.cancelQueries({ queryKey: PLAN_KEY });
-      updatePlan(await start());
+      const status = await start();
+      updatePlan(status);
+      if (status.hook_warning) {
+        pushToast({ tone: "info", title: "Plan", message: status.hook_warning });
+      }
       setPlanMinimized(false);
       return true;
     } catch (err) {
@@ -644,14 +758,18 @@ export default function App() {
   }
 
   const deleteFeatureMutation = useMutation({
-    mutationFn: ({ target, todos }: { target: FeatureTarget; todos: TodoDeleteChoice | null }) =>
-      deleteFeature(target, todos),
+    mutationFn: ({ target, todos, todoHost }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null }) =>
+      deleteFeature(target, todos, todoHost),
     onSettled: () => {
       deleteFeatureInFlight.current = false;
     },
     onSuccess: (response, { target }) => {
       if (response.status === "needs_todo_disposition") {
         setDeleteFeatureDialog((current) => current && { ...current, unfinished: response.unfinished });
+        return;
+      }
+      if (response.status === "needs_todo_host") {
+        setDeleteFeatureDialog((current) => current && { ...current, todoHost: response.prompt });
         return;
       }
       setDeleteFeatureDialog(null);
@@ -671,10 +789,10 @@ export default function App() {
     },
   });
 
-  function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null) {
+  function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
-    deleteFeatureMutation.mutate({ target, todos });
+    deleteFeatureMutation.mutate({ target, todos, todoHost });
   }
 
   const stopFeatureMutation = useMutation({
@@ -808,6 +926,20 @@ export default function App() {
         )}
       </aside>
 
+      {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
+      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} />}
+      {learning && (
+        <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
+          onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
+          onClose={() => void actLearning({ kind: "close" })} />
+      )}
+      {learningApproval && (
+        <ApprovalDialog label="Approve Learning agent" title="Start editing agent?"
+          message={learningApproval.message} confirmLabel="Start anyway" busy={learningBusy}
+          onConfirm={() => void launchLearning(learningApproval.qaId, true)}
+          onCancel={() => setLearningApproval(null)} />
+      )}
+
       <main className="main">
         {view?.kind === "todos" && (
           <div className="page">
@@ -869,6 +1001,11 @@ export default function App() {
               { project_id: selectedProject.id, feature_id: selectedFeature.id },
               quick,
             )}
+            onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            learningBusy={learningBusy}
+            onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
@@ -957,6 +1094,7 @@ export default function App() {
 
       {createFeatureProject && (
         <CreateFeatureForm
+          projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
           agents={harnesses.data ?? []}
           modes={modes.data ?? []}
@@ -1129,8 +1267,9 @@ export default function App() {
           featureName={deleteFeatureDialog.featureName}
           isWorktree={deleteFeatureDialog.isWorktree}
           unfinished={deleteFeatureDialog.unfinished}
+          todoHost={deleteFeatureDialog.todoHost}
           busy={deleteFeatureMutation.isPending}
-          onConfirm={(todos) => requestDeleteFeature(deleteFeatureDialog.target, todos)}
+          onConfirm={(todos, todoHost) => requestDeleteFeature(deleteFeatureDialog.target, todos, todoHost)}
           onClose={() => setDeleteFeatureDialog(null)}
         />
       )}
@@ -1351,6 +1490,11 @@ function FeatureView({
   onTab,
   onBack,
   onPlan,
+  onLearning,
+  learningBusy,
+  onDiff,
+  onReview,
+  reviewBusy,
   onNewSession,
   newSessionLoading,
   stoppedSessionIds,
@@ -1378,6 +1522,11 @@ function FeatureView({
   onTab: (tab: string) => void;
   onBack: () => void;
   onPlan: (quick: boolean) => void;
+  onLearning: () => void;
+  learningBusy: boolean;
+  onDiff: () => void;
+  onReview: () => void;
+  reviewBusy: boolean;
   onNewSession: () => void;
   newSessionLoading: boolean;
   stoppedSessionIds: string[];
@@ -1441,6 +1590,15 @@ function FeatureView({
             <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
               {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
             </button>
+            <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
+              <Icon name="file" size={12} /> Learning
+            </button>
+            {project.is_git && <button className="btn btn-secondary" onClick={onDiff}>
+              <Icon name="branch" size={12} /> Changes
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
+              {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
+            </button>}
             <Menu
               label="Plan"
               icon="sparkles"
@@ -1696,7 +1854,8 @@ function CreateProjectForm({
 
 type PlanKind = "none" | "quick" | "full";
 
-function CreateFeatureForm({
+export function CreateFeatureForm({
+  projectId,
   projectName,
   agents,
   modes,
@@ -1706,6 +1865,7 @@ function CreateFeatureForm({
   onCancel,
   onSubmit,
 }: {
+  projectId: string;
   projectName: string;
   agents: HarnessInfo[];
   modes: ModeInfo[];
@@ -1713,7 +1873,7 @@ function CreateFeatureForm({
   defaultUseWorktree: boolean;
   pending: boolean;
   onCancel: () => void;
-  onSubmit: (request: Omit<CreateFeatureRequest, "project_name"> & { hook_choice: null }, planKind: PlanKind) => void;
+  onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind) => void;
 }) {
   const [branch, setBranch] = useState("");
   const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
@@ -1721,6 +1881,7 @@ function CreateFeatureForm({
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
+  const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
     <Modal
@@ -1728,22 +1889,26 @@ function CreateFeatureForm({
       title="New feature"
       subtitle={`in ${projectName}`}
       onClose={onCancel}
-      onSubmit={() => onSubmit({
-        branch: branch.trim(),
-        agent,
-        mode,
-        review: false,
-        plan_mode: planKind !== "none",
-        create_terminal: false,
-        use_worktree: useWorktree,
-        enable_chrome: false,
-        hook_choice: null,
-        dry_run: false,
-      }, planKind)}
+      dismissable={!pending}
+      onSubmit={() => {
+        if (pending || !hook.ready || !branch.trim()) return;
+        onSubmit({
+          branch: branch.trim(),
+          agent,
+          mode,
+          review: false,
+          plan_mode: planKind !== "none",
+          create_terminal: false,
+          use_worktree: useWorktree,
+          enable_chrome: false,
+          hook_choice: hook.choice || null,
+          dry_run: false,
+        }, planKind);
+      }}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !branch.trim()}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim()}>
             {pending && <Spinner />}
             {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
           </button>
@@ -1805,6 +1970,7 @@ function CreateFeatureForm({
             hint="Gives the feature its own checkout so agents don't collide."
           />
         )}
+        <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>
   );
@@ -1842,6 +2008,7 @@ export function TodoNewFeatureForm({
     ? agent : (agents[0]?.slug ?? agent);
   const selectedMode = modes.some((candidate) => candidate.slug === mode)
     ? mode : (modes[0]?.slug ?? mode);
+  const hook = useWorktreeHookChoice(project?.id, !!project);
 
   return (
     <Modal
@@ -1849,8 +2016,9 @@ export function TodoNewFeatureForm({
       title={kind === "plan" ? "Plan in a new feature" : "Start in a new feature"}
       subtitle={todoTitle}
       onClose={onCancel}
+      dismissable={!pending}
       onSubmit={() => {
-        if (!project || !branch.trim()) return;
+        if (pending || !project || !branch.trim() || !hook.ready) return;
         onSubmit({
           project_name: project.name,
           branch: branch.trim(),
@@ -1861,14 +2029,14 @@ export function TodoNewFeatureForm({
           create_terminal: false,
           use_worktree: true,
           enable_chrome: false,
-          hook_choice: null,
+          hook_choice: hook.choice || null,
           dry_run: false,
         });
       }}
       footer={
         <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim()}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
+          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim() || !hook.ready}>
             {pending && <Spinner />}
             {kind === "plan" ? "Start plan" : "Create and start"}
           </button>
@@ -1877,7 +2045,7 @@ export function TodoNewFeatureForm({
     >
       <p className="muted small modal-lead">
         {kind === "plan"
-          ? "The worktree and agent launch wait until you accept the plan."
+          ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
           : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}
       </p>
       <div className="form-stack">
@@ -1909,6 +2077,7 @@ export function TodoNewFeatureForm({
             </select>
           </Field>
         </div>
+        <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>
   );

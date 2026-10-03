@@ -132,6 +132,15 @@ export interface CreateFeatureResponse {
   message: string;
 }
 
+export interface WorktreeHookPrompt {
+  title: string;
+  options: string[];
+}
+
+export function worktreeHookPrompt(projectId: string): Promise<WorktreeHookPrompt | null> {
+  return invoke("worktree_hook_prompt", { projectId });
+}
+
 export interface FeatureTarget {
   project_id: string;
   feature_id: string;
@@ -206,16 +215,30 @@ export function removeSession(target: SessionTarget): Promise<RemoveSessionRespo
 /** What happens to a deleted worktree's unfinished TODOs. */
 export type TodoDeleteChoice = "move_to_project" | "move_to_global" | "delete";
 
+export interface TodoHostPrompt {
+  list_id: string;
+  todo_count: number;
+  candidates: { feature_id: string; name: string }[];
+}
+
+export interface TodoHostChoice {
+  list_id: string;
+  /** Null explicitly deletes the project TODO list. */
+  feature_id: string | null;
+}
+
 export type DeleteFeatureResponse =
   | { status: "deleted"; feature_id: string; message: string }
   /** Nothing was touched; resend with a `TodoDeleteChoice`. */
-  | { status: "needs_todo_disposition"; unfinished: number };
+  | { status: "needs_todo_disposition"; unfinished: number }
+  | { status: "needs_todo_host"; prompt: TodoHostPrompt };
 
 export function deleteFeature(
   target: FeatureTarget,
   todos: TodoDeleteChoice | null,
+  todoHost: TodoHostChoice | null,
 ): Promise<DeleteFeatureResponse> {
-  return invoke("delete_feature", { target, todos });
+  return invoke("delete_feature", { target, todos, todoHost });
 }
 
 export interface SessionRecoveryOption {
@@ -424,6 +447,7 @@ export interface PlanStatus {
   active: PlanView | null;
   precall: PrecallView | null;
   message: string | null;
+  hook_warning: string | null;
   handoff: PlanHandoff | null;
 }
 
@@ -482,3 +506,154 @@ export function planAct(
 ): Promise<PlanStatus> {
   return invoke("plan_act", { expectedStep, action, input });
 }
+
+export interface LearningEntry {
+  key: string;
+  label: string;
+  kind: "header" | "project" | "dir" | "file";
+  depth: number;
+  expanded: boolean;
+}
+export interface LearningAnswer {
+  id: string;
+  parent_id: string | null;
+  question: string;
+  answer: string | null;
+  anchor: string;
+  status: "pending" | "running" | "answered" | "failed";
+  intent: "explain" | "action";
+  run_mode: string;
+  harness: AgentSlug;
+  error: string | null;
+  drift: string | null;
+  spawned_session_id: string | null;
+  /** The TODO this answer was kept as, while that item still exists. */
+  todo_id: string | null;
+  todo_seed: { title: string; notes: string } | null;
+}
+export interface LearningStarter { text: string; intent: "explain" | "action" }
+export interface LearningHunk { index: number; start: number; end: number }
+export interface LearningView {
+  workflow_id: string;
+  revision: number;
+  target: FeatureTarget;
+  feature_name: string;
+  scope: "repo_tree" | "branch_changes";
+  is_git: boolean;
+  entries: LearningEntry[];
+  content_path: string | null;
+  content: string[];
+  content_line_labels: string[];
+  content_error: string | null;
+  anchor: string;
+  /** 1-based inclusive rows of `content` under a line or hunk anchor. */
+  selection: [number, number] | null;
+  hunks: LearningHunk[];
+  starters: LearningStarter[];
+  can_keep_todo: boolean;
+  harness: AgentSlug;
+  harnesses: AgentSlug[];
+  level: "newcomer" | "familiar";
+  history_saved: boolean;
+  qa: LearningAnswer[];
+  error: string | null;
+  notice: string | null;
+}
+export type LearningAction =
+  | { kind: "select_entry"; key: string }
+  | { kind: "toggle_scope" | "refresh" | "project_anchor" | "file_anchor" | "close" }
+  | { kind: "lines_anchor"; start: number; end: number }
+  | { kind: "hunk_anchor"; index: number }
+  | { kind: "settings"; harness: AgentSlug; level: string }
+  | { kind: "ask"; question: string; intent: string; parent_id: string | null }
+  | { kind: "deep_dive" | "relabel_intent"; qa_id: string }
+  | { kind: "keep_todo"; qa_id: string; title: string; notes: string };
+export interface LearningHandoff {
+  target: SessionTarget;
+  draft_prompt: string;
+  notice: string | null;
+  info: string | null;
+  /** The linked session still exists but is stopped; start it instead of opening another. */
+  start_required: boolean;
+}
+export const learningBegin = (target: FeatureTarget): Promise<LearningView> =>
+  invoke("learning_begin", { target });
+export const learningSnapshot = (): Promise<LearningView | null> => invoke("learning_snapshot");
+export const learningAct = (view: LearningView, action: LearningAction): Promise<LearningView | null> =>
+  invoke("learning_act", { workflowId: view.workflow_id, revision: view.revision, action });
+export const learningLaunchAgent = (view: LearningView, qaId: string, approved: boolean): Promise<LearningHandoff> =>
+  invoke("learning_launch_agent", { workflowId: view.workflow_id, revision: view.revision, qaId, approved });
+
+export interface DiffOptions {
+  commit: string | null;
+  base_ref: string | null;
+  ignore_whitespace: boolean;
+  context: "standard" | "expanded" | "full";
+}
+export interface DiffLine {
+  kind: "context" | "added" | "removed" | "marker";
+  text: string;
+  old_line: number | null;
+  new_line: number | null;
+}
+export interface DiffHunk { header: string; lines: DiffLine[] }
+export interface DiffFile {
+  path: string;
+  old_path: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  hunks: DiffHunk[];
+  patch: string;
+}
+export interface DiffView {
+  target: FeatureTarget;
+  feature_name: string;
+  branch: string;
+  base_ref: string;
+  base_commit: string;
+  commit: string | null;
+  commits: { hash: string; short_hash: string; subject: string }[];
+  commits_error: string | null;
+  files: DiffFile[];
+  total_additions: number;
+  total_deletions: number;
+}
+export const loadDiff = (target: FeatureTarget, options: DiffOptions): Promise<DiffView> =>
+  invoke("load_diff", { target, options });
+
+export type ReviewSeverity = "blocker" | "suggestion" | "nit" | "question" | "praise";
+export interface ReviewFile {
+  diff: DiffFile;
+  verdict: "approved" | "rejected" | "undecided";
+  feedback: string;
+  severity: ReviewSeverity;
+  comment: { text: string; severity: ReviewSeverity; resolved: boolean; carried: boolean } | null;
+  line_comments: { anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null }[];
+  notes: string | null;
+  changed_since_last: boolean;
+}
+export interface ReviewView {
+  workflow_id: string;
+  revision: number;
+  target: FeatureTarget;
+  feature_name: string;
+  branch: string;
+  base_ref: string;
+  files: ReviewFile[];
+  selected_path: string | null;
+  general_feedback: string;
+  has_prior_review: boolean;
+  error: string | null;
+  save_error: string | null;
+}
+export type ReviewAction =
+  | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
+  | { kind: "reject"; path: string; feedback: string; severity: ReviewSeverity }
+  | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }
+  | { kind: "general"; text: string }
+  | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
+export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });
+export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
+  invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });

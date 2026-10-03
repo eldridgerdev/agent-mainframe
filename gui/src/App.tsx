@@ -2,6 +2,10 @@ import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  ReviewAction,
+  ReviewView,
+  reviewBegin,
+  reviewAct,
   LearningView,
   LearningAction,
   learningBegin,
@@ -60,6 +64,7 @@ import {
 } from "./api";
 import TerminalPane from "./TerminalPane";
 import DiffPanel from "./DiffPanel";
+import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
@@ -205,6 +210,10 @@ export default function App() {
     message: string;
   } | null>(null);
   const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
+  const [review, setReview] = useState<ReviewView | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const reviewPending = useRef(false);
   const [deleteFeatureDialog, setDeleteFeatureDialog] = useState<{
     target: FeatureTarget;
     projectName: string;
@@ -381,6 +390,30 @@ export default function App() {
     try { setLearning(await learningBegin(target)); }
     catch (err) { reportError(err); }
     finally { learningActionPending.current = false; setLearningBusy(false); }
+  }
+
+  async function beginReview(target: FeatureTarget) {
+    if (reviewPending.current) return;
+    reviewPending.current = true;
+    setReviewBusy(true);
+    setReviewError(null);
+    try { setReview(await reviewBegin(target)); }
+    catch (err) { reportError(err); }
+    finally { reviewPending.current = false; setReviewBusy(false); }
+  }
+
+  async function actReview(action: ReviewAction): Promise<boolean> {
+    if (!review || reviewPending.current) return false;
+    reviewPending.current = true;
+    setReviewBusy(true);
+    setReviewError(null);
+    try {
+      const next = await reviewAct(review, action);
+      setReview(next);
+      // A failed pause returns the retained review with its save error.
+      return !(action.kind === "pause" && next !== null);
+    } catch (err) { setReviewError(asGuiError(err).message); return false; }
+    finally { reviewPending.current = false; setReviewBusy(false); }
   }
 
   async function actLearning(action: LearningAction): Promise<boolean> {
@@ -894,6 +927,7 @@ export default function App() {
       </aside>
 
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
+      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} />}
       {learning && (
         <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
           onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
@@ -970,6 +1004,8 @@ export default function App() {
             onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             learningBusy={learningBusy}
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
@@ -1457,6 +1493,8 @@ function FeatureView({
   onLearning,
   learningBusy,
   onDiff,
+  onReview,
+  reviewBusy,
   onNewSession,
   newSessionLoading,
   stoppedSessionIds,
@@ -1487,6 +1525,8 @@ function FeatureView({
   onLearning: () => void;
   learningBusy: boolean;
   onDiff: () => void;
+  onReview: () => void;
+  reviewBusy: boolean;
   onNewSession: () => void;
   newSessionLoading: boolean;
   stoppedSessionIds: string[];
@@ -1555,6 +1595,9 @@ function FeatureView({
             </button>
             {project.is_git && <button className="btn btn-secondary" onClick={onDiff}>
               <Icon name="branch" size={12} /> Changes
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
+              {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
             </button>}
             <Menu
               label="Plan"

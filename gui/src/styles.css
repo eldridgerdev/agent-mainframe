@@ -1008,3 +1008,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 @media (max-width: 680px) { .diff-reader { grid-template-columns: 1fr; } .diff-files { max-height: 120px; border-bottom: 1px solid var(--border); } }
 .diff-metadata { padding: 6px 8px; font-size: 12px; }
 .diff-metadata summary { cursor: pointer; color: var(--text-muted); }
+
+.review-editor, .review-note, .review-confirm {
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.review-editor textarea { width: 100%; }
+.review-editor button, .review-confirm button { margin-right: 8px; }

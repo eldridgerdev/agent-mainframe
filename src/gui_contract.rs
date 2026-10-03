@@ -320,6 +320,7 @@ pub struct TodoAgentLaunchResponse {
 pub struct GuiHandle {
     app: App,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
+    pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
 }
 
 impl GuiHandle {
@@ -327,6 +328,7 @@ impl GuiHandle {
         Ok(Self {
             app: App::new(db_path)?,
             learning_context: None,
+            review_context: None,
         })
     }
 
@@ -340,6 +342,7 @@ impl GuiHandle {
         Self {
             app,
             learning_context: None,
+            review_context: None,
         }
     }
 
@@ -1935,6 +1938,17 @@ pub fn use_cli_for_session_hooks() {
     crate::tmux::TmuxManager::set_cli_binary(cli);
 }
 
+/// Pick the same tmux server the TUI uses. `configure_control_mode` decides
+/// between the shared socket and the dedicated `managed-tmux.sock`, and its
+/// built-in default (dedicated) disagrees with the config default (shared):
+/// a GUI that skipped this watched an empty server and showed every session
+/// the TUI started as stopped. Call once at startup, before any tmux call --
+/// the resolved socket is cached for the life of the process.
+pub fn use_configured_tmux_server() {
+    let config = crate::app::load_config();
+    crate::tmux::TmuxManager::configure_control_mode(config.tmux_control_mode);
+}
+
 fn find_cli_binary(
     gui_exe: &std::path::Path,
     path_var: Option<&std::ffi::OsStr>,
@@ -2051,6 +2065,7 @@ mod tests {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
             learning_context: None,
+            review_context: None,
         }
     }
 
@@ -2071,6 +2086,7 @@ mod tests {
         GuiHandle {
             app,
             learning_context: None,
+            review_context: None,
         }
     }
 
@@ -3918,6 +3934,7 @@ mod tests {
         GuiHandle {
             app,
             learning_context: None,
+            review_context: None,
         }
     }
 
@@ -4111,6 +4128,7 @@ mod tests {
             GuiHandle {
                 app,
                 learning_context: None,
+                review_context: None,
             },
             CreateFeatureRequest {
                 project_name: "demo".into(),

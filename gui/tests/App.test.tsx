@@ -137,5 +137,33 @@ it("opens current changes from a stopped Git feature without launching a session
 it("offers Changes only for Git projects", async () => {
   const client = await openFeature([], [], "stopped");
   expect(screen.queryByRole("button", { name: "Changes", exact: true })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Final Review", exact: true })).toBeNull();
+  client.clear();
+});
+
+it("opens Final Review on a stopped feature and pauses with its workflow identity once", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finishPause!: () => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve({
+      workflow_id: "review-id", revision: 7, target: { project_id: "project", feature_id: "feature" },
+      feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+      general_feedback: "", has_prior_review: false, error: null, save_error: null,
+    });
+    if (command === "review_act") return new Promise((resolve) => { finishPause = () => resolve(null); });
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  await screen.findByText("No changes to review.");
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_begin", { target: { project_id: "project", feature_id: "feature" } });
+  const pause = screen.getByRole("button", { name: "Pause review" });
+  fireEvent.click(pause);
+  fireEvent.click(pause);
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_act")).toHaveLength(1));
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_act", { workflowId: "review-id", revision: 7, action: { kind: "pause" } });
+  await act(async () => finishPause());
+  expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
   client.clear();
 });

@@ -417,23 +417,6 @@ pub fn act(
                 if lo > hi {
                     return Err(GuiError::conflict("Select the range in diff order"));
                 }
-                if matches!(action, ReviewAction::ToggleLineResolved { .. })
-                    && !state
-                        .line_comments
-                        .get(&state.files[state.selected_file].path)
-                        .is_some_and(|comments| {
-                            comments.iter().any(|c| {
-                                !c.draft
-                                    && !c.anchor_lost
-                                    && c.start.unwrap_or(c.location) == *start
-                                    && c.location == *end
-                            })
-                        })
-                {
-                    return Err(GuiError::conflict(
-                        "Kept thread is no longer at this anchor",
-                    ));
-                }
                 if state
                     .line_comments
                     .get(&state.files[state.selected_file].path)
@@ -494,9 +477,11 @@ pub fn act(
                     }
                     app.diff_review_submit_suggestion();
                 }
-                ReviewAction::ToggleLineResolved { .. } => {
-                    if !app.diff_review_toggle_resolved() {
-                        return Err(GuiError::conflict("Thread is no longer at this anchor"));
+                ReviewAction::ToggleLineResolved { start, end, .. } => {
+                    if !app.diff_review_toggle_thread_resolved(start, end) {
+                        return Err(GuiError::conflict(
+                            "Kept thread is no longer at this anchor",
+                        ));
                     }
                 }
                 ReviewAction::ToggleResolved { .. } => {
@@ -692,6 +677,54 @@ mod tests {
         );
         assert!(!reopened.files[0].line_comments[0].resolved);
         assert_eq!(reopened.files[0].verdict, "rejected");
+    }
+
+    #[test]
+    fn toggling_a_thread_flips_the_exact_anchor_not_an_overlapping_one() {
+        let (_dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let (outer_start, end) = span(&view, 7, 9);
+        action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start: end,
+                end,
+                text: "Inner".into(),
+                severity: Severity::Nit,
+            },
+        );
+        // Loaded or carried progress can hold kept threads that overlap; the
+        // outer one sorts first and covers the inner thread's line.
+        let AppMode::DiffViewer(state) = &mut gui.app_for_workflow().mode else {
+            panic!()
+        };
+        let comments = state.line_comments.get_mut("code.txt").unwrap();
+        let mut outer = comments[0].clone();
+        outer.start = Some(outer_start);
+        outer.text = "Outer".into();
+        comments.insert(0, outer);
+        let view = snapshot(&mut gui).unwrap();
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: end,
+                end,
+            },
+        );
+        let resolved = |text: &str| {
+            view.files[0]
+                .line_comments
+                .iter()
+                .find(|c| c.text == text)
+                .unwrap()
+                .resolved
+        };
+        assert!(resolved("Inner"));
+        assert!(!resolved("Outer"));
     }
 
     #[test]

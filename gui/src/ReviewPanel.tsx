@@ -18,11 +18,11 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   const [editor, setEditor] = useState<Editor | null>(null);
   const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
   const [pending, setPending] = useState<ReviewAction | "cancel" | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const dirty = editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
   const file = view.files.find((f) => f.diff.path === view.selected_path);
-  useEffect(() => { setSelection(null); }, [view.workflow_id, view.revision, view.selected_path]);
+  useEffect(() => { setSelection(null); setNotice(null); }, [view.workflow_id, view.revision, view.selected_path]);
   const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
-  const same = (a: ReviewLocation, b: ReviewLocation) => a.old_line === b.old_line && a.new_line === b.new_line;
   const locationKey = (location: ReviewLocation) => `${location.old_line}:${location.new_line}`;
   const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
   const lineIndex = (location: ReviewLocation) => lineIndices.get(locationKey(location)) ?? -1;
@@ -35,6 +35,7 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   function selectLine(line: DiffLine, extend: boolean) {
     if (busy || dirty || pending) return;
     setEditor(null);
+    setNotice(null);
     const location = { old_line: line.old_line, new_line: line.new_line };
     setSelection({ anchor: extend && selection ? selection.anchor : location, cursor: location });
   }
@@ -42,8 +43,27 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     if (!file || busy || dirty || pending) return;
     selected = { start: selected.start, end: selected.end };
     const lo = lineIndex(selected.start), hi = lineIndex(selected.end);
-    const existing = file.line_comments.find((comment) => comment.editable && lineIndex(comment.start) <= hi && lineIndex(comment.end) >= lo);
-    if (existing && same(selected.start, selected.end)) selected = { start: existing.start, end: existing.end };
+    // Saving replaces every thread overlapping the span and re-anchors the
+    // result there, so only edit a thread at its own span: a selection inside
+    // one thread snaps to it, and any other overlap is refused rather than
+    // silently moving a suggestion or deleting a neighbouring thread.
+    const overlapping = file.line_comments.filter((comment) => {
+      const start = lineIndex(comment.start), end = lineIndex(comment.end);
+      return start >= 0 && end >= 0 && start <= hi && end >= lo;
+    });
+    const existing = overlapping.length === 1 && overlapping[0].editable
+      && lineIndex(overlapping[0].start) <= lo && lineIndex(overlapping[0].end) >= hi ? overlapping[0] : undefined;
+    if (overlapping.length > 0 && !existing) {
+      const anchors = overlapping.map((comment) => comment.anchor).join(", ");
+      setNotice(overlapping.some((comment) => comment.anchor_lost)
+        ? `Selection overlaps a thread whose anchor was lost (${anchors}); refresh changes before editing these lines.`
+        : `Selection overlaps saved ${overlapping.length === 1 ? "thread" : "threads"} at ${anchors}, and saving would replace ${overlapping.length === 1 ? "it" : "them"}. Select lines within one thread to edit it, or lines clear of saved threads.`);
+      return;
+    }
+    setNotice(null);
+    if (existing) selected = { start: existing.start, end: existing.end };
+    // Highlight exactly the lines the editor is anchored to.
+    setSelection({ anchor: selected.start, cursor: selected.end });
     const text = kind === "line_comment" ? existing?.text ?? ""
       : existing?.suggestion ?? lines.slice(lineIndex(selected.start), lineIndex(selected.end) + 1).map((line) => line.text.slice(1)).join("\n");
     const severity = existing?.severity ?? "suggestion";
@@ -146,6 +166,7 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
           {!file.diff.is_binary && lines.length > 0 && <div className="review-line-controls">
             <p className="muted small">Click a line number to select it; Shift-click another to select a range in diff order.</p>
             {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
+            {notice && <p role="alert">{notice}</p>}
             <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
             <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
           </div>}

@@ -2,6 +2,7 @@ use crate::app::{
     App, AppMode, CommentAnchorContext, DiffViewerState, FileComment, LineComment,
     PendingEditorOpen, ReviewDecision, Severity,
 };
+use crate::diff::DiffLineLocation;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Default)]
@@ -652,22 +653,51 @@ impl App {
     /// cursor — the reviewer marking a conversation settled, or re-opening one
     /// they marked too soon. Returns `true` if a comment was toggled.
     pub fn diff_review_toggle_resolved(&mut self) -> bool {
+        let Some(cur) = (match &self.mode {
+            AppMode::DiffViewer(state) => state.comment_cursor,
+            _ => None,
+        }) else {
+            return false;
+        };
+        self.diff_review_toggle_resolved_where(|c, locs| {
+            !c.draft
+                && c.covered_indices(locs)
+                    .is_some_and(|range| range.contains(&cur))
+        })
+    }
+
+    /// Toggle the kept thread anchored at exactly `start..=end`, rather than
+    /// whichever thread first covers a cursor line: overlapping kept threads
+    /// (carried or reloaded progress) would otherwise let the cursor lookup
+    /// flip a different thread than the caller named.
+    pub fn diff_review_toggle_thread_resolved(
+        &mut self,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+    ) -> bool {
+        self.diff_review_toggle_resolved_where(|c, _| {
+            !c.draft
+                && !c.anchor_lost
+                && c.start.unwrap_or(c.location) == start
+                && c.location == end
+        })
+    }
+
+    fn diff_review_toggle_resolved_where(
+        &mut self,
+        matches: impl Fn(&LineComment, &[DiffLineLocation]) -> bool,
+    ) -> bool {
         let acted = if let AppMode::DiffViewer(state) = &mut self.mode {
-            let Some(cur) = state.comment_cursor else {
-                return false;
-            };
             let Some(file) = state.files.get(state.selected_file) else {
                 return false;
             };
             let path = file.path.clone();
             let locs = file.addressable_lines();
-            match state.line_comments.get_mut(&path).and_then(|comments| {
-                comments.iter_mut().find(|c| {
-                    !c.draft
-                        && c.covered_indices(&locs)
-                            .is_some_and(|range| range.contains(&cur))
-                })
-            }) {
+            match state
+                .line_comments
+                .get_mut(&path)
+                .and_then(|comments| comments.iter_mut().find(|c| matches(c, &locs)))
+            {
                 Some(comment) => {
                     comment.resolved = !comment.resolved;
                     Some((path, comment.resolved))

@@ -164,8 +164,10 @@ it("resolves and reopens saved file comments and handles an empty review", async
 });
 
 
+const noThreadsView: ReviewView = { ...view, files: [{ ...view.files[0], line_comments: [] }, view.files[1]] };
+
 it("selects a backwards range in unified diff order and submits its canonical base/current anchors", async () => {
-  const { onAct } = mount();
+  const { onAct } = mount(noThreadsView);
   fireEvent.click(screen.getByRole("button", { name: "Select line 1", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "Select base line 1" }), { shiftKey: true });
   expect(screen.getByRole("button", { name: "Select base line 1" }).getAttribute("aria-pressed")).toBe("true");
@@ -179,7 +181,7 @@ it("selects a backwards range in unified diff order and submits its canonical ba
 });
 
 it("selects the two sides independently in split layout and seeds replacement code without diff markers", async () => {
-  const { onAct } = mount();
+  const { onAct } = mount(noThreadsView);
   fireEvent.change(screen.getByRole("combobox", { name: "Review layout" }), { target: { value: "split" } });
   fireEvent.click(screen.getByRole("button", { name: "Select line 1", exact: true }));
   expect(screen.getByRole("button", { name: "Select base line 1" }).getAttribute("aria-pressed")).toBe("false");
@@ -220,6 +222,40 @@ it("snaps a single selected line onto an existing range when editing its prose",
   fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "line_comment", path: "code.rs",
     start: { old_line: 1, new_line: null }, end: { old_line: null, new_line: 1 }, text: "Kept thread", severity: "nit" }));
+});
+
+it("highlights a saved thread's own span while its editor is open", () => {
+  mount(editableView());
+  fireEvent.click(screen.getByRole("button", { name: "Select base line 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Edit line comment" }));
+  expect(screen.getByRole("button", { name: "Select base line 1" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByRole("button", { name: "Select line 1", exact: true }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByText("Selected base line 1 – line 1")).toBeTruthy();
+});
+
+it("refuses a selection that partly overlaps a saved thread instead of re-anchoring it", () => {
+  const partial = editableView();
+  partial.files[0].line_comments[0] = { ...partial.files[0].line_comments[0],
+    start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, anchor: "line 1" };
+  const { onAct } = mount(partial);
+  fireEvent.click(screen.getByRole("button", { name: "Select base line 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Select line 1", exact: true }), { shiftKey: true });
+  fireEvent.click(screen.getByRole("button", { name: "Suggest replacement" }));
+  expect(screen.getByRole("alert").textContent).toContain("overlaps saved thread at line 1");
+  expect(screen.queryByRole("textbox", { name: "Suggested replacement" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Select line 1", exact: true }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Suggest replacement" }));
+  expect((screen.getByRole("textbox", { name: "Suggested replacement" }) as HTMLTextAreaElement).value).toBe("suggested code");
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("refuses to edit lines under a lost-anchor thread", () => {
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Select line 1", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Comment on selection" }));
+  expect(screen.getByRole("alert").textContent).toContain("anchor was lost");
+  expect(screen.queryByRole("textbox", { name: "Line comment" })).toBeNull();
 });
 
 it("resolves range threads and refuses lost-anchor editing and AI-draft resolution", async () => {

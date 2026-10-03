@@ -122,7 +122,7 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
   dismissable?: boolean;
   headerActions?: ReactNode;
   /** Makes the body and footer one form, so Enter submits. */

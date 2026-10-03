@@ -21,7 +21,14 @@ Keep them current as the staged GUI scope grows.
 | Available | Deleting a feature that hosts the project TODO list asks which surviving feature should keep it, or whether to delete the list and its TODOs. The GUI collects this choice before deletion; Cancel leaves the feature and both lists untouched. |
 | Available | Learning on a feature: repository file tree or branch changes, file/line/hunk/project questions, starter questions, persisted answers, follow-ups, deep dives, intent relabelling, keep-as-TODO with editable title and notes, harness and reading-level selection, anchor-drift notices, and explicit editing-agent handoff with resource approval and an unsent draft. A stopped linked editing session is restarted through its tab's resume choice rather than duplicated. |
 | Limited | Native desktop Learning interactions and paid-harness runs are not yet validated. |
-| Planned | Supervised edits, PR triage, final review, standalone diff review, settings and the other workflows listed below. |
+| Available | Standalone diffs on Git features, including stopped features: all current changes or one feature commit, file filtering, hunk navigation, unified and side-by-side layouts, whitespace filtering, automatic or chosen base ref, expanded context, rename/mode metadata, binary notices and explicit refresh. |
+| Limited | Native WSLg captures verify the stopped-feature entry, current changes, unified/split layouts, whole-file context, commit selection and binary notice through real Rust IPC. Other native interactions and macOS validation remain open. Review comments, walkthroughs, AI questions and feedback handoff remain in the TUI. |
+| Planned | Supervised edits, PR triage, final review, settings and the other workflows listed below. |
+
+Native GUI diff proof is reproducible with
+[`gui-standalone-diffs.txt`](../../scripts/dev/screenshot/scenarios/gui-standalone-diffs.txt).
+It uses an isolated Git checkout/database and starts no agent. The same scenario
+runs through the repository's private screenshot publisher for PR review.
 
 Worktree-hook choices have automated coverage for creation, TODO launches,
 Full/Quick planning, lookup retry, and cancellation. Native desktop interaction

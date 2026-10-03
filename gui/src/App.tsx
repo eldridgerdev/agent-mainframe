@@ -59,6 +59,7 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import TerminalPane from "./TerminalPane";
+import DiffPanel from "./DiffPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
@@ -203,6 +204,7 @@ export default function App() {
     target: SessionTarget;
     message: string;
   } | null>(null);
+  const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
   const [deleteFeatureDialog, setDeleteFeatureDialog] = useState<{
     target: FeatureTarget;
     projectName: string;
@@ -891,6 +893,7 @@ export default function App() {
         )}
       </aside>
 
+      {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {learning && (
         <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
           onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
@@ -966,6 +969,7 @@ export default function App() {
             )}
             onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             learningBusy={learningBusy}
+            onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
@@ -1452,6 +1456,7 @@ function FeatureView({
   onPlan,
   onLearning,
   learningBusy,
+  onDiff,
   onNewSession,
   newSessionLoading,
   stoppedSessionIds,
@@ -1481,6 +1486,7 @@ function FeatureView({
   onPlan: (quick: boolean) => void;
   onLearning: () => void;
   learningBusy: boolean;
+  onDiff: () => void;
   onNewSession: () => void;
   newSessionLoading: boolean;
   stoppedSessionIds: string[];
@@ -1547,6 +1553,9 @@ function FeatureView({
             <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
               <Icon name="file" size={12} /> Learning
             </button>
+            {project.is_git && <button className="btn btn-secondary" onClick={onDiff}>
+              <Icon name="branch" size={12} /> Changes
+            </button>}
             <Menu
               label="Plan"
               icon="sparkles"

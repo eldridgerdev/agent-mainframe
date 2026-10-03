@@ -24,6 +24,7 @@ use agent_mainframe::gui_contract::{
     StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
     TodoDeleteChoice, TodoHostChoice, WorkspaceSnapshot,
 };
+use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_terminal::TerminalHandle;
@@ -33,6 +34,19 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<GuiHandle>);
+
+#[tauri::command]
+async fn load_diff(
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    options: DiffOptions,
+) -> Result<DiffView, GuiError> {
+    gui_diff::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        options,
+    )
+}
 
 #[tauri::command]
 fn worktree_hook_prompt(
@@ -721,6 +735,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            load_diff,
             supported_harnesses,
             supported_modes,
             get_snapshot,

@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Browse Git changes in the desktop app.** Open **Changes** on a feature,
+  even while it is stopped, to view all current changes or one feature commit.
+  Switch between unified and side-by-side layouts, filter files, jump between
+  hunks, expand context, ignore whitespace, or choose another base ref.
+  Binary files and renames are clearly identified; **Refresh** reloads changes.
 - **Choose worktree setup options in the desktop app.** New-feature and TODO
   launch forms now show the project's setup choices before creating a worktree.
   Choices work with direct starts and Full or Quick planning. Setup finishes

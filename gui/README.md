@@ -173,7 +173,7 @@ each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
-editing-agent handoff. Continue to use `amf` for workflows
+editing-agent handoff, plus standalone Git diffs. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -216,10 +216,21 @@ and opens an editable prompt that you can review before sending. Closing
 Learning leaves pending answers running while AMF stays open. Unsent questions
 are preserved across refreshes and require explicit discard on close.
 
-Starter questions, hunk selection, keeping an answer as a TODO, intent
-relabelling and restarting a stopped linked editing session remain TUI workflows.
+Learning also offers starter questions, hunk selection, keeping an answer as an
+editable TODO, intent relabelling and restarting a stopped linked editing session.
 Learning command and component tests use mocked harness execution; native desktop
 Learning interactions and paid-harness runs have not been validated yet.
+
+Use **Changes** on a Git feature to browse all current changes (committed,
+staged, unstaged and untracked) or one commit from the feature's history.
+The viewer works while the feature is stopped. Filter files, jump between hunks,
+switch unified/side-by-side layouts, ignore whitespace, expand context, or
+choose a different base ref for current changes. **Refresh** reloads Git's
+current contents. Review comments, AI questions, walkthroughs and feedback
+handoff remain TUI workflows. Native WSLg captures verify opening from a stopped feature, switching layouts
+and context, selecting a commit and displaying a binary notice through real
+Rust IPC. Other native interactions and macOS remain unvalidated. Command
+tests use isolated Git repositories; component tests mock the IPC calls.
 
 ## Checks
 

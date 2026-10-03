@@ -583,3 +583,42 @@ export const learningAct = (view: LearningView, action: LearningAction): Promise
   invoke("learning_act", { workflowId: view.workflow_id, revision: view.revision, action });
 export const learningLaunchAgent = (view: LearningView, qaId: string, approved: boolean): Promise<LearningHandoff> =>
   invoke("learning_launch_agent", { workflowId: view.workflow_id, revision: view.revision, qaId, approved });
+
+export interface DiffOptions {
+  commit: string | null;
+  base_ref: string | null;
+  ignore_whitespace: boolean;
+  context: "standard" | "expanded" | "full";
+}
+export interface DiffLine {
+  kind: "context" | "added" | "removed" | "marker";
+  text: string;
+  old_line: number | null;
+  new_line: number | null;
+}
+export interface DiffHunk { header: string; lines: DiffLine[] }
+export interface DiffFile {
+  path: string;
+  old_path: string | null;
+  status: string;
+  additions: number;
+  deletions: number;
+  is_binary: boolean;
+  hunks: DiffHunk[];
+  patch: string;
+}
+export interface DiffView {
+  target: FeatureTarget;
+  feature_name: string;
+  branch: string;
+  base_ref: string;
+  base_commit: string;
+  commit: string | null;
+  commits: { hash: string; short_hash: string; subject: string }[];
+  commits_error: string | null;
+  files: DiffFile[];
+  total_additions: number;
+  total_deletions: number;
+}
+export const loadDiff = (target: FeatureTarget, options: DiffOptions): Promise<DiffView> =>
+  invoke("load_diff", { target, options });

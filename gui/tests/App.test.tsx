@@ -24,10 +24,11 @@ async function openFeature(
   sessions: FeatureSession[],
   stoppedSessionIds: string[] = [],
   status: Feature["status"] = "idle",
+  isGit = false,
 ) {
   const snapshot: WorkspaceSnapshot = {
     projects: [{
-      id: "project", name: "demo", repo: "/demo", is_git: false,
+      id: "project", name: "demo", repo: "/demo", is_git: isGit,
       features: [{
         id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo",
         is_worktree: false, status, agent: "claude", mode: "vibeless", sessions,
@@ -107,5 +108,34 @@ it("cancels a project-list choice without issuing another deletion request", asy
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "delete_feature")).toHaveLength(1);
+  client.clear();
+});
+
+it("opens current changes from a stopped Git feature without launching a session", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "load_diff") return Promise.resolve({
+      target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
+      branch: "my-feat", base_ref: "main", base_commit: "12345678", commit: null,
+      commits: [], commits_error: null, files: [], total_additions: 0, total_deletions: 0,
+    });
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Changes", exact: true }));
+  await screen.findByText("No changes in this scope.");
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("load_diff", {
+    target: { project_id: "project", feature_id: "feature" },
+    options: { commit: null, base_ref: null, ignore_whitespace: false, context: "standard" },
+  });
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
+  fireEvent.click(screen.getAllByRole("button", { name: "Close", exact: true })[0]);
+  expect(screen.queryByRole("dialog", { name: "Diff viewer" })).toBeNull();
+  client.clear();
+});
+
+it("offers Changes only for Git projects", async () => {
+  const client = await openFeature([], [], "stopped");
+  expect(screen.queryByRole("button", { name: "Changes", exact: true })).toBeNull();
   client.clear();
 });

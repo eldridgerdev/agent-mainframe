@@ -121,52 +121,7 @@ pub fn load(
     let files = snapshot
         .files
         .into_iter()
-        .map(|file| {
-            let hunks = file.hunks_with_context(context).unwrap_or(file.hunks);
-            let hunks = hunks
-                .into_iter()
-                .map(|hunk| {
-                    let locations = diff::line_locations_in_hunk(&hunk);
-                    DiffHunkView {
-                        header: hunk.header,
-                        lines: hunk
-                            .lines
-                            .into_iter()
-                            .zip(locations)
-                            .map(|(line, location)| DiffLineView {
-                                kind: match line.kind {
-                                    DiffLineKind::Context => "context",
-                                    DiffLineKind::Added => "added",
-                                    DiffLineKind::Removed => "removed",
-                                    DiffLineKind::NoNewlineMarker => "marker",
-                                },
-                                text: line.text,
-                                old_line: location.and_then(|l| l.old_line),
-                                new_line: location.and_then(|l| l.new_line),
-                            })
-                            .collect(),
-                    }
-                })
-                .collect();
-            DiffFileView {
-                path: file.path,
-                old_path: file.old_path,
-                status: match file.status {
-                    DiffFileStatus::Added => "added",
-                    DiffFileStatus::Modified => "modified",
-                    DiffFileStatus::Deleted => "deleted",
-                    DiffFileStatus::Renamed => "renamed",
-                    DiffFileStatus::Copied => "copied",
-                    DiffFileStatus::TypeChanged => "type_changed",
-                    DiffFileStatus::Untracked => "untracked",
-                },
-                additions: file.additions,
-                deletions: file.deletions,
-                is_binary: file.is_binary,
-                hunks,
-                patch: file.patch,
-            }
-        })
+        .map(|file| file_view(file, context))
         .collect();
     Ok(DiffView {
         target,
@@ -190,8 +145,55 @@ pub fn load(
     })
 }
 
+pub(crate) fn file_view(file: crate::diff::DiffFile, context: usize) -> DiffFileView {
+    let hunks = file.hunks_with_context(context).unwrap_or(file.hunks);
+    let hunks = hunks
+        .into_iter()
+        .map(|hunk| {
+            let locations = diff::line_locations_in_hunk(&hunk);
+            DiffHunkView {
+                header: hunk.header,
+                lines: hunk
+                    .lines
+                    .into_iter()
+                    .zip(locations)
+                    .map(|(line, location)| DiffLineView {
+                        kind: match line.kind {
+                            DiffLineKind::Context => "context",
+                            DiffLineKind::Added => "added",
+                            DiffLineKind::Removed => "removed",
+                            DiffLineKind::NoNewlineMarker => "marker",
+                        },
+                        text: line.text,
+                        old_line: location.and_then(|l| l.old_line),
+                        new_line: location.and_then(|l| l.new_line),
+                    })
+                    .collect(),
+            }
+        })
+        .collect();
+    DiffFileView {
+        path: file.path,
+        old_path: file.old_path,
+        status: match file.status {
+            DiffFileStatus::Added => "added",
+            DiffFileStatus::Modified => "modified",
+            DiffFileStatus::Deleted => "deleted",
+            DiffFileStatus::Renamed => "renamed",
+            DiffFileStatus::Copied => "copied",
+            DiffFileStatus::TypeChanged => "type_changed",
+            DiffFileStatus::Untracked => "untracked",
+        },
+        additions: file.additions,
+        deletions: file.deletions,
+        is_binary: file.is_binary,
+        hunks,
+        patch: file.patch,
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::{App, AppMode};
     use crate::db::AmfDb;
@@ -201,7 +203,7 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
-    fn git(repo: &Path, args: &[&str]) -> String {
+    pub(crate) fn git(repo: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .args(args)
             .current_dir(repo)
@@ -221,7 +223,7 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().into()
     }
 
-    fn fixture() -> (tempfile::TempDir, GuiHandle, FeatureTarget) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, GuiHandle, FeatureTarget) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();

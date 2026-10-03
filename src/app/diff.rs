@@ -165,6 +165,17 @@ impl App {
                 state.base_commit = snapshot.base_commit;
                 state.error = None;
                 state.files = snapshot.files;
+                if state.review && !state.is_pr_review() {
+                    // Review bookkeeping generated during the round must not
+                    // become files to review when `.claude` is not ignored.
+                    state.files.retain(|file| {
+                        !matches!(
+                            file.path.as_str(),
+                            ".claude/final-review-progress.json"
+                                | ".claude/final-review-snapshot.json"
+                        )
+                    });
+                }
                 state.selected_file = selected_path
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));

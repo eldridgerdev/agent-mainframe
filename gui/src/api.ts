@@ -622,3 +622,38 @@ export interface DiffView {
 }
 export const loadDiff = (target: FeatureTarget, options: DiffOptions): Promise<DiffView> =>
   invoke("load_diff", { target, options });
+
+export type ReviewSeverity = "blocker" | "suggestion" | "nit" | "question" | "praise";
+export interface ReviewFile {
+  diff: DiffFile;
+  verdict: "approved" | "rejected" | "undecided";
+  feedback: string;
+  severity: ReviewSeverity;
+  comment: { text: string; severity: ReviewSeverity; resolved: boolean; carried: boolean } | null;
+  line_comments: { anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null }[];
+  notes: string | null;
+  changed_since_last: boolean;
+}
+export interface ReviewView {
+  workflow_id: string;
+  revision: number;
+  target: FeatureTarget;
+  feature_name: string;
+  branch: string;
+  base_ref: string;
+  files: ReviewFile[];
+  selected_path: string | null;
+  general_feedback: string;
+  has_prior_review: boolean;
+  error: string | null;
+  save_error: string | null;
+}
+export type ReviewAction =
+  | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
+  | { kind: "reject"; path: string; feedback: string; severity: ReviewSeverity }
+  | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }
+  | { kind: "general"; text: string }
+  | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" };
+export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });
+export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
+  invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });

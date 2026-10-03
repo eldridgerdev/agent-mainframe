@@ -27,6 +27,7 @@ use agent_mainframe::gui_contract::{
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
+use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
 use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
@@ -34,6 +35,32 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<GuiHandle>);
+
+#[tauri::command]
+async fn review_begin(
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+) -> Result<ReviewView, GuiError> {
+    gui_review::begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+async fn review_act(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision: u64,
+    action: ReviewAction,
+) -> Result<Option<ReviewView>, GuiError> {
+    gui_review::act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        action,
+    )
+}
 
 #[tauri::command]
 async fn load_diff(
@@ -726,6 +753,7 @@ fn main() {
     }
     // After the PATH adoption above, which the `amf` lookup reads.
     agent_mainframe::gui_contract::use_cli_for_session_hooks();
+    agent_mainframe::gui_contract::use_configured_tmux_server();
     tauri::Builder::default()
         .setup(|app| {
             let db_path = agent_mainframe::project::db_path();
@@ -735,6 +763,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            review_begin,
+            review_act,
             load_diff,
             supported_harnesses,
             supported_modes,

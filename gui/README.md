@@ -226,11 +226,26 @@ staged, unstaged and untracked) or one commit from the feature's history.
 The viewer works while the feature is stopped. Filter files, jump between hunks,
 switch unified/side-by-side layouts, ignore whitespace, expand context, or
 choose a different base ref for current changes. **Refresh** reloads Git's
-current contents. Review comments, AI questions, walkthroughs and feedback
-handoff remain TUI workflows. Native WSLg captures verify opening from a stopped feature, switching layouts
+current contents. Native WSLg captures verify opening from a stopped feature, switching layouts
 and context, selecting a commit and displaying a binary notice through real
 Rust IPC. Other native interactions and macOS remain unvalidated. Command
 tests use isolated Git repositories; component tests mock the IPC calls.
+
+Use **Final Review** on a Git feature to approve, reject or skip files, undo a
+verdict, write whole-file comments with severity, resolve/reopen comments, and
+save overall feedback. Developer notes and saved line threads/suggestions are
+shown alongside unified or side-by-side diffs. **Pause review** preserves progress
+in the same format the TUI resumes; reopening either interface continues it.
+Unsaved form edits require explicit discard before leaving, and failed saves
+retain edits with **Retry save**. **Refresh changes** reloads the diff and clears
+approvals and verdict-undo entries for changed patches; **Reload
+saved review** adopts progress changed in another interface. Edit a given review
+in one interface at a time; detected external saves block edits until reload.
+Line-thread editing, walkthroughs, AI questions/co-review, suggestion application,
+finish checks and sending feedback remain in the TUI. Native WSLg captures verify opening on a stopped feature, notes and saved line
+threads, verdict/comment persistence, split layout, unsaved-draft protection,
+pause/reopen, changed-patch rejection and approval invalidation after refresh.
+Remaining native interactions and macOS validation are open.
 
 ## Checks
 

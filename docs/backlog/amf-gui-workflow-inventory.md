@@ -22,13 +22,19 @@ Keep them current as the staged GUI scope grows.
 | Available | Learning on a feature: repository file tree or branch changes, file/line/hunk/project questions, starter questions, persisted answers, follow-ups, deep dives, intent relabelling, keep-as-TODO with editable title and notes, harness and reading-level selection, anchor-drift notices, and explicit editing-agent handoff with resource approval and an unsent draft. A stopped linked editing session is restarted through its tab's resume choice rather than duplicated. |
 | Limited | Native desktop Learning interactions and paid-harness runs are not yet validated. |
 | Available | Standalone diffs on Git features, including stopped features: all current changes or one feature commit, file filtering, hunk navigation, unified and side-by-side layouts, whitespace filtering, automatic or chosen base ref, expanded context, rename/mode metadata, binary notices and explicit refresh. |
-| Limited | Native WSLg captures verify the stopped-feature entry, current changes, unified/split layouts, whole-file context, commit selection and binary notice through real Rust IPC. Other native interactions and macOS validation remain open. Review comments, walkthroughs, AI questions and feedback handoff remain in the TUI. |
-| Planned | Supervised edits, PR triage, final review, settings and the other workflows listed below. |
+| Limited | Native WSLg captures verify the stopped-feature entry, current changes, unified/split layouts, whole-file context, commit selection and binary notice through real Rust IPC. Other native interactions and macOS validation remain open. Standalone Changes is read-only; use Final Review for whole-file comments. Line-comment editing, walkthroughs, AI questions and feedback handoff remain in the TUI. |
+| Available | Manual Final Review on Git features, including stopped features: approve/reject/skip, undo verdicts, whole-file comments and severity, resolve/reopen comments, overall feedback, developer notes, saved line threads/suggestions, and pause/resume using the TUI progress file. Changed patches and detected external progress edits require refresh/reload; failed saves retain edits with retry. |
+| Limited | Final Review line-thread editing, walkthroughs, AI questions/co-review, suggestion application, finish checks and feedback dispatch remain in the TUI. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
+| Planned | Supervised edits, PR triage, settings and the other workflows listed below. |
 
 Native GUI diff proof is reproducible with
 [`gui-standalone-diffs.txt`](../../scripts/dev/screenshot/scenarios/gui-standalone-diffs.txt).
 It uses an isolated Git checkout/database and starts no agent. The same scenario
 runs through the repository's private screenshot publisher for PR review.
+
+Native manual-review proof is reproducible with
+[`gui-manual-review.txt`](../../scripts/dev/screenshot/scenarios/gui-manual-review.txt).
+It uses the same isolated GUI fixture and starts no agent.
 
 Worktree-hook choices have automated coverage for creation, TODO launches,
 Full/Quick planning, lookup retry, and cancellation. Native desktop interaction

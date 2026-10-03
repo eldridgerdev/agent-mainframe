@@ -19,7 +19,7 @@ function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
   return rows;
 }
 
-function Hunk({ hunk, split }: { hunk: DiffHunk; split: boolean }) {
+export function Hunk({ hunk, split }: { hunk: DiffHunk; split: boolean }) {
   return <section className="diff-hunk">
     <div className="diff-hunk-header">{hunk.header}</div>
     {split ? <table className="diff-lines diff-split" aria-label="Side-by-side hunk"><tbody>

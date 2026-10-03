@@ -135,6 +135,18 @@ setup frame remains internal, and only native PNG frames reach the gallery.
 Publish this scenario with the same `publish-pages.sh --strict` path as TUI
 proof; no extra seed files are needed.
 
+The manual Final Review scenario reuses the same isolated native GUI fixture.
+Its seven frames cover the stopped-feature entry, notes and saved line threads,
+verdicts and whole-file comments, split layout, unsaved-draft protection,
+pause/reopen, changed-patch rejection and approval invalidation after refresh.
+It checks both the visible UI and saved review progress without starting an agent.
+
+```bash
+scripts/dev/screenshot/amf-capture.sh \
+  --scenario scripts/dev/screenshot/scenarios/gui-manual-review.txt \
+  --out-dir /tmp/amf-gui-review-proof
+```
+
 ## Capture contract
 
 The driver and the two Python helpers have deliberately separate output

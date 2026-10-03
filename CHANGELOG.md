@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Review changes in the desktop app.** Open **Final Review** on a Git
+  feature, even while stopped, to approve, reject or skip files, undo verdicts,
+  leave comments and overall feedback, and read developer notes and saved
+  line comments. Pause and resume the same review in either interface.
+  Unsaved drafts require an explicit discard; failed saves offer a retry.
+  Finishing and sending feedback still use the TUI.
 - **Browse Git changes in the desktop app.** Open **Changes** on a feature,
   even while it is stopped, to view all current changes or one feature commit.
   Switch between unified and side-by-side layouts, filter files, jump between
@@ -118,6 +124,12 @@ are tagged.
 
 ### Fixed
 
+- **Desktop reviews refuse verdicts on changed files.** Refresh to see the
+  latest patch; its outdated approval is cleared. Saved progress changed in
+  another interface requires an explicit reload before editing.
+- **The desktop app sees sessions started in the TUI.** Both interfaces use
+  the configured tmux server, so running sessions no longer appear stopped
+  because the desktop app looked at a different server.
 - **Missing or invalid setup choices no longer leave an unwanted worktree.**
   Desktop and automation creation requests reject them before creating a
   checkout or claiming a TODO.

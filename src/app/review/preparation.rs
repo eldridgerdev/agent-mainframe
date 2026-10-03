@@ -81,8 +81,21 @@ impl ReviewProgress {
 }
 
 /// Path of the saved review-progress file for a feature workdir.
-pub(super) fn review_progress_path(workdir: &Path) -> PathBuf {
+pub(crate) fn review_progress_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("final-review-progress.json")
+}
+
+/// Validate saved progress before an interface opens an editable review. The
+/// TUI's best-effort loader remains available for its existing open path.
+pub(crate) fn checked_review_progress(workdir: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(review_progress_path(workdir)) {
+        Ok(bytes) => {
+            serde_json::from_slice::<ReviewProgress>(&bytes)?;
+            Ok(Some(bytes))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Best-effort load of any saved review progress for `workdir`.
@@ -212,40 +225,38 @@ impl App {
     /// progress is never lost — the only exit from the review viewer finishes
     /// it, but an AMF quit/crash mid-review would otherwise discard everything.
     pub fn persist_review_progress(&mut self) {
+        if let Err(err) = self.try_persist_review_progress() {
+            self.log_warn(
+                "review",
+                format!("failed to persist review progress: {err}"),
+            );
+        }
+    }
+
+    /// Fallible counterpart for interfaces that must show whether a save
+    /// succeeded before allowing the reviewer to leave.
+    pub(crate) fn try_persist_review_progress(&mut self) -> Result<()> {
         // Refresh each comment's re-anchor snippet against the live diff first,
         // so whatever we persist can be re-located after a later refresh.
         self.recapture_anchor_contexts();
         let AppMode::DiffViewer(state) = &self.mode else {
-            return;
+            return Ok(());
         };
         if !state.review {
-            return;
+            return Ok(());
         }
         // A PR review never writes into the checkout it runs git in: its
         // draft goes to the database instead.
         if state.is_pr_review() {
             let _ = self.persist_pr_review_draft();
-            return;
+            return Ok(());
         }
         let progress = ReviewProgress::of(state);
         let path = review_progress_path(&state.workdir);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        match serde_json::to_string_pretty(&progress) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
-                    self.log_warn(
-                        "review",
-                        format!("failed to persist review progress: {err}"),
-                    );
-                }
-            }
-            Err(err) => self.log_warn(
-                "review",
-                format!("failed to serialize review progress: {err}"),
-            ),
-        }
+        write_review_notes_atomic(&path, &serde_json::to_string_pretty(&progress)?)
     }
 
     /// When the open viewer is a PR review, refuse the action with `reason`

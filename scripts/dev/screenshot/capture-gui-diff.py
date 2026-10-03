@@ -170,10 +170,11 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot/capture-gui-diff-frames.py"),
+                os.environ.get("AMF_GUI_CAPTURE_FRAMES", str(workspace / "scripts/dev/screenshot/capture-gui-diff-frames.py")),
                 str(out),
                 str(gui.pid),
                 inspector_address,
+                str(repo),
             ],
             env=env,
             check=True,

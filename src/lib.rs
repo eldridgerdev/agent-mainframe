@@ -17,6 +17,7 @@ pub mod gui_contract;
 pub mod gui_diff;
 pub mod gui_learning;
 pub mod gui_plans;
+pub mod gui_review;
 pub mod gui_terminal;
 pub mod gui_todos;
 pub mod project;

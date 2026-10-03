@@ -123,6 +123,11 @@ export function formatTotal(total: number): string {
         )
         dbpath = config / "amf/amf.db"
         for _ in range(60):
+            if gui.poll() is not None:
+                raise RuntimeError(
+                    f"The isolated GUI exited ({gui.returncode}):\n"
+                    + (out / "gui.log").read_text()
+                )
             if dbpath.exists():
                 try:
                     with sqlite3.connect(dbpath) as db:
@@ -132,7 +137,9 @@ export function formatTotal(total: number): string {
                     pass
             time.sleep(0.25)
         else:
-            raise RuntimeError("GUI database never initialized")
+            raise RuntimeError(
+                "GUI database never initialized:\n" + (out / "gui.log").read_text()
+            )
         with sqlite3.connect(dbpath) as db:
             stamp = "2026-10-02T18:00:00Z"
             db.execute(

@@ -438,10 +438,12 @@ Model and reasoning advice is implemented for new Full/Quick Plan review and
 existing Claude Code/Codex agent sessions. It also covers on-demand feature
 plans and TODO Plan review. New-feature plan selections apply to the initial
 implementation launch (including TODO plans); on-demand and host-feature TODO
-plans offer advice only for their destination harness. Existing-session advice
-leaves changing settings to the harness's model picker. Choices require verified
-account access, supported effort levels and fresh, attributable provider
-research. Task-specific quality, time and token totals remain unknown. See the
+plans offer advice only for their destination harness. Exactly identified, loaded
+Codex conversations on an existing shared daemon can apply model/effort in place
+for subsequent turns; other sessions use the harness's model picker. Choices
+require verified account access, supported effort levels and fresh, attributable
+provider research. Task-specific quality, time and token totals remain unknown.
+See the
 [capability and evidence contract](../development/model-reasoning-analyzer.md).
 
 - [x] Offer on-demand advice at plan review and in existing agent sessions.
@@ -452,7 +454,9 @@ research. Task-specific quality, time and token totals remain unknown. See the
 - [x] Offer reviewer-scoped advice from the Expert plan-review model picker;
   use headless eligibility and return to manual selection without starting review.
 - [ ] Add persistent stage-specific profiles for presets and workflows.
-- [ ] Verify a control boundary for applying changes to running harnesses.
+- [x] Verify an in-place control boundary for loaded Codex daemon conversations.
+- [ ] Verify live application for Claude Code and other harnesses, and explicit
+  restart/resume actions.
 - [ ] Define comparable outcome evidence before using history or opt-in trials.
 
 The advice workflow does not complete the broader routing and evaluation work

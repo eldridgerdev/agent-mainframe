@@ -43,8 +43,10 @@ are tagged.
   reviewing a new Full or Quick Plan to compare available Claude Code and
   Codex settings, then apply your choice to the initial implementation agent.
 - **Get advice for an open agent session.** Press `m` on its dashboard row or
-  `leader+B` in its pane. Recommendations use the feature and its plan; change
-  the setting in the harness's own model picker.
+  `leader+B` in its pane. Recommendations use the feature and its plan. For a
+  verified Codex conversation on a running shared daemon, press Enter to apply
+  model and effort to future turns while keeping the conversation open. Other
+  sessions use the harness's own model picker. No migration is required.
 - **Read the evidence behind a recommendation.** A compact model, effort and
   focus table offers speed, balance and depth choices when supported. Press
   `s` to inspect dated provider research. Account access and supported effort

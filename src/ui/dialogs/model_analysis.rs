@@ -21,6 +21,8 @@ struct AdviceView<'a> {
     show_sources: bool,
     scope: AdviceScope,
     checking_setting: bool,
+    can_apply_session: bool,
+    committing: bool,
     message: Option<&'a str>,
 }
 
@@ -34,6 +36,8 @@ pub fn draw_model_analysis(frame: &mut Frame, state: &State, message: Option<&st
             show_sources: state.show_sources,
             scope: state.scope(),
             checking_setting: state.is_checking_setting(),
+            can_apply_session: state.can_apply_session(),
+            committing: state.is_committing(),
             message,
         },
         theme,
@@ -103,6 +107,10 @@ fn draw(frame: &mut Frame, view: AdviceView<'_>, theme: &Theme) {
         .split(inner);
     let muted = Style::default().fg(theme.text_muted.to_color());
     let (phase, scope) = match view.scope {
+        AdviceScope::ExistingSession if view.can_apply_session => (
+            "Existing session",
+            "Apply to this conversation's future turns; the current turn keeps its settings.",
+        ),
         AdviceScope::ExistingSession => (
             "Existing session",
             "Advice for this harness. Change settings in its own model picker.",
@@ -325,6 +333,11 @@ fn draw_sources(
 
 fn draw_status(frame: &mut Frame, area: Rect, view: &AdviceView<'_>, theme: &Theme) {
     let (title, detail, color) = match view.status {
+        Status::Loading if view.committing => (
+            "Applying session settings…",
+            "Verifying the effective model and effort. The current turn continues with its existing settings.",
+            theme.primary.to_color(),
+        ),
         Status::Loading if view.checking_setting => (
             "Checking selected setting…",
             "Rechecking model availability and reasoning support before applying your selection.",
@@ -377,11 +390,24 @@ fn footer(view: &AdviceView<'_>, width: u16, theme: &Theme) -> Vec<Line<'static>
         .fg(theme.primary.to_color())
         .add_modifier(Modifier::BOLD);
     let text = Style::default().fg(theme.text_muted.to_color());
+    if view.committing {
+        return vec![Line::styled("Verifying update…", text)];
+    }
     let mut first = vec![Span::styled("Esc", key), Span::styled(" Back   ", text)];
     if matches!(view.status, Status::Ready(_)) {
         first.extend([Span::styled("↑/↓", key), Span::styled(" Choose   ", text)]);
-        if view.scope == AdviceScope::InitialLaunch {
-            first.extend([Span::styled("Enter", key), Span::styled(" Apply   ", text)]);
+        if view.scope == AdviceScope::InitialLaunch || view.can_apply_session {
+            first.extend([
+                Span::styled("Enter", key),
+                Span::styled(
+                    if view.can_apply_session {
+                        " Apply to session   "
+                    } else {
+                        " Apply   "
+                    },
+                    text,
+                ),
+            ]);
         }
     }
     let mut second = vec![Span::styled("r", key), Span::styled(" Retry   ", text)];
@@ -484,6 +510,8 @@ mod tests {
                             AdviceScope::InitialLaunch
                         },
                         checking_setting: false,
+                        can_apply_session: false,
+                        committing: false,
                         message: None,
                     },
                     &Theme::default(),
@@ -577,6 +605,8 @@ mod tests {
                             show_sources: false,
                             scope,
                             checking_setting: false,
+                            can_apply_session: false,
+                            committing: false,
                             message: None,
                         },
                         &Theme::default(),
@@ -597,6 +627,42 @@ mod tests {
                 AdviceScope::ExpertPlanReview => "Draft plan → Expert review",
                 _ => "Reviewed plan → implementation",
             }));
+        }
+    }
+    #[test]
+    fn live_application_shows_its_scope_and_waits_for_verification_after_commit() {
+        for committing in [false, true] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 25)).unwrap();
+            let status = if committing { Status::Loading } else { ready() };
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        AdviceView {
+                            status: &status,
+                            selected: 0,
+                            scroll: 0,
+                            show_sources: false,
+                            scope: AdviceScope::ExistingSession,
+                            checking_setting: committing,
+                            can_apply_session: true,
+                            committing,
+                            message: None,
+                        },
+                        &Theme::default(),
+                    )
+                })
+                .unwrap();
+            let text = contents(terminal.backend().buffer());
+            assert!(text.contains("future turns"));
+            if committing {
+                assert!(text.contains("Verifying update"));
+                assert!(!text.contains("Esc"));
+                assert!(!text.contains("Retry"));
+            } else {
+                assert!(text.contains("Apply to session"));
+                assert!(text.contains("Esc"));
+            }
         }
     }
 }

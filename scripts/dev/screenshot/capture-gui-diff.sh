@@ -24,6 +24,8 @@ if [[ "${CI:-}" == "true" || -z "${DISPLAY:-}" ]]; then
   xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
     dbus-run-session -- env GDK_BACKEND=x11 \
     WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
+    WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+    LIBGL_ALWAYS_SOFTWARE=1 \
     /usr/bin/python3 "$SCRIPT_DIR/capture-gui-diff.py" "$OUT_DIR"
 else
   GDK_BACKEND=x11 /usr/bin/python3 "$SCRIPT_DIR/capture-gui-diff.py" "$OUT_DIR"

@@ -4,6 +4,7 @@
 Only the window belonging to the supplied isolated GUI PID is inspected.
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -115,6 +116,7 @@ for attempt in range(100):
 assert windows, "The isolated GUI has no X11 window"
 window = max(windows, key=lambda w: w.get_geometry().width * w.get_geometry().height)
 notes = []
+captured_frames = set()
 
 
 def capture(name, note, expects, expression=None):
@@ -140,6 +142,9 @@ def capture(name, note, expects, expression=None):
         ],
         check=True,
     )
+    digest = hashlib.sha256((out / name).read_bytes()).digest()
+    assert digest not in captured_frames, "The native window saved a stale frame"
+    captured_frames.add(digest)
     (out / name.replace(".png", ".txt")).write_text(body)
     notes.append({"file": name, "note": note, "expects": expects})
     print("PASS:", name, note, flush=True)

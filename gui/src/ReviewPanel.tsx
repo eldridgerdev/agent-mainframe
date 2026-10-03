@@ -1,10 +1,14 @@
-import { useState } from "react";
-import { ReviewAction, ReviewSeverity, ReviewView } from "./api";
+import { useEffect, useState } from "react";
+import { DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import { Field, Modal, Spinner } from "./ui";
 
-type Editor = { kind: "comment" | "reject" | "general"; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
+type Editor = { kind: "comment" | "reject" | "general" | "line_comment" | "suggestion"; span?: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
+
+function locationLabel(location: ReviewLocation) {
+  return location.new_line !== null ? `line ${location.new_line}` : `base line ${location.old_line}`;
+}
 
 export default function ReviewPanel({ view, busy, error, onAct }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
@@ -12,9 +16,39 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   const [filter, setFilter] = useState("");
   const [split, setSplit] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
+  const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
   const [pending, setPending] = useState<ReviewAction | "cancel" | null>(null);
   const dirty = editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
   const file = view.files.find((f) => f.diff.path === view.selected_path);
+  useEffect(() => { setSelection(null); }, [view.workflow_id, view.revision, view.selected_path]);
+  const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
+  const same = (a: ReviewLocation, b: ReviewLocation) => a.old_line === b.old_line && a.new_line === b.new_line;
+  const locationKey = (location: ReviewLocation) => `${location.old_line}:${location.new_line}`;
+  const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
+  const lineIndex = (location: ReviewLocation) => lineIndices.get(locationKey(location)) ?? -1;
+  function selectedSpan(): ReviewSpan | null {
+    if (!selection) return null;
+    return lineIndex(selection.anchor) <= lineIndex(selection.cursor)
+      ? { start: selection.anchor, end: selection.cursor } : { start: selection.cursor, end: selection.anchor };
+  }
+  const span = selectedSpan();
+  function selectLine(line: DiffLine, extend: boolean) {
+    if (busy || dirty || pending) return;
+    setEditor(null);
+    const location = { old_line: line.old_line, new_line: line.new_line };
+    setSelection({ anchor: extend && selection ? selection.anchor : location, cursor: location });
+  }
+  function editSpan(kind: "line_comment" | "suggestion", selected: ReviewSpan) {
+    if (!file || busy || dirty || pending) return;
+    selected = { start: selected.start, end: selected.end };
+    const lo = lineIndex(selected.start), hi = lineIndex(selected.end);
+    const existing = file.line_comments.find((comment) => comment.editable && lineIndex(comment.start) <= hi && lineIndex(comment.end) >= lo);
+    if (existing && same(selected.start, selected.end)) selected = { start: existing.start, end: existing.end };
+    const text = kind === "line_comment" ? existing?.text ?? ""
+      : existing?.suggestion ?? lines.slice(lineIndex(selected.start), lineIndex(selected.end) + 1).map((line) => line.text.slice(1)).join("\n");
+    const severity = existing?.severity ?? "suggestion";
+    setEditor({ kind, path: file.diff.path, span: selected, text, severity, original: text, originalSeverity: severity });
+  }
   const files = view.files.filter((f) => f.diff.path.toLowerCase().includes(filter.toLowerCase()));
   const approved = view.files.filter((f) => f.verdict === "approved").length;
   const rejected = view.files.filter((f) => f.verdict === "rejected").length;
@@ -28,7 +62,7 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     if (dirty || (action !== "cancel" && (action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
     else void run(action);
   }
-  function edit(kind: Editor["kind"]) {
+  function edit(kind: "comment" | "reject" | "general") {
     if (busy || dirty) return;
     const text = kind === "general" ? view.general_feedback : kind === "reject" ? file?.feedback ?? "" : file?.comment?.text ?? "";
     // Like the TUI, a fresh rejection is a must-fix signal; an existing one keeps its severity.
@@ -39,6 +73,8 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     if (!editor || busy) return;
     const action: ReviewAction = editor.kind === "general" ? { kind: "general", text: editor.text }
       : editor.kind === "reject" ? { kind: "reject", path: editor.path, feedback: editor.text, severity: editor.severity }
+      : editor.kind === "line_comment" ? { kind: "line_comment", path: editor.path, ...editor.span!, text: editor.text, severity: editor.severity }
+      : editor.kind === "suggestion" ? { kind: "suggestion", path: editor.path, ...editor.span!, text: editor.text }
       : { kind: "comment", path: editor.path, text: editor.text, severity: editor.severity };
     if (await onAct(action)) setEditor(null);
   }
@@ -71,14 +107,15 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     </div>
     {view.general_feedback && <section aria-label="Saved overall feedback"><Markdown source={view.general_feedback} /></section>}
     {editor && <form className="review-editor" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-      <Field label={editor.kind === "general" ? "Overall feedback draft" : editor.kind === "reject" ? "Rejection feedback" : "File comment"}>
+      <Field label={editor.kind === "general" ? "Overall feedback draft" : editor.kind === "reject" ? "Rejection feedback" : editor.kind === "line_comment" ? "Line comment" : editor.kind === "suggestion" ? "Suggested replacement" : "File comment"}>
         <textarea rows={5} value={editor.text} disabled={busy} onChange={(event) => setEditor({ ...editor, text: event.target.value })} />
       </Field>
-      {editor.kind !== "general" && <Field label="Severity"><select value={editor.severity} disabled={busy} onChange={(event) => setEditor({ ...editor, severity: event.target.value as ReviewSeverity })}>
+      {editor.kind !== "general" && editor.kind !== "suggestion" && <Field label="Severity"><select value={editor.severity} disabled={busy} onChange={(event) => setEditor({ ...editor, severity: event.target.value as ReviewSeverity })}>
         {["blocker", "suggestion", "nit", "question", "praise"].map((severity) => <option key={severity} value={severity}>{severity}</option>)}
       </select></Field>}
-      <button className="btn btn-primary" disabled={busy || pending !== null}>Save {editor.kind === "reject" ? "rejection" : editor.kind === "general" ? "overall feedback" : "comment"}</button>
+      <button className="btn btn-primary" disabled={busy || pending !== null}>Save {editor.kind === "reject" ? "rejection" : editor.kind === "general" ? "overall feedback" : editor.kind === "suggestion" ? "suggestion" : "comment"}</button>
       <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => request("cancel")}>Cancel edit</button>
+      {editor.span && <p className="muted small">Anchored to {locationLabel(editor.span.start)} – {locationLabel(editor.span.end)}. An empty save removes this {editor.kind === "suggestion" ? "suggestion" : "comment's prose"}; the other part of the thread is kept.</p>}
       {editor.kind === "comment" && <p className="muted small">An empty comment removes the saved file comment. File comments leave the verdict unchanged.</p>}
     </form>}
     {!view.error && <div className="diff-reader">
@@ -99,12 +136,23 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
           {file.comment && <div className="review-note"><p>[{file.comment.severity}] {file.comment.text}{file.comment.resolved && " (resolved)"}{file.comment.carried && " (previous round)"}</p>
             <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "toggle_resolved", path: file.diff.path })}>{file.comment.resolved ? "Reopen comment" : "Resolve comment"}</button>
           </div>}
-          {file.line_comments.length > 0 && <details className="review-note"><summary>Saved line comments ({file.line_comments.length}) · edit in TUI</summary>
-            {file.line_comments.map((comment, index) => <div key={index}><p>{comment.anchor} [{comment.severity}] {comment.text}{comment.resolved && " (resolved)"}{comment.draft && " (AI draft)"}{comment.anchor_lost && " (anchor lost)"}</p>{comment.suggestion !== null && <pre>{comment.suggestion}</pre>}</div>)}
+          {file.line_comments.length > 0 && <details className="review-note"><summary>Saved line comments ({file.line_comments.length})</summary>
+            {file.line_comments.map((comment, index) => <div key={index}><p>{comment.anchor} [{comment.severity}] {comment.text}{comment.resolved && " (resolved)"}{comment.draft && " (AI draft)"}{comment.anchor_lost && " (anchor lost)"}</p>{comment.suggestion !== null && <pre>{comment.suggestion}</pre>}
+              <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("line_comment", comment)}>Edit line comment</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("suggestion", comment)}>Edit suggestion</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null || !comment.editable || comment.draft} onClick={() => request({ kind: "toggle_line_resolved", path: file.diff.path, start: comment.start, end: comment.end })}>{comment.resolved ? "Reopen thread" : "Resolve thread"}</button>
+            </div>)}
           </details>}
+          {!file.diff.is_binary && lines.length > 0 && <div className="review-line-controls">
+            <p className="muted small">Click a line number to select it; Shift-click another to select a range in diff order.</p>
+            {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
+            <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
+          </div>}
           <div className="diff-code">
             {file.diff.is_binary ? <p>Binary file changed; no text diff is available.</p> : file.diff.hunks.length === 0 ? <pre>{file.diff.patch || "No textual changes."}</pre>
-              : file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={split} />)}
+              : file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={split} selection={{ disabled: busy || dirty || pending !== null, select: selectLine,
+                contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />)}
           </div>
         </> : <p>{view.files.length ? "Select a file to review." : "No changes to review."}</p>}
       </section>

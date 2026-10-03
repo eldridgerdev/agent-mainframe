@@ -10,6 +10,7 @@ use crate::gui_diff::{DiffFileView, file_view};
 use crate::project::SessionKind;
 
 pub use crate::app::review::state::{FileComment, Severity};
+pub use crate::diff::DiffLineLocation;
 
 pub(crate) struct ReviewContext {
     id: String,
@@ -26,7 +27,7 @@ pub struct ReviewFileView {
     pub feedback: String,
     pub severity: Severity,
     pub comment: Option<FileComment>,
-    /// Existing line threads remain visible when resuming a TUI review.
+    /// Line threads share the TUI anchors and progress format.
     pub line_comments: Vec<ReviewLineCommentView>,
     pub notes: Option<String>,
     pub changed_since_last: bool,
@@ -34,6 +35,9 @@ pub struct ReviewFileView {
 
 #[derive(Debug, Serialize)]
 pub struct ReviewLineCommentView {
+    pub start: DiffLineLocation,
+    pub end: DiffLineLocation,
+    pub editable: bool,
     pub anchor: String,
     pub text: String,
     pub severity: Severity,
@@ -80,6 +84,24 @@ pub enum ReviewAction {
         path: String,
         text: String,
         severity: Severity,
+    },
+    LineComment {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+        text: String,
+        severity: Severity,
+    },
+    Suggestion {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+        text: String,
+    },
+    ToggleLineResolved {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
     },
     ToggleResolved {
         path: String,
@@ -202,6 +224,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         .files
         .iter()
         .map(|file| {
+            let locations = file.addressable_lines();
             let (verdict, feedback, severity) = match state.decisions.get(&file.path) {
                 Some(ReviewDecision::Approve) => ("approved", String::new(), Severity::default()),
                 Some(ReviewDecision::Reject { feedback, severity }) => {
@@ -221,10 +244,23 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
                     .into_iter()
                     .flatten()
                     .map(|comment| ReviewLineCommentView {
-                        anchor: match (comment.location.old_line, comment.location.new_line) {
-                            (_, Some(line)) => format!("line {line}"),
-                            (Some(line), None) => format!("base line {line}"),
-                            _ => "lost anchor".to_string(),
+                        start: comment.start.unwrap_or(comment.location),
+                        end: comment.location,
+                        editable: !comment.anchor_lost
+                            && locations.contains(&comment.location)
+                            && comment.start.is_none_or(|start| locations.contains(&start)),
+                        anchor: {
+                            let label = |loc: DiffLineLocation| match (loc.old_line, loc.new_line) {
+                                (_, Some(line)) => format!("line {line}"),
+                                (Some(line), None) => format!("base line {line}"),
+                                _ => "lost anchor".to_string(),
+                            };
+                            match comment.start {
+                                Some(start) => {
+                                    format!("{} – {}", label(start), label(comment.location))
+                                }
+                                None => label(comment.location),
+                            }
                         },
                         text: comment.text.clone(),
                         severity: comment.severity,
@@ -330,7 +366,10 @@ pub fn act(
             | ReviewAction::Skip { path }
             | ReviewAction::Reject { path, .. }
             | ReviewAction::Comment { path, .. }
-            | ReviewAction::ToggleResolved { path } => Some(path.clone()),
+            | ReviewAction::ToggleResolved { path }
+            | ReviewAction::LineComment { path, .. }
+            | ReviewAction::Suggestion { path, .. }
+            | ReviewAction::ToggleLineResolved { path, .. } => Some(path.clone()),
             ReviewAction::Undo => state.verdict_undo.last().map(|entry| entry.path.clone()),
             _ => None,
         };
@@ -361,6 +400,60 @@ pub fn act(
             }
             state.selected_file = index;
         }
+        // Resolve canonical source coordinates against the unchanged patch,
+        // never treating a marker/header or an out-of-date anchor as a line.
+        match &action {
+            ReviewAction::LineComment { start, end, .. }
+            | ReviewAction::Suggestion { start, end, .. }
+            | ReviewAction::ToggleLineResolved { start, end, .. } => {
+                let locs = state.files[state.selected_file].addressable_lines();
+                let locate = |location| {
+                    locs.iter().position(|l| *l == location).ok_or_else(|| {
+                        GuiError::conflict("Line anchor is no longer in this diff; refresh changes")
+                    })
+                };
+                let lo = locate(*start)?;
+                let hi = locate(*end)?;
+                if lo > hi {
+                    return Err(GuiError::conflict("Select the range in diff order"));
+                }
+                if matches!(action, ReviewAction::ToggleLineResolved { .. })
+                    && !state
+                        .line_comments
+                        .get(&state.files[state.selected_file].path)
+                        .is_some_and(|comments| {
+                            comments.iter().any(|c| {
+                                !c.draft
+                                    && !c.anchor_lost
+                                    && c.start.unwrap_or(c.location) == *start
+                                    && c.location == *end
+                            })
+                        })
+                {
+                    return Err(GuiError::conflict(
+                        "Kept thread is no longer at this anchor",
+                    ));
+                }
+                if state
+                    .line_comments
+                    .get(&state.files[state.selected_file].path)
+                    .is_some_and(|comments| {
+                        comments.iter().any(|c| {
+                            c.anchor_lost
+                                && c.covered_indices(&locs)
+                                    .is_some_and(|range| *range.start() <= hi && *range.end() >= lo)
+                        })
+                    })
+                {
+                    return Err(GuiError::conflict(
+                        "Thread anchor was lost; refresh changes before editing this span",
+                    ));
+                }
+                state.comment_anchor = Some(lo);
+                state.comment_cursor = Some(hi);
+            }
+            _ => {}
+        }
         // The shared actions save on their own, best-effort; this interface
         // saves once below instead, and reports whether that save succeeded.
         app.defer_review_progress_persist = true;
@@ -385,6 +478,26 @@ pub fn act(
                         s.comment_severity = severity;
                     }
                     app.diff_review_submit_file_comment();
+                }
+                ReviewAction::LineComment { text, severity, .. } => {
+                    app.diff_review_start_line_comment();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        s.reset_feedback_editor(text);
+                        s.comment_severity = severity;
+                    }
+                    app.diff_review_submit_line_comment();
+                }
+                ReviewAction::Suggestion { text, .. } => {
+                    app.diff_review_start_suggestion();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        s.reset_feedback_editor(text);
+                    }
+                    app.diff_review_submit_suggestion();
+                }
+                ReviewAction::ToggleLineResolved { .. } => {
+                    if !app.diff_review_toggle_resolved() {
+                        return Err(GuiError::conflict("Thread is no longer at this anchor"));
+                    }
                 }
                 ReviewAction::ToggleResolved { .. } => {
                     app.diff_review_toggle_file_comment_resolved();
@@ -475,6 +588,386 @@ mod tests {
         act(gui, &view.workflow_id, view.revision, action)
             .unwrap()
             .unwrap()
+    }
+
+    fn span(view: &ReviewView, start: usize, end: usize) -> (DiffLineLocation, DiffLineLocation) {
+        let find = |number| {
+            let line = view.files[0]
+                .diff
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .find(|l| l.new_line == Some(number))
+                .unwrap();
+            DiffLineLocation {
+                old_line: line.old_line,
+                new_line: line.new_line,
+            }
+        };
+        (find(start), find(end))
+    }
+
+    #[test]
+    fn range_comments_suggestions_and_resolution_resume_in_the_tui_progress_format() {
+        let (dir, mut gui, target) = fixture();
+        let initial = begin(&mut gui, target.clone()).unwrap();
+        let (start, end) = span(&initial, 8, 9);
+        let view = action(
+            &mut gui,
+            &initial,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "Range question".into(),
+                severity: Severity::Question,
+            },
+        );
+        assert_eq!(view.files[0].verdict, "rejected");
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "  replacement 🦀\n    next\n".into(),
+            },
+        );
+        let comment = &view.files[0].line_comments[0];
+        assert_eq!(comment.start, start);
+        assert_eq!(comment.end, end);
+        assert_eq!(comment.anchor, "line 8 – line 9");
+        assert!(comment.editable);
+        assert_eq!(comment.text, "Range question");
+        assert_eq!(comment.severity, Severity::Question);
+        assert_eq!(
+            comment.suggestion.as_deref(),
+            Some("  replacement 🦀\n    next")
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start,
+                end,
+            },
+        );
+        assert!(view.files[0].line_comments[0].resolved);
+        assert_eq!(view.files[0].verdict, "undecided");
+        act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        let resumed = begin(&mut gui, target).unwrap();
+        assert!(resumed.files[0].line_comments[0].resolved);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(crate::app::review::review_progress_path(
+                &dir.path().join("repo"),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["line_comments"]["code.txt"][0]["start"]["new_line"],
+            8
+        );
+        assert_eq!(
+            saved["line_comments"]["code.txt"][0]["location"]["new_line"],
+            9
+        );
+        assert!(saved["line_comments"]["code.txt"][0]["anchor_context"].is_object());
+        let reopened = action(
+            &mut gui,
+            &resumed,
+            ReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start,
+                end,
+            },
+        );
+        assert!(!reopened.files[0].line_comments[0].resolved);
+        assert_eq!(reopened.files[0].verdict, "rejected");
+    }
+
+    #[test]
+    fn editing_prose_preserves_suggestion_and_empty_saves_remove_only_the_requested_part() {
+        let (_dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&view, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "replacement".into(),
+            },
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "Explain".into(),
+                severity: Severity::Blocker,
+            },
+        );
+        assert_eq!(
+            view.files[0].line_comments[0].suggestion.as_deref(),
+            Some("replacement")
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: String::new(),
+            },
+        );
+        assert_eq!(view.files[0].line_comments[0].text, "Explain");
+        assert!(view.files[0].line_comments[0].suggestion.is_none());
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: String::new(),
+                severity: Severity::Nit,
+            },
+        );
+        assert!(view.files[0].line_comments.is_empty());
+        assert_eq!(view.files[0].verdict, "undecided");
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "code only".into(),
+            },
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: String::new(),
+                severity: Severity::Praise,
+            },
+        );
+        assert_eq!(
+            view.files[0].line_comments[0].suggestion.as_deref(),
+            Some("code only")
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: String::new(),
+            },
+        );
+        assert!(view.files[0].line_comments.is_empty());
+    }
+
+    #[test]
+    fn invalid_reversed_and_stale_line_anchors_do_not_mutate_or_save() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&view, 8, 9);
+        for (start, end) in [
+            (end, start),
+            (
+                DiffLineLocation {
+                    old_line: None,
+                    new_line: None,
+                },
+                end,
+            ),
+            (
+                start,
+                DiffLineLocation {
+                    old_line: None,
+                    new_line: Some(999),
+                },
+            ),
+        ] {
+            assert_eq!(
+                act(
+                    &mut gui,
+                    &view.workflow_id,
+                    view.revision,
+                    ReviewAction::LineComment {
+                        path: "code.txt".into(),
+                        start,
+                        end,
+                        text: "Must not save".into(),
+                        severity: Severity::Nit,
+                    }
+                )
+                .unwrap_err()
+                .kind,
+                GuiErrorKind::Conflict
+            );
+        }
+        assert!(
+            snapshot(&mut gui).unwrap().files[0]
+                .line_comments
+                .is_empty()
+        );
+        assert_eq!(snapshot(&mut gui).unwrap().revision, view.revision);
+        assert!(!crate::app::review::review_progress_path(&dir.path().join("repo")).exists());
+        std::fs::write(dir.path().join("repo/code.txt"), "different code\n").unwrap();
+        assert_eq!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::Suggestion {
+                    path: "code.txt".into(),
+                    start,
+                    end,
+                    text: "stale replacement".into(),
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn deletion_only_comments_and_no_newline_markers_use_canonical_base_anchors() {
+        let (dir, mut gui, target) = fixture();
+        std::fs::remove_file(dir.path().join("repo/delete.txt")).unwrap();
+        std::fs::write(dir.path().join("repo/new.txt"), "no newline").unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        let base = DiffLineLocation {
+            old_line: Some(1),
+            new_line: None,
+        };
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "delete.txt".into(),
+                start: base,
+                end: base,
+                text: "Keep this?".into(),
+                severity: Severity::Question,
+            },
+        );
+        let comment = &view
+            .files
+            .iter()
+            .find(|f| f.diff.path == "delete.txt")
+            .unwrap()
+            .line_comments[0];
+        assert_eq!(comment.anchor, "base line 1");
+        assert!(comment.editable);
+        let loc = DiffLineLocation {
+            old_line: None,
+            new_line: Some(1),
+        };
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "new.txt".into(),
+                start: loc,
+                end: loc,
+                text: "Add newline".into(),
+                severity: Severity::Nit,
+            },
+        );
+        assert_eq!(
+            view.files
+                .iter()
+                .find(|f| f.diff.path == "new.txt")
+                .unwrap()
+                .line_comments[0]
+                .end,
+            loc
+        );
+    }
+
+    #[test]
+    fn editing_a_carried_draft_keeps_its_origin_and_reopens_it_as_a_human_thread() {
+        let (dir, mut gui, target) = fixture();
+        let path = crate::app::review::review_progress_path(&dir.path().join("repo"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"line_comments":{"code.txt":[{"location":{"old_line":null,"new_line":8},"text":"AI idea","draft":true,"carried":true,"resolved":true,"severity":"nit"}]}}"#).unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&view, 8, 8);
+        assert_eq!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::ToggleLineResolved {
+                    path: "code.txt".into(),
+                    start,
+                    end,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "Human comment".into(),
+                severity: Severity::Nit,
+            },
+        );
+        assert!(!view.files[0].line_comments[0].draft);
+        assert!(!view.files[0].line_comments[0].resolved);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["line_comments"]["code.txt"][0]["carried"], true);
+        let AppMode::DiffViewer(state) = &mut gui.app_for_workflow().mode else {
+            panic!()
+        };
+        state.line_comments.get_mut("code.txt").unwrap()[0].anchor_lost = true;
+        assert!(!snapshot(&mut gui).unwrap().files[0].line_comments[0].editable);
+        assert_eq!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::Suggestion {
+                    path: "code.txt".into(),
+                    start,
+                    end,
+                    text: "must not replace a lost thread".into(),
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
     }
 
     #[test]

@@ -1,0 +1,6 @@
+# Native GUI line/range comments and suggestion editing, isolated DB/Git checkout.
+# The helper asserts UI states and persisted thread anchors through real Rust IPC.
+note:The isolated TUI confirms the capture harness is ready before the native review annotation scenario runs.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-review-lines-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

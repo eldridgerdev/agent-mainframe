@@ -19,19 +19,29 @@ function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
   return rows;
 }
 
-export function Hunk({ hunk, split }: { hunk: DiffHunk; split: boolean }) {
+export function Hunk({ hunk, split, selection }: { hunk: DiffHunk; split: boolean; selection?: {
+  disabled: boolean; contains: (line: DiffLine) => boolean; select: (line: DiffLine, extend: boolean) => void;
+} }) {
+  function number(line: DiffLine | null, side: "old_line" | "new_line") {
+    const value = line?.[side];
+    if (value == null || !line || !selection) return value;
+    return <button type="button" className="diff-line-select" disabled={selection.disabled}
+      aria-label={`Select ${side === "old_line" ? "base " : ""}line ${value}`} aria-pressed={selection.contains(line)}
+      onClick={(event) => selection.select(line, event.shiftKey)}>{value}</button>;
+  }
+  const selected = (line: DiffLine | null) => line && selection?.contains(line) ? " review-line-selected" : "";
   return <section className="diff-hunk">
     <div className="diff-hunk-header">{hunk.header}</div>
     {split ? <table className="diff-lines diff-split" aria-label="Side-by-side hunk"><tbody>
       {splitRows(hunk.lines).map(([old, next], index) => old?.kind === "marker" ? <tr key={index}><td colSpan={4} className="diff-text diff-marker"><code>{old.text}</code></td></tr> : <tr key={index}>
-        <td className="diff-number">{old?.old_line}</td>
-        <td className={`diff-text diff-${old?.kind ?? "empty"}`}><code>{old?.text}</code></td>
-        <td className="diff-number">{next?.new_line}</td>
-        <td className={`diff-text diff-${next?.kind ?? "empty"}`}><code>{next?.text}</code></td>
+        <td className="diff-number">{number(old, "old_line")}</td>
+        <td className={`diff-text diff-${old?.kind ?? "empty"}${selected(old)}`}><code>{old?.text}</code></td>
+        <td className="diff-number">{number(next, "new_line")}</td>
+        <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}><code>{next?.text}</code></td>
       </tr>)}
     </tbody></table> : <table className="diff-lines" aria-label="Unified hunk"><tbody>
-      {hunk.lines.map((line, index) => <tr key={index} className={`diff-${line.kind}`}>
-        <td className="diff-number">{line.old_line}</td><td className="diff-number">{line.new_line}</td>
+      {hunk.lines.map((line, index) => <tr key={index} className={`diff-${line.kind}${selected(line)}`}>
+        <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
         <td className="diff-text"><code>{line.text}</code></td>
       </tr>)}
     </tbody></table>}

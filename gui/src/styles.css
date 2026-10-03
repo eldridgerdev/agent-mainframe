@@ -1017,3 +1017,10 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 }
 .review-editor textarea { width: 100%; }
 .review-editor button, .review-confirm button { margin-right: 8px; }
+
+.diff-line-select { color: inherit; background: transparent; border: 0; padding: 0; font: inherit; cursor: pointer; }
+.diff-line-select:hover { text-decoration: underline; }
+.diff-line-select:disabled { cursor: default; }
+.diff-line-select[aria-pressed="true"] { color: var(--text); font-weight: bold; }
+.diff-lines .review-line-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+.review-line-controls { padding: 8px; }

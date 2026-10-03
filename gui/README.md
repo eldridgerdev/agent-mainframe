@@ -232,8 +232,13 @@ Rust IPC. Other native interactions and macOS remain unvalidated. Command
 tests use isolated Git repositories; component tests mock the IPC calls.
 
 Use **Final Review** on a Git feature to approve, reject or skip files, undo a
-verdict, write whole-file comments with severity, resolve/reopen comments, and
-save overall feedback. Developer notes and saved line threads/suggestions are
+verdict, write whole-file or line/range comments with severity, resolve/reopen
+comments, edit suggested replacements, and save overall feedback. Click a line
+number to select it; Shift-click another to extend a range in diff order. Use
+**Comment on selection** or **Suggest replacement**, or edit a saved thread.
+Empty saves clear prose or replacement code while keeping the other part of
+the thread. Suggestions are saved for later feedback; authoring does not write
+to the source file. Lost anchors stay visible and require refresh before editing. Developer notes and saved line threads/suggestions are
 shown alongside unified or side-by-side diffs. **Pause review** preserves progress
 in the same format the TUI resumes; reopening either interface continues it.
 Unsaved form edits require explicit discard before leaving, and failed saves
@@ -243,10 +248,13 @@ approvals and verdict-undo entries for changed patches, and reopening a paused
 review drops approvals whose patch changed meanwhile; **Reload
 saved review** adopts progress changed in another interface. Edit a given review
 in one interface at a time; detected external saves block edits until reload.
-Line-thread editing, walkthroughs, AI questions/co-review, suggestion application,
+Walkthroughs, AI questions/co-review, suggestion application,
 finish checks and sending feedback remain in the TUI. Native WSLg captures verify opening on a stopped feature, notes and saved line
 threads, verdict/comment persistence, split layout, unsaved-draft protection,
 pause/reopen, changed-patch rejection and approval invalidation after refresh.
+The isolated `gui-review-line-comments.txt` scenario also verifies range
+selection, line/range comment and replacement editing, split display,
+unsaved-suggestion protection, resolution/reopening and restored thread anchors.
 Remaining native interactions and macOS validation are open.
 
 ## Checks

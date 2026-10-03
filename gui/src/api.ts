@@ -623,6 +623,8 @@ export interface DiffView {
 export const loadDiff = (target: FeatureTarget, options: DiffOptions): Promise<DiffView> =>
   invoke("load_diff", { target, options });
 
+export interface ReviewLocation { old_line: number | null; new_line: number | null }
+export interface ReviewSpan { start: ReviewLocation; end: ReviewLocation }
 export type ReviewSeverity = "blocker" | "suggestion" | "nit" | "question" | "praise";
 export interface ReviewFile {
   diff: DiffFile;
@@ -630,7 +632,7 @@ export interface ReviewFile {
   feedback: string;
   severity: ReviewSeverity;
   comment: { text: string; severity: ReviewSeverity; resolved: boolean; carried: boolean } | null;
-  line_comments: { anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null }[];
+  line_comments: (ReviewSpan & { editable: boolean; anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null })[];
   notes: string | null;
   changed_since_last: boolean;
 }
@@ -652,6 +654,9 @@ export type ReviewAction =
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
   | { kind: "reject"; path: string; feedback: string; severity: ReviewSeverity }
   | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }
+  | (ReviewSpan & { kind: "line_comment"; path: string; text: string; severity: ReviewSeverity })
+  | (ReviewSpan & { kind: "suggestion"; path: string; text: string })
+  | (ReviewSpan & { kind: "toggle_line_resolved"; path: string })
   | { kind: "general"; text: string }
   | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
 export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });

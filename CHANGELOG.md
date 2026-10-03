@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Comment on lines and suggest code in desktop Final Review.** Click a line
+  number, or Shift-click to select a range, then write a comment with severity
+  or edit a suggested replacement. Resolve and reopen saved threads, and
+  resume them in either interface. Editing prose keeps its suggestion;
+  authoring a suggestion leaves the source file untouched. Unsaved drafts
+  require explicit discard before leaving.
 - **Review changes in the desktop app.** Open **Final Review** on a Git
   feature, even while stopped, to approve, reject or skip files, undo verdicts,
   leave comments and overall feedback, and read developer notes and saved

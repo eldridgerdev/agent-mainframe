@@ -653,7 +653,7 @@ export type ReviewAction =
   | { kind: "reject"; path: string; feedback: string; severity: ReviewSeverity }
   | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }
   | { kind: "general"; text: string }
-  | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" };
+  | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
 export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });
 export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
   invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });

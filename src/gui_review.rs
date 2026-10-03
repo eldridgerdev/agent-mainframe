@@ -94,6 +94,9 @@ pub enum ReviewAction {
     Reload,
     RetrySave,
     Pause,
+    /// Close without saving, abandoning any edits a failed save left unsaved.
+    /// The way out when saving keeps failing or the feature is gone.
+    Discard,
 }
 
 fn progress_bytes(workdir: &Path) -> GuiResult<Option<Vec<u8>>> {
@@ -111,7 +114,12 @@ fn progress_bytes(workdir: &Path) -> GuiResult<Option<Vec<u8>>> {
     }
 }
 
-fn open_state(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<()> {
+/// Open the review over the feature's checkout and return the saved progress
+/// as it was read *before* the shared loader restored it, which is the
+/// baseline for detecting a save by another interface: if one lands between
+/// this read and the restore, the next action reports a conflict instead of
+/// overwriting it.
+fn open_state(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Option<Vec<u8>>> {
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store
@@ -122,7 +130,7 @@ fn open_state(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<()> {
         return Err(GuiError::conflict("Final Review requires a Git checkout"));
     }
     let feature = &project.features[fi];
-    crate::app::review::checked_review_progress(&feature.workdir)?;
+    let progress = crate::app::review::checked_review_progress(&feature.workdir)?;
     let from_view = ViewState::new(
         project.name.clone(),
         feature.name.clone(),
@@ -144,7 +152,7 @@ fn open_state(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<()> {
         app.mode = previous_mode;
         return Err(error);
     }
-    Ok(())
+    Ok(progress)
 }
 
 pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView> {
@@ -165,11 +173,7 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
             "Finish the current workflow before opening Final Review",
         ));
     }
-    open_state(gui, &target)?;
-    let AppMode::DiffViewer(state) = &gui.app_for_workflow().mode else {
-        unreachable!()
-    };
-    let progress = progress_bytes(&state.workdir)?;
+    let progress = open_state(gui, &target)?;
     gui.review_context = Some(ReviewContext {
         id: uuid::Uuid::new_v4().to_string(),
         target,
@@ -266,9 +270,16 @@ pub fn act(
         .filter(|c| c.id == workflow_id && c.revision == revision)
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
     let target = context.target.clone();
+    let unsaved = context.save_error.is_some();
     // Pausing an already-saved review requires no writes, including after its
     // feature was deleted or another interface updated the saved progress.
-    if matches!(action, ReviewAction::Pause) && context.save_error.is_none() {
+    // Discarding never writes: it is the exit when a save cannot succeed.
+    let close_now = match action {
+        ReviewAction::Pause => context.save_error.is_none(),
+        ReviewAction::Discard => true,
+        _ => false,
+    };
+    if close_now {
         gui.app_for_workflow().mode = AppMode::Normal;
         gui.review_context = None;
         return Ok(None);
@@ -278,7 +289,13 @@ pub fn act(
     let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
-        .ok_or_else(|| GuiError::not_found("Feature was deleted; pause this review"))?;
+        .ok_or_else(|| {
+            GuiError::not_found(if unsaved {
+                "Feature was deleted; discard the unsaved progress to close this review"
+            } else {
+                "Feature was deleted; pause this review"
+            })
+        })?;
     let workdir = app.store.projects[pi].features[fi].workdir.clone();
     let AppMode::DiffViewer(state) = &app.mode else {
         return Err(GuiError::conflict("Final Review is no longer open"));
@@ -293,15 +310,15 @@ pub fn act(
             "Refresh changes successfully before editing this review",
         ));
     }
-    if !matches!(action, ReviewAction::Reload)
-        && progress_bytes(&workdir)? != gui.review_context.as_ref().unwrap().progress
-    {
+    if !reload && progress_bytes(&workdir)? != gui.review_context.as_ref().unwrap().progress {
         return Err(GuiError::conflict(
             "Saved review changed in another interface; reload the saved review before editing",
         ));
     }
-    if matches!(action, ReviewAction::Reload) {
-        open_state(gui, &target)?;
+    // Set when the action itself establishes what the saved file holds.
+    let mut baseline = None;
+    if reload {
+        baseline = Some(open_state(gui, &target)?);
     } else {
         let app = gui.app_for_workflow();
         let AppMode::DiffViewer(state) = &mut app.mode else {
@@ -344,89 +361,101 @@ pub fn act(
             }
             state.selected_file = index;
         }
-        match action {
-            ReviewAction::Approve { .. } => app.diff_review_approve_current(),
-            ReviewAction::Skip { .. } => app.diff_review_skip_current(),
-            ReviewAction::Reject {
-                feedback, severity, ..
-            } => {
-                app.diff_review_start_feedback();
-                if let AppMode::DiffViewer(s) = &mut app.mode {
-                    s.reset_feedback_editor(feedback);
-                    s.comment_severity = severity;
+        // The shared actions save on their own, best-effort; this interface
+        // saves once below instead, and reports whether that save succeeded.
+        app.defer_review_progress_persist = true;
+        let outcome = (|| -> GuiResult<()> {
+            match action {
+                ReviewAction::Approve { .. } => app.diff_review_approve_current(),
+                ReviewAction::Skip { .. } => app.diff_review_skip_current(),
+                ReviewAction::Reject {
+                    feedback, severity, ..
+                } => {
+                    app.diff_review_start_feedback();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        s.reset_feedback_editor(feedback);
+                        s.comment_severity = severity;
+                    }
+                    app.diff_review_submit_feedback();
                 }
-                app.diff_review_submit_feedback();
-            }
-            ReviewAction::Comment { text, severity, .. } => {
-                app.diff_review_start_file_comment();
-                if let AppMode::DiffViewer(s) = &mut app.mode {
-                    s.reset_feedback_editor(text);
-                    s.comment_severity = severity;
+                ReviewAction::Comment { text, severity, .. } => {
+                    app.diff_review_start_file_comment();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        s.reset_feedback_editor(text);
+                        s.comment_severity = severity;
+                    }
+                    app.diff_review_submit_file_comment();
                 }
-                app.diff_review_submit_file_comment();
-            }
-            ReviewAction::ToggleResolved { .. } => {
-                app.diff_review_toggle_file_comment_resolved();
-            }
-            ReviewAction::General { text } => {
-                app.diff_review_start_general_feedback();
-                if let AppMode::DiffViewer(s) = &mut app.mode {
-                    s.reset_feedback_editor(text);
+                ReviewAction::ToggleResolved { .. } => {
+                    app.diff_review_toggle_file_comment_resolved();
                 }
-                app.diff_review_submit_general_feedback();
-            }
-            ReviewAction::Undo => app.diff_review_undo_verdict(),
-            ReviewAction::Refresh => {
-                // A failed Git load must not replace an editable review with
-                // an empty file list and subsequently drop its saved threads.
-                let previous_files = if let AppMode::DiffViewer(s) = &app.mode {
-                    crate::diff::load_snapshot(
-                        &workdir,
-                        s.override_base_ref.as_deref(),
-                        s.ignore_whitespace,
-                    )?;
-                    s.files.clone()
-                } else {
-                    unreachable!()
-                };
-                app.refresh_diff_viewer();
-                app.complete_diff_viewer_loading();
-                if let AppMode::DiffViewer(s) = &mut app.mode {
-                    let unchanged = |path: &str| {
-                        previous_files.iter().any(|old| {
-                            old.path == path
-                                && s.files.iter().any(|new| {
-                                    new.path == path
-                                        && new.patch == old.patch
-                                        && new.status == old.status
-                                })
-                        })
+                ReviewAction::General { text } => {
+                    app.diff_review_start_general_feedback();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        s.reset_feedback_editor(text);
+                    }
+                    app.diff_review_submit_general_feedback();
+                }
+                ReviewAction::Undo => app.diff_review_undo_verdict(),
+                ReviewAction::Refresh => {
+                    // A failed Git load must not replace an editable review with
+                    // an empty file list and subsequently drop its saved threads.
+                    let previous_files = if let AppMode::DiffViewer(s) = &app.mode {
+                        crate::diff::load_snapshot(
+                            &workdir,
+                            s.override_base_ref.as_deref(),
+                            s.ignore_whitespace,
+                        )?;
+                        s.files.clone()
+                    } else {
+                        unreachable!()
                     };
-                    s.decisions.retain(|path, verdict| {
-                        !matches!(verdict, ReviewDecision::Approve) || unchanged(path)
-                    });
-                    s.verdict_undo.retain(|entry| unchanged(&entry.path));
+                    app.refresh_diff_viewer();
+                    app.complete_diff_viewer_loading();
+                    if let AppMode::DiffViewer(s) = &mut app.mode {
+                        let unchanged = |path: &str| {
+                            previous_files.iter().any(|old| {
+                                old.path == path
+                                    && s.files.iter().any(|new| {
+                                        new.path == path
+                                            && new.patch == old.patch
+                                            && new.status == old.status
+                                    })
+                            })
+                        };
+                        s.decisions.retain(|path, verdict| {
+                            !matches!(verdict, ReviewDecision::Approve) || unchanged(path)
+                        });
+                        s.verdict_undo.retain(|entry| unchanged(&entry.path));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        }
+            Ok(())
+        })();
+        app.defer_review_progress_persist = false;
+        outcome?;
     }
     let save_error = if reload {
         None
     } else {
-        gui.app_for_workflow()
-            .try_persist_review_progress()
-            .err()
-            .map(|err| err.to_string())
-    };
-    let progress = match progress_bytes(&workdir) {
-        Ok(progress) => progress,
-        Err(_) if save_error.is_some() => gui.review_context.as_ref().unwrap().progress.clone(),
-        Err(err) => return Err(err),
+        match gui.app_for_workflow().try_persist_review_progress() {
+            // The bytes just written are the new baseline; re-reading the
+            // file could instead pick up a save another interface made since.
+            Ok(Some(written)) => {
+                baseline = Some(Some(written));
+                None
+            }
+            Ok(None) => None,
+            // A failed atomic save leaves the file, and so the baseline, as is.
+            Err(err) => Some(err.to_string()),
+        }
     };
     let context = gui.review_context.as_mut().unwrap();
     context.revision += 1;
-    context.progress = progress;
+    if let Some(progress) = baseline {
+        context.progress = progress;
+    }
     context.save_error = save_error;
     if pause && context.save_error.is_none() {
         gui.app_for_workflow().mode = AppMode::Normal;
@@ -813,6 +842,136 @@ mod tests {
         )
         .unwrap();
         assert_eq!(begin(&mut gui, target).unwrap().general_feedback, "Keep me");
+    }
+
+    #[test]
+    fn discard_closes_when_saving_keeps_failing_without_writing() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target.clone()).unwrap();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::write(&claude, "parent is a file").unwrap();
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::General {
+                text: "Unsaveable".into(),
+            },
+        );
+        assert!(view.save_error.is_some());
+        assert!(!gui.app_for_workflow().defer_review_progress_persist);
+        // The feature disappears too: Pause can no longer succeed at all.
+        let db = crate::db::AmfDb::open(&dir.path().join("amf.db")).unwrap();
+        let mut store = db.load_store().unwrap();
+        store.projects[0].features.clear();
+        db.save_store(&store).unwrap();
+        let err = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::NotFound);
+        assert!(err.message.contains("discard"));
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::Discard
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        assert!(gui.review_context.is_none());
+        assert_eq!(std::fs::read_to_string(claude).unwrap(), "parent is a file");
+    }
+
+    #[test]
+    fn an_approval_is_dropped_on_reopen_when_its_patch_changed_while_paused() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target.clone()).unwrap();
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        );
+        act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        // Unchanged: the approval resumes.
+        let view = begin(&mut gui, target.clone()).unwrap();
+        assert_eq!(view.files[0].verdict, "approved");
+        act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("repo/code.txt"), "edited while paused\n").unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        assert_eq!(view.files[0].verdict, "undecided");
+    }
+
+    #[test]
+    fn a_claude_file_and_stray_staging_files_are_not_review_progress() {
+        let (dir, mut gui, target) = fixture();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::write(&claude, "parent is a file").unwrap();
+        assert!(
+            begin(&mut gui, target.clone())
+                .unwrap()
+                .save_error
+                .is_none()
+        );
+        let view = snapshot(&mut gui).unwrap();
+        act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        std::fs::remove_file(&claude).unwrap();
+        std::fs::create_dir(&claude).unwrap();
+        // What a crash mid-save leaves behind is never a file to review.
+        std::fs::write(claude.join(".final-review-progress.json.a1B2c3.tmp"), "{").unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        assert!(
+            view.files
+                .iter()
+                .all(|f| !f.diff.path.contains("final-review-progress"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_progress_keeps_the_existing_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut gui, target) = fixture();
+        let path = crate::app::review::review_progress_path(&dir.path().join("repo"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o664)).unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        action(
+            &mut gui,
+            &view,
+            ReviewAction::General {
+                text: "Saved".into(),
+            },
+        );
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o664);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Saved"));
     }
 
     #[test]

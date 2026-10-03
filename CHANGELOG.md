@@ -16,8 +16,8 @@ are tagged.
   feature, even while stopped, to approve, reject or skip files, undo verdicts,
   leave comments and overall feedback, and read developer notes and saved
   line comments. Pause and resume the same review in either interface.
-  Unsaved drafts require an explicit discard; failed saves offer a retry.
-  Finishing and sending feedback still use the TUI.
+  Unsaved drafts require an explicit discard; failed saves offer a retry, or
+  closing without saving when the save cannot succeed. Finishing and sending feedback still use the TUI.
 - **Browse Git changes in the desktop app.** Open **Changes** on a feature,
   even while it is stopped, to view all current changes or one feature commit.
   Switch between unified and side-by-side layouts, filter files, jump between
@@ -127,6 +127,11 @@ are tagged.
 - **Desktop reviews refuse verdicts on changed files.** Refresh to see the
   latest patch; its outdated approval is cleared. Saved progress changed in
   another interface requires an explicit reload before editing.
+- **Resuming a paused review drops approvals of files that changed.** In
+  either interface, an approval only resumes if the file's patch is the one
+  that was approved. Progress saved by earlier versions resumes as before.
+- **Saving review progress keeps the file's permissions,** and an interrupted
+  save no longer shows up as a file to review.
 - **The desktop app sees sessions started in the TUI.** Both interfaces use
   the configured tmux server, so running sessions no longer appear stopped
   because the desktop app looked at a different server.

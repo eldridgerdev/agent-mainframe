@@ -79,6 +79,27 @@ it("edits rejection feedback and overall feedback without launching or sending a
   await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "general", text: "Overall new" }));
 });
 
+it("defaults a fresh rejection to blocker, as the TUI does", async () => {
+  const { onAct } = mount({ ...view, selected_path: "image.bin" });
+  fireEvent.click(screen.getByRole("button", { name: "Reject file" }));
+  expect((screen.getByRole("combobox", { name: "Severity" }) as HTMLSelectElement).value).toBe("blocker");
+  fireEvent.change(screen.getByRole("textbox", { name: "Rejection feedback" }), { target: { value: "Wrong file" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save rejection" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "reject", path: "image.bin", feedback: "Wrong file", severity: "blocker" }));
+});
+
+it("closes without saving only after confirmation when a save failed", async () => {
+  const { onAct } = mount({ ...view, save_error: "Read-only file system" });
+  fireEvent.click(screen.getByRole("button", { name: "Close without saving" }));
+  expect(screen.getByRole("alertdialog", { name: "Close review without saving" })).toBeTruthy();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Close without saving" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard and close" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "discard" }));
+});
+
 it("preserves a failed edit and blocks duplicate actions while the command is pending", async () => {
   const onAct = vi.fn(async () => false);
   const { update } = mount(view, onAct);

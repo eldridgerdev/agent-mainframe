@@ -237,8 +237,10 @@ save overall feedback. Developer notes and saved line threads/suggestions are
 shown alongside unified or side-by-side diffs. **Pause review** preserves progress
 in the same format the TUI resumes; reopening either interface continues it.
 Unsaved form edits require explicit discard before leaving, and failed saves
-retain edits with **Retry save**. **Refresh changes** reloads the diff and clears
-approvals and verdict-undo entries for changed patches; **Reload
+retain edits with **Retry save**, or **Close without saving** when the save
+cannot succeed. **Refresh changes** reloads the diff and clears
+approvals and verdict-undo entries for changed patches, and reopening a paused
+review drops approvals whose patch changed meanwhile; **Reload
 saved review** adopts progress changed in another interface. Edit a given review
 in one interface at a time; detected external saves block edits until reload.
 Line-thread editing, walkthroughs, AI questions/co-review, suggestion application,

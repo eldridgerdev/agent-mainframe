@@ -25,13 +25,14 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   }
   function request(action: ReviewAction | "cancel") {
     if (busy) return;
-    if (dirty || (action !== "cancel" && action.kind === "reload" && view.save_error)) setPending(action);
+    if (dirty || (action !== "cancel" && (action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
     else void run(action);
   }
   function edit(kind: Editor["kind"]) {
     if (busy || dirty) return;
     const text = kind === "general" ? view.general_feedback : kind === "reject" ? file?.feedback ?? "" : file?.comment?.text ?? "";
-    const severity = kind === "reject" ? file?.severity ?? "suggestion" : file?.comment?.severity ?? "suggestion";
+    // Like the TUI, a fresh rejection is a must-fix signal; an existing one keeps its severity.
+    const severity = kind === "reject" ? (file?.verdict === "rejected" ? file.severity : "blocker") : file?.comment?.severity ?? "suggestion";
     setEditor({ kind, path: file?.diff.path ?? "", text, severity, original: text, originalSeverity: severity });
   }
   async function submit() {
@@ -47,12 +48,19 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {busy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
-    {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button></div>}
-    {pending && <div className="review-confirm" role="alertdialog" aria-label="Discard unsaved review draft">
-      <p>Discard unsaved edits and continue?</p>
-      <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and continue</button>
-      <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
-    </div>}
+    {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
+      <button className="btn btn-ghost" disabled={busy || pending !== null} onClick={() => request({ kind: "discard" })}>Close without saving</button></div>}
+    {pending && (pending !== "cancel" && pending.kind === "discard"
+      ? <div className="review-confirm" role="alertdialog" aria-label="Close review without saving">
+        <p>Close without saving? Changes since the last successful save are lost.</p>
+        <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and close</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
+      </div>
+      : <div className="review-confirm" role="alertdialog" aria-label="Discard unsaved review draft">
+        <p>Discard unsaved edits and continue?</p>
+        <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and continue</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
+      </div>)}
     <div className="diff-controls">
       <Field label="Filter review files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
       <Field label="Review layout"><select value={split ? "split" : "unified"} onChange={(event) => setSplit(event.target.value === "split")}><option value="unified">Unified</option><option value="split">Side by side</option></select></Field>

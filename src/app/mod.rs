@@ -949,6 +949,10 @@ pub struct App {
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
+    /// Set while an interface that saves review progress itself (and must
+    /// report whether the save succeeded) drives the shared review actions, so
+    /// their best-effort `persist_review_progress` does not write a second time.
+    pub(crate) defer_review_progress_persist: bool,
     /// Stashed pre-call notice while the user is in the override manager it
     /// opened (`e`); restored when the manager closes.
     pub precall_return: Option<Box<precall::PendingPrecall>>,
@@ -2539,6 +2543,7 @@ impl App {
             db: Some(db),
             store_version: Some(store_version),
             precall_cleared: None,
+            defer_review_progress_persist: false,
             precall_return: None,
             config,
             active_extension,
@@ -2797,6 +2802,7 @@ impl App {
             db: None,
             store_version: None,
             precall_cleared: None,
+            defer_review_progress_persist: false,
             precall_return: None,
             config: AppConfig {
                 // Whether a test warns before starting an agent must not

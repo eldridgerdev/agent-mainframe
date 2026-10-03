@@ -3,7 +3,11 @@
 // page). API routes are never cached — status is live or nothing.
 "use strict";
 
-const CACHE = "amf-remote-v5";
+// v6: drops any tunnel error page an earlier worker cached as the shell.
+const CACHE = "amf-remote-v6";
+// How long a page load waits on AMF before an installed app opens from its
+// cached shell instead.
+const NETWORK_TIMEOUT_MS = 4000;
 const SHELL = ["/", "/app.js", "/app.css", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -26,18 +30,44 @@ self.addEventListener("fetch", (event) => {
   const key = event.request.mode === "navigate" ? "/" : url.pathname;
   if (!SHELL.includes(key)) return;
 
-  // Network first, so a newer AMF build's shell replaces the cached one;
-  // the cache is only the offline fallback.
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE).then((cache) => cache.put(key, copy));
-        return response;
-      })
-      .catch(() => caches.match(key)),
-  );
+  event.respondWith(networkFirst(event.request, key));
 });
+
+// Network first, so a newer AMF build's shell replaces the cached one; the
+// cache is only the fallback. A fallback that waited for the network to
+// *fail* would rarely come: an AMF whose tailnet peer is offline doesn't
+// refuse, it just never answers, and the installed app sat on its splash
+// screen until the OS gave up minutes later. So the network gets
+// NETWORK_TIMEOUT_MS before a cached shell is served instead — which then
+// says "Can't reach AMF" itself. A tunnel's error page (`tailscale serve`
+// answers 502 for an AMF that is down) is likewise passed over for the
+// cache, and never cached.
+async function networkFirst(request, key) {
+  const network = fetch(request).then((response) => {
+    if (response.ok) {
+      const copy = response.clone();
+      caches.open(CACHE).then((cache) => cache.put(key, copy));
+    }
+    return response;
+  });
+  // Lost the race: a late failure has nobody left to report to.
+  network.catch(() => {});
+
+  let answer = null;
+  try {
+    answer = await Promise.race([
+      network,
+      new Promise((resolve) => setTimeout(resolve, NETWORK_TIMEOUT_MS, null)),
+    ]);
+  } catch { /* failed outright: fall back below */ }
+  if (answer?.ok) return answer;
+
+  const cached = await caches.match(key);
+  if (cached) return cached;
+  // Nothing cached yet (first visit): the network is all there is, so keep
+  // waiting on it, error page or not.
+  return answer ?? network;
+}
 
 // Payload from `crate::remote_push::PushMessage`: { title, body, tag }.
 self.addEventListener("push", (event) => {

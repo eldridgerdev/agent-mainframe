@@ -8,8 +8,8 @@ use ratatui::{
 
 use crate::app::remote_tailscale::{RemoteTailscaleState, SetupStep, StepState};
 use crate::app::{
-    App, PairingDialogStatus, PairingDialogView, PairingUrlSource, RemoteDevicesListState,
-    RemotePairingState,
+    App, PairingDialogStatus, PairingDialogView, PairingReach, PairingUrlSource,
+    RemoteDevicesListState, RemotePairingState,
 };
 use crate::tailscale::{ServeOutcome, TailscaleStatus};
 use crate::theme::Theme;
@@ -135,6 +135,9 @@ pub fn draw_remote_pairing_dialog(frame: &mut Frame, app: &App, state: &RemotePa
             ))
             .alignment(Alignment::Center),
         );
+    }
+    for text in reach_warning(app, state) {
+        lines.push(Line::from(Span::styled(text, warning)).alignment(Alignment::Center));
     }
     for line in serve_note_lines(tailscale, theme) {
         lines.push(line.alignment(Alignment::Center));
@@ -283,6 +286,24 @@ fn hint_spans(keys: &[(&str, &str)], theme: &Theme) -> Line<'static> {
         spans.push(Span::styled(format!(" {label}{gap}"), label_style));
     }
     Line::from(spans)
+}
+
+/// The address failed its `/health` check: say what was found, then what to
+/// do about it. Nothing while it passes or is still being checked — the QR
+/// is the normal case and needs no caption.
+fn reach_warning(app: &App, state: &RemotePairingState) -> Vec<String> {
+    let found = match &state.reach {
+        PairingReach::Unreachable(why) => {
+            format!("⚠ This address doesn't answer from this computer ({why}).")
+        }
+        PairingReach::NotAmf(what) => format!("⚠ Something answers here, but not AMF ({what})."),
+        PairingReach::NotChecked | PairingReach::Checking | PairingReach::Reachable => {
+            return Vec::new();
+        }
+    };
+    std::iter::once(found)
+        .chain(app.pairing_reach_advice())
+        .collect()
 }
 
 /// What a `t` (tailscale serve) is doing or did, when it needs saying.
@@ -696,6 +717,33 @@ mod tests {
             &rows,
             "No other device on your tailnet can reach this computer."
         ));
+    }
+
+    #[test]
+    fn warns_when_the_configured_address_does_not_answer() {
+        let mut app = app();
+        app.config.remote_public_url = Some("https://pc.tail1.ts.net".into());
+        app.open_pairing_dialog_for_test("127.0.0.1:47800".parse().unwrap());
+        app.feed_tailscale_probe(TailscaleStatus::NeedsLogin);
+        app.feed_pairing_reach(
+            "https://pc.tail1.ts.net",
+            PairingReach::Unreachable("timed out".into()),
+        );
+        app.poll_remote_server_bg();
+        let rows = screen(&app);
+        assert!(shows(
+            &rows,
+            "This address doesn't answer from this computer (timed out)."
+        ));
+        assert!(shows(
+            &rows,
+            "Tailscale is logged out here: run `tailscale up`."
+        ));
+
+        // Fixed elsewhere: the next answer clears the warning.
+        app.feed_pairing_reach("https://pc.tail1.ts.net", PairingReach::Reachable);
+        app.poll_remote_server_bg();
+        assert!(!shows(&screen(&app), "doesn't answer"));
     }
 
     #[test]

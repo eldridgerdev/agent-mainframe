@@ -557,20 +557,7 @@ pub fn act(
                     app.refresh_diff_viewer();
                     app.complete_diff_viewer_loading();
                     if let AppMode::DiffViewer(s) = &mut app.mode {
-                        let unchanged = |path: &str| {
-                            previous_files.iter().any(|old| {
-                                old.path == path
-                                    && s.files.iter().any(|new| {
-                                        new.path == path
-                                            && new.patch == old.patch
-                                            && new.status == old.status
-                                    })
-                            })
-                        };
-                        s.decisions.retain(|path, verdict| {
-                            !matches!(verdict, ReviewDecision::Approve) || unchanged(path)
-                        });
-                        s.verdict_undo.retain(|entry| unchanged(&entry.path));
+                        s.forget_verdicts_for_changed_patches(&previous_files);
                     }
                 }
                 _ => {}
@@ -766,16 +753,23 @@ mod tests {
         assert_eq!(applied.files[0].verdict, "undecided");
         assert!(applied.files[0].line_comments.is_empty());
         let source = std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap();
+        // Resubmit against the current revision, so the refusal has to come
+        // from the consumed thread rather than the stale-revision guard.
+        let repeated = act(
+            &mut gui,
+            &applied.workflow_id,
+            applied.revision,
+            apply(start, end),
+        )
+        .unwrap_err();
+        assert_eq!(repeated.kind, GuiErrorKind::Conflict);
         assert_eq!(
-            act(
-                &mut gui,
-                &view.workflow_id,
-                view.revision,
-                apply(start, end)
-            )
-            .unwrap_err()
-            .kind,
-            GuiErrorKind::Conflict
+            repeated.message,
+            "Kept suggestion is no longer at this anchor"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap(),
+            source
         );
         let undone = action(&mut gui, &applied, ReviewAction::Undo);
         assert_eq!(undone.files[0].verdict, "undecided");
@@ -783,6 +777,37 @@ mod tests {
             std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap(),
             source
         );
+    }
+
+    #[test]
+    fn applying_also_invalidates_approvals_of_files_changed_outside_amf() {
+        let (dir, mut gui, target) = fixture();
+        std::fs::write(dir.path().join("repo/old.txt"), "other change\n").unwrap();
+        let initial = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&initial, 8, 8);
+        let view = suggested(&mut gui, &initial, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "old.txt".into(),
+            },
+        );
+        // Another file moves after it was approved; applying a suggestion to
+        // `code.txt` reloads its new patch, so the old approval must go too.
+        std::fs::write(dir.path().join("repo/old.txt"), "edited elsewhere\n").unwrap();
+        let applied = action(&mut gui, &view, apply(start, end));
+        let old = applied
+            .files
+            .iter()
+            .find(|f| f.diff.path == "old.txt")
+            .unwrap();
+        assert_eq!(old.verdict, "undecided");
+        assert!(old.diff.patch.contains("+edited elsewhere"));
+        let AppMode::DiffViewer(state) = &gui.app_for_workflow().mode else {
+            panic!("review should remain open")
+        };
+        assert!(state.verdict_undo.is_empty());
     }
 
     #[test]

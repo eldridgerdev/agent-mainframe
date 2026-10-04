@@ -1005,6 +1005,25 @@ impl DiffViewerState {
         });
     }
 
+    /// After a reload, drop approvals and undo entries for every file whose
+    /// patch (or status) differs from `previous`, the files it replaced. An
+    /// approval describes the patch it was given on; a file that changed —
+    /// whether AMF wrote it or something outside AMF did — needs a new look.
+    pub fn forget_verdicts_for_changed_patches(&mut self, previous: &[crate::diff::DiffFile]) {
+        let files = &self.files;
+        let unchanged = |path: &str| {
+            previous.iter().any(|old| {
+                old.path == path
+                    && files.iter().any(|new| {
+                        new.path == path && new.patch == old.patch && new.status == old.status
+                    })
+            })
+        };
+        self.decisions
+            .retain(|path, verdict| !matches!(verdict, ReviewDecision::Approve) || unchanged(path));
+        self.verdict_undo.retain(|entry| unchanged(&entry.path));
+    }
+
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a
     /// blocker rejection or any kept (non-draft) blocker line comment. Feeds the
     /// `Blockers` file filter and the GitHub review-event escalation.

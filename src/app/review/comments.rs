@@ -576,10 +576,23 @@ impl App {
         self.persist_review_progress();
 
         if !report.applied.is_empty() {
+            let previous_files = match &self.mode {
+                AppMode::DiffViewer(state) => state.files.clone(),
+                _ => Vec::new(),
+            };
             // Re-load immediately so subsequent comments and the finish snapshot
             // use the source that was actually written, not the pre-apply patch.
             self.refresh_diff_viewer();
             self.complete_diff_viewer_loading();
+            // The reload also picks up any other file that changed outside AMF
+            // since it was approved; its approval is just as stale. A failed
+            // reload has no files to compare, and the written files were
+            // already cleared above.
+            if let AppMode::DiffViewer(state) = &mut self.mode
+                && state.error.is_none()
+            {
+                state.forget_verdicts_for_changed_patches(&previous_files);
+            }
             self.persist_review_progress();
         }
         report

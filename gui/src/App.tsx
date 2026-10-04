@@ -63,6 +63,7 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import TerminalPane from "./TerminalPane";
+import PromptComposer from "./PromptComposer";
 import DiffPanel from "./DiffPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
@@ -110,11 +111,6 @@ type View =
   | { kind: "project"; projectId: string }
   | { kind: "feature"; projectId: string; featureId: string };
 
-interface Draft {
-  key: string;
-  text: string;
-}
-
 const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Out of date",
@@ -136,6 +132,18 @@ const byStatus = (features: Feature[]) =>
 const sessionKey = (target: { feature_id: string; session_id: string }) =>
   `${target.feature_id}:${target.session_id}`;
 
+// Joins a handoff's seed onto a draft that already has unsent text.
+const DRAFT_SEPARATOR = "\n\n";
+
+/** Drops entries whose key is not in `live`, keeping the same object when nothing goes. */
+function pruneKeys<T>(current: Record<string, T>, live: Set<string>): Record<string, T> {
+  const stale = Object.keys(current).filter((key) => !live.has(key));
+  if (stale.length === 0) return current;
+  const next = { ...current };
+  for (const key of stale) delete next[key];
+  return next;
+}
+
 /// Workspace shell: sidebar navigation (global TODOs, projects, features),
 /// a main view for the selection, and modals for creation, approvals and
 /// the plan interview. Id resolution, idempotency, and terminal correctness
@@ -152,8 +160,11 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [sendingPrompt, setSendingPrompt] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
+  const promptSendsInFlight = useRef(new Set<string>());
+  const [composerFocusKey, setComposerFocusKey] = useState<string | null>(null);
+  const composerFocusHandled = useCallback(() => setComposerFocusKey(null), []);
   const [planMinimized, setPlanMinimized] = useState(false);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<string | null>(null);
   const [recoveryDialog, setRecoveryDialog] = useState<{
@@ -297,6 +308,23 @@ export default function App() {
     });
   }, [projects]);
 
+  // A closed session or deleted feature takes its unsent draft with it, so a
+  // reused key can never resurrect stale text. A just-launched session the
+  // snapshot hasn't caught up with yet keeps its handoff draft.
+  const workspaceData = workspace.data;
+  useEffect(() => {
+    if (!workspaceData) return;
+    const live = new Set(workspaceData.projects.flatMap((project) => project.features.flatMap(
+      (feature) => feature.sessions.map((session) =>
+        sessionKey({ feature_id: feature.id, session_id: session.id })))));
+    for (const [featureId, sessionId] of Object.entries(pendingSessionByFeature)) {
+      live.add(sessionKey({ feature_id: featureId, session_id: sessionId }));
+    }
+    setDrafts((current) => pruneKeys(current, live));
+    setSendingPrompts((current) => pruneKeys(current, live));
+    setComposerFocusKey((current) => current !== null && !live.has(current) ? null : current);
+  }, [workspaceData, pendingSessionByFeature]);
+
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
@@ -363,7 +391,55 @@ export default function App() {
       delete next[target.feature_id];
       return next;
     }), PENDING_SESSION_GRACE_MS);
-    if (draftPrompt !== undefined) setDraft({ key: sessionKey(target), text: draftPrompt });
+    if (draftPrompt !== undefined) {
+      const key = sessionKey(target);
+      setDrafts((current) => ({
+        ...current,
+        // A handoff to an existing session must preserve its unsent message.
+        [key]: current[key] ? `${current[key]}${DRAFT_SEPARATOR}${draftPrompt}` : draftPrompt,
+      }));
+      setComposerFocusKey(key);
+    }
+  }
+
+  function changeDraft(target: SessionTarget, text: string) {
+    const key = sessionKey(target);
+    if (promptSendsInFlight.current.has(key)) return;
+    setDrafts((current) => ({ ...current, [key]: text }));
+  }
+
+  async function sendDraft(target: SessionTarget, text: string) {
+    const key = sessionKey(target);
+    if (!text.trim() || promptSendsInFlight.current.has(key)) return;
+    // Lock synchronously: repeated keyboard/click events can arrive before
+    // React renders the pending state.
+    promptSendsInFlight.current.add(key);
+    setSendingPrompts((current) => ({ ...current, [key]: true }));
+    try {
+      await terminalSubmitPrompt(target, text);
+      // Completion belongs to the originating session, even after navigation.
+      // Edits are locked while sending, so the draft can only have grown by a
+      // handoff appending its seed: remove the delivered text and keep that.
+      setDrafts((current) => {
+        const draft = current[key];
+        if (draft === undefined || !draft.startsWith(text)) return current;
+        const rest = draft.slice(text.length);
+        return {
+          ...current,
+          [key]: rest.startsWith(DRAFT_SEPARATOR) ? rest.slice(DRAFT_SEPARATOR.length) : rest,
+        };
+      });
+    } catch (err) {
+      reportError(err);
+    } finally {
+      promptSendsInFlight.current.delete(key);
+      setSendingPrompts((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
   }
 
   useEffect(() => {
@@ -1031,23 +1107,12 @@ export default function App() {
               unfinished: null,
             })}
             {...lifecycle(selectedProject.id, selectedFeature)}
-            draft={draft}
-            onDraftChange={(text) => setDraft((current) => current && { ...current, text })}
-            onDiscardDraft={() => setDraft(null)}
-            sendingPrompt={sendingPrompt}
-            onSendDraft={(target, text) => {
-              setSendingPrompt(true);
-              void (async () => {
-                try {
-                  await terminalSubmitPrompt(target, text);
-                  setDraft(null);
-                } catch (err) {
-                  reportError(err);
-                } finally {
-                  setSendingPrompt(false);
-                }
-              })();
-            }}
+            drafts={drafts}
+            onDraftChange={changeDraft}
+            sendingPrompts={sendingPrompts}
+            onSendDraft={(target, text) => void sendDraft(target, text)}
+            composerFocusKey={composerFocusKey}
+            onComposerFocusHandled={composerFocusHandled}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "worktree", project_id: selectedProject.id, feature_id: selectedFeature.id }}
@@ -1505,11 +1570,12 @@ function FeatureView({
   stopping,
   onStart,
   onStop,
-  draft,
+  drafts,
   onDraftChange,
-  onDiscardDraft,
-  sendingPrompt,
+  sendingPrompts,
   onSendDraft,
+  composerFocusKey,
+  onComposerFocusHandled,
   todoPanel,
 }: Lifecycle & {
   project: Project;
@@ -1534,11 +1600,13 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
-  draft: Draft | null;
-  onDraftChange: (text: string) => void;
-  onDiscardDraft: () => void;
-  sendingPrompt: boolean;
+  drafts: Record<string, string>;
+  onDraftChange: (target: SessionTarget, text: string) => void;
+  sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
+  /** The session whose composer a handoff just seeded and should focus. */
+  composerFocusKey: string | null;
+  onComposerFocusHandled: () => void;
   todoPanel: ReactNode;
 }) {
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
@@ -1557,10 +1625,16 @@ function FeatureView({
     feature_id: feature.id,
     session_id: activeTab,
   };
-  const activeDraft = target && draft?.key === sessionKey(target) ? draft : null;
+  const activeKey = target ? sessionKey(target) : null;
+  const [connectedKey, setConnectedKey] = useState<string | null>(null);
+  const onTerminalReady = useCallback((ready: boolean) => {
+    setConnectedKey(ready ? activeKey : null);
+  }, [activeKey]);
   const isRunning = (session: FeatureSession) => sessionRunning(feature, session, stoppedSessionIds);
   const activeSession = sessions.find((session) => session.id === activeTab);
   const activeSessionRunning = activeSession !== undefined && isRunning(activeSession);
+  const isAgent = activeSession !== undefined &&
+    ["claude", "codex", "opencode", "pi"].includes(activeSession.kind);
   const activeLifecycle = activeSession && sessionLifecycle(activeSession);
 
   return (
@@ -1728,40 +1802,19 @@ function FeatureView({
         )}
         {target && !isStopped && (activeSessionRunning || !activeSession) && (
           <div className="session">
-            <TerminalPane key={sessionKey(target)} target={target} />
-            {activeDraft && (
-              <div className="composer">
-                <div className="composer-head">
-                  <Icon name="sparkles" />
-                  <strong>Draft prompt</strong>
-                  <span className="muted small">Review and edit before sending.</span>
-                  <span className="tabs-spacer" />
-                  <button className="btn btn-sm btn-ghost" onClick={onDiscardDraft}>Discard</button>
-                </div>
-                <textarea
-                  aria-label="Draft prompt"
-                  value={activeDraft.text}
-                  onChange={(event) => onDraftChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && activeDraft.text.trim()) {
-                      event.preventDefault();
-                      onSendDraft(target, activeDraft.text);
-                    }
-                  }}
-                  rows={5}
-                />
-                <div className="composer-foot">
-                  <span className="muted small"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send</span>
-                  <button
-                    className="btn btn-primary"
-                    disabled={sendingPrompt || !activeDraft.text.trim()}
-                    onClick={() => onSendDraft(target, activeDraft.text)}
-                  >
-                    {sendingPrompt ? <Spinner /> : <Icon name="send" />}
-                    {sendingPrompt ? "Sending…" : "Send prompt"}
-                  </button>
-                </div>
-              </div>
+            <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
+            {isAgent && (
+              <PromptComposer
+                key={`composer:${sessionKey(target)}`}
+                text={drafts[sessionKey(target)] ?? ""}
+                sending={sendingPrompts[sessionKey(target)] ?? false}
+                ready={connectedKey === sessionKey(target)}
+                focusRequested={composerFocusKey === sessionKey(target)}
+                onFocusHandled={onComposerFocusHandled}
+                onChange={(text) => onDraftChange(target, text)}
+                onClear={() => onDraftChange(target, "")}
+                onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
+              />
             )}
           </div>
         )}

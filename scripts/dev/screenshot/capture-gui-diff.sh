@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="${1:?Pass an output directory}"
+CAPTURE_RUNNER="${AMF_GUI_CAPTURE_RUNNER:-$SCRIPT_DIR/capture-gui-diff.py}"
 
 # The capture-only CI job checks out the requested ref and holds no Pages token.
 # Install native GUI dependencies here, so TUI-only captures stay lightweight.
@@ -26,9 +27,9 @@ if [[ "${CI:-}" == "true" || -z "${DISPLAY:-}" ]]; then
     WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
     WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
     LIBGL_ALWAYS_SOFTWARE=1 \
-    /usr/bin/python3 "$SCRIPT_DIR/capture-gui-diff.py" "$OUT_DIR"
+    /usr/bin/python3 "$CAPTURE_RUNNER" "$OUT_DIR"
 else
-  GDK_BACKEND=x11 /usr/bin/python3 "$SCRIPT_DIR/capture-gui-diff.py" "$OUT_DIR"
+  GDK_BACKEND=x11 /usr/bin/python3 "$CAPTURE_RUNNER" "$OUT_DIR"
 fi
 
 # Keep the TUI setup assertion internal. Publish only the native GUI frames.

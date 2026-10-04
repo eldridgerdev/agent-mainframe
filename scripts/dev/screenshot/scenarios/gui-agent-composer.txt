@@ -1,0 +1,6 @@
+# Native GUI composer proof with a private database, checkout and tmux server.
+# The two lightweight harness fixtures never invoke paid agents.
+note:The isolated TUI confirms the screenshot harness is ready before the native GUI capture starts.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-composer.sh" "$OUT_DIR"

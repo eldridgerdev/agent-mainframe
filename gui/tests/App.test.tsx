@@ -8,17 +8,173 @@ import type { Feature, FeatureSession, WorkspaceSnapshot } from "../src/api";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
-vi.mock("../src/TerminalPane", () => ({ default: () => null }));
+const terminal = vi.hoisted(() => ({ ready: true }));
+vi.mock("../src/TerminalPane", async () => {
+  const { useEffect } = await import("react");
+  return { default: ({ onReadyChange }: { onReadyChange: (ready: boolean) => void }) => {
+    useEffect(() => { onReadyChange(terminal.ready); }, [onReadyChange]);
+    return <button onClick={() => onReadyChange(true)}>Connect terminal</button>;
+  } };
+});
 vi.mock("../src/TodoPanel", () => ({ default: () => null }));
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  terminal.ready = true;
 });
 
 function session(id: string, kind = "terminal"): FeatureSession {
   return { id, kind, label: id, tmux_window: id };
 }
+
+const promptCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "terminal_submit_prompt");
+const draftInput = () => screen.getByRole("textbox", { name: "Draft prompt" }) as HTMLTextAreaElement;
+
+it.each(["claude", "codex", "opencode", "pi"])("composes locally for %s and stays available after sending", async (kind) => {
+  const client = await openFeature([session("Agent", kind)]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) =>
+    command === "terminal_submit_prompt" ? Promise.resolve() : original(command, args, options));
+  // Opening a tab must not pull keyboard focus away from the terminal.
+  expect(document.activeElement).not.toBe(draftInput());
+  const text = "Please fix this.\n\nKeep Unicode: café 世界 🚀";
+  fireEvent.change(draftInput(), { target: { value: text } });
+  fireEvent.keyDown(draftInput(), { key: "Enter" });
+  fireEvent.keyDown(draftInput(), { key: "Enter", shiftKey: true });
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
+  fireEvent.keyDown(draftInput(), { key: "Enter", ctrlKey: true });
+  await waitFor(() => expect(draftInput().value).toBe(""));
+  expect(promptCalls()).toEqual([["terminal_submit_prompt", { key: "feature:Agent", text }]]);
+  fireEvent.change(draftInput(), { target: { value: "Next message" } });
+  fireEvent.keyDown(draftInput(), { key: "Enter", metaKey: true });
+  await waitFor(() => expect(promptCalls()).toHaveLength(2));
+  client.clear();
+});
+
+it("retains separate drafts across tabs, TODOs, workspace navigation and snapshot refreshes", async () => {
+  const client = await openFeature([session("First", "claude"), session("Second", "codex")]);
+  fireEvent.change(draftInput(), { target: { value: "First draft" } });
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  expect(draftInput().value).toBe("");
+  fireEvent.change(draftInput(), { target: { value: "Second draft" } });
+  fireEvent.click(screen.getByRole("tab", { name: "TODOs" }));
+  expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull();
+  fireEvent.click(screen.getByRole("tab", { name: /First/ }));
+  expect(draftInput().value).toBe("First draft");
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull();
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  fireEvent.click(screen.getByRole("button", { name: "my-feat", exact: true }));
+  expect(draftInput().value).toBe("First draft");
+  fireEvent.click(screen.getByRole("button", { name: "Clear", exact: true }));
+  expect(draftInput().value).toBe("");
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  expect(draftInput().value).toBe("Second draft");
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it("drops a closed session's draft so a reused session id starts empty", async () => {
+  const client = await openFeature([session("First", "claude"), session("Second", "codex")]);
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  fireEvent.change(draftInput(), { target: { value: "Unsent" } });
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  const feature = snapshot.projects[0].features[0];
+  const without = (sessions: FeatureSession[]): WorkspaceSnapshot => ({
+    ...snapshot, projects: [{ ...snapshot.projects[0], features: [{ ...feature, sessions }] }],
+  });
+  act(() => client.setQueryData(["workspace-snapshot"], without([feature.sessions[0]])));
+  await waitFor(() => expect(screen.queryByRole("tab", { name: /Second/ })).toBeNull());
+  act(() => client.setQueryData(["workspace-snapshot"], without(feature.sessions)));
+  fireEvent.click(await screen.findByRole("tab", { name: /Second/ }));
+  expect(draftInput().value).toBe("");
+  client.clear();
+});
+
+it("locks a pending send, retains failed drafts and allows retry", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let rejectSend!: (error: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "terminal_submit_prompt"
+    ? new Promise((_, reject) => { rejectSend = reject; }) : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep on failure" } });
+  const send = screen.getByRole("button", { name: "Send prompt" });
+  fireEvent.click(send);
+  fireEvent.click(send);
+  fireEvent.keyDown(draftInput(), { key: "Enter", ctrlKey: true });
+  fireEvent.change(draftInput(), { target: { value: "An edit during send" } });
+  expect(promptCalls()).toHaveLength(1);
+  expect(draftInput().readOnly).toBe(true);
+  expect(draftInput().value).toBe("Keep on failure");
+  expect((screen.getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => rejectSend({ kind: "not_found", message: "Terminal disconnected" }));
+  expect(await screen.findByText("Terminal disconnected")).toBeTruthy();
+  expect(draftInput().value).toBe("Keep on failure");
+  expect(draftInput().readOnly).toBe(false);
+  vi.mocked(invoke).mockImplementation((command, args, options) =>
+    command === "terminal_submit_prompt" ? Promise.resolve() : original(command, args, options));
+  fireEvent.click(screen.getByRole("button", { name: "Send prompt" }));
+  await waitFor(() => expect(draftInput().value).toBe(""));
+  expect(promptCalls()).toHaveLength(2);
+  client.clear();
+});
+
+it("clears only the originating draft when a send completes after switching sessions", async () => {
+  const client = await openFeature([session("First", "claude"), session("Second", "pi")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finishSend!: () => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "terminal_submit_prompt"
+    ? new Promise<void>((resolve) => { finishSend = resolve; }) : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "First message" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send prompt" }));
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  fireEvent.change(draftInput(), { target: { value: "Second message" } });
+  expect(draftInput().readOnly).toBe(false);
+  await act(async () => finishSend());
+  expect(draftInput().value).toBe("Second message");
+  fireEvent.click(screen.getByRole("tab", { name: /First/ }));
+  expect(draftInput().value).toBe("");
+  expect(promptCalls()).toEqual([["terminal_submit_prompt", { key: "feature:First", text: "First message" }]]);
+  client.clear();
+});
+
+it("blocks empty prompts, unconnected sends and IME confirmation", async () => {
+  terminal.ready = false;
+  const client = await openFeature([session("Agent", "claude")]);
+  fireEvent.change(draftInput(), { target: { value: "A message" } });
+  fireEvent.keyDown(draftInput(), { key: "Enter", ctrlKey: true });
+  expect(promptCalls()).toHaveLength(0);
+  expect((screen.getByRole("button", { name: "Send prompt" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Connect terminal" }));
+  fireEvent.keyDown(draftInput(), { key: "Enter", ctrlKey: true, isComposing: true });
+  fireEvent.keyDown(draftInput(), { key: "Enter", metaKey: true, keyCode: 229 });
+  expect(promptCalls()).toHaveLength(0);
+  fireEvent.change(draftInput(), { target: { value: " \n\t" } });
+  fireEvent.keyDown(draftInput(), { key: "Enter", ctrlKey: true });
+  expect(promptCalls()).toHaveLength(0);
+  expect((screen.getByRole("button", { name: "Send prompt" }) as HTMLButtonElement).disabled).toBe(true);
+  client.clear();
+});
+
+it.each(["terminal", "nvim", "custom"])("keeps %s tabs using their terminal input", async (kind) => {
+  const client = await openFeature([session("Direct", kind)]);
+  expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull();
+  client.clear();
+});
+
+it("hides the composer on a stopped agent and restores its draft when restarted", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  fireEvent.change(draftInput(), { target: { value: "After restart" } });
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  act(() => client.setQueryData(["workspace-snapshot"], { ...snapshot, stopped_session_ids: ["Agent"] }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull());
+  act(() => client.setQueryData(["workspace-snapshot"], snapshot));
+  await waitFor(() => expect(draftInput().value).toBe("After restart"));
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
 
 async function openFeature(
   sessions: FeatureSession[],

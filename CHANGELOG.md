@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Compose agent prompts in the desktop app.** Claude, Codex, OpenCode and Pi
+  tabs now include a local composer below the terminal. Type or paste a message,
+  use Enter for newlines, then send with **Ctrl/Cmd+Enter** or **Send prompt**.
+  Each session keeps its draft while the window is open, including across tab
+  switches. Failed sends keep the text for retry, and repeated send actions
+  cannot submit the same pending message twice. No migration is required.
 - **Apply saved suggestions in desktop Final Review.** Confirm **Apply suggestion
   locally** to write a kept replacement to your checkout, resolve its thread and
   refresh the diff. Changed files require review again, and application history

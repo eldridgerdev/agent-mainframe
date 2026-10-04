@@ -181,6 +181,16 @@ external workspace and TODO changes every two seconds. Each feature page has
 one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
+
+Agent tabs include **Compose prompt** below the terminal. Type or paste locally;
+**Enter** adds a line, and **Ctrl/Cmd+Enter** or **Send prompt** sends the whole
+message through tmux's bracketed-paste path. Each session keeps its own unsent
+draft while this GUI window stays open, including when you switch tabs or leave
+the feature page. Failed sends keep the draft for retry. **Clear** clears only
+the current session's draft. TODO, planning and Learning handoffs fill this same
+composer, appending to any existing draft. Click the terminal whenever you need
+to interact directly with the harness; shell and editor tabs use direct input.
+
 Use **New session** on a feature page to start another agent, terminal, or
 Neovim session. You can name it or use the next default name; the new tab opens
 when creation succeeds. The picker shows the agents allowed for that project.

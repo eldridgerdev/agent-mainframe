@@ -15,6 +15,7 @@ Keep them current as the staged GUI scope grows.
 | --- | --- |
 | Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
 | Limited | VS Code and configured custom sessions still require the TUI session picker. |
+| Available | Local prompt composer on Claude, Codex, OpenCode and Pi tabs. Enter adds a line; Ctrl/Cmd+Enter or Send prompt submits the complete draft through tmux bracketed paste. Drafts stay per session through navigation and refresh while the window is open, failed sends retain text, and duplicate sends are blocked. TODO, planning and Learning handoffs use the same composer. Shell/editor input stays direct. |
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |
 | Available | Script-only and choice-prompting `on_worktree_created` hooks during ordinary creation, direct TODO creation, Full/Quick creation-time planning and TODO planning. The creation forms load project-specific options before submission; missing or invalid choices are rejected before creating a checkout or reserving a TODO. Hooks finish before the interview opens; cancelling that interview keeps the already-created worktree without launching its agent. |
@@ -65,6 +66,21 @@ the complete interface for workflows marked Planned.
 ## Remaining GUI parity priority
 
 Completed increments and remaining work, in priority order:
+
+- [x] **Agent prompt composer (user-requested priority, 2026-10-04).** All four
+  agent tabs offer local drafting and explicit submission. Drafts belong to
+  sessions and survive navigation and refresh while the GUI window stays open.
+  Automated interactions cover Unicode/multiline text, send failures, duplicate
+  prevention, attachment readiness and workflow seeds. Four asserted native
+  GUI frames verify drafting without sending, independent Claude/Codex drafts,
+  restoration after tab switching and exactly one complete message delivered
+  through real tmux IPC. Paid-harness runs and macOS validation remain open.
+  This explicit request takes priority over the general parity ordering below.
+
+  Native proof is reproducible with
+  [`gui-agent-composer.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-composer.txt).
+  It preserves HOME and uses a private database and tmux server with lightweight
+  harness fixtures; no paid agents or real AMF sessions are started.
 
 - [x] **Final Review line/range comments and suggestion editing.** Select lines
   in unified or split diffs, edit prose and replacement code, resolve/reopen

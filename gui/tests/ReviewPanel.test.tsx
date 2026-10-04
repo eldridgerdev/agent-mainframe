@@ -8,14 +8,14 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
-  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null,
+  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [],
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
       { kind: "removed", text: "-before", old_line: 1, new_line: null },
       { kind: "added", text: "+after", old_line: null, new_line: 1 },
     ] }] }, verdict: "rejected", feedback: "Needs work", severity: "blocker", changed_since_last: true,
     notes: "Developer explanation", comment: { text: "Saved question", severity: "question", resolved: false, carried: true },
-    line_comments: [{ start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, editable: false, anchor: "line 1", text: "Kept thread", severity: "nit", resolved: false, draft: false, anchor_lost: true, suggestion: "suggested code" }] },
+    line_comments: [{ start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, editable: false, anchor: "line 1", text: "Kept thread", severity: "nit", resolved: false, draft: false, anchor_lost: true, suggestion: "suggested code", apply_blocked: "anchor is no longer present in the current diff" }] },
     { diff: { path: "image.bin", old_path: "old.bin", status: "renamed", additions: 0, deletions: 0, is_binary: true, hunks: [], patch: "rename from old.bin" },
       verdict: "approved", feedback: "", severity: "suggestion", comment: null, notes: null, changed_since_last: false, line_comments: [] }],
 };
@@ -165,6 +165,76 @@ it("resolves and reopens saved file comments and handles an empty review", async
 
 
 const noThreadsView: ReviewView = { ...view, files: [{ ...view.files[0], line_comments: [] }, view.files[1]] };
+
+function applicableView(): ReviewView {
+  return { ...view, files: [{ ...view.files[0], diff: structuredClone(view.files[0].diff), line_comments: [{ ...view.files[0].line_comments[0], editable: true, anchor_lost: false, apply_blocked: null }] }] };
+}
+
+it("confirms a saved local replacement and can cancel without changing source", async () => {
+  const { onAct } = mount(applicableView());
+  fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
+  const confirmation = screen.getByRole("alertdialog", { name: "Apply suggestion locally" });
+  expect(confirmation.textContent).toContain("writes to your checkout");
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel application" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "apply_suggestion", path: "code.rs",
+    start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 } }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+});
+
+it("keeps a refused application visible and blocks duplicate submissions during a write", async () => {
+  const onAct = vi.fn(async () => false);
+  const { update } = mount(applicableView(), onAct);
+  fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledOnce());
+  expect(screen.getByRole("alertdialog", { name: "Apply suggestion locally" })).toBeTruthy();
+  expect(screen.getByText("suggested code")).toBeTruthy();
+  update({ busy: true, error: "File changed; refresh before applying" });
+  expect(screen.getByRole("alert").textContent).toContain("File changed");
+  fireEvent.click(screen.getByRole("button", { name: "Apply replacement" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
+  expect(onAct).toHaveBeenCalledOnce();
+  update({ error: "File changed; refresh before applying" });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel application" }));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh changes" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "refresh" }));
+});
+
+it("shows application blockers and protects unsaved editors and failed progress saves", () => {
+  const { onAct, update } = mount();
+  expect((screen.getByRole("button", { name: "Apply suggestion locally" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Cannot apply locally: anchor is no longer/)).toBeTruthy();
+  update({ view: applicableView() });
+  fireEvent.click(screen.getByRole("button", { name: "Edit suggestion" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Suggested replacement" }), { target: { value: "Unsaved code" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply suggestion locally" }));
+  expect((screen.getByRole("button", { name: "Apply suggestion locally" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
+  update({ view: { ...applicableView(), save_error: "Disk full" } });
+  expect((screen.getByRole("button", { name: "Apply suggestion locally" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("shows persisted application history and the refreshed source without offering the consumed replacement", () => {
+  const applied = applicableView();
+  applied.applied_suggestions = ["code.rs:1"];
+  applied.files[0].verdict = "undecided";
+  applied.files[0].line_comments[0] = { ...applied.files[0].line_comments[0], suggestion: null, resolved: true };
+  applied.files[0].diff.hunks[0].lines[1].text = "+suggested code";
+  mount(applied);
+  expect(screen.getByText("Applied locally (1)")).toBeTruthy();
+  expect(screen.getByText("code.rs:1")).toBeTruthy();
+  expect(screen.getByText(/does not undo source changes/)).toBeTruthy();
+  expect(screen.getByText("+suggested code")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Apply suggestion locally" })).toBeNull();
+});
 
 it("selects a backwards range in unified diff order and submits its canonical base/current anchors", async () => {
   const { onAct } = mount(noThreadsView);

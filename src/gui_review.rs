@@ -45,6 +45,8 @@ pub struct ReviewLineCommentView {
     pub draft: bool,
     pub anchor_lost: bool,
     pub suggestion: Option<String>,
+    /// A shared-engine explanation when this thread cannot be written locally.
+    pub apply_blocked: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +63,7 @@ pub struct ReviewView {
     pub has_prior_review: bool,
     pub error: Option<String>,
     pub save_error: Option<String>,
+    pub applied_suggestions: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,6 +100,11 @@ pub enum ReviewAction {
         start: DiffLineLocation,
         end: DiffLineLocation,
         text: String,
+    },
+    ApplySuggestion {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
     },
     ToggleLineResolved {
         path: String,
@@ -268,6 +276,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
                         draft: comment.draft,
                         anchor_lost: comment.anchor_lost,
                         suggestion: comment.suggestion.clone(),
+                        apply_blocked: crate::app::review::local_suggestion_blocker(file, comment),
                     })
                     .collect(),
                 notes: state.review_notes.get(&file.path).cloned(),
@@ -288,6 +297,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         general_feedback: state.general_feedback.clone(),
         has_prior_review: state.has_prior_review,
         error: state.error.clone(),
+        applied_suggestions: state.applied_suggestions.clone(),
     })
 }
 
@@ -307,6 +317,11 @@ pub fn act(
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
     let target = context.target.clone();
     let unsaved = context.save_error.is_some();
+    if unsaved && matches!(action, ReviewAction::ApplySuggestion { .. }) {
+        return Err(GuiError::conflict(
+            "Save review progress successfully before applying a suggestion",
+        ));
+    }
     // Pausing an already-saved review requires no writes, including after its
     // feature was deleted or another interface updated the saved progress.
     // Discarding never writes: it is the exit when a save cannot succeed.
@@ -369,6 +384,7 @@ pub fn act(
             | ReviewAction::ToggleResolved { path }
             | ReviewAction::LineComment { path, .. }
             | ReviewAction::Suggestion { path, .. }
+            | ReviewAction::ApplySuggestion { path, .. }
             | ReviewAction::ToggleLineResolved { path, .. } => Some(path.clone()),
             ReviewAction::Undo => state.verdict_undo.last().map(|entry| entry.path.clone()),
             _ => None,
@@ -405,6 +421,7 @@ pub fn act(
         match &action {
             ReviewAction::LineComment { start, end, .. }
             | ReviewAction::Suggestion { start, end, .. }
+            | ReviewAction::ApplySuggestion { start, end, .. }
             | ReviewAction::ToggleLineResolved { start, end, .. } => {
                 let locs = state.files[state.selected_file].addressable_lines();
                 let locate = |location| {
@@ -477,6 +494,35 @@ pub fn act(
                     }
                     app.diff_review_submit_suggestion();
                 }
+                ReviewAction::ApplySuggestion { path, start, end } => {
+                    let AppMode::DiffViewer(s) = &app.mode else {
+                        unreachable!()
+                    };
+                    // Match the whole thread, never another suggestion whose
+                    // span happens to overlap the requested line cursor.
+                    let comments = s.line_comments.get(&path).ok_or_else(|| {
+                        GuiError::conflict("Kept suggestion is no longer at this anchor")
+                    })?;
+                    let mut matching = comments.iter().enumerate().filter(|(_, c)| {
+                        c.start.unwrap_or(c.location) == start && c.location == end
+                    });
+                    let (index, comment) = matching.next().ok_or_else(|| {
+                        GuiError::conflict("Kept suggestion is no longer at this anchor")
+                    })?;
+                    if matching.next().is_some() {
+                        return Err(GuiError::conflict(
+                            "Multiple threads share this anchor; edit the thread before applying",
+                        ));
+                    }
+                    if let Some(reason) = crate::app::review::local_suggestion_blocker(
+                        &s.files[s.selected_file],
+                        comment,
+                    ) {
+                        return Err(GuiError::conflict(reason));
+                    }
+                    app.diff_review_apply_suggestion(&path, index)
+                        .map_err(GuiError::conflict)?;
+                }
                 ReviewAction::ToggleLineResolved { start, end, .. } => {
                     if !app.diff_review_toggle_thread_resolved(start, end) {
                         return Err(GuiError::conflict(
@@ -511,20 +557,7 @@ pub fn act(
                     app.refresh_diff_viewer();
                     app.complete_diff_viewer_loading();
                     if let AppMode::DiffViewer(s) = &mut app.mode {
-                        let unchanged = |path: &str| {
-                            previous_files.iter().any(|old| {
-                                old.path == path
-                                    && s.files.iter().any(|new| {
-                                        new.path == path
-                                            && new.patch == old.patch
-                                            && new.status == old.status
-                                    })
-                            })
-                        };
-                        s.decisions.retain(|path, verdict| {
-                            !matches!(verdict, ReviewDecision::Approve) || unchanged(path)
-                        });
-                        s.verdict_undo.retain(|entry| unchanged(&entry.path));
+                        s.forget_verdicts_for_changed_patches(&previous_files);
                     }
                 }
                 _ => {}
@@ -590,6 +623,453 @@ mod tests {
             }
         };
         (find(start), find(end))
+    }
+
+    fn suggested(gui: &mut GuiHandle, view: &ReviewView, from: usize, to: usize) -> ReviewView {
+        let (start, end) = span(view, from, to);
+        action(
+            gui,
+            view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "replacement\nsecond\nthird".into(),
+            },
+        )
+    }
+
+    fn apply(start: DiffLineLocation, end: DiffLineLocation) -> ReviewAction {
+        ReviewAction::ApplySuggestion {
+            path: "code.txt".into(),
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn local_application_writes_the_range_settles_prose_and_reanchors_other_threads() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target.clone()).unwrap();
+        let (start, end) = span(&view, 8, 9);
+        let (other, _) = span(&view, 10, 10);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start: other,
+                end: other,
+                text: "Keep this neighbour".into(),
+                severity: Severity::Nit,
+            },
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "Explain the fix".into(),
+                severity: Severity::Nit,
+            },
+        );
+        let view = suggested(&mut gui, &view, 8, 9);
+        let source = dir.path().join("repo/code.txt");
+        let before = std::fs::read_to_string(&source).unwrap();
+        assert!(
+            view.files[0]
+                .line_comments
+                .iter()
+                .find(|c| c.suggestion.is_some())
+                .unwrap()
+                .apply_blocked
+                .is_none()
+        );
+        let applied = action(&mut gui, &view, apply(start, end));
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            before.replace("committed 🦀\nline 9\n", "replacement\nsecond\nthird\n")
+        );
+        assert!(applied.files[0].diff.patch.contains("+replacement"));
+        let prose = applied.files[0]
+            .line_comments
+            .iter()
+            .find(|c| c.text == "Explain the fix")
+            .unwrap();
+        assert!(prose.resolved && prose.suggestion.is_none());
+        let neighbour = applied.files[0]
+            .line_comments
+            .iter()
+            .find(|c| c.text == "Keep this neighbour")
+            .unwrap();
+        assert_eq!(neighbour.end.new_line, Some(11));
+        assert!(!neighbour.anchor_lost);
+        assert_eq!(applied.applied_suggestions.len(), 1);
+        assert!(applied.save_error.is_none());
+        action(&mut gui, &applied, ReviewAction::Undo);
+        let latest = snapshot(&mut gui).unwrap();
+        act(
+            &mut gui,
+            &latest.workflow_id,
+            latest.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        let resumed = begin(&mut gui, target).unwrap();
+        assert_eq!(resumed.applied_suggestions, applied.applied_suggestions);
+        assert!(
+            resumed.files[0]
+                .line_comments
+                .iter()
+                .all(|c| c.suggestion.is_none())
+        );
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(crate::app::review::review_progress_path(
+                &dir.path().join("repo"),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["applied_suggestions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn applying_invalidates_approvals_and_undo_and_refuses_a_repeated_submission() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&view, 8, 8);
+        let view = suggested(&mut gui, &view, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        );
+        assert_eq!(view.files[0].verdict, "approved");
+        let applied = action(&mut gui, &view, apply(start, end));
+        assert_eq!(applied.files[0].verdict, "undecided");
+        assert!(applied.files[0].line_comments.is_empty());
+        let source = std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap();
+        // Resubmit against the current revision, so the refusal has to come
+        // from the consumed thread rather than the stale-revision guard.
+        let repeated = act(
+            &mut gui,
+            &applied.workflow_id,
+            applied.revision,
+            apply(start, end),
+        )
+        .unwrap_err();
+        assert_eq!(repeated.kind, GuiErrorKind::Conflict);
+        assert_eq!(
+            repeated.message,
+            "Kept suggestion is no longer at this anchor"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap(),
+            source
+        );
+        let undone = action(&mut gui, &applied, ReviewAction::Undo);
+        assert_eq!(undone.files[0].verdict, "undecided");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn applying_also_invalidates_approvals_of_files_changed_outside_amf() {
+        let (dir, mut gui, target) = fixture();
+        std::fs::write(dir.path().join("repo/old.txt"), "other change\n").unwrap();
+        let initial = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&initial, 8, 8);
+        let view = suggested(&mut gui, &initial, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "old.txt".into(),
+            },
+        );
+        // Another file moves after it was approved; applying a suggestion to
+        // `code.txt` reloads its new patch, so the old approval must go too.
+        std::fs::write(dir.path().join("repo/old.txt"), "edited elsewhere\n").unwrap();
+        let applied = action(&mut gui, &view, apply(start, end));
+        let old = applied
+            .files
+            .iter()
+            .find(|f| f.diff.path == "old.txt")
+            .unwrap();
+        assert_eq!(old.verdict, "undecided");
+        assert!(old.diff.patch.contains("+edited elsewhere"));
+        let AppMode::DiffViewer(state) = &gui.app_for_workflow().mode else {
+            panic!("review should remain open")
+        };
+        assert!(state.verdict_undo.is_empty());
+    }
+
+    #[test]
+    fn tui_cursor_application_keeps_unrelated_approvals_and_invalidates_only_changed_undo() {
+        let (dir, mut gui, target) = fixture();
+        std::fs::write(dir.path().join("repo/old.txt"), "other change\n").unwrap();
+        let initial = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &initial, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "old.txt".into(),
+            },
+        );
+        action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        );
+        let app = gui.app_for_workflow();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.selected_file = state
+                .files
+                .iter()
+                .position(|f| f.path == "code.txt")
+                .unwrap();
+            state.comment_cursor = state.files[state.selected_file]
+                .addressable_lines()
+                .iter()
+                .position(|l| l.new_line == Some(8));
+        }
+        app.diff_review_apply_suggestion_under_cursor();
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap()
+                .starts_with("Applied suggestion locally:")
+        );
+        let AppMode::DiffViewer(state) = &app.mode else {
+            panic!("review should remain open")
+        };
+        assert_eq!(
+            state.decisions.get("old.txt"),
+            Some(&ReviewDecision::Approve)
+        );
+        assert!(!state.decisions.contains_key("code.txt"));
+        assert!(
+            state
+                .verdict_undo
+                .iter()
+                .all(|entry| entry.path == "old.txt")
+        );
+        assert_eq!(state.applied_suggestions.len(), 1);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(crate::app::review::review_progress_path(
+                &dir.path().join("repo"),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["applied_suggestions"].as_array().unwrap().len(), 1);
+        assert!(saved["line_comments"]["code.txt"].is_null());
+    }
+
+    #[test]
+    fn application_requires_the_exact_whole_thread_and_a_kept_applicable_replacement() {
+        for case in [
+            "partial",
+            "resolved",
+            "draft",
+            "lost",
+            "mixed",
+            "no replacement",
+        ] {
+            let (dir, mut gui, target) = fixture();
+            let initial = begin(&mut gui, target).unwrap();
+            let view = suggested(&mut gui, &initial, 8, 9);
+            let (mut start, mut end) = span(&view, 8, 9);
+            if let AppMode::DiffViewer(state) = &mut gui.app_for_workflow().mode {
+                let comment = &mut state.line_comments.get_mut("code.txt").unwrap()[0];
+                match case {
+                    "partial" => start = end,
+                    "resolved" => comment.resolved = true,
+                    "draft" => comment.draft = true,
+                    "lost" => comment.anchor_lost = true,
+                    "mixed" => {
+                        start = DiffLineLocation {
+                            old_line: Some(8),
+                            new_line: None,
+                        };
+                        comment.start = Some(start);
+                    }
+                    "no replacement" => comment.suggestion = None,
+                    _ => unreachable!(),
+                }
+                end = comment.location;
+            }
+            let source = dir.path().join("repo/code.txt");
+            let before = std::fs::read_to_string(&source).unwrap();
+            let err = act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                apply(start, end),
+            )
+            .unwrap_err();
+            assert_eq!(err.kind, GuiErrorKind::Conflict, "{case}: {err:?}");
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), before, "{case}");
+            assert!(snapshot(&mut gui).unwrap().applied_suggestions.is_empty());
+            assert!(!gui.app_for_workflow().defer_review_progress_persist);
+        }
+    }
+
+    #[test]
+    fn application_refuses_changed_source_or_external_progress_without_consuming_the_suggestion() {
+        for external_progress in [false, true] {
+            let (dir, mut gui, target) = fixture();
+            let initial = begin(&mut gui, target).unwrap();
+            let view = suggested(&mut gui, &initial, 8, 9);
+            let (start, end) = span(&view, 8, 9);
+            let source = dir.path().join("repo/code.txt");
+            if external_progress {
+                std::fs::write(
+                    crate::app::review::review_progress_path(&dir.path().join("repo")),
+                    "{}",
+                )
+                .unwrap();
+            } else {
+                std::fs::write(&source, "edited elsewhere\n").unwrap();
+            }
+            let before = std::fs::read_to_string(&source).unwrap();
+            let err = act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                apply(start, end),
+            )
+            .unwrap_err();
+            assert_eq!(err.kind, GuiErrorKind::Conflict);
+            assert!(err.message.contains(if external_progress {
+                "Saved review changed"
+            } else {
+                "File changed"
+            }));
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), before);
+            assert!(
+                snapshot(&mut gui).unwrap().files[0].line_comments[0]
+                    .suggestion
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn application_refuses_a_feature_checkout_reassigned_by_another_process() {
+        let (dir, mut gui, target) = fixture();
+        let initial = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &initial, 8, 9);
+        let (start, end) = span(&view, 8, 9);
+        let source = dir.path().join("repo/code.txt");
+        let before = std::fs::read_to_string(&source).unwrap();
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("code.txt"), "other checkout\n").unwrap();
+        let db = crate::db::AmfDb::open(&dir.path().join("amf.db")).unwrap();
+        let mut store = db.load_store().unwrap();
+        store.projects[0].features[0].workdir = other.clone();
+        db.save_store(&store).unwrap();
+        let err = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            apply(start, end),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Feature checkout changed"), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), before);
+        assert_eq!(
+            std::fs::read_to_string(other.join("code.txt")).unwrap(),
+            "other checkout\n"
+        );
+        assert!(!gui.app_for_workflow().defer_review_progress_persist);
+    }
+
+    #[test]
+    fn an_application_write_failure_keeps_the_suggestion_and_source_intact() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut gui, target) = fixture();
+        let initial = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &initial, 8, 9);
+        let (start, end) = span(&view, 8, 9);
+        let source = dir.path().join("repo/code.txt");
+        let before = std::fs::read_to_string(&source).unwrap();
+        let permissions = std::fs::metadata(&source).unwrap().permissions();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let outcome = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            apply(start, end),
+        );
+        std::fs::set_permissions(&source, permissions).unwrap();
+        let err = outcome.unwrap_err();
+        assert!(err.message.contains("could not write file"), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), before);
+        assert!(
+            snapshot(&mut gui).unwrap().files[0].line_comments[0]
+                .suggestion
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_failed_progress_save_after_application_retains_the_write_and_offers_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut gui, target) = fixture();
+        let initial = begin(&mut gui, target.clone()).unwrap();
+        let view = suggested(&mut gui, &initial, 8, 9);
+        let (start, end) = span(&view, 8, 9);
+        let claude = dir.path().join("repo/.claude");
+        let permissions = std::fs::metadata(&claude).unwrap().permissions();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            apply(start, end),
+        );
+        std::fs::set_permissions(&claude, permissions).unwrap();
+        let applied = outcome.unwrap().unwrap();
+        assert!(applied.save_error.is_some());
+        assert_eq!(applied.applied_suggestions.len(), 1);
+        assert!(applied.files[0].line_comments.is_empty());
+        assert!(
+            std::fs::read_to_string(dir.path().join("repo/code.txt"))
+                .unwrap()
+                .contains("replacement\nsecond\nthird\n")
+        );
+        let err = act(
+            &mut gui,
+            &applied.workflow_id,
+            applied.revision,
+            apply(start, end),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Save review progress successfully"));
+        let saved = action(&mut gui, &applied, ReviewAction::RetrySave);
+        assert!(saved.save_error.is_none());
+        act(
+            &mut gui,
+            &saved.workflow_id,
+            saved.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        assert_eq!(
+            begin(&mut gui, target).unwrap().applied_suggestions,
+            applied.applied_suggestions
+        );
     }
 
     #[test]

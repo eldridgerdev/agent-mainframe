@@ -79,7 +79,7 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   }
   function request(action: ReviewAction | "cancel") {
     if (busy) return;
-    if (dirty || (action !== "cancel" && (action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
+    if (dirty || (action !== "cancel" && (action.kind === "apply_suggestion" || action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
     else void run(action);
   }
   function edit(kind: "comment" | "reject" | "general") {
@@ -106,9 +106,15 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
       <button className="btn btn-ghost" disabled={busy || pending !== null} onClick={() => request({ kind: "discard" })}>Close without saving</button></div>}
-    {pending && (pending !== "cancel" && pending.kind === "discard"
+    {pending && (pending !== "cancel" && pending.kind === "apply_suggestion"
+      ? <div className="review-confirm" role="alertdialog" aria-label="Apply suggestion locally">
+        <p>Apply the saved replacement to {pending.path}, {locationLabel(pending.start)} – {locationLabel(pending.end)}? This writes to your checkout, resolves the thread, and refreshes the diff. Review the changed code again before approving.</p>
+        <button className="btn btn-primary" disabled={busy} onClick={() => void run(pending)}>Apply replacement</button>
+        <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Cancel application</button>
+      </div>
+      : pending !== "cancel" && pending.kind === "discard"
       ? <div className="review-confirm" role="alertdialog" aria-label="Close review without saving">
-        <p>Close without saving? Changes since the last successful save are lost.</p>
+        <p>Close without saving? Review progress since the last successful save is lost. Source changes already applied stay in your checkout.</p>
         <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and close</button>
         <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
       </div>
@@ -126,6 +132,10 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
       <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
     {view.general_feedback && <section aria-label="Saved overall feedback"><Markdown source={view.general_feedback} /></section>}
+    {view.applied_suggestions.length > 0 && <details className="review-note"><summary>Applied locally ({view.applied_suggestions.length})</summary>
+      <ul>{view.applied_suggestions.map((anchor, index) => <li key={index}>{anchor}</li>)}</ul>
+      <p className="muted small">Closing without saving does not undo source changes already applied.</p>
+    </details>}
     {editor && <form className="review-editor" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       <Field label={editor.kind === "general" ? "Overall feedback draft" : editor.kind === "reject" ? "Rejection feedback" : editor.kind === "line_comment" ? "Line comment" : editor.kind === "suggestion" ? "Suggested replacement" : "File comment"}>
         <textarea rows={5} value={editor.text} disabled={busy} onChange={(event) => setEditor({ ...editor, text: event.target.value })} />
@@ -160,6 +170,11 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
             {file.line_comments.map((comment, index) => <div key={index}><p>{comment.anchor} [{comment.severity}] {comment.text}{comment.resolved && " (resolved)"}{comment.draft && " (AI draft)"}{comment.anchor_lost && " (anchor lost)"}</p>{comment.suggestion !== null && <pre>{comment.suggestion}</pre>}
               <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("line_comment", comment)}>Edit line comment</button>
               <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("suggestion", comment)}>Edit suggestion</button>
+              {comment.suggestion !== null && <>
+                <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || view.save_error !== null || comment.apply_blocked !== null}
+                  onClick={() => request({ kind: "apply_suggestion", path: file.diff.path, start: comment.start, end: comment.end })}>Apply suggestion locally</button>
+                {comment.apply_blocked && <p className="muted small">Cannot apply locally: {comment.apply_blocked}</p>}
+              </>}
               <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null || !comment.editable || comment.draft} onClick={() => request({ kind: "toggle_line_resolved", path: file.diff.path, start: comment.start, end: comment.end })}>{comment.resolved ? "Reopen thread" : "Resolve thread"}</button>
             </div>)}
           </details>}

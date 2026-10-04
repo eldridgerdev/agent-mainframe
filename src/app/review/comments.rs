@@ -420,21 +420,28 @@ impl App {
             return;
         };
 
-        let report = self.apply_review_suggestion_jobs(Some((&path, index)));
+        self.message = Some(match self.diff_review_apply_suggestion(&path, index) {
+            Ok(anchor) => format!("Applied suggestion locally: {anchor}"),
+            Err(reason) => format!("Suggestion not applied: {reason}"),
+        });
+    }
+
+    /// Apply one already-resolved thread through the same guarded write and
+    /// refresh path used by the TUI cursor action.
+    pub(crate) fn diff_review_apply_suggestion(
+        &mut self,
+        path: &str,
+        index: usize,
+    ) -> std::result::Result<String, String> {
+        let report = self.apply_review_suggestion_jobs(Some((path, index)));
         if report.applied.is_empty() {
-            self.message = Some(format!(
-                "Suggestion not applied: {}",
-                report
-                    .failures
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or("the suggestion is no longer applicable")
-            ));
+            Err(report
+                .failures
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "the suggestion is no longer applicable".into()))
         } else {
-            self.message = Some(format!(
-                "Applied suggestion locally: {}",
-                report.applied.join(", ")
-            ));
+            Ok(report.applied.join(", "))
         }
     }
 
@@ -554,6 +561,14 @@ impl App {
             state
                 .applied_suggestions
                 .extend(report.applied.iter().cloned());
+            // The source changed: approvals and undo entries for its previous
+            // patch no longer describe the reviewed code in either interface.
+            state.decisions.retain(|path, verdict| {
+                !changed_paths.contains(path) || !matches!(verdict, ReviewDecision::Approve)
+            });
+            state
+                .verdict_undo
+                .retain(|entry| !changed_paths.contains(&entry.path));
         }
         for path in &changed_paths {
             self.diff_review_sync_auto_reject(path);
@@ -561,10 +576,23 @@ impl App {
         self.persist_review_progress();
 
         if !report.applied.is_empty() {
+            let previous_files = match &self.mode {
+                AppMode::DiffViewer(state) => state.files.clone(),
+                _ => Vec::new(),
+            };
             // Re-load immediately so subsequent comments and the finish snapshot
             // use the source that was actually written, not the pre-apply patch.
             self.refresh_diff_viewer();
             self.complete_diff_viewer_loading();
+            // The reload also picks up any other file that changed outside AMF
+            // since it was approved; its approval is just as stale. A failed
+            // reload has no files to compare, and the written files were
+            // already cleared above.
+            if let AppMode::DiffViewer(state) = &mut self.mode
+                && state.error.is_none()
+            {
+                state.forget_verdicts_for_changed_patches(&previous_files);
+            }
             self.persist_review_progress();
         }
         report
@@ -1161,6 +1189,18 @@ pub(super) fn line_text_without_ending(line: &str) -> &str {
     line.strip_suffix("\r\n")
         .or_else(|| line.strip_suffix('\n'))
         .unwrap_or(line)
+}
+
+/// Explain why a thread cannot be applied without writing any source. The
+/// actual write also checks the live file against the reviewed content.
+pub(crate) fn local_suggestion_blocker(
+    file: &crate::diff::DiffFile,
+    comment: &LineComment,
+) -> Option<String> {
+    if !comment.is_open_thread() {
+        return Some("Only kept, unresolved suggestions can be applied locally".into());
+    }
+    plan_local_suggestion(file, 0, comment).err()
 }
 
 /// Validate that a suggestion still points at a contiguous current-side span

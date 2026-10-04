@@ -1,0 +1,6 @@
+# Native GUI local suggestion application, isolated DB/Git checkout.
+# The helper asserts source writes, refusals and shared progress through real Rust IPC.
+note:The isolated TUI confirms the harness is ready before native suggestion application begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-review-apply-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

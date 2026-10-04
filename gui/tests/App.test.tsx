@@ -149,7 +149,7 @@ it("opens Final Review on a stopped feature and pauses with its workflow identit
     if (command === "review_begin") return Promise.resolve({
       workflow_id: "review-id", revision: 7, target: { project_id: "project", feature_id: "feature" },
       feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
-      general_feedback: "", has_prior_review: false, error: null, save_error: null,
+        general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
     });
     if (command === "review_act") return new Promise((resolve) => { finishPause = () => resolve(null); });
     return original(command, args, options);

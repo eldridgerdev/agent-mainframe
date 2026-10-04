@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Apply saved suggestions in desktop Final Review.** Confirm **Apply suggestion
+  locally** to write a kept replacement to your checkout, resolve its thread and
+  refresh the diff. Changed files require review again, and application history
+  survives pause/reopen. Stale files and failed writes keep the suggestion;
+  failed progress saves offer **Retry save**. Closing without saving does not
+  undo source changes already applied. Finishing and batch application still
+  use the TUI.
 - **Comment on lines and suggest code in desktop Final Review.** Click a line
   number, or Shift-click to select a range, then write a comment with severity
   or edit a suggested replacement. Resolve and reopen saved threads, and
@@ -130,6 +137,8 @@ are tagged.
 
 ### Fixed
 
+- **Applying a suggestion clears the changed file's approval in both interfaces.**
+  Verdict undo cannot restore a verdict for the source that was replaced.
 - **Desktop reviews refuse verdicts on changed files.** Refresh to see the
   latest patch; its outdated approval is cleared. Saved progress changed in
   another interface requires an explicit reload before editing.

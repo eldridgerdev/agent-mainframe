@@ -63,6 +63,7 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import TerminalPane from "./TerminalPane";
+import PromptComposer from "./PromptComposer";
 import DiffPanel from "./DiffPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
@@ -110,11 +111,6 @@ type View =
   | { kind: "project"; projectId: string }
   | { kind: "feature"; projectId: string; featureId: string };
 
-interface Draft {
-  key: string;
-  text: string;
-}
-
 const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Out of date",
@@ -152,8 +148,9 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [sendingPrompt, setSendingPrompt] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
+  const promptSendsInFlight = useRef(new Set<string>());
   const [planMinimized, setPlanMinimized] = useState(false);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<string | null>(null);
   const [recoveryDialog, setRecoveryDialog] = useState<{
@@ -363,7 +360,40 @@ export default function App() {
       delete next[target.feature_id];
       return next;
     }), PENDING_SESSION_GRACE_MS);
-    if (draftPrompt !== undefined) setDraft({ key: sessionKey(target), text: draftPrompt });
+    if (draftPrompt !== undefined) {
+      const key = sessionKey(target);
+      setDrafts((current) => ({
+        ...current,
+        // A handoff to an existing session must preserve its unsent message.
+        [key]: current[key] ? `${current[key]}\n\n${draftPrompt}` : draftPrompt,
+      }));
+    }
+  }
+
+  function changeDraft(target: SessionTarget, text: string) {
+    const key = sessionKey(target);
+    if (promptSendsInFlight.current.has(key)) return;
+    setDrafts((current) => ({ ...current, [key]: text }));
+  }
+
+  async function sendDraft(target: SessionTarget, text: string) {
+    const key = sessionKey(target);
+    if (!text.trim() || promptSendsInFlight.current.has(key)) return;
+    // Lock synchronously: repeated keyboard/click events can arrive before
+    // React renders the pending state.
+    promptSendsInFlight.current.add(key);
+    setSendingPrompts((current) => ({ ...current, [key]: true }));
+    try {
+      await terminalSubmitPrompt(target, text);
+      // Completion belongs to the originating session, even after navigation.
+      // A new handoff may have extended its draft while this send was pending.
+      setDrafts((current) => current[key] === text ? { ...current, [key]: "" } : current);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      promptSendsInFlight.current.delete(key);
+      setSendingPrompts((current) => ({ ...current, [key]: false }));
+    }
   }
 
   useEffect(() => {
@@ -1031,23 +1061,10 @@ export default function App() {
               unfinished: null,
             })}
             {...lifecycle(selectedProject.id, selectedFeature)}
-            draft={draft}
-            onDraftChange={(text) => setDraft((current) => current && { ...current, text })}
-            onDiscardDraft={() => setDraft(null)}
-            sendingPrompt={sendingPrompt}
-            onSendDraft={(target, text) => {
-              setSendingPrompt(true);
-              void (async () => {
-                try {
-                  await terminalSubmitPrompt(target, text);
-                  setDraft(null);
-                } catch (err) {
-                  reportError(err);
-                } finally {
-                  setSendingPrompt(false);
-                }
-              })();
-            }}
+            drafts={drafts}
+            onDraftChange={changeDraft}
+            sendingPrompts={sendingPrompts}
+            onSendDraft={(target, text) => void sendDraft(target, text)}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "worktree", project_id: selectedProject.id, feature_id: selectedFeature.id }}
@@ -1505,10 +1522,9 @@ function FeatureView({
   stopping,
   onStart,
   onStop,
-  draft,
+  drafts,
   onDraftChange,
-  onDiscardDraft,
-  sendingPrompt,
+  sendingPrompts,
   onSendDraft,
   todoPanel,
 }: Lifecycle & {
@@ -1534,10 +1550,9 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
-  draft: Draft | null;
-  onDraftChange: (text: string) => void;
-  onDiscardDraft: () => void;
-  sendingPrompt: boolean;
+  drafts: Record<string, string>;
+  onDraftChange: (target: SessionTarget, text: string) => void;
+  sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
   todoPanel: ReactNode;
 }) {
@@ -1557,10 +1572,16 @@ function FeatureView({
     feature_id: feature.id,
     session_id: activeTab,
   };
-  const activeDraft = target && draft?.key === sessionKey(target) ? draft : null;
+  const activeKey = target ? sessionKey(target) : null;
+  const [connectedKey, setConnectedKey] = useState<string | null>(null);
+  const onTerminalReady = useCallback((ready: boolean) => {
+    setConnectedKey(ready ? activeKey : null);
+  }, [activeKey]);
   const isRunning = (session: FeatureSession) => sessionRunning(feature, session, stoppedSessionIds);
   const activeSession = sessions.find((session) => session.id === activeTab);
   const activeSessionRunning = activeSession !== undefined && isRunning(activeSession);
+  const isAgent = activeSession !== undefined &&
+    ["claude", "codex", "opencode", "pi"].includes(activeSession.kind);
   const activeLifecycle = activeSession && sessionLifecycle(activeSession);
 
   return (
@@ -1728,40 +1749,17 @@ function FeatureView({
         )}
         {target && !isStopped && (activeSessionRunning || !activeSession) && (
           <div className="session">
-            <TerminalPane key={sessionKey(target)} target={target} />
-            {activeDraft && (
-              <div className="composer">
-                <div className="composer-head">
-                  <Icon name="sparkles" />
-                  <strong>Draft prompt</strong>
-                  <span className="muted small">Review and edit before sending.</span>
-                  <span className="tabs-spacer" />
-                  <button className="btn btn-sm btn-ghost" onClick={onDiscardDraft}>Discard</button>
-                </div>
-                <textarea
-                  aria-label="Draft prompt"
-                  value={activeDraft.text}
-                  onChange={(event) => onDraftChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && activeDraft.text.trim()) {
-                      event.preventDefault();
-                      onSendDraft(target, activeDraft.text);
-                    }
-                  }}
-                  rows={5}
-                />
-                <div className="composer-foot">
-                  <span className="muted small"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> to send</span>
-                  <button
-                    className="btn btn-primary"
-                    disabled={sendingPrompt || !activeDraft.text.trim()}
-                    onClick={() => onSendDraft(target, activeDraft.text)}
-                  >
-                    {sendingPrompt ? <Spinner /> : <Icon name="send" />}
-                    {sendingPrompt ? "Sending…" : "Send prompt"}
-                  </button>
-                </div>
-              </div>
+            <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
+            {isAgent && (
+              <PromptComposer
+                key={`composer:${sessionKey(target)}`}
+                text={drafts[sessionKey(target)] ?? ""}
+                sending={sendingPrompts[sessionKey(target)] ?? false}
+                ready={connectedKey === sessionKey(target)}
+                onChange={(text) => onDraftChange(target, text)}
+                onClear={() => onDraftChange(target, "")}
+                onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
+              />
             )}
           </div>
         )}

@@ -82,11 +82,16 @@ interface AttachTerminalResponse {
 // not here -- this component's job is proving the wiring works end to end
 // through xterm.js and Tauri's IPC/event boundary, which those Rust-only
 // tests cannot exercise.
-export default function TerminalPane({ target }: { target: SessionTarget }) {
+export default function TerminalPane({ target, onReadyChange }: {
+  target: SessionTarget;
+  onReadyChange?: (ready: boolean) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setError(null);
+    onReadyChange?.(false);
     // Computed the same way the backend's `terminal_key` does, so the event
     // listener can be registered *before* `attach_terminal` returns -- if we
     // instead waited for the response to tell us the key, an output event
@@ -149,6 +154,7 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
         if (newestBeforeInitial !== null) renderReplay(newestBeforeInitial);
         newestBeforeInitial = null;
         attached = true;
+        onReadyChange?.(true);
       } catch (err) {
         if (!disposed) setError(asGuiError(err).message);
         unlisten?.();
@@ -185,6 +191,7 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
 
     return () => {
       disposed = true;
+      onReadyChange?.(false);
       observer.disconnect();
       onData.dispose();
       onResize.dispose();
@@ -193,7 +200,7 @@ export default function TerminalPane({ target }: { target: SessionTarget }) {
       if (attached) void invoke("detach_terminal", { key, generation }).catch(() => {});
       term.dispose();
     };
-  }, [target.project_id, target.feature_id, target.session_id]);
+  }, [target.project_id, target.feature_id, target.session_id, onReadyChange]);
 
   return (
     <div className="term-frame">

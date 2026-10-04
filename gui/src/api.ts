@@ -632,7 +632,7 @@ export interface ReviewFile {
   feedback: string;
   severity: ReviewSeverity;
   comment: { text: string; severity: ReviewSeverity; resolved: boolean; carried: boolean } | null;
-  line_comments: (ReviewSpan & { editable: boolean; anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null })[];
+  line_comments: (ReviewSpan & { editable: boolean; anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null; apply_blocked: string | null })[];
   notes: string | null;
   changed_since_last: boolean;
 }
@@ -649,6 +649,7 @@ export interface ReviewView {
   has_prior_review: boolean;
   error: string | null;
   save_error: string | null;
+  applied_suggestions: string[];
 }
 export type ReviewAction =
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
@@ -656,7 +657,7 @@ export type ReviewAction =
   | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }
   | (ReviewSpan & { kind: "line_comment"; path: string; text: string; severity: ReviewSeverity })
   | (ReviewSpan & { kind: "suggestion"; path: string; text: string })
-  | (ReviewSpan & { kind: "toggle_line_resolved"; path: string })
+  | (ReviewSpan & { kind: "toggle_line_resolved" | "apply_suggestion"; path: string })
   | { kind: "general"; text: string }
   | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
 export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });

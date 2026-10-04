@@ -132,6 +132,18 @@ const byStatus = (features: Feature[]) =>
 const sessionKey = (target: { feature_id: string; session_id: string }) =>
   `${target.feature_id}:${target.session_id}`;
 
+// Joins a handoff's seed onto a draft that already has unsent text.
+const DRAFT_SEPARATOR = "\n\n";
+
+/** Drops entries whose key is not in `live`, keeping the same object when nothing goes. */
+function pruneKeys<T>(current: Record<string, T>, live: Set<string>): Record<string, T> {
+  const stale = Object.keys(current).filter((key) => !live.has(key));
+  if (stale.length === 0) return current;
+  const next = { ...current };
+  for (const key of stale) delete next[key];
+  return next;
+}
+
 /// Workspace shell: sidebar navigation (global TODOs, projects, features),
 /// a main view for the selection, and modals for creation, approvals and
 /// the plan interview. Id resolution, idempotency, and terminal correctness
@@ -151,6 +163,8 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
+  const [composerFocusKey, setComposerFocusKey] = useState<string | null>(null);
+  const composerFocusHandled = useCallback(() => setComposerFocusKey(null), []);
   const [planMinimized, setPlanMinimized] = useState(false);
   const [pendingPlanApproval, setPendingPlanApproval] = useState<string | null>(null);
   const [recoveryDialog, setRecoveryDialog] = useState<{
@@ -294,6 +308,23 @@ export default function App() {
     });
   }, [projects]);
 
+  // A closed session or deleted feature takes its unsent draft with it, so a
+  // reused key can never resurrect stale text. A just-launched session the
+  // snapshot hasn't caught up with yet keeps its handoff draft.
+  const workspaceData = workspace.data;
+  useEffect(() => {
+    if (!workspaceData) return;
+    const live = new Set(workspaceData.projects.flatMap((project) => project.features.flatMap(
+      (feature) => feature.sessions.map((session) =>
+        sessionKey({ feature_id: feature.id, session_id: session.id })))));
+    for (const [featureId, sessionId] of Object.entries(pendingSessionByFeature)) {
+      live.add(sessionKey({ feature_id: featureId, session_id: sessionId }));
+    }
+    setDrafts((current) => pruneKeys(current, live));
+    setSendingPrompts((current) => pruneKeys(current, live));
+    setComposerFocusKey((current) => current !== null && !live.has(current) ? null : current);
+  }, [workspaceData, pendingSessionByFeature]);
+
   const dismissToast = useCallback((id: number) => {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
@@ -365,8 +396,9 @@ export default function App() {
       setDrafts((current) => ({
         ...current,
         // A handoff to an existing session must preserve its unsent message.
-        [key]: current[key] ? `${current[key]}\n\n${draftPrompt}` : draftPrompt,
+        [key]: current[key] ? `${current[key]}${DRAFT_SEPARATOR}${draftPrompt}` : draftPrompt,
       }));
+      setComposerFocusKey(key);
     }
   }
 
@@ -386,13 +418,27 @@ export default function App() {
     try {
       await terminalSubmitPrompt(target, text);
       // Completion belongs to the originating session, even after navigation.
-      // A new handoff may have extended its draft while this send was pending.
-      setDrafts((current) => current[key] === text ? { ...current, [key]: "" } : current);
+      // Edits are locked while sending, so the draft can only have grown by a
+      // handoff appending its seed: remove the delivered text and keep that.
+      setDrafts((current) => {
+        const draft = current[key];
+        if (draft === undefined || !draft.startsWith(text)) return current;
+        const rest = draft.slice(text.length);
+        return {
+          ...current,
+          [key]: rest.startsWith(DRAFT_SEPARATOR) ? rest.slice(DRAFT_SEPARATOR.length) : rest,
+        };
+      });
     } catch (err) {
       reportError(err);
     } finally {
       promptSendsInFlight.current.delete(key);
-      setSendingPrompts((current) => ({ ...current, [key]: false }));
+      setSendingPrompts((current) => {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     }
   }
 
@@ -1065,6 +1111,8 @@ export default function App() {
             onDraftChange={changeDraft}
             sendingPrompts={sendingPrompts}
             onSendDraft={(target, text) => void sendDraft(target, text)}
+            composerFocusKey={composerFocusKey}
+            onComposerFocusHandled={composerFocusHandled}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "worktree", project_id: selectedProject.id, feature_id: selectedFeature.id }}
@@ -1526,6 +1574,8 @@ function FeatureView({
   onDraftChange,
   sendingPrompts,
   onSendDraft,
+  composerFocusKey,
+  onComposerFocusHandled,
   todoPanel,
 }: Lifecycle & {
   project: Project;
@@ -1554,6 +1604,9 @@ function FeatureView({
   onDraftChange: (target: SessionTarget, text: string) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
+  /** The session whose composer a handoff just seeded and should focus. */
+  composerFocusKey: string | null;
+  onComposerFocusHandled: () => void;
   todoPanel: ReactNode;
 }) {
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
@@ -1756,6 +1809,8 @@ function FeatureView({
                 text={drafts[sessionKey(target)] ?? ""}
                 sending={sendingPrompts[sessionKey(target)] ?? false}
                 ready={connectedKey === sessionKey(target)}
+                focusRequested={composerFocusKey === sessionKey(target)}
+                onFocusHandled={onComposerFocusHandled}
                 onChange={(text) => onDraftChange(target, text)}
                 onClear={() => onDraftChange(target, "")}
                 onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}

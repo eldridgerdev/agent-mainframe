@@ -97,6 +97,16 @@ export function formatTotal(total: number): string {
     import shlex
     def command(label, filename):
         return shlex.join(["/usr/bin/python3", harness, str(repo / filename), label])
+    # tauri.conf.json's devUrl pins the GUI to Vite on 1420 (strictPort). If
+    # something already serves it, the readiness probe below could succeed
+    # against that server before ours exits, capturing the wrong frontend.
+    try:
+        with socket.create_connection(("localhost", 1420), timeout=1):
+            raise RuntimeError(
+                "Port 1420 is already in use; stop the other Vite/Tauri dev server first"
+            )
+    except OSError:
+        pass
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(

@@ -36,7 +36,8 @@ it.each(["claude", "codex", "opencode", "pi"])("composes locally for %s and stay
   const original = vi.mocked(invoke).getMockImplementation()!;
   vi.mocked(invoke).mockImplementation((command, args, options) =>
     command === "terminal_submit_prompt" ? Promise.resolve() : original(command, args, options));
-  expect(document.activeElement).toBe(draftInput());
+  // Opening a tab must not pull keyboard focus away from the terminal.
+  expect(document.activeElement).not.toBe(draftInput());
   const text = "Please fix this.\n\nKeep Unicode: café 世界 🚀";
   fireEvent.change(draftInput(), { target: { value: text } });
   fireEvent.keyDown(draftInput(), { key: "Enter" });
@@ -72,6 +73,23 @@ it("retains separate drafts across tabs, TODOs, workspace navigation and snapsho
   fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
   expect(draftInput().value).toBe("Second draft");
   expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it("drops a closed session's draft so a reused session id starts empty", async () => {
+  const client = await openFeature([session("First", "claude"), session("Second", "codex")]);
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  fireEvent.change(draftInput(), { target: { value: "Unsent" } });
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  const feature = snapshot.projects[0].features[0];
+  const without = (sessions: FeatureSession[]): WorkspaceSnapshot => ({
+    ...snapshot, projects: [{ ...snapshot.projects[0], features: [{ ...feature, sessions }] }],
+  });
+  act(() => client.setQueryData(["workspace-snapshot"], without([feature.sessions[0]])));
+  await waitFor(() => expect(screen.queryByRole("tab", { name: /Second/ })).toBeNull());
+  act(() => client.setQueryData(["workspace-snapshot"], without(feature.sessions)));
+  fireEvent.click(await screen.findByRole("tab", { name: /Second/ }));
+  expect(draftInput().value).toBe("");
   client.clear();
 });
 

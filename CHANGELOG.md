@@ -12,12 +12,17 @@ are tagged.
 
 ### Added
 
+- **Run project checks in desktop Final Review.** Preview and confirm the
+  configured check from **Pre-finish summary**, inspect its result and output,
+  or cancel it. The review stays open and unsaved drafts are kept. Changed
+  check commands or review targets cancel obsolete runs. Completing the review
+  and handing off feedback still use the TUI. No migration is required.
 - **Prepare desktop Final Review for finishing.** Open **Pre-finish summary**
   to see every verdict and open thread. Confirm **Apply pending suggestions**
   to write the batch locally; successful replacements settle their threads,
   blocked suggestions stay open with explanations, and changed files need
-  review again. Browsing keeps unsaved drafts. Finish checks and feedback handoff
-  still use the TUI. No migration is required.
+  review again. Browsing keeps unsaved drafts. Review completion and feedback
+  handoff still use the TUI. No migration is required.
 - **Use the prompt library in the desktop GUI.** Open **Prompt library** from
   navigation or an agent composer. Search by name, body or tag; browse user,
   global, project and worktree templates; fill text and
@@ -175,6 +180,8 @@ are tagged.
 
 ### Fixed
 
+- Verbose Final Review checks can finish without hanging on full output buffers.
+  Closing or cancelling a check also stops its child processes.
 - **Applying a suggestion clears the changed file's approval in both interfaces.**
   Verdict undo cannot restore a verdict for the source that was replaced.
 - **Desktop reviews refuse verdicts on changed files.** Refresh to see the

@@ -653,6 +653,8 @@ export interface ReviewView {
   applied_suggestions: string[];
   history: ReviewHistory | null;
   summary: ReviewSummary | null;
+  check_command: string | null;
+  check: { command: string; status: "running" | "passed" | "failed" | "cancelled" | "stale"; output: string } | null;
   ai: ReviewAi;
 }
 export interface ReviewSummary {
@@ -689,7 +691,8 @@ export interface ReviewAi {
   message: string | null;
 }
 export type ReviewAction =
-  | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" }
+  | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" | "cancel_check" }
+  | { kind: "run_check"; command: string }
   | { kind: "history_open" | "history_load_older" | "history_close" }
   | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }

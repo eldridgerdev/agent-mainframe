@@ -5,7 +5,6 @@ use crate::app::{
 use crate::editor::TextEditor;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Child;
 use std::time::Instant;
 /// Severity tag on a line comment or file rejection, conventional-comments
 /// style. Drives three things: the GitHub review *event* (any `Blocker` →
@@ -775,7 +774,7 @@ pub struct DiffViewerState {
     /// `finish_final_review` and polled to completion like
     /// `changeset_overview_child`. `None` when no check is configured or
     /// none is currently running.
-    pub finish_check_child: Option<Child>,
+    pub finish_check_child: Option<super::checks::ReviewCheckRun>,
     /// The command `finish_check_child` is running, kept so the result can
     /// be reported once it exits.
     pub finish_check_command: Option<String>,

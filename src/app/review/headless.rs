@@ -16,25 +16,17 @@ use std::path::Path;
 /// Outcome of the project's optional `final_review_check_command` (a
 /// build/test gate), run in the background when finishing a review. `None`
 /// throughout `complete_final_review` whenever no command is configured.
-pub(super) struct CheckOutcome {
-    pub(super) command: String,
-    pub(super) passed: bool,
-    pub(super) output: String,
+#[derive(Debug)]
+pub(crate) struct CheckOutcome {
+    pub(crate) command: String,
+    pub(crate) passed: bool,
+    pub(crate) output: String,
 }
 
 /// Cap on how much of a check command's combined stdout/stderr is kept, so a
 /// noisy build/test failure can't blow up the feedback file or the agent
-/// prompt built from it.
+/// prompt built from it. `checks::combine_output` divides it between streams.
 pub(super) const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
-
-pub(super) fn truncate_check_output(output: &str) -> String {
-    if output.chars().count() <= CHECK_OUTPUT_MAX_CHARS {
-        output.to_string()
-    } else {
-        let truncated: String = output.chars().take(CHECK_OUTPUT_MAX_CHARS).collect();
-        format!("{truncated}\n… (truncated)")
-    }
-}
 
 impl App {
     /// Generate a walkthrough for the current file when it has no developer
@@ -593,14 +585,7 @@ impl App {
             return self.complete_final_review(None);
         };
 
-        match std::process::Command::new("bash")
-            .arg("-c")
-            .arg(&command)
-            .current_dir(&workdir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
+        match super::checks::ReviewCheckRun::spawn(&workdir, &command) {
             Ok(child) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.finish_check_command = Some(command.clone());
@@ -624,44 +609,21 @@ impl App {
     /// `finish_final_review`); once it exits, actually finish the review with
     /// its outcome folded in. Mirrors `poll_changeset_overview`.
     pub fn poll_final_review_check(&mut self) -> Result<()> {
-        let finished = match &mut self.mode {
+        let outcome = match &mut self.mode {
             AppMode::DiffViewer(state) => match state.finish_check_child.as_mut() {
-                Some(child) => child.try_wait()?,
+                Some(run) => run.poll()?,
                 None => return Ok(()),
             },
             _ => return Ok(()),
         };
-        let Some(status) = finished else {
+        let Some(outcome) = outcome else {
             return Ok(());
         };
-
-        let (child, command) = match &mut self.mode {
-            AppMode::DiffViewer(state) => (
-                state.finish_check_child.take(),
-                state.finish_check_command.take(),
-            ),
-            _ => (None, None),
-        };
-        let (Some(child), Some(command)) = (child, command) else {
-            return Ok(());
-        };
-
-        let output = child.wait_with_output()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let combined = if !stdout.trim().is_empty() && !stderr.trim().is_empty() {
-            format!("{}\n{}", stdout.trim(), stderr.trim())
-        } else if !stdout.trim().is_empty() {
-            stdout.trim().to_string()
-        } else {
-            stderr.trim().to_string()
-        };
-
-        self.complete_final_review(Some(CheckOutcome {
-            command,
-            passed: status.success(),
-            output: truncate_check_output(&combined),
-        }))
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.finish_check_child = None;
+            state.finish_check_command = None;
+        }
+        self.complete_final_review(Some(outcome))
     }
 
     /// Persist one self-contained round into the bounded live feedback log,

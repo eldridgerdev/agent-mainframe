@@ -3,8 +3,8 @@ use super::comments::{
     reanchor_file_comments,
 };
 use super::headless::{
-    CHECK_OUTPUT_MAX_CHARS, build_pr_review, parse_co_review_output, pr_postable_lines,
-    severity_review_event, truncate_check_output, walkthrough_context,
+    build_pr_review, parse_co_review_output, pr_postable_lines, severity_review_event,
+    walkthrough_context,
 };
 use super::preparation::{
     anchor_file_path, archive_review_notes, compose_feedback_log, load_review_notes,
@@ -689,23 +689,6 @@ Fix this.
     assert_eq!(rounds[0].carried_unresolved, 1);
     assert!(rounds[0].markdown.contains("**Agent:** Fixed"));
     assert!(rounds[1].markdown.contains("cargo test"));
-}
-
-#[test]
-fn truncate_check_output_passes_short_output_through() {
-    assert_eq!(truncate_check_output("all good"), "all good");
-}
-
-#[test]
-fn truncate_check_output_caps_long_output() {
-    let long = "x".repeat(CHECK_OUTPUT_MAX_CHARS + 500);
-    let out = truncate_check_output(&long);
-    assert!(out.starts_with(&"x".repeat(CHECK_OUTPUT_MAX_CHARS)));
-    assert!(out.ends_with("… (truncated)"));
-    assert_eq!(
-        out.chars().count(),
-        CHECK_OUTPUT_MAX_CHARS + "\n… (truncated)".chars().count()
-    );
 }
 
 #[test]

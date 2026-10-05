@@ -92,7 +92,10 @@ export function formatTotal(total: number): string {
     git("add", "receipt.bin")
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
-    vite = subprocess.Popen(
+    # Explicit opt-in permits capture beside a dev server from this checkout.
+    # It serves frontend assets only; GUI IPC/SQLite remain in the scratch process.
+    reuse_frontend = os.environ.get("AMF_GUI_CAPTURE_REUSE_FRONTEND") == "1"
+    vite = None if reuse_frontend else subprocess.Popen(
         ["npm", "run", "dev"],
         cwd=workspace / "gui",
         stdout=vite_log,
@@ -102,7 +105,7 @@ export function formatTotal(total: number): string {
     gui = None
     try:
         for _ in range(100):
-            if vite.poll() is not None:
+            if vite is not None and vite.poll() is not None:
                 raise RuntimeError(
                     "The isolated Vite server failed; ensure port 1420 is free"
                 )

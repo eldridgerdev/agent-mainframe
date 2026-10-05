@@ -49,8 +49,14 @@ library. Library authoring and prompt overrides remain separate workflows.
 calls its suggestion-preparation step after checking the stable workflow,
 reviewed changeset and saved progress. The GUI confirms source writes and
 keeps review open for another look at changed code. Reading or closing the
-summary preserves unsaved editors and never saves progress. Checks, completing
-the review and feedback dispatch remain later GUI increments.
+summary preserves unsaved editors and never saves progress.
+
+`app/review/checks.rs` owns the shared build/test runner: it drains both output
+streams while retaining bounded text and terminates/reaps owned processes on
+cancellation or close. `gui_review/checks.rs` previews the effective project
+command, rechecks confirmation and workflow freshness, and returns transient
+results without saving progress or completing the review. Completing the review
+and feedback dispatch remain later GUI increments.
 
 ## Feature modules
 
@@ -70,7 +76,8 @@ the review and feedback dispatch remain later GUI increments.
 | | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |
 | | `review/history.rs` | Read-only round browsing, lazy archive loading and shared current-review projection |
 | | `review/comments.rs` | Anchors, comments, suggestions and editor operations |
-| | `review/headless.rs` | Walkthrough/co-review/check workers, completion and feedback dispatch |
+| | `review/headless.rs` | Walkthrough/co-review workers, completion and feedback dispatch |
+| | `review/checks.rs` | Shared build/test check execution, bounded output and process ownership |
 | | `review/pr_drafts.rs` | PR review drafts in SQLite: save, resume, PR-update flags and outdated comments |
 | | `review/pr_submit.rs` | PR review submit dialog, GitHub payload and posting |
 | | `review/state.rs` | Viewer/comment/undo/history state and mode-owned child handles |

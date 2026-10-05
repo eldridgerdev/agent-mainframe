@@ -6,10 +6,12 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
 }) {
   const summary = view.summary!;
   const [confirm, setConfirm] = useState(false);
+  const [checkConfirm, setCheckConfirm] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const inFlight = useRef(false);
-  useEffect(() => { setConfirm(false); }, [view.workflow_id, view.revision]);
-  const blocked = busy || submitting || dirty || view.ai.running || view.save_error !== null || view.error !== null;
+  useEffect(() => { setConfirm(false); setCheckConfirm(null); }, [view.workflow_id, view.revision, view.check_command]);
+  const checkRunning = view.check?.status === "running";
+  const blocked = busy || submitting || dirty || checkRunning || view.ai.running || view.save_error !== null || view.error !== null;
   async function apply() {
     if (blocked || inFlight.current) return;
     inFlight.current = true;
@@ -21,10 +23,21 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
       setSubmitting(false);
     }
   }
+  async function runCheck() {
+    if (blocked || inFlight.current || !checkConfirm) return;
+    inFlight.current = true;
+    setSubmitting(true);
+    try {
+      if (await onAct({ kind: "run_check", command: checkConfirm })) setCheckConfirm(null);
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  }
   return <section className="review-summary" aria-label="Pre-finish review summary">
-    <p>Every file verdict and open kept thread is shown below, including files hidden by your filter. Finishing, checks and feedback handoff still use the TUI.</p>
+    <p>Every file verdict and open kept thread is shown below, including files hidden by your filter. Run your configured project check here before finishing. Completing the review and feedback handoff still use the TUI.</p>
     {summary.undecided > 0 && <p role="status">{summary.undecided} file(s) have no verdict. Return to review to decide them before finishing.</p>}
-    {dirty && <p role="status">Your unsaved drafts are retained. Return to review and save or discard them before applying the batch.</p>}
+    {dirty && <p role="status">Your unsaved drafts are retained. Return to review and save or discard them before applying the batch or running checks.</p>}
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p>
       <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
     </div>}
@@ -32,12 +45,29 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
       <ul>{summary.failures.map((failure, index) => <li key={index}>{failure}</li>)}</ul>
     </div>}
     <p>{summary.pending_suggestions} open suggestion(s) · {view.applied_suggestions.length} applied locally</p>
-    <button className="btn btn-primary" disabled={blocked || summary.pending_suggestions === 0 || confirm} onClick={() => setConfirm(true)}>Apply pending suggestions</button>
+    <button className="btn btn-primary" disabled={blocked || summary.pending_suggestions === 0 || confirm || checkConfirm !== null} onClick={() => setConfirm(true)}>Apply pending suggestions</button>
     {confirm && <div className="review-confirm" role="alertdialog" aria-label="Apply pending suggestions locally">
       <p>Apply {summary.pending_suggestions} saved replacement(s) to your checkout? This writes source files, resolves successful threads, and refreshes the diff. Blocked suggestions stay open. Changed files lose approval and must be reviewed again. This does not finish the review or send feedback.</p>
       <button className="btn btn-primary" disabled={blocked} onClick={() => void apply()}>Apply batch locally</button>
       <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => setConfirm(false)}>Cancel batch application</button>
     </div>}
+    <section aria-label="Project review check" className="review-note">
+      <h3>Project check</h3>
+      {view.check_command ? <><pre>{view.check_command}</pre>
+        <button className="btn btn-secondary" disabled={blocked || checkConfirm !== null || confirm} onClick={() => setCheckConfirm(view.check_command)}>Run project check</button>
+      </> : <p>No final review check is configured for this project.</p>}
+      {checkConfirm !== null && <div className="review-confirm" role="alertdialog" aria-label="Run project review check">
+        <p>Run this shell command in the feature checkout? It may write build or test artifacts. Review progress stays open; this does not apply suggestions, finish the review or send feedback.</p>
+        <pre>{checkConfirm}</pre>
+        <button className="btn btn-primary" disabled={blocked} onClick={() => void runCheck()}>Run check now</button>
+        <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => setCheckConfirm(null)}>Cancel check launch</button>
+      </div>}
+      {view.check && <><p role="status">Check {view.check.status}: {view.check.command}</p>
+        {view.check.output && <pre aria-label="Project check output">{view.check.output}</pre>}
+        {checkRunning && <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel running check</button>}
+        <p className="muted small">Results stay in this open review. Finishing from the TUI runs its configured check again.</p>
+      </>}
+    </section>
     {summary.rows.map((row, index) => <article className="review-note" key={index}>
       <h3>{row.title}</h3>
       {row.severity && <p className="muted small">{row.severity}</p>}

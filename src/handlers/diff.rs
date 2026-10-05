@@ -3597,10 +3597,7 @@ index 1111111..2222222 100644
 
         // Simulate `q` having already spawned a background finish-check
         // command that hasn't reported back yet.
-        let child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let child = crate::app::review::ReviewCheckRun::spawn(dir.path(), "sleep 30").unwrap();
         let child_id = child.id();
         if let AppMode::DiffViewer(state) = &mut app.mode {
             state.finish_check_command = Some("sleep 30".to_string());

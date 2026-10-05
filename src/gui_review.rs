@@ -10,12 +10,13 @@ use crate::gui_diff::{DiffFileView, file_view};
 use crate::project::SessionKind;
 
 mod ai;
+mod checks;
 mod summary;
-pub use ai::poll;
 pub use ai::{
     ReviewAiView, ReviewCommentDraftView, ReviewCommentEditorView, ReviewDraftDestination,
     ReviewQuestionView,
 };
+pub use checks::{ReviewCheckStatus, ReviewCheckView, poll};
 pub use summary::{ReviewSummaryRow, ReviewSummaryView};
 
 pub use crate::app::review::state::{FileComment, Severity};
@@ -28,6 +29,8 @@ pub(crate) struct ReviewContext {
     progress: Option<Vec<u8>>,
     save_error: Option<String>,
     ready_comment: Option<ReviewCommentEditorView>,
+    check_run: Option<crate::app::review::ReviewCheckRun>,
+    check: Option<ReviewCheckView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +80,8 @@ pub struct ReviewView {
     pub applied_suggestions: Vec<String>,
     pub history: Option<ReviewHistoryView>,
     pub summary: Option<ReviewSummaryView>,
+    pub check_command: Option<String>,
+    pub check: Option<ReviewCheckView>,
     pub ai: ReviewAiView,
 }
 
@@ -104,6 +109,10 @@ pub enum ReviewAction {
     SummaryOpen,
     SummaryClose,
     ApplyFinishSuggestions,
+    RunCheck {
+        command: String,
+    },
+    CancelCheck,
     HistoryOpen,
     HistorySelect {
         round: usize,
@@ -289,6 +298,8 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         progress,
         save_error: None,
         ready_comment: None,
+        check_run: None,
+        check: None,
     });
     snapshot(gui)
 }
@@ -305,6 +316,8 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         context.save_error.clone(),
     );
     let ready_comment = context.ready_comment.clone();
+    let check = context.check.clone();
+    let check_command = checks::command(gui);
     let app = gui.app_for_workflow();
     let state = ai::state(&app.mode)?;
     let mut ai = ai::view(app)?;
@@ -381,6 +394,8 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         error: state.error.clone(),
         applied_suggestions: state.applied_suggestions.clone(),
         summary: summary::view(state),
+        check_command,
+        check,
         history: state
             .review_history
             .as_ref()
@@ -446,6 +461,36 @@ pub fn act(
         return Err(GuiError::conflict(
             "Save or discard the transferred comment draft first",
         ));
+    }
+    if context.check_run.is_some()
+        && !matches!(
+            action,
+            ReviewAction::SummaryOpen
+                | ReviewAction::SummaryClose
+                | ReviewAction::HistoryOpen
+                | ReviewAction::HistorySelect { .. }
+                | ReviewAction::HistoryLoadOlder
+                | ReviewAction::HistoryClose
+                | ReviewAction::CancelCheck
+                | ReviewAction::Pause
+                | ReviewAction::Discard
+        )
+    {
+        return Err(GuiError::conflict(
+            "Wait for or cancel the running check before changing this review",
+        ));
+    }
+    if matches!(action, ReviewAction::CancelCheck) {
+        if context.check_run.is_none() {
+            return Err(GuiError::conflict("No review check is running"));
+        }
+        checks::cancel(
+            gui,
+            ReviewCheckStatus::Cancelled,
+            "Cancelled by reviewer".into(),
+        );
+        gui.review_context.as_mut().unwrap().revision += 1;
+        return snapshot(gui).map(Some);
     }
     let target = context.target.clone();
     let unsaved = context.save_error.is_some();
@@ -584,6 +629,18 @@ pub fn act(
             "Saved review changed in another interface; reload the saved review before editing",
         ));
     }
+    if let ReviewAction::RunCheck { command } = &action {
+        checks::start(gui, command)?;
+        gui.review_context.as_mut().unwrap().revision += 1;
+        return snapshot(gui).map(Some);
+    }
+    let invalidate_check = matches!(
+        action,
+        ReviewAction::Refresh
+            | ReviewAction::Reload
+            | ReviewAction::ApplySuggestion { .. }
+            | ReviewAction::ApplyFinishSuggestions
+    );
     // Set when the action itself establishes what the saved file holds.
     let mut baseline = None;
     if reload {
@@ -790,6 +847,13 @@ pub fn act(
             app.defer_review_progress_persist = false;
             outcome?;
         }
+    }
+    if invalidate_check && gui.review_context.as_ref().unwrap().check.is_some() {
+        checks::cancel(
+            gui,
+            ReviewCheckStatus::Stale,
+            "Reviewed changes were refreshed or suggestions applied; run the check again".into(),
+        );
     }
     if !preserve_draft {
         gui.review_context.as_mut().unwrap().ready_comment = None;

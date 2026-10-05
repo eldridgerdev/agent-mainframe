@@ -1,3 +1,4 @@
+mod checks;
 mod comments;
 mod headless;
 mod history;
@@ -8,6 +9,7 @@ mod progression;
 
 #[cfg(test)]
 mod tests;
+pub(crate) use checks::ReviewCheckRun;
 pub use comments::resolve_editor_command;
 pub(crate) use comments::{comment_anchor_label, local_suggestion_blocker};
 pub(crate) use history::current_review_history_markdown;

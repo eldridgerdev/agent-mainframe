@@ -458,3 +458,33 @@ it("refuses a late library handoff after the session is deleted in the workspace
   expect(promptCalls()).toHaveLength(0);
   client.clear();
 });
+
+it("polls a running project check without AI work and stops when its result arrives", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const base = {
+    workflow_id: "review-check", revision: 7, target: { project_id: "project", feature_id: "feature" },
+    feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
+    summary: { rows: [], undecided: 0, pending_suggestions: 0, failures: [] }, check_command: "cargo test",
+    check: { command: "cargo test", status: "running", output: "" },
+    ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null,
+      question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
+  };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(base);
+    if (command === "review_snapshot") return Promise.resolve({ ...base, revision: 8, check: { ...base.check, status: "passed", output: "tests passed" } });
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    expect(screen.getByText("Check running: cargo test")).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText("Check passed: cargo test")).toBeTruthy();
+    expect(screen.getByLabelText("Project check output").textContent).toBe("tests passed");
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    const polls = vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot");
+    expect(polls).toEqual([["review_snapshot", { workflowId: "review-check" }]]);
+  } finally { vi.useRealTimers(); client.clear(); }
+});

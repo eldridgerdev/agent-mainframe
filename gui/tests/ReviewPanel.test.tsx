@@ -8,7 +8,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
-  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null, summary: null,
+  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null, summary: null, check_command: null, check: null,
   ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
@@ -765,4 +765,84 @@ it("protects a cleared transferred editor when an empty save would remove existi
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "line_comment", path: "code.rs", start: answeredTurn.start, end: answeredTurn.end, text: "", severity: "nit" }));
+});
+
+it("previews the configured check and cancelling its confirmation launches nothing", () => {
+  const { onAct } = mount({ ...view, summary, check_command: "npm test" });
+  fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
+  const dialog = screen.getByRole("alertdialog", { name: "Run project review check" });
+  expect(dialog.textContent).toContain("npm test");
+  expect(dialog.textContent).toContain("may write build or test artifacts");
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel check launch" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("submits a confirmed check once and retains a failed launch confirmation for retry", async () => {
+  let resolve!: (value: boolean) => void;
+  const onAct = vi.fn(() => new Promise<boolean>((done) => { resolve = done; }));
+  const { update } = mount({ ...view, summary, check_command: "cargo test" }, onAct);
+  fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Run check now" }));
+  fireEvent.click(screen.getByRole("button", { name: "Run check now" }));
+  expect(onAct).toHaveBeenCalledTimes(1);
+  expect(onAct).toHaveBeenCalledWith({ kind: "run_check", command: "cargo test" });
+  resolve(false);
+  await waitFor(() => expect((screen.getByRole("button", { name: "Run check now" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Run check now" }));
+  resolve(true);
+  update({ view: { ...view, summary, revision: 5, check_command: "cargo test", check: { command: "cargo test", status: "running", output: "" } } });
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(screen.getByText("Check running: cargo test")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel running check" }));
+  expect(onAct).toHaveBeenLastCalledWith({ kind: "cancel_check" });
+});
+
+it("displays pass fail and stale check output while leaving the summary open", () => {
+  const { update } = mount({ ...view, summary, check_command: "test script", check: { command: "test script", status: "failed", output: "test diagnostic\nstderr" } });
+  expect(screen.getByText("Check failed: test script")).toBeTruthy();
+  expect(screen.getByLabelText("Project check output").textContent).toBe("test diagnostic\nstderr");
+  expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(false);
+  update({ view: { ...view, summary, check_command: "test script", check: { command: "test script", status: "passed", output: "all passed" } } });
+  expect(screen.getByText("Check passed: test script")).toBeTruthy();
+  update({ view: { ...view, summary, check_command: "test script", check: { command: "test script", status: "stale", output: "Changes changed; result discarded" } } });
+  expect(screen.getByText("Check stale: test script")).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Pre-finish review summary" })).toBeTruthy();
+});
+
+it("requires a new confirmation when the configured command or revision changes", () => {
+  const { onAct, update } = mount({ ...view, summary, check_command: "old command" });
+  fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
+  update({ view: { ...view, summary, check_command: "new command" } });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Run project check" }));
+  expect(screen.getByRole("alertdialog").textContent).toContain("new command");
+  update({ view: { ...view, summary, revision: 5, check_command: "new command" } });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("retains unsaved drafts through check polling and blocks launch until they are saved or discarded", async () => {
+  const { onAct, update } = mount({ ...view, check_command: "true" });
+  fireEvent.click(screen.getByRole("button", { name: "Edit file comment" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Unsent check draft" } });
+  update({ view: { ...view, summary, check_command: "true" } });
+  expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view: { ...view, summary, revision: 5, check_command: "true", check: { command: "true", status: "passed", output: "" } } });
+  fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "summary_close" }));
+  update({ view: { ...view, check_command: "true" } });
+  expect((screen.getByRole("textbox", { name: "File comment" }) as HTMLTextAreaElement).value).toBe("Unsent check draft");
+});
+
+it("blocks check launches during AI or save failures and reports missing configuration", () => {
+  const { update } = mount({ ...view, summary });
+  expect(screen.getByText("No final review check is configured for this project.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Run project check" })).toBeNull();
+  update({ view: { ...view, summary, check_command: "true", ai: { ...view.ai, running: true } } });
+  expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view: { ...view, summary, check_command: "true", save_error: "disk full" } });
+  expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(true);
 });

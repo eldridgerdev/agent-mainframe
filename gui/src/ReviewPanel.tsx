@@ -17,7 +17,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   const ai = view.ai;
   const history = view.history;
   const summary = view.summary;
-  const busy = commandBusy || ai.precall !== null || (ai.question_running && ai.comment_draft !== null);
+  const busy = commandBusy || view.check?.status === "running" || ai.precall !== null || (ai.question_running && ai.comment_draft !== null);
   const [question, setQuestion] = useState<{ path: string; span: ReviewSpan | null; text: string; harness: AgentSlug; turn?: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState<{ request: number; text: string } | null>(null);
   const receivedDraft = useRef("");
@@ -150,7 +150,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
-    {summary ? <ReviewSummaryPanel view={view} busy={busy} dirty={dirty} onAct={onAct} /> : history ? <section className="review-history" aria-label="Review round history">
+    {summary ? <ReviewSummaryPanel view={view} busy={commandBusy || ai.precall !== null} dirty={dirty} onAct={onAct} /> : history ? <section className="review-history" aria-label="Review round history">
       <p className="muted small">Read-only history. Current reflects this open review; local unsaved drafts stay in their editors. Completed rounds include feedback, suggestions, checks and agent replies.</p>
       {history.error && <p role="alert">{history.error}</p>}
       <div className="review-history-reader">

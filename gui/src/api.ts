@@ -661,7 +661,10 @@ export interface ReviewAi {
   overview_running: boolean;
   overview: string | null;
   question_running: boolean;
-  questions: { question: string; answer: string | null; error: string | null; focus: string }[];
+  questions: {
+    question: string; answer: string | null; error: string | null; focus: string;
+    path: string | null; start: ReviewLocation | null; end: ReviewLocation | null; harness: AgentSlug;
+  }[];
   question_error: string | null;
   harnesses: AgentSlug[];
   message: string | null;

@@ -469,8 +469,10 @@ export default function App() {
     finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  // Poll only while AI work is in flight: the poll finishes it, and nothing
+  // else changes the review without an explicit action.
   useEffect(() => {
-    if (!review || reviewBusy) return;
+    if (!review || reviewBusy || !review.ai.running) return;
     let cancelled = false;
     let polling = false;
     const workflowId = review.workflow_id;
@@ -484,7 +486,7 @@ export default function App() {
       }).catch(() => { /* Explicit actions report conflicts. */ }).finally(() => { polling = false; });
     }, 1000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [review?.workflow_id, reviewBusy]);
+  }, [review?.workflow_id, review?.ai.running, reviewBusy]);
 
   async function beginReview(target: FeatureTarget) {
     if (reviewPending.current) return;

@@ -12,6 +12,10 @@ pub struct ReviewQuestionView {
     pub answer: Option<String>,
     pub error: Option<String>,
     pub focus: String,
+    pub path: Option<String>,
+    pub start: Option<DiffLineLocation>,
+    pub end: Option<DiffLineLocation>,
+    pub harness: AgentKind,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +88,10 @@ pub(super) fn view(app: &App) -> GuiResult<ReviewAiView> {
                 answer: t.answer.clone(),
                 error: t.error.clone(),
                 focus: t.context.focus.clone(),
+                path: t.context.path.clone(),
+                start: t.context.anchor.as_ref().map(|a| a.start),
+                end: t.context.anchor.as_ref().map(|a| a.end),
+                harness: t.harness.clone(),
             })
             .collect(),
         question_error: s.questions.error.clone(),
@@ -293,6 +301,9 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
 
 /// A read poll may finish work but never launches a paid request. Revision
 /// changes only for a completion/cancellation, preserving local GUI drafts.
+/// Like the TUI, it never times a run out on its own: long repository-aware
+/// runs are legitimate, the reviewer cancels explicitly, and a question's
+/// own deadline lives in the shared question worker.
 pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
     let context = gui
         .review_context
@@ -301,9 +312,6 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
         .ok_or_else(|| GuiError::conflict("Final Review is no longer open"))?;
     let target = context.target.clone();
     let progress = context.progress.clone();
-    let timed_out = context
-        .ai_started
-        .is_some_and(|t| t.elapsed().as_secs() >= 180);
     gui.refresh_snapshot()?;
     let app = gui.app_for_workflow();
     if matches!(app.mode, AppMode::PromptPrecall(_)) || !running(state(&app.mode)?) {
@@ -311,9 +319,6 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
     }
     let s = state(&app.mode)?;
     let valid = (|| -> GuiResult<()> {
-        if timed_out {
-            return Err(GuiError::conflict("AI request timed out"));
-        }
         let (pi, fi) = app
             .store
             .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -361,7 +366,6 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
     }
     let context = gui.review_context.as_mut().unwrap();
     context.revision += 1;
-    context.ai_started = None;
     snapshot(gui)
 }
 
@@ -558,6 +562,47 @@ mod tests {
             Some("Repository-backed explanation")
         );
         assert_eq!(completed.general_feedback, "Saved while waiting");
+    }
+
+    #[test]
+    fn pause_with_an_unsaved_review_cancels_a_pending_notice_instead_of_panicking() {
+        let (dir, mut gui, view) = opened();
+        // Saving fails without the blocker showing up as a reviewed change.
+        std::fs::write(dir.path().join("repo/.git/info/exclude"), ".claude\n").unwrap();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::write(&claude, "parent is a file").unwrap();
+        let view = act(
+            &mut gui,
+            &view,
+            ReviewAction::General {
+                text: "Keep me".into(),
+            },
+        );
+        assert!(view.save_error.is_some());
+        let pending = act(
+            &mut gui,
+            &view,
+            ReviewAction::Walkthrough {
+                path: "code.txt".into(),
+            },
+        );
+        assert!(pending.ai.precall.is_some());
+        let paused = act(&mut gui, &pending, ReviewAction::Pause);
+        assert!(paused.ai.precall.is_none());
+        assert!(paused.save_error.is_some());
+        assert_eq!(paused.general_feedback, "Keep me");
+        std::fs::remove_file(claude).unwrap();
+        let view = act(&mut gui, &paused, ReviewAction::RetrySave);
+        assert!(
+            super::super::act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::Pause
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]
@@ -788,23 +833,25 @@ mod tests {
     }
 
     #[test]
-    fn poll_reports_worker_failure_and_timeout_and_refresh_discards_cached_ai_notes() {
+    fn poll_reports_worker_failure_and_refresh_discards_cached_ai_notes() {
         let (_dir, mut gui, view) = opened();
         let tx = pending_co_review(&mut gui);
         tx.send(Err("fixture failure".into())).unwrap();
         let failed = drain(&mut gui, &view);
-        assert!(failed.ai.message.unwrap().contains("fixture failure"));
-        let _tx = pending_co_review(&mut gui);
-        gui.review_context.as_mut().unwrap().ai_started =
-            Some(Instant::now() - Duration::from_secs(181));
-        let timed_out = poll(&mut gui, &view.workflow_id).unwrap();
-        assert!(timed_out.ai.message.as_ref().unwrap().contains("timed out"));
+        assert!(
+            failed
+                .ai
+                .message
+                .as_ref()
+                .unwrap()
+                .contains("fixture failure")
+        );
         if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
             s.generated_notes
                 .insert("code.txt".into(), "Old walkthrough".into());
             s.changeset_overview = Some("Old overview".into());
         }
-        let refreshed = act(&mut gui, &timed_out, ReviewAction::Refresh);
+        let refreshed = act(&mut gui, &failed, ReviewAction::Refresh);
         assert!(refreshed.ai.overview.is_none());
         assert!(refreshed.files.iter().all(|f| f.walkthrough.is_none()));
     }

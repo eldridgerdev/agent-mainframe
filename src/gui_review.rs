@@ -22,7 +22,6 @@ pub(crate) struct ReviewContext {
     revision: u64,
     progress: Option<Vec<u8>>,
     save_error: Option<String>,
-    ai_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,7 +244,6 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         revision: 0,
         progress,
         save_error: None,
-        ai_started: None,
     });
     snapshot(gui)
 }
@@ -439,6 +437,11 @@ pub fn act(
         if matches!(action, ReviewAction::PrecallConfirm) {
             ai::apply(app, &action)?;
         } else {
+            // Only Pause gets here with a notice open (an unsaved review must
+            // retry its save first): drop the unsent call before saving.
+            if matches!(app.mode, AppMode::PromptPrecall(_)) {
+                app.precall_cancel();
+            }
             let AppMode::DiffViewer(state) = &mut app.mode else {
                 unreachable!()
             };
@@ -637,14 +640,8 @@ pub fn act(
     } else if !matches!(gui.app_for_workflow().mode, AppMode::PromptPrecall(_)) {
         save(gui);
     }
-    let running = ai::view(gui.app_for_workflow())?.running;
     let context = gui.review_context.as_mut().unwrap();
     context.revision += 1;
-    if running && context.ai_started.is_none() {
-        context.ai_started = Some(std::time::Instant::now());
-    } else if !running {
-        context.ai_started = None;
-    }
     if pause && context.save_error.is_none() {
         ai::cancel(gui.app_for_workflow());
         gui.app_for_workflow().mode = AppMode::Normal;

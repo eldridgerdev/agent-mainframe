@@ -32,6 +32,8 @@ pub(crate) struct QuestionContext {
     pub label: String,
     pub target: ReviewTarget,
     pub focus: String,
+    /// File the question is about; set even when no lines are selected.
+    pub path: Option<String>,
     pub anchor: Option<InlineAnchor>,
     pub version: String,
 }
@@ -165,6 +167,7 @@ impl QuestionContext {
                 ignore_whitespace: state.ignore_whitespace,
             },
             focus,
+            path: file.map(|f| f.path.clone()),
             anchor,
             version,
         }
@@ -209,6 +212,7 @@ impl QuestionContext {
                     )
                 })
                 .unwrap_or_else(|| "Whole PR; no finding or line selection".into()),
+            path: finding.and_then(|f| f.path.clone()),
             anchor,
             version: Self::ai_version(state),
         }

@@ -412,7 +412,7 @@ it.each(["claude", "codex", "opencode", "pi"])("asks selected source coordinates
   fireEvent.change(screen.getByRole("combobox", { name: "Answering harness" }), { target: { value: harness } });
   fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, question: "Why this line?", harness }));
-  update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ question: "Why this line?", answer: "An explanation", error: null, focus: "code.rs, new line 1" }] } } });
+  update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ question: "Why this line?", answer: "An explanation", error: null, focus: "code.rs, new line 1", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, harness }] } } });
   expect(screen.getByText("An explanation")).toBeTruthy();
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Review question" })).toBeNull());
 });
@@ -445,10 +445,40 @@ it("retains submitted question text while running and after a failed answer", as
   fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Keep this question" } });
   fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
-  const turn = { question: "Keep this question", answer: null, error: null, focus: "code.rs" };
+  const turn = { question: "Keep this question", answer: null, error: null, focus: "code.rs", path: "code.rs", start: null, end: null, harness: "claude" as const };
   update({ view: { ...noThreadsView, ai: { ...view.ai, running: true, question_running: true, questions: [turn] } } });
   expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Keep this question");
   update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ ...turn, error: "Harness failed" }], question_error: "Harness failed" } } });
   expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Keep this question");
   expect((screen.getByRole("button", { name: "Ask review question" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("retries a failed question about its own file, lines and harness, not the current selection", async () => {
+  const failed = { question: "Why this line?", answer: null, error: "Harness failed", focus: "code.rs, new line 1",
+    path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, harness: "codex" as const };
+  const { onAct } = mount({ ...noThreadsView, selected_path: "image.bin", ai: { ...view.ai, questions: [failed] } });
+  fireEvent.click(screen.getByText("Review questions (1)"));
+  fireEvent.click(screen.getByRole("button", { name: "Retry question" }));
+  expect(screen.getByText("Question about code.rs, line 1 – line 1")).toBeTruthy();
+  expect((screen.getByRole("combobox", { name: "Answering harness" }) as HTMLSelectElement).value).toBe("codex");
+  fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: failed.start, end: failed.end, question: "Why this line?", harness: "codex" }));
+});
+
+it("drops a line selection when the selected file's patch changes, but keeps it across unrelated updates", () => {
+  const { update } = mount(noThreadsView);
+  fireEvent.click(screen.getAllByRole("button", { name: "Select line 1" })[0]);
+  expect(screen.getByText("Selected line 1 – line 1")).toBeTruthy();
+  update({ view: { ...noThreadsView, revision: 5 } });
+  expect(screen.getByText("Selected line 1 – line 1")).toBeTruthy();
+  const shifted = { ...noThreadsView.files[0], diff: { ...noThreadsView.files[0].diff, patch: "refreshed patch" } };
+  update({ view: { ...noThreadsView, revision: 6, files: [shifted, noThreadsView.files[1]] } });
+  expect(screen.queryByText("Selected line 1 – line 1")).toBeNull();
+});
+
+it("does not claim the review is updating while a pre-call notice waits on the reviewer", () => {
+  const { update } = mount({ ...view, ai: { ...view.ai, precall: { title: "Walkthrough", harness: "Claude", preview: "", viewing: false } } });
+  expect(screen.queryByText(/Updating review/)).toBeNull();
+  update({ busy: true });
+  expect(screen.getByText(/Updating review/)).toBeTruthy();
 });

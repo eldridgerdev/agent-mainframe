@@ -24,7 +24,9 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   const [notice, setNotice] = useState<string | null>(null);
   const dirty = (editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity)) || !!question?.text.trim();
   const file = view.files.find((f) => f.diff.path === view.selected_path);
-  useEffect(() => { setSelection(null); setNotice(null); }, [view.workflow_id, view.selected_path]);
+  // Selections are keyed by line numbers, so they only mean anything against
+  // the patch they were made on: a refresh that shifts lines drops them.
+  useEffect(() => { setSelection(null); setNotice(null); }, [view.workflow_id, view.selected_path, file?.diff.patch]);
   useEffect(() => {
     setQuestion((draft) => {
       const turn = draft?.turn !== undefined ? ai.questions[draft.turn] : null;
@@ -111,7 +113,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={() => request({ kind: "pause" })}>Pause review</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Finish and send feedback from the TUI.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
-    {busy && <p role="status"><Spinner /> Updating review…</p>}
+    {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
       <button className="btn btn-ghost" disabled={busy || pending !== null} onClick={() => request({ kind: "discard" })}>Close without saving</button></div>}
@@ -159,8 +161,9 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     {ai.questions.length > 0 && <details className="review-note"><summary>Review questions ({ai.questions.length})</summary>{ai.questions.map((turn, index) => <section key={index}>
       <p><strong>{turn.question}</strong></p><details><summary>Question context</summary><pre>{turn.focus}</pre></details>
       {turn.answer && <Markdown source={turn.answer} />}{turn.error && <p role="alert">{turn.error}</p>}
-      {turn.error && file && <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !ai.harnesses.length}
-        onClick={() => setQuestion({ path: file.diff.path, span, text: turn.question, harness: ai.harnesses[0] })}>Retry question</button>}
+      {turn.error && turn.path && <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !ai.harnesses.length}
+        onClick={() => setQuestion({ path: turn.path!, span: turn.start && turn.end ? { start: turn.start, end: turn.end } : null, text: turn.question,
+          harness: ai.harnesses.includes(turn.harness) ? turn.harness : ai.harnesses[0] })}>Retry question</button>}
     </section>)}</details>}
     {question && <form className="review-editor" onSubmit={(event) => {
       event.preventDefault();

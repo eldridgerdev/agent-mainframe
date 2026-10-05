@@ -199,6 +199,9 @@ case "$(cat .amf/check-mode)" in
     sleep 30 &
     echo $! > .amf/check-descendant
     wait ;;
+  gated)
+    while [ ! -e .amf/check-release ]; do sleep 0.05; done
+    echo 'Invoice checks: 4 passed, 0 failed' ;;
 esac
 ''')
 progress_path = claude / "final-review-progress.json"
@@ -316,14 +319,14 @@ try:
     capture("006-cancelled-check-result.png", "Cancellation terminates the isolated command and its child process; the cancelled result stays visible and another explicit run is available.", ["Check cancelled:", "Cancelled by reviewer", "Run project check"], '!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Run project check").disabled')
     assert runs() == 3
 
-    (check_dir / "check-descendant").unlink()
+    # The reviewed patch is compared once the check exits, not on every poll.
+    mode_path.write_text("gated")
     run_check()
     check_text("Check running:")
-    descendant_ready()
     (repo / "invoice.ts").write_bytes(original_source + b"\n// Changed externally during the check.\n")
+    (check_dir / "check-release").write_text("")
     check_text("Check stale:")
-    check_exited()
-    capture("007-stale-check-result-discarded.png", "An external source change cancels the in-flight check and discards its obsolete result, asking the reviewer to refresh or reload before running again.", ["Check stale:", "Check cancelled; result discarded", "Refresh or reload before running again.", "Return to review"])
+    capture("007-stale-check-result-discarded.png", "A reviewed source changed while the check ran, so its result is discarded on completion and the reviewer is asked to refresh or reload before running again.", ["Check stale:", "Check finished; result discarded", "Refresh or reload before running again.", "Return to review"])
     assert runs() == 4
     (repo / "invoice.ts").write_bytes(original_source)
     assert progress_path.read_bytes() == original_progress, "Running checks unexpectedly saved review progress"

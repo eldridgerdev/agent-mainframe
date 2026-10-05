@@ -168,6 +168,15 @@ pub(super) fn cancel(app: &mut App) {
     }
 }
 
+pub(super) fn same_file(a: &crate::diff::DiffFile, b: &crate::diff::DiffFile) -> bool {
+    a.path == b.path
+        && a.old_path == b.old_path
+        && a.patch == b.patch
+        && a.status == b.status
+        && a.old_content == b.old_content
+        && a.new_content == b.new_content
+}
+
 pub(super) fn fresh(s: &DiffViewerState) -> GuiResult<()> {
     let mut current = crate::diff::load_snapshot(
         &s.workdir,
@@ -179,14 +188,11 @@ pub(super) fn fresh(s: &DiffViewerState) -> GuiResult<()> {
         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
     if current.base_commit != s.base_commit
         || current.files.len() != s.files.len()
-        || !current.files.iter().zip(&s.files).all(|(a, b)| {
-            a.path == b.path
-                && a.old_path == b.old_path
-                && a.patch == b.patch
-                && a.status == b.status
-                && a.old_content == b.old_content
-                && a.new_content == b.new_content
-        })
+        || !current
+            .files
+            .iter()
+            .zip(&s.files)
+            .all(|(a, b)| same_file(a, b))
     {
         return Err(GuiError::conflict(
             "Review changes changed; refresh changes before continuing",

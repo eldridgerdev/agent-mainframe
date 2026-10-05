@@ -25,17 +25,8 @@ pub(crate) struct CheckOutcome {
 
 /// Cap on how much of a check command's combined stdout/stderr is kept, so a
 /// noisy build/test failure can't blow up the feedback file or the agent
-/// prompt built from it.
+/// prompt built from it. `checks::combine_output` divides it between streams.
 pub(super) const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
-
-pub(super) fn truncate_check_output(output: &str) -> String {
-    if output.chars().count() <= CHECK_OUTPUT_MAX_CHARS {
-        output.to_string()
-    } else {
-        let truncated: String = output.chars().take(CHECK_OUTPUT_MAX_CHARS).collect();
-        format!("{truncated}\n… (truncated)")
-    }
-}
 
 impl App {
     /// Generate a walkthrough for the current file when it has no developer

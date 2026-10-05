@@ -646,7 +646,7 @@ fn draw_review_history_modal(frame: &mut Frame, state: &mut DiffViewerState, the
     };
     let selected = history.selected;
     let scroll = history.scroll;
-    let error = history.error.clone();
+    let error = history.error_message();
     let historical = selected > 0;
     let body = if selected == 0 {
         crate::app::review::current_review_history_markdown(state)
@@ -5612,6 +5612,7 @@ index 0000000..1111111
             archive_available: true,
             archive_loaded: false,
             error: None,
+            archive_error: None,
         });
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();

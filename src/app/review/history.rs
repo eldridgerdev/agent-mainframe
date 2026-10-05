@@ -38,6 +38,7 @@ impl App {
                 archive_available: archive_path.is_file(),
                 archive_loaded: false,
                 error,
+                archive_error: None,
             });
         }
     }
@@ -75,11 +76,16 @@ impl App {
         if let AppMode::DiffViewer(state) = &mut self.mode
             && let Some(history) = &mut state.review_history
         {
-            history.archive_loaded = true;
             match result {
-                Ok(rounds) => history.rounds.extend(rounds),
+                Ok(rounds) => {
+                    history.rounds.extend(rounds);
+                    history.archive_loaded = true;
+                    history.archive_error = None;
+                }
                 Err(e) => {
-                    history.error = Some(format!("Could not read archived review history: {e}"))
+                    history.archive_error = Some(format!(
+                        "Could not read archived review history: {e}. Load older rounds again to retry."
+                    ))
                 }
             }
         }

@@ -396,7 +396,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
                 current_unresolved: state.unresolved_thread_count(),
                 archive_available: history.archive_available,
                 archive_loaded: history.archive_loaded,
-                error: history.error.clone(),
+                error: history.error_message(),
             }),
         ai,
     })
@@ -518,7 +518,8 @@ pub fn act(
     }
     // History navigation only reads shared state/files. It must never save
     // progress, discard drafts, cancel workers or hide an outstanding save
-    // error, even when the saved review or checkout has changed externally.
+    // error, even when the saved review has changed externally. (A changed
+    // checkout is still refused above: history reads the review's workdir.)
     if matches!(
         action,
         ReviewAction::HistoryOpen
@@ -1016,7 +1017,7 @@ mod tests {
     }
 
     #[test]
-    fn history_defers_archive_read_errors_and_can_reopen_after_repair() {
+    fn history_archive_read_errors_can_be_retried_without_reopening() {
         let (dir, mut gui, target) = fixture();
         let claude = dir.path().join("repo/.claude");
         std::fs::create_dir_all(&claude).unwrap();
@@ -1027,32 +1028,17 @@ mod tests {
         assert!(view.history.as_ref().unwrap().error.is_none());
         let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
         let history = view.history.as_ref().unwrap();
-        assert!(history.archive_loaded);
-        assert!(
-            history
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("archived review history")
-        );
-        let view = action(&mut gui, &view, ReviewAction::HistoryClose);
+        // A failed read keeps "Load older rounds" offered and says so.
+        assert!(!history.archive_loaded);
+        let error = history.error.as_ref().unwrap();
+        assert!(error.contains("archived review history"));
+        assert!(error.contains("Load older rounds again to retry"));
         std::fs::write(&archive, "## Review — repaired\n\nbody\n").unwrap();
-        std::fs::create_dir(claude.join("final-review-feedback.md")).unwrap();
-        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
-        assert!(
-            view.history
-                .as_ref()
-                .unwrap()
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("Could not read review history")
-        );
         let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
-        assert_eq!(
-            view.history.as_ref().unwrap().rounds[0].title,
-            "Review — repaired"
-        );
+        let history = view.history.as_ref().unwrap();
+        assert!(history.archive_loaded);
+        assert!(history.error.is_none());
+        assert_eq!(history.rounds[0].title, "Review — repaired");
     }
 
     #[test]
@@ -1190,6 +1176,44 @@ mod tests {
         );
         app.close_review_history();
         assert!(ai::state(&app.mode).unwrap().review_history.is_none());
+    }
+
+    #[test]
+    fn failed_archive_read_keeps_live_error_and_can_be_retried() {
+        let (dir, mut gui, target) = fixture();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // A directory makes the live log unreadable; invalid UTF-8 makes the
+        // archive unreadable while it still counts as available.
+        std::fs::create_dir_all(claude.join("final-review-feedback.md")).unwrap();
+        let archive = claude.join("final-review-feedback-archive.md");
+        std::fs::write(&archive, [0xff, 0xfe, 0xfd]).unwrap();
+        begin(&mut gui, target).unwrap();
+        let app = gui.app_for_workflow();
+        app.open_review_history();
+        app.load_review_history_archive();
+        let history = ai::state(&app.mode)
+            .unwrap()
+            .review_history
+            .as_ref()
+            .unwrap();
+        assert!(!history.archive_loaded);
+        let message = history.error_message().unwrap();
+        assert!(message.contains("Could not read review history"));
+        assert!(message.contains("Could not read archived review history"));
+        assert!(message.contains("Load older rounds again to retry"));
+
+        std::fs::write(&archive, "## Review — archived\n\nbody\n").unwrap();
+        app.load_review_history_archive();
+        let history = ai::state(&app.mode)
+            .unwrap()
+            .review_history
+            .as_ref()
+            .unwrap();
+        assert!(history.archive_loaded);
+        assert_eq!(history.rounds[0].title, "Review — archived");
+        assert!(history.archive_error.is_none());
+        assert!(history.error.is_some());
     }
 
     #[test]

@@ -634,6 +634,7 @@ export interface ReviewFile {
   comment: { text: string; severity: ReviewSeverity; resolved: boolean; carried: boolean } | null;
   line_comments: (ReviewSpan & { editable: boolean; anchor: string; text: string; severity: ReviewSeverity; resolved: boolean; draft: boolean; anchor_lost: boolean; suggestion: string | null; apply_blocked: string | null })[];
   notes: string | null;
+  walkthrough: string | null;
   changed_since_last: boolean;
 }
 export interface ReviewView {
@@ -650,6 +651,23 @@ export interface ReviewView {
   error: string | null;
   save_error: string | null;
   applied_suggestions: string[];
+  ai: ReviewAi;
+}
+export interface ReviewAi {
+  precall: PrecallView | null;
+  running: boolean;
+  walkthrough_path: string | null;
+  co_review_path: string | null;
+  overview_running: boolean;
+  overview: string | null;
+  question_running: boolean;
+  questions: {
+    question: string; answer: string | null; error: string | null; focus: string;
+    path: string | null; start: ReviewLocation | null; end: ReviewLocation | null; harness: AgentSlug;
+  }[];
+  question_error: string | null;
+  harnesses: AgentSlug[];
+  message: string | null;
 }
 export type ReviewAction =
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
@@ -659,7 +677,12 @@ export type ReviewAction =
   | (ReviewSpan & { kind: "suggestion"; path: string; text: string })
   | (ReviewSpan & { kind: "toggle_line_resolved" | "apply_suggestion"; path: string })
   | { kind: "general"; text: string }
+  | { kind: "walkthrough" | "co_review"; path: string }
+  | { kind: "ask"; path: string; start: ReviewLocation | null; end: ReviewLocation | null; question: string; harness: AgentSlug }
+  | (ReviewSpan & { kind: "accept_draft" | "dismiss_draft"; path: string })
+  | { kind: "overview" | "cancel_ai" | "precall_confirm" | "precall_cancel" | "precall_toggle_view" }
   | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
 export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });
+export const reviewSnapshot = (workflowId: string): Promise<ReviewView> => invoke("review_snapshot", { workflowId });
 export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
   invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });

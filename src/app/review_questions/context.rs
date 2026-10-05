@@ -32,6 +32,8 @@ pub(crate) struct QuestionContext {
     pub label: String,
     pub target: ReviewTarget,
     pub focus: String,
+    /// File the question is about; set even when no lines are selected.
+    pub path: Option<String>,
     pub anchor: Option<InlineAnchor>,
     pub version: String,
 }
@@ -165,6 +167,7 @@ impl QuestionContext {
                 ignore_whitespace: state.ignore_whitespace,
             },
             focus,
+            path: file.map(|f| f.path.clone()),
             anchor,
             version,
         }
@@ -209,6 +212,7 @@ impl QuestionContext {
                     )
                 })
                 .unwrap_or_else(|| "Whole PR; no finding or line selection".into()),
+            path: finding.and_then(|f| f.path.clone()),
             anchor,
             version: Self::ai_version(state),
         }
@@ -338,6 +342,9 @@ pub(crate) fn repository_stamp(workdir: &Path) -> Result<String> {
             "--binary",
             "HEAD",
             "--",
+            ":(top,exclude).claude/final-review-progress.json",
+            ":(top,exclude).claude/final-review-snapshot.json",
+            ":(top,exclude,glob).claude/.final-review-progress.json.*.tmp",
         ],
     )?;
     let staged = git(
@@ -349,6 +356,9 @@ pub(crate) fn repository_stamp(workdir: &Path) -> Result<String> {
             "--no-textconv",
             "--binary",
             "--",
+            ":(top,exclude).claude/final-review-progress.json",
+            ":(top,exclude).claude/final-review-snapshot.json",
+            ":(top,exclude,glob).claude/.final-review-progress.json.*.tmp",
         ],
     )?;
     let paths = git(
@@ -357,7 +367,7 @@ pub(crate) fn repository_stamp(workdir: &Path) -> Result<String> {
     )?;
     let untracked = paths
         .split('\0')
-        .filter(|p| !p.is_empty())
+        .filter(|p| !p.is_empty() && !crate::app::review::is_review_bookkeeping_path(p))
         .map(|path| (path, untracked_stamp(&workdir.join(path))))
         .collect::<Vec<_>>();
     Ok(hash((head, patch, staged, untracked)))
@@ -411,8 +421,13 @@ pub(crate) fn prepare(context: &QuestionContext, ai_diff: AiDiffLoader) -> Resul
             files,
             ignore_whitespace,
         } => {
-            let snapshot =
+            let mut snapshot =
                 crate::diff::load_snapshot(&context.workdir, Some(base), *ignore_whitespace)?;
+            // Final Review excludes its own progress/snapshot artifacts in the
+            // loader. Preparation must compare the same reviewed file set.
+            snapshot
+                .files
+                .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
             ensure!(
                 snapshot.base_commit == *base
                     && files_version(&snapshot.files) == files_version(files),

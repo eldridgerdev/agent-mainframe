@@ -306,6 +306,7 @@ it("opens Final Review on a stopped feature and pauses with its workflow identit
       workflow_id: "review-id", revision: 7, target: { project_id: "project", feature_id: "feature" },
       feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
         general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+        ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, harnesses: ["claude"], message: null },
     });
     if (command === "review_act") return new Promise((resolve) => { finishPause = () => resolve(null); });
     return original(command, args, options);
@@ -322,4 +323,65 @@ it("opens Final Review on a stopped feature and pauses with its workflow identit
   expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
   client.clear();
+});
+
+it("polls review completions by workflow/revision and cannot resurrect a paused review", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const base = {
+    workflow_id: "review-poll", revision: 7, target: { project_id: "project", feature_id: "feature" },
+    feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+    ai: { precall: null, running: true, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null as string | null, question_running: true, questions: [], question_error: null, harnesses: ["claude"], message: null },
+  };
+  // The overview landed while a question is still running, so polling continues.
+  let response: Promise<typeof base> = Promise.resolve({ ...base, revision: 8, ai: { ...base.ai, overview: "Completed overview" } });
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(base);
+    if (command === "review_snapshot") return response;
+    if (command === "review_act") return Promise.resolve(null);
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText("Completed overview")).toBeTruthy();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_snapshot", { workflowId: "review-poll" });
+    response = Promise.resolve({ ...base, revision: 7, ai: { ...base.ai, overview: "Stale overview" } });
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.queryByText("Stale overview")).toBeNull();
+    let deliver!: (next: typeof base) => void;
+    response = new Promise((resolve) => { deliver = resolve; });
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Pause review" })));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Discard and continue" })));
+    await act(async () => deliver({ ...base, revision: 9 }));
+    expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull();
+    const mutations = vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_act");
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0][1]).toEqual({ workflowId: "review-poll", revision: 8, action: { kind: "pause" } });
+  } finally { vi.useRealTimers(); client.clear(); }
+});
+
+it("does not poll a review with no AI work in flight", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const idle = {
+    workflow_id: "review-idle", revision: 1, target: { project_id: "project", feature_id: "feature" },
+    feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+    ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, harnesses: ["claude"], message: null },
+  };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(idle);
+    if (command === "review_snapshot") return Promise.resolve(idle);
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot")).toHaveLength(0);
+  } finally { vi.useRealTimers(); client.clear(); }
 });

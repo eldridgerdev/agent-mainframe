@@ -242,6 +242,7 @@ impl App {
                 answer: None,
                 error: None,
                 context: context.clone(),
+                harness: harness.clone(),
                 prepared: None,
             });
             q.selected = q.turns.len() - 1;

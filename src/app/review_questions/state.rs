@@ -14,6 +14,8 @@ pub(crate) struct Turn {
     pub answer: Option<String>,
     pub error: Option<String>,
     pub context: QuestionContext,
+    /// Harness that answered (or was asked), so a retry can reuse it.
+    pub harness: AgentKind,
     pub prepared: Option<PreparedContext>,
 }
 

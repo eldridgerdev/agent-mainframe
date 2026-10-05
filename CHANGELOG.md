@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Ask AI for help in desktop Final Review.** Generate a Claude walkthrough,
+  changeset overview or co-review, or ask repository-aware questions with
+  Claude, Codex, OpenCode or Pi. Preview and confirm each new call. Co-review
+  findings stay drafts until you accept or dismiss them; cancelled or stale
+  requests cannot add late findings. Question text survives failed or cancelled
+  calls. No migration is required.
 - **Compose agent prompts in the desktop app.** Claude, Codex, OpenCode and Pi
   tabs now include a local composer below the terminal. Type or paste a message,
   use Enter for newlines, then send with **Ctrl/Cmd+Enter** or **Send prompt**.

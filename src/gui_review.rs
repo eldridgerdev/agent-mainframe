@@ -73,12 +73,37 @@ pub struct ReviewView {
     pub error: Option<String>,
     pub save_error: Option<String>,
     pub applied_suggestions: Vec<String>,
+    pub history: Option<ReviewHistoryView>,
     pub ai: ReviewAiView,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReviewHistoryView {
+    /// Current is index zero; completed rounds are newest first.
+    pub selected: usize,
+    pub rounds: Vec<ReviewHistoryRoundView>,
+    pub markdown: String,
+    pub current_unresolved: usize,
+    pub archive_available: bool,
+    pub archive_loaded: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReviewHistoryRoundView {
+    pub title: String,
+    pub carried_unresolved: usize,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReviewAction {
+    HistoryOpen,
+    HistorySelect {
+        round: usize,
+    },
+    HistoryLoadOlder,
+    HistoryClose,
     Walkthrough {
         path: String,
     },
@@ -349,6 +374,30 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         has_prior_review: state.has_prior_review,
         error: state.error.clone(),
         applied_suggestions: state.applied_suggestions.clone(),
+        history: state
+            .review_history
+            .as_ref()
+            .map(|history| ReviewHistoryView {
+                selected: history.selected,
+                rounds: history
+                    .rounds
+                    .iter()
+                    .map(|round| ReviewHistoryRoundView {
+                        title: round.title.clone(),
+                        carried_unresolved: round.carried_unresolved,
+                    })
+                    .collect(),
+                markdown: history
+                    .selected
+                    .checked_sub(1)
+                    .and_then(|index| history.rounds.get(index))
+                    .map(|round| round.markdown.clone())
+                    .unwrap_or_else(|| crate::app::review::current_review_history_markdown(state)),
+                current_unresolved: state.unresolved_thread_count(),
+                archive_available: history.archive_available,
+                archive_loaded: history.archive_loaded,
+                error: history.error.clone(),
+            }),
         ai,
     })
 }
@@ -412,8 +461,15 @@ pub fn act(
             | ReviewAction::PrecallToggleView
             | ReviewAction::CancelAi
             | ReviewAction::DiscardQuestionDraft
+            | ReviewAction::HistoryClose
     ) {
-        ai::apply(app, &action)?;
+        if matches!(action, ReviewAction::HistoryClose) {
+            // Returning to the editor must remain possible after the target
+            // disappears, so the reviewer can pause or discard their edits.
+            app.close_review_history();
+        } else {
+            ai::apply(app, &action)?;
+        }
         let context = gui.review_context.as_mut().unwrap();
         if matches!(action, ReviewAction::DiscardQuestionDraft) {
             context.ready_comment = None;
@@ -459,6 +515,39 @@ pub fn act(
         return Err(GuiError::conflict(
             "Feature checkout changed; pause and reopen Final Review",
         ));
+    }
+    // History navigation only reads shared state/files. It must never save
+    // progress, discard drafts, cancel workers or hide an outstanding save
+    // error, even when the saved review or checkout has changed externally.
+    if matches!(
+        action,
+        ReviewAction::HistoryOpen
+            | ReviewAction::HistorySelect { .. }
+            | ReviewAction::HistoryLoadOlder
+    ) {
+        match action {
+            ReviewAction::HistoryOpen => app.open_review_history(),
+            ReviewAction::HistorySelect { round } => {
+                let history = state
+                    .review_history
+                    .as_ref()
+                    .ok_or_else(|| GuiError::conflict("Open review history first"))?;
+                if round > history.rounds.len() {
+                    return Err(GuiError::conflict("Review round is not loaded"));
+                }
+                let delta = round as isize - history.selected as isize;
+                app.review_history_move(delta);
+            }
+            ReviewAction::HistoryLoadOlder => {
+                if state.review_history.is_none() {
+                    return Err(GuiError::conflict("Open review history first"));
+                }
+                app.load_review_history_archive();
+            }
+            _ => unreachable!(),
+        }
+        gui.review_context.as_mut().unwrap().revision += 1;
+        return snapshot(gui).map(Some);
     }
     if state.error.is_some() && !reload && !refresh {
         return Err(GuiError::conflict(
@@ -800,6 +889,307 @@ mod tests {
             start,
             end,
         }
+    }
+
+    #[test]
+    fn history_loads_live_rounds_then_archive_newest_first_without_writes() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        let claude = repo.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let live = "# Final Review Feedback\n\n## Review — newest\n\n(unresolved from a previous round)\n```suggestion\nreplacement\n```\n**Agent:** fixed\n\n## Review — previous\n\n**Check:** passed\n";
+        let archive = "# Final Review Feedback Archive\n\n## Review — oldest\n\nold\n\n## Review — middle\n\nnewer\n";
+        std::fs::write(claude.join("final-review-feedback.md"), live).unwrap();
+        std::fs::write(claude.join("final-review-feedback-archive.md"), archive).unwrap();
+        let source = std::fs::read(repo.join("code.txt")).unwrap();
+        let progress = progress_bytes(&repo).unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
+        let history = view.history.as_ref().unwrap();
+        assert_eq!(history.selected, 0);
+        assert_eq!(history.rounds.len(), 2);
+        assert_eq!(history.rounds[0].title, "Review — newest");
+        assert_eq!(history.rounds[0].carried_unresolved, 1);
+        assert!(history.archive_available);
+        assert!(!history.archive_loaded);
+        let view = action(&mut gui, &view, ReviewAction::HistorySelect { round: 1 });
+        let markdown = &view.history.as_ref().unwrap().markdown;
+        assert!(markdown.contains("```suggestion\nreplacement"));
+        assert!(markdown.contains("**Agent:** fixed"));
+        let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
+        let history = view.history.as_ref().unwrap();
+        assert!(history.archive_loaded);
+        assert_eq!(history.selected, 1);
+        assert_eq!(history.rounds[2].title, "Review — middle");
+        assert_eq!(history.rounds[3].title, "Review — oldest");
+        let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
+        assert_eq!(view.history.as_ref().unwrap().rounds.len(), 4);
+        let view = action(&mut gui, &view, ReviewAction::HistorySelect { round: 4 });
+        assert!(view.history.as_ref().unwrap().markdown.contains("old\n"));
+        let view = action(&mut gui, &view, ReviewAction::HistoryClose);
+        assert!(view.history.is_none());
+        assert_eq!(progress_bytes(&repo).unwrap(), progress);
+        assert_eq!(std::fs::read(repo.join("code.txt")).unwrap(), source);
+        assert_eq!(
+            std::fs::read_to_string(claude.join("final-review-feedback.md")).unwrap(),
+            live
+        );
+        assert_eq!(
+            std::fs::read_to_string(claude.join("final-review-feedback-archive.md")).unwrap(),
+            archive
+        );
+    }
+
+    #[test]
+    fn current_history_projects_verdicts_resolved_and_draft_threads_and_agent_replies() {
+        use crate::app::review::state::{AgentResponse, LineComment};
+        let (_dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let (start, end) = span(&view, 8, 9);
+        let state = match &mut gui.app_for_workflow().mode {
+            AppMode::DiffViewer(state) => state,
+            _ => unreachable!(),
+        };
+        state.decisions.insert(
+            "code.txt".into(),
+            ReviewDecision::Reject {
+                feedback: "Must fix".into(),
+                severity: Severity::Blocker,
+            },
+        );
+        state.general_feedback = "Overall feedback".into();
+        state.line_comments.insert(
+            "code.txt".into(),
+            vec![
+                LineComment {
+                    start: Some(start),
+                    location: end,
+                    text: "Resolved thread".into(),
+                    suggestion: Some("replacement".into()),
+                    resolved: true,
+                    draft: false,
+                    severity: Severity::Nit,
+                    anchor_context: None,
+                    start_anchor_context: None,
+                    anchor_lost: false,
+                    carried: false,
+                },
+                LineComment {
+                    start: None,
+                    location: start,
+                    text: "Unaccepted finding".into(),
+                    suggestion: None,
+                    resolved: false,
+                    draft: true,
+                    severity: Severity::Question,
+                    anchor_context: None,
+                    start_anchor_context: None,
+                    anchor_lost: false,
+                    carried: false,
+                },
+            ],
+        );
+        state.prior_agent_responses.insert(
+            "code.txt".into(),
+            vec![AgentResponse {
+                anchor: "code.txt:8".into(),
+                response: "Agent explanation".into(),
+            }],
+        );
+        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
+        let history = view.history.unwrap();
+        assert!(history.rounds.is_empty());
+        assert_eq!(history.current_unresolved, 0);
+        for text in [
+            "Overall feedback",
+            "Must fix",
+            "needs work [blocker]",
+            "L8-9",
+            "nit · resolved",
+            "replacement",
+            "AI draft",
+            "Unaccepted finding",
+            "Agent explanation",
+        ] {
+            assert!(history.markdown.contains(text), "Missing {text}");
+        }
+    }
+
+    #[test]
+    fn history_defers_archive_read_errors_and_can_reopen_after_repair() {
+        let (dir, mut gui, target) = fixture();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let archive = claude.join("final-review-feedback-archive.md");
+        std::fs::write(&archive, [0xff]).unwrap();
+        let view = begin(&mut gui, target).unwrap();
+        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
+        assert!(view.history.as_ref().unwrap().error.is_none());
+        let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
+        let history = view.history.as_ref().unwrap();
+        assert!(history.archive_loaded);
+        assert!(
+            history
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("archived review history")
+        );
+        let view = action(&mut gui, &view, ReviewAction::HistoryClose);
+        std::fs::write(&archive, "## Review — repaired\n\nbody\n").unwrap();
+        std::fs::create_dir(claude.join("final-review-feedback.md")).unwrap();
+        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
+        assert!(
+            view.history
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("Could not read review history")
+        );
+        let view = action(&mut gui, &view, ReviewAction::HistoryLoadOlder);
+        assert_eq!(
+            view.history.as_ref().unwrap().rounds[0].title,
+            "Review — repaired"
+        );
+    }
+
+    #[test]
+    fn history_preserves_unsaved_progress_and_transferred_drafts_after_external_save() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        let view = begin(&mut gui, target).unwrap();
+        let context = gui.review_context.as_mut().unwrap();
+        context.save_error = Some("Retry this save".into());
+        context.ready_comment = Some(ReviewCommentEditorView {
+            request: 4,
+            original: String::new(),
+            path: None,
+            start: None,
+            end: None,
+            text: "Transferred draft".into(),
+            severity: Severity::Nit,
+        });
+        std::fs::create_dir_all(repo.join(".claude")).unwrap();
+        let external = b"{\"general_feedback\":\"external\"}";
+        std::fs::write(crate::app::review::review_progress_path(&repo), external).unwrap();
+        let view = action(&mut gui, &view, ReviewAction::HistoryOpen);
+        let view = action(&mut gui, &view, ReviewAction::HistoryClose);
+        assert_eq!(view.save_error.as_deref(), Some("Retry this save"));
+        assert_eq!(view.ai.ready_comment.unwrap().text, "Transferred draft");
+        assert_eq!(progress_bytes(&repo).unwrap().unwrap(), external);
+        assert!(gui.review_context.as_ref().unwrap().progress.is_none());
+    }
+
+    #[test]
+    fn history_rejects_stale_unloaded_and_deleted_targets() {
+        let (dir, mut gui, target) = fixture();
+        let original = begin(&mut gui, target).unwrap();
+        assert!(
+            act(
+                &mut gui,
+                &original.workflow_id,
+                original.revision,
+                ReviewAction::HistorySelect { round: 0 }
+            )
+            .is_err()
+        );
+        let view = action(&mut gui, &original, ReviewAction::HistoryOpen);
+        assert!(
+            act(
+                &mut gui,
+                &original.workflow_id,
+                original.revision,
+                ReviewAction::HistoryClose
+            )
+            .is_err()
+        );
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::HistorySelect { round: usize::MAX }
+            )
+            .is_err()
+        );
+        let db = crate::db::AmfDb::open(&dir.path().join("amf.db")).unwrap();
+        let mut store = db.load_store().unwrap();
+        store.projects[0].features.clear();
+        db.save_store(&store).unwrap();
+        assert_eq!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::HistoryLoadOlder
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::NotFound
+        );
+        let view = action(&mut gui, &view, ReviewAction::HistoryClose);
+        assert!(view.history.is_none());
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::Pause
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn tui_history_navigation_loads_archive_only_after_the_live_tail() {
+        let (dir, mut gui, target) = fixture();
+        let claude = dir.path().join("repo/.claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("final-review-feedback.md"),
+            "## Review — live\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            claude.join("final-review-feedback-archive.md"),
+            "## Review — archived\n\nbody\n",
+        )
+        .unwrap();
+        begin(&mut gui, target).unwrap();
+        let app = gui.app_for_workflow();
+        app.open_review_history();
+        app.review_history_move(1);
+        let history = ai::state(&app.mode)
+            .unwrap()
+            .review_history
+            .as_ref()
+            .unwrap();
+        assert_eq!(history.selected, 1);
+        assert!(!history.archive_loaded);
+        app.review_history_move(1);
+        let history = ai::state(&app.mode)
+            .unwrap()
+            .review_history
+            .as_ref()
+            .unwrap();
+        assert_eq!(history.selected, 2);
+        assert!(history.archive_loaded);
+        assert_eq!(history.rounds[1].title, "Review — archived");
+        app.review_history_move(-2);
+        assert_eq!(
+            ai::state(&app.mode)
+                .unwrap()
+                .review_history
+                .as_ref()
+                .unwrap()
+                .selected,
+            0
+        );
+        app.close_review_history();
+        assert!(ai::state(&app.mode).unwrap().review_history.is_none());
     }
 
     #[test]

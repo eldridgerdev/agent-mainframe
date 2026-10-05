@@ -651,7 +651,17 @@ export interface ReviewView {
   error: string | null;
   save_error: string | null;
   applied_suggestions: string[];
+  history: ReviewHistory | null;
   ai: ReviewAi;
+}
+export interface ReviewHistory {
+  selected: number;
+  rounds: { title: string; carried_unresolved: number }[];
+  markdown: string;
+  current_unresolved: number;
+  archive_available: boolean;
+  archive_loaded: boolean;
+  error: string | null;
 }
 export interface ReviewAi {
   precall: PrecallView | null;
@@ -672,6 +682,8 @@ export interface ReviewAi {
   message: string | null;
 }
 export type ReviewAction =
+  | { kind: "history_open" | "history_load_older" | "history_close" }
+  | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
   | { kind: "reject"; path: string; feedback: string; severity: ReviewSeverity }
   | { kind: "comment"; path: string; text: string; severity: ReviewSeverity }

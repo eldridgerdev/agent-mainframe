@@ -51,6 +51,7 @@ three extracted features' types. Cross-feature mode transitions remain on App.
 | | `pr_review/state.rs`, `runtime.rs` | Dialog types and background work ownership |
 | Final Review | `review/preparation.rs` | Diff snapshots, persisted progression/history and review notes |
 | | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |
+| | `review/history.rs` | Read-only round browsing, lazy archive loading and shared current-review projection |
 | | `review/comments.rs` | Anchors, comments, suggestions and editor operations |
 | | `review/headless.rs` | Walkthrough/co-review/check workers, completion and feedback dispatch |
 | | `review/pr_drafts.rs` | PR review drafts in SQLite: save, resume, PR-update flags and outdated comments |

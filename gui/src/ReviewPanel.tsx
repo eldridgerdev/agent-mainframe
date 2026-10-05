@@ -14,6 +14,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
 }) {
   const ai = view.ai;
+  const history = view.history;
   const busy = commandBusy || ai.precall !== null || (ai.question_running && ai.comment_draft !== null);
   const [question, setQuestion] = useState<{ path: string; span: ReviewSpan | null; text: string; harness: AgentSlug; turn?: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState<{ request: number; text: string } | null>(null);
@@ -135,12 +136,35 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       : { kind: "comment", path: editor.path, text: editor.text, severity: editor.severity };
     if (await onAct(action)) setEditor(null);
   }
-  return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={() => request({ kind: "pause" })}
-    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={() => request({ kind: "pause" })}>Pause review</button>}>
+  const close = () => {
+    if (commandBusy) return;
+    if (history) void onAct({ kind: "history_close" });
+    else request({ kind: "pause" });
+  };
+  return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
+    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={close}>{history ? "Return to review" : "Pause review"}</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Finish and send feedback from the TUI.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
+    {history ? <section className="review-history" aria-label="Review round history">
+      <p className="muted small">Read-only history. Current reflects this open review; local unsaved drafts stay in their editors. Completed rounds include feedback, suggestions, checks and agent replies.</p>
+      {history.error && <p role="alert">{history.error}</p>}
+      <div className="review-history-reader">
+        <nav className="diff-files" aria-label="Review rounds">
+          <button className={`diff-file ${history.selected === 0 ? "diff-file-selected" : ""}`} aria-pressed={history.selected === 0} disabled={commandBusy}
+            onClick={() => void onAct({ kind: "history_select", round: 0 })}><span>Current</span><small>{history.current_unresolved} open threads</small></button>
+          {history.rounds.map((round, index) => <button key={index} className={`diff-file ${history.selected === index + 1 ? "diff-file-selected" : ""}`} aria-pressed={history.selected === index + 1} disabled={commandBusy}
+            onClick={() => void onAct({ kind: "history_select", round: index + 1 })}><span>{round.title}</span><small>{round.carried_unresolved} carried unresolved</small></button>)}
+          {history.archive_available && !history.archive_loaded && <button className="btn btn-secondary btn-sm" disabled={commandBusy}
+            onClick={() => void onAct({ kind: "history_load_older" })}>Load older rounds</button>}
+        </nav>
+        <section className="review-history-body" key={`${view.workflow_id}:${history.selected}`} aria-label="Review round contents"><Markdown source={history.markdown} /></section>
+      </div>
+      {history.rounds.length === 0 && <p>No completed rounds loaded.</p>}
+    </section> : <>
+    <button className="btn btn-secondary btn-sm" disabled={commandBusy || ai.precall !== null || pending !== null}
+      onClick={() => void onAct({ kind: "history_open" })}>Review history</button>
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>
       <button className="btn btn-ghost" disabled={busy || pending !== null} onClick={() => request({ kind: "discard" })}>Close without saving</button></div>}
     {pending && (pending !== "cancel" && pending.kind === "apply_suggestion"
@@ -297,5 +321,6 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
         </> : <p>{view.files.length ? "Select a file to review." : "No changes to review."}</p>}
       </section>
     </div>}
+    </>}
   </Modal>;
 }

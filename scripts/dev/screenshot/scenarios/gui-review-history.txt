@@ -1,0 +1,5 @@
+# Native review-history proof with isolated Git/SQLite; no agents are launched.
+note:The isolated TUI confirms the capture harness is ready before native review-history proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-review-history-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

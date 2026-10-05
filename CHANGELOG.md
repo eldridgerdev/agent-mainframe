@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Browse review history in desktop Final Review.** Open **Review history**
+  to read the current review and completed rounds, including feedback,
+  suggestions, checks and agent replies. **Load older rounds** opens archived
+  history on demand. Returning to the review keeps unsaved comment and question
+  drafts. No migration is required.
 - **Turn AI answers into feedback in desktop Final Review.** Choose **Draft
   inline comment** or **Draft overall feedback** on an answered question,
   preview and confirm the call, then edit the generated text. **Open comment

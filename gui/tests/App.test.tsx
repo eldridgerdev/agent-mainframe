@@ -305,7 +305,7 @@ it("opens Final Review on a stopped feature and pauses with its workflow identit
     if (command === "review_begin") return Promise.resolve({
       workflow_id: "review-id", revision: 7, target: { project_id: "project", feature_id: "feature" },
       feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
-        general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+        general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
         ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
     });
     if (command === "review_act") return new Promise((resolve) => { finishPause = () => resolve(null); });
@@ -331,7 +331,7 @@ it("polls review completions by workflow/revision and cannot resurrect a paused 
   const base = {
     workflow_id: "review-poll", revision: 7, target: { project_id: "project", feature_id: "feature" },
     feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
-    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
     ai: { precall: null, running: true, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null as string | null, question_running: true, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
   };
   // The overview landed while a question is still running, so polling continues.
@@ -370,7 +370,7 @@ it("does not poll a review with no AI work in flight", async () => {
   const idle = {
     workflow_id: "review-idle", revision: 1, target: { project_id: "project", feature_id: "feature" },
     feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
-    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [],
+    general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
     ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
   };
   vi.mocked(invoke).mockImplementation((command, args, options) => {

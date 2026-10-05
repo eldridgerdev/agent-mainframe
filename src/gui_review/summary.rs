@@ -91,7 +91,7 @@ pub(super) fn view(s: &DiffViewerState) -> Option<ReviewSummaryView> {
             .filter(|f| !s.decisions.contains_key(&f.path))
             .count(),
         pending_suggestions: s.pending_suggestion_count(),
-        failures: s.suggestion_apply_failures.clone(),
+        failures: s.open_suggestion_apply_failures(),
     })
 }
 

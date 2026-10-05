@@ -720,20 +720,25 @@ impl App {
             applied_suggestions,
             suggestion_apply_failures,
         ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
-            AppMode::DiffViewer(state) => (
-                state.workdir,
-                state.files,
-                state.decisions,
-                state.line_comments,
-                state.file_comments,
-                state.general_feedback,
-                state.from_view,
-                state.fix_target,
-                state.fix_target_feature_id,
-                state.review_harness,
-                state.applied_suggestions,
-                state.suggestion_apply_failures,
-            ),
+            AppMode::DiffViewer(state) => {
+                // Only failures whose suggestion is still open describe work
+                // the fixing agent is being handed.
+                let suggestion_apply_failures = state.open_suggestion_apply_failures();
+                (
+                    state.workdir,
+                    state.files,
+                    state.decisions,
+                    state.line_comments,
+                    state.file_comments,
+                    state.general_feedback,
+                    state.from_view,
+                    state.fix_target,
+                    state.fix_target_feature_id,
+                    state.review_harness,
+                    state.applied_suggestions,
+                    suggestion_apply_failures,
+                )
+            }
             AppMode::DiffViewerLoading(state) => {
                 // Diff not loaded yet; nothing to summarize.
                 self.mode = AppMode::Viewing(state.from_view);

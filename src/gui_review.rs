@@ -1100,6 +1100,104 @@ mod tests {
         );
     }
 
+    /// Prepare a batch where the line-10 suggestion is blocked by a lost
+    /// anchor and the line-8 one applies.
+    fn blocked_batch(gui: &mut GuiHandle, target: FeatureTarget) -> ReviewView {
+        let view = begin(gui, target).unwrap();
+        let view = suggested(gui, &view, 8, 8);
+        let view = suggested(gui, &view, 10, 10);
+        if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+            let comment = &mut s.line_comments.get_mut("code.txt").unwrap()[1];
+            comment.anchor_lost = true;
+            comment.text = "blocked one".into();
+        }
+        let view = action(gui, &view, ReviewAction::RetrySave);
+        let view = action(gui, &view, ReviewAction::SummaryOpen);
+        let applied = action(gui, &view, ReviewAction::ApplyFinishSuggestions);
+        assert_eq!(applied.summary.as_ref().unwrap().failures.len(), 1);
+        applied
+    }
+
+    #[test]
+    fn finish_preparation_failures_survive_a_pause_into_the_finished_round() {
+        let (dir, mut gui, target) = fixture();
+        let applied = blocked_batch(&mut gui, target.clone());
+        let reason = applied.summary.as_ref().unwrap().failures[0].clone();
+        act(
+            &mut gui,
+            &applied.workflow_id,
+            applied.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        let repo = dir.path().join("repo");
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(repo.join(".claude/final-review-progress.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            saved["suggestion_apply_failures"].as_array().unwrap().len(),
+            1
+        );
+
+        // Resume and finish through the shared (TUI) finish path.
+        let resumed = begin(&mut gui, target).unwrap();
+        assert_eq!(
+            ai::state(&gui.app_for_workflow().mode)
+                .unwrap()
+                .open_suggestion_apply_failures()
+                .len(),
+            1
+        );
+        act(
+            &mut gui,
+            &resumed.workflow_id,
+            resumed.revision,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        )
+        .unwrap();
+        gui.app_for_workflow().finish_final_review().unwrap();
+        let feedback =
+            std::fs::read_to_string(repo.join(".claude/final-review-feedback.md")).unwrap();
+        let reason = reason.split_once(": ").unwrap().1;
+        assert!(
+            feedback.contains("1 not applied") && feedback.contains(reason),
+            "{feedback}"
+        );
+    }
+
+    #[test]
+    fn finish_preparation_failure_lapses_once_its_suggestion_is_settled() {
+        let (_dir, mut gui, target) = fixture();
+        let applied = blocked_batch(&mut gui, target);
+        let comment = applied.files[0]
+            .line_comments
+            .iter()
+            .find(|c| c.suggestion.is_some())
+            .unwrap();
+        let resolved = action(
+            &mut gui,
+            &applied,
+            ReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: comment.start,
+                end: comment.end,
+            },
+        );
+        let summary = resolved.summary.as_ref().unwrap();
+        assert_eq!(summary.pending_suggestions, 0);
+        assert!(summary.failures.is_empty(), "{:?}", summary.failures);
+        // Not saved either, so a resumed review cannot bring it back.
+        assert!(
+            ai::state(&gui.app_for_workflow().mode)
+                .unwrap()
+                .live_suggestion_apply_failures()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn finish_preparation_refuses_changed_patches_progress_checkouts_and_deleted_targets_before_writing()
      {

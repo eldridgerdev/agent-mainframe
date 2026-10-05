@@ -429,6 +429,34 @@ impl App {
                         s.questions.error = Some("Return to the original selected diff line before transferring this inline draft".into());
                         return;
                     }
+                    // Draft transfer appends to a thread rather than replacing
+                    // neighbouring anchors. Preserve a containing thread's full
+                    // range, even when the question selected only part of it.
+                    let lines = s.files[s.selected_file].addressable_lines();
+                    let cursor = s.comment_cursor.unwrap();
+                    let selection_anchor = s.comment_anchor.unwrap_or(cursor);
+                    let lo = selection_anchor.min(cursor);
+                    let hi = selection_anchor.max(cursor);
+                    let overlapping = s
+                        .line_comments
+                        .get(&anchor.path)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|c| c.covered_indices(&lines).map(|range| (c, range)))
+                        .filter(|(_, range)| *range.start() <= hi && *range.end() >= lo)
+                        .collect::<Vec<_>>();
+                    if overlapping.len() > 1
+                        || overlapping.first().is_some_and(|(c, range)| {
+                            c.anchor_lost || *range.start() > lo || *range.end() < hi
+                        })
+                    {
+                        s.questions.error = Some("Question range overlaps neighbouring threads or a lost anchor; edit them separately. Your draft is retained".into());
+                        return;
+                    }
+                    if let Some((_, range)) = overlapping.first() {
+                        s.comment_anchor = Some(*range.start());
+                        s.comment_cursor = Some(*range.end());
+                    }
                 }
             }
             AppMode::AiReview(s) => {

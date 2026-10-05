@@ -211,7 +211,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot/capture-gui-review-ai-frames.py"),
+                env.get("AMF_GUI_AI_FRAMES", str(workspace / "scripts/dev/screenshot/capture-gui-review-ai-frames.py")),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,

@@ -11,7 +11,10 @@ use crate::project::SessionKind;
 
 mod ai;
 pub use ai::poll;
-pub use ai::{ReviewAiView, ReviewQuestionView};
+pub use ai::{
+    ReviewAiView, ReviewCommentDraftView, ReviewCommentEditorView, ReviewDraftDestination,
+    ReviewQuestionView,
+};
 
 pub use crate::app::review::state::{FileComment, Severity};
 pub use crate::diff::DiffLineLocation;
@@ -22,6 +25,7 @@ pub(crate) struct ReviewContext {
     revision: u64,
     progress: Option<Vec<u8>>,
     save_error: Option<String>,
+    ready_comment: Option<ReviewCommentEditorView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +93,15 @@ pub enum ReviewAction {
         question: String,
         harness: crate::project::AgentKind,
     },
+    DraftQuestion {
+        turn: usize,
+        destination: ReviewDraftDestination,
+    },
+    TransferQuestionDraft {
+        request: u64,
+        text: String,
+    },
+    DiscardQuestionDraft,
     AcceptDraft {
         path: String,
         start: DiffLineLocation,
@@ -244,6 +257,7 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         revision: 0,
         progress,
         save_error: None,
+        ready_comment: None,
     });
     snapshot(gui)
 }
@@ -259,9 +273,11 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         context.target.clone(),
         context.save_error.clone(),
     );
+    let ready_comment = context.ready_comment.clone();
     let app = gui.app_for_workflow();
     let state = ai::state(&app.mode)?;
-    let ai = ai::view(app)?;
+    let mut ai = ai::view(app)?;
+    ai.ready_comment = ready_comment;
     let files = state
         .files
         .iter()
@@ -343,6 +359,16 @@ pub fn act(
     revision: u64,
     action: ReviewAction,
 ) -> GuiResult<Option<ReviewView>> {
+    let preserve_draft = matches!(
+        action,
+        ReviewAction::DraftQuestion { .. }
+            | ReviewAction::TransferQuestionDraft { .. }
+            | ReviewAction::PrecallConfirm
+            | ReviewAction::PrecallCancel
+            | ReviewAction::PrecallToggleView
+            | ReviewAction::CancelAi
+            | ReviewAction::RetrySave
+    );
     let pause = matches!(action, ReviewAction::Pause);
     let reload = matches!(action, ReviewAction::Reload);
     let refresh = matches!(action, ReviewAction::Refresh);
@@ -351,6 +377,16 @@ pub fn act(
         .as_ref()
         .filter(|c| c.id == workflow_id && c.revision == revision)
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
+    if context.ready_comment.is_some()
+        && matches!(
+            action,
+            ReviewAction::Ask { .. } | ReviewAction::DraftQuestion { .. }
+        )
+    {
+        return Err(GuiError::conflict(
+            "Save or discard the transferred comment draft first",
+        ));
+    }
     let target = context.target.clone();
     let unsaved = context.save_error.is_some();
     let app = gui.app_for_workflow();
@@ -372,10 +408,17 @@ pub fn act(
     }
     if matches!(
         action,
-        ReviewAction::PrecallCancel | ReviewAction::PrecallToggleView | ReviewAction::CancelAi
+        ReviewAction::PrecallCancel
+            | ReviewAction::PrecallToggleView
+            | ReviewAction::CancelAi
+            | ReviewAction::DiscardQuestionDraft
     ) {
         ai::apply(app, &action)?;
-        gui.review_context.as_mut().unwrap().revision += 1;
+        let context = gui.review_context.as_mut().unwrap();
+        if matches!(action, ReviewAction::DiscardQuestionDraft) {
+            context.ready_comment = None;
+        }
+        context.revision += 1;
         return snapshot(gui).map(Some);
     }
     let context = gui.review_context.as_ref().unwrap();
@@ -631,6 +674,12 @@ pub fn act(
             })();
             app.defer_review_progress_persist = false;
             outcome?;
+        }
+    }
+    if !preserve_draft {
+        gui.review_context.as_mut().unwrap().ready_comment = None;
+        if let Some(q) = gui.app_for_workflow().review_questions_mut() {
+            q.draft = None;
         }
     }
     if reload {

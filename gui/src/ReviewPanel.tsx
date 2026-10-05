@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
@@ -14,15 +14,18 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
 }) {
   const ai = view.ai;
-  const busy = commandBusy || ai.precall !== null;
+  const busy = commandBusy || ai.precall !== null || (ai.question_running && ai.comment_draft !== null);
   const [question, setQuestion] = useState<{ path: string; span: ReviewSpan | null; text: string; harness: AgentSlug; turn?: number } | null>(null);
+  const [commentDraft, setCommentDraft] = useState<{ request: number; text: string } | null>(null);
+  const receivedDraft = useRef("");
+  const receivedEditor = useRef("");
   const [filter, setFilter] = useState("");
   const [split, setSplit] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
   const [pending, setPending] = useState<ReviewAction | "cancel" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const dirty = (editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity)) || !!question?.text.trim();
+  const dirty = (editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity)) || !!question?.text.trim() || commentDraft !== null;
   const file = view.files.find((f) => f.diff.path === view.selected_path);
   // Selections are keyed by line numbers, so they only mean anything against
   // the patch they were made on: a refresh that shifts lines drops them.
@@ -33,6 +36,26 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       return turn?.answer && turn.question === draft?.text.trim() ? null : draft;
     });
   }, [ai.questions]);
+  useEffect(() => {
+    const draft = ai.comment_draft;
+    const key = `${view.workflow_id}:${draft?.request}`;
+    if (draft && receivedDraft.current !== key) {
+      receivedDraft.current = key;
+      setCommentDraft({ request: draft.request, text: draft.text });
+    }
+  }, [view.workflow_id, ai.comment_draft]);
+  useEffect(() => {
+    const ready = ai.ready_comment;
+    const key = `${view.workflow_id}:${ready?.request}`;
+    if (ready && receivedEditor.current !== key) {
+      receivedEditor.current = key;
+      setCommentDraft(null);
+      if (ready.start && ready.end) setSelection({ anchor: ready.start, cursor: ready.end });
+      setEditor({ kind: ready.path ? "line_comment" : "general", path: ready.path ?? "",
+        span: ready.start && ready.end ? { start: ready.start, end: ready.end } : undefined,
+        text: ready.text, severity: ready.severity, original: ready.original, originalSeverity: ready.severity });
+    }
+  }, [view.workflow_id, ai.ready_comment]);
   const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
   const locationKey = (location: ReviewLocation) => `${location.old_line}:${location.new_line}`;
   const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
@@ -51,7 +74,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     setSelection({ anchor: extend && selection ? selection.anchor : location, cursor: location });
   }
   function editSpan(kind: "line_comment" | "suggestion", selected: ReviewSpan) {
-    if (!file || busy || dirty || pending) return;
+    if (!file || busy || ai.question_running || dirty || pending) return;
     selected = { start: selected.start, end: selected.end };
     const lo = lineIndex(selected.start), hi = lineIndex(selected.end);
     // Saving replaces every thread overlapping the span and re-anchors the
@@ -86,7 +109,10 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
 
   async function run(action: ReviewAction | "cancel") {
     if (commandBusy) return;
-    if (action === "cancel" || await onAct(action)) { setEditor(null); setQuestion(null); setPending(null); }
+    const succeeded = action === "cancel"
+      ? (!(ai.ready_comment || ai.comment_draft) || await onAct({ kind: "discard_question_draft" }))
+      : await onAct(action);
+    if (succeeded) { setEditor(null); setQuestion(null); setCommentDraft(null); setPending(null); }
   }
   function request(action: ReviewAction | "cancel") {
     if (commandBusy) return;
@@ -94,7 +120,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     else void run(action);
   }
   function edit(kind: "comment" | "reject" | "general") {
-    if (busy || dirty) return;
+    if (busy || ai.question_running || dirty) return;
     const text = kind === "general" ? view.general_feedback : kind === "reject" ? file?.feedback ?? "" : file?.comment?.text ?? "";
     // Like the TUI, a fresh rejection is a must-fix signal; an existing one keeps its severity.
     const severity = kind === "reject" ? (file?.verdict === "rejected" ? file.severity : "blocker") : file?.comment?.severity ?? "suggestion";
@@ -140,7 +166,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       <button className="btn btn-secondary btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "refresh" })}>Refresh changes</button>
       <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "reload" })}>Reload saved review</button>
       <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null || view.error !== null} onClick={() => request({ kind: "undo" })}>Undo verdict</button>
-      <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
+      <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
     {ai.precall && <section className="review-confirm" role="alertdialog" aria-label="Review AI call">
       <p>Headless AI call: {ai.precall.title} · {ai.precall.harness}. This reads the checkout and may use paid harness credits.</p>
@@ -149,7 +175,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       <button className="btn btn-primary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_confirm" })}>Continue AI call</button>
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_cancel" })}>Cancel AI call</button>
     </section>}
-    {ai.running && <div role="status"><Spinner /> {ai.question_running ? "Answering review question" : ai.co_review_path ? `Co-reviewing ${ai.co_review_path}` : ai.walkthrough_path ? `Generating walkthrough for ${ai.walkthrough_path}` : "Generating changeset overview"}…
+    {ai.running && <div role="status"><Spinner /> {ai.question_running ? (ai.comment_draft ? "Checking comment draft context" : "Answering or drafting review question") : ai.co_review_path ? `Co-reviewing ${ai.co_review_path}` : ai.walkthrough_path ? `Generating walkthrough for ${ai.walkthrough_path}` : "Generating changeset overview"}…
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "cancel_ai" })}>Cancel AI request</button>
     </div>}
     {ai.message && <p role="status">{ai.message}</p>}
@@ -160,11 +186,26 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     {ai.overview && <details className="review-note"><summary>AI changeset overview</summary><Markdown source={ai.overview} /></details>}
     {ai.questions.length > 0 && <details className="review-note"><summary>Review questions ({ai.questions.length})</summary>{ai.questions.map((turn, index) => <section key={index}>
       <p><strong>{turn.question}</strong></p><details><summary>Question context</summary><pre>{turn.focus}</pre></details>
-      {turn.answer && <Markdown source={turn.answer} />}{turn.error && <p role="alert">{turn.error}</p>}
+      {turn.answer && <><Markdown source={turn.answer} />
+        <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || editor !== null || question !== null || pending !== null || !ai.harnesses.includes(turn.harness) || !turn.start || !turn.end}
+          onClick={() => void onAct({ kind: "draft_question", turn: index, destination: "inline" })}>Draft inline comment</button>
+        <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || editor !== null || question !== null || pending !== null || !ai.harnesses.includes(turn.harness)}
+          onClick={() => void onAct({ kind: "draft_question", turn: index, destination: "general" })}>Draft overall feedback</button>
+      </>}{turn.error && <p role="alert">{turn.error}</p>}
       {turn.error && turn.path && <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !ai.harnesses.length}
         onClick={() => setQuestion({ path: turn.path!, span: turn.start && turn.end ? { start: turn.start, end: turn.end } : null, text: turn.question,
           harness: ai.harnesses.includes(turn.harness) ? turn.harness : ai.harnesses[0] })}>Retry question</button>}
     </section>)}</details>}
+    {commentDraft && <form className="review-editor" onSubmit={(event) => {
+      event.preventDefault();
+      if (!busy && !ai.running && !editor && !question && commentDraft.text.trim()) void onAct({ kind: "transfer_question_draft", request: commentDraft.request, text: commentDraft.text });
+    }}>
+      <p>AI draft for {ai.comment_draft?.destination === "inline" ? "the question's original line or range" : "overall feedback"}. Review and edit it before opening the comment editor.</p>
+      <Field label="AI comment draft"><textarea rows={5} value={commentDraft.text} disabled={busy || ai.running} onChange={(event) => setCommentDraft({ ...commentDraft, text: event.target.value })} /></Field>
+      <button className="btn btn-primary" disabled={busy || ai.running || pending !== null || editor !== null || question !== null || !commentDraft.text.trim()}>Open comment editor</button>
+      <button type="button" className="btn btn-secondary" disabled={busy || ai.running} onClick={() => request({ kind: "discard_question_draft" })}>Discard AI draft</button>
+      <p className="muted small">Opening the editor checks the repository again, runs no AI call and appends to existing feedback. Save the comment explicitly to keep it.</p>
+    </form>}
     {question && <form className="review-editor" onSubmit={(event) => {
       event.preventDefault();
       if (!busy && !ai.running && question.text.trim()) {
@@ -208,8 +249,8 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
           <div className="diff-file-header"><strong>{file.diff.old_path && file.diff.old_path !== file.diff.path ? `${file.diff.old_path} → ${file.diff.path}` : file.diff.path}</strong><span>{file.verdict}</span>
             <button className="btn btn-secondary btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "approve", path: file.diff.path })}>Approve file</button>
             <button className="btn btn-secondary btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "skip", path: file.diff.path })}>Skip file</button>
-            <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("reject")}>Reject file</button>
-            <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("comment")}>Edit file comment</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("reject")}>Reject file</button>
+            <button className="btn btn-ghost btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("comment")}>Edit file comment</button>
           </div>
           <div className="review-line-controls">
             <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || file.diff.is_binary || !!file.notes || !!file.walkthrough}
@@ -231,8 +272,8 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
                 <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => request({ kind: "accept_draft", path: file.diff.path, start: comment.start, end: comment.end })}>Accept AI draft</button>
                 <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => request({ kind: "dismiss_draft", path: file.diff.path, start: comment.start, end: comment.end })}>Dismiss AI draft</button>
               </>}
-              <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("line_comment", comment)}>Edit line comment</button>
-              <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("suggestion", comment)}>Edit suggestion</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || ai.question_running || dirty || pending !== null || !comment.editable} onClick={() => editSpan("line_comment", comment)}>Edit line comment</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy || ai.question_running || dirty || pending !== null || !comment.editable} onClick={() => editSpan("suggestion", comment)}>Edit suggestion</button>
               {comment.suggestion !== null && <>
                 <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || view.save_error !== null || comment.apply_blocked !== null}
                   onClick={() => request({ kind: "apply_suggestion", path: file.diff.path, start: comment.start, end: comment.end })}>Apply suggestion locally</button>
@@ -245,8 +286,8 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
             <p className="muted small">Click a line number to select it; Shift-click another to select a range in diff order.</p>
             {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
             {notice && <p role="alert">{notice}</p>}
-            <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
-            <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
           </div>}
           <div className="diff-code">
             {file.diff.is_binary ? <p>Binary file changed; no text diff is available.</p> : file.diff.hunks.length === 0 ? <pre>{file.diff.patch || "No textual changes."}</pre>

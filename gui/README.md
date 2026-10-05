@@ -286,8 +286,21 @@ discard pending AI results and require refresh/reload before continuing.
 **Cancel AI request** releases question and single-process runs; an already-started
 batched co-review may finish its current work, but its late findings are discarded.
 
-AI-assisted question-to-comment drafting, review history, finish-time batch
-application, finish checks and sending feedback remain in the TUI. Automated
+From an answered question, choose **Draft inline comment** (for questions about
+selected lines) or **Draft overall feedback**. The answering harness drafts the
+feedback after another prompt preview and confirmation. Edit **AI comment draft**,
+then choose **Open comment editor** to check the repository again without another
+AI call. Transfer appends to existing feedback, preserves a containing thread's
+full range and severity, and refuses ambiguous overlaps. Nothing is saved until
+**Save comment** or **Save overall feedback**. Failed transfers retain your edits;
+leaving a generated or transferred draft requires explicit discard.
+
+Review history, finish-time batch application, finish checks and sending feedback
+remain in the TUI. Question-to-comment drafting has command/component coverage and eight asserted
+native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,
+confirmation/cancellation, inline and overall transfer, unsaved protection and
+pause/reopen persistence. The capture uses offline Codex and real Rust IPC;
+paid-harness execution, other native interactions and macOS validation remain open. Automated
 command and component tests cover the new AI controls. Eight asserted native WSLg
 frames from `gui-review-ai.txt` also verify prompt preview, walkthrough/overview
 output, co-review drafts, local multiline questions and answers, accepted-finding

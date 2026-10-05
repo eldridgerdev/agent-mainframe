@@ -16,7 +16,12 @@ if "--help" in sys.argv:
 repo = pathlib.Path.cwd()
 assert (repo / ".git/amf-gui-ai-fixture").is_file(), "Refusing a non-fixture checkout"
 prompt = sys.stdin.read()
-if "You are an AI co-reviewer" in prompt:
+if "Write a concise, constructive review comment based on the answer below." in prompt:
+    kind = "comment_draft"
+    assert harness == "codex"
+    assert "Rounding and currency formatting" in prompt and "invoice.ts" in prompt
+    answer = "Please add tests for negative totals and half-cent boundaries before relying on this rounding rule. Keep calculation separate from currency formatting."
+elif "You are an AI co-reviewer" in prompt:
     kind = "co_review"
     answer = "9|Cover negative totals before relying on this rounding rule.\n16|Consider making the currency and locale configurable."
 elif "triage a full changeset" in prompt:

@@ -1113,3 +1113,60 @@ fn amf_managed_blocks_do_not_count_as_local_changes_but_real_edits_do() {
         assert!(error.contains("has local changes (AGENTS.md)"), "{error}");
     }
 }
+
+#[test]
+fn inline_question_transfer_preserves_a_containing_thread_for_single_and_reverse_selections() {
+    for reverse in [false, true] {
+        let fixture = Fixture::new();
+        std::fs::write(
+            fixture.dir.path().join("caller.rs"),
+            "fn caller() -> u32 {\n    1 + 0\n}\n",
+        )
+        .unwrap();
+        let mut app = fixture.app();
+        let AppMode::DiffViewer(s) = &mut app.mode else {
+            panic!("review");
+        };
+        let lines = s.files[0].addressable_lines();
+        let index = |n| lines.iter().position(|l| l.new_line == Some(n)).unwrap();
+        let (first, middle, last) = (index(1), index(2), index(3));
+        s.comment_anchor = Some(first);
+        s.comment_cursor = Some(last);
+        app.diff_review_start_line_comment();
+        if let AppMode::DiffViewer(s) = &mut app.mode {
+            s.reset_feedback_editor("Existing range thread".into());
+            s.comment_severity = crate::app::Severity::Nit;
+        }
+        app.diff_review_submit_line_comment();
+        if let AppMode::DiffViewer(s) = &mut app.mode {
+            s.comment_anchor = Some(if reverse { last } else { middle });
+            s.comment_cursor = Some(middle);
+        }
+        ask(&mut app);
+        app.review_question_work.runner = draft;
+        app.draft_review_question(DraftDestination::Inline);
+        confirm_precall(&mut app);
+        drain(&mut app);
+        assert!(app.review_questions().unwrap().draft.is_some());
+        app.transfer_review_question_draft();
+        drain(&mut app);
+        let AppMode::DiffViewer(s) = &app.mode else {
+            panic!("review");
+        };
+        assert!(s.questions.error.is_none(), "{:?}", s.questions.error);
+        assert!(s.editing_line_comment);
+        assert_eq!(
+            (s.comment_anchor, s.comment_cursor),
+            (Some(first), Some(last))
+        );
+        assert_eq!(s.comment_severity, crate::app::Severity::Nit);
+        assert_eq!(
+            s.feedback_editor.text(),
+            "Existing range thread\n\nCould we call reusable() from helper.rs here?"
+        );
+        assert_eq!(
+            s.line_comments["caller.rs"][0].text,
+            "Existing range thread"
+        );
+    }
+}

@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **Turn AI answers into feedback in desktop Final Review.** Choose **Draft
+  inline comment** or **Draft overall feedback** on an answered question,
+  preview and confirm the call, then edit the generated text. **Open comment
+  editor** checks that the answer still matches your checkout and appends to
+  existing feedback; save explicitly to keep it. Failed transfers retain your
+  edits, and unsaved drafts require explicit discard. Existing threads keep
+  their full range, severity and suggested code in either interface; ambiguous
+  overlaps are refused. No migration is required.
 - **Ask AI for help in desktop Final Review.** Generate a Claude walkthrough,
   changeset overview or co-review, or ask repository-aware questions with
   Claude, Codex, OpenCode or Pi. Preview and confirm each new call. Co-review

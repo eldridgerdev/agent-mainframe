@@ -1,5 +1,6 @@
 //! GUI presentation and lifecycle guards for the existing review AI engines.
-use serde::Serialize;
+use crate::app::review_questions::DraftDestination;
+use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::app::App;
@@ -18,6 +19,43 @@ pub struct ReviewQuestionView {
     pub harness: AgentKind,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDraftDestination {
+    Inline,
+    General,
+}
+
+impl From<ReviewDraftDestination> for DraftDestination {
+    fn from(value: ReviewDraftDestination) -> Self {
+        match value {
+            ReviewDraftDestination::Inline => Self::Inline,
+            ReviewDraftDestination::General => Self::General,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReviewCommentDraftView {
+    pub request: u64,
+    pub turn: usize,
+    pub destination: ReviewDraftDestination,
+    pub text: String,
+}
+
+/// The shared transfer engine opens an editor without saving. The GUI keeps
+/// that handoff until an explicit save/discard, independently of later polls.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewCommentEditorView {
+    pub request: u64,
+    pub original: String,
+    pub path: Option<String>,
+    pub start: Option<DiffLineLocation>,
+    pub end: Option<DiffLineLocation>,
+    pub text: String,
+    pub severity: Severity,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ReviewAiView {
     pub precall: Option<PrecallView>,
@@ -29,6 +67,8 @@ pub struct ReviewAiView {
     pub question_running: bool,
     pub questions: Vec<ReviewQuestionView>,
     pub question_error: Option<String>,
+    pub comment_draft: Option<ReviewCommentDraftView>,
+    pub ready_comment: Option<ReviewCommentEditorView>,
     pub harnesses: Vec<AgentKind>,
     pub message: Option<String>,
 }
@@ -95,6 +135,18 @@ pub(super) fn view(app: &App) -> GuiResult<ReviewAiView> {
             })
             .collect(),
         question_error: s.questions.error.clone(),
+        comment_draft: s.questions.draft.as_ref().map(|(destination, editor)| {
+            ReviewCommentDraftView {
+                request: s.questions.next_request,
+                turn: s.questions.selected,
+                destination: match destination {
+                    DraftDestination::Inline => ReviewDraftDestination::Inline,
+                    DraftDestination::General => ReviewDraftDestination::General,
+                },
+                text: editor.text().to_string(),
+            }
+        }),
+        ready_comment: None,
         harnesses: harnesses(app)?,
         message: app.message.clone(),
     })
@@ -163,6 +215,61 @@ fn claude_guard(app: &App) -> GuiResult<()> {
     Ok(())
 }
 
+fn no_draft(app: &App) -> GuiResult<()> {
+    if state(&app.mode)?.questions.draft.is_some() {
+        return Err(GuiError::conflict(
+            "Use or discard the current comment draft first",
+        ));
+    }
+    Ok(())
+}
+
+fn question_error(app: &App) -> GuiResult<()> {
+    if let Some(error) = &state(&app.mode)?.questions.error {
+        return Err(GuiError::conflict(error.clone()));
+    }
+    Ok(())
+}
+
+/// Take the existing TUI editor's text, severity and snapped anchors as a GUI
+/// handoff. No comment is saved by transfer, and GUI editing stays local.
+fn take_comment_editor(app: &mut App) -> Option<ReviewCommentEditorView> {
+    let AppMode::DiffViewer(s) = &mut app.mode else {
+        return None;
+    };
+    if !s.editing_general && !s.editing_line_comment {
+        return None;
+    }
+    let inline = s.editing_line_comment;
+    let lines = s.files[s.selected_file].addressable_lines();
+    let original = if inline {
+        s.line_comments
+            .get(&s.files[s.selected_file].path)
+            .into_iter()
+            .flatten()
+            .find(|c| {
+                c.covered_indices(&lines)
+                    .is_some_and(|range| range.contains(&s.comment_cursor.unwrap()))
+            })
+            .map(|c| c.text.clone())
+            .unwrap_or_default()
+    } else {
+        s.general_feedback.clone()
+    };
+    let editor = ReviewCommentEditorView {
+        request: s.questions.next_request,
+        original,
+        path: inline.then(|| s.files[s.selected_file].path.clone()),
+        start: inline.then(|| lines[s.comment_anchor.or(s.comment_cursor).unwrap()]),
+        end: inline.then(|| lines[s.comment_cursor.unwrap()]),
+        text: s.feedback_editor.text().to_string(),
+        severity: s.comment_severity,
+    };
+    s.editing_general = false;
+    s.editing_line_comment = false;
+    Some(editor)
+}
+
 pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
     match action {
         ReviewAction::Walkthrough { .. } => {
@@ -200,6 +307,7 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             ..
         } => {
             start_guard(app)?;
+            no_draft(app)?;
             if question.trim().is_empty() {
                 return Err(GuiError::conflict("Enter a question first"));
             }
@@ -245,6 +353,94 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             {
                 return Err(GuiError::conflict(error.clone()));
             }
+        }
+        ReviewAction::DraftQuestion { turn, destination } => {
+            start_guard(app)?;
+            no_draft(app)?;
+            let q = &state(&app.mode)?.questions;
+            let turn_data = q
+                .turns
+                .get(*turn)
+                .filter(|t| t.answer.is_some() && t.prepared.is_some())
+                .ok_or_else(|| {
+                    GuiError::conflict("Answer this question before drafting a comment")
+                })?;
+            if matches!(destination, ReviewDraftDestination::Inline)
+                && turn_data.context.anchor.is_none()
+            {
+                return Err(GuiError::conflict(
+                    "Ask about a selected line or range before drafting an inline comment",
+                ));
+            }
+            if !harnesses(app)?.contains(&turn_data.harness) {
+                return Err(GuiError::conflict(
+                    "The answering harness is unavailable or disabled for this project",
+                ));
+            }
+            let harness = turn_data.harness.clone();
+            let q = app.review_questions_mut().unwrap();
+            q.selected = *turn;
+            q.harness = harness;
+            q.error = None;
+            app.message = None;
+            app.draft_review_question((*destination).into());
+            question_error(app)?;
+        }
+        ReviewAction::TransferQuestionDraft { request, text } => {
+            start_guard(app)?;
+            if text.trim().is_empty() {
+                return Err(GuiError::conflict("Enter a comment draft first"));
+            }
+            let s = state(&app.mode)?;
+            let q = &s.questions;
+            let (destination, _) = q
+                .draft
+                .as_ref()
+                .filter(|_| q.next_request == *request)
+                .ok_or_else(|| {
+                    GuiError::conflict("Comment draft changed; retry from the current view")
+                })?;
+            let destination = *destination;
+            let turn = q
+                .turns
+                .get(q.selected)
+                .ok_or_else(|| GuiError::conflict("The draft's answer is no longer available"))?;
+            let anchor = turn.context.anchor.clone();
+            // Restore the question's original span, even after file navigation.
+            // The shared transfer worker validates its repository stamp again.
+            if destination == DraftDestination::Inline {
+                let anchor = anchor.unwrap();
+                let AppMode::DiffViewer(s) = &mut app.mode else {
+                    unreachable!()
+                };
+                s.selected_file = s
+                    .files
+                    .iter()
+                    .position(|f| f.path == anchor.path)
+                    .ok_or_else(|| {
+                        GuiError::conflict("The question's file is no longer in this review")
+                    })?;
+                set_span(s, anchor.start, anchor.end)?;
+            }
+            app.review_questions_mut()
+                .unwrap()
+                .draft
+                .as_mut()
+                .unwrap()
+                .1 = crate::editor::TextEditor::new(text.clone());
+            app.message = None;
+            app.transfer_review_question_draft();
+            question_error(app)?;
+        }
+        ReviewAction::DiscardQuestionDraft => {
+            if running(state(&app.mode)?) {
+                return Err(GuiError::conflict(
+                    "Cancel the running AI request before discarding its draft",
+                ));
+            }
+            let q = app.review_questions_mut().unwrap();
+            q.draft = None;
+            q.error = None;
         }
         ReviewAction::AcceptDraft { start, end, path }
         | ReviewAction::DismissDraft { start, end, path } => {
@@ -362,6 +558,10 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
         if before == after {
             return snapshot(gui);
         }
+        let ready_comment = take_comment_editor(app);
+        if ready_comment.is_some() {
+            gui.review_context.as_mut().unwrap().ready_comment = ready_comment;
+        }
         super::save(gui);
     }
     let context = gui.review_context.as_mut().unwrap();
@@ -434,6 +634,557 @@ mod tests {
         assert!(input.prompt.contains("Why this change?"));
         assert!(input.prompt.contains("code.txt"));
         Ok("Repository-backed explanation".into())
+    }
+
+    fn answer_or_draft(
+        input: &crate::app::review_questions::test_support::RunInput,
+    ) -> anyhow::Result<String> {
+        if input.discovery {
+            return answer(input);
+        }
+        assert!(input.prompt.contains("Repository-backed explanation"));
+        assert!(input.prompt.contains("Why this change?"));
+        Ok("AI feedback".into())
+    }
+
+    fn answered(
+        gui: &mut GuiHandle,
+        view: &ReviewView,
+        harness: AgentKind,
+        inline: bool,
+    ) -> ReviewView {
+        gui.app_for_workflow().review_question_work.runner = answer_or_draft;
+        let (start, end) = if inline {
+            let line = view
+                .files
+                .iter()
+                .find(|f| f.diff.path == "code.txt")
+                .unwrap()
+                .diff
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .find(|l| l.new_line == Some(8))
+                .unwrap();
+            let location = DiffLineLocation {
+                old_line: line.old_line,
+                new_line: line.new_line,
+            };
+            (Some(location), Some(location))
+        } else {
+            (None, None)
+        };
+        let pending = act(
+            gui,
+            view,
+            ReviewAction::Ask {
+                path: "code.txt".into(),
+                start,
+                end,
+                question: "Why this change?".into(),
+                harness,
+            },
+        );
+        let running = act(gui, &pending, ReviewAction::PrecallConfirm);
+        drain(gui, &running)
+    }
+
+    fn drafted(
+        gui: &mut GuiHandle,
+        view: &ReviewView,
+        destination: ReviewDraftDestination,
+    ) -> ReviewView {
+        let pending = act(
+            gui,
+            view,
+            ReviewAction::DraftQuestion {
+                turn: 0,
+                destination,
+            },
+        );
+        assert!(pending.ai.precall.is_some());
+        assert!(!pending.ai.running);
+        let running = act(gui, &pending, ReviewAction::PrecallConfirm);
+        drain(gui, &running)
+    }
+
+    #[test]
+    fn question_drafts_use_all_answering_harnesses_and_transfer_without_saving_or_calling_ai() {
+        for harness in AgentKind::ALL {
+            for inline in [false, true] {
+                let (_dir, mut gui, view) = opened();
+                let view = answered(&mut gui, &view, harness.clone(), inline);
+                let before =
+                    progress_bytes(&gui.app_for_workflow().store.projects[0].features[0].workdir)
+                        .unwrap();
+                let destination = if inline {
+                    ReviewDraftDestination::Inline
+                } else {
+                    ReviewDraftDestination::General
+                };
+                let pending = act(
+                    &mut gui,
+                    &view,
+                    ReviewAction::DraftQuestion {
+                        turn: 0,
+                        destination,
+                    },
+                );
+                assert_eq!(
+                    pending.ai.precall.as_ref().unwrap().harness,
+                    harness.display_name()
+                );
+                assert!(
+                    pending
+                        .ai
+                        .precall
+                        .as_ref()
+                        .unwrap()
+                        .preview
+                        .contains("Repository-backed explanation")
+                );
+                assert!(gui.app_for_workflow().review_question_work.job.is_none());
+                let restored = act(&mut gui, &pending, ReviewAction::PrecallCancel);
+                assert!(restored.ai.comment_draft.is_none());
+                let view = drafted(&mut gui, &restored, destination);
+                let draft = view.ai.comment_draft.as_ref().unwrap();
+                assert_eq!(draft.text, "AI feedback");
+                assert_eq!(draft.turn, 0);
+                gui.app_for_workflow().review_question_work.runner =
+                    |_| panic!("transfer must never call an AI harness");
+                let transferring = act(
+                    &mut gui,
+                    &view,
+                    ReviewAction::TransferQuestionDraft {
+                        request: draft.request,
+                        text: "Edited feedback 🦀".into(),
+                    },
+                );
+                assert!(transferring.ai.precall.is_none());
+                let view = drain(&mut gui, &transferring);
+                let editor = view.ai.ready_comment.as_ref().unwrap();
+                assert_eq!(editor.text, "Edited feedback 🦀");
+                assert_eq!(editor.path.is_some(), inline);
+                assert!(view.ai.comment_draft.is_none());
+                assert!(view.files.iter().all(|f| f.line_comments.is_empty()));
+                assert!(view.general_feedback.is_empty());
+                assert_eq!(
+                    progress_bytes(&gui.app_for_workflow().store.projects[0].features[0].workdir)
+                        .unwrap(),
+                    before
+                );
+                let action = if inline {
+                    ReviewAction::LineComment {
+                        path: editor.path.clone().unwrap(),
+                        start: editor.start.unwrap(),
+                        end: editor.end.unwrap(),
+                        text: editor.text.clone(),
+                        severity: editor.severity,
+                    }
+                } else {
+                    ReviewAction::General {
+                        text: editor.text.clone(),
+                    }
+                };
+                let saved = act(&mut gui, &view, action);
+                assert!(saved.ai.ready_comment.is_none());
+                assert!(saved.save_error.is_none());
+                if inline {
+                    assert_eq!(saved.files[0].line_comments[0].text, "Edited feedback 🦀");
+                } else {
+                    assert_eq!(saved.general_feedback, "Edited feedback 🦀");
+                }
+                super::super::act(
+                    &mut gui,
+                    &saved.workflow_id,
+                    saved.revision,
+                    ReviewAction::Pause,
+                )
+                .unwrap();
+                let resumed = begin(&mut gui, saved.target).unwrap();
+                if inline {
+                    assert_eq!(resumed.files[0].line_comments[0].text, "Edited feedback 🦀");
+                } else {
+                    assert_eq!(resumed.general_feedback, "Edited feedback 🦀");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn draft_transfer_restores_original_file_and_appends_to_a_containing_thread_with_its_severity_and_suggestion()
+     {
+        let (dir, mut gui, view) = opened();
+        let loc = |n| {
+            let l = view.files[0]
+                .diff
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .find(|l| l.new_line == Some(n))
+                .unwrap();
+            DiffLineLocation {
+                old_line: l.old_line,
+                new_line: l.new_line,
+            }
+        };
+        let start = loc(8);
+        let end = loc(9);
+        let view = act(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "Existing thread".into(),
+                severity: Severity::Nit,
+            },
+        );
+        let view = act(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "replacement".into(),
+            },
+        );
+        std::fs::write(dir.path().join("repo/another.txt"), "second file\n").unwrap();
+        let view = act(&mut gui, &view, ReviewAction::Refresh);
+        let view = answered(&mut gui, &view, AgentKind::Codex, true);
+        let view = drafted(&mut gui, &view, ReviewDraftDestination::Inline);
+        // Ordinary navigation intentionally discards the draft; simulate the
+        // shared cursor moving independently to exercise identity restoration.
+        if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+            s.selected_file = s
+                .files
+                .iter()
+                .position(|f| f.path == "another.txt")
+                .unwrap();
+        }
+        let request = view.ai.comment_draft.as_ref().unwrap().request;
+        let transferring = act(
+            &mut gui,
+            &view,
+            ReviewAction::TransferQuestionDraft {
+                request,
+                text: "New paragraph".into(),
+            },
+        );
+        let view = drain(&mut gui, &transferring);
+        let editor = view.ai.ready_comment.as_ref().unwrap();
+        assert_eq!(view.selected_path.as_deref(), Some("code.txt"));
+        assert_eq!((editor.start, editor.end), (Some(start), Some(end)));
+        assert_eq!(editor.text, "Existing thread\n\nNew paragraph");
+        assert_eq!(editor.original, "Existing thread");
+        assert_eq!(editor.severity, Severity::Nit);
+        let saved = act(
+            &mut gui,
+            &view,
+            ReviewAction::LineComment {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: editor.text.clone(),
+                severity: editor.severity,
+            },
+        );
+        let c = &saved
+            .files
+            .iter()
+            .find(|f| f.diff.path == "code.txt")
+            .unwrap()
+            .line_comments[0];
+        assert_eq!(c.suggestion.as_deref(), Some("replacement"));
+        assert_eq!(c.severity, Severity::Nit);
+    }
+
+    #[test]
+    fn general_draft_transfer_appends_existing_feedback_and_explicit_discard_keeps_saved_review() {
+        let (_dir, mut gui, view) = opened();
+        let view = act(
+            &mut gui,
+            &view,
+            ReviewAction::General {
+                text: "Existing feedback".into(),
+            },
+        );
+        let view = answered(&mut gui, &view, AgentKind::Pi, false);
+        let view = drafted(&mut gui, &view, ReviewDraftDestination::General);
+        let transferring = act(
+            &mut gui,
+            &view,
+            ReviewAction::TransferQuestionDraft {
+                request: view.ai.comment_draft.as_ref().unwrap().request,
+                text: "New paragraph".into(),
+            },
+        );
+        let view = drain(&mut gui, &transferring);
+        assert_eq!(
+            view.ai.ready_comment.as_ref().unwrap().text,
+            "Existing feedback\n\nNew paragraph"
+        );
+        assert_eq!(view.general_feedback, "Existing feedback");
+        let discarded = act(&mut gui, &view, ReviewAction::DiscardQuestionDraft);
+        assert!(discarded.ai.ready_comment.is_none());
+        assert_eq!(discarded.general_feedback, "Existing feedback");
+    }
+
+    #[test]
+    fn changed_repository_stamp_refuses_drafting_and_transfer_retains_edited_text() {
+        for transfer in [false, true] {
+            let (dir, mut gui, view) = opened();
+            let mut view = answered(&mut gui, &view, AgentKind::Claude, true);
+            if transfer {
+                view = drafted(&mut gui, &view, ReviewDraftDestination::Inline);
+            }
+            // An empty commit keeps the displayed patch unchanged but changes
+            // the repository HEAD the answer was prepared against.
+            crate::gui_diff::tests::git(
+                &dir.path().join("repo"),
+                &["commit", "--allow-empty", "-m", "context changed"],
+            );
+            let running = if transfer {
+                let request = view.ai.comment_draft.as_ref().unwrap().request;
+                act(
+                    &mut gui,
+                    &view,
+                    ReviewAction::TransferQuestionDraft {
+                        request,
+                        text: "Keep my edited draft".into(),
+                    },
+                )
+            } else {
+                let pending = act(
+                    &mut gui,
+                    &view,
+                    ReviewAction::DraftQuestion {
+                        turn: 0,
+                        destination: ReviewDraftDestination::Inline,
+                    },
+                );
+                act(&mut gui, &pending, ReviewAction::PrecallConfirm)
+            };
+            let failed = drain(&mut gui, &running);
+            assert!(
+                failed
+                    .ai
+                    .question_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("context changed")
+            );
+            assert!(failed.ai.ready_comment.is_none());
+            assert!(failed.files.iter().all(|f| f.line_comments.is_empty()));
+            if transfer {
+                assert_eq!(
+                    failed.ai.comment_draft.as_ref().unwrap().text,
+                    "Keep my edited draft"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inline_transfer_refuses_partial_or_ambiguous_overlap_and_retains_the_draft() {
+        for ambiguous in [false, true] {
+            let (_dir, mut gui, view) = opened();
+            let mut view = answered(&mut gui, &view, AgentKind::Claude, true);
+            if !ambiguous {
+                // Make the original question span extend beyond the new thread.
+                if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+                    let lines = s.files[0].addressable_lines();
+                    let next = lines
+                        .iter()
+                        .find(|l| l.new_line == Some(9))
+                        .copied()
+                        .unwrap();
+                    s.questions.turns[0].context.anchor.as_mut().unwrap().end = next;
+                }
+            }
+            view = drafted(&mut gui, &view, ReviewDraftDestination::Inline);
+            if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+                let anchor = s.questions.turns[0].context.anchor.as_ref().unwrap().start;
+                let c = crate::app::review::state::LineComment {
+                    location: anchor,
+                    text: "Saved thread".into(),
+                    draft: false,
+                    start: None,
+                    suggestion: Some("keep replacement".into()),
+                    severity: Severity::Nit,
+                    resolved: false,
+                    carried: false,
+                    anchor_context: None,
+                    start_anchor_context: None,
+                    anchor_lost: false,
+                };
+                let mut comments = vec![c.clone()];
+                if ambiguous {
+                    comments.push(c);
+                }
+                s.line_comments.insert("code.txt".into(), comments);
+            }
+            let transferring = act(
+                &mut gui,
+                &view,
+                ReviewAction::TransferQuestionDraft {
+                    request: view.ai.comment_draft.as_ref().unwrap().request,
+                    text: "Keep this draft".into(),
+                },
+            );
+            let refused = drain(&mut gui, &transferring);
+            assert!(refused.ai.ready_comment.is_none());
+            assert!(
+                refused
+                    .ai
+                    .question_error
+                    .as_ref()
+                    .unwrap()
+                    .contains("overlaps neighbouring threads")
+            );
+            assert_eq!(
+                refused.ai.comment_draft.as_ref().unwrap().text,
+                "Keep this draft"
+            );
+            assert!(
+                refused.files[0]
+                    .line_comments
+                    .iter()
+                    .all(|c| c.text == "Saved thread"
+                        && c.suggestion.as_deref() == Some("keep replacement"))
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_closed_or_obsolete_draft_workers_cannot_deliver_late_comments() {
+        fn wait_for_cancel(
+            input: &crate::app::review_questions::test_support::RunInput,
+        ) -> anyhow::Result<String> {
+            let until = Instant::now() + Duration::from_secs(5);
+            while !input.cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                anyhow::ensure!(
+                    Instant::now() < until,
+                    "fixture cancellation did not arrive"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Ok("Obsolete draft".into())
+        }
+        for cause in 0..5 {
+            let (dir, mut gui, view) = opened();
+            let view = answered(&mut gui, &view, AgentKind::Claude, true);
+            gui.app_for_workflow().review_question_work.runner = wait_for_cancel;
+            let pending = act(
+                &mut gui,
+                &view,
+                ReviewAction::DraftQuestion {
+                    turn: 0,
+                    destination: ReviewDraftDestination::Inline,
+                },
+            );
+            let running = act(&mut gui, &pending, ReviewAction::PrecallConfirm);
+            match cause {
+                0 => {
+                    act(&mut gui, &running, ReviewAction::CancelAi);
+                }
+                1 => {
+                    super::super::act(
+                        &mut gui,
+                        &running.workflow_id,
+                        running.revision,
+                        ReviewAction::Pause,
+                    )
+                    .unwrap();
+                    continue;
+                }
+                2 => {
+                    std::fs::write(dir.path().join("repo/code.txt"), "changed patch\n").unwrap();
+                }
+                3 => {
+                    std::fs::write(
+                        crate::app::review::review_progress_path(&dir.path().join("repo")),
+                        "{}\n",
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    let app = gui.app_for_workflow();
+                    app.store.projects[0].features.clear();
+                    app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+                }
+            }
+            let cancelled = poll(&mut gui, &running.workflow_id).unwrap();
+            assert!(!cancelled.ai.running);
+            assert!(cancelled.ai.comment_draft.is_none());
+            assert!(cancelled.ai.ready_comment.is_none());
+            assert!(cancelled.files.iter().all(|f| f.line_comments.is_empty()));
+            assert!(gui.app_for_workflow().review_question_work.job.is_none());
+        }
+    }
+
+    #[test]
+    fn draft_requests_reject_missing_answers_unanchored_inline_duplicate_and_stale_submissions() {
+        let (_dir, mut gui, view) = opened();
+        assert!(
+            super::super::act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::DraftQuestion {
+                    turn: 0,
+                    destination: ReviewDraftDestination::General
+                }
+            )
+            .is_err()
+        );
+        let view = answered(&mut gui, &view, AgentKind::Claude, false);
+        assert!(
+            super::super::act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::DraftQuestion {
+                    turn: 0,
+                    destination: ReviewDraftDestination::Inline
+                }
+            )
+            .is_err()
+        );
+        let view = drafted(&mut gui, &view, ReviewDraftDestination::General);
+        for action in [
+            ask(AgentKind::Codex),
+            ReviewAction::DraftQuestion {
+                turn: 0,
+                destination: ReviewDraftDestination::General,
+            },
+            ReviewAction::TransferQuestionDraft {
+                request: 999,
+                text: "stale".into(),
+            },
+            ReviewAction::TransferQuestionDraft {
+                request: view.ai.comment_draft.as_ref().unwrap().request,
+                text: "  ".into(),
+            },
+        ] {
+            assert!(super::super::act(&mut gui, &view.workflow_id, view.revision, action).is_err());
+        }
+        let discarded = act(&mut gui, &view, ReviewAction::DiscardQuestionDraft);
+        assert!(discarded.ai.comment_draft.is_none());
+        assert!(
+            super::super::act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::DraftQuestion {
+                    turn: 0,
+                    destination: ReviewDraftDestination::General
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

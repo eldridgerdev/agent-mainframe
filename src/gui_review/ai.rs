@@ -378,13 +378,13 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
                 ));
             }
             let harness = turn_data.harness.clone();
-            let q = app.review_questions_mut().unwrap();
-            q.selected = *turn;
-            q.harness = harness;
-            q.error = None;
             app.message = None;
-            app.draft_review_question((*destination).into());
-            question_error(app)?;
+            app.draft_review_question_turn(*turn, harness, (*destination).into());
+            // An open pre-call notice has changed nothing yet, so cancelling it
+            // must leave the selection, harness and error as they were.
+            if !matches!(app.mode, AppMode::PromptPrecall(_)) {
+                question_error(app)?;
+            }
         }
         ReviewAction::TransferQuestionDraft { request, text } => {
             start_guard(app)?;
@@ -408,19 +408,24 @@ pub(super) fn apply(app: &mut App, action: &ReviewAction) -> GuiResult<bool> {
             let anchor = turn.context.anchor.clone();
             // Restore the question's original span, even after file navigation.
             // The shared transfer worker validates its repository stamp again.
+            // A refused span leaves the view on the file the reviewer was reading.
             if destination == DraftDestination::Inline {
                 let anchor = anchor.unwrap();
                 let AppMode::DiffViewer(s) = &mut app.mode else {
                     unreachable!()
                 };
-                s.selected_file = s
+                let index = s
                     .files
                     .iter()
                     .position(|f| f.path == anchor.path)
                     .ok_or_else(|| {
                         GuiError::conflict("The question's file is no longer in this review")
                     })?;
-                set_span(s, anchor.start, anchor.end)?;
+                let previous = std::mem::replace(&mut s.selected_file, index);
+                if let Err(error) = set_span(s, anchor.start, anchor.end) {
+                    s.selected_file = previous;
+                    return Err(error);
+                }
             }
             app.review_questions_mut()
                 .unwrap()
@@ -1059,6 +1064,87 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_draft_notice_keeps_the_selection_harness_and_error() {
+        let (_dir, mut gui, view) = opened();
+        let view = answered(&mut gui, &view, AgentKind::Claude, true);
+        let view = answered(&mut gui, &view, AgentKind::Claude, true);
+        let q = gui.app_for_workflow().review_questions_mut().unwrap();
+        assert_eq!(q.selected, 1);
+        q.harness = AgentKind::Codex;
+        q.error = Some("Earlier error".into());
+        let pending = act(
+            &mut gui,
+            &view,
+            ReviewAction::DraftQuestion {
+                turn: 0,
+                destination: ReviewDraftDestination::General,
+            },
+        );
+        assert_eq!(
+            pending.ai.precall.as_ref().unwrap().harness,
+            AgentKind::Claude.display_name()
+        );
+        let restored = act(&mut gui, &pending, ReviewAction::PrecallCancel);
+        assert_eq!(restored.ai.question_error.as_deref(), Some("Earlier error"));
+        let q = gui.app_for_workflow().review_questions().unwrap();
+        assert_eq!(q.selected, 1);
+        assert_eq!(q.harness, AgentKind::Codex);
+        // Continuing instead drafts from the requested turn with its harness.
+        let pending = act(
+            &mut gui,
+            &restored,
+            ReviewAction::DraftQuestion {
+                turn: 0,
+                destination: ReviewDraftDestination::General,
+            },
+        );
+        let running = act(&mut gui, &pending, ReviewAction::PrecallConfirm);
+        let drafted = drain(&mut gui, &running);
+        assert_eq!(drafted.ai.comment_draft.as_ref().unwrap().turn, 0);
+        assert!(drafted.ai.question_error.is_none());
+        let q = gui.app_for_workflow().review_questions().unwrap();
+        assert_eq!(q.harness, AgentKind::Claude);
+    }
+
+    #[test]
+    fn refused_inline_transfer_keeps_the_file_the_reviewer_is_reading() {
+        let (dir, mut gui, view) = opened();
+        std::fs::write(dir.path().join("repo/old.txt"), "edited\n").unwrap();
+        let view = act(&mut gui, &view, ReviewAction::Refresh);
+        let view = answered(&mut gui, &view, AgentKind::Claude, true);
+        let view = drafted(&mut gui, &view, ReviewDraftDestination::Inline);
+        let draft = view.ai.comment_draft.as_ref().unwrap().request;
+        let other = view
+            .files
+            .iter()
+            .position(|f| f.diff.path != "code.txt")
+            .unwrap();
+        let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode else {
+            panic!("review");
+        };
+        s.selected_file = other;
+        s.questions.turns[0].context.anchor.as_mut().unwrap().start = DiffLineLocation {
+            old_line: None,
+            new_line: Some(9999),
+        };
+        let refused = super::super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::TransferQuestionDraft {
+                request: draft,
+                text: "Edited feedback".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(refused.message.contains("no longer in this diff"));
+        let AppMode::DiffViewer(s) = &gui.app_for_workflow().mode else {
+            panic!("review");
+        };
+        assert_eq!(s.selected_file, other);
+    }
+
+    #[test]
     fn cancelled_closed_or_obsolete_draft_workers_cannot_deliver_late_comments() {
         fn wait_for_cancel(
             input: &crate::app::review_questions::test_support::RunInput,
@@ -1098,6 +1184,16 @@ mod tests {
                         ReviewAction::Pause,
                     )
                     .unwrap();
+                    // Closing drops the job; the worker's late result has no
+                    // owner, so a reopened review must not surface it.
+                    assert!(gui.app_for_workflow().review_question_work.job.is_none());
+                    let reopened = begin(&mut gui, running.target.clone()).unwrap();
+                    std::thread::sleep(Duration::from_millis(50));
+                    let reopened = poll(&mut gui, &reopened.workflow_id).unwrap();
+                    assert!(!reopened.ai.running);
+                    assert!(reopened.ai.comment_draft.is_none());
+                    assert!(reopened.ai.ready_comment.is_none());
+                    assert!(reopened.files.iter().all(|f| f.line_comments.is_empty()));
                     continue;
                 }
                 2 => {

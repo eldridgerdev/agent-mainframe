@@ -17,6 +17,7 @@ pub(crate) use worker::Work;
 use crate::app::precall::PrecallAction;
 use crate::app::{App, AppMode};
 use crate::editor::TextEditor;
+use crate::project::AgentKind;
 use crate::prompts::PromptId;
 use context::QuestionContext;
 use state::Turn;
@@ -123,7 +124,7 @@ impl App {
             .chars()
             .take(32_000)
             .collect();
-        self.start_review_question_task(context, Task::Answer { question, earlier });
+        self.start_review_question_task(context, Task::Answer { question, earlier }, None);
     }
     pub(crate) fn retry_review_question(&mut self) {
         let text = self
@@ -136,24 +137,41 @@ impl App {
         }
     }
     pub(crate) fn draft_review_question(&mut self, destination: DraftDestination) {
-        let Some(turn) = self
+        let Some((turn, harness)) = self
             .review_questions()
-            .and_then(|q| q.turns.get(q.selected))
+            .map(|q| (q.selected, q.harness.clone()))
+        else {
+            return;
+        };
+        self.draft_review_question_turn(turn, harness, destination);
+    }
+    /// Draft from `turn` with `harness`. Neither becomes the selection until
+    /// the call clears its pre-call notice, so cancelling it changes nothing.
+    pub(crate) fn draft_review_question_turn(
+        &mut self,
+        turn: usize,
+        harness: AgentKind,
+        destination: DraftDestination,
+    ) {
+        let Some(turn_data) = self
+            .review_questions()
+            .and_then(|q| q.turns.get(turn))
             .cloned()
         else {
             return;
         };
-        let (Some(answer), Some(prepared)) = (turn.answer, turn.prepared) else {
+        let (Some(answer), Some(prepared)) = (turn_data.answer, turn_data.prepared) else {
             return;
         };
         self.start_review_question_task(
-            turn.context,
+            turn_data.context,
             Task::Draft {
                 destination,
-                question: turn.question,
+                question: turn_data.question,
                 answer,
                 stamp: prepared.stamp,
             },
+            Some((turn, harness)),
         );
     }
     pub(crate) fn transfer_review_question_draft(&mut self) {
@@ -178,9 +196,16 @@ impl App {
             text: editor.text().to_string(),
             stamp: prepared.stamp.clone(),
         };
-        self.start_review_question_task(context, task);
+        self.start_review_question_task(context, task, None);
     }
-    fn start_review_question_task(&mut self, context: QuestionContext, task: Task) {
+    /// `target` is the turn and harness the task runs for; `None` uses the
+    /// current selection. An `Answer` always appends a new turn instead.
+    fn start_review_question_task(
+        &mut self,
+        context: QuestionContext,
+        task: Task,
+        target: Option<(usize, AgentKind)>,
+    ) {
         self.cancel_review_question();
         let Some(current) = self.review_question_context() else {
             return;
@@ -192,7 +217,10 @@ impl App {
             return;
         }
         let repo = self.repo_for_project_path(&context.workdir);
-        let harness = self.review_questions().expect("review").harness.clone();
+        let (turn, harness) = target.unwrap_or_else(|| {
+            let q = self.review_questions().expect("review");
+            (q.selected, q.harness.clone())
+        });
         if !self.allowed_agents_for_repo(&repo).contains(&harness) {
             self.review_questions_mut().expect("review").error = Some("This harness is unavailable or disabled for this project; choose another with Ctrl+H".into());
             return;
@@ -224,7 +252,7 @@ impl App {
                 answer,
                 ..
             } => Some((
-                PrecallAction::ReviewQuestionDraft(*destination),
+                PrecallAction::ReviewQuestionDraft(*destination, turn),
                 context.preview_tokens(question, "", answer),
             )),
             Task::Transfer { .. } => None,
@@ -247,6 +275,9 @@ impl App {
             });
             q.selected = q.turns.len() - 1;
             q.scroll = 0;
+        } else {
+            q.selected = turn;
+            q.harness = harness.clone();
         }
         q.next_request += 1;
         q.request = Some(q.next_request);

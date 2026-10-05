@@ -666,6 +666,8 @@ export interface ReviewAi {
     path: string | null; start: ReviewLocation | null; end: ReviewLocation | null; harness: AgentSlug;
   }[];
   question_error: string | null;
+  comment_draft: { request: number; turn: number; destination: "inline" | "general"; text: string } | null;
+  ready_comment: { request: number; original: string; path: string | null; start: ReviewLocation | null; end: ReviewLocation | null; text: string; severity: ReviewSeverity } | null;
   harnesses: AgentSlug[];
   message: string | null;
 }
@@ -679,6 +681,9 @@ export type ReviewAction =
   | { kind: "general"; text: string }
   | { kind: "walkthrough" | "co_review"; path: string }
   | { kind: "ask"; path: string; start: ReviewLocation | null; end: ReviewLocation | null; question: string; harness: AgentSlug }
+  | { kind: "draft_question"; turn: number; destination: "inline" | "general" }
+  | { kind: "transfer_question_draft"; request: number; text: string }
+  | { kind: "discard_question_draft" }
   | (ReviewSpan & { kind: "accept_draft" | "dismiss_draft"; path: string })
   | { kind: "overview" | "cancel_ai" | "precall_confirm" | "precall_cancel" | "precall_toggle_view" }
   | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };

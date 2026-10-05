@@ -9,7 +9,7 @@ const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
   general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [],
-  ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
+  ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
       { kind: "removed", text: "-before", old_line: 1, new_line: null },
@@ -481,4 +481,98 @@ it("does not claim the review is updating while a pre-call notice waits on the r
   expect(screen.queryByText(/Updating review/)).toBeNull();
   update({ busy: true });
   expect(screen.getByText(/Updating review/)).toBeTruthy();
+});
+
+const answeredTurn = { question: "Why this line?", answer: "Repository explanation", error: null, focus: "code.rs, new line 1", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, harness: "codex" as const };
+const withDraft: ReviewView = { ...noThreadsView, ai: { ...view.ai, questions: [answeredTurn], comment_draft: { request: 2, turn: 0, destination: "inline", text: "Generated feedback" } } };
+const withReady: ReviewView = { ...noThreadsView, ai: { ...view.ai, questions: [answeredTurn], ready_comment: { request: 3, original: "Existing thread", path: "code.rs", start: answeredTurn.start, end: answeredTurn.end, text: "Existing thread\n\nGenerated feedback", severity: "nit" } } };
+
+it("drafts from the selected answer with explicit inline or overall destinations", async () => {
+  const { onAct, update } = mount({ ...noThreadsView, ai: { ...view.ai, questions: [answeredTurn] } });
+  fireEvent.click(screen.getByText("Review questions (1)"));
+  fireEvent.click(screen.getByRole("button", { name: "Draft inline comment" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "draft_question", turn: 0, destination: "inline" }));
+  fireEvent.click(screen.getByRole("button", { name: "Draft overall feedback" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "draft_question", turn: 0, destination: "general" }));
+  update({ view: { ...noThreadsView, ai: { ...view.ai, questions: [{ ...answeredTurn, start: null, end: null }] } } });
+  expect((screen.getByRole("button", { name: "Draft inline comment" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Draft overall feedback" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("retains edited AI draft text across polls and failed transfers and blocks duplicate submissions", async () => {
+  const { onAct, update } = mount(withDraft, vi.fn(async () => false));
+  const textbox = screen.getByRole("textbox", { name: "AI comment draft" });
+  fireEvent.change(textbox, { target: { value: "Human edits 🦀\nMore feedback" } });
+  update({ view: { ...withDraft, revision: 5, ai: { ...withDraft.ai, comment_draft: { ...withDraft.ai.comment_draft! } } } });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Human edits 🦀\nMore feedback");
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Open comment editor" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "transfer_question_draft", request: 2, text: "Human edits 🦀\nMore feedback" }));
+  update({ busy: true });
+  fireEvent.click(screen.getByRole("button", { name: "Open comment editor" }));
+  expect(onAct).toHaveBeenCalledOnce();
+  update({ error: "Repository changed", view: { ...withDraft, revision: 6 } });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Human edits 🦀\nMore feedback");
+  expect(screen.getByRole("alert").textContent).toContain("Repository changed");
+});
+
+it("requires explicit discard before leaving a generated draft and preserves it when dismissal is cancelled", async () => {
+  const { onAct } = mount(withDraft);
+  fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
+  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect((screen.getByRole("textbox", { name: "AI comment draft" }) as HTMLTextAreaElement).value).toBe("Generated feedback");
+  fireEvent.click(screen.getByRole("button", { name: "Discard AI draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "discard_question_draft" }));
+  expect(screen.queryByRole("textbox", { name: "AI comment draft" })).toBeNull();
+});
+
+it("opens the transferred inline editor without saving and keeps edits until an explicit anchored save", async () => {
+  const { onAct, update } = mount(withReady, vi.fn(async () => false));
+  const textbox = screen.getByRole("textbox", { name: "Line comment" });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Existing thread\n\nGenerated feedback");
+  expect((screen.getByRole("combobox", { name: "Severity" }) as HTMLSelectElement).value).toBe("nit");
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.change(textbox, { target: { value: "Final feedback" } });
+  update({ view: { ...withReady, revision: 8, ai: { ...withReady.ai, ready_comment: { ...withReady.ai.ready_comment! } } } });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Final feedback");
+  fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "line_comment", path: "code.rs", start: answeredTurn.start, end: answeredTurn.end, text: "Final feedback", severity: "nit" }));
+  expect((textbox as HTMLTextAreaElement).value).toBe("Final feedback");
+});
+
+it("opens transferred overall feedback and cancels without saving or restoring the draft on polling", async () => {
+  const general = { ...withReady, ai: { ...withReady.ai, ready_comment: { ...withReady.ai.ready_comment!, path: null, start: null, end: null } } };
+  const { onAct, update } = mount(general);
+  expect(screen.getByRole("textbox", { name: "Overall feedback draft" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard and continue" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "discard_question_draft" }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Overall feedback draft" })).toBeNull());
+  update({ view: { ...general, revision: 9, ai: { ...general.ai, ready_comment: { ...general.ai.ready_comment! } } } });
+  expect(screen.queryByRole("textbox", { name: "Overall feedback draft" })).toBeNull();
+});
+
+it("blocks drafting with disabled harnesses and while another request or unsaved draft is active", () => {
+  const { update } = mount({ ...noThreadsView, ai: { ...view.ai, harnesses: ["claude"], questions: [answeredTurn] } });
+  fireEvent.click(screen.getByText("Review questions (1)"));
+  expect((screen.getByRole("button", { name: "Draft overall feedback" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view: { ...noThreadsView, ai: { ...view.ai, running: true, question_running: true, questions: [answeredTurn] } } });
+  expect((screen.getByRole("button", { name: "Draft inline comment" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view: withDraft });
+  expect((screen.getByRole("button", { name: "Draft overall feedback" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+
+it("protects a cleared transferred editor when an empty save would remove existing prose", async () => {
+  const { onAct } = mount(withReady, vi.fn(async () => false));
+  fireEvent.change(screen.getByRole("textbox", { name: "Line comment" }), { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
+  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save comment" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "line_comment", path: "code.rs", start: answeredTurn.start, end: answeredTurn.end, text: "", severity: "nit" }));
 });

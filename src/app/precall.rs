@@ -46,7 +46,8 @@ pub enum PrecallAction {
     ReviewMemoryCompact,
     ReviewMemoryAiSummary,
     ReviewQuestion,
-    ReviewQuestionDraft(crate::app::review_questions::DraftDestination),
+    /// Draft from the answered turn at this index.
+    ReviewQuestionDraft(crate::app::review_questions::DraftDestination, usize),
 }
 
 impl PrecallAction {
@@ -67,7 +68,7 @@ impl PrecallAction {
             PrecallAction::ReviewMemoryCompact => PromptId::ReviewMemoryCompact,
             PrecallAction::ReviewMemoryAiSummary => PromptId::ReviewMemoryAiSummary,
             PrecallAction::ReviewQuestion => PromptId::ReviewQuestion,
-            PrecallAction::ReviewQuestionDraft(_) => PromptId::ReviewQuestionDraft,
+            PrecallAction::ReviewQuestionDraft(..) => PromptId::ReviewQuestionDraft,
         }
     }
 }
@@ -269,8 +270,8 @@ impl App {
                 self.submit_review_question();
                 Ok(())
             }
-            PrecallAction::ReviewQuestionDraft(destination) => {
-                self.draft_review_question(destination);
+            PrecallAction::ReviewQuestionDraft(destination, turn) => {
+                self.draft_review_question_turn(turn, harness, destination);
                 Ok(())
             }
         }

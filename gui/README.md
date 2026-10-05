@@ -200,7 +200,9 @@ project and worktree copies. Select a template, fill its text/multiline fields
 and configured or inline choices, then review the resolved preview. **Add to
 draft** opens the chosen allowed agent session and appends to its unsent text;
 it does not start an agent or send a message. Templates and target permissions
-are rechecked on insertion, and external changes appear while browsing. Cancel
+are rechecked on insertion. The list refreshes while you browse, and a
+selected template edited or deleted elsewhere is deselected with a notice so
+you never fill an outdated copy. The preview renders as you type. Cancel
 leaves existing composer drafts intact. Create/edit/delete/export templates and
 editable prompt overrides remain in the TUI. Native desktop interaction and
 macOS runtime validation for this library increment remain open.

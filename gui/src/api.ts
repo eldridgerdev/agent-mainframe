@@ -714,7 +714,12 @@ export interface LibraryEntry {
   source: string; slots: LibrarySlot[];
 }
 export interface LibraryTarget { target: SessionTarget; label: string; stopped: boolean }
-export interface LibraryView { entries: LibraryEntry[]; targets: LibraryTarget[] }
+export interface LibraryView {
+  entries: LibraryEntry[];
+  /** Every key in the scope, ignoring the search: absence means changed or deleted. */
+  available_keys: string[];
+  targets: LibraryTarget[];
+}
 export interface ResolvePrompt {
   scope: LibraryScope; entry_key: string; values: [string, string][]; target: SessionTarget | null;
 }

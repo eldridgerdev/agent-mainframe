@@ -4,6 +4,7 @@ import {
   LibraryEntry, LibraryScope, Project, SessionTarget, asGuiError,
   promptLibraryLoad, promptLibraryResolve,
 } from "./api";
+import { renderTemplate } from "./promptTemplate";
 import { EmptyState, Field, Modal, Spinner } from "./ui";
 
 const targetKey = (target: SessionTarget) => JSON.stringify([target.project_id, target.feature_id, target.session_id]);
@@ -22,6 +23,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
   const [destination, setDestination] = useState(initialTarget ? targetKey(initialTarget) : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const inFlight = useRef(false);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
@@ -30,12 +32,17 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     queryFn: () => promptLibraryLoad(scope, search),
     retry: false, staleTime: 0, refetchInterval: busy ? false : 3000,
   });
+  // A key is the entry's content, so an external edit or deletion retires it.
+  // `available_keys` ignores the search, which only hides entries.
+  useEffect(() => {
+    if (selected && library.data && !library.data.available_keys.includes(selected.key)) {
+      setSelected(null); setValues({}); setError(null);
+      setNotice(`“${selected.name}” was changed or removed outside this window. Select it again to use the current version.`);
+    }
+  }, [library.data, selected]);
   const pairs: [string, string][] = selected?.slots.map((slot) => [slot.key, values[slot.key] ?? ""]) ?? [];
-  const preview = useQuery({
-    queryKey: ["prompt-library-preview", scope, selected?.key, pairs],
-    queryFn: () => promptLibraryResolve({ scope, entry_key: selected!.key, values: pairs, target: null }),
-    enabled: selected !== null, retry: false, staleTime: 0,
-  });
+  // Rendered locally: the backend re-resolves (and revalidates) only on insertion.
+  const preview = selected ? renderTemplate(selected.body, pairs) : "";
   const target = library.data?.targets.find((candidate) => targetKey(candidate.target) === destination);
   const missingRequired = selected?.slots.some((slot) => slot.required && !(values[slot.key] ?? "").trim());
   const scopes: { label: string; value: LibraryScope }[] = [{ label: "User & global prompts", value: { kind: "global" } }];
@@ -49,7 +56,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
   function choose(entry: LibraryEntry) {
     setSelected(entry);
     setValues(Object.fromEntries(entry.slots.map((slot) => [slot.key, slot.initial_value])));
-    setError(null);
+    setError(null); setNotice(null);
   }
   function close() {
     active.current = false;
@@ -79,13 +86,13 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       <span className="muted small">Existing draft text is kept. Send explicitly from the composer.</span>
       <button className="btn btn-secondary" onClick={close}>Cancel</button>
       <button className="btn btn-primary" onClick={() => void insert()}
-        disabled={busy || !selected || !target || missingRequired || library.isError || preview.isFetching || preview.isError || !preview.data?.trim()}>
+        disabled={busy || !selected || !target || missingRequired || library.isError || !preview.trim()}>
         {busy && <Spinner />}{busy ? "Adding…" : "Add to draft"}
       </button>
     </>}>
     <div className="library-toolbar">
       <Field label="Library scope"><select disabled={busy} value={JSON.stringify(scope)} onChange={(event) => {
-        setScope(JSON.parse(event.target.value) as LibraryScope); setSelected(null); setValues({}); setError(null);
+        setScope(JSON.parse(event.target.value) as LibraryScope); setSelected(null); setValues({}); setError(null); setNotice(null);
       }}>
         {!scopes.some((candidate) => JSON.stringify(candidate.value) === JSON.stringify(scope)) &&
           <option value={JSON.stringify(scope)}>Scope no longer available</option>}
@@ -93,7 +100,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       </select></Field>
       <Field label="Search prompts"><input autoFocus disabled={busy} placeholder="Search name, body or #tag…" value={search}
         onChange={(event) => setSearch(event.target.value)} /></Field>
-      <button className="btn btn-secondary btn-sm" disabled={library.isFetching || busy} onClick={() => { void library.refetch(); if (selected) void preview.refetch(); }}>Refresh</button>
+      <button className="btn btn-secondary btn-sm" disabled={library.isFetching || busy} onClick={() => void library.refetch()}>Refresh</button>
     </div>
     {library.error && <p role="alert" className="error-text">{asGuiError(library.error).message}</p>}
     <div className="library-browser">
@@ -111,6 +118,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
         </button>)}
       </div>
       <div className="library-detail">
+        {!selected && notice && <p role="status" className="muted">{notice}</p>}
         {!selected && <EmptyState icon="file" title="Select a prompt">Preview its text and customize any placeholders before adding it.</EmptyState>}
         {selected && <>
           <h3>{selected.name} <span className="badge">{selected.source}</span></h3>
@@ -129,9 +137,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
             </Field>)}
           </div>}
           <h4>Prompt preview</h4>
-          {preview.isFetching && <p className="muted small">Updating preview…</p>}
-          {preview.error && <p role="alert" className="error-text">{asGuiError(preview.error).message}</p>}
-          {!preview.isError && <pre className="library-preview" aria-label="Resolved prompt">{preview.data ?? ""}</pre>}
+          <pre className="library-preview" aria-label="Resolved prompt">{preview}</pre>
           <Field label="Agent session"><select disabled={busy} value={destination} onChange={(event) => { setDestination(event.target.value); setError(null); }}>
             <option value="">Choose an agent session…</option>
             {destination && !target && <option value={destination}>Selected session no longer available</option>}

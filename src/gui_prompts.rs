@@ -1,5 +1,6 @@
 //! Read-only desktop prompt library. Source merging, search and substitution
 //! are shared with the TUI; delivery returns an unsent frontend draft only.
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -59,6 +60,9 @@ pub struct LibraryTarget {
 #[derive(Debug, Serialize)]
 pub struct LibraryView {
     pub entries: Vec<LibraryEntry>,
+    /// Every entry key in the scope, regardless of the search, so a client can
+    /// tell a changed or deleted selection from one the search hides.
+    pub available_keys: Vec<String>,
     pub targets: Vec<LibraryTarget>,
 }
 
@@ -105,23 +109,21 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
         .zip(fi)
         .map(|(pi, fi)| &app.store.projects[pi].features[fi].workdir);
     let mut scored = Vec::new();
-    for (index, entry) in app.prompt_library_for_scope(pi, fi).into_iter().enumerate() {
+    // Identical entries are told apart by their occurrence within the same
+    // source and content, never by list position: a position shifts whenever
+    // an unrelated template is added, removed or reordered.
+    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    let mut available_keys = Vec::new();
+    for entry in app.prompt_library_for_scope(pi, fi) {
         let template = entry.template;
-        let Some(score) =
-            prompt_filter_score(&template.name, &template.body, &template.tags, query)
-        else {
-            continue;
-        };
         let slots = resolve_placeholders(&template);
-        let mut hash = DefaultHasher::new();
         // Config entries without IDs/timestamps are reconstructed on every read.
         // Hash only authored content; include checkout paths to refuse reassignment.
-        serde_json::to_string(&(
+        let identity = serde_json::to_string(&(
             scope,
             repo,
             workdir,
             entry.source.label(),
-            index,
             &template.name,
             &template.description,
             &template.body,
@@ -129,12 +131,22 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
             &slots,
             (entry.source == crate::prompt_library::PromptSource::User).then_some(&template.id),
         ))
-        .map_err(|error| GuiError::from(anyhow::Error::from(error)))?
-        .hash(&mut hash);
+        .map_err(|error| GuiError::from(anyhow::Error::from(error)))?;
+        let occurrence = occurrences.entry(identity.clone()).or_default();
+        let mut hash = DefaultHasher::new();
+        (&identity, *occurrence).hash(&mut hash);
+        *occurrence += 1;
+        let key = format!("{:016x}", hash.finish());
+        available_keys.push(key.clone());
+        let Some(score) =
+            prompt_filter_score(&template.name, &template.body, &template.tags, query)
+        else {
+            continue;
+        };
         scored.push((
             score,
             LibraryEntry {
-                key: format!("{:016x}", hash.finish()),
+                key,
                 name: template.name,
                 description: template.description,
                 body: template.body,
@@ -177,6 +189,7 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
     }
     Ok(LibraryView {
         entries: scored.into_iter().map(|(_, entry)| entry).collect(),
+        available_keys,
         targets,
     })
 }
@@ -395,6 +408,55 @@ mod tests {
         let view = load(&mut gui, &scope, "").unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(resolve(&mut gui, request(&scope, &view.entries[0], Some(target))).is_err());
+    }
+
+    #[test]
+    fn keys_survive_unrelated_library_edits_and_searches_but_duplicates_stay_distinct() {
+        let (dir, mut gui, scope, target) = fixture();
+        std::fs::write(
+            dir.path().join("worktree/amf.json"),
+            r#"{"prompt_templates":[{"name":"Twin","body":"same"},{"name":"Twin","body":"same"}]}"#,
+        )
+        .unwrap();
+        let first = insert_user(&mut gui, "first");
+        let keys = |gui: &mut GuiHandle| {
+            load(gui, &scope, "")
+                .unwrap()
+                .entries
+                .into_iter()
+                .filter(|entry| entry.source != "User")
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>()
+        };
+        let before = keys(&mut gui);
+        assert_eq!(before.len(), 3);
+        assert_ne!(before[0], before[1], "identical entries keep distinct keys");
+        let user_key = load(&mut gui, &scope, "first").unwrap().entries[0]
+            .key
+            .clone();
+
+        insert_user(&mut gui, "second");
+        assert_eq!(keys(&mut gui), before);
+        gui.app_for_workflow()
+            .db
+            .as_ref()
+            .unwrap()
+            .delete_prompt_template(&first.id)
+            .unwrap();
+        let after = keys(&mut gui);
+        assert_eq!(after, before);
+
+        let searched = load(&mut gui, &scope, "global").unwrap();
+        assert_eq!(searched.entries.len(), 1);
+        assert_eq!(searched.entries[0].key, after[2]);
+        assert!(searched.available_keys.contains(&after[0]));
+        assert!(!searched.available_keys.contains(&user_key));
+        let view = load(&mut gui, &scope, "").unwrap();
+        let global = view.entries.iter().find(|e| e.source == "Global").unwrap();
+        assert_eq!(
+            resolve(&mut gui, request(&scope, global, Some(target))).unwrap(),
+            "global"
+        );
     }
 
     #[test]

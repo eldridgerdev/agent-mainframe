@@ -20,7 +20,8 @@ const entry: LibraryEntry = {
     { key: "rust|go", label: "Choose an option", kind: "select", options: ["rust", "go"], initial_value: "rust", required: false },
   ],
 };
-const view: LibraryView = { entries: [entry, { ...entry, key: "project-template", source: "Project", name: "Project prompt", slots: [], body: "Plain prompt" }], targets: [
+const view: LibraryView = { entries: [entry, { ...entry, key: "project-template", source: "Project", name: "Project prompt", slots: [], body: "Plain prompt" }],
+  available_keys: ["template", "project-template"], targets: [
   { target, label: "Project / Feature / Claude", stopped: false },
   { target: { ...target, session_id: "codex" }, label: "Project / Feature / Codex", stopped: true },
 ] };
@@ -43,9 +44,11 @@ function mount() {
     projects={projects} onClose={onClose} onInsert={onInsert} /></QueryClientProvider>);
   return { client, onClose, onInsert };
 }
+const previewText = () => screen.getByLabelText("Resolved prompt").textContent;
+const resolveCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_library_resolve");
 async function choose() {
   fireEvent.click(await screen.findByRole("button", { name: /Fix a bug/ }));
-  await screen.findByText("Resolved repair");
+  expect(previewText()).toBe("Fix auth in dev with Keep tests and rust.");
   await waitFor(() => expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(false));
 }
 const insertCalls = () => vi.mocked(invoke).mock.calls.filter(([command, args]) => command === "prompt_library_resolve" && (args as { request: ResolvePrompt }).request.target !== null);
@@ -61,14 +64,17 @@ it("previews defaults, fills text, multiline and choices, then inserts only afte
   fireEvent.change(screen.getByRole("textbox", { name: "Notes" }), { target: { value: "one\ntwo" } });
   fireEvent.change(screen.getByRole("combobox", { name: "env" }), { target: { value: "prod" } });
   fireEvent.change(screen.getByRole("combobox", { name: "Choose an option" }), { target: { value: "go" } });
-  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("prompt_library_resolve", { request: {
-    scope, entry_key: "template", values: [["area", "login 世界"], ["env", "prod"], ["notes", "one\ntwo"], ["rust|go", "go"]], target: null,
-  } }));
-  expect(onInsert).not.toHaveBeenCalled(); expect(insertCalls()).toHaveLength(0);
+  expect(previewText()).toBe("Fix login 世界 in prod with one\ntwo and go.");
+  // The preview renders locally; typing never round-trips to the backend.
+  expect(resolveCalls()).toHaveLength(0);
+  expect(onInsert).not.toHaveBeenCalled();
   await waitFor(() => expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Add to draft" }));
   await waitFor(() => expect(onInsert).toHaveBeenCalledWith(target, "Resolved repair"));
-  expect(insertCalls()).toHaveLength(1);
+  expect(insertCalls()).toHaveLength(1); expect(resolveCalls()).toHaveLength(1);
+  expect(insertCalls()[0][1]).toEqual({ request: {
+    scope, entry_key: "template", values: [["area", "login 世界"], ["env", "prod"], ["notes", "one\ntwo"], ["rust|go", "go"]], target,
+  } });
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_submit_prompt" || command === "terminal_input")).toBe(false);
 });
 
@@ -116,7 +122,7 @@ it("locks duplicate insertion synchronously and retains fields through failure f
   expect(onInsert).not.toHaveBeenCalled();
   vi.mocked(invoke).mockImplementation(original);
   fireEvent.click(screen.getByRole("button", { name: /Project prompt/ }));
-  await screen.findByText("Plain prompt");
+  await waitFor(() => expect(previewText()).toBe("Plain prompt"));
   await waitFor(() => expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Add to draft" }));
   await waitFor(() => expect(onInsert).toHaveBeenCalledOnce());
@@ -153,10 +159,10 @@ it("cancels while filling and ignores a late insertion response after unmount", 
 it("shows empty, unavailable-target and loading failure states with a working retry", async () => {
   vi.mocked(invoke).mockRejectedValue({ kind: "internal", message: "Could not read library" });
   mount(); await screen.findByText("Could not read library");
-  vi.mocked(invoke).mockResolvedValue({ entries: [], targets: [] });
+  vi.mocked(invoke).mockResolvedValue({ entries: [], available_keys: [], targets: [] });
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   await screen.findByText("No saved prompts");
-  vi.mocked(invoke).mockImplementation(async (command) => command === "prompt_library_load" ? { entries: [entry], targets: [] } : "Resolved repair");
+  vi.mocked(invoke).mockImplementation(async (command) => command === "prompt_library_load" ? { entries: [entry], available_keys: ["template"], targets: [] } : "Resolved repair");
   fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
   fireEvent.click(await screen.findByRole("button", { name: /Fix a bug/ }));
   await screen.findByText(/Add an allowed agent session/);
@@ -168,7 +174,7 @@ it("keeps a newer scope visible when an old request resolves late", async () => 
   vi.mocked(invoke).mockImplementation((command, args) => {
     if (command === "prompt_library_load" && (args as { scope: { kind: string } }).scope.kind === "feature")
       return new Promise((resolve) => { finish = resolve; });
-    return Promise.resolve({ entries: [{ ...entry, name: "Global template", source: "Global" }], targets: [] });
+    return Promise.resolve({ entries: [{ ...entry, name: "Global template", source: "Global" }], available_keys: ["template"], targets: [] });
   });
   mount();
   await waitFor(() => expect(finish).toBeTruthy());
@@ -176,4 +182,29 @@ it("keeps a newer scope visible when an old request resolves late", async () => 
   await screen.findByRole("button", { name: /Global template/ });
   await act(async () => finish(view));
   expect(screen.queryByRole("button", { name: /Fix a bug/ })).toBeNull();
+});
+
+it("keeps a selection the search only hides, and clears one changed outside the window", async () => {
+  mock(); const { client, onInsert } = mount(); await choose();
+  fireEvent.change(screen.getByRole("textbox", { name: "Area (required)" }), { target: { value: "login" } });
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_library_load"
+    ? Promise.resolve({ ...view, entries: [view.entries[1]] }) : original(command, args, options));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["prompt-library"] }); });
+  await waitFor(() => expect(screen.queryByRole("button", { name: /Fix a bug/ })).toBeNull());
+  expect((screen.getByRole("textbox", { name: "Area (required)" }) as HTMLInputElement).value).toBe("login");
+
+  const edited = { ...entry, key: "template-v2", body: "Edited {{area}}" };
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_library_load"
+    ? Promise.resolve({ ...view, entries: [edited, view.entries[1]], available_keys: ["template-v2", "project-template"] })
+    : original(command, args, options));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["prompt-library"] }); });
+  expect(await screen.findByText(/“Fix a bug” was changed or removed outside this window/)).toBeTruthy();
+  expect(screen.getByText("Select a prompt")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /Fix a bug/ }));
+  expect(previewText()).toBe("Edited auth");
+  expect(screen.getByRole("button", { name: /Fix a bug/ }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.queryByText(/was changed or removed/)).toBeNull();
+  expect(onInsert).not.toHaveBeenCalled();
 });

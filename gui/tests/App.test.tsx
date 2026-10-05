@@ -400,6 +400,7 @@ it.each(["claude", "codex", "opencode", "pi"])("adds a library prompt to an exis
   vi.mocked(invoke).mockImplementation((command, args, options) => {
     if (command === "prompt_library_load") return Promise.resolve({
       entries: [{ key: "plain", name: "Library fixture", source: "User", body: "Library prompt", tags: [], description: null, slots: [] }],
+      available_keys: ["plain"],
       targets: ["First", "Second"].map((id) => ({ target: { ...target, session_id: id }, label: id, stopped: false })),
     });
     if (command === "prompt_library_resolve") return Promise.resolve("Library prompt");
@@ -433,6 +434,7 @@ it("refuses a late library handoff after the session is deleted in the workspace
   vi.mocked(invoke).mockImplementation((command, args, options) => {
     if (command === "prompt_library_load") return Promise.resolve({
       entries: [{ key: "plain", name: "Library fixture", source: "User", body: "Library prompt", tags: [], description: null, slots: [] }],
+      available_keys: ["plain"],
       targets: [{ target, label: "Agent", stopped: false }],
     });
     if (command === "prompt_library_resolve") {

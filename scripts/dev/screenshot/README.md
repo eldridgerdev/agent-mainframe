@@ -147,6 +147,27 @@ scripts/dev/screenshot/amf-capture.sh \
   --out-dir /tmp/amf-gui-review-proof
 ```
 
+The Final Review AI scenario uses offline Claude/Codex executables in a private
+Git checkout. Eight asserted native frames cover the controls, resolved prompt
+preview, walkthrough and overview, co-review drafts, local multiline question,
+repository-aware answer, accepted finding persistence and changed-patch refusal.
+It checks the saved progress and invocation log through real Rust IPC; opening,
+editing, cancelling and reopening must not start additional calls. No paid
+harness or terminal agent is launched.
+
+This scenario also requires `bubblewrap` (`bwrap`). The GUI's mount namespace
+masks Claude's HOME-based native versions so discovery selects the private
+fixture executables. HOME and installed files stay unchanged. Its GUI uses
+software rendering; the WebKit process sandbox is disabled only for this
+isolated offline capture. The helper owns its GUI/Vite process groups and a
+private tmux socket.
+
+```bash
+scripts/dev/screenshot/amf-capture.sh \
+  --scenario scripts/dev/screenshot/scenarios/gui-review-ai.txt \
+  --out-dir /tmp/amf-gui-review-ai-proof
+```
+
 ## Capture contract
 
 The driver and the two Python helpers have deliberately separate output

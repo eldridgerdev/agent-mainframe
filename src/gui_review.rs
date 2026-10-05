@@ -9,6 +9,10 @@ use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
 use crate::gui_diff::{DiffFileView, file_view};
 use crate::project::SessionKind;
 
+mod ai;
+pub use ai::poll;
+pub use ai::{ReviewAiView, ReviewQuestionView};
+
 pub use crate::app::review::state::{FileComment, Severity};
 pub use crate::diff::DiffLineLocation;
 
@@ -18,6 +22,7 @@ pub(crate) struct ReviewContext {
     revision: u64,
     progress: Option<Vec<u8>>,
     save_error: Option<String>,
+    ai_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,6 +35,7 @@ pub struct ReviewFileView {
     /// Line threads share the TUI anchors and progress format.
     pub line_comments: Vec<ReviewLineCommentView>,
     pub notes: Option<String>,
+    pub walkthrough: Option<String>,
     pub changed_since_last: bool,
 }
 
@@ -64,11 +70,40 @@ pub struct ReviewView {
     pub error: Option<String>,
     pub save_error: Option<String>,
     pub applied_suggestions: Vec<String>,
+    pub ai: ReviewAiView,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReviewAction {
+    Walkthrough {
+        path: String,
+    },
+    CoReview {
+        path: String,
+    },
+    Overview,
+    Ask {
+        path: String,
+        start: Option<DiffLineLocation>,
+        end: Option<DiffLineLocation>,
+        question: String,
+        harness: crate::project::AgentKind,
+    },
+    AcceptDraft {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+    },
+    DismissDraft {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+    },
+    CancelAi,
+    PrecallConfirm,
+    PrecallCancel,
+    PrecallToggleView,
     Select {
         path: String,
     },
@@ -210,6 +245,7 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         revision: 0,
         progress,
         save_error: None,
+        ai_started: None,
     });
     snapshot(gui)
 }
@@ -225,9 +261,9 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         context.target.clone(),
         context.save_error.clone(),
     );
-    let AppMode::DiffViewer(state) = &gui.app_for_workflow().mode else {
-        return Err(GuiError::conflict("Final Review is no longer open"));
-    };
+    let app = gui.app_for_workflow();
+    let state = ai::state(&app.mode)?;
+    let ai = ai::view(app)?;
     let files = state
         .files
         .iter()
@@ -280,6 +316,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
                     })
                     .collect(),
                 notes: state.review_notes.get(&file.path).cloned(),
+                walkthrough: state.generated_notes.get(&file.path).cloned(),
                 changed_since_last: state.changed_since_last.contains(&file.path),
             }
         })
@@ -298,6 +335,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         has_prior_review: state.has_prior_review,
         error: state.error.clone(),
         applied_suggestions: state.applied_suggestions.clone(),
+        ai,
     })
 }
 
@@ -317,6 +355,32 @@ pub fn act(
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
     let target = context.target.clone();
     let unsaved = context.save_error.is_some();
+    let app = gui.app_for_workflow();
+    let in_precall = matches!(app.mode, AppMode::PromptPrecall(_));
+    if in_precall
+        && !matches!(
+            action,
+            ReviewAction::PrecallConfirm
+                | ReviewAction::PrecallCancel
+                | ReviewAction::PrecallToggleView
+                | ReviewAction::CancelAi
+                | ReviewAction::Pause
+                | ReviewAction::Discard
+        )
+    {
+        return Err(GuiError::conflict(
+            "Continue or cancel the pending AI call first",
+        ));
+    }
+    if matches!(
+        action,
+        ReviewAction::PrecallCancel | ReviewAction::PrecallToggleView | ReviewAction::CancelAi
+    ) {
+        ai::apply(app, &action)?;
+        gui.review_context.as_mut().unwrap().revision += 1;
+        return snapshot(gui).map(Some);
+    }
+    let context = gui.review_context.as_ref().unwrap();
     if unsaved && matches!(action, ReviewAction::ApplySuggestion { .. }) {
         return Err(GuiError::conflict(
             "Save review progress successfully before applying a suggestion",
@@ -331,6 +395,7 @@ pub fn act(
         _ => false,
     };
     if close_now {
+        ai::cancel(gui.app_for_workflow());
         gui.app_for_workflow().mode = AppMode::Normal;
         gui.review_context = None;
         return Ok(None);
@@ -348,9 +413,7 @@ pub fn act(
             })
         })?;
     let workdir = app.store.projects[pi].features[fi].workdir.clone();
-    let AppMode::DiffViewer(state) = &app.mode else {
-        return Err(GuiError::conflict("Final Review is no longer open"));
-    };
+    let state = ai::state(&app.mode)?;
     if state.workdir != workdir {
         return Err(GuiError::conflict(
             "Feature checkout changed; pause and reopen Final Review",
@@ -369,231 +432,277 @@ pub fn act(
     // Set when the action itself establishes what the saved file holds.
     let mut baseline = None;
     if reload {
+        ai::cancel(gui.app_for_workflow());
         baseline = Some(open_state(gui, &target)?);
     } else {
         let app = gui.app_for_workflow();
-        let AppMode::DiffViewer(state) = &mut app.mode else {
-            unreachable!()
-        };
-        let path = match &action {
-            ReviewAction::Select { path }
-            | ReviewAction::Approve { path }
-            | ReviewAction::Skip { path }
-            | ReviewAction::Reject { path, .. }
-            | ReviewAction::Comment { path, .. }
-            | ReviewAction::ToggleResolved { path }
-            | ReviewAction::LineComment { path, .. }
-            | ReviewAction::Suggestion { path, .. }
-            | ReviewAction::ApplySuggestion { path, .. }
-            | ReviewAction::ToggleLineResolved { path, .. } => Some(path.clone()),
-            ReviewAction::Undo => state.verdict_undo.last().map(|entry| entry.path.clone()),
-            _ => None,
-        };
-        if let Some(path) = path {
-            let index = state
-                .files
-                .iter()
-                .position(|f| f.path == path)
-                .ok_or_else(|| {
-                    GuiError::conflict("File is no longer in this review; refresh changes")
-                })?;
-            // A verdict or comment must apply to the patch the reviewer saw.
-            if !matches!(action, ReviewAction::Select { .. }) {
-                let fresh = crate::diff::load_snapshot(
-                    &workdir,
-                    state.override_base_ref.as_deref(),
-                    state.ignore_whitespace,
-                )?;
-                if !fresh.files.iter().any(|f| {
-                    f.path == path
-                        && f.patch == state.files[index].patch
-                        && f.status == state.files[index].status
-                }) {
-                    return Err(GuiError::conflict(
-                        "File changed since you opened it; refresh changes before reviewing it",
-                    ));
+        if matches!(action, ReviewAction::PrecallConfirm) {
+            ai::apply(app, &action)?;
+        } else {
+            let AppMode::DiffViewer(state) = &mut app.mode else {
+                unreachable!()
+            };
+            let path = match &action {
+                ReviewAction::Select { path }
+                | ReviewAction::Approve { path }
+                | ReviewAction::Skip { path }
+                | ReviewAction::Reject { path, .. }
+                | ReviewAction::Comment { path, .. }
+                | ReviewAction::ToggleResolved { path }
+                | ReviewAction::LineComment { path, .. }
+                | ReviewAction::Suggestion { path, .. }
+                | ReviewAction::ApplySuggestion { path, .. }
+                | ReviewAction::ToggleLineResolved { path, .. } => Some(path.clone()),
+                ReviewAction::Walkthrough { path }
+                | ReviewAction::CoReview { path }
+                | ReviewAction::Ask { path, .. }
+                | ReviewAction::AcceptDraft { path, .. }
+                | ReviewAction::DismissDraft { path, .. } => Some(path.clone()),
+                ReviewAction::Undo => state.verdict_undo.last().map(|entry| entry.path.clone()),
+                _ => None,
+            };
+            if let Some(path) = path {
+                let index = state
+                    .files
+                    .iter()
+                    .position(|f| f.path == path)
+                    .ok_or_else(|| {
+                        GuiError::conflict("File is no longer in this review; refresh changes")
+                    })?;
+                // A verdict or comment must apply to the patch the reviewer saw.
+                if !matches!(action, ReviewAction::Select { .. }) {
+                    let fresh = crate::diff::load_snapshot(
+                        &workdir,
+                        state.override_base_ref.as_deref(),
+                        state.ignore_whitespace,
+                    )?;
+                    if !fresh.files.iter().any(|f| {
+                        f.path == path
+                            && f.patch == state.files[index].patch
+                            && f.status == state.files[index].status
+                    }) {
+                        return Err(GuiError::conflict(
+                            "File changed since you opened it; refresh changes before reviewing it",
+                        ));
+                    }
                 }
+                state.selected_file = index;
             }
-            state.selected_file = index;
-        }
-        // Resolve canonical source coordinates against the unchanged patch,
-        // never treating a marker/header or an out-of-date anchor as a line.
-        match &action {
-            ReviewAction::LineComment { start, end, .. }
-            | ReviewAction::Suggestion { start, end, .. }
-            | ReviewAction::ApplySuggestion { start, end, .. }
-            | ReviewAction::ToggleLineResolved { start, end, .. } => {
-                let locs = state.files[state.selected_file].addressable_lines();
-                let locate = |location| {
-                    locs.iter().position(|l| *l == location).ok_or_else(|| {
-                        GuiError::conflict("Line anchor is no longer in this diff; refresh changes")
-                    })
-                };
-                let lo = locate(*start)?;
-                let hi = locate(*end)?;
-                if lo > hi {
-                    return Err(GuiError::conflict("Select the range in diff order"));
+            // Resolve canonical source coordinates against the unchanged patch,
+            // never treating a marker/header or an out-of-date anchor as a line.
+            match &action {
+                ReviewAction::LineComment { start, end, .. }
+                | ReviewAction::Suggestion { start, end, .. }
+                | ReviewAction::ApplySuggestion { start, end, .. }
+                | ReviewAction::ToggleLineResolved { start, end, .. } => {
+                    set_span(state, *start, *end)?;
                 }
-                if state
-                    .line_comments
-                    .get(&state.files[state.selected_file].path)
-                    .is_some_and(|comments| {
-                        comments.iter().any(|c| {
-                            c.anchor_lost
-                                && c.covered_indices(&locs)
-                                    .is_some_and(|range| *range.start() <= hi && *range.end() >= lo)
-                        })
-                    })
-                {
-                    return Err(GuiError::conflict(
-                        "Thread anchor was lost; refresh changes before editing this span",
-                    ));
-                }
-                state.comment_anchor = Some(lo);
-                state.comment_cursor = Some(hi);
-            }
-            _ => {}
-        }
-        // The shared actions save on their own, best-effort; this interface
-        // saves once below instead, and reports whether that save succeeded.
-        app.defer_review_progress_persist = true;
-        let outcome = (|| -> GuiResult<()> {
-            match action {
-                ReviewAction::Approve { .. } => app.diff_review_approve_current(),
-                ReviewAction::Skip { .. } => app.diff_review_skip_current(),
-                ReviewAction::Reject {
-                    feedback, severity, ..
+                ReviewAction::AcceptDraft { start, end, .. }
+                | ReviewAction::DismissDraft { start, end, .. }
+                | ReviewAction::Ask {
+                    start: Some(start),
+                    end: Some(end),
+                    ..
                 } => {
-                    app.diff_review_start_feedback();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.reset_feedback_editor(feedback);
-                        s.comment_severity = severity;
-                    }
-                    app.diff_review_submit_feedback();
-                }
-                ReviewAction::Comment { text, severity, .. } => {
-                    app.diff_review_start_file_comment();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.reset_feedback_editor(text);
-                        s.comment_severity = severity;
-                    }
-                    app.diff_review_submit_file_comment();
-                }
-                ReviewAction::LineComment { text, severity, .. } => {
-                    app.diff_review_start_line_comment();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.reset_feedback_editor(text);
-                        s.comment_severity = severity;
-                    }
-                    app.diff_review_submit_line_comment();
-                }
-                ReviewAction::Suggestion { text, .. } => {
-                    app.diff_review_start_suggestion();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.reset_feedback_editor(text);
-                    }
-                    app.diff_review_submit_suggestion();
-                }
-                ReviewAction::ApplySuggestion { path, start, end } => {
-                    let AppMode::DiffViewer(s) = &app.mode else {
-                        unreachable!()
-                    };
-                    // Match the whole thread, never another suggestion whose
-                    // span happens to overlap the requested line cursor.
-                    let comments = s.line_comments.get(&path).ok_or_else(|| {
-                        GuiError::conflict("Kept suggestion is no longer at this anchor")
-                    })?;
-                    let mut matching = comments.iter().enumerate().filter(|(_, c)| {
-                        c.start.unwrap_or(c.location) == start && c.location == end
-                    });
-                    let (index, comment) = matching.next().ok_or_else(|| {
-                        GuiError::conflict("Kept suggestion is no longer at this anchor")
-                    })?;
-                    if matching.next().is_some() {
-                        return Err(GuiError::conflict(
-                            "Multiple threads share this anchor; edit the thread before applying",
-                        ));
-                    }
-                    if let Some(reason) = crate::app::review::local_suggestion_blocker(
-                        &s.files[s.selected_file],
-                        comment,
-                    ) {
-                        return Err(GuiError::conflict(reason));
-                    }
-                    app.diff_review_apply_suggestion(&path, index)
-                        .map_err(GuiError::conflict)?;
-                }
-                ReviewAction::ToggleLineResolved { start, end, .. } => {
-                    if !app.diff_review_toggle_thread_resolved(start, end) {
-                        return Err(GuiError::conflict(
-                            "Kept thread is no longer at this anchor",
-                        ));
-                    }
-                }
-                ReviewAction::ToggleResolved { .. } => {
-                    app.diff_review_toggle_file_comment_resolved();
-                }
-                ReviewAction::General { text } => {
-                    app.diff_review_start_general_feedback();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.reset_feedback_editor(text);
-                    }
-                    app.diff_review_submit_general_feedback();
-                }
-                ReviewAction::Undo => app.diff_review_undo_verdict(),
-                ReviewAction::Refresh => {
-                    // A failed Git load must not replace an editable review with
-                    // an empty file list and subsequently drop its saved threads.
-                    let previous_files = if let AppMode::DiffViewer(s) = &app.mode {
-                        crate::diff::load_snapshot(
-                            &workdir,
-                            s.override_base_ref.as_deref(),
-                            s.ignore_whitespace,
-                        )?;
-                        s.files.clone()
-                    } else {
-                        unreachable!()
-                    };
-                    app.refresh_diff_viewer();
-                    app.complete_diff_viewer_loading();
-                    if let AppMode::DiffViewer(s) = &mut app.mode {
-                        s.forget_verdicts_for_changed_patches(&previous_files);
-                    }
+                    set_span(state, *start, *end)?;
                 }
                 _ => {}
             }
-            Ok(())
-        })();
-        app.defer_review_progress_persist = false;
-        outcome?;
-    }
-    let save_error = if reload {
-        None
-    } else {
-        match gui.app_for_workflow().try_persist_review_progress() {
-            // The bytes just written are the new baseline; re-reading the
-            // file could instead pick up a save another interface made since.
-            Ok(Some(written)) => {
-                baseline = Some(Some(written));
-                None
-            }
-            Ok(None) => None,
-            // A failed atomic save leaves the file, and so the baseline, as is.
-            Err(err) => Some(err.to_string()),
+            // The shared actions save on their own, best-effort; this interface
+            // saves once below instead, and reports whether that save succeeded.
+            app.defer_review_progress_persist = true;
+            let outcome = (|| -> GuiResult<()> {
+                if ai::apply(app, &action)? {
+                    return Ok(());
+                }
+                match action {
+                    ReviewAction::Approve { .. } => app.diff_review_approve_current(),
+                    ReviewAction::Skip { .. } => app.diff_review_skip_current(),
+                    ReviewAction::Reject {
+                        feedback, severity, ..
+                    } => {
+                        app.diff_review_start_feedback();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.reset_feedback_editor(feedback);
+                            s.comment_severity = severity;
+                        }
+                        app.diff_review_submit_feedback();
+                    }
+                    ReviewAction::Comment { text, severity, .. } => {
+                        app.diff_review_start_file_comment();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.reset_feedback_editor(text);
+                            s.comment_severity = severity;
+                        }
+                        app.diff_review_submit_file_comment();
+                    }
+                    ReviewAction::LineComment { text, severity, .. } => {
+                        app.diff_review_start_line_comment();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.reset_feedback_editor(text);
+                            s.comment_severity = severity;
+                        }
+                        app.diff_review_submit_line_comment();
+                    }
+                    ReviewAction::Suggestion { text, .. } => {
+                        app.diff_review_start_suggestion();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.reset_feedback_editor(text);
+                        }
+                        app.diff_review_submit_suggestion();
+                    }
+                    ReviewAction::ApplySuggestion { path, start, end } => {
+                        let AppMode::DiffViewer(s) = &app.mode else {
+                            unreachable!()
+                        };
+                        // Match the whole thread, never another suggestion whose
+                        // span happens to overlap the requested line cursor.
+                        let comments = s.line_comments.get(&path).ok_or_else(|| {
+                            GuiError::conflict("Kept suggestion is no longer at this anchor")
+                        })?;
+                        let mut matching = comments.iter().enumerate().filter(|(_, c)| {
+                            c.start.unwrap_or(c.location) == start && c.location == end
+                        });
+                        let (index, comment) = matching.next().ok_or_else(|| {
+                            GuiError::conflict("Kept suggestion is no longer at this anchor")
+                        })?;
+                        if matching.next().is_some() {
+                            return Err(GuiError::conflict(
+                                "Multiple threads share this anchor; edit the thread before applying",
+                            ));
+                        }
+                        if let Some(reason) = crate::app::review::local_suggestion_blocker(
+                            &s.files[s.selected_file],
+                            comment,
+                        ) {
+                            return Err(GuiError::conflict(reason));
+                        }
+                        app.diff_review_apply_suggestion(&path, index)
+                            .map_err(GuiError::conflict)?;
+                    }
+                    ReviewAction::ToggleLineResolved { start, end, .. } => {
+                        if !app.diff_review_toggle_thread_resolved(start, end) {
+                            return Err(GuiError::conflict(
+                                "Kept thread is no longer at this anchor",
+                            ));
+                        }
+                    }
+                    ReviewAction::ToggleResolved { .. } => {
+                        app.diff_review_toggle_file_comment_resolved();
+                    }
+                    ReviewAction::General { text } => {
+                        app.diff_review_start_general_feedback();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.reset_feedback_editor(text);
+                        }
+                        app.diff_review_submit_general_feedback();
+                    }
+                    ReviewAction::Undo => app.diff_review_undo_verdict(),
+                    ReviewAction::Refresh => {
+                        // A failed Git load must not replace an editable review with
+                        // an empty file list and subsequently drop its saved threads.
+                        let previous_files = if let AppMode::DiffViewer(s) = &app.mode {
+                            crate::diff::load_snapshot(
+                                &workdir,
+                                s.override_base_ref.as_deref(),
+                                s.ignore_whitespace,
+                            )?;
+                            s.files.clone()
+                        } else {
+                            unreachable!()
+                        };
+                        ai::cancel(app);
+                        app.refresh_diff_viewer();
+                        if let AppMode::DiffViewerLoading(s) = &mut app.mode {
+                            s.generated_notes.clear();
+                            s.changeset_overview = None;
+                        }
+                        app.complete_diff_viewer_loading();
+                        if let AppMode::DiffViewer(s) = &mut app.mode {
+                            s.forget_verdicts_for_changed_patches(&previous_files);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })();
+            app.defer_review_progress_persist = false;
+            outcome?;
         }
-    };
+    }
+    if reload {
+        let context = gui.review_context.as_mut().unwrap();
+        context.progress = baseline.unwrap();
+        context.save_error = None;
+    } else if !matches!(gui.app_for_workflow().mode, AppMode::PromptPrecall(_)) {
+        save(gui);
+    }
+    let running = ai::view(gui.app_for_workflow())?.running;
     let context = gui.review_context.as_mut().unwrap();
     context.revision += 1;
-    if let Some(progress) = baseline {
-        context.progress = progress;
+    if running && context.ai_started.is_none() {
+        context.ai_started = Some(std::time::Instant::now());
+    } else if !running {
+        context.ai_started = None;
     }
-    context.save_error = save_error;
     if pause && context.save_error.is_none() {
+        ai::cancel(gui.app_for_workflow());
         gui.app_for_workflow().mode = AppMode::Normal;
         gui.review_context = None;
         return Ok(None);
     }
     snapshot(gui).map(Some)
+}
+
+fn set_span(
+    state: &mut DiffViewerState,
+    start: DiffLineLocation,
+    end: DiffLineLocation,
+) -> GuiResult<()> {
+    let locs = state.files[state.selected_file].addressable_lines();
+    let locate = |location| {
+        locs.iter().position(|l| *l == location).ok_or_else(|| {
+            GuiError::conflict("Line anchor is no longer in this diff; refresh changes")
+        })
+    };
+    let lo = locate(start)?;
+    let hi = locate(end)?;
+    if lo > hi {
+        return Err(GuiError::conflict("Select the range in diff order"));
+    }
+    if state
+        .line_comments
+        .get(&state.files[state.selected_file].path)
+        .is_some_and(|comments| {
+            comments.iter().any(|c| {
+                c.anchor_lost
+                    && c.covered_indices(&locs)
+                        .is_some_and(|range| *range.start() <= hi && *range.end() >= lo)
+            })
+        })
+    {
+        return Err(GuiError::conflict(
+            "Thread anchor was lost; refresh changes before editing this span",
+        ));
+    }
+    state.comment_anchor = Some(lo);
+    state.comment_cursor = Some(hi);
+
+    Ok(())
+}
+
+fn save(gui: &mut GuiHandle) {
+    let outcome = gui.app_for_workflow().try_persist_review_progress();
+    let context = gui.review_context.as_mut().unwrap();
+    match outcome {
+        Ok(written) => {
+            if let Some(written) = written {
+                context.progress = Some(written);
+            }
+            context.save_error = None;
+        }
+        Err(error) => context.save_error = Some(error.to_string()),
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,5 @@
+# Native Final Review AI controls, with isolated Git/SQLite and offline CLI fixtures.
+note:The isolated TUI confirms the capture harness is ready before the native GUI proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-review-ai.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

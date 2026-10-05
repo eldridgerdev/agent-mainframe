@@ -48,6 +48,17 @@ async fn review_begin(
 }
 
 #[tauri::command]
+async fn review_snapshot(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<ReviewView, GuiError> {
+    gui_review::poll(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
 async fn review_act(
     state: State<'_, AppState>,
     workflow_id: String,
@@ -764,6 +775,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             review_begin,
+            review_snapshot,
             review_act,
             load_diff,
             supported_harnesses,

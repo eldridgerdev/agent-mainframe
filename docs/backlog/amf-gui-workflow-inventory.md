@@ -25,7 +25,8 @@ Keep them current as the staged GUI scope grows.
 | Available | Standalone diffs on Git features, including stopped features: all current changes or one feature commit, file filtering, hunk navigation, unified and side-by-side layouts, whitespace filtering, automatic or chosen base ref, expanded context, rename/mode metadata, binary notices and explicit refresh. |
 | Limited | Native WSLg captures verify the stopped-feature entry, current changes, unified/split layouts, whole-file context, commit selection and binary notice through real Rust IPC. Other native interactions and macOS validation remain open. Standalone Changes is read-only; use Final Review for whole-file and line/range comments and suggestion editing. Walkthroughs, AI questions and feedback handoff remain in the TUI. |
 | Available | Manual Final Review on Git features, including stopped features: approve/reject/skip, undo verdicts, whole-file and line/range comments with severity, suggestion editing and confirmed local application, resolve/reopen comments, overall feedback, developer notes, saved line threads/suggestions, persisted application history, and pause/resume using the TUI progress file. Local application uses the shared TUI write guards, consumes the replacement, resolves its thread, refreshes the diff and invalidates the changed file's approval/undo. Changed patches and detected external progress edits require refresh/reload; failed saves retain edits with retry. |
-| Limited | Final Review walkthroughs, AI questions/co-review, review history, finish-time batch suggestion application, finish checks and feedback dispatch remain in the TUI. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Native WSLg captures also verify range selection, line/range prose and replacement editing, split display, unsaved-suggestion protection, thread resolution/reopening and pause/reopen persistence. Native WSLg captures also verify confirmed local application and cancellation, changed source and approval invalidation, stale-file and read-only-file refusals, progress-save retry and restored application history. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
+| Available | Final Review per-file Claude walkthroughs, cached changeset overview, Claude co-review drafts with explicit accept/dismiss, and repository-aware questions/follow-ups using the project's allowed Claude, Codex, OpenCode or Pi harnesses. Each new AI call requires a pre-call confirmation with prompt preview; polling never launches work. Changed patches, feature targets and external review saves discard pending results. Question conversations and generated notes remain in memory for the open review; accepted co-review findings share the TUI's saved progress. |
+| Limited | Final Review AI-assisted question-to-comment drafting, review history, finish-time batch suggestion application, finish checks and feedback dispatch remain in the TUI. Automated tests and eight asserted native WSLg frames cover walkthroughs, questions and co-review using offline CLI fixtures and real Rust IPC. Paid-harness runs remain unvalidated. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Native WSLg captures also verify range selection, line/range prose and replacement editing, split display, unsaved-suggestion protection, thread resolution/reopening and pause/reopen persistence. Native WSLg captures also verify confirmed local application and cancellation, changed source and approval invalidation, stale-file and read-only-file refusals, progress-save retry and restored application history. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
 | Planned | Supervised edits and PR triage, as part of the remaining diff-related parity work. |
 | Planned | Code syntax highlighting in GUI diffs, reviews and the Learning source reader, after the remaining diff-related parity work and before any other GUI parity work. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
@@ -50,6 +51,13 @@ Its seven frames exercise confirmation and cancellation, successful source write
 approval invalidation, stale-source and read-only-source refusals, progress-save
 retry, and persisted application history after pause/reopen. The helper asserts
 both GUI states and the isolated checkout/progress files; no agent is launched.
+
+Native walkthrough, question and co-review proof is reproducible with
+[`gui-review-ai.txt`](../../scripts/dev/screenshot/scenarios/gui-review-ai.txt).
+Eight frames check prompt previews, generated notes, local questions and answers,
+co-review drafts, accepted-finding persistence and changed-patch refusal through
+real Rust IPC. Offline CLI fixtures and invocation-log assertions verify that
+opening, editing, cancelling and reopening never launch extra calls.
 
 Worktree-hook choices have automated coverage for creation, TODO launches,
 Full/Quick planning, lookup retry, and cancellation. Native desktop interaction
@@ -88,7 +96,7 @@ Completed increments and remaining work, in priority order:
   and seven asserted native WSLg frames cover this increment.
 
 - [ ] **Remaining diff and review parity.** Complete diff-related workflows,
-  including Final Review walkthroughs, AI questions/co-review, review history,
+  including AI-assisted question-to-comment drafting, review history,
   finish-time batch suggestion application, finish checks and feedback
   handoff, plus supervised edits and PR triage.
   - [x] **Local suggestion application (2026-10-04).** Explicit confirmation
@@ -96,6 +104,7 @@ Completed increments and remaining work, in priority order:
     source and persists the application record. Stale targets/patches/progress,
     inapplicable spans, duplicate requests, source-write failure and progress-save
     retry have automated coverage and seven asserted native WSLg frames. Remaining native interactions and macOS validation stay open.
+  - [x] **Walkthroughs and AI questions/co-review (2026-10-04).** Shared engines power explicit GUI AI requests, prompt previews/confirmation/cancellation, workflow-scoped completion polling, all four question harnesses and exact co-review draft acceptance/dismissal. Local question drafts survive failed/cancelled calls. Saved AMF review artifacts no longer invalidate repository-aware questions in either interface. Eleven new Rust regressions and eleven new frontend interactions pass, together with the full parallel workspace suite, all 106 frontend tests, both builds, formatting and strict Clippy. All 3,207 baseline test names remain present. Eight asserted native WSLg frames verify the AI controls, prompt preview, generated output, local multiline question and answer, saved-finding persistence and changed-patch refusal through real Rust IPC with offline harnesses. The scenario is [`gui-review-ai.txt`](../../scripts/dev/screenshot/scenarios/gui-review-ai.txt); invocation-log checks prove cancellation/reopen never start extra calls. Paid-harness runs, remaining native interactions and macOS runtime validation remain open. Next: AI-assisted question-to-comment drafting, then review history and finish workflows.
 - [ ] **Code syntax highlighting.** Highlight source code in unified and
   side-by-side diffs, review views and the Learning source reader. Keep change
   markers and line numbers readable, with plain-text fallback for unsupported

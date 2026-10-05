@@ -266,9 +266,34 @@ approvals and verdict-undo entries for changed patches, and reopening a paused
 review drops approvals whose patch changed meanwhile; **Reload
 saved review** adopts progress changed in another interface. Edit a given review
 in one interface at a time; detected external saves block edits until reload.
-Walkthroughs, AI questions/co-review, review history, finish-time batch application,
-finish checks and sending feedback remain in the TUI. Native WSLg captures verify opening on a stopped feature, notes and saved line
-threads, verdict/comment persistence, split layout, unsaved-draft protection,
+**Generate walkthrough**, **Changeset overview** and **AI co-review file** reuse
+AMF's Claude review tools. Each new call offers a prompt preview and requires
+**Continue AI call**; cancelling runs nothing. Walkthroughs are cached for files
+without developer notes, and co-review findings stay AI drafts until **Accept AI
+draft** or **Dismiss AI draft**. Accepting a draft uses the same verdict rules
+and saved progress as a human line comment.
+
+**Ask about file** or **Ask about selection** opens a local question draft.
+Choose an allowed Claude, Codex, OpenCode or Pi harness, then ask explicitly.
+The answering harness reads the repository and reviewed diff; follow-ups include
+earlier answers for the current review version. Questions, answers and AI notes
+stay in memory while this review is open; pause/reopen retains verdicts/comments,
+including accepted co-review findings, but starts a new conversation. Failed
+questions can be retried, cancelled pre-call notices retain question text, and
+closing an unsent question requires explicit discard. Polling never starts a new
+AI call. Changed patches, moved/deleted feature targets or external progress edits
+discard pending AI results and require refresh/reload before continuing.
+**Cancel AI request** releases question and single-process runs; an already-started
+batched co-review may finish its current work, but its late findings are discarded.
+
+AI-assisted question-to-comment drafting, review history, finish-time batch
+application, finish checks and sending feedback remain in the TUI. Automated
+command and component tests cover the new AI controls. Eight asserted native WSLg
+frames from `gui-review-ai.txt` also verify prompt preview, walkthrough/overview
+output, co-review drafts, local multiline questions and answers, accepted-finding
+persistence and changed-patch refusal through real Rust IPC. The isolated scenario
+uses offline CLI fixtures; paid-harness runs remain unvalidated. Native WSLg captures verify
+opening on a stopped feature, notes and saved line threads, verdict/comment persistence, split layout, unsaved-draft protection,
 pause/reopen, changed-patch rejection and approval invalidation after refresh.
 The isolated `gui-review-line-comments.txt` scenario also verifies range
 selection, line/range comment and replacement editing, split display,

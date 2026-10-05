@@ -12,7 +12,7 @@ if [[ "${CI:-}" == "true" ]]; then
   sudo apt-get update
   sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
     libayatana-appindicator3-dev librsvg2-dev xvfb xauth \
-    python3-gi gir1.2-gtk-3.0 python3-websocket python3-xlib dbus-x11
+    python3-gi gir1.2-gtk-3.0 python3-websocket python3-xlib dbus-x11 bubblewrap
 fi
 npm --prefix "$REPO_ROOT/gui" ci --no-audit --no-fund
 npm --prefix "$REPO_ROOT/gui" run build

@@ -9,15 +9,16 @@ const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
   general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [],
+  ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
       { kind: "removed", text: "-before", old_line: 1, new_line: null },
       { kind: "added", text: "+after", old_line: null, new_line: 1 },
     ] }] }, verdict: "rejected", feedback: "Needs work", severity: "blocker", changed_since_last: true,
-    notes: "Developer explanation", comment: { text: "Saved question", severity: "question", resolved: false, carried: true },
+    notes: "Developer explanation", walkthrough: null, comment: { text: "Saved question", severity: "question", resolved: false, carried: true },
     line_comments: [{ start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, editable: false, anchor: "line 1", text: "Kept thread", severity: "nit", resolved: false, draft: false, anchor_lost: true, suggestion: "suggested code", apply_blocked: "anchor is no longer present in the current diff" }] },
     { diff: { path: "image.bin", old_path: "old.bin", status: "renamed", additions: 0, deletions: 0, is_binary: true, hunks: [], patch: "rename from old.bin" },
-      verdict: "approved", feedback: "", severity: "suggestion", comment: null, notes: null, changed_since_last: false, line_comments: [] }],
+      verdict: "approved", feedback: "", severity: "suggestion", comment: null, notes: null, walkthrough: null, changed_since_last: false, line_comments: [] }],
 };
 function mount(initial = view, onAct = vi.fn(async () => true)) {
   const props = { view: initial, busy: false, error: null, onAct };
@@ -359,4 +360,95 @@ it("keeps failed suggestion drafts and blocks selection changes until edits are 
   update({ busy: true });
   fireEvent.click(screen.getByRole("button", { name: "Save suggestion" }));
   expect(onAct).toHaveBeenCalledOnce();
+});
+
+it("starts walkthroughs, changeset overview and co-review only on explicit clicks", async () => {
+  const { onAct } = mount({ ...view, files: view.files.map((f) => ({ ...f, notes: null })) });
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Generate walkthrough" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "walkthrough", path: "code.rs" }));
+  fireEvent.click(screen.getByRole("button", { name: "AI co-review file" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "co_review", path: "code.rs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Changeset overview", exact: true }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "overview" }));
+});
+
+it("offers preview, continue and cancel while a pre-call notice keeps the review visible", async () => {
+  const { onAct, update } = mount({ ...view, ai: { ...view.ai, precall: { title: "Walkthrough", harness: "Claude", preview: "Rendered prompt", viewing: false } } });
+  expect(screen.getByText("Developer explanation")).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Approve file" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "View prompt" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "precall_toggle_view" }));
+  update({ view: { ...view, ai: { ...view.ai, precall: { title: "Walkthrough", harness: "Claude", preview: "Rendered prompt", viewing: true } } } });
+  expect(screen.getByText("Rendered prompt")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Continue AI call" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "precall_confirm" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel AI call" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "precall_cancel" }));
+});
+
+it("keeps a multiline question through pre-call cancellation, failed commands and polling", async () => {
+  const { onAct, update } = mount(view, vi.fn(async () => false));
+  fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
+  const textbox = screen.getByRole("textbox", { name: "Review question" });
+  fireEvent.change(textbox, { target: { value: "Why?\nCheck the helper 🦀" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Answering harness" }), { target: { value: "codex" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: null, end: null, question: "Why?\nCheck the helper 🦀", harness: "codex" }));
+  update({ view: { ...view, revision: view.revision + 1, ai: { ...view.ai, precall: { title: "Question", harness: "Codex", preview: "preview", viewing: false } } } });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Why?\nCheck the helper 🦀");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel AI call" }));
+  update({ view: { ...view, revision: view.revision + 2 } });
+  expect((textbox as HTMLTextAreaElement).value).toBe("Why?\nCheck the helper 🦀");
+  fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
+  expect(screen.getByRole("alertdialog", { name: "Discard unsaved review draft" })).toBeTruthy();
+});
+
+it.each(["claude", "codex", "opencode", "pi"])("asks selected source coordinates with %s and shows returned answers", async (harness) => {
+  const { onAct, update } = mount(noThreadsView);
+  fireEvent.click(screen.getAllByRole("button", { name: "Select line 1" })[0]);
+  fireEvent.click(screen.getByRole("button", { name: "Ask about selection" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Why this line?" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Answering harness" }), { target: { value: harness } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "ask", path: "code.rs", start: { old_line: null, new_line: 1 }, end: { old_line: null, new_line: 1 }, question: "Why this line?", harness }));
+  update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ question: "Why this line?", answer: "An explanation", error: null, focus: "code.rs, new line 1" }] } } });
+  expect(screen.getByText("An explanation")).toBeTruthy();
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Review question" })).toBeNull());
+});
+
+it("requires explicit acceptance of co-review drafts and supports dismissal", async () => {
+  const next = editableView();
+  next.files[0].line_comments[0].draft = true;
+  const { onAct } = mount(next);
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Accept AI draft" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "accept_draft", path: "code.rs", start: next.files[0].line_comments[0].start, end: next.files[0].line_comments[0].end }));
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss AI draft" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "dismiss_draft", path: "code.rs", start: next.files[0].line_comments[0].start, end: next.files[0].line_comments[0].end }));
+});
+
+it("shows in-flight progress, blocks a second AI run, and confirms cancellation on pause", async () => {
+  const { onAct } = mount({ ...view, ai: { ...view.ai, running: true, co_review_path: "code.rs" } });
+  expect(screen.getByText(/Co-reviewing code.rs/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "AI co-review file" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Pause review" }));
+  expect(screen.getByText(/cancel the running AI request/)).toBeTruthy();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel AI request" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "cancel_ai" }));
+});
+
+it("retains submitted question text while running and after a failed answer", async () => {
+  const { update } = mount(noThreadsView);
+  fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Keep this question" } });
+  fireEvent.click(screen.getByRole("button", { name: "Ask review question" }));
+  const turn = { question: "Keep this question", answer: null, error: null, focus: "code.rs" };
+  update({ view: { ...noThreadsView, ai: { ...view.ai, running: true, question_running: true, questions: [turn] } } });
+  expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Keep this question");
+  update({ view: { ...noThreadsView, revision: 5, ai: { ...view.ai, questions: [{ ...turn, error: "Harness failed" }], question_error: "Harness failed" } } });
+  expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Keep this question");
+  expect((screen.getByRole("button", { name: "Ask review question" }) as HTMLButtonElement).disabled).toBe(false);
 });

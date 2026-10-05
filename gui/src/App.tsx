@@ -6,6 +6,7 @@ import {
   ReviewView,
   reviewBegin,
   reviewAct,
+  reviewSnapshot,
   LearningView,
   LearningAction,
   learningBegin,
@@ -467,6 +468,23 @@ export default function App() {
     catch (err) { reportError(err); }
     finally { learningActionPending.current = false; setLearningBusy(false); }
   }
+
+  useEffect(() => {
+    if (!review || reviewBusy) return;
+    let cancelled = false;
+    let polling = false;
+    const workflowId = review.workflow_id;
+    const timer = window.setInterval(() => {
+      if (polling || reviewPending.current) return;
+      polling = true;
+      void reviewSnapshot(workflowId).then((next) => {
+        if (cancelled || reviewPending.current) return;
+        setReview((current) => current?.workflow_id === workflowId && next.workflow_id === workflowId
+          && next.revision > current.revision ? next : current);
+      }).catch(() => { /* Explicit actions report conflicts. */ }).finally(() => { polling = false; });
+    }, 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [review?.workflow_id, reviewBusy]);
 
   async function beginReview(target: FeatureTarget) {
     if (reviewPending.current) return;

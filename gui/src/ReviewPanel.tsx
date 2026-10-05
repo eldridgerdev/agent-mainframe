@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
+import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import { Field, Modal, Spinner } from "./ui";
@@ -10,18 +10,27 @@ function locationLabel(location: ReviewLocation) {
   return location.new_line !== null ? `line ${location.new_line}` : `base line ${location.old_line}`;
 }
 
-export default function ReviewPanel({ view, busy, error, onAct }: {
+export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
 }) {
+  const ai = view.ai;
+  const busy = commandBusy || ai.precall !== null;
+  const [question, setQuestion] = useState<{ path: string; span: ReviewSpan | null; text: string; harness: AgentSlug; turn?: number } | null>(null);
   const [filter, setFilter] = useState("");
   const [split, setSplit] = useState(false);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
   const [pending, setPending] = useState<ReviewAction | "cancel" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const dirty = editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
+  const dirty = (editor !== null && (editor.text !== editor.original || editor.severity !== editor.originalSeverity)) || !!question?.text.trim();
   const file = view.files.find((f) => f.diff.path === view.selected_path);
-  useEffect(() => { setSelection(null); setNotice(null); }, [view.workflow_id, view.revision, view.selected_path]);
+  useEffect(() => { setSelection(null); setNotice(null); }, [view.workflow_id, view.selected_path]);
+  useEffect(() => {
+    setQuestion((draft) => {
+      const turn = draft?.turn !== undefined ? ai.questions[draft.turn] : null;
+      return turn?.answer && turn.question === draft?.text.trim() ? null : draft;
+    });
+  }, [ai.questions]);
   const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
   const locationKey = (location: ReviewLocation) => `${location.old_line}:${location.new_line}`;
   const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
@@ -74,12 +83,12 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
   const rejected = view.files.filter((f) => f.verdict === "rejected").length;
 
   async function run(action: ReviewAction | "cancel") {
-    if (busy) return;
-    if (action === "cancel" || await onAct(action)) { setEditor(null); setPending(null); }
+    if (commandBusy) return;
+    if (action === "cancel" || await onAct(action)) { setEditor(null); setQuestion(null); setPending(null); }
   }
   function request(action: ReviewAction | "cancel") {
-    if (busy) return;
-    if (dirty || (action !== "cancel" && (action.kind === "apply_suggestion" || action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
+    if (commandBusy) return;
+    if (dirty || (action !== "cancel" && ((action.kind === "pause" && ai.running) || action.kind === "apply_suggestion" || action.kind === "discard" || (action.kind === "reload" && view.save_error)))) setPending(action);
     else void run(action);
   }
   function edit(kind: "comment" | "reject" | "general") {
@@ -99,7 +108,7 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
     if (await onAct(action)) setEditor(null);
   }
   return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={() => request({ kind: "pause" })}
-    footer={<button className="btn btn-secondary" disabled={busy} onClick={() => request({ kind: "pause" })}>Pause review</button>}>
+    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={() => request({ kind: "pause" })}>Pause review</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Finish and send feedback from the TUI.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {busy && <p role="status"><Spinner /> Updating review…</p>}
@@ -119,9 +128,9 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
         <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
       </div>
       : <div className="review-confirm" role="alertdialog" aria-label="Discard unsaved review draft">
-        <p>Discard unsaved edits and continue?</p>
-        <button className="btn btn-danger" disabled={busy} onClick={() => void run(pending)}>Discard and continue</button>
-        <button className="btn btn-secondary" disabled={busy} onClick={() => setPending(null)}>Keep editing</button>
+        <p>{ai.running ? "Discard unsaved edits, cancel the running AI request and continue?" : "Discard unsaved edits and continue?"}</p>
+        <button className="btn btn-danger" disabled={commandBusy} onClick={() => void run(pending)}>Discard and continue</button>
+        <button className="btn btn-secondary" disabled={commandBusy} onClick={() => setPending(null)}>Keep editing</button>
       </div>)}
     <div className="diff-controls">
       <Field label="Filter review files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
@@ -131,6 +140,44 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
       <button className="btn btn-ghost btn-sm" disabled={busy || pending !== null || view.error !== null} onClick={() => request({ kind: "undo" })}>Undo verdict</button>
       <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("general")}>Overall feedback</button>
     </div>
+    {ai.precall && <section className="review-confirm" role="alertdialog" aria-label="Review AI call">
+      <p>Headless AI call: {ai.precall.title} · {ai.precall.harness}. This reads the checkout and may use paid harness credits.</p>
+      {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
+      <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
+      <button className="btn btn-primary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_confirm" })}>Continue AI call</button>
+      <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_cancel" })}>Cancel AI call</button>
+    </section>}
+    {ai.running && <div role="status"><Spinner /> {ai.question_running ? "Answering review question" : ai.co_review_path ? `Co-reviewing ${ai.co_review_path}` : ai.walkthrough_path ? `Generating walkthrough for ${ai.walkthrough_path}` : "Generating changeset overview"}…
+      <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "cancel_ai" })}>Cancel AI request</button>
+    </div>}
+    {ai.message && <p role="status">{ai.message}</p>}
+    {ai.question_error && <p role="alert">{ai.question_error}</p>}
+    <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !view.files.length || view.error !== null}
+      onClick={() => void onAct({ kind: "overview" })}>Changeset overview</button>
+    <p className="muted small">Walkthroughs, overview and co-review use Claude. Questions offer the project's allowed harnesses.</p>
+    {ai.overview && <details className="review-note"><summary>AI changeset overview</summary><Markdown source={ai.overview} /></details>}
+    {ai.questions.length > 0 && <details className="review-note"><summary>Review questions ({ai.questions.length})</summary>{ai.questions.map((turn, index) => <section key={index}>
+      <p><strong>{turn.question}</strong></p><details><summary>Question context</summary><pre>{turn.focus}</pre></details>
+      {turn.answer && <Markdown source={turn.answer} />}{turn.error && <p role="alert">{turn.error}</p>}
+      {turn.error && file && <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !ai.harnesses.length}
+        onClick={() => setQuestion({ path: file.diff.path, span, text: turn.question, harness: ai.harnesses[0] })}>Retry question</button>}
+    </section>)}</details>}
+    {question && <form className="review-editor" onSubmit={(event) => {
+      event.preventDefault();
+      if (!busy && !ai.running && question.text.trim()) {
+        setQuestion({ ...question, turn: ai.questions.length });
+        void onAct({ kind: "ask", path: question.path, start: question.span?.start ?? null, end: question.span?.end ?? null, question: question.text, harness: question.harness });
+      }
+    }}>
+      <p>Question about {question.path}{question.span && `, ${locationLabel(question.span.start)} – ${locationLabel(question.span.end)}`}</p>
+      <p className="muted small">The answering harness reads the repository and reviewed diff. Answers stay in this review while it is open. Follow-ups include earlier answers for this review version.</p>
+      <Field label="Review question"><textarea rows={4} value={question.text} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, text: event.target.value })} /></Field>
+      <Field label="Answering harness"><select value={question.harness} disabled={busy || ai.running} onChange={(event) => setQuestion({ ...question, harness: event.target.value as AgentSlug })}>
+        {ai.harnesses.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
+      </select></Field>
+      <button className="btn btn-primary" disabled={busy || ai.running || pending !== null || !question.text.trim()}>Ask review question</button>
+      <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => request("cancel")}>Cancel question</button>
+    </form>}
     {view.general_feedback && <section aria-label="Saved overall feedback"><Markdown source={view.general_feedback} /></section>}
     {view.applied_suggestions.length > 0 && <details className="review-note"><summary>Applied locally ({view.applied_suggestions.length})</summary>
       <ul>{view.applied_suggestions.map((anchor, index) => <li key={index}>{anchor}</li>)}</ul>
@@ -161,6 +208,15 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
             <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("reject")}>Reject file</button>
             <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null} onClick={() => edit("comment")}>Edit file comment</button>
           </div>
+          <div className="review-line-controls">
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || file.diff.is_binary || !!file.notes || !!file.walkthrough}
+              onClick={() => void onAct({ kind: "walkthrough", path: file.diff.path })}>Generate walkthrough</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || file.diff.is_binary || !file.diff.hunks.length}
+              onClick={() => void onAct({ kind: "co_review", path: file.diff.path })}>AI co-review file</button>
+            <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || !ai.harnesses.length}
+              onClick={() => { setEditor(null); setQuestion({ path: file.diff.path, span, text: "", harness: ai.harnesses[0] }); }}>Ask about {span ? "selection" : "file"}</button>
+          </div>
+          {file.walkthrough && <details className="review-note"><summary>AI walkthrough</summary><Markdown source={file.walkthrough} /></details>}
           {file.feedback && <p className="review-note">[{file.severity}] {file.feedback}</p>}
           {file.notes && <details className="review-note"><summary>Developer notes</summary><Markdown source={file.notes} /></details>}
           {file.comment && <div className="review-note"><p>[{file.comment.severity}] {file.comment.text}{file.comment.resolved && " (resolved)"}{file.comment.carried && " (previous round)"}</p>
@@ -168,6 +224,10 @@ export default function ReviewPanel({ view, busy, error, onAct }: {
           </div>}
           {file.line_comments.length > 0 && <details className="review-note"><summary>Saved line comments ({file.line_comments.length})</summary>
             {file.line_comments.map((comment, index) => <div key={index}><p>{comment.anchor} [{comment.severity}] {comment.text}{comment.resolved && " (resolved)"}{comment.draft && " (AI draft)"}{comment.anchor_lost && " (anchor lost)"}</p>{comment.suggestion !== null && <pre>{comment.suggestion}</pre>}
+              {comment.draft && <>
+                <button className="btn btn-secondary btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => request({ kind: "accept_draft", path: file.diff.path, start: comment.start, end: comment.end })}>Accept AI draft</button>
+                <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => request({ kind: "dismiss_draft", path: file.diff.path, start: comment.start, end: comment.end })}>Dismiss AI draft</button>
+              </>}
               <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("line_comment", comment)}>Edit line comment</button>
               <button className="btn btn-ghost btn-sm" disabled={busy || dirty || pending !== null || !comment.editable} onClick={() => editSpan("suggestion", comment)}>Edit suggestion</button>
               {comment.suggestion !== null && <>

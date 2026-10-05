@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import App from "../src/App";
@@ -164,14 +164,17 @@ it.each(["terminal", "nvim", "custom"])("keeps %s tabs using their terminal inpu
   client.clear();
 });
 
-it("hides the composer on a stopped agent and restores its draft when restarted", async () => {
+it("keeps a stopped agent draft editable with sending disabled and restores it when restarted", async () => {
   const client = await openFeature([session("Agent", "claude")]);
   fireEvent.change(draftInput(), { target: { value: "After restart" } });
   const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
   act(() => client.setQueryData(["workspace-snapshot"], { ...snapshot, stopped_session_ids: ["Agent"] }));
-  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull());
+  await waitFor(() => expect(screen.getByText("Start this session to send your draft.")).toBeTruthy());
+  expect(draftInput().value).toBe("After restart");
+  expect((screen.getByRole("button", { name: "Send prompt" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(draftInput(), { target: { value: "Edited while stopped" } });
   act(() => client.setQueryData(["workspace-snapshot"], snapshot));
-  await waitFor(() => expect(draftInput().value).toBe("After restart"));
+  await waitFor(() => expect(draftInput().value).toBe("Edited while stopped"));
   expect(promptCalls()).toHaveLength(0);
   client.clear();
 });
@@ -384,4 +387,72 @@ it("does not poll a review with no AI work in flight", async () => {
     await act(async () => vi.advanceTimersByTimeAsync(5000));
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot")).toHaveLength(0);
   } finally { vi.useRealTimers(); client.clear(); }
+});
+
+it.each(["claude", "codex", "opencode", "pi"])("adds a library prompt to an existing %s draft without sending or replacing another draft", async (kind) => {
+  const client = await openFeature([session("First", kind), session("Second", kind)]);
+  fireEvent.change(draftInput(), { target: { value: "First message" } });
+  fireEvent.click(screen.getByRole("tab", { name: /Second/ }));
+  fireEvent.change(draftInput(), { target: { value: "Second message" } });
+  fireEvent.click(screen.getByRole("tab", { name: /First/ }));
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const target = { project_id: "project", feature_id: "feature", session_id: "Second" };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_library_load") return Promise.resolve({
+      entries: [{ key: "plain", name: "Library fixture", source: "User", body: "Library prompt", tags: [], description: null, slots: [] }],
+      targets: ["First", "Second"].map((id) => ({ target: { ...target, session_id: id }, label: id, stopped: false })),
+    });
+    if (command === "prompt_library_resolve") return Promise.resolve("Library prompt");
+    return original(command, args, options);
+  });
+  fireEvent.click(within(draftInput().closest(".composer")!).getByRole("button", { name: "Prompt library" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Library fixture/ }));
+  await screen.findByText("Library prompt", { selector: "pre[aria-label='Resolved prompt']" });
+  fireEvent.change(screen.getByRole("combobox", { name: "Agent session" }), {
+    target: { value: JSON.stringify(["project", "feature", "Second"]) },
+  });
+  await waitFor(() => expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Add to draft" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Prompt library" })).toBeNull());
+  expect(draftInput().value).toBe("Second message\n\nLibrary prompt");
+  expect(document.activeElement).toBe(draftInput());
+  fireEvent.click(screen.getByRole("tab", { name: /First/ }));
+  expect(draftInput().value).toBe("First message");
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("prompt_library_load", {
+    scope: { kind: "feature", project_id: "project", feature_id: "feature" }, query: "",
+  });
+  client.clear();
+});
+
+it("refuses a late library handoff after the session is deleted in the workspace snapshot", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const target = { project_id: "project", feature_id: "feature", session_id: "Agent" };
+  let finish!: (text: string) => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_library_load") return Promise.resolve({
+      entries: [{ key: "plain", name: "Library fixture", source: "User", body: "Library prompt", tags: [], description: null, slots: [] }],
+      targets: [{ target, label: "Agent", stopped: false }],
+    });
+    if (command === "prompt_library_resolve") {
+      if ((args as { request: { target: unknown } }).request.target) return new Promise((resolve) => { finish = resolve; });
+      return Promise.resolve("Library prompt");
+    }
+    return original(command, args, options);
+  });
+  fireEvent.click(within(draftInput().closest(".composer")!).getByRole("button", { name: "Prompt library" }));
+  fireEvent.click(await screen.findByRole("button", { name: /Library fixture/ }));
+  await screen.findByText("Library prompt", { selector: "pre[aria-label='Resolved prompt']" });
+  await waitFor(() => expect((screen.getByRole("button", { name: "Add to draft" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Add to draft" }));
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  act(() => client.setQueryData(["workspace-snapshot"], {
+    ...snapshot, projects: snapshot.projects.map((project) => ({ ...project, features: project.features.map((feature) => ({ ...feature, sessions: [] })) })),
+  }));
+  await act(async () => finish("Late prompt"));
+  expect(await screen.findByText("That session was removed. Choose another agent session.")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "Draft prompt" })).toBeNull();
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
 });

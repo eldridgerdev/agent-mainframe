@@ -352,6 +352,51 @@ pub fn prompt_filter_score(name: &str, body: &str, tags: &[String], query: &str)
     .min()
 }
 
+/// Build the ordered list of slots to fill for a template: the distinct
+/// `{{key}}` tokens that appear in the body, in first-seen order. Each key
+/// resolves to its explicit `PromptPlaceholder` definition when the template
+/// declares one (so config-authored label / kind / default / required apply),
+/// otherwise a synthesized `Text` slot. Explicit placeholders whose key never
+/// appears in the body are skipped — filling them would substitute nothing.
+pub(crate) fn resolve_placeholders(template: &PromptTemplate) -> Vec<PromptPlaceholder> {
+    infer_placeholder_slots(&template.body)
+        .into_iter()
+        .map(|slot| {
+            // An explicit config-authored definition always wins.
+            if let Some(explicit) = template.placeholders.iter().find(|p| p.key == slot.key) {
+                return explicit.clone();
+            }
+            // A slot with inline options (`{{a|b}}` / `{{label: a|b}}`) becomes
+            // a Select; a bare `{{key}}` becomes a free-text slot. A labelled
+            // menu carries its label so the fill flow shows a heading.
+            let kind = if slot.options.is_empty() {
+                PlaceholderKind::Text { default: None }
+            } else {
+                PlaceholderKind::Select {
+                    options: slot.options,
+                }
+            };
+            PromptPlaceholder {
+                key: slot.key,
+                label: slot.label,
+                kind,
+                required: false,
+            }
+        })
+        .collect()
+}
+
+/// The value a slot's field is seeded with. `Text` / `MultiLine` use their
+/// configured default (empty when none); `Select` starts on its first option.
+pub(crate) fn placeholder_default(p: &PromptPlaceholder) -> String {
+    match &p.kind {
+        PlaceholderKind::Text { default } | PlaceholderKind::MultiLine { default } => {
+            default.clone().unwrap_or_default()
+        }
+        PlaceholderKind::Select { options } => options.first().cloned().unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,8 +6,8 @@ use chrono::Utc;
 use super::*;
 use crate::editor::TextEditor;
 use crate::prompt_library::{
-    PlaceholderKind, PromptPlaceholder, PromptSource, PromptTemplate, infer_placeholder_slots,
-    render_template,
+    PromptPlaceholder, PromptSource, PromptTemplate, placeholder_default, render_template,
+    resolve_placeholders,
 };
 
 /// Where `export_selected_template` writes a user template.
@@ -918,9 +918,19 @@ impl App {
         pi: usize,
         fi: usize,
     ) -> Vec<PromptLibraryEntry> {
-        let Some(project) = self.store.projects.get(pi) else {
+        if self.store.projects.get(pi).is_none() {
             return Vec::new();
-        };
+        }
+        self.prompt_library_for_scope(Some(pi), Some(fi))
+    }
+
+    /// Read-only source merge shared by remote and desktop library browsers.
+    pub(crate) fn prompt_library_for_scope(
+        &self,
+        pi: Option<usize>,
+        fi: Option<usize>,
+    ) -> Vec<PromptLibraryEntry> {
+        let project = pi.and_then(|pi| self.store.projects.get(pi));
         let user = self
             .db
             .as_ref()
@@ -931,11 +941,12 @@ impl App {
         } else {
             crate::extension::load_global_extension_config().prompt_templates
         };
-        let project_templates = load_project_prompt_templates(&project.repo);
+        let project_templates = project
+            .map(|project| load_project_prompt_templates(&project.repo))
+            .unwrap_or_default();
         let worktree_templates = project
-            .features
-            .get(fi)
-            .filter(|feature| feature.workdir != project.repo)
+            .and_then(|project| fi.and_then(|fi| project.features.get(fi)))
+            .filter(|feature| Some(&feature.workdir) != project.map(|project| &project.repo))
             .map(|feature| load_project_prompt_templates(&feature.workdir))
             .unwrap_or_default();
         merge_prompt_library_entries(&user, &global, &project_templates, &worktree_templates)
@@ -1006,52 +1017,6 @@ fn merge_prompt_library_entries(
         });
     }
     entries
-}
-
-/// Build the ordered list of slots to fill for a template: the distinct
-/// `{{key}}` tokens that appear in the body, in first-seen order. Each key
-/// resolves to its explicit `PromptPlaceholder` definition when the template
-/// declares one (so config-authored label / kind / default / required apply),
-/// otherwise a synthesized `Text` slot. Explicit placeholders whose key never
-/// appears in the body are skipped — filling them would substitute nothing.
-fn resolve_placeholders(template: &PromptTemplate) -> Vec<PromptPlaceholder> {
-    infer_placeholder_slots(&template.body)
-        .into_iter()
-        .map(|slot| {
-            // An explicit config-authored definition always wins.
-            if let Some(explicit) = template.placeholders.iter().find(|p| p.key == slot.key) {
-                return explicit.clone();
-            }
-            // A slot with inline options (`{{a|b}}` / `{{label: a|b}}`) becomes
-            // a Select; a bare `{{key}}` becomes a free-text slot. A labelled
-            // menu carries its label so the fill flow shows a heading.
-            let kind = if slot.options.is_empty() {
-                PlaceholderKind::Text { default: None }
-            } else {
-                PlaceholderKind::Select {
-                    options: slot.options,
-                }
-            };
-            PromptPlaceholder {
-                key: slot.key,
-                label: slot.label,
-                kind,
-                required: false,
-            }
-        })
-        .collect()
-}
-
-/// The value a slot's field is seeded with. `Text` / `MultiLine` use their
-/// configured default (empty when none); `Select` (phase 3) degrades to its
-/// first option so a hand-authored config template still injects.
-fn placeholder_default(p: &PromptPlaceholder) -> String {
-    match &p.kind {
-        PlaceholderKind::Text { default } | PlaceholderKind::MultiLine { default } => {
-            default.clone().unwrap_or_default()
-        }
-        PlaceholderKind::Select { options } => options.first().cloned().unwrap_or_default(),
-    }
 }
 
 /// The prompt shown for a slot in the fill-in flow: its explicit `label`, the
@@ -1133,6 +1098,7 @@ fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::extension::ExtensionConfig;
+    use crate::prompt_library::PlaceholderKind;
 
     fn text_placeholder(key: &str, default: Option<&str>, required: bool) -> PromptPlaceholder {
         PromptPlaceholder {

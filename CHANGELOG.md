@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Use the prompt library in the desktop GUI.** Open **Prompt library** from
+  navigation or an agent composer. Search by name, body or tag; browse user,
+  global, project and worktree templates; fill text and
+  select fields; then **Add to draft** for an allowed agent session. Existing
+  draft text is kept and sending remains explicit. Stopped sessions also keep
+  an editable composer so you can prepare a prompt before starting. No migration
+  is required.
 - **Browse review history in desktop Final Review.** Open **Review history**
   to read the current review and completed rounds, including feedback,
   suggestions, checks and agent replies. **Load older rounds** opens archived

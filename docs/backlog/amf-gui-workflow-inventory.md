@@ -28,7 +28,9 @@ Keep them current as the staged GUI scope grows.
 | Available | Final Review per-file Claude walkthroughs, cached changeset overview, Claude co-review drafts with explicit accept/dismiss, and repository-aware questions/follow-ups using the project's allowed Claude, Codex, OpenCode or Pi harnesses. Each new AI call requires a pre-call confirmation with prompt preview; polling never launches work. Changed patches, feature targets and external review saves discard pending results. Question conversations and generated notes remain in memory for the open review; accepted co-review findings share the TUI's saved progress. Answered questions can draft inline comments or overall feedback with their answering harness, another pre-call notice and editable text. Transfer checks the repository again without an AI call, appends existing prose and opens an unsaved editor; explicit Save keeps the feedback. |
 | Limited | Final Review finish-time batch suggestion application, finish checks and feedback dispatch remain in the TUI. Seven asserted native WSLg frames verify round history, archive loading, draft restoration and read-error recovery through real Rust IPC; remaining interactions and macOS validation stay open. Question-to-comment drafting has command/component tests and eight asserted native WSLg frames through real Rust IPC with offline Codex; paid-harness execution remains unvalidated. Automated tests and eight asserted native WSLg frames cover walkthroughs, questions and co-review using offline CLI fixtures and real Rust IPC. Paid-harness runs remain unvalidated. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Native WSLg captures also verify range selection, line/range prose and replacement editing, split display, unsaved-suggestion protection, thread resolution/reopening and pause/reopen persistence. Native WSLg captures also verify confirmed local application and cancellation, changed source and approval invalidation, stale-file and read-only-file refusals, progress-save retry and restored application history. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
 | Planned | Supervised edits and PR triage, as part of the remaining diff-related parity work. |
-| Planned | Code syntax highlighting in GUI diffs, reviews and the Learning source reader, after the remaining diff-related parity work and before the remaining GUI parity work; the user-prioritized prompt library runs first. |
+| Planned | Code syntax highlighting in GUI diffs, reviews and the Learning source reader, after the remaining diff-related parity work and before the remaining GUI parity work. |
+| Available | Prompt library browsing from workspace navigation or an agent composer, with shared user/global/project/worktree sources, fuzzy name/body and `#tag` search, original/resolved previews, required text/multiline fields and configured/inline choices. Add to draft targets an allowed Claude, Codex, OpenCode or Pi session, appends existing text and leaves sending explicit. Stopped agent drafts are editable before start. Template/checkout changes and stale/deleted/disallowed targets are rechecked before insertion. |
+| Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring, deletion/export and editable prompt overrides remain in the TUI. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
 
 Native GUI diff proof is reproducible with
@@ -103,7 +105,25 @@ Completed increments and remaining work, in priority order:
   kept threads, and pause/resume their shared progress. Command/component tests
   and seven asserted native WSLg frames cover this increment.
 
-- [ ] **Prompt library (user-requested next priority, 2026-10-05).** Make saved prompts available in the GUI soon: browse/search the shared library, preview a template, fill text placeholders and configured select choices, then target an allowed agent session and insert the resolved prompt into its unsent composer for explicit sending. Reuse the TUI library, template resolution and persistence; retain existing drafts and cover cancellation, stale/deleted targets and duplicate submissions with GUI interactions and relevant TUI regressions. This user-requested priority comes immediately after the review-history increment, ahead of the remaining diff/review work and syntax highlighting. Editable prompt overrides remain a separate later item.
+- [x] **Prompt library (user-requested priority, 2026-10-05).** Browse/search the
+  shared library, preview a template, fill text placeholders and configured
+  select choices, then target an allowed agent session and insert the resolved
+  prompt into its unsent composer for explicit sending. Reuses the TUI library,
+  template resolution and persistence while retaining existing drafts.
+  Implemented immediately after review history, ahead of the remaining
+  diff/review work and syntax highlighting. Editable prompt overrides remain a
+  separate later item.
+
+  Implemented the scoped two-pane browser and explicit unsent composer handoff.
+  Seven Rust regressions and thirteen new frontend interactions cover source
+  merging, anonymous config identity, defaults/required fields/choices, external
+  template edits, target restrictions/deletion, delayed completions, cancellation,
+  duplicate insertion and all four agent composers. The normal parallel workspace
+  suite passes (3,235 library tests and seven GUI-crate tests; one pre-existing
+  live-GitHub acceptance test ignored). All 136 frontend tests, production frontend
+  build, both executable builds, formatting and strict workspace/all-target Clippy
+  pass. The library inventory retains all 3,229 baseline test names and adds seven. Native desktop and macOS
+  interaction validation remain open; authoring/export and overrides are later work.
 
 - [ ] **Remaining diff and review parity.** Complete diff-related workflows,
   including finish-time batch suggestion application, finish checks and feedback
@@ -120,7 +140,7 @@ Completed increments and remaining work, in priority order:
   side-by-side diffs, review views and the Learning source reader. Keep change
   markers and line numbers readable, with plain-text fallback for unsupported
   languages. Schedule this after all remaining diff-related parity items and
-  before the remaining GUI parity work; the user-prioritized prompt library runs first.
+  before the remaining GUI parity work.
 - [ ] **Other GUI parity.** Continue prompt overrides, dormancy, settings,
   VS Code/custom sessions and the remaining workflow inventory.
 

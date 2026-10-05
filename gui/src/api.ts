@@ -703,3 +703,24 @@ export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invok
 export const reviewSnapshot = (workflowId: string): Promise<ReviewView> => invoke("review_snapshot", { workflowId });
 export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
   invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });
+
+export type LibraryScope = { kind: "global" } | { kind: "project"; project_id: string }
+  | { kind: "feature"; project_id: string; feature_id: string };
+export type LibrarySlot = {
+  key: string; label: string; required: boolean; initial_value: string;
+} & ({ kind: "text" | "multi_line"; default: string | null } | { kind: "select"; options: string[] });
+export interface LibraryEntry {
+  key: string; name: string; description: string | null; body: string; tags: string[];
+  source: string; slots: LibrarySlot[];
+}
+export interface LibraryTarget { target: SessionTarget; label: string; stopped: boolean }
+export interface LibraryView { entries: LibraryEntry[]; targets: LibraryTarget[] }
+export interface ResolvePrompt {
+  scope: LibraryScope; entry_key: string; values: [string, string][]; target: SessionTarget | null;
+}
+export function promptLibraryLoad(scope: LibraryScope, query: string): Promise<LibraryView> {
+  return invoke("prompt_library_load", { scope, query });
+}
+export function promptLibraryResolve(request: ResolvePrompt): Promise<string> {
+  return invoke("prompt_library_resolve", { request });
+}

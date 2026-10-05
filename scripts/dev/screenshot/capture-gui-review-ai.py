@@ -44,8 +44,6 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-review-ai-") as temporary:
         LIBGL_ALWAYS_SOFTWARE="1",
     )
     # CLI fixtures are private to this capture. Never call a paid harness.
-    if not shutil.which("bwrap"):
-        raise RuntimeError("Native AI capture requires bubblewrap (bwrap) for fixture isolation")
     fixture_bin = scratch / "bin"
     fixture_bin.mkdir()
     for harness in ["claude", "codex", "opencode", "pi"]:
@@ -62,13 +60,17 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-review-ai-") as temporary:
     empty_versions = scratch / "empty-versions"
     empty_versions.mkdir()
     gui_pid_path = scratch / "gui.pid"
-    # Preserve native display device access (ordinary --bind mounts are nodev).
-    command = ["bwrap", "--die-with-parent", "--dev-bind", "/", "/"]
+    command = ["/bin/sh", "-c", 'echo "$$" > "$1"; exec "$2"', "gui-capture",
+               str(gui_pid_path), str(workspace / "target/debug/amf-gui")]
     versions = pathlib.Path.home() / ".local/share/claude/versions"
     if versions.exists():
-        command.extend(["--bind", str(empty_versions), str(versions)])
-    command.extend(["--", "/bin/sh", "-c", 'echo "$$" > "$1"; exec "$2"', "gui-capture",
-                    str(gui_pid_path), str(workspace / "target/debug/amf-gui")])
+        if not shutil.which("bwrap"):
+            raise RuntimeError("Masking installed Claude versions requires bubblewrap (bwrap)")
+        # Preserve native display device access (ordinary --bind mounts are nodev).
+        command = ["bwrap", "--die-with-parent", "--dev-bind", "/", "/",
+                   "--bind", str(empty_versions), str(versions), "--", *command]
+    # A clean CI HOME has no native versions to mask. PATH already selects
+    # all four private fixtures, so no mount/user namespace is needed there.
     git_env = env | {
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",

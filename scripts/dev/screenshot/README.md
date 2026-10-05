@@ -155,9 +155,11 @@ It checks the saved progress and invocation log through real Rust IPC; opening,
 editing, cancelling and reopening must not start additional calls. No paid
 harness or terminal agent is launched.
 
-This scenario also requires `bubblewrap` (`bwrap`). The GUI's mount namespace
-masks Claude's HOME-based native versions so discovery selects the private
-fixture executables. HOME and installed files stay unchanged. Its GUI uses
+If Claude's native versions exist under HOME, this scenario also requires
+`bubblewrap` (`bwrap`). The GUI's mount namespace masks those versions so
+discovery selects the private fixture executables. A clean CI HOME uses the
+private PATH directly, without creating a namespace. HOME and installed files
+stay unchanged. Its GUI uses
 software rendering; the WebKit process sandbox is disabled only for this
 isolated offline capture. The helper owns its GUI/Vite process groups and a
 private tmux socket.

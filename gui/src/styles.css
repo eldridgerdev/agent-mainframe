@@ -986,6 +986,10 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .learning-starters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
 .learning-question { margin: 12px 0; }
 .learning-history { display: grid; grid-template-columns: minmax(150px, 28%) minmax(0, 1fr); gap: 16px; }
+.review-history-reader { display: grid; grid-template-columns: minmax(180px, 28%) minmax(0, 1fr); gap: 16px; }
+.review-history-reader > nav, .review-history-body { max-height: 60vh; overflow: auto; }
+.review-history-body { overflow-wrap: anywhere; }
+@media (max-width: 680px) { .review-history-reader { grid-template-columns: 1fr; } .review-history-reader > nav { max-height: 150px; } }
 .learning-history nav { max-height: 300px; overflow: auto; }
 .learning-history section { max-height: 400px; overflow: auto; }
 @media (max-width: 680px) { .learning-reader, .learning-history { grid-template-columns: 1fr; } .learning-files { max-height: 110px; } }

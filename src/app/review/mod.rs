@@ -1,5 +1,6 @@
 mod comments;
 mod headless;
+mod history;
 mod pr_drafts;
 mod pr_submit;
 mod preparation;
@@ -9,6 +10,7 @@ mod progression;
 mod tests;
 pub(crate) use comments::local_suggestion_blocker;
 pub use comments::resolve_editor_command;
+pub(crate) use history::current_review_history_markdown;
 pub(crate) use pr_drafts::draft_comment_count;
 pub(crate) use pr_submit::submission_counts;
 pub(crate) use preparation::{

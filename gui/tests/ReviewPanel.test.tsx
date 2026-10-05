@@ -8,7 +8,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
-  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [],
+  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null,
   ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
@@ -25,6 +25,97 @@ function mount(initial = view, onAct = vi.fn(async () => true)) {
   const component = render(<ReviewPanel {...props} />);
   return { onAct, update: (next: Partial<typeof props>) => component.rerender(<ReviewPanel {...props} {...next} />) };
 }
+
+const history: NonNullable<ReviewView["history"]> = {
+  selected: 0, current_unresolved: 1, archive_available: true, archive_loaded: false, error: null,
+  rounds: [{ title: "Review — yesterday", carried_unresolved: 2 }],
+  markdown: "## Current Review\n\nLocal feedback",
+};
+
+it("browses completed rounds and explicitly loads the archive without editing", async () => {
+  const { onAct, update } = mount({ ...view, history });
+  expect(screen.getByRole("heading", { name: "Current Review" })).toBeTruthy();
+  expect(screen.getByText("1 open threads")).toBeTruthy();
+  expect(screen.getByText("2 carried unresolved")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Approve file" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Review — yesterday/ }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_select", round: 1 }));
+  update({ view: { ...view, history: { ...history, selected: 1, markdown: "## Completed round\n\n**Agent:** Fixed it\n\n```suggestion\nreplacement\n```" } } });
+  expect(screen.getByText("replacement")).toBeTruthy();
+  expect(screen.getByText(/Fixed it/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Load older rounds" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_load_older" }));
+  update({ view: { ...view, history: { ...history, archive_loaded: true } } });
+  expect(screen.queryByRole("button", { name: "Load older rounds" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Current 1 open threads/ }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_select", round: 0 }));
+});
+
+it("retains a dirty editor through history navigation and returns without pausing", async () => {
+  const { onAct, update } = mount();
+  fireEvent.click(screen.getByRole("button", { name: "Edit file comment" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Keep my unsaved draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review history" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_open" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  update({ view: { ...view, history } });
+  fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_close" }));
+  update({ view });
+  expect((screen.getByRole("textbox", { name: "File comment" }) as HTMLTextAreaElement).value).toBe("Keep my unsaved draft");
+  expect(onAct).not.toHaveBeenCalledWith({ kind: "pause" });
+  expect(onAct).not.toHaveBeenCalledWith({ kind: "retry_save" });
+});
+
+it("retains question text when history is closed with Escape", async () => {
+  const { onAct, update } = mount();
+  fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Why this change?" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review history" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_open" }));
+  update({ view: { ...view, history } });
+  fireEvent.keyDown(window, { key: "Escape" });
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_close" }));
+  update({ view });
+  expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Why this change?");
+  expect(onAct).not.toHaveBeenCalledWith({ kind: "cancel_ai" });
+});
+
+it("retains edited AI comment drafts through history navigation", async () => {
+  const { onAct, update } = mount(withDraft);
+  fireEvent.change(screen.getByRole("textbox", { name: "AI comment draft" }), { target: { value: "Edited AI prose" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review history" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_open" }));
+  update({ view: { ...withDraft, history } });
+  fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_close" }));
+  update({ view: withDraft });
+  expect((screen.getByRole("textbox", { name: "AI comment draft" }) as HTMLTextAreaElement).value).toBe("Edited AI prose");
+  expect(onAct).not.toHaveBeenCalledWith({ kind: "discard_question_draft" });
+});
+
+it("shows history read failures and empty rounds and prevents submissions while busy", () => {
+  const { onAct, update } = mount({ ...view, history: { ...history, rounds: [], error: "Could not read review history" } });
+  expect(screen.getByRole("alert").textContent).toContain("Could not read review history");
+  expect(screen.getByText("No completed rounds loaded.")).toBeTruthy();
+  update({ busy: true });
+  fireEvent.click(screen.getByRole("button", { name: "Load older rounds" }));
+  fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("preserves drafts after a failed history request and waits for pre-call decisions", async () => {
+  const { onAct, update } = mount(view, vi.fn(async () => false));
+  fireEvent.click(screen.getByRole("button", { name: "Overall feedback", exact: true }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Overall feedback draft" }), { target: { value: "Unsaved overall" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review history" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "history_open" }));
+  expect((screen.getByRole("textbox", { name: "Overall feedback draft" }) as HTMLTextAreaElement).value).toBe("Unsaved overall");
+  update({ view: { ...view, ai: { ...view.ai, precall: { title: "Question", harness: "codex", viewing: false, preview: "prompt" } } } });
+  fireEvent.click(screen.getByRole("button", { name: "Review history" }));
+  expect(onAct).toHaveBeenCalledTimes(1);
+});
 
 it("renders verdicts, developer notes and carried threads alongside shared diff layouts", () => {
   const { update } = mount();

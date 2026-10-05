@@ -295,7 +295,20 @@ full range and severity, and refuses ambiguous overlaps. Nothing is saved until
 **Save comment** or **Save overall feedback**. Failed transfers retain your edits;
 leaving a generated or transferred draft requires explicit discard.
 
-Review history, finish-time batch application, finish checks and sending feedback
+**Review history** opens a read-only round browser. **Current** shows this open
+review's verdicts, feedback, resolved threads, AI drafts and prior agent replies;
+unsaved form text stays in its editor. Completed rounds appear newest first with
+their original feedback, suggestions, check output and agent replies.
+**Load older rounds** reads archived history on demand. **Return to review**
+or Escape closes the browser and keeps local drafts. Browsing saves no progress
+and leaves outstanding save errors available for retry after returning.
+Seven asserted native WSLg frames verify Current/completed rounds, archived
+history, restored draft text, archive read failures and retry after repair through
+real Rust IPC. Source and progress assertions confirm browsing writes neither.
+Reproduce with `scripts/dev/screenshot/scenarios/gui-review-history.txt`. Remaining
+interactions and macOS validation stay open.
+
+Finish-time batch application, finish checks and sending feedback
 remain in the TUI. Question-to-comment drafting has command/component coverage and eight asserted
 native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,
 confirmation/cancellation, inline and overall transfer, unsaved protection and

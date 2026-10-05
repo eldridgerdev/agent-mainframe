@@ -416,8 +416,25 @@ pub struct ReviewHistoryState {
     pub rendered_lines: usize,
     pub view_height: usize,
     pub archive_available: bool,
+    /// Set only by a successful archive read. A failed read leaves it false
+    /// so the archive can be retried without closing history.
     pub archive_loaded: bool,
+    /// Live feedback-log read failure, from opening history.
     pub error: Option<String>,
+    /// Latest archive read failure; cleared by a successful retry. Kept apart
+    /// from `error` so neither failure hides the other.
+    pub archive_error: Option<String>,
+}
+
+impl ReviewHistoryState {
+    /// Every outstanding read failure, one per line.
+    pub fn error_message(&self) -> Option<String> {
+        match (&self.error, &self.archive_error) {
+            (Some(live), Some(archive)) => Some(format!("{live}\n{archive}")),
+            (Some(e), None) | (None, Some(e)) => Some(e.clone()),
+            (None, None) => None,
+        }
+    }
 }
 
 /// One row of the pre-finish summary list (`summary_items`): every verdict,

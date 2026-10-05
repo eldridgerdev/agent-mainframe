@@ -514,10 +514,16 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .composer textarea:focus { outline: none; }
 .composer-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 8px 16px;
   padding: 6px 8px 8px 14px;
 }
+.composer-help { display: flex; flex-direction: column; gap: 4px; }
+.composer-shortcuts { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.composer-shortcuts > span { white-space: nowrap; }
+.composer-foot > .btn { margin-left: auto; }
 
 /* ── TODOs ──────────────────────────────────────────────── */
 

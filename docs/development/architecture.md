@@ -45,6 +45,13 @@ while `App.tsx` appends the handoff to the session draft after a final workspace
 cache check. Neither browsing nor preparation launches a process or writes the
 library. Library authoring and prompt overrides remain separate workflows.
 
+`gui_review/summary.rs` projects the shared TUI pre-finish summary rows and
+calls its suggestion-preparation step after checking the stable workflow,
+reviewed changeset and saved progress. The GUI confirms source writes and
+keeps review open for another look at changed code. Reading or closing the
+summary preserves unsaved editors and never saves progress. Checks, completing
+the review and feedback dispatch remain later GUI increments.
+
 ## Feature modules
 
 | Feature | Files under `src/app/` | Responsibility |

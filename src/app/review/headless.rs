@@ -535,13 +535,10 @@ impl App {
         Ok(())
     }
 
-    /// Finish the review. If the project has a `final_review_check_command`
-    /// configured (a build/test gate), spawn it in the background and return
-    /// immediately — `poll_final_review_check` picks up the result once the
-    /// process exits and actually completes the review. Otherwise (the
-    /// default: no command configured) completes immediately, unchanged from
-    /// before this gate existed.
-    pub fn finish_final_review(&mut self) -> Result<()> {
+    /// Shared source-write step of finishing. The GUI can explicitly prepare
+    /// the batch while keeping the review open to inspect the changed code.
+    /// Consumes the opt-in before writing, including when some jobs fail.
+    pub(crate) fn prepare_final_review_suggestions(&mut self) {
         let apply_on_finish = matches!(&self.mode, AppMode::DiffViewer(state) if state.review && state.apply_suggestions_on_finish);
         if apply_on_finish {
             if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -556,6 +553,16 @@ impl App {
             }
             self.persist_review_progress();
         }
+    }
+
+    /// Finish the review. If the project has a `final_review_check_command`
+    /// configured (a build/test gate), spawn it in the background and return
+    /// immediately — `poll_final_review_check` picks up the result once the
+    /// process exits and actually completes the review. Otherwise (the
+    /// default: no command configured) completes immediately, unchanged from
+    /// before this gate existed.
+    pub fn finish_final_review(&mut self) -> Result<()> {
+        self.prepare_final_review_suggestions();
 
         let spawn_info = match &self.mode {
             AppMode::DiffViewer(state)

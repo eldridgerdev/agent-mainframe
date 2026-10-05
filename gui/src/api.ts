@@ -652,7 +652,14 @@ export interface ReviewView {
   save_error: string | null;
   applied_suggestions: string[];
   history: ReviewHistory | null;
+  summary: ReviewSummary | null;
   ai: ReviewAi;
+}
+export interface ReviewSummary {
+  rows: { path: string | null; title: string; text: string; severity: ReviewSeverity | null; suggestion: string | null; apply_blocked: string | null }[];
+  undecided: number;
+  pending_suggestions: number;
+  failures: string[];
 }
 export interface ReviewHistory {
   selected: number;
@@ -682,6 +689,7 @@ export interface ReviewAi {
   message: string | null;
 }
 export type ReviewAction =
+  | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" }
   | { kind: "history_open" | "history_load_older" | "history_close" }
   | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }

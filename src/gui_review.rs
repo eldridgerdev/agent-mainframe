@@ -10,11 +10,13 @@ use crate::gui_diff::{DiffFileView, file_view};
 use crate::project::SessionKind;
 
 mod ai;
+mod summary;
 pub use ai::poll;
 pub use ai::{
     ReviewAiView, ReviewCommentDraftView, ReviewCommentEditorView, ReviewDraftDestination,
     ReviewQuestionView,
 };
+pub use summary::{ReviewSummaryRow, ReviewSummaryView};
 
 pub use crate::app::review::state::{FileComment, Severity};
 pub use crate::diff::DiffLineLocation;
@@ -74,6 +76,7 @@ pub struct ReviewView {
     pub save_error: Option<String>,
     pub applied_suggestions: Vec<String>,
     pub history: Option<ReviewHistoryView>,
+    pub summary: Option<ReviewSummaryView>,
     pub ai: ReviewAiView,
 }
 
@@ -98,6 +101,9 @@ pub struct ReviewHistoryRoundView {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReviewAction {
+    SummaryOpen,
+    SummaryClose,
+    ApplyFinishSuggestions,
     HistoryOpen,
     HistorySelect {
         round: usize,
@@ -374,6 +380,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         has_prior_review: state.has_prior_review,
         error: state.error.clone(),
         applied_suggestions: state.applied_suggestions.clone(),
+        summary: summary::view(state),
         history: state
             .review_history
             .as_ref()
@@ -417,6 +424,8 @@ pub fn act(
             | ReviewAction::PrecallToggleView
             | ReviewAction::CancelAi
             | ReviewAction::RetrySave
+            | ReviewAction::SummaryOpen
+            | ReviewAction::SummaryClose
     );
     let pause = matches!(action, ReviewAction::Pause);
     let reload = matches!(action, ReviewAction::Reload);
@@ -429,7 +438,9 @@ pub fn act(
     if context.ready_comment.is_some()
         && matches!(
             action,
-            ReviewAction::Ask { .. } | ReviewAction::DraftQuestion { .. }
+            ReviewAction::Ask { .. }
+                | ReviewAction::DraftQuestion { .. }
+                | ReviewAction::ApplyFinishSuggestions
         )
     {
         return Err(GuiError::conflict(
@@ -462,8 +473,11 @@ pub fn act(
             | ReviewAction::CancelAi
             | ReviewAction::DiscardQuestionDraft
             | ReviewAction::HistoryClose
+            | ReviewAction::SummaryClose
     ) {
-        if matches!(action, ReviewAction::HistoryClose) {
+        if matches!(action, ReviewAction::SummaryClose) {
+            app.close_review_summary();
+        } else if matches!(action, ReviewAction::HistoryClose) {
             // Returning to the editor must remain possible after the target
             // disappears, so the reviewer can pause or discard their edits.
             app.close_review_history();
@@ -478,7 +492,12 @@ pub fn act(
         return snapshot(gui).map(Some);
     }
     let context = gui.review_context.as_ref().unwrap();
-    if unsaved && matches!(action, ReviewAction::ApplySuggestion { .. }) {
+    if unsaved
+        && matches!(
+            action,
+            ReviewAction::ApplySuggestion { .. } | ReviewAction::ApplyFinishSuggestions
+        )
+    {
         return Err(GuiError::conflict(
             "Save review progress successfully before applying a suggestion",
         ));
@@ -525,8 +544,13 @@ pub fn act(
         ReviewAction::HistoryOpen
             | ReviewAction::HistorySelect { .. }
             | ReviewAction::HistoryLoadOlder
+            | ReviewAction::SummaryOpen
     ) {
         match action {
+            ReviewAction::SummaryOpen => {
+                app.close_review_history();
+                app.open_review_summary();
+            }
             ReviewAction::HistoryOpen => app.open_review_history(),
             ReviewAction::HistorySelect { round } => {
                 let history = state
@@ -652,6 +676,7 @@ pub fn act(
                     return Ok(());
                 }
                 match action {
+                    ReviewAction::ApplyFinishSuggestions => summary::apply(app)?,
                     ReviewAction::Approve { .. } => app.diff_review_approve_current(),
                     ReviewAction::Skip { .. } => app.diff_review_skip_current(),
                     ReviewAction::Reject {
@@ -890,6 +915,334 @@ mod tests {
             start,
             end,
         }
+    }
+
+    #[test]
+    fn summary_reads_all_verdicts_and_only_open_kept_threads_without_saving_or_discarding_drafts() {
+        let (dir, mut gui, target) = fixture();
+        let initial = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &initial, 8, 8);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::General {
+                text: "Overall feedback".into(),
+            },
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Comment {
+                path: "code.txt".into(),
+                text: "File feedback".into(),
+                severity: Severity::Question,
+            },
+        );
+        let repo = dir.path().join("repo");
+        let before = progress_bytes(&repo).unwrap();
+        let source = std::fs::read(repo.join("code.txt")).unwrap();
+        if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+            let comments = s.line_comments.get_mut("code.txt").unwrap();
+            let mut draft = comments[0].clone();
+            draft.draft = true;
+            draft.text = "AI draft excluded".into();
+            comments.push(draft);
+            let mut resolved = comments[0].clone();
+            resolved.resolved = true;
+            resolved.text = "Resolved excluded".into();
+            comments.push(resolved);
+        }
+        gui.review_context.as_mut().unwrap().save_error = Some("Retain save failure".into());
+        gui.review_context.as_mut().unwrap().ready_comment = Some(ReviewCommentEditorView {
+            request: 1,
+            original: "".into(),
+            text: "Retain draft".into(),
+            path: None,
+            start: None,
+            end: None,
+            severity: Severity::Nit,
+        });
+        let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+        let summary = view.summary.as_ref().unwrap();
+        assert_eq!(summary.rows.len(), 4);
+        // The shared TUI engine marks an undecided file as needing work when
+        // its first kept suggestion is saved; the summary preserves that.
+        assert!(summary.rows[0].title.contains("needs work"));
+        assert_eq!(summary.pending_suggestions, 1);
+        assert_eq!(summary.undecided, 0);
+        assert_eq!(
+            summary.rows[1].suggestion.as_deref(),
+            Some("replacement\nsecond\nthird")
+        );
+        assert_eq!(summary.rows[2].text, "File feedback");
+        assert_eq!(summary.rows[3].text, "Overall feedback");
+        assert_eq!(view.ai.ready_comment.as_ref().unwrap().text, "Retain draft");
+        let view = action(&mut gui, &view, ReviewAction::SummaryClose);
+        assert!(view.summary.is_none());
+        assert!(view.save_error.is_some());
+        assert!(view.ai.ready_comment.is_some());
+        assert_eq!(progress_bytes(&repo).unwrap(), before);
+        assert_eq!(std::fs::read(repo.join("code.txt")).unwrap(), source);
+        assert!(!repo.join(".claude/final-review-feedback.md").exists());
+    }
+
+    #[test]
+    fn finish_preparation_batches_bottom_up_consumes_opt_in_and_resumes_without_finishing() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target.clone()).unwrap();
+        let view = suggested(&mut gui, &view, 8, 9);
+        let (start, end) = span(&view, 10, 10);
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Suggestion {
+                path: "code.txt".into(),
+                start,
+                end,
+                text: "BOTTOM".into(),
+            },
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        );
+        let repo = dir.path().join("repo");
+        let source = std::fs::read_to_string(repo.join("code.txt")).unwrap();
+        let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+        assert_eq!(view.summary.as_ref().unwrap().pending_suggestions, 2);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("code.txt")).unwrap(),
+            source
+        );
+        let applied = action(&mut gui, &view, ReviewAction::ApplyFinishSuggestions);
+        assert_eq!(
+            std::fs::read_to_string(repo.join("code.txt")).unwrap(),
+            source.replace(
+                "committed 🦀\nline 9\nline 10\n",
+                "replacement\nsecond\nthird\nBOTTOM\n"
+            )
+        );
+        assert_eq!(applied.applied_suggestions.len(), 2);
+        assert_eq!(applied.summary.as_ref().unwrap().pending_suggestions, 0);
+        assert!(applied.summary.as_ref().unwrap().failures.is_empty());
+        assert_eq!(applied.files[0].verdict, "undecided");
+        let s = ai::state(&gui.app_for_workflow().mode).unwrap();
+        assert!(!s.apply_suggestions_on_finish);
+        assert!(s.verdict_undo.is_empty());
+        assert!(s.finish_check_child.is_none());
+        assert!(!repo.join(".claude/final-review-feedback.md").exists());
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::ApplyFinishSuggestions
+            )
+            .unwrap_err()
+            .message
+            .contains("Review changed")
+        );
+        assert!(
+            act(
+                &mut gui,
+                &applied.workflow_id,
+                applied.revision,
+                ReviewAction::ApplyFinishSuggestions
+            )
+            .unwrap_err()
+            .message
+            .contains("No open suggestions")
+        );
+        act(
+            &mut gui,
+            &applied.workflow_id,
+            applied.revision,
+            ReviewAction::Pause,
+        )
+        .unwrap();
+        let resumed = begin(&mut gui, target).unwrap();
+        assert_eq!(resumed.applied_suggestions, applied.applied_suggestions);
+        assert!(resumed.files[0].line_comments.is_empty());
+    }
+
+    #[test]
+    fn finish_preparation_reports_blocked_jobs_and_keeps_their_replacements() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &view, 8, 8);
+        let view = suggested(&mut gui, &view, 10, 10);
+        if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+            s.line_comments.get_mut("code.txt").unwrap()[1].anchor_lost = true;
+        }
+        let view = action(&mut gui, &view, ReviewAction::RetrySave);
+        let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+        let applied = action(&mut gui, &view, ReviewAction::ApplyFinishSuggestions);
+        let summary = applied.summary.unwrap();
+        assert_eq!(summary.pending_suggestions, 1);
+        assert_eq!(summary.failures.len(), 1);
+        assert!(summary.failures[0].contains("anchor"));
+        assert_eq!(applied.applied_suggestions.len(), 1);
+        assert!(
+            applied.files[0]
+                .line_comments
+                .iter()
+                .any(|c| c.suggestion.is_some())
+        );
+        let text = std::fs::read_to_string(dir.path().join("repo/code.txt")).unwrap();
+        assert!(text.contains("replacement\nsecond\nthird\nline 9\nline 10\n"));
+        assert!(
+            !ai::state(&gui.app_for_workflow().mode)
+                .unwrap()
+                .apply_suggestions_on_finish
+        );
+    }
+
+    #[test]
+    fn finish_preparation_refuses_changed_patches_progress_checkouts_and_deleted_targets_before_writing()
+     {
+        for change in ["patch", "progress", "checkout", "deleted"] {
+            let (dir, mut gui, target) = fixture();
+            let view = begin(&mut gui, target).unwrap();
+            let view = suggested(&mut gui, &view, 8, 9);
+            let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+            let repo = dir.path().join("repo");
+            match change {
+                "patch" => std::fs::write(repo.join("code.txt"), "External edit\n").unwrap(),
+                "progress" => {
+                    std::fs::write(crate::app::review::review_progress_path(&repo), "{}").unwrap()
+                }
+                _ => {
+                    let db = gui.app_for_workflow().db.as_ref().unwrap();
+                    let mut store = db.load_store().unwrap();
+                    if change == "deleted" {
+                        store.projects[0].features.clear();
+                    } else {
+                        store.projects[0].features[0].workdir = dir.path().join("other");
+                    }
+                    db.save_store(&store).unwrap();
+                }
+            }
+            let before = std::fs::read(repo.join("code.txt")).unwrap();
+            assert!(
+                act(
+                    &mut gui,
+                    &view.workflow_id,
+                    view.revision,
+                    ReviewAction::ApplyFinishSuggestions
+                )
+                .is_err(),
+                "{change}"
+            );
+            assert_eq!(
+                std::fs::read(repo.join("code.txt")).unwrap(),
+                before,
+                "{change}"
+            );
+            assert!(snapshot(&mut gui).unwrap().applied_suggestions.is_empty());
+            let closed = action(&mut gui, &view, ReviewAction::SummaryClose);
+            assert!(closed.summary.is_none());
+        }
+    }
+
+    #[test]
+    fn finish_preparation_requires_summary_and_refuses_running_ai_or_transferred_drafts() {
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &view, 8, 9);
+        let source = dir.path().join("repo/code.txt");
+        let before = std::fs::read(&source).unwrap();
+        let err = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::ApplyFinishSuggestions,
+        )
+        .unwrap_err();
+        assert!(err.message.contains("Open the pre-finish summary"));
+        let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        if let AppMode::DiffViewer(s) = &mut gui.app_for_workflow().mode {
+            s.co_review_bg = Some(receiver);
+        }
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::ApplyFinishSuggestions
+            )
+            .unwrap_err()
+            .message
+            .contains("running AI request")
+        );
+        ai::cancel(gui.app_for_workflow());
+        gui.review_context.as_mut().unwrap().ready_comment = Some(ReviewCommentEditorView {
+            request: 1,
+            original: "".into(),
+            text: "Draft".into(),
+            path: None,
+            start: None,
+            end: None,
+            severity: Severity::Nit,
+        });
+        assert!(
+            act(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                ReviewAction::ApplyFinishSuggestions
+            )
+            .unwrap_err()
+            .message
+            .contains("transferred comment draft")
+        );
+        assert!(snapshot(&mut gui).unwrap().ai.ready_comment.is_some());
+        assert_eq!(std::fs::read(source).unwrap(), before);
+    }
+
+    #[test]
+    fn finish_preparation_retains_applied_source_after_save_failure_and_requires_retry() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut gui, target) = fixture();
+        let view = begin(&mut gui, target).unwrap();
+        let view = suggested(&mut gui, &view, 8, 9);
+        let view = action(&mut gui, &view, ReviewAction::SummaryOpen);
+        let claude = dir.path().join("repo/.claude");
+        let permissions = std::fs::metadata(&claude).unwrap().permissions();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::ApplyFinishSuggestions,
+        );
+        std::fs::set_permissions(&claude, permissions).unwrap();
+        let applied = result.unwrap().unwrap();
+        assert!(applied.save_error.is_some());
+        assert!(applied.summary.is_some());
+        assert_eq!(applied.applied_suggestions.len(), 1);
+        assert!(
+            std::fs::read_to_string(dir.path().join("repo/code.txt"))
+                .unwrap()
+                .contains("replacement\nsecond\nthird\n")
+        );
+        assert!(
+            act(
+                &mut gui,
+                &applied.workflow_id,
+                applied.revision,
+                ReviewAction::ApplyFinishSuggestions
+            )
+            .unwrap_err()
+            .message
+            .contains("Save review progress successfully")
+        );
+        let saved = action(&mut gui, &applied, ReviewAction::RetrySave);
+        assert!(saved.save_error.is_none());
+        assert!(saved.summary.is_some());
     }
 
     #[test]

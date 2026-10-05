@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
+import ReviewSummaryPanel from "./ReviewSummaryPanel";
 import { Field, Modal, Spinner } from "./ui";
 
 type Editor = { kind: "comment" | "reject" | "general" | "line_comment" | "suggestion"; span?: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
@@ -15,6 +16,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
 }) {
   const ai = view.ai;
   const history = view.history;
+  const summary = view.summary;
   const busy = commandBusy || ai.precall !== null || (ai.question_running && ai.comment_draft !== null);
   const [question, setQuestion] = useState<{ path: string; span: ReviewSpan | null; text: string; harness: AgentSlug; turn?: number } | null>(null);
   const [commentDraft, setCommentDraft] = useState<{ request: number; text: string } | null>(null);
@@ -139,15 +141,16 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
   const close = () => {
     if (commandBusy) return;
     if (history) void onAct({ kind: "history_close" });
+    else if (summary) void onAct({ kind: "summary_close" });
     else request({ kind: "pause" });
   };
   return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
-    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={close}>{history ? "Return to review" : "Pause review"}</button>}>
+    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Finish and send feedback from the TUI.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
-    {history ? <section className="review-history" aria-label="Review round history">
+    {summary ? <ReviewSummaryPanel view={view} busy={busy} dirty={dirty} onAct={onAct} /> : history ? <section className="review-history" aria-label="Review round history">
       <p className="muted small">Read-only history. Current reflects this open review; local unsaved drafts stay in their editors. Completed rounds include feedback, suggestions, checks and agent replies.</p>
       {history.error && <p role="alert">{history.error}</p>}
       <div className="review-history-reader">
@@ -163,6 +166,8 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       </div>
       {history.rounds.length === 0 && <p>No completed rounds loaded.</p>}
     </section> : <>
+    <button className="btn btn-secondary btn-sm" disabled={commandBusy || ai.precall !== null || pending !== null}
+      onClick={() => void onAct({ kind: "summary_open" })}>Pre-finish summary</button>
     <button className="btn btn-secondary btn-sm" disabled={commandBusy || ai.precall !== null || pending !== null}
       onClick={() => void onAct({ kind: "history_open" })}>Review history</button>
     {view.save_error && <div role="alert"><p>Progress was not saved: {view.save_error}</p><button className="btn btn-secondary" disabled={busy} onClick={() => void onAct({ kind: "retry_save" })}>Retry save</button>

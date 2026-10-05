@@ -1653,7 +1653,7 @@ pub(super) fn reanchor_file_comments(
 /// whose anchor could not be re-located after the diff changed carries a stale
 /// line number, so it is labelled by file alone — the reviewer (and the agent)
 /// are told the line is gone rather than pointed at the wrong one.
-pub(super) fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
+pub(crate) fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
     if comment.anchor_lost {
         return format!("{file} (anchor lost — possibly addressed)");
     }

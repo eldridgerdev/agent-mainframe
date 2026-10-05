@@ -324,8 +324,21 @@ real Rust IPC. Source and progress assertions confirm browsing writes neither.
 Reproduce with `scripts/dev/screenshot/scenarios/gui-review-history.txt`. Remaining
 interactions and macOS validation stay open.
 
-Finish-time batch application, finish checks and sending feedback
-remain in the TUI. Question-to-comment drafting has command/component coverage and eight asserted
+**Pre-finish summary** shows every file verdict, open kept thread and overall
+feedback, including files hidden by your filter. Browsing keeps unsaved drafts
+and writes no progress. **Apply pending suggestions** requires a separate
+confirmation before writing source files through the same batch engine as TUI
+finishing. Successful replacements settle their threads, refresh the diff and
+clear changed-file approvals; blocked jobs stay open with an explanation. The
+review stays open so you can inspect and review changed code again. Failed
+progress saves keep the source changes and require **Retry save** before another
+application; closing without saving does not undo those source writes.
+
+Finish checks, completing the review and sending feedback remain in the TUI.
+The summary and batch controls have automated command/component coverage; native
+desktop and macOS interaction validation remain open.
+
+Question-to-comment drafting has command/component coverage and eight asserted
 native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,
 confirmation/cancellation, inline and overall transfer, unsaved protection and
 pause/reopen persistence. The capture uses offline Codex and real Rust IPC;

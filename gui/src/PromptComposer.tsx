@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { Icon, Spinner } from "./ui";
 
 export default function PromptComposer({
@@ -16,6 +16,9 @@ export default function PromptComposer({
 }) {
   const canSend = ready && !sending && text.trim().length > 0;
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const shortcutsId = useId();
+  const isMac = navigator.platform.startsWith("Mac");
+  const sendModifier = isMac ? "Cmd" : "Ctrl";
 
   // Focus only on an explicit handoff. Switching tabs or returning to a
   // feature must leave focus where the user put it -- often the terminal.
@@ -40,6 +43,7 @@ export default function PromptComposer({
       <textarea
         ref={textarea}
         aria-label="Draft prompt"
+        aria-describedby={shortcutsId}
         placeholder="Write a message or paste a prompt…"
         value={text}
         readOnly={sending}
@@ -55,11 +59,16 @@ export default function PromptComposer({
         rows={4}
       />
       <div className="composer-foot">
-        <span className="muted small">
-          {ready ? <><kbd>Enter</kbd> for a new line · <kbd>Ctrl/Cmd</kbd> + <kbd>Enter</kbd> to send</>
-            : "Waiting for terminal connection…"}
-        </span>
-        <button className="btn btn-primary" disabled={!canSend} onClick={onSend}>
+        <div className="composer-help">
+          <div id={shortcutsId} className="composer-shortcuts small">
+            <span><kbd>{sendModifier}</kbd> + <kbd>Enter</kbd> to send</span>
+            <span><kbd>Enter</kbd> for a new line</span>
+          </div>
+          {!ready && <span className="muted small">Waiting for terminal connection…</span>}
+        </div>
+        <button className="btn btn-primary" disabled={!canSend} onClick={onSend}
+          aria-keyshortcuts={isMac ? "Meta+Enter" : "Control+Enter"}
+          title={`Send prompt (${sendModifier}+Enter)`}>
           {sending ? <Spinner /> : <Icon name="send" />}
           {sending ? "Sending…" : "Send prompt"}
         </button>

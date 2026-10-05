@@ -173,7 +173,7 @@ each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
-editing-agent handoff, plus standalone Git diffs. Continue to use `amf` for workflows
+editing-agent handoff, plus standalone Git diffs and saved prompt browsing. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -190,6 +190,22 @@ the feature page. Failed sends keep the draft for retry. **Clear** clears only
 the current session's draft. TODO, planning and Learning handoffs fill this same
 composer, appending to any existing draft. Click the terminal whenever you need
 to interact directly with the harness; shell and editor tabs use direct input.
+Stopped agent tabs also show their editable draft, with sending disabled until
+that session starts and its terminal connects.
+
+Open **Prompt library** in workspace navigation or an agent composer. The current project or feature determines the initial library scope;
+you can switch to another scope or just user/global templates. Search matches
+names and bodies, with `#tag` filtering. Source badges distinguish user, global,
+project and worktree copies. Select a template, fill its text/multiline fields
+and configured or inline choices, then review the resolved preview. **Add to
+draft** opens the chosen allowed agent session and appends to its unsent text;
+it does not start an agent or send a message. Templates and target permissions
+are rechecked on insertion. The list refreshes while you browse, and a
+selected template edited or deleted elsewhere is deselected with a notice so
+you never fill an outdated copy. The preview renders as you type. Cancel
+leaves existing composer drafts intact. Create/edit/delete/export templates and
+editable prompt overrides remain in the TUI. Native desktop interaction and
+macOS runtime validation for this library increment remain open.
 
 Use **New session** on a feature page to start another agent, terminal, or
 Neovim session. You can name it or use the next default name; the new tab opens

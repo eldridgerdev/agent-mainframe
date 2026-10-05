@@ -2,6 +2,7 @@ import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
+  LibraryScope,
   ReviewAction,
   ReviewView,
   reviewBegin,
@@ -65,6 +66,7 @@ import {
 } from "./api";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
+import PromptLibraryPanel from "./PromptLibraryPanel";
 import DiffPanel from "./DiffPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
@@ -161,6 +163,7 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
+  const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -401,6 +404,25 @@ export default function App() {
       }));
       setComposerFocusKey(key);
     }
+  }
+
+  function openPromptLibrary(target: SessionTarget | null = null) {
+    const scope: LibraryScope = target
+      ? { kind: "feature", project_id: target.project_id, feature_id: target.feature_id }
+      : selectedFeature && selectedProject
+        ? { kind: "feature", project_id: selectedProject.id, feature_id: selectedFeature.id }
+        : selectedProject ? { kind: "project", project_id: selectedProject.id } : { kind: "global" };
+    setPromptLibrary({ scope, target });
+  }
+
+  function insertLibraryPrompt(target: SessionTarget, text: string) {
+    const project = queryClient.getQueryData<WorkspaceSnapshot>(SNAPSHOT_KEY)?.projects.find((project) => project.id === target.project_id);
+    const feature = project?.features.find((feature) => feature.id === target.feature_id);
+    if (!feature?.sessions.some((session) => session.id === target.session_id)) {
+      throw { kind: "not_found", message: "That session was removed. Choose another agent session." };
+    }
+    openSession(target, text);
+    setPromptLibrary(null);
   }
 
   function changeDraft(target: SessionTarget, text: string) {
@@ -948,6 +970,10 @@ export default function App() {
             <span className="nav-label">Global TODOs</span>
           </button>
 
+          <button className="nav-item" onClick={() => openPromptLibrary()}>
+            <Icon name="file" /><span className="nav-label">Prompt library</span>
+          </button>
+
           <div className="nav-section">
             <span>Projects</span>
             <button
@@ -1127,6 +1153,7 @@ export default function App() {
               unfinished: null,
             })}
             {...lifecycle(selectedProject.id, selectedFeature)}
+            onPromptLibrary={openPromptLibrary}
             drafts={drafts}
             onDraftChange={changeDraft}
             sendingPrompts={sendingPrompts}
@@ -1404,6 +1431,11 @@ export default function App() {
         />
       )}
 
+      {promptLibrary && <PromptLibraryPanel
+        initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
+        onClose={() => setPromptLibrary(null)} onInsert={insertLibraryPrompt}
+      />}
+
       <Toasts toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
@@ -1591,6 +1623,7 @@ function FeatureView({
   onStart,
   onStop,
   drafts,
+  onPromptLibrary,
   onDraftChange,
   sendingPrompts,
   onSendDraft,
@@ -1621,6 +1654,7 @@ function FeatureView({
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
   drafts: Record<string, string>;
+  onPromptLibrary: (target: SessionTarget) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
@@ -1656,6 +1690,16 @@ function FeatureView({
   const isAgent = activeSession !== undefined &&
     ["claude", "codex", "opencode", "pi"].includes(activeSession.kind);
   const activeLifecycle = activeSession && sessionLifecycle(activeSession);
+  const composer = target && isAgent ? (
+    <PromptComposer key={`composer:${sessionKey(target)}`}
+      text={drafts[sessionKey(target)] ?? ""} sending={sendingPrompts[sessionKey(target)] ?? false}
+      ready={activeSessionRunning && !isStopped && connectedKey === sessionKey(target)}
+      connectionMessage={isStopped || !activeSessionRunning ? "Start this session to send your draft." : undefined}
+      focusRequested={composerFocusKey === sessionKey(target)} onFocusHandled={onComposerFocusHandled}
+      onChange={(text) => onDraftChange(target, text)} onClear={() => onDraftChange(target, "")}
+      onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
+      onLibrary={() => onPromptLibrary(target)} />
+  ) : null;
 
   return (
     <div className="page page-fill">
@@ -1820,22 +1864,13 @@ function FeatureView({
             Starting an agent session offers to resume its saved conversation when there is one.
           </EmptyState>
         )}
+        {target && isAgent && (isStopped || !activeSessionRunning) && (
+          <div className="stopped-composer">{composer}</div>
+        )}
         {target && !isStopped && (activeSessionRunning || !activeSession) && (
           <div className="session">
             <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
-            {isAgent && (
-              <PromptComposer
-                key={`composer:${sessionKey(target)}`}
-                text={drafts[sessionKey(target)] ?? ""}
-                sending={sendingPrompts[sessionKey(target)] ?? false}
-                ready={connectedKey === sessionKey(target)}
-                focusRequested={composerFocusKey === sessionKey(target)}
-                onFocusHandled={onComposerFocusHandled}
-                onChange={(text) => onDraftChange(target, text)}
-                onClear={() => onDraftChange(target, "")}
-                onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
-              />
-            )}
+            {composer}
           </div>
         )}
       </div>

@@ -27,6 +27,7 @@ use agent_mainframe::gui_contract::{
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
+use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
@@ -35,6 +36,30 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 struct AppState(Mutex<GuiHandle>);
+
+#[tauri::command]
+fn prompt_library_load(
+    state: State<AppState>,
+    scope: LibraryScope,
+    query: String,
+) -> Result<LibraryView, GuiError> {
+    gui_prompts::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &scope,
+        &query,
+    )
+}
+
+#[tauri::command]
+fn prompt_library_resolve(
+    state: State<AppState>,
+    request: ResolvePrompt,
+) -> Result<String, GuiError> {
+    gui_prompts::resolve(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
 
 #[tauri::command]
 async fn review_begin(
@@ -774,6 +799,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            prompt_library_load,
+            prompt_library_resolve,
             review_begin,
             review_snapshot,
             review_act,

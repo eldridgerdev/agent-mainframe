@@ -2,7 +2,8 @@ import { useEffect, useId, useRef } from "react";
 import { Icon, Spinner } from "./ui";
 
 export default function PromptComposer({
-  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend,
+  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary,
+  connectionMessage = "Waiting for terminal connection…",
 }: {
   text: string;
   sending: boolean;
@@ -13,6 +14,8 @@ export default function PromptComposer({
   onChange: (text: string) => void;
   onClear: () => void;
   onSend: () => void;
+  onLibrary: () => void;
+  connectionMessage?: string;
 }) {
   const canSend = ready && !sending && text.trim().length > 0;
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -36,6 +39,7 @@ export default function PromptComposer({
         <strong>Compose prompt</strong>
         <span className="muted small">Draft here, then send to the agent.</span>
         <span className="tabs-spacer" />
+        <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="file" />Prompt library</button>
         <button className="btn btn-sm btn-ghost" disabled={sending || !text} onClick={onClear}>
           Clear
         </button>
@@ -64,7 +68,7 @@ export default function PromptComposer({
             <span><kbd>{sendModifier}</kbd> + <kbd>Enter</kbd> to send</span>
             <span><kbd>Enter</kbd> for a new line</span>
           </div>
-          {!ready && <span className="muted small">Waiting for terminal connection…</span>}
+          {!ready && <span className="muted small">{connectionMessage}</span>}
         </div>
         <button className="btn btn-primary" disabled={!canSend} onClick={onSend}
           aria-keyshortcuts={isMac ? "Meta+Enter" : "Control+Enter"}

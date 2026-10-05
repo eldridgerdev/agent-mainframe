@@ -35,6 +35,16 @@ pane/sidebar infrastructure, logging and configuration access. Features remain
 configuration, session and TODO/plan state, with compatibility re-exports of the
 three extracted features' types. Cross-feature mode transitions remain on App.
 
+The desktop prompt-library adapter in `src/gui_prompts.rs` reads the same
+source merge as Remote Control and the TUI, and calls the shared search,
+placeholder/default and substitution helpers in `src/prompt_library.rs`.
+Content keys exclude generated config IDs/dates and include checkout paths;
+insertion reloads templates and allowed session targets before returning an
+unsent string. `PromptLibraryPanel.tsx` owns only local selection/fill state,
+while `App.tsx` appends the handoff to the session draft after a final workspace
+cache check. Neither browsing nor preparation launches a process or writes the
+library. Library authoring and prompt overrides remain separate workflows.
+
 ## Feature modules
 
 | Feature | Files under `src/app/` | Responsibility |

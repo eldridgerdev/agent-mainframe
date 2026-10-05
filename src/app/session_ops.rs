@@ -81,7 +81,7 @@ impl SessionStop {
     }
 }
 
-fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
+pub(crate) fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
     match kind {
         SessionKind::Claude => Some(AgentKind::Claude),
         SessionKind::Opencode => Some(AgentKind::Opencode),

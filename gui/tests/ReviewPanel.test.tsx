@@ -8,7 +8,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
-  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null,
+  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null, summary: null,
   ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
@@ -31,6 +31,105 @@ const history: NonNullable<ReviewView["history"]> = {
   rounds: [{ title: "Review — yesterday", carried_unresolved: 2 }],
   markdown: "## Current Review\n\nLocal feedback",
 };
+
+const summary: NonNullable<ReviewView["summary"]> = {
+  undecided: 1, pending_suggestions: 2, failures: [],
+  rows: [
+    { path: "code.rs", title: "code.rs — needs work", text: "Needs work", severity: "blocker", suggestion: null, apply_blocked: null },
+    { path: "code.rs", title: "code.rs:1", text: "Kept thread", severity: "nit", suggestion: "suggested code", apply_blocked: "lost anchor" },
+    { path: "image.bin", title: "image.bin — no verdict", text: "", severity: null, suggestion: null, apply_blocked: null },
+    { path: null, title: "Overall feedback", text: "Overall saved", severity: null, suggestion: null, apply_blocked: null },
+  ],
+};
+
+it("opens the complete pre-finish summary without discarding a draft or its file filter", async () => {
+  const { onAct, update } = mount();
+  fireEvent.change(screen.getByRole("textbox", { name: "Filter review files" }), { target: { value: "code.rs" } });
+  fireEvent.click(screen.getByRole("button", { name: "Edit file comment" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "File comment" }), { target: { value: "Unsent multiline\ndraft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Pre-finish summary" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "summary_open" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  update({ view: { ...view, summary } });
+  expect(screen.getByRole("heading", { name: "image.bin — no verdict" })).toBeTruthy();
+  expect(screen.getByText(/1 file\(s\) have no verdict/)).toBeTruthy();
+  expect(screen.getByText("suggested code")).toBeTruthy();
+  expect(screen.getByText(/Cannot apply locally: lost anchor/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Return to review" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "summary_close" }));
+  update({ view });
+  expect((screen.getByRole("textbox", { name: "File comment" }) as HTMLTextAreaElement).value).toBe("Unsent multiline\ndraft");
+  expect((screen.getByRole("textbox", { name: "Filter review files" }) as HTMLInputElement).value).toBe("code.rs");
+});
+
+it("retains a question draft through the summary and closes it with Escape without pausing", async () => {
+  const { onAct, update } = mount();
+  fireEvent.click(screen.getByRole("button", { name: "Ask about file" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Review question" }), { target: { value: "Question draft" } });
+  update({ view: { ...view, summary } });
+  fireEvent.keyDown(window, { key: "Escape" });
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "summary_close" }));
+  update({ view });
+  expect((screen.getByRole("textbox", { name: "Review question" }) as HTMLTextAreaElement).value).toBe("Question draft");
+  expect(onAct).not.toHaveBeenCalledWith({ kind: "pause" });
+});
+
+it("requires explicit batch confirmation and cancelling starts no action", () => {
+  const { onAct } = mount({ ...view, summary });
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
+  expect(screen.getByRole("alertdialog", { name: "Apply pending suggestions locally" }).textContent).toContain("writes source files");
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel batch application" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("sends exactly one batch action, retains failed confirmation for retry and reflects partial results", async () => {
+  let resolve!: (value: boolean) => void;
+  const onAct = vi.fn(() => new Promise<boolean>((done) => { resolve = done; }));
+  const { update } = mount({ ...view, summary }, onAct);
+  fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
+  expect(onAct).toHaveBeenCalledTimes(1);
+  expect(onAct).toHaveBeenCalledWith({ kind: "apply_finish_suggestions" });
+  resolve(false);
+  await waitFor(() => expect((screen.getByRole("button", { name: "Apply batch locally" }) as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
+  resolve(true);
+  update({ view: { ...view, revision: 5, applied_suggestions: ["code.rs:1"], summary: { ...summary, pending_suggestions: 1, failures: ["other.rs:9: overlapping replacements"] } } });
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(screen.getByText("other.rs:9: overlapping replacements")).toBeTruthy();
+  expect(screen.getByText("1 open suggestion(s) · 1 applied locally")).toBeTruthy();
+});
+
+it("blocks batch writes during AI work or save errors and retains the summary for save retry", async () => {
+  const { onAct, update } = mount({ ...view, summary, ai: { ...view.ai, running: true } });
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view: { ...view, summary, save_error: "disk full" } });
+  expect(screen.getByRole("alert").textContent).toContain("disk full");
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+  await waitFor(() => expect(onAct).toHaveBeenLastCalledWith({ kind: "retry_save" }));
+  update({ view: { ...view, summary } });
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(false);
+  update({ view: { ...view, summary: { ...summary, pending_suggestions: 0 } } });
+  expect((screen.getByRole("button", { name: "Apply pending suggestions" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("requires a fresh confirmation when the review revision changes and prevents busy submissions", () => {
+  const { onAct, update } = mount({ ...view, summary });
+  fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
+  update({ view: { ...view, revision: 5, summary } });
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Apply pending suggestions" }));
+  update({ view: { ...view, revision: 5, summary }, busy: true });
+  fireEvent.click(screen.getByRole("button", { name: "Apply batch locally" }));
+  expect(onAct).not.toHaveBeenCalled();
+});
 
 it("browses completed rounds and explicitly loads the archive without editing", async () => {
   const { onAct, update } = mount({ ...view, history });

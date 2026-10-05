@@ -227,6 +227,47 @@ pub struct LineComment {
     pub carried: bool,
 }
 
+/// A suggestion the finish-time batch tried and could not apply. Stored beside
+/// the review rather than on the comment, so it is identified by the comment's
+/// content (`path`, `text`, `suggestion`) instead of an index or line: those
+/// shift when the batch's own successful writes refresh the diff. Persisted
+/// with review progress so the reason outlives a pause and reaches the round
+/// a later finish writes for the fixing agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuggestionApplyFailure {
+    pub path: String,
+    /// The comment's anchor label when the batch ran.
+    pub anchor: String,
+    pub text: String,
+    pub suggestion: String,
+    pub reason: String,
+}
+
+impl SuggestionApplyFailure {
+    pub(crate) fn new(path: &str, comment: &LineComment, reason: impl Into<String>) -> Self {
+        Self {
+            path: path.to_string(),
+            anchor: crate::app::review::comment_anchor_label(path, comment),
+            text: comment.text.clone(),
+            suggestion: comment.suggestion.clone().unwrap_or_default(),
+            reason: reason.into(),
+        }
+    }
+
+    /// `anchor: reason`, as reported when the batch ran.
+    pub fn message(&self) -> String {
+        format!("{}: {}", self.anchor, self.reason)
+    }
+
+    /// Whether `comment` is the still-open suggestion this failure was
+    /// reported for.
+    fn describes(&self, comment: &LineComment) -> bool {
+        comment.is_open_thread()
+            && comment.text == self.text
+            && comment.suggestion.as_deref() == Some(self.suggestion.as_str())
+    }
+}
+
 impl LineComment {
     /// Whether this comment spans more than one line.
     pub fn is_range(&self) -> bool {
@@ -591,9 +632,11 @@ pub struct DiffViewerState {
     /// review (either individually or by the finish-time batch). Carried until
     /// finish so the summary can say exactly what AMF changed locally.
     pub applied_suggestions: Vec<String>,
-    /// Finish-time application failures (`anchor: reason`). The affected
-    /// suggestions remain open and are sent to the fixing agent normally.
-    pub suggestion_apply_failures: Vec<String>,
+    /// Finish-time application failures. The affected suggestions remain open
+    /// and are sent to the fixing agent normally. Read through
+    /// `open_suggestion_apply_failures`, which drops an entry whose suggestion
+    /// has since been applied, resolved, edited, or deleted.
+    pub suggestion_apply_failures: Vec<SuggestionApplyFailure>,
     /// Severity being composed in the line-comment or rejection editor. Seeded
     /// when the editor opens (from an existing comment/rejection, else a sensible
     /// default) and cycled with Ctrl+E; read on submit. Transient — not
@@ -1101,6 +1144,44 @@ impl DiffViewerState {
             .flatten()
             .filter(|comment| comment.is_open_thread() && comment.suggestion.is_some())
             .count()
+    }
+
+    /// The recorded batch failures whose suggestion is still open, each with
+    /// the comment it describes. A failure stops describing anything once its
+    /// suggestion is applied individually, resolved, edited, or deleted, and
+    /// must not outlive it.
+    fn live_suggestion_failures(
+        &self,
+    ) -> impl Iterator<Item = (&SuggestionApplyFailure, &LineComment)> {
+        self.suggestion_apply_failures.iter().filter_map(|failure| {
+            let comment = self
+                .line_comments
+                .get(&failure.path)?
+                .iter()
+                .find(|comment| failure.describes(comment))?;
+            Some((failure, comment))
+        })
+    }
+
+    /// The still-relevant batch failures, as they should be saved.
+    pub(crate) fn live_suggestion_apply_failures(&self) -> Vec<SuggestionApplyFailure> {
+        self.live_suggestion_failures()
+            .map(|(failure, _)| failure.clone())
+            .collect()
+    }
+
+    /// The still-relevant batch failures as `anchor: reason`, with the anchor
+    /// re-read from the comment as it stands now.
+    pub fn open_suggestion_apply_failures(&self) -> Vec<String> {
+        self.live_suggestion_failures()
+            .map(|(failure, comment)| {
+                format!(
+                    "{}: {}",
+                    crate::app::review::comment_anchor_label(&failure.path, comment),
+                    failure.reason
+                )
+            })
+            .collect()
     }
 
     /// True when no line comment was authored in *this* session — every stored

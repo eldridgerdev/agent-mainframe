@@ -132,7 +132,11 @@ fn local_suggestion_refuses_a_file_changed_since_diff_load() {
     let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, comment)]);
 
     assert!(report.applied.is_empty());
-    assert!(report.failures[0].contains("changed since the diff was loaded"));
+    assert!(
+        report.failures[0]
+            .reason
+            .contains("changed since the diff was loaded")
+    );
     assert_eq!(
         std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
         live
@@ -162,7 +166,7 @@ fn local_suggestion_refuses_deletion_side_anchor() {
     let report = apply_suggestions_to_file(workdir.path(), &file, &[(0, comment)]);
 
     assert!(report.applied.is_empty());
-    assert!(report.failures[0].contains("deletion-only line"));
+    assert!(report.failures[0].reason.contains("deletion-only line"));
     assert_eq!(
         std::fs::read_to_string(workdir.path().join("src/example.rs")).unwrap(),
         "one\n"

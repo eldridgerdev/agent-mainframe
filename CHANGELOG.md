@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Prepare desktop Final Review for finishing.** Open **Pre-finish summary**
+  to see every verdict and open thread. Confirm **Apply pending suggestions**
+  to write the batch locally; successful replacements settle their threads,
+  blocked suggestions stay open with explanations, and changed files need
+  review again. Browsing keeps unsaved drafts. Finish checks and feedback handoff
+  still use the TUI. No migration is required.
 - **Use the prompt library in the desktop GUI.** Open **Prompt library** from
   navigation or an agent composer. Search by name, body or tag; browse user,
   global, project and worktree templates; fill text and
@@ -49,7 +55,7 @@ are tagged.
   refresh the diff. Changed files require review again, and application history
   survives pause/reopen. Stale files and failed writes keep the suggestion;
   failed progress saves offer **Retry save**. Closing without saving does not
-  undo source changes already applied. Finishing and batch application still
+  undo source changes already applied. Finishing and feedback handoff still
   use the TUI.
 - **Comment on lines and suggest code in desktop Final Review.** Click a line
   number, or Shift-click to select a range, then write a comment with severity

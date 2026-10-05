@@ -1,3 +1,4 @@
+use crate::app::review::state::SuggestionApplyFailure;
 use crate::app::{
     App, AppMode, CommentAnchorContext, DiffViewerState, FileComment, LineComment,
     PendingEditorOpen, ReviewDecision, Severity,
@@ -8,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, Default)]
 pub(super) struct SuggestionApplyReport {
     pub(super) applied: Vec<String>,
-    pub(super) failures: Vec<String>,
+    pub(super) failures: Vec<SuggestionApplyFailure>,
 }
 
 #[derive(Debug)]
@@ -23,7 +24,7 @@ pub(super) struct PlannedSuggestion {
 #[derive(Debug, Default)]
 pub(super) struct FileSuggestionApplyReport {
     pub(super) applied: Vec<(usize, String)>,
-    pub(super) failures: Vec<String>,
+    pub(super) failures: Vec<SuggestionApplyFailure>,
 }
 
 pub(super) fn local_suggestion_summary(applied: &[String], failures: &[String]) -> String {
@@ -437,8 +438,8 @@ impl App {
         if report.applied.is_empty() {
             Err(report
                 .failures
-                .into_iter()
-                .next()
+                .first()
+                .map(SuggestionApplyFailure::message)
                 .unwrap_or_else(|| "the suggestion is no longer applicable".into()))
         } else {
             Ok(report.applied.join(", "))
@@ -1487,9 +1488,11 @@ pub(super) fn apply_suggestions_to_file(
 ) -> FileSuggestionApplyReport {
     let mut report = FileSuggestionApplyReport::default();
     let fail_all = |reason: String, report: &mut FileSuggestionApplyReport| {
-        report.failures.extend(comments.iter().map(|(_, comment)| {
-            format!("{}: {reason}", comment_anchor_label(&file.path, comment))
-        }));
+        report.failures.extend(
+            comments
+                .iter()
+                .map(|(_, comment)| SuggestionApplyFailure::new(&file.path, comment, &reason)),
+        );
     };
 
     let Some(reviewed_content) = file.new_content.as_deref() else {
@@ -1521,37 +1524,39 @@ pub(super) fn apply_suggestions_to_file(
     let mut plans = Vec::new();
     for (index, comment) in comments {
         match plan_local_suggestion(file, *index, comment) {
-            Ok(plan) => plans.push(plan),
-            Err(reason) => report.failures.push(format!(
-                "{}: {reason}",
-                comment_anchor_label(&file.path, comment)
-            )),
+            Ok(plan) => plans.push((plan, comment)),
+            Err(reason) => report
+                .failures
+                .push(SuggestionApplyFailure::new(&file.path, comment, reason)),
         }
     }
-    plans.sort_by_key(|plan| (plan.start_line, plan.end_line));
-    let mut accepted: Vec<PlannedSuggestion> = Vec::new();
-    for plan in plans {
-        if let Some(previous) = accepted.last()
+    plans.sort_by_key(|(plan, _)| (plan.start_line, plan.end_line));
+    let mut accepted: Vec<(PlannedSuggestion, &LineComment)> = Vec::new();
+    for (plan, comment) in plans {
+        if let Some((previous, _)) = accepted.last()
             && plan.start_line <= previous.end_line
         {
-            report.failures.push(format!(
-                "{}: suggestion overlaps another local suggestion",
-                plan.anchor
+            report.failures.push(SuggestionApplyFailure::new(
+                &file.path,
+                comment,
+                "suggestion overlaps another local suggestion",
             ));
         } else {
-            accepted.push(plan);
+            accepted.push((plan, comment));
         }
     }
 
     let mut updated = live_content;
-    for plan in accepted.iter().rev() {
+    for (plan, comment) in accepted.iter().rev() {
         if let Err(reason) = replace_content_line_span(
             &mut updated,
             plan.start_line,
             plan.end_line,
             &plan.replacement,
         ) {
-            report.failures.push(format!("{}: {reason}", plan.anchor));
+            report
+                .failures
+                .push(SuggestionApplyFailure::new(&file.path, comment, reason));
             return report;
         }
     }
@@ -1559,16 +1564,14 @@ pub(super) fn apply_suggestions_to_file(
         return report;
     }
     if let Err(err) = std::fs::write(&path, updated) {
-        report.failures.extend(
-            accepted
-                .iter()
-                .map(|plan| format!("{}: could not write file: {err}", plan.anchor)),
-        );
+        report.failures.extend(accepted.iter().map(|(_, comment)| {
+            SuggestionApplyFailure::new(&file.path, comment, format!("could not write file: {err}"))
+        }));
         return report;
     }
     report.applied = accepted
         .into_iter()
-        .map(|plan| (plan.comment_index, plan.anchor))
+        .map(|(plan, _)| (plan.comment_index, plan.anchor))
         .collect();
     report
 }
@@ -1653,7 +1656,7 @@ pub(super) fn reanchor_file_comments(
 /// whose anchor could not be re-located after the diff changed carries a stale
 /// line number, so it is labelled by file alone — the reviewer (and the agent)
 /// are told the line is gone rather than pointed at the wrong one.
-pub(super) fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
+pub(crate) fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
     if comment.anchor_lost {
         return format!("{file} (anchor lost — possibly addressed)");
     }

@@ -189,7 +189,7 @@ pub(super) fn fresh(s: &DiffViewerState) -> GuiResult<()> {
         })
     {
         return Err(GuiError::conflict(
-            "Review changes changed; refresh changes before running AI",
+            "Review changes changed; refresh changes before continuing",
         ));
     }
     Ok(())

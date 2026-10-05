@@ -1,5 +1,6 @@
 use super::comments::reanchor_file_comments;
 use super::headless::CheckOutcome;
+use super::state::SuggestionApplyFailure;
 use crate::app::{
     App, AppMode, CommentAnchorContext, DiffViewerState, FileComment, FileFilter, LineComment,
     ReviewDecision, ReviewHistoryRound,
@@ -60,6 +61,12 @@ pub(super) struct ReviewProgress {
     pub(super) apply_suggestions_on_finish: bool,
     #[serde(default)]
     pub(super) applied_suggestions: Vec<String>,
+    /// Why the finish-time batch left suggestions unapplied. Saved so a review
+    /// prepared in one interface and finished after a pause (or in the other
+    /// interface) still tells the fixing agent what local application tried.
+    /// Only entries whose suggestion is still open are kept.
+    #[serde(default)]
+    pub(super) suggestion_apply_failures: Vec<SuggestionApplyFailure>,
     #[serde(default)]
     pub(super) selected_file: usize,
     /// file path -> fingerprint of the patch each approval was given against,
@@ -81,6 +88,7 @@ impl ReviewProgress {
             general_feedback: state.general_feedback.clone(),
             apply_suggestions_on_finish: state.apply_suggestions_on_finish,
             applied_suggestions: state.applied_suggestions.clone(),
+            suggestion_apply_failures: state.live_suggestion_apply_failures(),
             selected_file: state.selected_file,
             approved_fingerprints: state
                 .files
@@ -503,6 +511,7 @@ impl App {
             || !state.general_feedback.is_empty()
             || state.apply_suggestions_on_finish
             || !state.applied_suggestions.is_empty()
+            || !state.suggestion_apply_failures.is_empty()
         {
             return;
         }
@@ -585,6 +594,7 @@ impl App {
         state.general_feedback = progress.general_feedback;
         state.apply_suggestions_on_finish = progress.apply_suggestions_on_finish;
         state.applied_suggestions = progress.applied_suggestions;
+        state.suggestion_apply_failures = progress.suggestion_apply_failures;
         if !state.files.is_empty() {
             state.selected_file = progress.selected_file.min(state.files.len() - 1);
         }

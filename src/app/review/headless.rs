@@ -535,13 +535,10 @@ impl App {
         Ok(())
     }
 
-    /// Finish the review. If the project has a `final_review_check_command`
-    /// configured (a build/test gate), spawn it in the background and return
-    /// immediately — `poll_final_review_check` picks up the result once the
-    /// process exits and actually completes the review. Otherwise (the
-    /// default: no command configured) completes immediately, unchanged from
-    /// before this gate existed.
-    pub fn finish_final_review(&mut self) -> Result<()> {
+    /// Shared source-write step of finishing. The GUI can explicitly prepare
+    /// the batch while keeping the review open to inspect the changed code.
+    /// Consumes the opt-in before writing, including when some jobs fail.
+    pub(crate) fn prepare_final_review_suggestions(&mut self) {
         let apply_on_finish = matches!(&self.mode, AppMode::DiffViewer(state) if state.review && state.apply_suggestions_on_finish);
         if apply_on_finish {
             if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -556,6 +553,16 @@ impl App {
             }
             self.persist_review_progress();
         }
+    }
+
+    /// Finish the review. If the project has a `final_review_check_command`
+    /// configured (a build/test gate), spawn it in the background and return
+    /// immediately — `poll_final_review_check` picks up the result once the
+    /// process exits and actually completes the review. Otherwise (the
+    /// default: no command configured) completes immediately, unchanged from
+    /// before this gate existed.
+    pub fn finish_final_review(&mut self) -> Result<()> {
+        self.prepare_final_review_suggestions();
 
         let spawn_info = match &self.mode {
             AppMode::DiffViewer(state)
@@ -713,20 +720,25 @@ impl App {
             applied_suggestions,
             suggestion_apply_failures,
         ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
-            AppMode::DiffViewer(state) => (
-                state.workdir,
-                state.files,
-                state.decisions,
-                state.line_comments,
-                state.file_comments,
-                state.general_feedback,
-                state.from_view,
-                state.fix_target,
-                state.fix_target_feature_id,
-                state.review_harness,
-                state.applied_suggestions,
-                state.suggestion_apply_failures,
-            ),
+            AppMode::DiffViewer(state) => {
+                // Only failures whose suggestion is still open describe work
+                // the fixing agent is being handed.
+                let suggestion_apply_failures = state.open_suggestion_apply_failures();
+                (
+                    state.workdir,
+                    state.files,
+                    state.decisions,
+                    state.line_comments,
+                    state.file_comments,
+                    state.general_feedback,
+                    state.from_view,
+                    state.fix_target,
+                    state.fix_target_feature_id,
+                    state.review_harness,
+                    state.applied_suggestions,
+                    suggestion_apply_failures,
+                )
+            }
             AppMode::DiffViewerLoading(state) => {
                 // Diff not loaded yet; nothing to summarize.
                 self.mode = AppMode::Viewing(state.from_view);

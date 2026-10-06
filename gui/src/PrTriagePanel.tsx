@@ -51,8 +51,8 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     return () => { live = false; };
   }, [target.project_id, target.feature_id]);
 
-  // Background work (a comment fetch or an investigation) reports through polls.
-  const waiting = view?.stage === "loading" || view?.review?.investigating != null;
+  // Background work (a comment fetch, a list read or an investigation) reports through polls.
+  const waiting = view?.stage === "loading" || !!view?.picker?.loading || view?.review?.investigating != null;
   useEffect(() => {
     if (!view || !waiting || busy) return;
     const workflowId = view.workflow_id;
@@ -96,6 +96,12 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
   const review = view?.review ?? null;
   const comments = review?.comments ?? [];
   const selected = comments.find((c) => c.id === selectedId) ?? comments[0] ?? null;
+
+  // An investigation draft belongs to one comment. Moving off an empty one
+  // drops it; a typed one stays, announced on every other comment.
+  useEffect(() => {
+    setInvestigate((current) => current && current.commentId !== selected?.id && !current.text.trim() ? null : current);
+  }, [selected?.id]);
   const replyDirty = reply !== null && reply.text !== reply.seed;
   const dirty = replyDirty || !!investigate?.text.trim();
   const locked = busy || !!view?.precall || !!view?.write_confirm || review?.investigating != null;
@@ -104,13 +110,19 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     else if (view) void act({ kind: "close" }); else onClose();
   };
 
-  async function startInvestigation() {
+  // The draft outlives the preview: it is cleared only once the call starts,
+  // so a refused or failed confirmation never costs the user their text.
+  function previewInvestigation() {
     if (!investigate) return;
     const text = investigate.text.trim();
-    if (await act({
+    void act({
       kind: "investigate", comment_id: investigate.commentId, harness: investigate.harness,
       note: investigate.followUp ? null : text || null, follow_up: investigate.followUp ? text : null,
-    })) setInvestigate(null);
+    });
+  }
+
+  async function confirmInvestigation() {
+    if (await act({ kind: "precall_confirm" })) setInvestigate(null);
   }
 
   return (
@@ -146,7 +158,8 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
           </form>
         </div>
         {view.picker.error && <div className="callout callout-warning" role="alert"><p>Could not list pull requests: {view.picker.error}</p></div>}
-        {view.picker.entries.length === 0 && !view.picker.error && <p className="muted">No {view.picker.include_closed ? "" : "open "}pull requests. Open one by number instead.</p>}
+        {view.picker.loading && <p className="row"><Spinner /> Loading pull requests…</p>}
+        {view.picker.entries.length === 0 && !view.picker.error && !view.picker.loading && <p className="muted">No {view.picker.include_closed ? "" : "open "}pull requests. Open one by number instead.</p>}
         <ul className="pr-list">
           {view.picker.entries.map((entry) => <li key={entry.number}>
             <button className="pr-entry" disabled={busy} onClick={() => void act({ kind: "open", number: entry.number })}
@@ -194,7 +207,7 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
           <p>Headless AI call: {view.precall.title} · {view.precall.harness}. It reads the checkout without changing it and may use paid harness credits.</p>
           {view.precall.viewing && <pre className="doc doc-mono">{view.precall.preview}</pre>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_toggle_view" })}>{view.precall.viewing ? "Hide prompt" : "View prompt"}</button>
-          <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "precall_confirm" })}>Continue AI call</button>
+          <button className="btn btn-primary" disabled={busy} onClick={() => void confirmInvestigation()}>Continue AI call</button>
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "precall_cancel" })}>Cancel AI call</button>
         </section>}
 
@@ -261,6 +274,12 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
                 onClick={() => void act({ kind: "request_resolve", comment_id: selected.id })}>{selected.resolved ? "Reopen thread…" : "Resolve thread…"}</button>}
             </div>}
             {!selected.actionable && <p className="small muted">AMF follow-up replies are shown for context only.</p>}
+            {investigate && investigate.commentId !== selected.id && <p className="small muted">
+              An investigation request for another comment is open.{" "}
+              {comments.some((c) => c.id === investigate.commentId) &&
+                <><button className="link-button" onClick={() => setSelectedId(investigate.commentId)}>Go to it</button>{" · "}</>}
+              <button className="link-button" disabled={busy} onClick={() => setInvestigate(null)}>Discard it</button>
+            </p>}
             {view?.reply && view.reply.comment_id !== selected.id && <p className="small muted">
               A reply to another comment is open.{" "}
               <button className="link-button" onClick={() => setSelectedId(view.reply!.comment_id)}>Go to the reply</button>
@@ -268,17 +287,17 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
 
             {investigate && investigate.commentId === selected.id && <section className="review-editor" aria-label="Investigation request" ref={reveal}>
               <Field label="Investigating harness">
-                <select value={investigate.harness} disabled={busy} onChange={(e) => setInvestigate({ ...investigate, harness: e.target.value as AgentSlug })}>
+                <select value={investigate.harness} disabled={busy || !!view?.precall} onChange={(e) => setInvestigate({ ...investigate, harness: e.target.value as AgentSlug })}>
                   {view!.harnesses.map((h) => <option key={h} value={h}>{h}</option>)}
                 </select>
               </Field>
               <Field label={investigate.followUp ? "Follow-up question" : "What do you suspect? (optional)"}>
-                <textarea rows={3} value={investigate.text} maxLength={1000}
+                <textarea rows={3} value={investigate.text} maxLength={1000} disabled={!!view?.precall}
                   onChange={(e) => setInvestigate({ ...investigate, text: e.target.value })} />
               </Field>
               <button className="btn btn-primary" disabled={locked || (investigate.followUp && !investigate.text.trim())}
-                onClick={() => void startInvestigation()}>Preview AI call</button>
-              <button className="btn btn-ghost" disabled={busy} onClick={() => setInvestigate(null)}>Cancel</button>
+                onClick={previewInvestigation}>Preview AI call</button>
+              <button className="btn btn-ghost" disabled={busy || !!view?.precall} onClick={() => setInvestigate(null)}>Cancel</button>
             </section>}
 
             {view?.reply && view.reply.comment_id === selected.id && reply && <section className="review-editor" aria-label="Reply draft" ref={reveal}>

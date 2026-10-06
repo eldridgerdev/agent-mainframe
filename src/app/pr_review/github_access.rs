@@ -122,6 +122,9 @@ pub(crate) mod fake {
         pub(crate) threads: Vec<(String, bool, Vec<u64>)>,
         pub(crate) fail_writes: bool,
         pub(crate) fail_fetch: Option<String>,
+        /// Fail every read except the comment fetch, as a hung or offline
+        /// `gh` would.
+        pub(crate) fail_reads: bool,
         /// Every write, in order, as `kind: detail`.
         pub(crate) writes: Vec<String>,
         pub(crate) fetches: usize,
@@ -146,6 +149,14 @@ pub(crate) mod fake {
             }
         }
 
+        fn read(&self) -> Result<std::sync::MutexGuard<'_, FakeState>> {
+            let state = self.state();
+            if state.fail_reads {
+                bail!("fixture GitHub is unreachable");
+            }
+            Ok(state)
+        }
+
         fn write(&self, entry: String) -> Result<()> {
             let mut state = self.state();
             if state.fail_writes {
@@ -158,12 +169,13 @@ pub(crate) mod fake {
 
     impl TriageGithub for FakeGithub {
         fn current_user(&self, _: &Path) -> Result<String> {
+            drop(self.read()?);
             Ok("reviewer".into())
         }
 
         fn list_prs(&self, _: &Path, include_closed: bool) -> Result<Vec<PrListEntry>> {
             Ok(self
-                .state()
+                .read()?
                 .prs
                 .iter()
                 .filter(|p| include_closed || p.state == "OPEN")
@@ -172,7 +184,7 @@ pub(crate) mod fake {
         }
 
         fn resolve_pr(&self, _: &Path) -> Result<PrResolution> {
-            let number = self.state().branch_pr;
+            let number = self.read()?.branch_pr;
             Ok(match number {
                 Some(n) => PrResolution::Found(self.pr_ref(n)),
                 None => PrResolution::NoPrForBranch,
@@ -180,6 +192,7 @@ pub(crate) mod fake {
         }
 
         fn fetch_pr_by_number(&self, _: &Path, number: u32) -> Result<PrRef> {
+            drop(self.read()?);
             Ok(self.pr_ref(number))
         }
 
@@ -205,12 +218,12 @@ pub(crate) mod fake {
         }
 
         fn pr_meta(&self, _: &Path, _: u32) -> Result<PrMeta> {
-            Ok(self.state().meta.clone())
+            Ok(self.read()?.meta.clone())
         }
 
         fn review_threads(&self, _: &Path, _: &PrRef) -> Result<Vec<ReviewThread>> {
             Ok(self
-                .state()
+                .read()?
                 .threads
                 .iter()
                 .map(|(id, resolved, ids)| ReviewThread {

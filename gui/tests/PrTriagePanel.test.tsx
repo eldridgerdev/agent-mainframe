@@ -13,7 +13,7 @@ const base: PrTriageView = {
   workflow_id: "triage", revision: 1, target, feature_name: "Round totals", branch: "round-totals",
   stage: "pick", loading_pr: null, review: null, precall: null, reply: null, write_confirm: null,
   harnesses: ["claude", "codex"], default_harness: "claude", error: null, notice: null,
-  picker: { include_closed: false, error: null, branch_pr: 12, entries: [
+  picker: { include_closed: false, error: null, branch_pr: 12, loading: false, entries: [
     { number: 12, title: "Round invoice totals", author: "dev", head_ref: "round-totals", updated_at: "", is_draft: false, state: "OPEN", mine: true },
     { number: 9, title: "Currency formatting", author: "aria", head_ref: "currency", updated_at: "", is_draft: true, state: "OPEN", mine: false },
   ] },
@@ -77,6 +77,60 @@ it("opens a pull request typed by number and shows list errors inline", async ()
   fireEvent.change(screen.getByRole("textbox", { name: "PR number" }), { target: { value: "65x4" } });
   fireEvent.click(screen.getByRole("button", { name: "Open by number" }));
   await waitFor(() => expect(actions()[0]?.action).toEqual({ kind: "open", number: 654 }));
+});
+
+it("polls a pull request list that is still being read", async () => {
+  const reading = { ...base, picker: { ...base.picker!, entries: [], error: null, loading: true } };
+  let snapshots = 0;
+  backend(reading, () => base, () => ++snapshots < 2 ? reading : base);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  expect(await screen.findByText(/Loading pull requests/)).toBeTruthy();
+  expect(screen.queryByText(/No open pull requests/)).toBeNull();
+  expect(await screen.findByRole("button", { name: /Open PR #12/ }, { timeout: 3000 })).toBeTruthy();
+});
+
+it("keeps an investigation draft with its comment and says so elsewhere", async () => {
+  backend(review, () => review);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Investigate…" }));
+  // An untouched draft is dropped when the selection moves.
+  fireEvent.click(screen.getByRole("button", { name: /bot/ }));
+  expect((screen.getByRole("button", { name: "Investigate…" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByText(/investigation request for another comment/)).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: /aria/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Investigate…" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "What do you suspect? (optional)" }), { target: { value: "Rounds the wrong way" } });
+  fireEvent.click(screen.getByRole("button", { name: /bot/ }));
+  expect(screen.getByText(/investigation request for another comment is open/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Investigate…" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Go to it" }));
+  expect((screen.getByRole("textbox", { name: "What do you suspect? (optional)" }) as HTMLTextAreaElement).value).toBe("Rounds the wrong way");
+  fireEvent.click(screen.getByRole("button", { name: /bot/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard it" }));
+  expect(screen.queryByText(/investigation request for another comment/)).toBeNull();
+  expect((screen.getByRole("button", { name: "Investigate…" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("keeps the investigation text when continuing the AI call is refused", async () => {
+  const precall = { ...review, revision: 4, precall: { title: "PR Triage: read-only investigation", harness: "Claude", preview: "Investigate.", viewing: false } };
+  let state: PrTriageView = review;
+  backend(review, (action) => {
+    if (action.kind === "investigate") return state = precall;
+    if (action.kind === "precall_confirm") throw { kind: "conflict", message: "Couldn't load PR #12: rate limited" };
+    return state;
+  }, () => state);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Investigate…" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "What do you suspect? (optional)" }), { target: { value: "Negative totals round up" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview AI call" }));
+  await screen.findByRole("alertdialog", { name: "Investigation AI call" });
+  const draft = screen.getByRole("textbox", { name: "What do you suspect? (optional)" }) as HTMLTextAreaElement;
+  expect(draft.disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Continue AI call" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("rate limited");
+  expect(screen.getByRole("alertdialog", { name: "Investigation AI call" })).toBeTruthy();
+  expect((screen.getByRole("textbox", { name: "What do you suspect? (optional)" }) as HTMLTextAreaElement).value).toBe("Negative totals round up");
 });
 
 it("investigates only after the pre-call notice is continued, once", async () => {

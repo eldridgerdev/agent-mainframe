@@ -6,10 +6,19 @@
 //! writes and headless calls are two-step: a request records exactly what
 //! would be sent, and only an explicit confirmation of that pending step —
 //! rechecked against GitHub and the open review — performs it.
-use std::path::PathBuf;
+//!
+//! Each step's `gh` reads run without the GUI lock: [`plan_begin`],
+//! [`plan_poll`] and [`plan_act`] name them under the lock,
+//! [`PrTriageReads::run`] performs them without it, and the matching
+//! `*_prefetched` call applies the results under the lock again. GitHub
+//! writes stay under the lock, after their rechecks, so nothing can change
+//! between the last check and the write.
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::pr_review::github_access::TriageGithub;
 use crate::app::pr_review::{
     CommentKind, INVESTIGATION_CONTEXT_MAX_LEN, PrComment, PrFetchFailure, PrInvestigationStatus,
     PrSortMode, ReplyKind, ReplyTarget, investigation_prompt_from_meta, strip_bot_boilerplate,
@@ -17,7 +26,7 @@ use crate::app::pr_review::{
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
 use crate::editor::TextEditor;
-use crate::github::PrResolution;
+use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
 use crate::gui_plans::PrecallView;
 use crate::project::AgentKind;
@@ -32,10 +41,164 @@ pub(crate) struct PrTriageContext {
     workdir: PathBuf,
     branch_pr: Option<u32>,
     current_user: Option<String>,
+    /// The pull request list's last filter, kept so returning to the list
+    /// (back, or after a failed comment fetch) shows the same pull requests.
+    include_closed: bool,
+    /// The list is open but not read yet; the next poll reads it.
+    list_pending: bool,
     error: Option<String>,
     notice: Option<String>,
     investigation: Option<PendingInvestigation>,
     write: Option<PendingWrite>,
+}
+
+/// The GitHub reads one step needs, named under the GUI lock and performed by
+/// [`Self::run`] without it.
+pub struct PrTriageReads {
+    github: Option<Arc<dyn TriageGithub>>,
+    workdir: PathBuf,
+    plan: ReadPlan,
+}
+
+#[derive(Default)]
+struct ReadPlan {
+    branch_pr: bool,
+    current_user: bool,
+    list: Option<bool>,
+    pr: Option<u32>,
+    meta: Option<u32>,
+    threads: Option<PrRef>,
+}
+
+impl PrTriageReads {
+    fn none() -> Self {
+        Self {
+            github: None,
+            workdir: PathBuf::new(),
+            plan: ReadPlan::default(),
+        }
+    }
+
+    fn new(app: &App, workdir: PathBuf, plan: ReadPlan) -> Self {
+        Self {
+            github: Some(app.pr_review_work.github()),
+            workdir,
+            plan,
+        }
+    }
+
+    /// Perform the planned reads. Blocking: call it without the GUI lock.
+    pub fn run(self) -> PrTriagePrefetch {
+        let Some(github) = self.github else {
+            return PrTriagePrefetch::default();
+        };
+        let (workdir, plan) = (&self.workdir, self.plan);
+        PrTriagePrefetch {
+            github: None,
+            branch_pr: plan.branch_pr.then(|| github.resolve_pr(workdir)),
+            current_user: plan.current_user.then(|| github.current_user(workdir)),
+            list: plan.list.map(|c| (c, github.list_prs(workdir, c))),
+            pr: plan.pr.map(|n| (n, github.fetch_pr_by_number(workdir, n))),
+            meta: plan.meta.map(|n| (n, github.pr_meta(workdir, n))),
+            threads: plan
+                .threads
+                .map(|pr| (pr.number, github.review_threads(workdir, &pr))),
+            workdir: Some(self.workdir),
+        }
+    }
+}
+
+/// The results of [`PrTriageReads::run`]. A step takes each result it
+/// planned; anything it reads that was not prefetched (or was read for
+/// another checkout or pull request) is read live, so a plan that misses a
+/// read costs a blocking call, never a stale answer.
+#[derive(Default)]
+pub struct PrTriagePrefetch {
+    github: Option<Arc<dyn TriageGithub>>,
+    workdir: Option<PathBuf>,
+    branch_pr: Option<anyhow::Result<PrResolution>>,
+    current_user: Option<anyhow::Result<String>>,
+    list: Option<(bool, anyhow::Result<Vec<PrListEntry>>)>,
+    pr: Option<(u32, anyhow::Result<PrRef>)>,
+    meta: Option<(u32, anyhow::Result<PrMeta>)>,
+    threads: Option<(u32, anyhow::Result<Vec<ReviewThread>>)>,
+}
+
+fn take_for<K: PartialEq, T>(slot: &mut Option<(K, T)>, key: K) -> Option<T> {
+    slot.take().filter(|(k, _)| *k == key).map(|(_, v)| v)
+}
+
+impl PrTriagePrefetch {
+    /// Attach the App's GitHub for live reads; every `*_prefetched` entry
+    /// point calls this first.
+    fn attach(&mut self, gui: &mut GuiHandle) {
+        self.github = Some(gui.app_for_workflow().pr_review_work.github());
+    }
+
+    fn live(&self) -> &dyn TriageGithub {
+        self.github
+            .as_deref()
+            .expect("prefetch attached to the App")
+    }
+
+    fn fresh(&self, workdir: &Path) -> bool {
+        self.workdir.as_deref() == Some(workdir)
+    }
+
+    fn resolve_pr(&mut self, workdir: &Path) -> anyhow::Result<PrResolution> {
+        match self.branch_pr.take().filter(|_| self.fresh(workdir)) {
+            Some(result) => result,
+            None => self.live().resolve_pr(workdir),
+        }
+    }
+
+    fn current_user(&mut self, workdir: &Path) -> anyhow::Result<String> {
+        match self.current_user.take().filter(|_| self.fresh(workdir)) {
+            Some(result) => result,
+            None => self.live().current_user(workdir),
+        }
+    }
+
+    /// The prefetched list only: `None` when it was not read.
+    fn prefetched_list(
+        &mut self,
+        workdir: &Path,
+        include_closed: bool,
+    ) -> Option<anyhow::Result<Vec<PrListEntry>>> {
+        take_for(&mut self.list, include_closed).filter(|_| self.fresh(workdir))
+    }
+
+    fn list_prs(
+        &mut self,
+        workdir: &Path,
+        include_closed: bool,
+    ) -> anyhow::Result<Vec<PrListEntry>> {
+        match self.prefetched_list(workdir, include_closed) {
+            Some(result) => result,
+            None => self.live().list_prs(workdir, include_closed),
+        }
+    }
+
+    fn fetch_pr_by_number(&mut self, workdir: &Path, number: u32) -> anyhow::Result<PrRef> {
+        match take_for(&mut self.pr, number).filter(|_| self.fresh(workdir)) {
+            Some(result) => result,
+            None => self.live().fetch_pr_by_number(workdir, number),
+        }
+    }
+
+    fn pr_meta(&mut self, workdir: &Path, number: u32) -> anyhow::Result<PrMeta> {
+        match take_for(&mut self.meta, number).filter(|_| self.fresh(workdir)) {
+            Some(result) => result,
+            None => self.live().pr_meta(workdir, number),
+        }
+    }
+
+    fn review_threads(&mut self, workdir: &Path, pr: &PrRef) -> anyhow::Result<Vec<ReviewThread>> {
+        match take_for(&mut self.threads, pr.number).filter(|_| self.fresh(workdir)) {
+            Some(result) => result,
+            None => self.live().review_threads(workdir, pr),
+        }
+    }
 }
 
 /// An investigation waiting for its pre-call confirmation. `prompt` is the
@@ -84,6 +247,8 @@ pub struct PrPickerView {
     pub include_closed: bool,
     pub error: Option<String>,
     pub branch_pr: Option<u32>,
+    /// The list is still being read; poll for it.
+    pub loading: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,7 +502,14 @@ fn take_feedback(app: &mut App, toasts_before: usize) -> (Option<String>, Option
     (error, notice)
 }
 
-fn open_picker(gui: &mut GuiHandle, include_closed: bool, error: Option<String>) -> GuiResult<()> {
+/// Show the pull request list. `entries` is `None` when the list is still to
+/// be read: the next poll reads it without the GUI lock.
+fn open_picker(
+    gui: &mut GuiHandle,
+    include_closed: bool,
+    entries: Option<anyhow::Result<Vec<PrListEntry>>>,
+    error: Option<String>,
+) -> GuiResult<()> {
     let context = gui
         .pr_triage_context
         .as_ref()
@@ -347,15 +519,16 @@ fn open_picker(gui: &mut GuiHandle, include_closed: bool, error: Option<String>)
         context.branch_pr,
         context.current_user.clone(),
     );
-    let app = gui.app_for_workflow();
-    let github = app.pr_review_work.github();
-    let (entries, list_error) = match github.list_prs(&workdir, include_closed) {
-        Ok(entries) => (entries, None),
-        Err(e) => (Vec::new(), Some(e.to_string())),
+    let list_pending = entries.is_none();
+    let (entries, list_error) = match entries {
+        Some(Ok(entries)) => (entries, None),
+        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        None => (Vec::new(), None),
     };
     let selected = branch_pr
         .and_then(|n| entries.iter().position(|e| e.number == n))
         .unwrap_or(0);
+    let app = gui.app_for_workflow();
     app.pr_review_work.cancel_fetch();
     app.mode = AppMode::PrPicker(PrPickerState {
         workdir,
@@ -368,17 +541,26 @@ fn open_picker(gui: &mut GuiHandle, include_closed: bool, error: Option<String>)
     });
     if let Some(context) = gui.pr_triage_context.as_mut() {
         context.error = error;
+        context.include_closed = include_closed;
+        context.list_pending = list_pending;
     }
     Ok(())
 }
 
-pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<PrTriageView> {
+enum Opening {
+    /// This feature's triage is already open.
+    Existing,
+    /// A new triage for the feature checked out here.
+    New(PathBuf),
+}
+
+fn opening(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Opening> {
     gui.refresh_snapshot()?;
     let open_target = gui.pr_triage_context.as_ref().map(|c| c.target.clone());
     if let Some(open) = open_target {
         if is_triage_mode(&gui.app_for_workflow().mode) {
             if open.project_id == target.project_id && open.feature_id == target.feature_id {
-                return snapshot(gui);
+                return Ok(Opening::Existing);
             }
             return Err(GuiError::conflict(
                 "Close PR Triage before opening another feature",
@@ -399,14 +581,51 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<PrTriageVi
     if !app.store.projects[pi].is_git {
         return Err(GuiError::conflict("PR Triage requires a Git repository"));
     }
-    let workdir = app.store.projects[pi].features[fi].workdir.clone();
-    let github = app.pr_review_work.github();
-    let (branch_pr, resolve_error) = match github.resolve_pr(&workdir) {
+    Ok(Opening::New(
+        app.store.projects[pi].features[fi].workdir.clone(),
+    ))
+}
+
+/// Open PR Triage for `target`, reading GitHub in place. The Tauri command
+/// uses [`plan_begin`] and [`begin_prefetched`] to read without the lock.
+pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<PrTriageView> {
+    let reads = plan_begin(gui, &target)?;
+    begin_prefetched(gui, target, reads.run())
+}
+
+pub fn plan_begin(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<PrTriageReads> {
+    Ok(match opening(gui, target)? {
+        Opening::Existing => poll_reads(gui),
+        Opening::New(workdir) => PrTriageReads::new(
+            gui.app_for_workflow(),
+            workdir,
+            ReadPlan {
+                branch_pr: true,
+                current_user: true,
+                list: Some(false),
+                ..ReadPlan::default()
+            },
+        ),
+    })
+}
+
+pub fn begin_prefetched(
+    gui: &mut GuiHandle,
+    target: FeatureTarget,
+    mut reads: PrTriagePrefetch,
+) -> GuiResult<PrTriageView> {
+    reads.attach(gui);
+    let workdir = match opening(gui, &target)? {
+        Opening::Existing => return snapshot(gui, &mut reads),
+        Opening::New(workdir) => workdir,
+    };
+    let (branch_pr, resolve_error) = match reads.resolve_pr(&workdir) {
         Ok(PrResolution::Found(pr)) => (Some(pr.number), None),
         Ok(PrResolution::NoPrForBranch) => (None, None),
         Err(e) => (None, Some(e.to_string())),
     };
-    let current_user = github.current_user(&workdir).ok();
+    let current_user = reads.current_user(&workdir).ok();
+    let entries = reads.list_prs(&workdir, false);
     gui.pr_triage_context = Some(PrTriageContext {
         id: uuid::Uuid::new_v4().to_string(),
         target,
@@ -414,17 +633,24 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<PrTriageVi
         workdir,
         branch_pr,
         current_user,
+        include_closed: false,
+        list_pending: false,
         error: None,
         notice: None,
         investigation: None,
         write: None,
     });
-    open_picker(gui, false, resolve_error)?;
-    snapshot(gui)
+    open_picker(gui, false, Some(entries), resolve_error)?;
+    snapshot(gui, &mut reads)
 }
 
 /// Apply finished background work, then describe the current state.
 pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrTriageView> {
+    let reads = plan_poll(gui, workflow_id)?;
+    poll_prefetched(gui, workflow_id, reads.run())
+}
+
+fn check_workflow(gui: &GuiHandle, workflow_id: &str) -> GuiResult<()> {
     if !gui
         .pr_triage_context
         .as_ref()
@@ -432,7 +658,45 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrTriageView> {
     {
         return Err(GuiError::conflict("PR Triage is no longer open"));
     }
-    snapshot(gui)
+    Ok(())
+}
+
+pub fn plan_poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrTriageReads> {
+    check_workflow(gui, workflow_id)?;
+    Ok(poll_reads(gui))
+}
+
+/// A poll reads only a pull request list that is open but not read yet.
+fn poll_reads(gui: &mut GuiHandle) -> PrTriageReads {
+    let Some(context) = gui.pr_triage_context.as_ref() else {
+        return PrTriageReads::none();
+    };
+    let (workdir, include_closed) = (context.workdir.clone(), context.include_closed);
+    if !context.list_pending {
+        return PrTriageReads::none();
+    }
+    let app = gui.app_for_workflow();
+    if !matches!(app.mode, AppMode::PrPicker(_)) {
+        return PrTriageReads::none();
+    }
+    PrTriageReads::new(
+        app,
+        workdir,
+        ReadPlan {
+            list: Some(include_closed),
+            ..ReadPlan::default()
+        },
+    )
+}
+
+pub fn poll_prefetched(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+    mut reads: PrTriagePrefetch,
+) -> GuiResult<PrTriageView> {
+    check_workflow(gui, workflow_id)?;
+    reads.attach(gui);
+    snapshot(gui, &mut reads)
 }
 
 fn check_target(gui: &mut GuiHandle) -> GuiResult<()> {
@@ -467,11 +731,26 @@ fn check_target(gui: &mut GuiHandle) -> GuiResult<()> {
     Ok(())
 }
 
-fn snapshot(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
+fn snapshot(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<PrTriageView> {
     check_target(gui)?;
+    let context = gui.pr_triage_context.as_ref().unwrap();
+    let (workdir, include_closed, list_pending) = (
+        context.workdir.clone(),
+        context.include_closed,
+        context.list_pending,
+    );
+    let mut changed = false;
+    if list_pending {
+        if !matches!(gui.app_for_workflow().mode, AppMode::PrPicker(_)) {
+            gui.pr_triage_context.as_mut().unwrap().list_pending = false;
+        } else if let Some(entries) = reads.prefetched_list(&workdir, include_closed) {
+            let error = gui.pr_triage_context.as_mut().unwrap().error.take();
+            open_picker(gui, include_closed, Some(entries), error)?;
+            changed = true;
+        }
+    }
     let app = gui.app_for_workflow();
     let toasts = app.toasts.len();
-    let mut changed = false;
     let mut fetch_failure = None;
     if matches!(app.mode, AppMode::PrReviewLoading(_)) {
         match app.poll_pr_review_fetch() {
@@ -498,7 +777,9 @@ fn snapshot(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
     }
     let (error, notice) = take_feedback(app, toasts);
     if let Some(message) = fetch_failure {
-        open_picker(gui, false, Some(message))?;
+        // Back to the list the user opened it from; it is read on the next
+        // poll rather than here, under the lock.
+        open_picker(gui, include_closed, None, Some(message))?;
         changed = true;
     }
     let context = gui.pr_triage_context.as_mut().unwrap();
@@ -523,6 +804,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         context.workdir.clone(),
     );
     let branch_pr = context.branch_pr;
+    let list_pending = context.list_pending;
     let current_user = context.current_user.clone();
     let error = context.error.clone();
     let notice = context.notice.clone();
@@ -586,6 +868,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
             include_closed: state.include_closed,
             error: state.error.clone(),
             branch_pr,
+            loading: list_pending,
         }),
         _ => None,
     };
@@ -718,7 +1001,11 @@ fn review_view(state: &PrReviewState, investigating: Option<(u64, AgentKind)>) -
         branch_mismatch: state.branch_mismatch().map(str::to_string),
         fetched_at: state.review.fetched_at.format("%Y-%m-%d %H:%M").to_string(),
         open_count: state.review.open_count(),
-        total: all.len(),
+        // Collated AMF replies render under their root, not as rows.
+        total: all
+            .iter()
+            .filter(|c| !state.review.is_collated_amf_reply(c))
+            .count(),
         hide_resolved: state.hide_resolved,
         sort: sort_key(state.sort_mode),
         hidden_resolved: state.hidden_resolved_count(),
@@ -744,12 +1031,25 @@ fn close(gui: &mut GuiHandle) {
     gui.pr_triage_context = None;
 }
 
+/// Apply one action, reading GitHub in place. The Tauri command uses
+/// [`plan_act`] and [`act_prefetched`] to read without the lock.
 pub fn act(
     gui: &mut GuiHandle,
     workflow_id: &str,
     revision: u64,
     action: PrTriageAction,
 ) -> GuiResult<Option<PrTriageView>> {
+    let reads = plan_act(gui, workflow_id, revision, &action)?;
+    act_prefetched(gui, workflow_id, revision, action, reads.run())
+}
+
+/// Refuse an action for a stale view or one a pending step blocks.
+fn gate<'a>(
+    gui: &'a GuiHandle,
+    workflow_id: &str,
+    revision: u64,
+    action: &PrTriageAction,
+) -> GuiResult<&'a PrTriageContext> {
     use PrTriageAction as A;
     let context = gui
         .pr_triage_context
@@ -771,12 +1071,78 @@ pub fn act(
             "Confirm or cancel the pending GitHub write first",
         ));
     }
+    Ok(context)
+}
+
+/// Name the GitHub reads `action` will make. Only a guess at what it needs:
+/// [`act_prefetched`] re-checks everything and reads live what was missed.
+pub fn plan_act(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+    revision: u64,
+    action: &PrTriageAction,
+) -> GuiResult<PrTriageReads> {
+    use PrTriageAction as A;
+    let context = gate(gui, workflow_id, revision, action)?;
+    let (workdir, include_closed) = (context.workdir.clone(), context.include_closed);
+    let resolving = matches!(context.write, Some(PendingWrite::Resolve { .. }));
+    let replying = matches!(context.write, Some(PendingWrite::Reply { .. }));
+    let app = gui.app_for_workflow();
+    let pr = review_state(&app.mode).map(|s| s.review.pr.clone());
+    let number = pr.as_ref().map(|pr| pr.number);
+    let plan = match action {
+        A::ToggleClosed => match &app.mode {
+            AppMode::PrPicker(state) => ReadPlan {
+                list: Some(!state.include_closed),
+                ..ReadPlan::default()
+            },
+            _ => ReadPlan::default(),
+        },
+        A::BackToList => ReadPlan {
+            list: Some(include_closed),
+            ..ReadPlan::default()
+        },
+        A::Open { number } => ReadPlan {
+            pr: Some(*number),
+            ..ReadPlan::default()
+        },
+        A::Refresh => ReadPlan {
+            pr: number,
+            ..ReadPlan::default()
+        },
+        A::Investigate { .. } | A::PrecallConfirm => ReadPlan {
+            meta: number,
+            ..ReadPlan::default()
+        },
+        A::ConfirmWrite if replying => ReadPlan {
+            pr: number,
+            ..ReadPlan::default()
+        },
+        A::ConfirmWrite if resolving => ReadPlan {
+            threads: pr,
+            ..ReadPlan::default()
+        },
+        _ => return Ok(PrTriageReads::none()),
+    };
+    Ok(PrTriageReads::new(app, workdir, plan))
+}
+
+pub fn act_prefetched(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+    revision: u64,
+    action: PrTriageAction,
+    mut reads: PrTriagePrefetch,
+) -> GuiResult<Option<PrTriageView>> {
+    use PrTriageAction as A;
+    gate(gui, workflow_id, revision, &action)?;
+    reads.attach(gui);
     if matches!(action, A::Close) {
         close(gui);
         return Ok(None);
     }
     check_target(gui)?;
-    let result = apply(gui, action);
+    let result = apply(gui, action, &mut reads);
     let Some(context) = gui.pr_triage_context.as_mut() else {
         return result.map(|_| None);
     };
@@ -785,12 +1151,17 @@ pub fn act(
         context.error = None;
     }
     result?;
-    snapshot(gui).map(Some)
+    snapshot(gui, &mut reads).map(Some)
 }
 
-fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
+fn apply(
+    gui: &mut GuiHandle,
+    action: PrTriageAction,
+    reads: &mut PrTriagePrefetch,
+) -> GuiResult<()> {
     use PrTriageAction as A;
-    let workdir = gui.pr_triage_context.as_ref().unwrap().workdir.clone();
+    let context = gui.pr_triage_context.as_ref().unwrap();
+    let (workdir, include_closed) = (context.workdir.clone(), context.include_closed);
     {
         let context = gui.pr_triage_context.as_mut().unwrap();
         context.notice = None;
@@ -802,16 +1173,15 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
                 return Err(GuiError::conflict("The pull request list is not open"));
             };
             let include = !state.include_closed;
-            open_picker(gui, include, None)
+            let entries = reads.list_prs(&workdir, include);
+            open_picker(gui, include, Some(entries), None)
         }
         A::Open { number } => {
             let app = gui.app_for_workflow();
             if !matches!(app.mode, AppMode::PrPicker(_)) {
                 return Err(GuiError::conflict("The pull request list is not open"));
             }
-            let pr = app
-                .pr_review_work
-                .github()
+            let pr = reads
                 .fetch_pr_by_number(&workdir, number)
                 .map_err(GuiError::from)?;
             app.enter_pr_review(workdir, pr);
@@ -831,7 +1201,8 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
                     "Wait for or cancel the running investigation first",
                 ));
             }
-            open_picker(gui, false, None)
+            let entries = reads.list_prs(&workdir, include_closed);
+            open_picker(gui, include_closed, Some(entries), None)
         }
         A::Refresh => {
             let app = gui.app_for_workflow();
@@ -842,9 +1213,7 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
                 ));
             }
             let number = state.review.pr.number;
-            let pr = app
-                .pr_review_work
-                .github()
+            let pr = reads
                 .fetch_pr_by_number(&workdir, number)
                 .map_err(GuiError::from)?;
             app.start_pr_review_fetch(workdir, pr);
@@ -892,7 +1261,7 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
             harness,
             note,
             follow_up,
-        } => request_investigation(gui, comment_id, harness, note, follow_up),
+        } => request_investigation(gui, reads, comment_id, harness, note, follow_up),
         A::PrecallToggleView => {
             let pending = gui
                 .pr_triage_context
@@ -913,7 +1282,7 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
             context.notice = Some("Headless AI call cancelled".into());
             Ok(())
         }
-        A::PrecallConfirm => confirm_investigation(gui),
+        A::PrecallConfirm => confirm_investigation(gui, reads),
         A::CancelInvestigation => {
             let app = gui.app_for_workflow();
             if !matches!(app.mode, AppMode::PrInvestigationLoading(_)) {
@@ -1003,7 +1372,7 @@ fn apply(gui: &mut GuiHandle, action: PrTriageAction) -> GuiResult<()> {
                 .ok_or_else(|| GuiError::conflict("No GitHub write is waiting"))?;
             Ok(())
         }
-        A::ConfirmWrite => confirm_write(gui),
+        A::ConfirmWrite => confirm_write(gui, reads),
     }
 }
 
@@ -1020,6 +1389,7 @@ fn set_feedback(gui: &mut GuiHandle, toasts: usize) {
 
 fn request_investigation(
     gui: &mut GuiHandle,
+    reads: &mut PrTriagePrefetch,
     comment_id: u64,
     harness: AgentKind,
     note: Option<String>,
@@ -1059,6 +1429,7 @@ fn request_investigation(
     }
     let prompt = build_prompt(
         app,
+        reads,
         &workdir,
         &comment,
         follow_up.as_deref(),
@@ -1080,7 +1451,8 @@ fn request_investigation(
 /// Build the prompt the run will send, from a fresh read of the PR.
 fn build_prompt(
     app: &mut App,
-    workdir: &std::path::Path,
+    reads: &mut PrTriagePrefetch,
+    workdir: &Path,
     comment: &PrComment,
     follow_up: Option<&str>,
     note: Option<&str>,
@@ -1107,9 +1479,7 @@ fn build_prompt(
             ))
         }
     };
-    let meta = app
-        .pr_review_work
-        .github()
+    let meta = reads
         .pr_meta(workdir, number)
         .map_err(|e| GuiError::from(e.context(format!("Couldn't load PR #{number}"))))?;
     Ok(investigation_prompt_from_meta(
@@ -1123,7 +1493,7 @@ fn build_prompt(
     ))
 }
 
-fn confirm_investigation(gui: &mut GuiHandle) -> GuiResult<()> {
+fn confirm_investigation(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<()> {
     let workdir = gui.pr_triage_context.as_ref().unwrap().workdir.clone();
     let pending = gui
         .pr_triage_context
@@ -1134,6 +1504,7 @@ fn confirm_investigation(gui: &mut GuiHandle) -> GuiResult<()> {
         .ok_or_else(|| GuiError::conflict("No AI call is waiting"))?;
     let app = gui.app_for_workflow();
     if app.pr_review_work.investigation_pending() {
+        gui.pr_triage_context.as_mut().unwrap().investigation = Some(pending);
         return Err(GuiError::conflict("An investigation is already running"));
     }
     let comment = select(app, pending.comment_id)?;
@@ -1144,13 +1515,21 @@ fn confirm_investigation(gui: &mut GuiHandle) -> GuiResult<()> {
     }
     // The PR's description or file list may have changed on GitHub since the
     // preview. Never send a prompt the operator has not seen.
-    let prompt = build_prompt(
+    let prompt = match build_prompt(
         app,
+        reads,
         &workdir,
         &comment,
         pending.follow_up.as_deref(),
         pending.note.as_deref(),
-    )?;
+    ) {
+        Ok(prompt) => prompt,
+        Err(e) => {
+            // A failed re-read changes nothing: keep the notice to retry.
+            gui.pr_triage_context.as_mut().unwrap().investigation = Some(pending);
+            return Err(e);
+        }
+    };
     if prompt != pending.prompt {
         gui.pr_triage_context.as_mut().unwrap().investigation = Some(PendingInvestigation {
             prompt,
@@ -1222,7 +1601,7 @@ fn start_reply(gui: &mut GuiHandle, comment_id: u64, reply: &str) -> GuiResult<(
     Ok(())
 }
 
-fn confirm_write(gui: &mut GuiHandle) -> GuiResult<()> {
+fn confirm_write(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<()> {
     let workdir = gui.pr_triage_context.as_ref().unwrap().workdir.clone();
     let write = gui
         .pr_triage_context
@@ -1232,7 +1611,6 @@ fn confirm_write(gui: &mut GuiHandle) -> GuiResult<()> {
         .take()
         .ok_or_else(|| GuiError::conflict("No GitHub write is waiting"))?;
     let app = gui.app_for_workflow();
-    let github = app.pr_review_work.github();
     match write {
         PendingWrite::Reply {
             comment_id,
@@ -1258,7 +1636,7 @@ fn confirm_write(gui: &mut GuiHandle) -> GuiResult<()> {
                     "The pull request was refreshed after you confirmed; nothing was posted",
                 ));
             }
-            let current = github
+            let current = reads
                 .fetch_pr_by_number(&workdir, pr.number)
                 .map_err(GuiError::from)?;
             if current.head_sha != pr.head_sha {
@@ -1300,7 +1678,7 @@ fn confirm_write(gui: &mut GuiHandle) -> GuiResult<()> {
         } => {
             select(app, comment_id)?;
             let pr = review_mut(app)?.review.pr.clone();
-            let threads = github
+            let threads = reads
                 .review_threads(&workdir, &pr)
                 .map_err(GuiError::from)?;
             let Some(current) = threads.iter().find(|t| t.id == thread_id) else {
@@ -1476,10 +1854,11 @@ mod tests {
         super::act(gui, &view.workflow_id, view.revision, action)
     }
 
-    /// Poll until no fetch or investigation is in flight.
+    /// Poll until no fetch, list read or investigation is in flight.
     fn settle(gui: &mut GuiHandle, mut view: PrTriageView) -> PrTriageView {
         let until = Instant::now() + Duration::from_secs(10);
         while view.stage == "loading"
+            || view.picker.as_ref().is_some_and(|p| p.loading)
             || view
                 .review
                 .as_ref()
@@ -1536,6 +1915,7 @@ mod tests {
             review.open_count, 2,
             "resolved threads and AMF replies are not open work"
         );
+        assert_eq!(review.total, 3, "collated AMF replies are not rows");
         // The AMF follow-up reply is collated under its root, not a row.
         assert_eq!(
             review.comments.iter().map(|c| c.id).collect::<Vec<_>>(),
@@ -1602,10 +1982,130 @@ mod tests {
             .pr_review_work
             .set_github_for_test(std::sync::Arc::new(fake.clone()));
         let picked = begin(&mut gui, target).unwrap();
-        let loading = act(&mut gui, &picked, PrTriageAction::Open { number: 7 });
-        let view = settle(&mut gui, loading);
-        assert_eq!(view.stage, "pick");
+        let all = act(&mut gui, &picked, PrTriageAction::ToggleClosed);
+        let loading = act(&mut gui, &all, PrTriageAction::Open { number: 5 });
+        // The failure is reported at once; the list is read by a later poll,
+        // never inside the poll that saw the failure.
+        let mut failed = loading;
+        while failed.stage == "loading" {
+            std::thread::sleep(Duration::from_millis(10));
+            failed = poll(&mut gui, &failed.workflow_id).unwrap();
+        }
+        assert_eq!(failed.stage, "pick");
+        assert!(failed.picker.as_ref().unwrap().loading);
+        let view = settle(&mut gui, failed);
         assert!(view.error.as_deref().unwrap().contains("rate limited"));
+        // Back on the list it was opened from, closed and merged included.
+        let picker = view.picker.as_ref().unwrap();
+        assert!(picker.include_closed);
+        assert!(picker.entries.iter().any(|e| e.number == 5));
+
+        fake.state().fail_fetch = None;
+        let loading = act(&mut gui, &view, PrTriageAction::Open { number: 7 });
+        let opened = settle(&mut gui, loading);
+        let listed = act(&mut gui, &opened, PrTriageAction::BackToList);
+        let picker = listed.picker.as_ref().unwrap();
+        assert!(picker.include_closed && picker.entries.len() == 2);
+    }
+
+    #[test]
+    fn each_step_uses_the_reads_made_before_it_took_the_lock() {
+        let (_dir, mut gui, target) = fixture();
+        let fake = github();
+        let app = gui.app_for_workflow();
+        app.store.available_harnesses = vec![AgentKind::Claude];
+        app.pr_review_work
+            .set_github_for_test(std::sync::Arc::new(fake.clone()));
+        app.pr_review_work.set_investigation_runner_for_test(runner);
+        // Every step reads first, then GitHub goes away: whatever it applies
+        // under the lock must come from those reads, not a fresh `gh` call.
+        let reads = plan_begin(&mut gui, &target).unwrap().run();
+        fake.state().fail_reads = true;
+        let picked = begin_prefetched(&mut gui, target, reads).unwrap();
+        let picker = picked.picker.as_ref().unwrap();
+        assert_eq!(picker.branch_pr, Some(7));
+        assert!(picker.error.is_none() && picker.entries[0].mine);
+
+        let step = |gui: &mut GuiHandle, view: &PrTriageView, action: PrTriageAction| {
+            fake.state().fail_reads = false;
+            let reads = plan_act(gui, &view.workflow_id, view.revision, &action)
+                .unwrap()
+                .run();
+            fake.state().fail_reads = true;
+            super::act_prefetched(gui, &view.workflow_id, view.revision, action, reads)
+                .unwrap()
+                .unwrap()
+        };
+        let all = step(&mut gui, &picked, PrTriageAction::ToggleClosed);
+        assert_eq!(all.picker.as_ref().unwrap().entries.len(), 2);
+        let loading = step(&mut gui, &all, PrTriageAction::Open { number: 7 });
+        let view = settle(&mut gui, loading);
+        let investigate = PrTriageAction::Investigate {
+            comment_id: 101,
+            harness: AgentKind::Claude,
+            note: None,
+            follow_up: None,
+        };
+        let pending = step(&mut gui, &view, investigate);
+        assert!(pending.precall.is_some());
+        let running = step(&mut gui, &pending, PrTriageAction::PrecallConfirm);
+        let done = settle(&mut gui, running);
+        assert_eq!(
+            comment_view(&done, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .status,
+            "complete"
+        );
+        let resolve = step(
+            &mut gui,
+            &done,
+            PrTriageAction::RequestResolve { comment_id: 101 },
+        );
+        let resolved = step(&mut gui, &resolve, PrTriageAction::ConfirmWrite);
+        assert!(comment_view(&resolved, 101).resolved);
+        assert_eq!(fake.state().writes, ["resolve THREAD_A: true"]);
+    }
+
+    #[test]
+    fn a_failed_reread_keeps_the_precall_notice() {
+        let (_dir, mut gui, fake, view) = opened();
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::Investigate {
+                comment_id: 101,
+                harness: AgentKind::Claude,
+                note: Some("I suspect the empty case".into()),
+                follow_up: None,
+            },
+        );
+        fake.state().fail_reads = true;
+        let refused = try_act(&mut gui, &pending, PrTriageAction::PrecallConfirm).unwrap_err();
+        assert!(
+            refused.message.contains("Couldn't load PR #7"),
+            "{}",
+            refused.message
+        );
+        let kept = poll(&mut gui, &pending.workflow_id).unwrap();
+        assert_eq!(
+            kept.precall.as_ref().map(|p| &p.preview),
+            pending.precall.as_ref().map(|p| &p.preview)
+        );
+        assert!(comment_view(&kept, 101).investigation.is_none());
+
+        fake.state().fail_reads = false;
+        let running = act(&mut gui, &kept, PrTriageAction::PrecallConfirm);
+        let done = settle(&mut gui, running);
+        assert_eq!(
+            comment_view(&done, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .status,
+            "complete"
+        );
     }
 
     #[test]

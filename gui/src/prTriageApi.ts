@@ -20,6 +20,8 @@ export interface PrPicker {
   include_closed: boolean;
   error: string | null;
   branch_pr: number | null;
+  /** The list is still being read; keep polling. */
+  loading: boolean;
 }
 
 export interface PrThreadReply { id: number; author: string; body: string; via_amf: boolean }

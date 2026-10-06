@@ -66,7 +66,12 @@ summary preserves unsaved editors and never saves progress.
 `PrReviewLoading`, `PrReview`, `PrInvestigationLoading`) by stable workflow id
 and revision. Reads and writes go through `pr_review/github_access.rs`'s
 `TriageGithub` boundary, which production backs with the unchanged `gh` calls
-and tests replace with an offline fixture. Investigations and GitHub writes are
+and tests replace with an offline fixture. Each step's `gh` reads run without
+the GUI handle lock: `plan_begin`/`plan_poll`/`plan_act` name them under the
+lock, `PrTriageReads::run` performs them on a blocking thread, and the
+`*_prefetched` call applies the results (reading live only what the plan
+missed). A pull request list that must be re-read after a failed comment fetch
+is left `loading` for the next poll. Investigations and GitHub writes are
 two-step: the adapter records the exact prompt or posted body, and confirmation
 re-reads the PR (head, metadata or thread) before calling the shared engine.
 `try_pr_review_post_reply`/`try_pr_review_toggle_resolve` return failures instead

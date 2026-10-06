@@ -32,7 +32,9 @@ use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_prompt_overrides::{
     self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
 };
-use agent_mainframe::gui_pr_triage::{self, PrTriageAction, PrTriageView};
+use agent_mainframe::gui_pr_triage::{
+    self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageView,
+};
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_supervised_edits::{
@@ -930,15 +932,30 @@ async fn dormancy_stop(
     Ok(results)
 }
 
-// PR Triage reads GitHub through `gh`, so these run off the main thread.
+// PR Triage reads GitHub through `gh`, which can be slow or hang (network,
+// auth prompt, rate limit). Each step names its reads under the handle lock,
+// performs them on a blocking thread without it, then applies the results
+// under the lock again, so the other commands never queue behind `gh`.
+async fn pr_triage_read(reads: PrTriageReads) -> Result<PrTriagePrefetch, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || reads.run())
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("PR Triage's GitHub read stopped: {e}")))
+}
+
 #[tauri::command]
 async fn pr_triage_begin(
     state: State<'_, AppState>,
     target: FeatureTarget,
 ) -> Result<PrTriageView, GuiError> {
-    gui_pr_triage::begin(
+    let reads = gui_pr_triage::plan_begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &target,
+    )?;
+    let prefetch = pr_triage_read(reads).await?;
+    gui_pr_triage::begin_prefetched(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         target,
+        prefetch,
     )
 }
 
@@ -947,9 +964,15 @@ async fn pr_triage_snapshot(
     state: State<'_, AppState>,
     workflow_id: String,
 ) -> Result<PrTriageView, GuiError> {
-    gui_pr_triage::poll(
+    let reads = gui_pr_triage::plan_poll(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &workflow_id,
+    )?;
+    let prefetch = pr_triage_read(reads).await?;
+    gui_pr_triage::poll_prefetched(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        prefetch,
     )
 }
 
@@ -960,11 +983,19 @@ async fn pr_triage_act(
     revision: u64,
     action: PrTriageAction,
 ) -> Result<Option<PrTriageView>, GuiError> {
-    gui_pr_triage::act(
+    let reads = gui_pr_triage::plan_act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        &action,
+    )?;
+    let prefetch = pr_triage_read(reads).await?;
+    gui_pr_triage::act_prefetched(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &workflow_id,
         revision,
         action,
+        prefetch,
     )
 }
 

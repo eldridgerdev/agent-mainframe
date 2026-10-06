@@ -770,7 +770,7 @@ it("opens PR Triage from a Git feature without starting it and closes through it
       workflow_id: "triage-id", revision: 2, target: { project_id: "project", feature_id: "feature" },
       feature_name: "my-feat", branch: "my-feat", stage: "pick", loading_pr: null, review: null, precall: null,
       reply: null, write_confirm: null, harnesses: ["claude"], default_harness: "claude", error: null, notice: null,
-      picker: { entries: [], include_closed: false, error: null, branch_pr: null },
+      picker: { entries: [], include_closed: false, error: null, branch_pr: null, loading: false },
     });
     if (command === "pr_triage_act") return Promise.resolve(null);
     return original(command, args, options);

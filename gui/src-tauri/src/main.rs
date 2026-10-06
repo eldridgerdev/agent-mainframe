@@ -29,11 +29,11 @@ use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
-use agent_mainframe::gui_prompt_overrides::{
-    self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
-};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageView,
+};
+use agent_mainframe::gui_prompt_overrides::{
+    self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
 };
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};

@@ -1906,8 +1906,13 @@ mod tests {
         );
 
         let loading = act(&mut gui, &all, PrTriageAction::Open { number: 7 });
-        assert_eq!(loading.stage, "loading");
-        assert_eq!(loading.loading_pr, Some(7));
+        // The fetch runs on a worker and the fake answers at once, so it may
+        // already have landed by the time `act` builds its view.
+        if loading.stage == "loading" {
+            assert_eq!(loading.loading_pr, Some(7));
+        } else {
+            assert_eq!(loading.stage, "review");
+        }
         let view = settle(&mut gui, loading);
         let review = view.review.as_ref().unwrap();
         assert_eq!(review.number, 7);

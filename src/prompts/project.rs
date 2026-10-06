@@ -118,9 +118,130 @@ pub fn load_from_repo(repo: &Path) -> ProjectPromptOverrides {
         .unwrap_or_default()
 }
 
+/// Strict counterpart of [`load_from_repo`] for editors: a missing config is
+/// an empty map, but an unreadable file, malformed JSON, a non-object root or
+/// a malformed `prompt_overrides` value is an error. An editor must report
+/// that rather than show "no overrides" and then overwrite the file.
+pub fn load_strict(repo: &Path) -> anyhow::Result<ProjectPromptOverrides> {
+    Ok(read_config_object(repo)?.1)
+}
+
+/// The repo config as a JSON object plus its parsed `prompt_overrides`.
+fn read_config_object(
+    repo: &Path,
+) -> anyhow::Result<(
+    serde_json::Map<String, serde_json::Value>,
+    ProjectPromptOverrides,
+)> {
+    let Some(path) = crate::extension::resolve_project_config_path(repo) else {
+        return Ok(Default::default());
+    };
+    let name = path.display();
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| anyhow::anyhow!("couldn't read {name}: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| anyhow::anyhow!("{name} is not valid JSON ({error}); fix it first"))?;
+    let serde_json::Value::Object(object) = value else {
+        anyhow::bail!("{name} must contain a JSON object; fix it first");
+    };
+    let overrides = match object.get("prompt_overrides") {
+        None | Some(serde_json::Value::Null) => ProjectPromptOverrides::new(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            anyhow::anyhow!("{name} has an invalid prompt_overrides value ({error}); fix it first")
+        })?,
+    };
+    Ok((object, overrides))
+}
+
+/// Read-modify-write only the `prompt_overrides` key of the repo's config.
+///
+/// Every other key is preserved exactly as parsed (including keys this build
+/// does not know), the file is replaced atomically by
+/// [`crate::extension::write_project_config`], and empty entries are dropped.
+/// A config that cannot be parsed is refused rather than replaced with a
+/// default one.
+pub fn update_in_repo(
+    repo: &Path,
+    edit: impl FnOnce(&mut ProjectPromptOverrides),
+) -> anyhow::Result<()> {
+    let (mut object, mut overrides) = read_config_object(repo)?;
+    edit(&mut overrides);
+    overrides.retain(|_, entry| !entry.is_empty());
+    if overrides.is_empty() {
+        object.remove("prompt_overrides");
+    } else {
+        // Sorted keys keep the committed file's diff stable.
+        let sorted: std::collections::BTreeMap<_, _> = overrides.into_iter().collect();
+        object.insert("prompt_overrides".into(), serde_json::to_value(sorted)?);
+    }
+    let json = serde_json::to_string_pretty(&serde_json::Value::Object(object))?;
+    crate::extension::write_project_config(repo, &json)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_in_repo_preserves_other_keys_and_drops_empty_entries() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("amf.json"),
+            r#"{"future_key":{"kept":true},"allowed_agents":["codex"]}"#,
+        )
+        .unwrap();
+        update_in_repo(dir.path(), |map| {
+            map.entry("session.summary".into())
+                .or_default()
+                .set_harness(&AgentKind::Codex, Some("codex {{recent_lines}}".into()));
+        })
+        .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("amf.json")).unwrap())
+                .unwrap();
+        assert_eq!(raw["future_key"]["kept"], true);
+        assert_eq!(raw["allowed_agents"][0], "codex");
+        assert_eq!(
+            raw["prompt_overrides"]["session.summary"]["harnesses"]["codex"],
+            "codex {{recent_lines}}"
+        );
+        // Defaults of unrelated typed fields are not written back.
+        assert!(raw.get("custom_sessions").is_none());
+
+        update_in_repo(dir.path(), |map| {
+            map.get_mut("session.summary")
+                .unwrap()
+                .set_harness(&AgentKind::Codex, None);
+        })
+        .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.path().join("amf.json")).unwrap())
+                .unwrap();
+        assert!(raw.get("prompt_overrides").is_none(), "{raw}");
+        assert_eq!(raw["future_key"]["kept"], true);
+    }
+
+    #[test]
+    fn update_in_repo_refuses_to_replace_a_malformed_config() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("amf.json");
+        for junk in ["{ not json", "[1, 2]", r#"{"prompt_overrides": 7}"#] {
+            std::fs::write(&path, junk).unwrap();
+            assert!(load_strict(dir.path()).is_err(), "{junk}");
+            let error = update_in_repo(dir.path(), |map| {
+                map.entry("session.summary".into())
+                    .or_default()
+                    .set_shared(Some("x".into()));
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("fix it first"), "{error}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), junk);
+        }
+        // A missing config is simply empty, and the first save creates it.
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_strict(dir.path()).unwrap().is_empty());
+    }
 
     fn entry(shared: Option<&str>, harnesses: &[(&str, &str)]) -> PromptOverrideEntry {
         PromptOverrideEntry {

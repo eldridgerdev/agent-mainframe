@@ -47,3 +47,7 @@ AMF_PLAN.md
 gui/node_modules/
 gui/dist/
 gui/src-tauri/gen/
+
+# Python bytecode from the screenshot/dev scripts.
+__pycache__/
+*.pyc

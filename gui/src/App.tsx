@@ -72,6 +72,7 @@ import PromptComposer from "./PromptComposer";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
+import DormancyPanel from "./DormancyPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ReviewPanel from "./ReviewPanel";
@@ -168,6 +169,7 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
+  const [showDormancy, setShowDormancy] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -1049,6 +1051,10 @@ export default function App() {
             <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
           </button>
 
+          <button className="nav-item" onClick={() => setShowDormancy(true)}>
+            <Icon name="zap" /><span className="nav-label">Dormant features</span>
+          </button>
+
           <div className="nav-section">
             <span>Projects</span>
             <button
@@ -1117,6 +1123,11 @@ export default function App() {
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
         ref={supervisedPanel} target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
+      {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
+        onOpenFeature={(target) => {
+          setShowDormancy(false);
+          setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
+        }} />}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} />}
       {learning && (

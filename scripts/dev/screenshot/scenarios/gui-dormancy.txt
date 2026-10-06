@@ -1,0 +1,8 @@
+# Native GUI dormancy proof with a private database, config, worktrees and tmux server.
+# Features are dormant for real: seeded last_accessed plus silent tmux windows past a
+# one-minute threshold. The editors are stand-in processes the runner owns; no agent
+# is launched and no real editor or user process is touched.
+note:The isolated TUI confirms the screenshot harness is ready before native dormancy proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-dormancy.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-dormancy-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

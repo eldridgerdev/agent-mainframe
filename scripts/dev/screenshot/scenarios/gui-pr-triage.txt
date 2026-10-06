@@ -1,0 +1,6 @@
+# Native PR Triage with isolated Git/SQLite, an offline `gh` and offline CLI fixtures.
+# The fixture `gh` refuses every GitHub write and the capture asserts none was attempted.
+note:The isolated TUI confirms the capture harness is ready before the native GUI proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-pr-triage.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

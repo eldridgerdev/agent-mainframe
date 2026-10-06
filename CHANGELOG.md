@@ -61,6 +61,16 @@ are tagged.
   Code instance, is left running and reported. Showing a session in the GUI now
   counts as opening its feature, as entering it in the TUI does. No migration is
   required.
+- **Triage pull request feedback in the desktop GUI.** Open **PR Triage** on a
+  Git feature, pick a pull request from the list or by number, and browse its
+  review comments, threads, diff context and replies. Mark comments done or
+  skipped locally, run read-only investigations with follow-ups, reply, and
+  resolve or reopen threads. Every AI call shows its prompt first, every GitHub
+  write shows exactly what it will post, and both need explicit confirmation.
+  Writes are refused when the PR or thread changed since it loaded. Fix
+  injection, batch fixes, review memory and AI Review still use the TUI. No
+  migration is required.
+
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed

@@ -328,6 +328,7 @@ pub struct GuiHandle {
     pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
     /// A completed review's result, until the interface takes it once.
     pub(crate) review_completion: Option<crate::gui_review::ReviewCompletion>,
+    pub(crate) pr_triage_context: Option<crate::gui_pr_triage::PrTriageContext>,
 }
 
 impl GuiHandle {
@@ -337,6 +338,7 @@ impl GuiHandle {
             learning_context: None,
             review_context: None,
             review_completion: None,
+            pr_triage_context: None,
         })
     }
 
@@ -352,6 +354,7 @@ impl GuiHandle {
             learning_context: None,
             review_context: None,
             review_completion: None,
+            pr_triage_context: None,
         }
     }
 
@@ -2102,6 +2105,7 @@ mod tests {
             learning_context: None,
             review_context: None,
             review_completion: None,
+            pr_triage_context: None,
         }
     }
 
@@ -2124,6 +2128,7 @@ mod tests {
             learning_context: None,
             review_context: None,
             review_completion: None,
+            pr_triage_context: None,
         }
     }
 
@@ -3973,6 +3978,7 @@ mod tests {
             learning_context: None,
             review_context: None,
             review_completion: None,
+            pr_triage_context: None,
         }
     }
 
@@ -4168,6 +4174,7 @@ mod tests {
                 learning_context: None,
                 review_context: None,
                 review_completion: None,
+                pr_triage_context: None,
             },
             CreateFeatureRequest {
                 project_name: "demo".into(),

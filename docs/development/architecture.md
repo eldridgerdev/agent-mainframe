@@ -62,6 +62,16 @@ reviewed changeset and saved progress. The GUI confirms source writes and
 keeps review open for another look at changed code. Reading or closing the
 summary preserves unsaved editors and never saves progress.
 
+`gui_pr_triage.rs` drives the TUI's PR Triage modes (`PrPicker`,
+`PrReviewLoading`, `PrReview`, `PrInvestigationLoading`) by stable workflow id
+and revision. Reads and writes go through `pr_review/github_access.rs`'s
+`TriageGithub` boundary, which production backs with the unchanged `gh` calls
+and tests replace with an offline fixture. Investigations and GitHub writes are
+two-step: the adapter records the exact prompt or posted body, and confirmation
+re-reads the PR (head, metadata or thread) before calling the shared engine.
+`try_pr_review_post_reply`/`try_pr_review_toggle_resolve` return failures instead
+of the TUI's dashboard reset, so the GUI keeps the pane and draft.
+
 `app/review/checks.rs` owns the shared build/test runner: it drains both output
 streams while retaining bounded text and terminates/reaps owned processes on
 cancellation or close. `gui_review/checks.rs` previews the effective project
@@ -115,6 +125,7 @@ rules; the module signals no process itself. Terminal attachment records
 | | `pr_review/memory.rs` | Review-memory bootstrap, compact and append workflows |
 | | `pr_review/review_tab.rs` | "Review a PR" tab: open-PR list, tab switching, opening a PR into the viewer and leaving it |
 | | `pr_review/revisions.rs` | Object-only PR fetch into `refs/amf/review/N/*`, head check, merge-base, ref cleanup |
+| | `pr_review/github_access.rs` | `TriageGithub` read/write boundary (`gh` in production, fixtures in tests) and the investigation runner seam |
 | | `pr_review/state.rs`, `runtime.rs` | Dialog types and background work ownership |
 | Final Review | `review/preparation.rs` | Diff snapshots, persisted progression/history and review notes |
 | | `review/progression.rs` | Navigation, selection, approvals, filters and review summary |

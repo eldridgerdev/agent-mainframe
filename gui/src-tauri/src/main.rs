@@ -32,6 +32,7 @@ use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_prompt_overrides::{
     self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
 };
+use agent_mainframe::gui_pr_triage::{self, PrTriageAction, PrTriageView};
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_supervised_edits::{
@@ -929,6 +930,44 @@ async fn dormancy_stop(
     Ok(results)
 }
 
+// PR Triage reads GitHub through `gh`, so these run off the main thread.
+#[tauri::command]
+async fn pr_triage_begin(
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+) -> Result<PrTriageView, GuiError> {
+    gui_pr_triage::begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+async fn pr_triage_snapshot(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<PrTriageView, GuiError> {
+    gui_pr_triage::poll(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+async fn pr_triage_act(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision: u64,
+    action: PrTriageAction,
+) -> Result<Option<PrTriageView>, GuiError> {
+    gui_pr_triage::act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        action,
+    )
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -1006,6 +1045,9 @@ fn main() {
             supervised_edit_respond,
             dormancy_load,
             dormancy_stop,
+            pr_triage_begin,
+            pr_triage_snapshot,
+            pr_triage_act,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

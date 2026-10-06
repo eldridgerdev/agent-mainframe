@@ -297,6 +297,7 @@ it("offers Changes only for Git projects", async () => {
   const client = await openFeature([], [], "stopped");
   expect(screen.queryByRole("button", { name: "Changes", exact: true })).toBeNull();
   expect(screen.queryByRole("button", { name: "Final Review", exact: true })).toBeNull();
+  expect(screen.queryByRole("button", { name: "PR Triage", exact: true })).toBeNull();
   client.clear();
 });
 
@@ -758,5 +759,28 @@ it("opens dormant features from navigation and hands Open to the feature page wi
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull());
   expect(await screen.findByRole("tab", { name: /Agent/ })).toBeTruthy();
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "dormancy_stop" || command === "stop_feature")).toBe(false);
+  client.clear();
+});
+
+it("opens PR Triage from a Git feature without starting it and closes through its workflow", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "pr_triage_begin") return Promise.resolve({
+      workflow_id: "triage-id", revision: 2, target: { project_id: "project", feature_id: "feature" },
+      feature_name: "my-feat", branch: "my-feat", stage: "pick", loading_pr: null, review: null, precall: null,
+      reply: null, write_confirm: null, harnesses: ["claude"], default_harness: "claude", error: null, notice: null,
+      picker: { entries: [], include_closed: false, error: null, branch_pr: null },
+    });
+    if (command === "pr_triage_act") return Promise.resolve(null);
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "PR Triage", exact: true }));
+  await screen.findByText(/No open pull requests/);
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_begin", { target: { project_id: "project", feature_id: "feature" } });
+  fireEvent.click(within(screen.getByRole("dialog", { name: "PR Triage" })).getByRole("button", { name: "Close" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_act", { workflowId: "triage-id", revision: 2, action: { kind: "close" } });
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
   client.clear();
 });

@@ -240,5 +240,9 @@ export function formatTotal(total: number): string {
                 except subprocess.TimeoutExpired:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
+        # The GUI's tmux observer daemonizes onto the private socket; stop
+        # that server too so no capture process outlives the run.
+        subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "kill-server"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         gui_log.close()
         vite_log.close()

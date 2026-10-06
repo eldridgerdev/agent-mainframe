@@ -223,8 +223,29 @@ are rechecked on insertion. The list refreshes while you browse, and a
 selected template edited or deleted elsewhere is deselected with a notice so
 you never fill an outdated copy. The preview renders as you type. Cancel
 leaves existing composer drafts intact. Create/edit/delete/export templates and
-editable prompt overrides remain in the TUI. Native desktop interaction and
-macOS runtime validation for this library increment remain open.
+editable prompt overrides have their own manager (below). Native desktop
+interaction and macOS runtime validation for this library increment remain open.
+
+Open **Prompt overrides** in workspace navigation to change the prompts AMF
+sends for headless AI calls (plan interviews, Final Review walkthroughs and
+questions, AI PR review, review memory, Learning answers and session
+summaries). It is separate from the prompt library: library templates are text
+you insert into an agent draft, while overrides replace AMF's own built-in
+prompts. Choose a context (global, a project, or a feature) and the harness to
+preview. Each prompt shows the layer in effect, its placeholders, effective
+template, built-in default and every stored override. **New override…** or
+**Edit** opens a local editor; choose **This feature** (stored in AMF's
+database for that checkout), **This project (amf.json)** (committed with the
+repo) or **Global**, and a shared or harness-specific template, then **Save
+override**. **Clear…** removes exactly one stored override after confirmation.
+Escape, switching prompts or contexts ask before discarding unsaved text. The
+list refreshes while open. If the TUI, another window or a hand edit changes
+that prompt's overrides, saving is blocked until you choose **Reload current
+version**, which keeps your text. A malformed `amf.json` is reported and never
+overwritten. A pending Final Review or planning AI call offers **Edit prompt**,
+which opens the manager on that prompt. The call keeps waiting and uses your
+saved override when you continue, though its preview still shows the earlier
+text. Native macOS validation remains open.
 
 Use **New session** on a feature page to start another agent, terminal, or
 Neovim session. You can name it or use the next default name; the new tab opens

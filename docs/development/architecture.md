@@ -43,7 +43,18 @@ insertion reloads templates and allowed session targets before returning an
 unsent string. `PromptLibraryPanel.tsx` owns only local selection/fill state,
 while `App.tsx` appends the handoff to the session draft after a final workspace
 cache check. Neither browsing nor preparation launches a process or writes the
-library. Library authoring and prompt overrides remain separate workflows.
+library. Library authoring remains a separate workflow.
+
+`src/gui_prompt_overrides.rs` adapts the headless-prompt override manager
+without touching `App::mode`, so it can sit above an open interview or review
+and its pre-call notice. Rows come from the shared registry and
+`resolve_template_layered` over the same DB and `amf.json` layers the call sites
+read. Each row carries a revision fingerprint of that prompt's stored overrides
+and context paths; saves and clears re-resolve the stable context and refuse a
+mismatch. Project writes go through `prompts::project::update_in_repo`, which
+the TUI manager also uses. It changes only the `prompt_overrides` key and
+refuses a malformed config. `precall_target` maps a pending
+`AppMode::PromptPrecall` to its prompt, harness and feature/project context.
 
 `gui_review/summary.rs` projects the shared TUI pre-finish summary rows and
 calls its suggestion-preparation step after checking the stable workflow,

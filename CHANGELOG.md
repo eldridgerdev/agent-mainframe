@@ -40,6 +40,16 @@ are tagged.
   the agent will do. An edit that changed, was already answered elsewhere, or
   whose agent stopped waiting is refused. Edits a running TUI received are
   still answered in the TUI, and AI explanations of an edit remain TUI-only. No
+- **Edit headless prompt overrides in the desktop GUI.** Open **Prompt
+  overrides** from navigation to see all of AMF's headless AI prompts. Each
+  prompt shows the layer in effect (feature, project, global or built-in, and
+  whether a harness-specific template won), its placeholders, its effective
+  template and the built-in default. Save an override for this feature, this
+  project's `amf.json` or all projects, either shared or for one harness.
+  Clearing an override needs confirmation. Unsaved edits are protected. A
+  change made by the TUI, another window or a hand edit of `amf.json` must be
+  reloaded before saving. Pending Final Review and planning AI calls offer
+  **Edit prompt**; your saved change applies when you continue the call. No
   migration is required.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
@@ -209,6 +219,10 @@ are tagged.
 
 ### Fixed
 
+- **Saving a project prompt override keeps the rest of `amf.json`.** The TUI
+  and GUI now change only its `prompt_overrides` key. Unknown keys are kept and
+  unset settings are no longer written out. A malformed `amf.json` is reported
+  rather than replaced with a default config.
 - Verbose Final Review checks can finish without hanging on full output buffers.
   Closing or cancelling a check also stops its child processes.
 - **Applying a suggestion clears the changed file's approval in both interfaces.**

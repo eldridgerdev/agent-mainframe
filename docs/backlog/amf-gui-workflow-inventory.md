@@ -35,7 +35,9 @@ Keep them current as the staged GUI scope grows.
 | Planned | PR triage, as part of the remaining diff-related parity work. |
 | Planned | Code syntax highlighting in GUI diffs, reviews and the Learning source reader, after the remaining diff-related parity work and before the remaining GUI parity work. |
 | Available | Prompt library browsing from workspace navigation or an agent composer, with shared user/global/project/worktree sources, fuzzy name/body and `#tag` search, original/resolved previews, required text/multiline fields and configured/inline choices. Add to draft targets an allowed Claude, Codex, OpenCode or Pi session, appends existing text and leaves sending explicit. Stopped agent drafts are editable before start. Template/checkout changes and stale/deleted/disallowed targets are rechecked before insertion. |
-| Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring, deletion/export and editable prompt overrides remain in the TUI. |
+| Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
+| Available | Headless prompt override manager from workspace navigation, with every registry prompt, its effective layer (and per-harness winner), placeholders, effective and built-in templates. Save feature, project (`amf.json`) or global overrides, shared or per harness. Clear one stored override with confirmation. Unsaved-edit protection is included. Stale saves after TUI, other-window or hand edits of `amf.json` are refused until reloaded, and malformed `amf.json` is reported without being overwritten. Pending Final Review and planning AI calls link to the manager through **Edit prompt**. |
+| Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
 
 Native GUI diff proof is reproducible with
@@ -228,7 +230,17 @@ Completed increments and remaining work, in priority order:
   markers and line numbers readable, with plain-text fallback for unsupported
   languages. Schedule this after all remaining diff-related parity items and
   before the remaining GUI parity work.
-- [ ] **Other GUI parity.** Continue prompt overrides, dormancy, settings,
+- [x] **Prompt overrides manager (2026-10-06).** List every headless prompt
+  with its effective layer, placeholders, effective and built-in templates.
+  Save/clear feature, project (`amf.json`) and global overrides, shared or per
+  harness, through the shared registry, resolver and stores. Per-prompt
+  revisions refuse stale writes after external DB/`amf.json` edits. Unsaved
+  edits are protected, and pending Final Review/planning pre-call notices link
+  to the manager. Rust regressions, frontend interactions and ten asserted
+  native WSLg frames
+  ([`gui-prompt-overrides.txt`](../../scripts/dev/screenshot/scenarios/gui-prompt-overrides.txt))
+  cover this increment.
+- [ ] **Other GUI parity.** Continue dormancy, settings,
   VS Code/custom sessions and the remaining workflow inventory.
 
 ## Method

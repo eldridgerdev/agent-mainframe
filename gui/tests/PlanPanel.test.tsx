@@ -65,5 +65,14 @@ describe("PlanPanel", () => {
     expect(screen.getByText("Rendered planning prompt")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(onAct).toHaveBeenCalledWith("precall_confirm", undefined);
+    // The override link appears only when the host can open the manager.
+    expect(screen.queryByRole("button", { name: "Edit prompt" })).toBeNull();
+    const onEditPrompt = vi.fn();
+    rerender(
+      <PlanPanel view={{ ...brief }} precall={precall} busy={false} onAct={onAct} onEditPrompt={onEditPrompt} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Edit prompt" }));
+    expect(onEditPrompt).toHaveBeenCalledTimes(1);
+    expect(onAct).not.toHaveBeenCalledWith("precall_cancel", undefined);
   });
 });

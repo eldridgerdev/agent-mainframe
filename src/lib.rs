@@ -17,6 +17,7 @@ pub mod gui_contract;
 pub mod gui_diff;
 pub mod gui_learning;
 pub mod gui_plans;
+pub mod gui_prompt_overrides;
 pub mod gui_prompts;
 pub mod gui_review;
 pub mod gui_supervised_edits;

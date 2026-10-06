@@ -1245,3 +1245,15 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .supervised-snippet { white-space: pre-wrap; padding: 8px; border-radius: 6px; }
 .supervised-confirm { flex-direction: column; align-items: stretch; margin-top: 10px; }
 .supervised-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 10px; }
+/* Prompt overrides manager */
+.overrides-badge-active { background: var(--accent-soft); border-color: var(--accent); }
+.overrides-token { display: inline-block; margin: 2px 6px 2px 0; font-family: var(--mono); }
+.overrides-editor { display: grid; gap: 12px; }
+.overrides-editor-targets { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.overrides-textarea { font-family: var(--mono); min-height: 260px; resize: vertical; }
+.overrides-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.overrides-slots { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
+.overrides-slots li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.overrides-slots li .badge { margin-left: 8px; }
+.overrides-slot-actions { display: flex; gap: 6px; }
+@media (max-width: 720px) { .overrides-editor-targets { grid-template-columns: 1fr; } }

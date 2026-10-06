@@ -85,15 +85,6 @@ def click(text):
     )
 
 
-def select(label, value):
-    evaluate(
-        f"""(()=>{{const label=Array.from(document.querySelectorAll('label')).find(l=>l.querySelector('span')?.textContent==={json.dumps(label)});const el=label.querySelector('select');el.value={json.dumps(value)};el.dispatchEvent(new Event('change',{{bubbles:true}}));}})()"""
-    )
-    wait(
-        '!document.body.innerText.includes("Loading changes…") && !!document.querySelector(".diff-reader")'
-    )
-
-
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
 windows = []
@@ -122,9 +113,13 @@ notes = []
 captured_frames = set()
 
 
+def ready():
+    wait('!document.body.innerText.includes("Updating review…") && !document.body.innerText.includes("Loading prompts…")')
+
+
 def capture(name, note, expects, expression=None, allow_alert=False):
     wait('document.fonts.status==="loaded"')
-    wait('!document.body.innerText.includes("Loading changes…")')
+    ready()
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
@@ -153,10 +148,6 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     notes.append({"file": name, "note": note, "expects": expects})
     print("PASS:", name, note, flush=True)
 
-
-
-def ready():
-    wait('!document.body.innerText.includes("Updating review…") && !document.body.innerText.includes("Loading prompts…")')
 
 
 def choose_file(path):

@@ -10,6 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.49.0] - 2026-10-06
+
+The desktop app now covers much more of AMF: complete Final Review with feedback
+handoff, supervised edits, PR Triage, prompt overrides, dormant features and a
+sidebar that matches the TUI dashboard. AMF Remote is easier to reach over
+Tailscale, and model advice and reasoning levels are available in more places.
+
 ### Added
 
 - **Desktop sidebar matches the TUI dashboard tree.** Project rows show their
@@ -74,14 +83,13 @@ are tagged.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed
-  check commands or review targets cancel obsolete runs. Completing the review
-  and handing off feedback still use the TUI. No migration is required.
+  check commands or review targets cancel obsolete runs. No migration is
+  required.
 - **Prepare desktop Final Review for finishing.** Open **Pre-finish summary**
   to see every verdict and open thread. Confirm **Apply pending suggestions**
   to write the batch locally; successful replacements settle their threads,
   blocked suggestions stay open with explanations, and changed files need
-  review again. Browsing keeps unsaved drafts. Review completion and feedback
-  handoff still use the TUI. No migration is required.
+  review again. Browsing keeps unsaved drafts. No migration is required.
 - **Use the prompt library in the desktop GUI.** Open **Prompt library** from
   navigation or an agent composer. Search by name, body or tag; browse user,
   global, project and worktree templates; fill text and
@@ -132,7 +140,7 @@ are tagged.
   leave comments and overall feedback, and read developer notes and saved
   line comments. Pause and resume the same review in either interface.
   Unsaved drafts require an explicit discard; failed saves offer a retry, or
-  closing without saving when the save cannot succeed. Finishing and sending feedback still use the TUI.
+  closing without saving when the save cannot succeed.
 - **Browse Git changes in the desktop app.** Open **Changes** on a feature,
   even while it is stopped, to view all current changes or one feature commit.
   Switch between unified and side-by-side layouts, filter files, jump between

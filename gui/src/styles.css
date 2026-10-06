@@ -1228,3 +1228,20 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   .library-list { max-height: 180px; border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; margin-bottom: 16px; }
   .library-detail { padding-left: 0; }
 }
+
+/* Supervised edits (Vibeless per-edit approval). */
+.nav-count-attention {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--amber-soft);
+  color: var(--amber);
+  font-weight: 600;
+  text-align: center;
+}
+.btn .nav-count-attention { margin-left: 4px; }
+.supervised-reason { margin: 8px 0; }
+.supervised-snippet { white-space: pre-wrap; padding: 8px; border-radius: 6px; }
+.supervised-confirm { flex-direction: column; align-items: stretch; margin-top: 10px; }
+.supervised-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 10px; }

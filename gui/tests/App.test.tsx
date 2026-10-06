@@ -592,3 +592,22 @@ it("collects a completed poll result when cancellation starts while the poll is 
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion")).toHaveLength(1);
   } finally { vi.useRealTimers(); client.clear(); }
 });
+
+it("badges a feature with waiting supervised edits and opens them from the feature page", async () => {
+  await openFeature([session("Agent", "claude")]);
+  const initial = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "supervised_edit_counts") return [{
+      project_id: "project", feature_id: "feature", feature_name: "my-feat", count: 2, first_id: "e1", first_path: "src/a.ts",
+    }];
+    if (command === "supervised_edits_load") return { target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", edits: [] };
+    return initial(command, args, options);
+  });
+  const header = await screen.findByRole("button", { name: /Supervised edits\s*2/ }, { timeout: 4000 });
+  expect(within(screen.getByRole("navigation", { name: "Workspace" })).getByTitle("Edits waiting for review").textContent).toBe("2");
+  fireEvent.click(header);
+  expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command, args]) =>
+    command === "supervised_edits_load" && JSON.stringify(args) === JSON.stringify({ target: { project_id: "project", feature_id: "feature" }, context: "standard" }))).toBe(true));
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "supervised_edit_respond")).toBe(false);
+});

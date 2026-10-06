@@ -183,69 +183,30 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
         _ => return Ok(()),
     };
 
-    let response = if skip {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "cancel",
-            "reason": null,
-            "skip": true,
-            "reject": false,
-        })
+    use crate::app::supervised_edits::{EditReviewDecision, EditReviewReply, edit_review_response};
+    let decision = if skip {
+        EditReviewDecision::Cancel
     } else if reject {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "reject",
-            "reason": if reason.is_empty() { serde_json::Value::Null } else { serde_json::json!(reason) },
-            "skip": false,
-            "reject": true,
-        })
+        EditReviewDecision::Reject
     } else {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "proceed",
-            "reason": if reason.is_empty() { serde_json::Value::Null } else { serde_json::json!(reason) },
-            "skip": false,
-            "reject": false,
-        })
+        EditReviewDecision::Approve
     };
-
-    let mut responded_over_ipc = false;
-    if let (Some(req), Some(sock)) = (request_id, reply_socket)
-        && !req.is_empty()
-        && !sock.is_empty()
-    {
-        let mut payload = response.clone();
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("request_id".to_string(), serde_json::json!(req));
-        }
-        if crate::ipc::send(
-            std::path::Path::new(&sock),
-            &serde_json::to_string(&payload).unwrap_or_default(),
-        )
-        .is_ok()
-        {
-            responded_over_ipc = true;
-        } else {
-            app.log_warn(
-                "ipc",
-                "Failed IPC response for change-reason; falling back to files".to_string(),
-            );
-        }
-    }
-
-    if !responded_over_ipc {
-        if let Some(parent) = response_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(
-            &response_file,
-            serde_json::to_string(&response).unwrap_or_default(),
+    let response = edit_review_response(decision, &reason);
+    // A failed response write leaves the proceed signal untouched, so the
+    // hook keeps waiting instead of reading a missing reply as approval.
+    if let Err(err) = app.deliver_edit_review_response(
+        &EditReviewReply {
+            request_id: request_id.as_deref(),
+            reply_socket: reply_socket.as_deref(),
+            response_file: &response_file,
+            proceed_signal: &proceed_signal,
+        },
+        &response,
+    ) {
+        app.log_warn(
+            "diff-review",
+            format!("Could not answer the edit review: {err:#}"),
         );
-
-        if let Some(parent) = proceed_signal.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&proceed_signal, "");
     }
 
     app.mode = match return_to_view {

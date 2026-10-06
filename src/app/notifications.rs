@@ -71,7 +71,120 @@ struct IpcMsg {
 /// request.
 const NOTIFICATION_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
+/// A hook's file-fallback notification as written to `.claude/notifications/`
+/// or the global notifications directory. Shared by the TUI's scan and the
+/// desktop GUI's supervised-edit reader, so both see the same requests.
+#[derive(Deserialize)]
+struct NotificationJson {
+    session_id: Option<String>,
+    cwd: Option<String>,
+    message: Option<String>,
+    #[serde(alias = "type")]
+    notification_type: Option<String>,
+    amf_session: Option<String>,
+    proceed_signal: Option<String>,
+    request_id: Option<String>,
+    reply_socket: Option<String>,
+    file_path: Option<String>,
+    relative_path: Option<String>,
+    tool: Option<String>,
+    change_id: Option<String>,
+    old_snippet: Option<String>,
+    new_snippet: Option<String>,
+    #[allow(dead_code)] // parsed from hook JSON, not surfaced yet
+    content_preview: Option<String>,
+    response_file: Option<String>,
+    original_file: Option<String>,
+    proposed_file: Option<String>,
+    is_new_file: Option<bool>,
+    reason: Option<String>,
+}
+
+impl NotificationJson {
+    /// Parse one `.json` notification file; anything unreadable or malformed
+    /// is skipped, exactly as the scan always has.
+    fn read(path: &Path) -> Option<Self> {
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            return None;
+        }
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    fn into_pending_input(
+        self,
+        path: PathBuf,
+        project_name: Option<String>,
+        feature_name: Option<String>,
+    ) -> PendingInput {
+        PendingInput {
+            session_id: self.session_id.unwrap_or_default(),
+            cwd: self.cwd.unwrap_or_default(),
+            message: self.message.unwrap_or_default(),
+            notification_type: self.notification_type.unwrap_or_default(),
+            file_path: path,
+            target_file_path: self.file_path,
+            relative_path: self.relative_path,
+            change_id: self.change_id,
+            tool: self.tool,
+            old_snippet: self.old_snippet,
+            new_snippet: self.new_snippet,
+            original_file: self.original_file,
+            proposed_file: self.proposed_file,
+            is_new_file: self.is_new_file,
+            reason: self.reason,
+            response_file: self.response_file,
+            project_name,
+            feature_name,
+            proceed_signal: self.proceed_signal,
+            request_id: self.request_id,
+            reply_socket: self.reply_socket,
+        }
+    }
+}
+
 impl App {
+    /// Every file-fallback notification on disk, resolved to its feature:
+    /// each feature's own `.claude/notifications/` first (owned by that
+    /// feature), then the global directory (matched by AMF session, then
+    /// cwd). Reading never removes or answers anything.
+    pub(crate) fn read_notification_files(&self) -> Vec<PendingInput> {
+        let mut inputs = Vec::new();
+        for project in &self.store.projects {
+            for feature in &project.features {
+                let notify_dir = feature.workdir.join(".claude").join("notifications");
+                let Ok(entries) = std::fs::read_dir(&notify_dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(notif) = NotificationJson::read(&path) else {
+                        continue;
+                    };
+                    inputs.push(notif.into_pending_input(
+                        path,
+                        Some(project.name.clone()),
+                        Some(feature.name.clone()),
+                    ));
+                }
+            }
+        }
+
+        let global_notify_dir = crate::project::amf_config_dir().join("notifications");
+        if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(notif) = NotificationJson::read(&path) else {
+                    continue;
+                };
+                let cwd_path = PathBuf::from(notif.cwd.as_deref().unwrap_or_default());
+                let (project_name, feature_name, _, _) =
+                    self.project_feature_for_message(notif.amf_session.as_deref(), &cwd_path);
+                inputs.push(notif.into_pending_input(path, project_name, feature_name));
+            }
+        }
+        inputs
+    }
     fn notification_dirs_fingerprint(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
 
@@ -449,33 +562,7 @@ impl App {
             AppMode::Viewing(view) => Some(view.clone()),
             _ => None,
         };
-        let diff_path = input
-            .relative_path
-            .clone()
-            .filter(|path| !path.is_empty())
-            .or_else(|| input.target_file_path.clone())
-            .unwrap_or_default();
-        let (mut diff_file, diff_error) = match (
-            input.original_file.as_deref(),
-            input.proposed_file.as_deref(),
-        ) {
-            (Some(original), Some(proposed)) => match crate::diff::load_review_file(
-                Path::new(original),
-                Path::new(proposed),
-                &diff_path,
-            ) {
-                Ok(file) => (Some(file), None),
-                Err(err) => (None, Some(err.to_string())),
-            },
-            _ => (None, None),
-        };
-        if input.is_new_file == Some(true)
-            && let Some(file) = &mut diff_file
-        {
-            file.status = crate::diff::DiffFileStatus::Added;
-            file.old_path = None;
-            file.deletions = 0;
-        }
+        let (diff_file, diff_error) = super::supervised_edits::load_edit_review_diff(input);
         self.mode = AppMode::DiffReviewPrompt(DiffReviewState {
             session_id: input.session_id.clone(),
             workdir: PathBuf::from(&input.cwd),
@@ -1563,224 +1650,26 @@ impl App {
 
         let old_pending_inputs = self.pending_inputs.clone();
 
-        #[derive(Deserialize)]
-        struct NotificationJson {
-            session_id: Option<String>,
-            cwd: Option<String>,
-            message: Option<String>,
-            #[serde(alias = "type")]
-            notification_type: Option<String>,
-            amf_session: Option<String>,
-            proceed_signal: Option<String>,
-            request_id: Option<String>,
-            reply_socket: Option<String>,
-            file_path: Option<String>,
-            relative_path: Option<String>,
-            tool: Option<String>,
-            change_id: Option<String>,
-            old_snippet: Option<String>,
-            new_snippet: Option<String>,
-            #[allow(dead_code)] // parsed from hook JSON, not surfaced yet
-            content_preview: Option<String>,
-            response_file: Option<String>,
-            original_file: Option<String>,
-            proposed_file: Option<String>,
-            is_new_file: Option<bool>,
-            reason: Option<String>,
-        }
-
         let mut inputs = Vec::new();
-
-        for project in &self.store.projects {
-            for feature in &project.features {
-                let notify_dir = feature.workdir.join(".claude").join("notifications");
-
-                let entries = match std::fs::read_dir(&notify_dir) {
-                    Ok(e) => e,
-                    Err(_) => continue,
-                };
-
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                        continue;
-                    }
-
-                    let data = match std::fs::read_to_string(&path) {
-                        Ok(d) => d,
-                        Err(_) => continue,
-                    };
-
-                    let notif: NotificationJson = match serde_json::from_str(&data) {
-                        Ok(n) => n,
-                        Err(_) => continue,
-                    };
-
-                    let notification_type = notif.notification_type.clone().unwrap_or_default();
-                    let is_structured_diff_review = notification_type == "change-reason"
-                        || (notification_type == "diff-review"
-                            && self.use_custom_diff_review_viewer());
-                    // Only open immediately while viewing the requesting
-                    // feature; from anywhere else the review is queued as
-                    // a pending input and announced with a toast below.
-                    let open_diff_review_now = is_structured_diff_review
-                        && match &self.mode {
-                            AppMode::Viewing(view) => feature.name == view.feature_name,
-                            _ => false,
-                        };
-                    if open_diff_review_now {
-                        let input = PendingInput {
-                            session_id: notif.session_id.unwrap_or_default(),
-                            cwd: notif.cwd.unwrap_or_default(),
-                            message: notif.message.unwrap_or_default(),
-                            notification_type,
-                            file_path: path.clone(),
-                            target_file_path: notif.file_path,
-                            relative_path: notif.relative_path,
-                            change_id: notif.change_id,
-                            tool: notif.tool,
-                            old_snippet: notif.old_snippet,
-                            new_snippet: notif.new_snippet,
-                            original_file: notif.original_file,
-                            proposed_file: notif.proposed_file,
-                            is_new_file: notif.is_new_file,
-                            reason: notif.reason,
-                            response_file: notif.response_file,
-                            project_name: Some(project.name.clone()),
-                            feature_name: Some(feature.name.clone()),
-                            proceed_signal: notif.proceed_signal,
-                            request_id: notif.request_id.clone(),
-                            reply_socket: notif.reply_socket.clone(),
-                        };
-                        // When opening from Viewing mode, keep the item in
-                        // pending_inputs so check_pending_diff_review can
-                        // detect the active review. Normal-mode opens don't
-                        // need this — the review is already visible.
-                        if matches!(self.mode, AppMode::Viewing(_)) {
-                            self.pending_inputs.push(input.clone());
-                        }
-                        self.open_diff_review_prompt(&input);
-                        let _ = std::fs::remove_file(&path);
-                        return true;
-                    }
-
-                    inputs.push(PendingInput {
-                        session_id: notif.session_id.unwrap_or_default(),
-                        cwd: notif.cwd.unwrap_or_default(),
-                        message: notif.message.unwrap_or_default(),
-                        notification_type,
-                        file_path: path,
-                        target_file_path: notif.file_path,
-                        relative_path: notif.relative_path,
-                        change_id: notif.change_id,
-                        tool: notif.tool,
-                        old_snippet: notif.old_snippet,
-                        new_snippet: notif.new_snippet,
-                        original_file: notif.original_file,
-                        proposed_file: notif.proposed_file,
-                        is_new_file: notif.is_new_file,
-                        reason: notif.reason,
-                        response_file: notif.response_file,
-                        project_name: Some(project.name.clone()),
-                        feature_name: Some(feature.name.clone()),
-                        proceed_signal: notif.proceed_signal,
-                        request_id: notif.request_id,
-                        reply_socket: notif.reply_socket,
-                    });
-                }
+        for input in self.read_notification_files() {
+            // Only open immediately while viewing the requesting feature;
+            // from anywhere else the review is queued as a pending input and
+            // announced with a toast below.
+            let open_diff_review_now = self.is_structured_edit_review(&input.notification_type)
+                && matches!(
+                    &self.mode,
+                    AppMode::Viewing(view)
+                        if input.feature_name.as_deref() == Some(view.feature_name.as_str())
+                );
+            if open_diff_review_now {
+                // Keep the item in pending_inputs so
+                // check_pending_diff_review can detect the active review.
+                self.pending_inputs.push(input.clone());
+                self.open_diff_review_prompt(&input);
+                let _ = std::fs::remove_file(&input.file_path);
+                return true;
             }
-        }
-
-        let global_notify_dir = crate::project::amf_config_dir().join("notifications");
-
-        if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-
-                let data = match std::fs::read_to_string(&path) {
-                    Ok(d) => d,
-                    Err(_) => continue,
-                };
-
-                let notif: NotificationJson = match serde_json::from_str(&data) {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-
-                let session_id = notif.session_id.unwrap_or_default();
-                let cwd = notif.cwd.unwrap_or_default();
-                let notification_type = notif.notification_type.unwrap_or_default();
-                let amf_session = notif.amf_session.clone();
-                let proceed_signal_val = notif.proceed_signal.clone();
-                let is_structured_diff_review = notification_type == "change-reason"
-                    || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
-
-                let cwd_path = PathBuf::from(&cwd);
-                let (found_project_name_for_open, found_feature_name_for_open, _, _) =
-                    self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
-                if is_structured_diff_review
-                    && let AppMode::Viewing(view) = &self.mode
-                    && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
-                {
-                    let input = PendingInput {
-                        session_id,
-                        cwd,
-                        message: notif.message.unwrap_or_default(),
-                        notification_type,
-                        file_path: path.clone(),
-                        target_file_path: notif.file_path,
-                        relative_path: notif.relative_path,
-                        change_id: notif.change_id,
-                        tool: notif.tool,
-                        old_snippet: notif.old_snippet,
-                        new_snippet: notif.new_snippet,
-                        original_file: notif.original_file,
-                        proposed_file: notif.proposed_file,
-                        is_new_file: notif.is_new_file,
-                        reason: notif.reason,
-                        response_file: notif.response_file,
-                        project_name: found_project_name_for_open,
-                        feature_name: found_feature_name_for_open,
-                        proceed_signal: proceed_signal_val,
-                        request_id: notif.request_id.clone(),
-                        reply_socket: notif.reply_socket.clone(),
-                    };
-                    self.pending_inputs.push(input.clone());
-                    self.open_diff_review_prompt(&input);
-                    let _ = std::fs::remove_file(&path);
-                    return true;
-                }
-
-                let (project_name, feature_name, _, _) =
-                    self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
-
-                inputs.push(PendingInput {
-                    session_id,
-                    cwd,
-                    message: notif.message.unwrap_or_default(),
-                    notification_type,
-                    file_path: path,
-                    target_file_path: notif.file_path,
-                    relative_path: notif.relative_path,
-                    change_id: notif.change_id,
-                    tool: notif.tool,
-                    old_snippet: notif.old_snippet,
-                    new_snippet: notif.new_snippet,
-                    original_file: notif.original_file,
-                    proposed_file: notif.proposed_file,
-                    is_new_file: notif.is_new_file,
-                    reason: notif.reason,
-                    response_file: notif.response_file,
-                    project_name,
-                    feature_name,
-                    proceed_signal: notif.proceed_signal,
-                    request_id: notif.request_id,
-                    reply_socket: notif.reply_socket,
-                });
-            }
+            inputs.push(input);
         }
 
         // Preserve IPC-origin pending inputs (which use an empty

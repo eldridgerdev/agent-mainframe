@@ -8,7 +8,7 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
-  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null, summary: null, check_command: null, check: null,
+  general_feedback: "Overall saved", has_prior_review: true, error: null, save_error: null, applied_suggestions: [], history: null, summary: null, check_command: null, check: null, finish: null,
   ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude", "codex", "opencode", "pi"], message: null },
   files: [{ diff: { path: "code.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, patch: "",
     hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
@@ -845,4 +845,80 @@ it("blocks check launches during AI or save failures and reports missing configu
   expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(true);
   update({ view: { ...view, summary, check_command: "true", save_error: "disk full" } });
   expect((screen.getByRole("button", { name: "Run project check" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+const finish: NonNullable<ReviewView["finish"]> = {
+  approved: 1, needs_work: 1, skipped: 1, file_comments: 1, line_comments: 1, general_feedback: true, apply_suggestions: 2,
+  post_to_pr: true, submit_prompt: true, handoff: { session_id: "agent-1", label: "Claude 1", stopped: false }, completing: false,
+};
+
+it("shows what completing records and hands off, and cancelling or closing sends nothing", () => {
+  const { onAct } = mount({ ...view, summary, finish, check_command: "cargo test" });
+  expect(screen.getByText(/1 approved · 1 need work · 1 skipped/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
+  const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
+  for (const text of [/1 file\(s\) have no verdict and are recorded as skipped/, /2 saved replacement\(s\) are written to source before the check/,
+    /Cancelling completion during the check leaves those source changes in place/,
+    /Runs the configured check first/, /earlier results shown here are not reused/, /GitHub pull request/,
+    /sends the "address the feedback" prompt to Claude 1/]) {
+    expect(within(confirm).getByText(text)).toBeTruthy();
+  }
+  expect(within(confirm).getByText("cargo test")).toBeTruthy();
+  fireEvent.click(within(confirm).getByRole("button", { name: "Keep reviewing" }));
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(onAct).not.toHaveBeenCalled();
+});
+
+it("sends one completion with the confirmed expectations and offers completing without handoff", async () => {
+  let resolve!: (value: boolean) => void;
+  const onAct = vi.fn(() => new Promise<boolean>((done) => { resolve = done; }));
+  mount({ ...view, summary, finish, check_command: "cargo test" }, onAct);
+  fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
+  fireEvent.click(screen.getByRole("button", { name: "Complete without handoff" }));
+  fireEvent.click(screen.getByRole("button", { name: "Complete and hand off to Claude 1" }));
+  expect(onAct).toHaveBeenCalledTimes(1);
+  expect(onAct).toHaveBeenCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", deliver: false });
+  // A refused completion keeps the confirmation for another decision.
+  resolve(false);
+  await waitFor(() => expect((screen.getByRole("button", { name: "Complete and hand off to Claude 1" }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Complete and hand off to Claude 1" }));
+  expect(onAct).toHaveBeenLastCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", deliver: true });
+});
+
+it("explains stopped and missing handoff targets", () => {
+  const stopped = { ...finish, handoff: { session_id: "agent-1", label: "Claude 1", stopped: true } };
+  const { update } = mount({ ...view, summary, finish: stopped });
+  fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
+  expect(screen.getByText(/unsent draft in Claude 1 \(stopped, so it cannot be sent yet\)/)).toBeTruthy();
+  expect(screen.getByText("No project check is configured.")).toBeTruthy();
+  update({ view: { ...view, summary, finish: { ...finish, handoff: null }, revision: 9 } });
+  fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
+  expect(screen.getByText(/no agent session; the feedback is saved for later/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: /hand off/ })).toBeNull();
+  expect(screen.getByRole("button", { name: "Complete review" })).toBeTruthy();
+});
+
+it("keeps unsaved and generated drafts by refusing to complete until they are settled", () => {
+  const { update } = mount();
+  fireEvent.click(screen.getByRole("button", { name: "Overall feedback" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Overall feedback draft" }), { target: { value: "Unsaved overall" } });
+  update({ view: { ...view, summary, finish } });
+  expect((screen.getByRole("button", { name: "Complete review…" }) as HTMLButtonElement).disabled).toBe(true);
+  update({ view });
+  expect((screen.getByRole("textbox", { name: "Overall feedback draft" }) as HTMLTextAreaElement).value).toBe("Unsaved overall");
+  cleanup();
+  mount({ ...view, summary, finish, ai: { ...view.ai, comment_draft: { request: 1, turn: 0, destination: "general", text: "Generated" } } });
+  expect((screen.getByRole("button", { name: "Complete review…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText("Transfer or discard the generated comment draft before completing.")).toBeTruthy();
+});
+
+it("cancels a completion while its check runs and cannot leave the summary meanwhile", async () => {
+  const { onAct } = mount({ ...view, summary, finish: { ...finish, completing: true }, check_command: "cargo test",
+    check: { command: "cargo test", status: "running", output: "" } });
+  expect(screen.queryByRole("button", { name: "Complete review…" })).toBeNull();
+  expect((screen.getByRole("button", { name: "Return to review" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Completion waits for this check/)).toBeTruthy();
+  expect(screen.getByText(/Any suggestions applied before the check remain in source files if you cancel/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel completion" }));
+  await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "cancel_check" }));
 });

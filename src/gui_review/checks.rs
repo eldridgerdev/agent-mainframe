@@ -36,12 +36,21 @@ pub(super) fn command(gui: &mut GuiHandle) -> Option<String> {
     .filter(|c| !c.is_empty())
 }
 
+/// Stop the owned check (if any) and settle its displayed result. A
+/// completion waiting for it is abandoned: nothing is recorded.
 pub(super) fn cancel(gui: &mut GuiHandle, status: ReviewCheckStatus, output: String) {
     let context = gui.review_context.as_mut().unwrap();
     context.check_run = None;
+    let completing = context.completion.take().is_some();
     if let Some(check) = &mut context.check {
         check.status = status;
-        check.output = output;
+        check.output = if completing {
+            format!(
+                "Review not completed; no feedback round was recorded. Suggestions applied before the check remain in source files. {output}"
+            )
+        } else {
+            output
+        };
     }
 }
 
@@ -159,16 +168,23 @@ fn validate_result(
     reviewed_files_unchanged(state)
 }
 
-/// Shared poll command routes check completions by stable workflow identity.
-/// A stale result is never saved or accepted as a successful gate.
+/// [`poll_open`] for callers that expect the review to stay open.
 pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
+    poll_open(gui, workflow_id)?.ok_or_else(|| GuiError::conflict("Final Review was completed"))
+}
+
+/// Shared poll command routes check completions by stable workflow identity.
+/// A stale result is never saved or accepted as a successful gate. Returns
+/// `None` once a confirmed completion's check has finished and the review was
+/// completed; its result is then available from `take_completion`.
+pub fn poll_open(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<Option<ReviewView>> {
     let context = gui
         .review_context
         .as_ref()
         .filter(|c| c.id == workflow_id)
         .ok_or_else(|| GuiError::conflict("Final Review is no longer open"))?;
     if context.check_run.is_none() {
-        return ai::poll(gui, workflow_id);
+        return ai::poll(gui, workflow_id).map(Some);
     }
     let target = context.target.clone();
     let progress = context.progress.clone();
@@ -208,8 +224,23 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
             .unwrap()
             .poll();
         match result {
-            Ok(None) => return snapshot(gui),
+            Ok(None) => return snapshot(gui).map(Some),
             Ok(Some(outcome)) => match validate_result(gui, &expected, &progress) {
+                Ok(_) if gui.review_context.as_ref().unwrap().completion.is_some() => {
+                    gui.review_context.as_mut().unwrap().check_run = None;
+                    match super::complete::after_check(gui, outcome) {
+                        Ok(true) => return Ok(None),
+                        Ok(false) => {
+                            gui.review_context.as_mut().unwrap().revision += 1;
+                            return snapshot(gui).map(Some);
+                        }
+                        Err(error) => cancel(
+                            gui,
+                            ReviewCheckStatus::Stale,
+                            format!("Check finished, but {}.", error.message),
+                        ),
+                    }
+                }
                 Ok(outside) => {
                     let mut output = outcome.output;
                     if !outside.is_empty() {
@@ -244,7 +275,7 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
         }
     }
     gui.review_context.as_mut().unwrap().revision += 1;
-    snapshot(gui)
+    snapshot(gui).map(Some)
 }
 
 #[cfg(test)]

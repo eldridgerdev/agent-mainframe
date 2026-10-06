@@ -353,9 +353,26 @@ review stays open so you can inspect and review changed code again. Failed
 progress saves keep the source changes and require **Retry save** before another
 application; closing without saving does not undo those source writes.
 
-Finish checks, completing the review and sending feedback remain in the TUI.
-The summary and batch controls have automated command/component coverage; native
-desktop and macOS interaction validation remain open.
+**Complete review…** in the summary opens a confirmation that lists what the
+round records: verdict and comment counts, files without a verdict (recorded as
+skipped), any saved apply-on-finish batch, the configured check and PR posting.
+Completing works like the TUI finish. It applies that batch, reruns the
+configured check (earlier results in the summary are not reused) and records
+the round in `.claude/final-review-feedback.md`. It then clears saved progress
+and closes the review. While the check runs you can **Cancel completion**, and
+nothing is written. Choose **Complete and hand off to …** to give an actionable
+round's "address the feedback" prompt to the feature's first agent session. It
+is submitted when the TUI's `final_review_submit_prompt` setting is on and the
+session is running. Otherwise it is added to that session's composer as an
+unsent draft. **Complete without handoff** only saves the feedback. Unsaved or
+generated drafts, failed saves, changed patches or saved progress, a changed
+check command or agent session, and deleted or moved features are refused
+before anything is written. The completion is delivered once. Choosing another
+destination (a dedicated session, another feature or a companion feature)
+remains in the TUI.
+
+The summary, batch and completion controls have automated command/component
+coverage; native desktop and macOS interaction validation remain open.
 
 Question-to-comment drafting has command/component coverage and eight asserted
 native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,

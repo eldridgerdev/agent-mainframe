@@ -11,12 +11,16 @@ use crate::project::SessionKind;
 
 mod ai;
 mod checks;
+mod complete;
 mod summary;
 pub use ai::{
     ReviewAiView, ReviewCommentDraftView, ReviewCommentEditorView, ReviewDraftDestination,
     ReviewQuestionView,
 };
-pub use checks::{ReviewCheckStatus, ReviewCheckView, poll};
+pub use checks::{ReviewCheckStatus, ReviewCheckView, poll, poll_open};
+pub use complete::{
+    ReviewCompletion, ReviewFinishView, ReviewHandoff, ReviewHandoffTarget, take_completion,
+};
 pub use summary::{ReviewSummaryRow, ReviewSummaryView};
 
 pub use crate::app::review::state::{FileComment, Severity};
@@ -31,6 +35,8 @@ pub(crate) struct ReviewContext {
     ready_comment: Option<ReviewCommentEditorView>,
     check_run: Option<crate::app::review::ReviewCheckRun>,
     check: Option<ReviewCheckView>,
+    /// A confirmed completion waiting for `check_run`.
+    completion: Option<complete::PendingCompletion>,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,6 +88,8 @@ pub struct ReviewView {
     pub summary: Option<ReviewSummaryView>,
     pub check_command: Option<String>,
     pub check: Option<ReviewCheckView>,
+    /// What completing would record and hand off; present with the summary.
+    pub finish: Option<ReviewFinishView>,
     pub ai: ReviewAiView,
 }
 
@@ -113,6 +121,14 @@ pub enum ReviewAction {
         command: String,
     },
     CancelCheck,
+    /// Complete the review with the expectations its confirmation showed.
+    /// `deliver` hands an actionable round's prompt to `handoff_session`.
+    Complete {
+        check_command: Option<String>,
+        apply_suggestions: usize,
+        handoff_session: Option<String>,
+        deliver: bool,
+    },
     HistoryOpen,
     HistorySelect {
         round: usize,
@@ -291,6 +307,7 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         ));
     }
     let progress = open_state(gui, &target)?;
+    gui.review_completion = None;
     gui.review_context = Some(ReviewContext {
         id: uuid::Uuid::new_v4().to_string(),
         target,
@@ -300,6 +317,7 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         ready_comment: None,
         check_run: None,
         check: None,
+        completion: None,
     });
     snapshot(gui)
 }
@@ -318,6 +336,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
     let ready_comment = context.ready_comment.clone();
     let check = context.check.clone();
     let check_command = checks::command(gui);
+    let finish = complete::preview(gui);
     let app = gui.app_for_workflow();
     let state = ai::state(&app.mode)?;
     let mut ai = ai::view(app)?;
@@ -396,6 +415,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         summary: summary::view(state),
         check_command,
         check,
+        finish,
         history: state
             .review_history
             .as_ref()
@@ -456,10 +476,23 @@ pub fn act(
             ReviewAction::Ask { .. }
                 | ReviewAction::DraftQuestion { .. }
                 | ReviewAction::ApplyFinishSuggestions
+                | ReviewAction::Complete { .. }
         )
     {
         return Err(GuiError::conflict(
             "Save or discard the transferred comment draft first",
+        ));
+    }
+    // A completion in progress keeps its summary open: the check result
+    // decides whether anything is recorded.
+    if context.completion.is_some()
+        && !matches!(
+            action,
+            ReviewAction::CancelCheck | ReviewAction::Pause | ReviewAction::Discard
+        )
+    {
+        return Err(GuiError::conflict(
+            "Wait for or cancel the completion check first",
         ));
     }
     if context.check_run.is_some()
@@ -633,6 +666,27 @@ pub fn act(
         checks::start(gui, command)?;
         gui.review_context.as_mut().unwrap().revision += 1;
         return snapshot(gui).map(Some);
+    }
+    if let ReviewAction::Complete {
+        check_command,
+        apply_suggestions,
+        handoff_session,
+        deliver,
+    } = action
+    {
+        return match complete::start(
+            gui,
+            check_command,
+            apply_suggestions,
+            handoff_session,
+            deliver,
+        )? {
+            complete::Started::Completed => Ok(None),
+            complete::Started::Checking | complete::Started::Stopped => {
+                gui.review_context.as_mut().unwrap().revision += 1;
+                snapshot(gui).map(Some)
+            }
+        };
     }
     let invalidate_check = matches!(
         action,

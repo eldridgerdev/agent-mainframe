@@ -326,6 +326,8 @@ pub struct GuiHandle {
     app: App,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
     pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
+    /// A completed review's result, until the interface takes it once.
+    pub(crate) review_completion: Option<crate::gui_review::ReviewCompletion>,
 }
 
 impl GuiHandle {
@@ -334,6 +336,7 @@ impl GuiHandle {
             app: App::new(db_path)?,
             learning_context: None,
             review_context: None,
+            review_completion: None,
         })
     }
 
@@ -348,6 +351,7 @@ impl GuiHandle {
             app,
             learning_context: None,
             review_context: None,
+            review_completion: None,
         }
     }
 
@@ -2091,6 +2095,7 @@ mod tests {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
             learning_context: None,
             review_context: None,
+            review_completion: None,
         }
     }
 
@@ -2112,6 +2117,7 @@ mod tests {
             app,
             learning_context: None,
             review_context: None,
+            review_completion: None,
         }
     }
 
@@ -3960,6 +3966,7 @@ mod tests {
             app,
             learning_context: None,
             review_context: None,
+            review_completion: None,
         }
     }
 
@@ -4154,6 +4161,7 @@ mod tests {
                 app,
                 learning_context: None,
                 review_context: None,
+                review_completion: None,
             },
             CreateFeatureRequest {
                 project_name: "demo".into(),

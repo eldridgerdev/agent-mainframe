@@ -77,8 +77,19 @@ async fn review_begin(
 async fn review_snapshot(
     state: State<'_, AppState>,
     workflow_id: String,
-) -> Result<ReviewView, GuiError> {
-    gui_review::poll(
+) -> Result<Option<ReviewView>, GuiError> {
+    gui_review::poll_open(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+fn review_take_completion(
+    state: State<AppState>,
+    workflow_id: String,
+) -> Option<gui_review::ReviewCompletion> {
+    gui_review::take_completion(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &workflow_id,
     )
@@ -825,6 +836,7 @@ fn main() {
             review_begin,
             review_snapshot,
             review_act,
+            review_take_completion,
             load_diff,
             supported_harnesses,
             supported_modes,

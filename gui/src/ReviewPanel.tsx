@@ -145,8 +145,8 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
     else request({ kind: "pause" });
   };
   return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
-    footer={<button className="btn btn-secondary" disabled={commandBusy} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
-    <p>Review progress is shared with the TUI. Pause and reopen to resume. Finish and send feedback from the TUI.</p>
+    footer={<button className="btn btn-secondary" disabled={commandBusy || !!view.finish?.completing} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
+    <p>Review progress is shared with the TUI. Pause and reopen to resume. Complete the review and hand off feedback from the pre-finish summary.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}

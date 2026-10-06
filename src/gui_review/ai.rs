@@ -519,7 +519,7 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
         .ok_or_else(|| GuiError::conflict("Final Review is no longer open"))?;
     let target = context.target.clone();
     let progress = context.progress.clone();
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     if matches!(app.mode, AppMode::PromptPrecall(_)) || !running(state(&app.mode)?) {
         return snapshot(gui);

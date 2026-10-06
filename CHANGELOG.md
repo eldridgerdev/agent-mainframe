@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Desktop sidebar matches the TUI dashboard tree.** Project rows show their
+  path and empty or paused-plan hints. Feature rows show the TUI's status glyphs
+  and its badges for nickname and branch, `repo`, issue, PR state, usage, mode,
+  review, plan, age, sessions, stopped sessions, requests and summaries.
+  Expanded features list their sessions with kind, run state, context window
+  and status; selecting one opens its tab. Collapsing a project or feature now
+  uses the TUI's saved collapse state in both directions. Signals that only a
+  running TUI knows, such as the attention reason, are not shown. No migration
+  is required.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed

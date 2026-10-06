@@ -1544,6 +1544,28 @@ impl App {
         self.thinking_features.contains(tmux_session)
     }
 
+    /// The thinking verdict available to a process that does not own the IPC
+    /// socket (the desktop GUI): the sources `sync_thinking_status` reads when
+    /// `self.ipc` is `None`, without the OpenCode capture-pane fallback (a
+    /// subprocess per feature per poll) and without its pending-input and
+    /// attention side effects.
+    pub(crate) fn thinking_from_shared_sources(
+        &self,
+        tmux_session: &str,
+        agent: &AgentKind,
+    ) -> bool {
+        match agent {
+            AgentKind::Claude | AgentKind::Codex | AgentKind::Pi => {
+                Self::is_session_marked_thinking(tmux_session)
+            }
+            AgentKind::Opencode => self
+                .opencode_sidebar_cache
+                .get(tmux_session)
+                .and_then(opencode_sidebar_thinking_state)
+                .unwrap_or(false),
+        }
+    }
+
     pub(crate) fn note_codex_prompt_submit(&mut self, tmux_session: &str, tmux_window: &str) {
         let mut matched: Option<(String, String, String)> = None;
         for project in &self.store.projects {

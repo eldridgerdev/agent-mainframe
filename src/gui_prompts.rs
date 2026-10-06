@@ -76,7 +76,7 @@ pub struct ResolvePrompt {
 }
 
 pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult<LibraryView> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let (pi, fi) = match scope {
         LibraryScope::Global => (None, None),

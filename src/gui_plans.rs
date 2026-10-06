@@ -29,6 +29,9 @@ pub struct PlanQuestionView {
 pub struct PlanView {
     pub interview_key: String,
     pub feature_name: String,
+    /// The project a creation-time interview's feature will join; `None` for
+    /// an interview on an existing feature (whose `interview_key` is its id).
+    pub pending_project_name: Option<String>,
     pub kind: String,
     pub phase: String,
     /// Rejects an action submitted after navigation or an AI completion has
@@ -159,6 +162,10 @@ fn status_of(app: &App) -> PlanStatus {
             Some(PlanView {
                 interview_key: state.interview_key.clone(),
                 feature_name: state.feature_name.clone(),
+                pending_project_name: state
+                    .pending_launch
+                    .as_ref()
+                    .map(|pending| pending.project_name.clone()),
                 kind: match state.kind {
                     crate::app::PlanInterviewMode::Full => "full",
                     crate::app::PlanInterviewMode::Quick => "quick",
@@ -218,7 +225,7 @@ fn status_of(app: &App) -> PlanStatus {
 /// is owned by `App`; a second target gets a conflict rather than silently
 /// replacing the first interview's unsaved editor state.
 pub fn begin(gui: &mut GuiHandle, target: &FeatureTarget, quick: bool) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let existing = match &app.mode {
         AppMode::PlanInterview(state) => Some(state),
@@ -267,7 +274,7 @@ pub fn begin_feature_creation(
     request: &CreateFeatureRequest,
     quick: bool,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     begin_feature_creation_core(gui.app_for_workflow(), request, quick, None)
 }
 
@@ -406,7 +413,7 @@ pub fn begin_todo_in_new_feature(
     todo_id: &str,
     request: &CreateFeatureRequest,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let resolved = gui
         .db()?
         .resolve_todo_by_id(todo_id)
@@ -461,7 +468,7 @@ pub fn begin_todo_in_host(
     todo_id: &str,
     target: &FeatureTarget,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let resolved = gui
         .db()?
         .resolve_todo_by_id(todo_id)
@@ -1108,6 +1115,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut gui, target) = fixture(dir.path());
         let brief = begin(&mut gui, &target, true).unwrap().active.unwrap();
+        // An on-demand interview belongs to its existing feature row.
+        assert_eq!(brief.interview_key, target.feature_id);
+        assert_eq!(brief.pending_project_name, None);
         let consent = next(&mut gui, brief, "Investigate the API surface");
         assert_eq!(consent.phase, "ai_consent");
         let review = next(&mut gui, consent, "");
@@ -1320,6 +1330,9 @@ mod tests {
                 .active
                 .unwrap();
             assert_eq!(view.kind, if quick { "quick" } else { "full" });
+            // The sidebar files a minimized creation-time interview under
+            // the project its feature will join.
+            assert_eq!(view.pending_project_name.as_deref(), Some("demo"));
             assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
 
             let cancelled = act(&mut gui, &view.step_key, PlanAction::Cancel, None).unwrap();

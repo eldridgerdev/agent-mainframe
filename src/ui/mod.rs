@@ -1,7 +1,7 @@
 mod dashboard;
 mod dialogs;
 pub mod header;
-mod list;
+pub(crate) mod list;
 pub mod pane;
 mod picker;
 mod status;

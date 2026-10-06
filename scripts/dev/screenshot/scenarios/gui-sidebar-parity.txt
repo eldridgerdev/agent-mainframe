@@ -1,0 +1,7 @@
+# Native GUI sidebar parity with the TUI dashboard tree. Private HOME, SQLite,
+# Git checkouts, tmux server and an offline read-only `gh`; no agent runs and
+# nothing reaches GitHub.
+note:The isolated TUI confirms the screenshot harness is ready before the native GUI capture starts.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-sidebar.sh" "$OUT_DIR"

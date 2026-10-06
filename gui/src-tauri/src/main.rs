@@ -18,6 +18,7 @@ use agent_mainframe::automation::{
     AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
     CreateProjectResponse,
 };
+use agent_mainframe::gui_contract::sidebar::{CollapseTarget, SidebarClock};
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
     NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
@@ -231,13 +232,32 @@ fn supported_modes() -> Vec<ModeInfo> {
         .collect()
 }
 
+/// Cadence for the sidebar's background sources (session status/context and
+/// the dashboard PR sweep), kept beside the handle so tests never start them.
+struct SidebarSources(Mutex<SidebarClock>);
+
 #[tauri::command]
-fn get_snapshot(state: State<AppState>) -> Result<WorkspaceSnapshot, GuiError> {
-    state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .refresh_live_snapshot()
+fn get_snapshot(
+    state: State<AppState>,
+    sources: State<SidebarSources>,
+) -> Result<WorkspaceSnapshot, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.drive_sidebar_sources(&mut sources.0.lock().expect("sidebar clock mutex poisoned"));
+    gui.refresh_live_snapshot()
+}
+
+/// Persists a sidebar row's collapse state in the store the TUI shares.
+#[tauri::command]
+fn set_collapsed(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: CollapseTarget,
+    collapsed: bool,
+) -> Result<WorkspaceSnapshot, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let snapshot = gui.set_collapsed(target, collapsed)?;
+    emit_workspace_changed(&app, &snapshot);
+    Ok(snapshot)
 }
 
 /// Emits the post-mutation snapshot on `workspace-changed` so any open
@@ -796,6 +816,7 @@ fn main() {
             let gui = GuiHandle::new(db_path)?;
             app.manage(AppState(Mutex::new(gui)));
             app.manage(TerminalState(Mutex::new(Attachments::new())));
+            app.manage(SidebarSources(Mutex::new(SidebarClock::default())));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -808,6 +829,7 @@ fn main() {
             supported_harnesses,
             supported_modes,
             get_snapshot,
+            set_collapsed,
             create_project,
             create_feature,
             worktree_hook_prompt,

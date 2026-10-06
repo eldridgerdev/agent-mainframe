@@ -176,7 +176,7 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
     // Only reloads the store when its version changed, so this stays cheap
     // per poll. A deleted feature or moved checkout is checked while the
     // command runs because it may be removing the directory under it.
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let state = ai::state(&app.mode)?;
     let target_valid = match app

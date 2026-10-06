@@ -22,7 +22,7 @@
 //! A per-harness entry beats the shared `template` for that harness. Templates
 //! are stored and rendered verbatim — no placeholder validation.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -41,8 +41,8 @@ pub struct PromptOverrideEntry {
     pub template: Option<String>,
     /// Per-harness templates, keyed by `"claude"` / `"codex"` / `"opencode"` /
     /// `"pi"`. Each beats [`Self::template`] for that one harness.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub harnesses: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub harnesses: BTreeMap<String, String>,
 }
 
 impl PromptOverrideEntry {
@@ -79,7 +79,7 @@ impl PromptOverrideEntry {
 }
 
 /// The `amf.json` `prompt_overrides` map: prompt-id string → entry.
-pub type ProjectPromptOverrides = HashMap<String, PromptOverrideEntry>;
+pub type ProjectPromptOverrides = BTreeMap<String, PromptOverrideEntry>;
 
 /// The effective project-scope template for `id` under `harness`, or `None`
 /// when the repo config has no usable override for it.
@@ -155,8 +155,10 @@ fn read_config_object(
 
 /// Read-modify-write only the `prompt_overrides` key of the repo's config.
 ///
-/// Every other key is preserved exactly as parsed (including keys this build
-/// does not know), the file is replaced atomically by
+/// Every other key is kept, in the file's own order (serde_json's
+/// `preserve_order`), including keys this build does not know; the
+/// `prompt_overrides` maps are `BTreeMap`s so that key is written sorted. The
+/// file is replaced atomically by
 /// [`crate::extension::write_project_config`], and empty entries are dropped.
 /// A config that cannot be parsed is refused rather than replaced with a
 /// default one.
@@ -170,9 +172,7 @@ pub fn update_in_repo(
     if overrides.is_empty() {
         object.remove("prompt_overrides");
     } else {
-        // Sorted keys keep the committed file's diff stable.
-        let sorted: std::collections::BTreeMap<_, _> = overrides.into_iter().collect();
-        object.insert("prompt_overrides".into(), serde_json::to_value(sorted)?);
+        object.insert("prompt_overrides".into(), serde_json::to_value(overrides)?);
     }
     let json = serde_json::to_string_pretty(&serde_json::Value::Object(object))?;
     crate::extension::write_project_config(repo, &json)?;
@@ -220,6 +220,39 @@ mod tests {
                 .unwrap();
         assert!(raw.get("prompt_overrides").is_none(), "{raw}");
         assert_eq!(raw["future_key"]["kept"], true);
+    }
+
+    #[test]
+    fn update_in_repo_keeps_the_files_key_order() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("amf.json"),
+            r#"{"zeta":1,"allowed_agents":["codex"],"lifecycle_hooks":{"on_stop":null,"on_start":null},"alpha":2}"#,
+        )
+        .unwrap();
+        update_in_repo(dir.path(), |map| {
+            let entry = map.entry("session.summary".into()).or_default();
+            entry.set_harness(&AgentKind::Pi, Some("pi".into()));
+            entry.set_harness(&AgentKind::Codex, Some("codex".into()));
+            map.entry("learning.answer".into())
+                .or_default()
+                .set_shared(Some("shared".into()));
+        })
+        .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("amf.json")).unwrap();
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle}: {text}"))
+        };
+        // Hand-written keys keep their order, nested ones included; the new
+        // key goes last and its own maps are sorted.
+        assert!(at("\"zeta\"") < at("\"allowed_agents\""));
+        assert!(at("\"allowed_agents\"") < at("\"lifecycle_hooks\""));
+        assert!(at("\"on_stop\"") < at("\"on_start\""));
+        assert!(at("\"lifecycle_hooks\"") < at("\"alpha\""));
+        assert!(at("\"alpha\"") < at("\"prompt_overrides\""));
+        assert!(at("\"learning.answer\"") < at("\"session.summary\""));
+        assert!(at("\"codex\": \"codex\"") < at("\"pi\": \"pi\""));
     }
 
     #[test]

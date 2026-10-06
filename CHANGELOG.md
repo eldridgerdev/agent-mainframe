@@ -220,8 +220,8 @@ are tagged.
 ### Fixed
 
 - **Saving a project prompt override keeps the rest of `amf.json`.** The TUI
-  and GUI now change only its `prompt_overrides` key. Unknown keys are kept and
-  unset settings are no longer written out. A malformed `amf.json` is reported
+  and GUI now change only its `prompt_overrides` key. Other keys, including
+  unknown ones, keep their order, and unset settings are no longer written out. A malformed `amf.json` is reported
   rather than replaced with a default config.
 - Verbose Final Review checks can finish without hanging on full output buffers.
   Closing or cancelling a check also stops its child processes.

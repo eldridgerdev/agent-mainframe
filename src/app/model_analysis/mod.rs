@@ -666,6 +666,17 @@ impl App {
         self.message = None;
     }
     pub(crate) fn retry_model_analysis(&mut self) {
+        if let AppMode::ModelAnalysis(state) = &mut self.mode {
+            if state.committing {
+                return;
+            }
+            // Retry requests fresh advice, abandoning any uncommitted selection.
+            state.session_apply = None;
+        }
+        self.start_model_analysis();
+    }
+
+    fn start_model_analysis(&mut self) {
         if matches!(&self.mode, AppMode::ModelAnalysis(s) if s.committing) {
             return;
         }
@@ -1146,7 +1157,7 @@ impl App {
             if let AppMode::ModelAnalysis(s) = &mut self.mode {
                 s.session_apply = Some(application);
             }
-            self.retry_model_analysis();
+            self.start_model_analysis();
             return Ok(());
         }
         let (prepared, plan) = s.target.plan().expect("plan advice target");

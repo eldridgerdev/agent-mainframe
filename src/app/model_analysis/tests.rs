@@ -327,6 +327,20 @@ fn live_control_error_retries_analysis_without_repeating_mutation() {
 }
 
 #[test]
+fn retry_during_live_preparation_analyzes_without_applying_the_pending_selection() {
+    let (mut app, _dir) = live_session_fixture();
+    app.apply_model_analysis().unwrap();
+    wait_for_prepared(&app);
+    app.model_analysis_work.prepare_session =
+        |_, _| panic!("Retry must analyze, not prepare the pending selection again");
+    app.retry_model_analysis();
+    poll(&mut app);
+    assert!(matches!(&app.mode, AppMode::ModelAnalysis(s)
+        if s.session_apply.is_none() && matches!(s.status, Status::Ready(_))));
+    assert!(!app.store.projects[0].repo.join("applied-setting").exists());
+}
+
+#[test]
 fn failed_retry_setup_drops_the_prepared_selection_instead_of_replaying_it() {
     let (mut app, _dir) = live_session_fixture();
     app.apply_model_analysis().unwrap();

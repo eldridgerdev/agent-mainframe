@@ -20,7 +20,7 @@ use crate::token_tracking::{
     aggregate_token_usage, format_feature_token_usage, provider_for_session_kind,
 };
 
-fn format_age(dt: DateTime<Utc>) -> String {
+pub(crate) fn format_age(dt: DateTime<Utc>) -> String {
     let secs = Utc::now().signed_duration_since(dt).num_seconds();
     if secs < 60 {
         "just now".into()
@@ -56,7 +56,7 @@ pub fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
         .collect()
 }
 
-fn shorten_path(path: &Path) -> String {
+pub(crate) fn shorten_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir()
         && let Ok(rest) = path.strip_prefix(&home)
     {

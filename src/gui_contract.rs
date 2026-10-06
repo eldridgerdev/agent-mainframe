@@ -23,6 +23,8 @@ use crate::automation::{
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
+pub mod sidebar;
+
 /// A structured, serializable error every GUI-facing operation returns
 /// instead of a bare string, so the frontend can branch on `kind` (e.g. a
 /// "this was deleted elsewhere, refresh?" affordance for `NotFound`) instead
@@ -133,6 +135,9 @@ pub struct WorkspaceSnapshot {
     /// Sessions of a running feature whose tmux window is gone: stopped on
     /// their own (the TUI's `x`) or exited. Only a live snapshot fills this.
     pub stopped_session_ids: Vec<String>,
+    /// What the TUI dashboard tree derives at render time, keyed by id
+    /// (`gui_contract::sidebar`).
+    pub sidebar: sidebar::SidebarSnapshot,
 }
 
 /// Addresses one feature by stable id rather than dashboard selection or a
@@ -351,6 +356,7 @@ impl GuiHandle {
             projects: self.app.store.projects.clone(),
             snapshot_at: chrono::Utc::now(),
             stopped_session_ids: Vec::new(),
+            sidebar: sidebar::project_sidebar(&self.app, &self.app.store.projects),
         }
     }
 
@@ -363,7 +369,8 @@ impl GuiHandle {
         if let Some(db) = &self.app.db {
             let current = db.current_store_version().map_err(GuiError::from)?;
             if self.app.store_version != Some(current) {
-                let (store, version) = db.load_store_versioned().map_err(GuiError::from)?;
+                let (mut store, version) = db.load_store_versioned().map_err(GuiError::from)?;
+                sidebar::carry_runtime_session_fields(&self.app.store, &mut store);
                 self.app.store = store;
                 self.app.store_version = Some(version);
             }
@@ -450,6 +457,9 @@ impl GuiHandle {
                 }
             }
         }
+        // Statuses were just corrected against tmux: a stopped feature
+        // cannot be thinking, whatever its marker file says.
+        snapshot.sidebar = sidebar::project_sidebar(&self.app, &snapshot.projects);
         Ok(snapshot)
     }
 

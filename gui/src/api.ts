@@ -28,6 +28,15 @@ export interface FeatureSession {
   stopped?: boolean;
 }
 
+export interface IssueSource {
+  host: string;
+  owner: string;
+  repository: string;
+  number: number;
+}
+
+// Persisted fields the TUI dashboard tree reads are optional here so older
+// fixtures and partial snapshots stay valid; the Rust store always sends them.
 export interface Feature {
   id: string;
   name: string;
@@ -38,6 +47,18 @@ export interface Feature {
   agent: AgentSlug;
   mode: ModeSlug;
   sessions: FeatureSession[];
+  /** Shared with the TUI tree; Rust defaults it to collapsed. */
+  collapsed?: boolean;
+  nickname?: string | null;
+  review?: boolean;
+  plan_mode?: boolean;
+  remote_control?: boolean;
+  pending_worktree_script?: boolean;
+  ready?: boolean;
+  created_at?: string;
+  summary?: string | null;
+  summary_updated_at?: string | null;
+  issue_source?: IssueSource | null;
 }
 
 export interface Project {
@@ -46,6 +67,45 @@ export interface Project {
   repo: string;
   is_git: boolean;
   features: Feature[];
+  /** Shared with the TUI tree. */
+  collapsed?: boolean;
+}
+
+/** What the TUI tree derives at render time (`gui_contract::sidebar`). */
+export interface SidebarSnapshot {
+  projects: Record<string, { repo_display: string }>;
+  features: Record<string, SidebarFeature>;
+  sessions: Record<string, SidebarSession>;
+}
+
+export type SidebarPr =
+  | { state: "open"; number: number; unresolved_threads: number | null }
+  | { state: "merged" | "closed"; number: number };
+
+export interface SidebarFeature {
+  workdir_display: string;
+  created_age: string;
+  issue: string | null;
+  summary_age: string | null;
+  usage: string | null;
+  pr: SidebarPr | null;
+  thinking: boolean;
+  waiting_for_input: boolean;
+  pending_input: boolean;
+}
+
+export interface SidebarContext {
+  text: string;
+  band: "normal" | "warning" | "critical";
+  stale: boolean;
+  pending_reset: boolean;
+}
+
+export interface SidebarSession {
+  status_text: string | null;
+  context: SidebarContext | null;
+  icon: string | null;
+  icon_nerd: string | null;
 }
 
 export interface WorkspaceSnapshot {
@@ -53,6 +113,18 @@ export interface WorkspaceSnapshot {
   snapshot_at: string;
   /** Sessions of a running feature whose tmux window is gone. */
   stopped_session_ids: string[];
+  /** Absent only in fixtures written before sidebar parity. */
+  sidebar?: SidebarSnapshot;
+}
+
+export interface CollapseTarget {
+  project_id: string;
+  feature_id: string | null;
+}
+
+/** Persist a tree row's collapse state in the store the TUI shares. */
+export function setCollapsed(target: CollapseTarget, collapsed: boolean): Promise<WorkspaceSnapshot> {
+  return invoke("set_collapsed", { target, collapsed });
 }
 
 export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "internal";
@@ -429,6 +501,8 @@ export interface PlanQuestionView {
 export interface PlanView {
   interview_key: string;
   feature_name: string;
+  /** Creation-time interviews only: the project the new feature will join. */
+  pending_project_name?: string | null;
   kind: "full" | "quick";
   phase: string;
   step_key: string;

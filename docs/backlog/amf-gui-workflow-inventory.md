@@ -15,6 +15,8 @@ Keep them current as the staged GUI scope grows.
 | --- | --- |
 | Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
 | Limited | VS Code and configured custom sessions still require the TUI session picker. |
+| Available | Sidebar parity with the TUI dashboard tree: shortened project paths, empty-project and paused creation-plan hints; feature status glyphs in the TUI's precedence, nickname/branch, `repo`, issue source, open/merged/closed PR badges with open threads, token usage, mode/review/plan/plan-paused badges, age, session and stopped-session counts, the `?` request marker, workdir and AI summary; nested session rows with kind icons, run state, agent context indicator and status line that open their tab; collapse state persisted in the shared `collapsed` flags. Context, usage, status text and open PRs come from the TUI's own collectors running in the GUI process; merged/closed PRs, thinking markers and waiting notification files are read from their shared on-disk forms. |
+| Limited | The sidebar omits TUI-process state with no shared form: the attention reason, TUI background hooks, TUI deletion, summary generation and AI-review progress. `remote` and the pending worktree script render when present but are not persisted, so another process's values never reach the GUI. While a TUI owns the IPC socket, thinking and waiting can be under-reported. OpenCode thinking uses the sidebar cache only. Six asserted native WSLg frames cover the tree, session rows, collapse round trip and paused-plan resume; macOS validation remains open. |
 | Available | Local prompt composer on Claude, Codex, OpenCode and Pi tabs. Enter adds a line; Ctrl/Cmd+Enter or Send prompt submits the complete draft through tmux bracketed paste. Drafts stay per session through navigation and refresh while the window is open, failed sends retain text, and duplicate sends are blocked. TODO, planning and Learning handoffs use the same composer. Shell/editor input stays direct. |
 | Available | Global, project and worktree TODO lists: add, change status, delete, reorder, move and copy. Start a TODO agent in an existing feature or a new git worktree feature with an editable, unsent prompt. |
 | Available | Full and Quick Plan on an existing feature or while creating a feature; Full Plan for a TODO in an existing feature or a new git worktree. Review/edit, headless-call notice, cancellation and explicit approval for over-limit starts. |
@@ -99,6 +101,16 @@ Completed increments and remaining work, in priority order:
   [`gui-agent-composer.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-composer.txt).
   It preserves HOME and uses a private database and tmux server with lightweight
   harness fixtures; no paid agents or real AMF sessions are started.
+
+- [x] **Sidebar parity with the TUI dashboard tree (user-requested, 2026-10-06).**
+  The sidebar carries every row, badge and glyph `src/ui/list.rs::draw` shows,
+  nested session rows and the shared collapse state. Each runtime signal is
+  derived in the GUI process with the TUI's own collector, read from a shared
+  on-disk form, or deliberately left out as TUI-process state. Native proof is
+  reproducible with
+  [`gui-sidebar-parity.txt`](../../scripts/dev/screenshot/scenarios/gui-sidebar-parity.txt),
+  which uses a private HOME, database, Git checkouts and tmux server and an
+  offline, read-only `gh`.
 
 - [x] **Final Review line/range comments and suggestion editing.** Select lines
   in unified or split diffs, edit prose and replacement code, resolve/reopen

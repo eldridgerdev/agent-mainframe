@@ -124,7 +124,7 @@ kbd {
 .app { display: flex; height: 100vh; overflow: hidden; }
 
 .sidebar {
-  width: 248px;
+  width: 300px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -204,6 +204,178 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .nav-chevron { width: 16px; height: 24px; justify-content: center; color: var(--text-faint); margin-left: -2px; }
 .nav-chevron:hover { color: var(--text); }
 .nav-link { flex: 1; min-width: 0; gap: 8px; height: 30px; text-align: left; font-weight: 500; color: var(--text); }
+
+/* Workspace tree: the TUI dashboard tree's rows (SidebarTree.tsx). */
+.tree-project-meta {
+  padding: 0 8px 2px 32px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-empty-hint, .tree-project-plan { margin: 2px 8px 4px 32px; }
+.tree-empty-hint {
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-decoration: underline dotted;
+}
+.tree-empty-hint:hover { color: var(--accent); }
+.tree-feature { margin: 1px 0; padding: 3px 6px 4px 14px; border-radius: 6px; }
+.tree-feature:hover { background: var(--surface-3); }
+.tree-feature-active, .tree-feature-active:hover { background: var(--accent-soft); }
+.tree-row { display: flex; align-items: center; gap: 5px; min-height: 24px; }
+.tree-row .nav-chevron { flex-shrink: 0; }
+.tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+  text-align: left;
+}
+.tree-feature-active .tree-name { font-weight: 600; }
+.tree-name-deleting { color: var(--text-faint); text-decoration: line-through; }
+.tree-branch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+.tree-glyph {
+  width: 14px;
+  flex-shrink: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.tree-glyph .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+.glyph-worktree_script, .glyph-thinking { color: var(--accent); }
+.glyph-deleting { color: var(--red); }
+.glyph-waiting { color: var(--amber); }
+.glyph-ready { color: var(--green); }
+.tree-pending { flex-shrink: 0; font-weight: 700; color: var(--amber); }
+.tree-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 4px;
+  padding: 2px 0 0 38px;
+  cursor: default;
+}
+.tree-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-chip-warning { background: var(--amber-soft); color: var(--amber); font-weight: 600; }
+.tree-chip-danger { background: var(--red-soft); color: var(--red); font-weight: 600; }
+.tree-chip-info { background: var(--accent-soft); color: var(--accent); }
+.tree-chip-review { background: var(--green-soft); color: var(--green); }
+.tree-chip-detail { font-family: var(--mono); font-size: 10px; }
+.tree-chip-age { background: transparent; color: var(--amber); padding: 0 2px; }
+.tree-chip-stopped { background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.tree-chip-action:hover { text-decoration: underline; }
+.tree-chip-mode.mode-vibe { background: var(--amber-soft); color: var(--amber); }
+.tree-chip-mode.mode-supervibe {
+  background: linear-gradient(90deg, #e5484d, #e0ab3e, #30a46c, #4f5bd5, #8e4ec6);
+  color: #fff;
+  font-weight: 600;
+}
+.tree-pr { font-weight: 600; }
+.tree-pr.pr-open { background: var(--accent-soft); color: var(--accent); }
+.tree-pr.pr-clear { background: var(--green-soft); color: var(--green); }
+.tree-pr.pr-merged { background: rgba(142, 78, 198, 0.14); color: #8e4ec6; }
+.tree-pr.pr-closed { background: var(--red-soft); color: var(--red); }
+.tree-summary {
+  padding: 2px 0 0 38px;
+  font-size: 11.5px;
+  color: var(--amber);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-sessions { margin: 3px 0 0 22px; border-left: 1px solid var(--border-strong); padding-left: 6px; }
+.tree-detail {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 0 2px;
+}
+.tree-session { border-radius: 5px; }
+.tree-session-active { background: var(--surface); box-shadow: var(--shadow-sm); }
+.tree-session-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+}
+.tree-session-row:hover { color: var(--accent); }
+.tree-session-stopped .tree-session-label { color: var(--text-faint); }
+.tree-session-state { width: 10px; flex-shrink: 0; display: inline-grid; place-items: center; }
+.tree-kind {
+  width: 14px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--mono), "AMF Symbols";
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.kind-claude { color: #d97757; }
+.kind-codex, .kind-pi { color: #10a37f; }
+.kind-opencode { color: #6e7bff; }
+.kind-terminal { color: var(--green); }
+.kind-nvim { color: #57a143; }
+.kind-vscode { color: #23a9f2; }
+.kind-custom, .kind-todos { color: var(--amber); }
+/* The label truncates first so the context indicator stays readable, but
+   never below a few characters: like the TUI row, the name wins. */
+.tree-session-label { flex: 1 1 0; min-width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-context { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
+.ctx-normal { color: var(--green); }
+.ctx-warning { color: var(--amber); font-weight: 700; }
+.ctx-critical { color: var(--red); font-weight: 700; }
+.ctx-stale { opacity: 0.75; font-style: italic; }
+.ctx-pending { color: var(--text-faint); }
+.tree-session-status {
+  padding: 0 4px 2px 33px;
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .plan-pill {
   margin: 8px;

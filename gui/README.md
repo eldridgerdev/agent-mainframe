@@ -182,6 +182,25 @@ one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
 
+The sidebar is the TUI dashboard tree. Each project shows its shortened path,
+an add-feature hint when it is empty, and any minimized creation-time plan.
+Each feature row shows the TUI's status glyph (worktree script, deletion in
+this window, waiting for input, agent working, ready, then running/idle/
+stopped), its nickname and branch, then badges: `repo`, issue source, PR state
+and open threads, token usage, mode, `review`, `plan`, `plan paused · Resume`,
+`remote`, age, session count, stopped sessions, the `?` request marker and the
+AI summary. The workdir and full text are in tooltips. Expanding a feature lists
+its sessions with kind icon, running state, the agent context indicator and
+the status line; selecting a row opens that tab. Collapse state is the
+`collapsed` flag the TUI uses, so it round-trips between interfaces. The GUI
+derives context, usage, status text and open PRs with the TUI's own background
+collectors (the PR sweep reads GitHub through `gh` every five minutes), and reads
+merged/closed PRs, the hooks' thinking markers and waiting notification files
+from their shared on-disk forms. The attention reason, a TUI background hook,
+TUI deletion, summary generation and AI-review progress exist only inside a
+TUI process and are not shown. While a TUI is running, hooks report to it
+instead of the shared files, so the GUI can under-report thinking and waiting.
+
 Agent tabs include **Compose prompt** below the terminal. Type or paste locally;
 **Enter** adds a line, and **Ctrl/Cmd+Enter** or **Send prompt** sends the whole
 message through tmux's bracketed-paste path. Each session keeps its own unsent

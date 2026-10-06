@@ -17,6 +17,7 @@ import {
   AgentSlug,
   NewSessionKind,
   NewSessionOption,
+  CollapseTarget,
   CreateFeatureRequest,
   Feature,
   FeatureSession,
@@ -53,6 +54,7 @@ import {
   recoverSession,
   savedAgentSessions,
   sessionRecoveryOption,
+  setCollapsed,
   startFeature,
   removeSession,
   startSession,
@@ -75,6 +77,7 @@ import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
 import NewSessionDialog from "./NewSessionDialog";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
+import SidebarTree, { byStatus, withCollapsed } from "./SidebarTree";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
@@ -126,12 +129,6 @@ const LOADING_PHASES = new Set([
   "investigation_loading", "critique_loading", "done",
 ]);
 
-// Feature list order (sidebar and project page): running features first, then idle, then stopped. The sort
-// is stable, so each group keeps the store's own order.
-const STATUS_RANK: Record<Feature["status"], number> = { active: 0, idle: 1, stopped: 2 };
-const byStatus = (features: Feature[]) =>
-  [...features].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
-
 const sessionKey = (target: { feature_id: string; session_id: string }) =>
   `${target.feature_id}:${target.session_id}`;
 
@@ -154,7 +151,6 @@ function pruneKeys<T>(current: Record<string, T>, live: Set<string>): Record<str
 export default function App() {
   const queryClient = useQueryClient();
   const [view, setView] = useState<View | null>(null);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
@@ -350,6 +346,17 @@ export default function App() {
         : undefined,
     });
   }, [pushToast, workspace]);
+
+  /** Collapse or expand a tree row in the store shared with the TUI, showing
+   *  the change at once and undoing it if the write is refused. */
+  const toggleCollapsed = useCallback((target: CollapseTarget, collapsed: boolean) => {
+    const show = (value: boolean) => queryClient.setQueryData<WorkspaceSnapshot>(
+      SNAPSHOT_KEY, (current) => current && withCollapsed(current, target, value));
+    show(collapsed);
+    setCollapsed(target, collapsed)
+      .then((snapshot) => queryClient.setQueryData(SNAPSHOT_KEY, snapshot))
+      .catch((err) => { show(!collapsed); reportError(err); });
+  }, [queryClient, reportError]);
 
   const harnessName = (slug: AgentSlug) =>
     harnesses.data?.find((harness) => harness.slug === slug)?.display_name ?? slug;
@@ -996,44 +1003,31 @@ export default function App() {
             <p className="nav-note">No projects yet.</p>
           )}
 
-          {projects.map((project) => {
-            const isCollapsed = collapsed[project.id] ?? false;
-            const projectActive = view?.kind === "project" && view.projectId === project.id;
-            return (
-              <div key={project.id} className="nav-group">
-                <div className={projectActive ? "nav-item nav-item-active" : "nav-item"}>
-                  <button
-                    className="nav-chevron"
-                    aria-label={isCollapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
-                    onClick={() => setCollapsed((current) => ({ ...current, [project.id]: !isCollapsed }))}
-                  >
-                    <Icon name={isCollapsed ? "chevronRight" : "chevronDown"} size={14} />
-                  </button>
-                  <button
-                    className="nav-link"
-                    onClick={() => setView({ kind: "project", projectId: project.id })}
-                  >
-                    <span className="nav-label">{project.name}</span>
-                    <span className="nav-count">{project.features.length}</span>
-                  </button>
-                </div>
-                {!isCollapsed && byStatus(project.features).map((feature) => {
-                  const active = view?.kind === "feature" && view.featureId === feature.id;
-                  return (
-                    <button
-                      key={feature.id}
-                      className={active ? "nav-item nav-sub nav-item-active" : "nav-item nav-sub"}
-                      onClick={() => setView({ kind: "feature", projectId: project.id, featureId: feature.id })}
-                      title={`${feature.name} — ${feature.status}`}
-                    >
-                      <StatusDot status={feature.status} />
-                      <span className="nav-label">{feature.name}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            );
-          })}
+          <SidebarTree
+            projects={projects}
+            sidebar={workspace.data?.sidebar}
+            stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
+            selection={view?.kind === "project" ? view
+              : view?.kind === "feature" ? { ...view, tab: tabByFeature[view.featureId] } : null}
+            deletingFeatureId={deleteFeatureMutation.isPending
+              ? deleteFeatureMutation.variables?.target.feature_id ?? null : null}
+            pausedPlan={activePlan && planMinimized ? {
+              featureId: activePlan.pending_project_name ? null : activePlan.interview_key,
+              projectName: activePlan.pending_project_name ?? null,
+              featureName: activePlan.feature_name,
+            } : null}
+            onSelectProject={(projectId) => setView({ kind: "project", projectId })}
+            onSelectFeature={(projectId, featureId) => setView({ kind: "feature", projectId, featureId })}
+            onSelectSession={(target, kind) => {
+              setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
+              setTabByFeature((current) => ({
+                ...current, [target.feature_id]: kind === "todos" ? TODOS_TAB : target.session_id,
+              }));
+            }}
+            onToggleCollapsed={toggleCollapsed}
+            onResumePlan={() => setPlanMinimized(false)}
+            onCreateFeature={setCreateFeatureFor}
+          />
         </nav>
 
         {activePlan && planMinimized && (

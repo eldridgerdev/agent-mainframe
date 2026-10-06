@@ -26,6 +26,7 @@ use agent_mainframe::gui_contract::{
     TodoDeleteChoice, TodoHostChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
+use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_prompt_overrides::{
@@ -563,11 +564,15 @@ fn attach_terminal(
     target: SessionTarget,
     size: TerminalSize,
 ) -> Result<AttachTerminalResponse, GuiError> {
-    let terminal_target = state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .resolve_session_target(&target)?;
+    let terminal_target = {
+        let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+        let resolved = gui.resolve_session_target(&target)?;
+        // Opening a session is attention, as the TUI's view entry is.
+        if let Err(err) = gui_dormancy::note_opened(&mut gui, &target) {
+            eprintln!("amf-gui: could not record feature access: {}", err.message);
+        }
+        resolved
+    };
     let key = terminal_key(&target);
 
     let event_name = format!("terminal-output:{key}");
@@ -900,6 +905,24 @@ fn learning_launch_agent(
     Ok(response)
 }
 
+#[tauri::command]
+async fn dormancy_load(state: State<'_, AppState>) -> Result<DormancyView, GuiError> {
+    gui_dormancy::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+
+/// Async so editor cleanup's bounded grace period never blocks the window.
+#[tauri::command]
+async fn dormancy_stop(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    selection: Vec<DormantObservation>,
+) -> Result<Vec<DormancyStopResult>, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let results = gui_dormancy::stop(&mut gui, selection)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(results)
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -975,6 +998,8 @@ fn main() {
             supervised_edits_load,
             supervised_edit_counts,
             supervised_edit_respond,
+            dormancy_load,
+            dormancy_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

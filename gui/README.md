@@ -173,7 +173,8 @@ each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
-editing-agent handoff, plus standalone Git diffs, supervised edits and saved prompt browsing. Continue to use `amf` for workflows
+editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing and
+dormant-feature stops. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -436,6 +437,23 @@ A running TUI receives these requests over its socket and answers them there;
 the GUI does not take that socket over. Explaining an edit with AI also stays
 in the TUI. `gui-supervised-edits.txt` drives the real Claude hook script with
 offline input against an isolated database and checkout.
+
+### Dormant features
+
+Open **Dormant features** in workspace navigation for the TUI's `z` list:
+running features whose agent has produced no output for longer than
+`dormant_idle_minutes` *and* that nobody has opened for longer than
+`dormant_last_accessed_hours`, longest idle first, with each age and timestamp.
+Setting either key to `0` switches detection off. Select features and confirm
+**Stop** to stop them through the TUI's stop, including editor cleanup when
+`kill_editor_on_stop` is on. Each feature is checked again before stopping, and
+the result lists what happened to each one: which editor windows were closed,
+which were left running and why, and which features were skipped because they
+changed. Showing a session's terminal counts as opening the feature, as in the
+TUI. Closing only an editor and deleting from this list remain TUI actions.
+Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
+confirmation, a confirm-time refusal and editor ownership with stand-in
+processes on a private tmux server.
 
 ## Checks
 

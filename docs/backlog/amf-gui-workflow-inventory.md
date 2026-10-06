@@ -38,6 +38,8 @@ Keep them current as the staged GUI scope grows.
 | Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
 | Available | Headless prompt override manager from workspace navigation, with every registry prompt, its effective layer (and per-harness winner), placeholders, effective and built-in templates. Save feature, project (`amf.json`) or global overrides, shared or per harness. Clear one stored override with confirmation. Unsaved-edit protection is included. Stale saves after TUI, other-window or hand edits of `amf.json` are refused until reloaded, and malformed `amf.json` is reported without being overwritten. Pending Final Review and planning AI calls link to the manager through **Edit prompt**. |
 | Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
+| Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
+| Limited | Closing only a dormant feature's editor and deleting from the dormant list remain TUI actions. Four asserted native WSLg frames verify the list, confirmation, a confirm-time refusal and editor ownership through real Rust IPC with stand-in editors; macOS validation is open. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
 
 Native GUI diff proof is reproducible with
@@ -240,8 +242,13 @@ Completed increments and remaining work, in priority order:
   native WSLg frames
   ([`gui-prompt-overrides.txt`](../../scripts/dev/screenshot/scenarios/gui-prompt-overrides.txt))
   cover this increment.
-- [ ] **Other GUI parity.** Continue dormancy, settings,
+- [ ] **Other GUI parity.** Continue settings,
   VS Code/custom sessions and the remaining workflow inventory.
+  - [x] **Dormancy (2026-10-06).** List idle, unattended features and stop a
+    confirmed selection through the shared stop and editor-cleanup engine,
+    with per-feature confirm-time re-checks and a full editor report. GUI
+    session views now update `last_accessed` like TUI view entry. Reproduce with
+    [`gui-dormancy.txt`](../../scripts/dev/screenshot/scenarios/gui-dormancy.txt).
 
 ## Method
 

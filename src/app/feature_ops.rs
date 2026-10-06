@@ -1644,6 +1644,19 @@ impl App {
 
     /// Inner stop logic called after a hook prompt is confirmed.
     pub fn do_stop_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
+        self.stop_feature_reporting(pi, fi).map(|_| ())
+    }
+
+    /// [`Self::do_stop_feature`], returning what editor cleanup did:
+    /// `None` when `kill_editor_on_stop` is off (no editor was examined) or
+    /// the feature no longer exists, otherwise the full killed/skipped/pending
+    /// report, which the status line only summarizes. The stop itself is the
+    /// same one path either way.
+    pub(crate) fn stop_feature_reporting(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<Option<crate::app::editor_ops::EditorKillReport>> {
         // Run on_stop for custom sessions before killing tmux.
         if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Self::run_custom_session_on_stop(feature, self.db.as_ref());
@@ -1652,7 +1665,7 @@ impl App {
         let (tmux_session, workdir, agent) =
             match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
                 Some(f) => (f.tmux_session.clone(), f.workdir.clone(), f.agent.clone()),
-                None => return Ok(()),
+                None => return Ok(None),
             };
 
         self.tmux.kill_session(&tmux_session)?;
@@ -1665,7 +1678,7 @@ impl App {
             .and_then(|p| p.features.get_mut(fi))
         {
             Some(f) => f,
-            None => return Ok(()),
+            None => return Ok(None),
         };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
@@ -1679,19 +1692,20 @@ impl App {
         // The tmux session is gone, but the editor AMF opened for this feature
         // is not in tmux — and neither are the language servers under it, which
         // are the heaviest thing the feature was holding.
-        let editor_report = if self.config.kill_editor_on_stop {
-            self.kill_tracked_editors(&feature_id)
-        } else {
-            Default::default()
-        };
+        let editor_report = self
+            .config
+            .kill_editor_on_stop
+            .then(|| self.kill_tracked_editors(&feature_id));
 
         self.save()?;
-        self.message = Some(match editor_report.summary() {
-            Some(detail) => format!("Stopped '{}' - {}", name, detail),
-            None => format!("Stopped '{}'", name),
-        });
+        self.message = Some(
+            match editor_report.as_ref().and_then(|report| report.summary()) {
+                Some(detail) => format!("Stopped '{}' - {}", name, detail),
+                None => format!("Stopped '{}'", name),
+            },
+        );
 
-        Ok(())
+        Ok(editor_report)
     }
 
     /// Run on_stop commands for all custom sessions in a

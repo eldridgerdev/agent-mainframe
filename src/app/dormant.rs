@@ -134,27 +134,50 @@ pub fn dormant_features(
     dormant
 }
 
+/// One dormancy check, with the activity readings it was decided on, so a
+/// caller that must re-check later (the GUI's confirm-time recheck) can tell
+/// *what* changed rather than only that something did.
+#[derive(Debug, Clone)]
+pub(crate) struct DormancyScan {
+    pub features: Vec<DormantFeature>,
+    /// Latest tmux activity per session name, as read for this scan.
+    pub activity: HashMap<String, DateTime<Utc>>,
+    pub now: DateTime<Utc>,
+}
+
 impl App {
     /// Dormant features right now, or an empty list when dormancy is switched
     /// off in config.
     pub fn find_dormant_features(&self) -> Vec<DormantFeature> {
-        let Some((idle_threshold, unattended_threshold)) = self.config.dormant_thresholds() else {
-            return Vec::new();
-        };
+        self.scan_dormant_features()
+            .map(|scan| scan.features)
+            .unwrap_or_default()
+    }
+
+    /// The check behind [`Self::find_dormant_features`], or `None` when
+    /// dormancy is switched off in config.
+    pub(crate) fn scan_dormant_features(&self) -> Option<DormancyScan> {
+        let (idle_threshold, unattended_threshold) = self.config.dormant_thresholds()?;
         let activity = latest_activity_by_session(&self.tmux.window_activity());
         let db = self.db.as_ref();
         let editor_alive = |feature_id: &str| -> bool {
             db.and_then(|db| db.launched_editors_for_feature(feature_id).ok())
                 .is_some_and(|editors| editors.iter().any(|editor| procs::pid_alive(editor.pid)))
         };
-        dormant_features(
+        let now = Utc::now();
+        let features = dormant_features(
             &self.store,
             &activity,
-            Utc::now(),
+            now,
             idle_threshold,
             unattended_threshold,
             &editor_alive,
-        )
+        );
+        Some(DormancyScan {
+            features,
+            activity,
+            now,
+        })
     }
 
     /// Open the dormant-features overlay. Opens even when nothing is dormant —

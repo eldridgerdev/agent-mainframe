@@ -1257,3 +1257,38 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .overrides-slots li .badge { margin-left: 8px; }
 .overrides-slot-actions { display: flex; gap: 6px; }
 @media (max-width: 720px) { .overrides-editor-targets { grid-template-columns: 1fr; } }
+/* ── Dormant features ───────────────────────────────────── */
+
+.chip-warning { background: var(--amber-soft); color: var(--amber); }
+.dormancy-list, .dormancy-results ul, .dormancy-confirm ul, .dormancy-editors {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dormancy-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.dormancy-row-selected { border-color: var(--amber); background: var(--amber-soft); }
+.dormancy-row input[type="checkbox"] { margin-top: 3px; width: auto; height: auto; }
+.dormancy-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.dormancy-row-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dormancy-why { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--text-muted); }
+.dormancy-why strong { color: var(--text); }
+.dormancy-confirm, .dormancy-results { display: flex; flex-direction: column; gap: 10px; }
+.dormancy-confirm p, .dormancy-results p { margin: 0; }
+.dormancy-confirm ul { gap: 4px; }
+.dormancy-result { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--radius); }
+.dormancy-result .icon { margin-top: 2px; flex: none; }
+.dormancy-result-stopped { background: var(--green-soft); }
+.dormancy-result-stopped > .icon { color: var(--green); }
+.dormancy-result-refused, .dormancy-result-failed { background: var(--amber-soft); }
+.dormancy-result-refused > .icon, .dormancy-result-failed > .icon { color: var(--amber); }
+.dormancy-editors { margin-top: 4px; gap: 2px; font-size: 13px; color: var(--text-muted); }

@@ -1428,11 +1428,17 @@ impl GuiHandle {
             });
         }
 
-        self.app.do_stop_feature(pi, fi)?;
+        let editors = self.app.stop_feature_reporting(pi, fi)?;
+        // Carry the editor cleanup's outcome (a window left running because
+        // AMF did not open it, say) instead of dropping it with the status line.
+        let message = match editors.as_ref().and_then(|report| report.summary()) {
+            Some(detail) => format!("Stopped '{name}' - {detail}"),
+            None => format!("Stopped '{name}'"),
+        };
         Ok(StopFeatureResponse {
             feature_id: target.feature_id,
             already_stopped: false,
-            message: format!("Stopped '{name}'"),
+            message,
         })
     }
 

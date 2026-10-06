@@ -721,3 +721,42 @@ it("opens prompt overrides from navigation and from a pending review AI call wit
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "review_act")).toBe(false);
   client.clear();
 });
+
+it("opens dormant features from navigation and hands Open to the feature page without stopping anything", async () => {
+  const snapshot: WorkspaceSnapshot = {
+    projects: [{ id: "project", name: "demo", repo: "/demo", is_git: false, features: [{
+      id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo", is_worktree: false,
+      status: "idle", agent: "claude", mode: "vibeless", sessions: [session("Agent", "claude")],
+    }] }],
+    snapshot_at: "2026-10-05T00:00:00Z", stopped_session_ids: [],
+  };
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    switch (command) {
+      case "get_snapshot": return snapshot;
+      case "supported_harnesses": return [{ slug: "claude", display_name: "Claude" }];
+      case "supported_modes": return [{ slug: "vibeless", display_name: "Vibeless", description: "" }];
+      case "plan_snapshot": return { active: null, draft: null };
+      case "dormancy_load": return {
+        enabled: true, idle_minutes: 60, unattended_hours: 4, kill_editor_on_stop: true,
+        checked_at: "2026-10-05T10:00:00Z", features: [{
+          project_name: "demo", workdir: "/demo", is_worktree: false, editor_alive: false,
+          idle_secs: 7200, unattended_secs: 86_400, observation: {
+            target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
+            tmux_session: "amf-my-feat", last_activity: "2026-10-05T08:00:00Z", last_accessed: "2026-10-04T10:00:00Z",
+          },
+        }],
+      };
+      default: throw new Error(`Unexpected command: ${command}`);
+    }
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Dormant features" }));
+  const panel = within(await screen.findByRole("dialog", { name: "Dormant features" }));
+  expect(await panel.findByRole("checkbox", { name: "Select my-feat" })).toBeTruthy();
+  fireEvent.click(panel.getByRole("button", { name: "Open" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull());
+  expect(await screen.findByRole("tab", { name: /Agent/ })).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "dormancy_stop" || command === "stop_feature")).toBe(false);
+  client.clear();
+});

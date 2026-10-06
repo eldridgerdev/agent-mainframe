@@ -843,3 +843,48 @@ export function promptLibraryLoad(scope: LibraryScope, query: string): Promise<L
 export function promptLibraryResolve(request: ResolvePrompt): Promise<string> {
   return invoke("prompt_library_resolve", { request });
 }
+
+// Mirrors src/gui_dormancy.rs.
+/** The readings a dormant row was listed on; sent back verbatim to stop it. */
+export interface DormantObservation {
+  target: FeatureTarget;
+  feature_name: string;
+  tmux_session: string;
+  last_activity: string;
+  last_accessed: string;
+}
+export interface DormantFeatureView {
+  project_name: string;
+  workdir: string;
+  is_worktree: boolean;
+  editor_alive: boolean;
+  idle_secs: number;
+  unattended_secs: number;
+  observation: DormantObservation;
+}
+export interface DormancyView {
+  /** False when either threshold is 0 in config, which switches detection off. */
+  enabled: boolean;
+  idle_minutes: number;
+  unattended_hours: number;
+  kill_editor_on_stop: boolean;
+  checked_at: string;
+  features: DormantFeatureView[];
+}
+export interface EditorCleanup {
+  killed: { name: string; processes: number }[];
+  /** `deliberate` is false only for an editor that had already closed. */
+  skipped: { name: string; reason: string; deliberate: boolean }[];
+  /** Windows still opening; AMF closes them once they can be identified. */
+  pending: string[];
+  summary: string | null;
+}
+export type DormancyRefusal = "duplicate" | "deleted" | "already_stopped" | "restarted"
+  | "shared_session" | "dormancy_off" | "opened" | "output" | "no_longer_dormant";
+export type DormancyStopResult = { target: FeatureTarget; feature_name: string } & (
+  | { outcome: "stopped"; editors: EditorCleanup | null }
+  | { outcome: "refused"; reason: DormancyRefusal; message: string }
+  | { outcome: "failed"; message: string });
+export const dormancyLoad = (): Promise<DormancyView> => invoke("dormancy_load");
+export const dormancyStop = (selection: DormantObservation[]): Promise<DormancyStopResult[]> =>
+  invoke("dormancy_stop", { selection });

@@ -51,6 +51,16 @@ are tagged.
   reloaded before saving. Pending Final Review and planning AI calls offer
   **Edit prompt**; your saved change applies when you continue the call. No
   migration is required.
+- **Find and stop dormant features in the desktop GUI.** Open **Dormant
+  features** in navigation to see running features that are idle and
+  unopened past the configured thresholds, with how long and since when. Select
+  features, confirm, and AMF stops them through the same stop as the TUI,
+  including closing editor windows it opened. Each feature is checked again at
+  confirm time: one that was opened, produced output, was stopped or deleted is
+  skipped with its reason, and a window AMF did not open, or one sharing its VS
+  Code instance, is left running and reported. Showing a session in the GUI now
+  counts as opening its feature, as entering it in the TUI does. No migration is
+  required.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed

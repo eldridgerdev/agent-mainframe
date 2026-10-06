@@ -260,7 +260,7 @@ pub struct ExtensionConfig {
     /// Unlike the other fields here, this one is **not** merged from the
     /// global `extension` block: project scope is defined by what the repo's
     /// `amf.json` carries, and nothing else.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub prompt_overrides: crate::prompts::project::ProjectPromptOverrides,
     /// Soft size gate for batched review: the estimated prompt-token ceiling
     /// above which the `W` AI PR review and final-review co-review split the

@@ -30,11 +30,14 @@ export default function PlanPanel({
   precall,
   busy,
   onAct,
+  onEditPrompt,
 }: {
   view: PlanView;
   precall: PrecallView | null;
   busy: boolean;
   onAct: (action: PlanAction, input?: PlanInput) => Promise<void>;
+  /** Opens the prompt override manager on the pending call's prompt. */
+  onEditPrompt?: () => void;
 }) {
   const [text, setText] = useState(view.editor_text);
   const [selectedOption, setSelectedOption] = useState<number | null>(view.selected_option);
@@ -99,6 +102,7 @@ export default function PlanPanel({
               </button>
             }
           >
+            {onEditPrompt && <button className="btn btn-ghost" disabled={busy} onClick={onEditPrompt}>Edit prompt</button>}
             {button("Cancel call", "precall_cancel", undefined, "ghost")}
             {button("Continue", "precall_confirm", undefined, "primary")}
           </Actions>

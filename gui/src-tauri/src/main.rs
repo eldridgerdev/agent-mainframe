@@ -28,6 +28,9 @@ use agent_mainframe::gui_contract::{
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
+use agent_mainframe::gui_prompt_overrides::{
+    self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
+};
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_supervised_edits::{
@@ -63,6 +66,48 @@ fn prompt_library_resolve(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         request,
     )
+}
+
+#[tauri::command]
+fn prompt_overrides_load(
+    state: State<AppState>,
+    context: OverrideContext,
+    harness: Option<AgentKind>,
+) -> Result<OverridesView, GuiError> {
+    gui_prompt_overrides::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &context,
+        harness,
+    )
+}
+
+#[tauri::command]
+fn prompt_overrides_save(
+    state: State<AppState>,
+    request: SaveOverride,
+) -> Result<OverridesView, GuiError> {
+    gui_prompt_overrides::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_overrides_clear(
+    state: State<AppState>,
+    request: ClearOverride,
+) -> Result<OverridesView, GuiError> {
+    gui_prompt_overrides::clear(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_overrides_precall_target(
+    state: State<AppState>,
+) -> Result<PrecallOverrideTarget, GuiError> {
+    gui_prompt_overrides::precall_target(&mut state.0.lock().expect("gui handle mutex poisoned"))
 }
 
 #[tauri::command]
@@ -876,6 +921,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             prompt_library_load,
             prompt_library_resolve,
+            prompt_overrides_load,
+            prompt_overrides_save,
+            prompt_overrides_clear,
+            prompt_overrides_precall_target,
             review_begin,
             review_snapshot,
             review_act,

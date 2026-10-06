@@ -11,8 +11,10 @@ function locationLabel(location: ReviewLocation) {
   return location.new_line !== null ? `line ${location.new_line}` : `base line ${location.old_line}`;
 }
 
-export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
+export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onEditPrompt }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
+  /** Opens the prompt override manager on the pending call's prompt. */
+  onEditPrompt?: () => void;
 }) {
   const ai = view.ai;
   const history = view.history;
@@ -201,6 +203,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct }: {
       <p>Headless AI call: {ai.precall.title} · {ai.precall.harness}. This reads the checkout and may use paid harness credits.</p>
       {ai.precall.viewing && <pre className="review-note">{ai.precall.preview}</pre>}
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_toggle_view" })}>{ai.precall.viewing ? "Hide prompt" : "View prompt"}</button>
+      {onEditPrompt && <button className="btn btn-secondary" disabled={commandBusy} onClick={onEditPrompt}>Edit prompt</button>}
       <button className="btn btn-primary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_confirm" })}>Continue AI call</button>
       <button className="btn btn-secondary" disabled={commandBusy} onClick={() => void onAct({ kind: "precall_cancel" })}>Cancel AI call</button>
     </section>}

@@ -669,3 +669,55 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
   }
   client.clear();
 });
+
+it("opens prompt overrides from navigation and from a pending review AI call without leaving the review", async () => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const overrides = (context: unknown) => ({
+    context, context_label: "demo / my-feat", repo: "/demo", workdir: "/demo", harness: "claude",
+    scopes: [{ scope: "global", label: "Global (all projects)", available: true, reason: null }],
+    project_config_error: null,
+    rows: ["review.walkthrough", "review.co_review"].map((id) => ({
+      id, title: id === "review.co_review" ? "Final Review: AI co-review" : "Final Review: file walkthrough",
+      summary: "", placeholders: [], source: "built_in", source_harness: null, effective_template: `${id} text`,
+      default_template: `${id} text`, stored: [], revision: "r",
+    })),
+  });
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_overrides_load") return Promise.resolve(overrides((args as { context: unknown }).context));
+    if (command === "prompt_overrides_precall_target") return Promise.resolve({
+      prompt_id: "review.co_review", harness: "claude", context: { kind: "feature", project_id: "project", feature_id: "feature" },
+    });
+    if (command === "review_begin") return Promise.resolve({
+      workflow_id: "review-id", revision: 7, target: { project_id: "project", feature_id: "feature" },
+      feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+      general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null, summary: null,
+      ai: { precall: { title: "Final Review: AI co-review", harness: "Claude", preview: "rendered", viewing: false },
+        running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null, question_running: false,
+        questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
+    });
+    return original(command, args, options);
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Prompt overrides" }));
+  await screen.findByRole("dialog", { name: "Prompt overrides" });
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("prompt_overrides_load",
+    { context: { kind: "feature", project_id: "project", feature_id: "feature" }, harness: null }));
+  fireEvent.click(screen.getByRole("button", { name: "Done" }));
+  expect(screen.queryByRole("dialog", { name: "Prompt overrides" })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "Edit prompt" }));
+  const manager = await screen.findByRole("dialog", { name: "Prompt overrides" });
+  expect(within(manager).getByText(/Opened from a pending AI call/)).toBeTruthy();
+  await waitFor(() => expect(within(manager).getByRole("button", { name: /Final Review: AI co-review/ }).getAttribute("aria-pressed")).toBe("true"));
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("prompt_overrides_load",
+    { context: { kind: "feature", project_id: "project", feature_id: "feature" }, harness: "claude" });
+  // Escape closes only the manager; the review and its pending call remain.
+  fireEvent.keyDown(document.body, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Prompt overrides" })).toBeNull());
+  expect(screen.getByRole("dialog", { name: "Final Review" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Continue AI call" })).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "review_act")).toBe(false);
+  client.clear();
+});

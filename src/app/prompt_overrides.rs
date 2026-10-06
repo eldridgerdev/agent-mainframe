@@ -411,16 +411,13 @@ impl App {
         template: &str,
     ) -> Result<()> {
         let repo = repo.ok_or_else(|| anyhow::anyhow!("no project repo in context"))?;
-        let mut config = load_raw_project_config(repo);
-        let entry = config
-            .prompt_overrides
-            .entry(id.as_str().to_string())
-            .or_default();
-        match harness {
-            Some(h) => entry.set_harness(h, Some(template.to_string())),
-            None => entry.set_shared(Some(template.to_string())),
-        }
-        crate::extension::save_project_extension_config(repo, &config)
+        crate::prompts::project::update_in_repo(repo, |overrides| {
+            let entry = overrides.entry(id.as_str().to_string()).or_default();
+            match harness {
+                Some(h) => entry.set_harness(h, Some(template.to_string())),
+                None => entry.set_shared(Some(template.to_string())),
+            }
+        })
     }
 
     /// Clear the selected row's effective override (`d`, `d` again to confirm).
@@ -512,9 +509,9 @@ impl App {
 
     fn clear_project_override(&self, id: PromptId, repo: Option<&Path>) -> Result<()> {
         let repo = repo.ok_or_else(|| anyhow::anyhow!("no project repo"))?;
-        let mut config = load_raw_project_config(repo);
-        config.prompt_overrides.remove(id.as_str());
-        crate::extension::save_project_extension_config(repo, &config)
+        crate::prompts::project::update_in_repo(repo, |overrides| {
+            overrides.remove(id.as_str());
+        })
     }
 
     fn prompt_overrides_reload(&mut self) {
@@ -526,15 +523,4 @@ impl App {
             state.selected = keep;
         }
     }
-}
-
-/// Read `{repo}/amf.json` (or the legacy path) into an `ExtensionConfig`,
-/// falling back to a default so a first override can be added to a repo with
-/// no config file yet. Deliberately *not* merged with global config — the
-/// manager edits this repo's file only.
-fn load_raw_project_config(repo: &Path) -> crate::extension::ExtensionConfig {
-    crate::extension::resolve_project_config_path(repo)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
 }

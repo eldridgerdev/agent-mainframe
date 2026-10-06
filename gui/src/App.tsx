@@ -8,6 +8,7 @@ import {
   reviewBegin,
   reviewAct,
   reviewSnapshot,
+  reviewTakeCompletion,
   LearningView,
   LearningAction,
   learningBegin,
@@ -515,8 +516,10 @@ export default function App() {
     const timer = window.setInterval(() => {
       if (polling || reviewPending.current) return;
       polling = true;
-      void reviewSnapshot(workflowId).then((next) => {
+      void reviewSnapshot(workflowId).then(async (next) => {
         if (cancelled || reviewPending.current) return;
+        // A confirmed completion finished with its check.
+        if (next === null) { await finishReview(workflowId); return; }
         setReview((current) => current?.workflow_id === workflowId && next.workflow_id === workflowId
           && next.revision > current.revision ? next : current);
       }).catch(() => { /* Explicit actions report conflicts. */ }).finally(() => { polling = false; });
@@ -534,6 +537,18 @@ export default function App() {
     finally { reviewPending.current = false; setReviewBusy(false); }
   }
 
+  /** Close a completed review and apply its handoff exactly once. */
+  async function finishReview(workflowId: string) {
+    const done = await reviewTakeCompletion(workflowId);
+    setReview((current) => current?.workflow_id === workflowId ? null : current);
+    if (!done) return;
+    pushToast({ tone: "info", title: "Final Review", message: done.message });
+    // A submitted prompt shows its agent working; an unsent one joins the
+    // session's composer draft for the reviewer to edit and send.
+    if (done.handoff) openSession(done.handoff.target, done.handoff.draft_prompt ?? undefined);
+    void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+  }
+
   async function actReview(action: ReviewAction): Promise<boolean> {
     if (!review || reviewPending.current) return false;
     reviewPending.current = true;
@@ -541,6 +556,10 @@ export default function App() {
     setReviewError(null);
     try {
       const next = await reviewAct(review, action);
+      if (next === null && action.kind === "complete") {
+        await finishReview(review.workflow_id);
+        return true;
+      }
       setReview(next);
       // A failed pause returns the retained review with its save error.
       return !(action.kind === "pause" && next !== null);

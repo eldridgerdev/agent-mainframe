@@ -729,7 +729,31 @@ export interface ReviewView {
   summary: ReviewSummary | null;
   check_command: string | null;
   check: { command: string; status: "running" | "passed" | "failed" | "cancelled" | "stale"; output: string } | null;
+  finish: ReviewFinish | null;
   ai: ReviewAi;
+}
+/** What completing would record and hand off; present with the summary. */
+export interface ReviewFinish {
+  approved: number;
+  needs_work: number;
+  skipped: number;
+  file_comments: number;
+  line_comments: number;
+  general_feedback: boolean;
+  /** Open suggestions a saved apply-on-finish opt-in writes before recording. */
+  apply_suggestions: number;
+  post_to_pr: boolean;
+  /** Whether a handed-off prompt is submitted or left as an unsent draft. */
+  submit_prompt: boolean;
+  handoff: { session_id: string; label: string; stopped: boolean } | null;
+  /** The configured check is running as part of a confirmed completion. */
+  completing: boolean;
+}
+export interface ReviewCompletion {
+  workflow_id: string;
+  message: string;
+  /** `draft_prompt` is unsent composer text; null when the prompt was submitted. */
+  handoff: { target: SessionTarget; draft_prompt: string | null } | null;
 }
 export interface ReviewSummary {
   rows: { path: string | null; title: string; text: string; severity: ReviewSeverity | null; suggestion: string | null; apply_blocked: string | null }[];
@@ -767,6 +791,7 @@ export interface ReviewAi {
 export type ReviewAction =
   | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" | "cancel_check" }
   | { kind: "run_check"; command: string }
+  | { kind: "complete"; check_command: string | null; apply_suggestions: number; handoff_session: string | null; deliver: boolean }
   | { kind: "history_open" | "history_load_older" | "history_close" }
   | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }
@@ -785,7 +810,11 @@ export type ReviewAction =
   | { kind: "overview" | "cancel_ai" | "precall_confirm" | "precall_cancel" | "precall_toggle_view" }
   | { kind: "undo" | "refresh" | "reload" | "retry_save" | "pause" | "discard" };
 export const reviewBegin = (target: FeatureTarget): Promise<ReviewView> => invoke("review_begin", { target });
-export const reviewSnapshot = (workflowId: string): Promise<ReviewView> => invoke("review_snapshot", { workflowId });
+/** Null once a confirmed completion finished while polling; take its result. */
+export const reviewSnapshot = (workflowId: string): Promise<ReviewView | null> => invoke("review_snapshot", { workflowId });
+/** A completed review's result, returned once. */
+export const reviewTakeCompletion = (workflowId: string): Promise<ReviewCompletion | null> =>
+  invoke("review_take_completion", { workflowId });
 export const reviewAct = (view: ReviewView, action: ReviewAction): Promise<ReviewView | null> =>
   invoke("review_act", { workflowId: view.workflow_id, revision: view.revision, action });
 

@@ -55,8 +55,19 @@ summary preserves unsaved editors and never saves progress.
 streams while retaining bounded text and terminates/reaps owned processes on
 cancellation or close. `gui_review/checks.rs` previews the effective project
 command, rechecks confirmation and workflow freshness, and returns transient
-results without saving progress or completing the review. Completing the review
-and feedback dispatch remain later GUI increments.
+results without saving progress or completing the review.
+
+`gui_review/complete.rs` completes a review through the TUI finish engine. The
+TUI's `complete_final_review` is now `record_final_review_round` (write the
+round, clear progress, record the snapshot, optional PR post) followed by
+`dispatch_review_feedback`; the GUI calls the recording half itself, after
+rechecking the confirmed check command, suggestion opt-in batch and handoff
+session. Like the TUI it applies the saved opt-in batch and reruns the
+configured check rather than trusting a transient GUI result. An actionable
+round's prompt goes to the reviewed feature's first agent session only when
+the reviewer chose handoff: submitted through `deliver_review_prompt` when the
+TUI setting submits and the session runs, otherwise returned once (via
+`take_completion`) as an unsent composer draft.
 
 ## Feature modules
 

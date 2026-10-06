@@ -18,7 +18,7 @@ pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
 
 /// The prompt dispatched to the agent after a review finishes, asking it to act
 /// on the feedback file's most recent round.
-pub(super) const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes in \
+pub(crate) const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes in \
      .claude/final-review-feedback.md. Read that file and address every item in the most recent \
      review round (the first \"## Review\" section); earlier sections are prior rounds kept for \
      history. Each item is tagged with a severity in brackets: [blocker] must be fixed, \

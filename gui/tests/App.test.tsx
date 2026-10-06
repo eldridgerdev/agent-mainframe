@@ -488,3 +488,77 @@ it("polls a running project check without AI work and stops when its result arri
     expect(polls).toEqual([["review_snapshot", { workflowId: "review-check" }]]);
   } finally { vi.useRealTimers(); client.clear(); }
 });
+
+const completionBase = {
+  workflow_id: "review-done", revision: 3, target: { project_id: "project", feature_id: "feature" },
+  feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
+  general_feedback: "Rename it", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
+  summary: { rows: [], undecided: 0, pending_suggestions: 0, failures: [] }, check_command: null, check: null,
+  finish: { approved: 0, needs_work: 1, skipped: 0, file_comments: 0, line_comments: 0, general_feedback: true, apply_suggestions: 0,
+    post_to_pr: false, submit_prompt: false, handoff: { session_id: "Agent", label: "Agent", stopped: false }, completing: false },
+  ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null,
+    question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
+};
+
+it("completes once and appends the unsent feedback prompt to the agent's composer draft", async () => {
+  const client = await openFeature([session("Agent", "claude")], [], "idle", true);
+  fireEvent.change(draftInput(), { target: { value: "Existing message" } });
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finishAct!: () => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(completionBase);
+    if (command === "review_act") return new Promise((resolve) => { finishAct = () => resolve(null); });
+    if (command === "review_take_completion") return Promise.resolve({
+      workflow_id: "review-done", message: "Final review: 0 approved, 1 need work — the feedback prompt is an unsent draft in Agent",
+      handoff: { target: { project_id: "project", feature_id: "feature", session_id: "Agent" }, draft_prompt: "Address the feedback" },
+    });
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "Complete review…" }));
+  const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
+  expect(within(confirm).getByText(/opens the "address the feedback" prompt as an unsent draft in Agent/)).toBeTruthy();
+  const handoff = within(confirm).getByRole("button", { name: "Complete and hand off to Agent" });
+  fireEvent.click(handoff);
+  fireEvent.click(handoff);
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_act")).toHaveLength(1));
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_act", { workflowId: "review-done", revision: 3,
+    action: { kind: "complete", check_command: null, apply_suggestions: 0, handoff_session: "Agent", deliver: true } });
+  await act(async () => finishAct());
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull());
+  expect(draftInput().value).toBe("Existing message\n\nAddress the feedback");
+  expect(await screen.findByText(/unsent draft in Agent/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion"))
+    .toEqual([["review_take_completion", { workflowId: "review-done" }]]);
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it("finishes a completion whose check ends while polling and stops polling", async () => {
+  const client = await openFeature([session("Agent", "claude")], [], "idle", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const running = { ...completionBase, check_command: "cargo test", check: { command: "cargo test", status: "running", output: "" },
+    finish: { ...completionBase.finish, submit_prompt: true, completing: true } };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(running);
+    if (command === "review_snapshot") return Promise.resolve(null);
+    if (command === "review_take_completion") return Promise.resolve({
+      workflow_id: "review-done", message: "Final review: check `cargo test` passed — sent to Agent",
+      handoff: { target: { project_id: "project", feature_id: "feature", session_id: "Agent" }, draft_prompt: null },
+    });
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    expect(screen.getByText(/Completing: the configured check is running/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Return to review" }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull();
+    expect(screen.getByText(/sent to Agent/)).toBeTruthy();
+    expect(draftInput().value).toBe("");
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot")).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion")).toHaveLength(1);
+  } finally { vi.useRealTimers(); client.clear(); }
+});

@@ -21,6 +21,16 @@ are tagged.
   uses the TUI's saved collapse state in both directions. Signals that only a
   running TUI knows, such as the attention reason, are not shown. No migration
   is required.
+- **Complete desktop Final Review and hand off feedback.** From **Pre-finish
+  summary**, choose **Complete review…** to see what the round records, then
+  confirm **Complete and hand off** or **Complete without handoff**. As in the
+  TUI, a saved apply-on-finish batch is written first and the configured check
+  runs again; its result is recorded and you can cancel it. The round goes to
+  `.claude/final-review-feedback.md`. Actionable feedback is sent to the
+  feature's first agent session when your settings submit prompts and the
+  session is running; otherwise it opens there as an unsent draft. Changed
+  reviews, checks or agent targets are refused, and unsaved drafts block
+  completion. No migration is required.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed

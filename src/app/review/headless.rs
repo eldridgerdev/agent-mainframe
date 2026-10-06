@@ -23,6 +23,16 @@ pub(crate) struct CheckOutcome {
     pub(crate) output: String,
 }
 
+/// A written, actionable review round awaiting its "address the feedback"
+/// dispatch. Returned by [`App::record_final_review_round`].
+pub(crate) struct ReviewFeedbackDispatch {
+    pub(crate) from_view: ViewState,
+    pub(crate) summary: String,
+    pub(crate) fix_target: FixTarget,
+    pub(crate) fix_target_feature_id: Option<String>,
+    pub(crate) review_harness: Option<crate::project::AgentKind>,
+}
+
 /// Cap on how much of a check command's combined stdout/stderr is kept, so a
 /// noisy build/test failure can't blow up the feedback file or the agent
 /// prompt built from it. `checks::combine_output` divides it between streams.
@@ -666,8 +676,32 @@ impl App {
 
     /// Write `.claude/final-review-feedback.md` for any rejected files and
     /// return to the feature view with a summary message, folding in the
-    /// optional build/test-gate `check` outcome.
+    /// optional build/test-gate `check` outcome, then dispatch an actionable
+    /// round to the chosen fix target.
     pub(super) fn complete_final_review(&mut self, check: Option<CheckOutcome>) -> Result<()> {
+        if let Some(dispatch) = self.record_final_review_round(check) {
+            self.dispatch_review_feedback(
+                dispatch.from_view,
+                dispatch.summary,
+                dispatch.fix_target,
+                dispatch.fix_target_feature_id,
+                dispatch.review_harness,
+            );
+        }
+        Ok(())
+    }
+
+    /// The recording half of [`Self::complete_final_review`]: consume the
+    /// open review, write its round (clearing saved progress and recording
+    /// the snapshot) and, when the round holds actionable feedback that was
+    /// written, return what dispatching it needs instead of dispatching.
+    /// Every other outcome sets `self.message`, returns to the feature view
+    /// and yields `None`. Lets the desktop interface confirm the handoff
+    /// separately while sharing every recording rule with the TUI.
+    pub(crate) fn record_final_review_round(
+        &mut self,
+        check: Option<CheckOutcome>,
+    ) -> Option<ReviewFeedbackDispatch> {
         let (
             workdir,
             files,
@@ -704,11 +738,11 @@ impl App {
             AppMode::DiffViewerLoading(state) => {
                 // Diff not loaded yet; nothing to summarize.
                 self.mode = AppMode::Viewing(state.from_view);
-                return Ok(());
+                return None;
             }
             other => {
                 self.mode = other;
-                return Ok(());
+                return None;
             }
         };
 
@@ -820,7 +854,7 @@ impl App {
                 } + &history_error,
             );
             self.mode = AppMode::Viewing(from_view);
-            return Ok(());
+            return None;
         }
         {
             // Build this round as a self-contained section. Rounds are
@@ -916,7 +950,7 @@ impl App {
             if let Err(e) = self.persist_final_review_round(&workdir, &round) {
                 self.message = Some(format!("Final review: failed to write feedback file: {e}"));
                 self.mode = AppMode::Viewing(from_view);
-                return Ok(());
+                return None;
             }
 
             let comment_note = if line_comment_count > 0 {
@@ -957,18 +991,16 @@ impl App {
             } else {
                 String::new()
             };
-            // Dispatch the "address the feedback" prompt to the chosen target.
-            // This sets `self.message` and `self.mode` (it may open the harness
-            // picker when a fresh dedicated session is needed).
-            self.dispatch_review_feedback(
+            // The caller dispatches the "address the feedback" prompt to the
+            // chosen target (the TUI immediately, via `complete_final_review`).
+            Some(ReviewFeedbackDispatch {
                 from_view,
-                format!("{summary}{pr_note}"),
+                summary: format!("{summary}{pr_note}"),
                 fix_target,
                 fix_target_feature_id,
                 review_harness,
-            );
+            })
         }
-        Ok(())
     }
 
     /// Dispatch a finished review's "address the feedback" prompt to the agent
@@ -1131,29 +1163,34 @@ impl App {
     /// hasn't sent it yet, so there's nothing to watch for finishing.
     pub(super) fn paste_review_prompt(&mut self, session: &str, window: &str) -> String {
         let submit = self.config.final_review_submit_prompt;
-        let pasted = self
-            .tmux
-            .paste_text(session, window, REVIEW_FEEDBACK_PROMPT)
-            .and_then(|()| {
-                if submit {
-                    self.tmux.send_key_name(session, window, "Enter")
-                } else {
-                    Ok(())
-                }
-            });
-        match pasted {
-            Ok(()) if submit => {
-                self.awaiting_review_fixes.insert(
-                    session.to_string(),
-                    AwaitingReviewFix {
-                        started_thinking: false,
-                    },
-                );
-                " — sent to agent".to_string()
-            }
-            Ok(()) => " — pasted to agent (not submitted)".to_string(),
+        match self.deliver_review_prompt(session, window, submit) {
+            Ok(true) => " — sent to agent".to_string(),
+            Ok(false) => " — pasted to agent (not submitted)".to_string(),
             Err(e) => format!(" (couldn't prompt agent: {e})"),
         }
+    }
+
+    /// Paste the address-feedback prompt into `window`, sending Enter when
+    /// `submit`. Returns whether it was submitted; a submitted prompt starts
+    /// the "fixes ready" watch described on [`Self::paste_review_prompt`].
+    pub(crate) fn deliver_review_prompt(
+        &mut self,
+        session: &str,
+        window: &str,
+        submit: bool,
+    ) -> Result<bool> {
+        self.tmux
+            .paste_text(session, window, REVIEW_FEEDBACK_PROMPT)?;
+        if submit {
+            self.tmux.send_key_name(session, window, "Enter")?;
+            self.awaiting_review_fixes.insert(
+                session.to_string(),
+                AwaitingReviewFix {
+                    started_thinking: false,
+                },
+            );
+        }
+        Ok(submit)
     }
 
     /// Move the harness-pick selection by `delta` (negative = up), wrapping.

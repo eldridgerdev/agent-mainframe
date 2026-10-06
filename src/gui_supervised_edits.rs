@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app::supervised_edits::{
-    EditReviewDecision, EditReviewReply, edit_review_response, load_edit_review_diff,
+    EditReviewClaim, EditReviewDecision, EditReviewReply, edit_review_response,
+    load_edit_review_diff, opencode_edit_is_waiting,
 };
 use crate::app::{App, PendingInput};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
@@ -203,6 +204,9 @@ fn project_view(input: &PendingInput, context: usize) -> SupervisedEditView {
         (None, _) | (_, None) => {
             Some("This request has no reply path; answer it from the AMF TUI.".to_string())
         }
+        _ if !answered && input.notification_type == "change-reason" && !opencode_edit_is_waiting(input) => {
+            Some("The agent is no longer waiting for this edit (or this legacy request has no waiting owner).".to_string())
+        }
         (Some(signal), Some(_))
             if !answered && signal.parent().is_some_and(|dir| !dir.exists()) =>
         {
@@ -320,6 +324,7 @@ pub fn pending_counts(gui: &mut GuiHandle) -> GuiResult<Vec<PendingEditCount>> {
         .filter(|input| app.is_structured_edit_review(&input.notification_type))
         .filter(|input| {
             non_empty(input.proceed_signal.as_deref()).is_some_and(|signal| !signal.exists())
+                && (input.notification_type != "change-reason" || opencode_edit_is_waiting(input))
         })
         .map(|input| {
             let at = std::fs::metadata(&input.file_path)
@@ -397,6 +402,18 @@ pub fn respond(
                  answered elsewhere, or the agent stopped",
             )
         })?;
+    if let Some(reason) = &edit.view.unavailable {
+        return Err(GuiError::conflict(reason.clone()));
+    }
+    let response_file = PathBuf::from(edit.input.response_file.as_deref().unwrap_or_default());
+    let claim = EditReviewClaim::acquire(&response_file)
+        .map_err(|err| GuiError::conflict(format!("{err:#}")))?;
+    // Another process may have answered or the hook may have departed while
+    // this responder acquired ownership. Re-read under the shared claim.
+    let edit = pending_for_feature(app, &project_name, &feature_name, 3)
+        .into_iter()
+        .find(|edit| edit.view.id == edit_id)
+        .ok_or_else(|| GuiError::conflict("This edit is no longer waiting for review"))?;
     if edit.view.answered {
         return Err(GuiError::conflict(
             "This edit was already answered; the agent has not picked the answer up yet",
@@ -424,7 +441,8 @@ pub fn respond(
     };
     let response_file = PathBuf::from(edit.input.response_file.as_deref().unwrap_or_default());
     let proceed_signal = PathBuf::from(edit.input.proceed_signal.as_deref().unwrap_or_default());
-    app.deliver_edit_review_response(
+    app.deliver_claimed_edit_review_response(
+        &claim,
         &EditReviewReply {
             request_id: edit.input.request_id.as_deref(),
             reply_socket: edit.input.reply_socket.as_deref(),
@@ -665,6 +683,108 @@ mod tests {
     }
 
     #[test]
+    fn opencode_requires_a_live_owner_for_this_request() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        let hook = claude_hook(&repo, dir.path(), "owned", &proposed(&repo));
+        let mut notification: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&hook.notification).unwrap()).unwrap();
+        notification["type"] = "change-reason".into();
+        std::fs::write(&hook.notification, notification.to_string()).unwrap();
+        let lease = hook.dir.join("waiter.json");
+        let mut child = crate::resources::test_support::TestChild::new(
+            std::process::Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .unwrap(),
+        );
+        let owner =
+            serde_json::json!({"pid": child.id(), "session_id": "sess", "change_id": "owned"});
+        std::fs::write(&lease, owner.to_string()).unwrap();
+        let live = load(&mut gui, target.clone(), DiffContext::Standard)
+            .unwrap()
+            .edits
+            .remove(0);
+        assert!(live.unavailable.is_none());
+        assert_eq!(pending_counts(&mut gui).unwrap()[0].count, 1);
+
+        // A marker for another write does not establish ownership.
+        let mut wrong = owner.clone();
+        wrong["change_id"] = "another-write".into();
+        std::fs::write(&lease, wrong.to_string()).unwrap();
+        assert!(
+            respond(
+                &mut gui,
+                target.clone(),
+                &live.id,
+                &live.revision,
+                SupervisedEditDecision::Approve
+            )
+            .is_err()
+        );
+        assert!(!hook.proceed.exists());
+
+        // An alive process with an expired lease is not still polling.
+        std::fs::write(&lease, owner.to_string()).unwrap();
+        std::fs::File::open(&lease)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(10),
+                ),
+            )
+            .unwrap();
+        assert!(pending_counts(&mut gui).unwrap().is_empty());
+        assert!(
+            respond(
+                &mut gui,
+                target.clone(),
+                &live.id,
+                &live.revision,
+                SupervisedEditDecision::Approve
+            )
+            .is_err()
+        );
+
+        // Killing OpenCode leaves its files but must make its request unanswerable.
+        std::fs::write(&lease, owner.to_string()).unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(hook.dir.exists());
+        assert!(pending_counts(&mut gui).unwrap().is_empty());
+        let gone = load(&mut gui, target.clone(), DiffContext::Standard)
+            .unwrap()
+            .edits
+            .remove(0);
+        assert!(gone.unavailable.is_some());
+        assert!(
+            respond(
+                &mut gui,
+                target.clone(),
+                &gone.id,
+                &gone.revision,
+                SupervisedEditDecision::Approve
+            )
+            .is_err()
+        );
+        assert!(!hook.proceed.exists());
+
+        // Old notifications with persistent, session-wide paths fail closed.
+        std::fs::remove_file(lease).unwrap();
+        assert!(
+            respond(
+                &mut gui,
+                target,
+                &live.id,
+                &live.revision,
+                SupervisedEditDecision::Approve
+            )
+            .is_err()
+        );
+        assert!(!hook.proceed.exists());
+    }
+
+    #[test]
     fn approve_returns_the_agent_reason_and_deleted_features_are_not_found() {
         let (dir, mut gui, target) = fixture();
         let repo = dir.path().join("repo");
@@ -674,6 +794,14 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&hook.notification).unwrap()).unwrap();
         notification["type"] = "change-reason".into();
         notification["reason"] = "Spell out the number".into();
+        std::fs::write(
+            hook.dir.join("waiter.json"),
+            serde_json::json!({
+                "pid": std::process::id(), "session_id": "sess", "change_id": "303"
+            })
+            .to_string(),
+        )
+        .unwrap();
         std::fs::write(&hook.notification, notification.to_string()).unwrap();
 
         let edit = load(&mut gui, target.clone(), DiffContext::Standard)

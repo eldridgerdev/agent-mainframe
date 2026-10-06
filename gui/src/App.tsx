@@ -71,7 +71,7 @@ import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import DiffPanel from "./DiffPanel";
-import SupervisedEditsPanel, { usePendingEdits } from "./SupervisedEditsPanel";
+import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
@@ -224,6 +224,13 @@ export default function App() {
   } | null>(null);
   const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
   const [supervisedTarget, setSupervisedTarget] = useState<FeatureTarget | null>(null);
+  const supervisedPanel = useRef<SupervisedEditsPanelHandle>(null);
+  function openSupervisedEdits(target: FeatureTarget) {
+    if (supervisedTarget?.project_id === target.project_id && supervisedTarget.feature_id === target.feature_id) return;
+    const proceed = () => setSupervisedTarget(target);
+    if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
+    else proceed();
+  }
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -368,7 +375,7 @@ export default function App() {
     }
   }, [queryClient, reportError]);
 
-  const pendingEdits = usePendingEdits(pushToast, setSupervisedTarget);
+  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits);
 
   const harnessName = (slug: AgentSlug) =>
     harnesses.data?.find((harness) => harness.slug === slug)?.display_name ?? slug;
@@ -1079,7 +1086,7 @@ export default function App() {
       </aside>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
-        target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
+        ref={supervisedPanel} target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} />}
       {learning && (
@@ -1159,7 +1166,7 @@ export default function App() {
             learningBusy={learningBusy}
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
-            onSupervisedEdits={() => setSupervisedTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}

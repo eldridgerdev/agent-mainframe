@@ -203,10 +203,11 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
         },
         &response,
     ) {
-        app.log_warn(
+        app.report_logged_error(
             "diff-review",
-            format!("Could not answer the edit review: {err:#}"),
+            format!("Could not answer the edit review: {err:#}. Review and feedback kept; retry the answer"),
         );
+        return Ok(());
     }
 
     app.mode = match return_to_view {
@@ -598,6 +599,71 @@ mod tests {
             .unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn delivery_failure_keeps_review_and_feedback_for_retry() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        app.pending_inputs.push(crate::app::PendingInput {
+            session_id: "sess-1".to_string(),
+            cwd: tmp.path().display().to_string(),
+            message: "Review this".to_string(),
+            notification_type: "diff-review".to_string(),
+            file_path: tmp.path().join("notification.json"),
+            target_file_path: Some("src/main.rs".to_string()),
+            relative_path: Some("src/main.rs".to_string()),
+            change_id: Some("chg-1".to_string()),
+            tool: Some("edit".to_string()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: Some(tmp.path().join("response.json").display().to_string()),
+            project_name: Some("my-project".to_string()),
+            feature_name: Some("my-feature".to_string()),
+            proceed_signal: Some(tmp.path().join("proceed").display().to_string()),
+            request_id: None,
+            reply_socket: None,
+        });
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.editing_feedback = true;
+            state.reason = "keep this feedback".to_string();
+            state.response_file = tmp.path().join("blocked/response.json");
+        }
+        std::fs::write(tmp.path().join("blocked"), "").unwrap();
+        app.pending_inputs[0].response_file = Some(
+            tmp.path()
+                .join("blocked/response.json")
+                .display()
+                .to_string(),
+        );
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        app.scan_notifications_forced();
+        let AppMode::DiffReviewPrompt(state) = &app.mode else {
+            panic!("review must remain open")
+        };
+        assert_eq!(state.reason, "keep this feedback");
+        assert!(state.editing_feedback);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(!tmp.path().join("proceed").exists());
+        assert!(app.message.as_deref().unwrap().contains("retry the answer"));
+        std::fs::remove_file(tmp.path().join("blocked")).unwrap();
+        std::fs::create_dir(tmp.path().join("blocked")).unwrap();
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert!(app.pending_inputs.is_empty());
+        assert!(tmp.path().join("proceed").exists());
+        let response: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(tmp.path().join("blocked/response.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["decision"], "reject");
+        assert_eq!(response["reason"], "keep this feedback");
     }
 
     #[test]

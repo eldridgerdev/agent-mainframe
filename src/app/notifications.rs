@@ -1672,14 +1672,18 @@ impl App {
             inputs.push(input);
         }
 
-        // Preserve IPC-origin pending inputs (which use an empty
-        // file_path sentinel) when refreshing from file-based sources.
+        // Preserve IPC-origin inputs and the open review, whose file was
+        // consumed on opening. A refresh must not drop its retryable input.
         // A matching change_id also counts as a duplicate: when a hook's
         // notify-wait times out it rewrites the same payload as a file
         // (minus request_id), and the file copy must win because the
         // IPC entry's reply socket is gone by then.
         for existing in self.pending_inputs.clone() {
-            if existing.file_path.as_os_str().is_empty()
+            let active_review = matches!(&self.mode, AppMode::DiffReviewPrompt(state)
+                if existing.session_id == state.session_id
+                    && existing.response_file.as_deref().map(Path::new) == Some(state.response_file.as_path())
+                    && existing.proceed_signal.as_deref().map(Path::new) == Some(state.proceed_signal.as_path()));
+            if (existing.file_path.as_os_str().is_empty() || active_review)
                 && !inputs.iter().any(|i| {
                     i.session_id == existing.session_id
                         && i.notification_type == existing.notification_type

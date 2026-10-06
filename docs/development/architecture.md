@@ -77,6 +77,12 @@ The GUI binds no IPC socket, so it answers only file-fallback requests, by a
 stable edit ID and a revision hashed over the request and both captured
 copies. It refuses changed, already-answered and abandoned edits and never
 recreates a departed hook's files.
+Responders hold a shared file lock through validation and delivery and publish
+responses without overwriting an existing decision. A failed signal can retry
+only that original decision; TUI delivery failures keep the review and feedback
+open. OpenCode uses reply paths unique to each change and a waiting lease with
+process, session and change ownership, refreshed while its hook polls. The GUI
+requires a live owner and a fresh lease before answering OpenCode requests.
 
 ## Feature modules
 

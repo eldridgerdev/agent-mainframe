@@ -159,3 +159,28 @@ it("announces only edits that arrive after the first poll, once each", async () 
   expect(pushToast).toHaveBeenCalledTimes(1);
   expect(latest).toEqual({ feature: 2, other: 1 });
 });
+
+
+it.each(["Close", "Escape"])("protects feedback on %s while a new context query is loading", async (closeAction) => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "supervised_edits_load") {
+      if ((args as { context: string }).context !== "standard") return new Promise(() => {});
+      return view([edit()]);
+    }
+    return [];
+  });
+  const onClose = mount();
+  await screen.findByText("-return subtotal;");
+  fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "keep draft" } });
+  fireEvent.change(screen.getByLabelText("Context"), { target: { value: "expanded" } });
+  expect(await screen.findByText(/Loading pending edits/)).toBeTruthy();
+  if (closeAction === "Close") fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
+  else fireEvent.keyDown(document, { key: "Escape" });
+  expect(onClose).not.toHaveBeenCalled();
+  const prompt = screen.getByRole("alertdialog", { name: "Discard unsent feedback" });
+  expect(prompt.textContent).toContain("src/invoice.ts");
+  fireEvent.click(within(prompt).getByRole("button", { name: "Keep editing" }));
+  fireEvent.change(screen.getByLabelText("Context"), { target: { value: "standard" } });
+  expect((await screen.findByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("keep draft");
+  expect(responds()).toHaveLength(0);
+});

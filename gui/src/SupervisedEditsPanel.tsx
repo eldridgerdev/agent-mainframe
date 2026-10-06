@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DiffOptions, FeatureTarget, asGuiError } from "./api";
 import { Hunk } from "./DiffPanel";
@@ -26,6 +26,8 @@ export function usePendingEdits(
 ): Record<string, number> {
   const counts = useQuery({ queryKey: PENDING_EDITS_KEY, queryFn: supervisedEditCounts, refetchInterval: 2_000, retry: false });
   const announced = useRef<Set<string> | null>(null);
+  const open = useRef(onOpen);
+  open.current = onOpen;
   useEffect(() => {
     if (!counts.data) return;
     const seen = announced.current;
@@ -38,7 +40,7 @@ export function usePendingEdits(
         tone: "info",
         title: "Edit waiting for review",
         message: `${entry.feature_name}: the agent wants to change ${entry.first_path}.`,
-        action: { label: "Review", onClick: () => onOpen({ project_id: entry.project_id, feature_id: entry.feature_id }) },
+        action: { label: "Review", onClick: () => open.current({ project_id: entry.project_id, feature_id: entry.feature_id }) },
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -64,24 +66,29 @@ function requestedAt(edit: SupervisedEdit) {
 /** Vibeless mode's per-edit approval. Every answer is confirmed first and
  * names the exact revision the reviewer saw; the backend refuses it when the
  * edit changed, was answered elsewhere or the agent stopped waiting. */
-export default function SupervisedEditsPanel({ target, onClose, onAnswered }: {
+export type SupervisedEditsPanelHandle = {
+  requestSwitch: (proceed: () => void) => void;
+};
+
+const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   target: FeatureTarget;
   onClose: () => void;
   /** Called after an answer is delivered, so navigation counts refresh. */
   onAnswered?: () => void;
-}) {
+}>(({ target, onClose, onAnswered }, ref) => {
   const queryClient = useQueryClient();
   const [context, setContext] = useState<DiffOptions["context"]>("standard");
   const [split, setSplit] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const feedbackPaths = useRef<Record<string, string>>({});
   const [confirm, setConfirm] = useState<{ id: string; revision: string; kind: DecisionKind } | null>(null);
   const [sending, setSending] = useState(false);
   const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [lost, setLost] = useState<string | null>(null);
-  const [discardPrompt, setDiscardPrompt] = useState(false);
+  const [discardPrompt, setDiscardPrompt] = useState<{ proceed: () => void; switching: boolean } | null>(null);
   const answered = useRef(new Set<string>());
   const lastSelected = useRef<SupervisedEdit | null>(null);
 
@@ -127,14 +134,23 @@ export default function SupervisedEditsPanel({ target, onClose, onAnswered }: {
   }, [view]);
 
   const draft = edit ? feedback[edit.id] ?? "" : "";
-  const unsentDrafts = edits.filter((candidate) => (feedback[candidate.id] ?? "").trim() !== "");
+  const unsentDrafts = Object.entries(feedback)
+    .filter(([, text]) => text.trim() !== "")
+    .map(([id]) => feedbackPaths.current[id] ?? "a pending edit");
   const blocked = !edit || edit.answered || edit.unavailable !== null || sending;
 
-  function requestClose() {
-    if (sending) return;
-    if (unsentDrafts.length > 0) setDiscardPrompt(true);
-    else onClose();
+  function requestLeave(proceed: () => void, switching = false) {
+    if (inFlight.current) {
+      if (switching) setNotice("An answer is being sent. Wait for its result before switching reviews.");
+      return;
+    }
+    if (unsentDrafts.length > 0) setDiscardPrompt({ proceed, switching });
+    else proceed();
   }
+
+  function requestClose() { requestLeave(onClose); }
+
+  useImperativeHandle(ref, () => ({ requestSwitch: (proceed) => requestLeave(proceed, true) }));
 
   function select(id: string) {
     setSelectedId(id);
@@ -204,10 +220,12 @@ export default function SupervisedEditsPanel({ target, onClose, onAnswered }: {
     {lost && <p role="status" className="callout callout-warning">{lost}</p>}
     {error && <p role="alert" className="callout callout-warning">{error}</p>}
     {discardPrompt && <div role="alertdialog" aria-label="Discard unsent feedback" className="callout callout-warning supervised-confirm">
-      <p>Discard unsent feedback for {unsentDrafts.map((candidate) => candidate.path).join(", ")}? Closing does not answer the agent; the edit keeps waiting.</p>
+      <p>Discard unsent feedback for {unsentDrafts.join(", ")}? Leaving does not answer the agent; the edit keeps waiting.</p>
       <div className="supervised-actions">
-        <button className="btn btn-ghost" onClick={() => setDiscardPrompt(false)}>Keep editing</button>
-        <button className="btn btn-warning" onClick={onClose}>Discard and close</button>
+        <button className="btn btn-ghost" onClick={() => setDiscardPrompt(null)}>Keep editing</button>
+        <button className="btn btn-warning" disabled={sending} onClick={() => {
+          if (!inFlight.current) { discardPrompt.proceed(); setDiscardPrompt(null); }
+        }}>{discardPrompt.switching ? "Discard and switch" : "Discard and close"}</button>
       </div>
     </div>}
     {view && !query.error && (edits.length === 0
@@ -247,7 +265,7 @@ export default function SupervisedEditsPanel({ target, onClose, onAnswered }: {
               ? `Sent with Reject (optional, ${draft.length}/${MAX_FEEDBACK_CHARS}).`
               : `OpenCode does not forward rejection feedback (${draft.length}/${MAX_FEEDBACK_CHARS}).`}>
             <textarea aria-label="Feedback for the agent" rows={2} maxLength={MAX_FEEDBACK_CHARS} value={draft} disabled={blocked}
-              onChange={(event) => { const text = event.target.value; setFeedback((current) => ({ ...current, [edit.id]: text })); }} />
+              onChange={(event) => { const text = event.target.value; feedbackPaths.current[edit.id] = edit.path; setFeedback((current) => ({ ...current, [edit.id]: text })); }} />
           </Field>
           {confirm && confirm.id === edit.id
             ? <div role="alertdialog" aria-label="Confirm answer" className="callout callout-warning supervised-confirm">
@@ -273,4 +291,6 @@ export default function SupervisedEditsPanel({ target, onClose, onAnswered }: {
         </section>}
       </div>)}
   </Modal>;
-}
+});
+
+export default SupervisedEditsPanel;

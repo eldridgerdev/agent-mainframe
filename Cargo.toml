@@ -99,10 +99,10 @@ qrcode = { version = "0.14", default-features = false }
 web-push-native = { version = "0.5", default-features = false }
 p256 = { version = "0.13", features = ["ecdsa"] }
 base64ct = { version = "1", features = ["alloc"] }
+# Codex's existing daemon uses WebSocket frames over its local control socket.
+# Already in the dependency tree through axum's `ws` feature.
+tungstenite = "0.29"
 
 [dev-dependencies]
 mockall = "0.13"
 pretty_assertions = "1"
-# A blocking WebSocket client for the Remote Control terminal-socket tests;
-# already in the tree through axum's `ws` feature.
-tungstenite = "0.29"

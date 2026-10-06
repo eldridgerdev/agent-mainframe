@@ -48,6 +48,7 @@ pub(crate) struct HarnessCapability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchPath {
     Interactive,
+    ExistingSession,
     Headless,
 }
 
@@ -57,6 +58,7 @@ impl LaunchPath {
     fn supports_model(self, harness: &AgentKind) -> bool {
         match self {
             Self::Interactive => matches!(harness, AgentKind::Claude | AgentKind::Codex),
+            Self::ExistingSession => matches!(harness, AgentKind::Codex),
             Self::Headless => true,
         }
     }
@@ -64,6 +66,7 @@ impl LaunchPath {
     fn supports_reasoning(self, harness: &AgentKind, level: &str) -> bool {
         match self {
             Self::Interactive => matches!(harness, AgentKind::Claude | AgentKind::Codex),
+            Self::ExistingSession => matches!(harness, AgentKind::Codex),
             Self::Headless => crate::headless::ReasoningLevel::supported_for(harness)
                 .iter()
                 .any(|supported| supported.slug() == level),
@@ -381,6 +384,17 @@ mod tests {
                 AgentKind::Opencode | AgentKind::Pi => 0,
             };
             assert_eq!(eligible.choices().len(), expected, "{harness:?}");
+        }
+    }
+
+    #[test]
+    fn existing_session_control_only_admits_codex_and_cannot_produce_startup_arguments() {
+        let caps: Vec<_> = AgentKind::ALL.into_iter().map(capability).collect();
+        let eligible = options(&caps, LaunchPath::ExistingSession);
+        assert!(!eligible.choices().is_empty());
+        for choice in eligible.choices() {
+            assert_eq!(*choice.harness(), AgentKind::Codex);
+            assert!(eligible.interactive_args(choice).is_err());
         }
     }
 

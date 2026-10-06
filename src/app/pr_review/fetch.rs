@@ -15,6 +15,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// Why a background comment fetch produced no review.
+#[derive(Debug)]
+pub(crate) enum PrFetchFailure {
+    Failed(anyhow::Error),
+    /// The worker vanished without reporting.
+    Disconnected,
+}
+
 /// Fetch every comment source for a resolved PR and normalize them into one
 /// [`PrReview`]. This is the single entry point the UI/state layer calls to
 /// (re)load a review; it runs entirely in Rust and spends zero agent tokens.
@@ -287,58 +295,78 @@ impl App {
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
     pub(crate) fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
-        if let Some(mut review) = self.load_cached_pr_review(&pr) {
+        if let Some(review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
                 format!("cache hit for PR #{} @ {}", pr.number, pr.head_sha),
             );
-            self.apply_persisted_triage(&mut review);
-            let investigations = self.pr_review_load_investigations(&workdir, review.pr.number);
             let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
-            let ai_review = self.ai_review_triage_snapshot(&review.pr);
-            let checked_out_branch =
-                crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
-            self.mode = AppMode::PrReview(PrReviewState {
-                workdir,
-                review,
-                selected: 0,
-                detail_scroll: 0,
-                detail_content_lines: 0,
-                hide_resolved: false,
-                sort_mode: PrSortMode::default(),
-                fix_target: FixTarget::default(),
-                fix_target_picked: false,
-                usage_baselines,
-                review_harness: None,
-                dedicated_session_label: TRIAGE_SESSION_LABEL.to_string(),
-                harness_pick: None,
-                new_feature_setup: None,
-                integrate: None,
-                fix_confirm: None,
-                fix_vim_enabled: false,
-                mark_pick: None,
-                reply_kind_pick: None,
-                reply: None,
-                memory_add: None,
-                marked: std::collections::HashSet::new(),
-                pending_batch: false,
-                checked_out_branch,
-                pending_ai_review_findings: ai_review.pending_findings,
-                ai_review_last_run: ai_review.last_run,
-                investigations,
-                investigation_harness_pick: None,
-                investigation_action_pick: None,
-                investigation_follow_up: None,
-                pending_follow_up: None,
-                investigation_context: Default::default(),
-            });
-            // A companion triage feature created on an earlier visit is reused
-            // for every fix in this PR — adopt it now so `f` doesn't re-ask.
-            self.adopt_existing_triage_feature();
-            self.apply_pending_local_findings();
+            self.open_loaded_pr_review(workdir, review, usage_baselines, false);
             return;
         }
         self.start_pr_review_fetch(workdir, pr);
+    }
+
+    /// Open the PR Triage pane on an already-loaded review: the one state
+    /// both the cache hit and a completed fetch arrive at. A freshly fetched
+    /// review (`fetched`) refreshes the cache first; either way the local
+    /// triage, investigations and AI-review badge are overlaid from SQLite.
+    pub(crate) fn open_loaded_pr_review(
+        &mut self,
+        workdir: PathBuf,
+        mut review: PrReview,
+        usage_baselines: HashMap<
+            crate::token_tracking::TokenUsageSource,
+            crate::token_tracking::SessionTokenUsage,
+        >,
+        fetched: bool,
+    ) {
+        if fetched {
+            self.cache_pr_review(&review);
+        }
+        self.apply_persisted_triage(&mut review);
+        let investigations = self.pr_review_load_investigations(&workdir, review.pr.number);
+        let ai_review = self.ai_review_triage_snapshot(&review.pr);
+        let checked_out_branch =
+            crate::worktree::WorktreeManager::current_branch(&workdir).unwrap_or(None);
+        self.mode = AppMode::PrReview(PrReviewState {
+            workdir,
+            review,
+            selected: 0,
+            detail_scroll: 0,
+            detail_content_lines: 0,
+            hide_resolved: false,
+            sort_mode: PrSortMode::default(),
+            fix_target: FixTarget::default(),
+            fix_target_picked: false,
+            usage_baselines,
+            review_harness: None,
+            dedicated_session_label: TRIAGE_SESSION_LABEL.to_string(),
+            harness_pick: None,
+            new_feature_setup: None,
+            integrate: None,
+            fix_confirm: None,
+            fix_vim_enabled: false,
+            mark_pick: None,
+            reply_kind_pick: None,
+            reply: None,
+            memory_add: None,
+            marked: std::collections::HashSet::new(),
+            pending_batch: false,
+            checked_out_branch,
+            pending_ai_review_findings: ai_review.pending_findings,
+            ai_review_last_run: ai_review.last_run,
+            investigations,
+            investigation_harness_pick: None,
+            investigation_action_pick: None,
+            investigation_follow_up: None,
+            pending_follow_up: None,
+            investigation_context: Default::default(),
+        });
+        // A companion triage feature created on an earlier visit is reused
+        // for every fix in this PR — adopt it now so `f` doesn't re-ask.
+        self.adopt_existing_triage_feature();
+        self.apply_pending_local_findings();
     }
 
     /// Drop in-memory state that belongs to a known predecessor PR on the same
@@ -670,7 +698,7 @@ impl App {
     }
 
     /// Spawn the off-thread comment fetch and enter the loading mode.
-    pub(super) fn start_pr_review_fetch(&mut self, workdir: PathBuf, pr: PrRef) {
+    pub(crate) fn start_pr_review_fetch(&mut self, workdir: PathBuf, pr: PrRef) {
         self.log_info(
             "pr_review",
             format!("fetching comments for PR #{}", pr.number),
@@ -688,8 +716,9 @@ impl App {
 
         let thread_workdir = workdir.clone();
         let thread_pr = pr.clone();
+        let github = self.pr_review_work.github();
         std::thread::spawn(move || {
-            let _ = tx.send(fetch_and_normalize(&thread_workdir, thread_pr));
+            let _ = tx.send(github.fetch_review(&thread_workdir, thread_pr));
         });
 
         self.mode = AppMode::PrReviewLoading(PrReviewLoadState {
@@ -708,85 +737,56 @@ impl App {
     /// pane (or report the error and return to the dashboard). Returns `true`
     /// when state changed and a redraw is warranted.
     pub fn poll_pr_review_bg(&mut self) -> bool {
-        let Some(result) = self.pr_review_work.poll_fetch() else {
-            return false;
-        };
+        match self.poll_pr_review_fetch() {
+            None => false,
+            Some(Ok(())) => true,
+            Some(Err(PrFetchFailure::Failed(e))) => {
+                self.mode = AppMode::Normal;
+                self.show_error(e);
+                true
+            }
+            Some(Err(PrFetchFailure::Disconnected)) => {
+                self.mode = AppMode::Normal;
+                self.message = Some("PR fetch failed unexpectedly".to_string());
+                true
+            }
+        }
+    }
+
+    /// The fetch-completion step shared by the TUI and the desktop adapter.
+    /// A successful result opens the pane; a failure is returned with the
+    /// loading mode left in place, so each caller decides where to go next.
+    /// `None` when nothing finished, or the result had no live loading target.
+    pub(crate) fn poll_pr_review_fetch(
+        &mut self,
+    ) -> Option<std::result::Result<(), PrFetchFailure>> {
+        let result = self.pr_review_work.poll_fetch()?;
         match result {
             Ok(result) => {
                 self.pr_review_work.cancel_fetch();
                 // If the user navigated away from the loading screen, drop it.
                 let AppMode::PrReviewLoading(state) = &self.mode else {
-                    return false;
+                    return None;
                 };
                 let workdir = state.workdir.clone();
                 let usage_baselines = state.usage_baselines.clone();
                 match result {
-                    Ok(mut review) => {
+                    Ok(review) => {
                         self.log_info(
                             "pr_review",
                             format!("loaded {} comments", review.comments.len()),
                         );
-                        self.cache_pr_review(&review);
-                        self.apply_persisted_triage(&mut review);
-                        let investigations =
-                            self.pr_review_load_investigations(&workdir, review.pr.number);
-                        let ai_review = self.ai_review_triage_snapshot(&review.pr);
-                        let checked_out_branch =
-                            crate::worktree::WorktreeManager::current_branch(&workdir)
-                                .unwrap_or(None);
-                        self.mode = AppMode::PrReview(PrReviewState {
-                            workdir,
-                            review,
-                            selected: 0,
-                            detail_scroll: 0,
-                            detail_content_lines: 0,
-                            hide_resolved: false,
-                            sort_mode: PrSortMode::default(),
-                            fix_target: FixTarget::default(),
-                            fix_target_picked: false,
-                            usage_baselines,
-                            review_harness: None,
-                            dedicated_session_label: TRIAGE_SESSION_LABEL.to_string(),
-                            harness_pick: None,
-                            new_feature_setup: None,
-                            integrate: None,
-                            fix_confirm: None,
-                            fix_vim_enabled: false,
-                            mark_pick: None,
-                            reply_kind_pick: None,
-                            reply: None,
-                            memory_add: None,
-                            marked: std::collections::HashSet::new(),
-                            pending_batch: false,
-                            checked_out_branch,
-                            pending_ai_review_findings: ai_review.pending_findings,
-                            ai_review_last_run: ai_review.last_run,
-                            investigations,
-                            investigation_harness_pick: None,
-                            investigation_action_pick: None,
-                            investigation_follow_up: None,
-                            pending_follow_up: None,
-                            investigation_context: Default::default(),
-                        });
-                        self.adopt_existing_triage_feature();
-                        self.apply_pending_local_findings();
+                        self.open_loaded_pr_review(workdir, review, usage_baselines, true);
+                        Some(Ok(()))
                     }
-                    Err(e) => {
-                        self.mode = AppMode::Normal;
-                        self.show_error(e);
-                    }
+                    Err(e) => Some(Err(PrFetchFailure::Failed(e))),
                 }
-                true
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pr_review_work.cancel_fetch();
-                if matches!(self.mode, AppMode::PrReviewLoading(_)) {
-                    self.mode = AppMode::Normal;
-                    self.message = Some("PR fetch failed unexpectedly".to_string());
-                    return true;
-                }
-                false
+                matches!(self.mode, AppMode::PrReviewLoading(_))
+                    .then_some(Err(PrFetchFailure::Disconnected))
             }
         }
     }
@@ -799,7 +799,7 @@ impl App {
             AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.clone()),
             _ => return,
         };
-        let threads = match GhCli::review_threads(&workdir, &pr.owner, &pr.repo, pr.number) {
+        let threads = match self.pr_review_work.github().review_threads(&workdir, &pr) {
             Ok(threads) => threads,
             Err(e) => {
                 self.log_warn("pr_review", format!("thread refresh failed: {e}"));

@@ -173,8 +173,8 @@ each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
-editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing and
-dormant-feature stops. Continue to use `amf` for workflows
+editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing,
+dormant-feature stops and a first PR Triage slice. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -454,6 +454,28 @@ TUI. Closing only an editor and deleting from this list remain TUI actions.
 Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
 processes on a private tmux server.
+
+### PR Triage
+
+**PR Triage** on a Git feature lists the repository's open pull requests (or all
+of them), marks the branch's own PR, and opens any PR from the list or by number.
+Comments load through the same `gh` fetch and normalization as the TUI's PR
+Triage: inline comments with their windowed diff context, review summaries,
+conversation and bot comments, review-thread resolution, and AMF's own follow-up
+replies collated under the comment they answer. Hide resolved threads, change the
+sort, and mark comments done or skipped locally. **Investigate…** runs the shared
+read-only investigation (with an optional hypothesis, then follow-ups) on an
+allowed harness: a pre-call notice shows the exact prompt and nothing runs until
+**Continue AI call**. If the PR changed after the preview, the call is refused and
+the updated prompt is shown instead. **Reply: fixed**, **Reply: not needed** and
+**Reply with findings** open a local draft; **Review reply…** shows the exact body
+(with AMF's attribution) and destination, and only **Post reply to GitHub** writes.
+**Resolve thread…**/**Reopen thread…** also ask first. Before writing, AMF re-reads
+the PR head and the thread on GitHub and refuses stale targets, keeping your
+draft. Fix-target picking and agent fix injection, batch fixes, review memory,
+AI Review and keep-as-TODO remain in the TUI. Command and component tests cover
+these flows; seven asserted native WSLg frames from `gui-pr-triage.txt` use an
+offline `gh` that refuses every write and offline harness fixtures.
 
 ## Checks
 

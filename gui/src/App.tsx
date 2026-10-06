@@ -75,6 +75,7 @@ import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverrides
 import DormancyPanel from "./DormancyPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
+import PrTriagePanel from "./PrTriagePanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
@@ -239,6 +240,7 @@ export default function App() {
     if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
     else proceed();
   }
+  const [prTriageTarget, setPrTriageTarget] = useState<FeatureTarget | null>(null);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -1128,6 +1130,7 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {prTriageTarget && <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} />}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} />}
       {learning && (
@@ -1208,6 +1211,7 @@ export default function App() {
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
@@ -1701,6 +1705,7 @@ function FeatureView({
   onDiff,
   pendingEdits,
   onSupervisedEdits,
+  onPrTriage,
   onReview,
   reviewBusy,
   onNewSession,
@@ -1738,6 +1743,7 @@ function FeatureView({
   /** Supervised edits waiting for an answer in this feature. */
   pendingEdits: number;
   onSupervisedEdits: () => void;
+  onPrTriage: () => void;
   onReview: () => void;
   reviewBusy: boolean;
   onNewSession: () => void;
@@ -1834,6 +1840,9 @@ function FeatureView({
             </button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
               {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
+              <Icon name="inbox" size={12} /> PR Triage
             </button>}
             <Menu
               label="Plan"

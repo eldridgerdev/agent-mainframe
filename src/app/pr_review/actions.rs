@@ -1,7 +1,7 @@
 use super::{MarkAction, PrComment, ReplyDraftRequest, TriageState};
 use crate::app::{App, AppMode, FixConfirmState, MarkPickState};
 use crate::editor::TextEditor;
-use crate::github::GhCli;
+use anyhow::Result;
 
 /// Append the provider-neutral reply-draft handoff to the exact prompt shown
 /// in the fix confirmation dialog. Every built-in harness can run the hidden
@@ -510,29 +510,37 @@ impl App {
     /// the SQLite cache is refreshed so a later cache-hit re-open reflects it.
     /// Zero agent tokens.
     pub fn pr_review_toggle_resolve(&mut self) {
+        if let Err(e) = self.try_pr_review_toggle_resolve() {
+            self.show_error(e);
+        }
+    }
+
+    /// [`Self::pr_review_toggle_resolve`] without the TUI's error handling: a
+    /// failed GitHub write is returned with the pane untouched, so the desktop
+    /// adapter can keep its triage state open. `Ok(None)` means nothing was
+    /// written (no selection, or no thread — the hint is in `message`);
+    /// `Ok(Some(resolved))` is the thread's new state.
+    pub(crate) fn try_pr_review_toggle_resolve(&mut self) -> Result<Option<bool>> {
         let info = match &self.mode {
             AppMode::PrReview(state) => state
                 .selected_comment()
                 .map(|c| (state.workdir.clone(), c.thread_id.clone(), c.is_resolved)),
-            _ => return,
+            _ => return Ok(None),
         };
         let Some((workdir, thread_id, is_resolved)) = info else {
             self.message = Some("No comment selected".into());
-            return;
+            return Ok(None);
         };
         let Some(thread_id) = thread_id else {
             self.message = Some("This comment has no resolvable review thread".into());
-            return;
+            return Ok(None);
         };
 
         let desired = !is_resolved;
-        let now_resolved = match GhCli::set_thread_resolved(&workdir, &thread_id, desired) {
-            Ok(state) => state,
-            Err(e) => {
-                self.show_error(e);
-                return;
-            }
-        };
+        let now_resolved = self
+            .pr_review_work
+            .github()
+            .set_thread_resolved(&workdir, &thread_id, desired)?;
 
         if let AppMode::PrReview(state) = &mut self.mode {
             for c in &mut state.review.comments {
@@ -548,6 +556,7 @@ impl App {
             "Thread reopened"
         };
         self.push_toast_success(msg.to_string());
+        Ok(Some(now_resolved))
     }
 
     /// The combined-batch context for `comment_id` in `pr_number`, if that

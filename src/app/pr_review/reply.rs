@@ -4,7 +4,6 @@ use super::{
 };
 use crate::app::{App, AppMode, Feature, ReplyKindPickState, ReplyState, SessionKind};
 use crate::editor::TextEditor;
-use crate::github::GhCli;
 use anyhow::Result;
 use std::path::Path;
 
@@ -496,6 +495,33 @@ impl App {
     /// `Skipped` (with the body kept as the local note) for a "not needed" one.
     /// The GitHub write runs only on the user's explicit confirm.
     pub fn pr_review_post_reply(&mut self) -> Result<()> {
+        if let Err(e) = self.try_pr_review_post_reply() {
+            self.show_error(e);
+        }
+        Ok(())
+    }
+
+    /// The exact body [`Self::pr_review_post_reply`] would send for the open
+    /// reply if its editor held `body`: attribution follows whether that text
+    /// is still the unedited agent draft. `None` when no reply is open.
+    pub(crate) fn pr_review_reply_posted_body(&self, body: &str) -> Option<String> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let reply = state.reply.as_ref()?;
+        let agent_drafted = reply.agent_drafted && body.trim() == reply.original_seed.trim();
+        Some(append_reply_attribution(
+            body.trim(),
+            agent_drafted,
+            reply.generation_metadata.as_ref(),
+        ))
+    }
+
+    /// [`Self::pr_review_post_reply`] without the TUI's error handling: a
+    /// failed GitHub write is returned with the reply dialog and pane intact.
+    /// `Ok(false)` means nothing was posted (no reply open, or an empty body —
+    /// the hint is in `message`).
+    pub(crate) fn try_pr_review_post_reply(&mut self) -> Result<bool> {
         let prep = match &self.mode {
             AppMode::PrReview(state) => state.reply.as_ref().and_then(|reply| {
                 let comment = state
@@ -514,12 +540,12 @@ impl App {
                     reply.generation_metadata.clone(),
                 ))
             }),
-            _ => return Ok(()),
+            _ => return Ok(false),
         };
         let Some((workdir, pr, target, kind, comment_id, body, agent_drafted, generation_metadata)) =
             prep
         else {
-            return Ok(());
+            return Ok(false);
         };
 
         if body.is_empty() {
@@ -530,7 +556,7 @@ impl App {
                 }
             };
             self.message = Some(hint.into());
-            return Ok(());
+            return Ok(false);
         }
 
         // The posted body carries AI authorship attribution for a captured
@@ -539,22 +565,12 @@ impl App {
         // AMF's own record, not content read back from GitHub.
         let posted_body =
             append_reply_attribution(&body, agent_drafted, generation_metadata.as_ref());
-        let result = match target {
-            ReplyTarget::InlineThread { root_comment_id } => GhCli::reply_to_review_comment(
-                &workdir,
-                &pr.owner,
-                &pr.repo,
-                pr.number,
-                root_comment_id,
-                &posted_body,
-            ),
-            ReplyTarget::Conversation => {
-                GhCli::post_issue_comment(&workdir, &pr.owner, &pr.repo, pr.number, &posted_body)
+        let github = self.pr_review_work.github();
+        match target {
+            ReplyTarget::InlineThread { root_comment_id } => {
+                github.reply_to_review_comment(&workdir, &pr, root_comment_id, &posted_body)?
             }
-        };
-        if let Err(e) = result {
-            self.show_error(e);
-            return Ok(());
+            ReplyTarget::Conversation => github.post_issue_comment(&workdir, &pr, &posted_body)?,
         }
 
         // Apply the triage outcome for this reply kind and close the dialog.
@@ -608,7 +624,7 @@ impl App {
             ReplyKind::Investigation => "Posted reply · marked replied",
         };
         self.push_toast_success(toast.to_string());
-        Ok(())
+        Ok(true)
     }
 
     /// Record which session AMF is about to ask for a reply draft, at the one

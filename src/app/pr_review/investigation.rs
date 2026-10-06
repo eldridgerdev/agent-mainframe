@@ -4,8 +4,7 @@ use crate::app::{
     InvestigationFollowUpDraft, InvestigationHarnessPick, PendingFollowUp,
     PrInvestigationLoadState,
 };
-use crate::github::{GhCli, PrChangedFile};
-use crate::headless::HeadlessRunner;
+use crate::github::PrChangedFile;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -48,7 +47,7 @@ pub(super) const INVESTIGATION_FOLLOW_UP_DEPTH: usize = 3;
 /// Character cap on the optional operator-supplied investigation note (`e`).
 /// A hypothesis, not a spec — roomier than the plan-interview custom answer
 /// (500) but still bounded so it can't crowd out the prompt.
-pub(super) const INVESTIGATION_CONTEXT_MAX_LEN: usize = 1000;
+pub(crate) const INVESTIGATION_CONTEXT_MAX_LEN: usize = 1000;
 
 /// One file a PR touches — path plus GitHub's per-file line deltas
 /// (`gh pr view --json files`). Handed to the investigation prompt so the
@@ -219,6 +218,39 @@ pub fn build_investigation_prompt(ctx: &InvestigationPromptContext<'_>) -> Strin
     out.trim_end().to_string()
 }
 
+/// Build the investigation prompt for `comment` from the PR's metadata, the
+/// one way both the TUI worker and the desktop pre-call preview assemble it,
+/// so the previewed prompt is exactly the one a run sends. `follow_up` is the
+/// initial answer, earlier turns and the new question.
+pub(crate) fn investigation_prompt_from_meta(
+    comment: &PrComment,
+    pr_number: u32,
+    meta: &crate::github::PrMeta,
+    follow_up: Option<(&str, &[PrInvestigationTurn], &str)>,
+    user_context: Option<&str>,
+) -> String {
+    let changed: Vec<InvestigationChangedFile> = meta
+        .files
+        .iter()
+        .map(InvestigationChangedFile::from_gh)
+        .collect();
+    build_investigation_prompt(&InvestigationPromptContext {
+        comment,
+        pr_number,
+        pr_title: &meta.title,
+        pr_description: &meta.body,
+        changed_files: &changed,
+        follow_up: follow_up.map(
+            |(initial_answer, prior_turns, question)| InvestigationFollowUp {
+                initial_answer,
+                prior_turns,
+                question,
+            },
+        ),
+        user_context,
+    })
+}
+
 /// What a background investigation run hands back to the poll loop. Carries
 /// everything needed to persist the row without touching `self.mode` (which may
 /// have moved on) — the built prompt is included so the finished row records
@@ -364,7 +396,7 @@ impl App {
                 AppMode::PrReview(state) => state.pending_follow_up.take(),
                 _ => None,
             };
-            self.pr_review_launch_investigation(only, follow_up);
+            self.pr_review_launch_investigation(only, follow_up, None);
             return;
         }
         let preferred = self
@@ -425,7 +457,7 @@ impl App {
                 AppMode::PrReview(state) => state.pending_follow_up.take(),
                 _ => None,
             };
-            self.pr_review_launch_investigation(harness, follow_up);
+            self.pr_review_launch_investigation(harness, follow_up, None);
         }
     }
 
@@ -437,10 +469,15 @@ impl App {
     /// `follow_up` is `Some` for a Learning-Mode-`F`-style re-run: the prompt
     /// carries the prior turn(s) and the poll loop appends a thread turn instead
     /// of replacing the initial answer.
-    pub(super) fn pr_review_launch_investigation(
+    ///
+    /// `prepared_prompt` is a prompt the operator already reviewed (the
+    /// desktop pre-call notice); the worker then sends it verbatim instead of
+    /// rebuilding it from a fresh `gh pr view`.
+    pub(crate) fn pr_review_launch_investigation(
         &mut self,
         harness: AgentKind,
         follow_up: Option<PendingFollowUp>,
+        prepared_prompt: Option<String>,
     ) {
         let (workdir, pr) = match &self.mode {
             AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.clone()),
@@ -571,37 +608,33 @@ impl App {
         // (a read-only repo pass repo config cannot loosen). It must never write
         // the worktree, switch tmux sessions, deliver a prompt to an interactive
         // agent, or reach `pr_review_inject_fix` / the Vibeless edit-review path.
+        let github = self.pr_review_work.github();
+        let runner = self.pr_review_work.investigation_runner();
         std::thread::spawn(move || {
-            let built: std::result::Result<String, String> = (|| {
-                let meta = GhCli::pr_meta(&workdir, pr_number)
-                    .map_err(|e| format!("couldn't load PR #{pr_number}: {e}"))?;
-                let changed: Vec<InvestigationChangedFile> = meta
-                    .files
-                    .iter()
-                    .map(InvestigationChangedFile::from_gh)
-                    .collect();
-                let follow_up_ctx = prior_context
-                    .as_ref()
-                    .zip(follow_up_question.as_deref())
-                    .map(|((initial, turns), question)| InvestigationFollowUp {
-                        initial_answer: initial.as_str(),
-                        prior_turns: turns.as_slice(),
-                        question,
-                    });
-                let ctx = InvestigationPromptContext {
-                    comment: &comment,
-                    pr_number,
-                    pr_title: &meta.title,
-                    pr_description: &meta.body,
-                    changed_files: &changed,
-                    follow_up: follow_up_ctx,
-                    user_context: user_context.as_deref(),
-                };
-                Ok(build_investigation_prompt(&ctx))
-            })();
+            let built: std::result::Result<String, String> = match prepared_prompt {
+                Some(prompt) => Ok(prompt),
+                None => github
+                    .pr_meta(&workdir, pr_number)
+                    .map_err(|e| format!("couldn't load PR #{pr_number}: {e}"))
+                    .map(|meta| {
+                        let follow_up_ctx = prior_context
+                            .as_ref()
+                            .zip(follow_up_question.as_deref())
+                            .map(|((initial, turns), question)| {
+                                (initial.as_str(), turns.as_slice(), question)
+                            });
+                        investigation_prompt_from_meta(
+                            &comment,
+                            pr_number,
+                            &meta,
+                            follow_up_ctx,
+                            user_context.as_deref(),
+                        )
+                    }),
+            };
             let (context_snapshot, result) = match built {
                 Ok(prompt) => {
-                    let answer = HeadlessRunner::run_investigation(&harness, &workdir, &prompt)
+                    let answer = runner(&harness, &workdir, &prompt)
                         .map_err(|e| investigation_failure_message(&harness, &e));
                     (prompt, answer)
                 }
@@ -882,7 +915,7 @@ impl App {
     /// investigation answer. Approving in the reply dialog posts via the
     /// existing `gh` path (`pr_review_post_reply`) and marks the comment
     /// `Replied`.
-    pub(super) fn pr_investigation_post_reply(&mut self) {
+    pub(crate) fn pr_investigation_post_reply(&mut self) {
         let seed = match &self.mode {
             AppMode::PrReview(state) => {
                 let comment_id = match state.selected_comment() {
@@ -913,7 +946,7 @@ impl App {
 
     /// Mark the selected comment's investigation `Dismissed` (in memory and,
     /// best-effort, on disk). The answer is kept.
-    pub(super) fn pr_investigation_dismiss(&mut self) {
+    pub(crate) fn pr_investigation_dismiss(&mut self) {
         use crate::app::pr_review::PrInvestigationStatus;
         let (project_id, pr_number, comment_id) = match &mut self.mode {
             AppMode::PrReview(state) => {

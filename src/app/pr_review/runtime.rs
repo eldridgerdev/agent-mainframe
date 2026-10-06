@@ -25,6 +25,8 @@ pub(crate) struct PrReviewWork {
     review_post: Option<Receiver<ReviewPostFetch>>,
     review_post_seq: u64,
     review_poster: ReviewPoster,
+    github: std::sync::Arc<dyn super::github_access::TriageGithub>,
+    investigation_runner: super::github_access::InvestigationRunner,
 }
 
 /// Everything needed to post one PR review. `pr.head_sha` is the head the
@@ -222,6 +224,8 @@ impl Default for PrReviewWork {
             review_post: None,
             review_post_seq: 0,
             review_poster: gh_review_poster,
+            github: std::sync::Arc::new(super::github_access::GhTriageGithub),
+            investigation_runner: crate::headless::HeadlessRunner::run_investigation,
         }
     }
 }
@@ -336,6 +340,31 @@ impl PrReviewWork {
     #[cfg(test)]
     pub(crate) fn set_review_list_loader_for_test(&mut self, loader: ReviewListLoader) {
         self.review_list_loader = loader;
+    }
+
+    /// The GitHub boundary PR Triage's shared engines read and write through.
+    pub(crate) fn github(&self) -> std::sync::Arc<dyn super::github_access::TriageGithub> {
+        self.github.clone()
+    }
+
+    pub(crate) fn investigation_runner(&self) -> super::github_access::InvestigationRunner {
+        self.investigation_runner
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_github_for_test(
+        &mut self,
+        github: std::sync::Arc<dyn super::github_access::TriageGithub>,
+    ) {
+        self.github = github;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_investigation_runner_for_test(
+        &mut self,
+        runner: super::github_access::InvestigationRunner,
+    ) {
+        self.investigation_runner = runner;
     }
 
     pub(crate) fn begin_fetch(&mut self, receiver: Receiver<anyhow::Result<PrReview>>) {

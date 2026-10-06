@@ -12,6 +12,7 @@
 mod actions;
 mod domain;
 mod fetch;
+pub(crate) mod github_access;
 mod integration;
 mod investigation;
 mod memory;
@@ -41,9 +42,11 @@ pub use domain::{
     ReplyDraftRequest, ReplyGenerationMetadata, ReplyKind, ReplyTarget, TriageState,
     combined_fix_prompt, estimate_tokens, reply_effective_agent_drafted,
 };
+pub(crate) use fetch::PrFetchFailure;
 pub use fetch::{fetch_and_normalize, strip_bot_boilerplate};
 pub use investigation::InvestigationOutcome;
 pub(crate) use investigation::investigation_findings_for_prompt;
+pub(crate) use investigation::{INVESTIGATION_CONTEXT_MAX_LEN, investigation_prompt_from_meta};
 pub(crate) use memory::MEMORY_CATEGORIES;
 pub use memory::{
     BootstrapDepth, BootstrapProgress, BootstrapStage, CompactProgress, CompactStage,

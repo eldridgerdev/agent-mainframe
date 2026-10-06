@@ -22,6 +22,14 @@ interface Draft {
   revision: string;
 }
 
+/** A pending clear: the slot and the prompt revision the user confirmed against. */
+interface PendingClear {
+  promptId: string;
+  slot: StoredOverride;
+  /** Captured when the confirmation opened, not re-read from the poll. */
+  revision: string;
+}
+
 /**
  * The headless-prompt override manager (the TUI's dashboard `E`). Reads and
  * writes go through the shared registry, resolver and stores; every write is
@@ -42,7 +50,7 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
   const [harness, setHarness] = useState<AgentSlug | null>(initialHarness);
   const [selectedId, setSelectedId] = useState<string | null>(initialPromptId);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [confirmClear, setConfirmClear] = useState<StoredOverride | null>(null);
+  const [confirmClear, setConfirmClear] = useState<PendingClear | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<{ label: string; run: () => void } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +74,7 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
     ? view.rows.find((candidate) => candidate.id === draft.promptId) ?? null : null;
   const dirty = draft !== null && draft.text !== draft.initialText;
   const stale = draft !== null && draftRow !== null && draftRow.revision !== draft.revision;
+  const clearStale = confirmClear !== null && row !== null && (row.id !== confirmClear.promptId || row.revision !== confirmClear.revision);
 
   function guard(label: string, run: () => void) {
     if (dirty) setPendingDiscard({ label, run });
@@ -139,12 +148,13 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
     }), `Saved the ${slotLabel(draft.scope, draft.harness)} override for ${draft.promptId}.`);
     if (saved) setDraft(null);
   }
-  async function clear(slot: StoredOverride) {
-    if (!row || !view) return;
+  async function clear(pending: PendingClear) {
+    if (!view || clearStale) return;
+    const { promptId, slot, revision } = pending;
     const cleared = await run(() => promptOverridesClear({
-      context: view.context, prompt_id: row.id, scope: slot.scope, harness: slot.harness,
-      revision: row.revision, view_harness: harness,
-    }), `Cleared the ${slotLabel(slot.scope, slot.harness)} override for ${row.id}.`);
+      context: view.context, prompt_id: promptId, scope: slot.scope, harness: slot.harness,
+      revision, view_harness: harness,
+    }), `Cleared the ${slotLabel(slot.scope, slot.harness)} override for ${promptId}.`);
     if (cleared) setConfirmClear(null);
   }
 
@@ -253,15 +263,17 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
                   <span><strong>{label}</strong>{slot.scope === row.source && (slot.harness ?? null) === (row.source_harness ?? null) && <span className="badge overrides-badge-active">in effect</span>}</span>
                   <span className="overrides-slot-actions">
                     <button className="btn btn-secondary btn-sm" disabled={busy || draft !== null || !scopeOption?.available} onClick={() => startEdit(row, slot)} aria-label={`Edit ${label}`}>Edit</button>
-                    <button className="btn btn-ghost btn-sm" disabled={busy || draft !== null || !scopeOption?.available} onClick={() => { setConfirmClear(slot); setError(null); setNotice(null); }} aria-label={`Clear ${label}`}>Clear…</button>
+                    <button className="btn btn-ghost btn-sm" disabled={busy || draft !== null || !scopeOption?.available} onClick={() => { setConfirmClear({ promptId: row.id, slot, revision: row.revision }); setError(null); setNotice(null); }} aria-label={`Clear ${label}`}>Clear…</button>
                   </span>
                 </li>;
               })}
             </ul>
             {confirmClear && <div className="callout callout-warning" role="alertdialog" aria-label="Confirm clear override">
-              <p>Clear the {slotLabel(confirmClear.scope, confirmClear.harness)} override for {row.title}? Only this override is removed; the prompt then uses the next layer that has a template.</p>
+              <p>Clear the {slotLabel(confirmClear.slot.scope, confirmClear.slot.harness)} override for {row.title}? Only this override is removed; the prompt then uses the next layer that has a template.</p>
+              <pre className="library-preview" aria-label="Template to clear">{confirmClear.slot.template}</pre>
+              {clearStale && <p role="alert">This prompt’s overrides changed after you chose Clear. Keep it, then review the current template before clearing.</p>}
               <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setConfirmClear(null)}>Keep it</button>
-              <button className="btn btn-danger btn-sm" disabled={busy} onClick={() => void clear(confirmClear)}>{busy && <Spinner />}Clear override</button>
+              <button className="btn btn-danger btn-sm" disabled={busy || clearStale} onClick={() => void clear(confirmClear)}>{busy && <Spinner />}Clear override</button>
             </div>}
             <button className="btn btn-primary" disabled={busy || draft !== null || availableScopes.length === 0} onClick={() => startEdit(row, null)}>New override…</button>
           </>}

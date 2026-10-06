@@ -172,6 +172,25 @@ it("clears one stored override only after explicit confirmation", async () => {
   expect(await screen.findByText(/Cleared the Global · Codex override/)).toBeTruthy();
 });
 
+it("clears against the revision the user confirmed, not a newer polled one", async () => {
+  let current = view();
+  mount(() => current, undefined, "session.summary");
+  fireEvent.click(await screen.findByRole("button", { name: "Clear Global · Codex" }));
+  const confirm = screen.getByRole("alertdialog", { name: "Confirm clear override" });
+  expect(within(confirm).getByLabelText("Template to clear").textContent).toBe("GLOBAL codex {{recent_lines}}");
+
+  // The TUI rewrites that slot while the confirmation is open; the next poll sees it.
+  current = view([walkthrough, { ...summary, revision: "s9", effective_template: "TUI {{recent_lines}}",
+    stored: [summary.stored[0], { scope: "global", harness: "codex", template: "TUI {{recent_lines}}" }] }]);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  expect((await within(confirm).findByRole("alert")).textContent).toContain("changed after you chose Clear");
+  expect(within(confirm).getByLabelText("Template to clear").textContent).toBe("GLOBAL codex {{recent_lines}}");
+  const clear = within(confirm).getByRole("button", { name: "Clear override" }) as HTMLButtonElement;
+  expect(clear.disabled).toBe(true);
+  fireEvent.click(clear);
+  expect(calls("prompt_overrides_clear")).toHaveLength(0);
+});
+
 it("reports a broken amf.json and disables unavailable scopes with their reason", async () => {
   mount(() => view([walkthrough], {
     project_config_error: "/repo/amf.json is not valid JSON (EOF); fix it first",

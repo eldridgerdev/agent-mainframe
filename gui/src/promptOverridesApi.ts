@@ -67,6 +67,8 @@ export interface PrecallOverrideTarget {
   prompt_id: string;
   harness: AgentSlug;
   context: OverrideContext;
+  /** Why the manager opened on Global instead of the call's own context. */
+  context_note: string | null;
 }
 
 export function promptOverridesLoad(context: OverrideContext, harness: AgentSlug | null): Promise<OverridesView> {

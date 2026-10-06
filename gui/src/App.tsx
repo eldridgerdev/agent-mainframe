@@ -166,6 +166,7 @@ export default function App() {
   const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [promptOverrides, setPromptOverrides] = useState<{
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
+    contextNote?: string | null;
   } | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
@@ -457,7 +458,10 @@ export default function App() {
   async function editPrecallPrompt() {
     try {
       const target = await promptOverridesPrecallTarget();
-      setPromptOverrides({ context: target.context, promptId: target.prompt_id, harness: target.harness, fromPrecall: true });
+      setPromptOverrides({
+        context: target.context, promptId: target.prompt_id, harness: target.harness, fromPrecall: true,
+        contextNote: target.context_note,
+      });
     } catch (err) {
       reportError(err);
     }
@@ -1507,7 +1511,7 @@ export default function App() {
       {promptOverrides && <PromptOverridesPanel
         initialContext={promptOverrides.context} initialPromptId={promptOverrides.promptId}
         initialHarness={promptOverrides.harness} fromPrecall={promptOverrides.fromPrecall}
-        projects={projects} onClose={() => setPromptOverrides(null)}
+        contextNote={promptOverrides.contextNote ?? null} projects={projects} onClose={() => setPromptOverrides(null)}
       />}
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />

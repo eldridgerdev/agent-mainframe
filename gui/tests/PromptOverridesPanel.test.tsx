@@ -191,6 +191,22 @@ it("clears against the revision the user confirmed, not a newer polled one", asy
   expect(calls("prompt_overrides_clear")).toHaveLength(0);
 });
 
+it("explains why a pending call's manager opened on Global until another context is chosen", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "prompt_overrides_load") return view();
+    throw new Error(`Unexpected command ${command}`);
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  clients.push(client);
+  render(<QueryClientProvider client={client}><PromptOverridesPanel initialContext={{ kind: "global" }}
+    initialPromptId="plan_interview.round" initialHarness="pi" fromPrecall contextNote={"Project \"Gone\" for this call was not found, so this opened on Global."}
+    projects={projects} onClose={vi.fn()} /></QueryClientProvider>);
+  expect((await screen.findByRole("note", { name: "Override context note" })).textContent).toContain("\"Gone\" for this call was not found");
+  fireEvent.change(screen.getByRole("combobox", { name: "Override context" }), { target: { value: JSON.stringify(context) } });
+  expect(screen.queryByRole("note", { name: "Override context note" })).toBeNull();
+  await act(async () => undefined);
+});
+
 it("reports a broken amf.json and disables unavailable scopes with their reason", async () => {
   mount(() => view([walkthrough], {
     project_config_error: "/repo/amf.json is not valid JSON (EOF); fix it first",

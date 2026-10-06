@@ -36,12 +36,14 @@ interface PendingClear {
  * checked against the revision the draft was based on, so a change made by the
  * TUI, another window or a hand edit of `amf.json` must be reloaded first.
  */
-export default function PromptOverridesPanel({ initialContext, initialPromptId, initialHarness, fromPrecall, projects, onClose }: {
+export default function PromptOverridesPanel({ initialContext, initialPromptId, initialHarness, fromPrecall, contextNote = null, projects, onClose }: {
   initialContext: OverrideContext;
   initialPromptId: string | null;
   initialHarness: AgentSlug | null;
   /** Opened from a pending AI call's notice, which stays open underneath. */
   fromPrecall: boolean;
+  /** Why the pending call's own context couldn't be opened; shown while the initial context is selected. */
+  contextNote?: string | null;
   projects: Project[];
   onClose: () => void;
 }) {
@@ -168,6 +170,8 @@ export default function PromptOverridesPanel({ initialContext, initialPromptId, 
       <button className="btn btn-secondary" disabled={busy} onClick={requestClose}>Done</button>
     </>}>
     {fromPrecall && <div className="callout callout-accent" role="note"><p>Opened from a pending AI call. Saved changes apply when you continue that call; its preview was rendered before your edit.</p></div>}
+    {contextNote && contextKey(context) === contextKey(initialContext) &&
+      <div className="callout callout-warning" role="note" aria-label="Override context note"><p>{contextNote}</p></div>}
     <div className="library-toolbar">
       <Field label="Override context"><select disabled={busy} value={contextKey(context)} onChange={(event) => {
         const next = JSON.parse(event.target.value) as OverrideContext;

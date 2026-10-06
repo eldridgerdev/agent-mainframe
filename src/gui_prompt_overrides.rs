@@ -143,6 +143,9 @@ pub struct PrecallOverrideTarget {
     pub prompt_id: &'static str,
     pub harness: AgentKind,
     pub context: OverrideContext,
+    /// Set when the call's feature or project couldn't be found and the
+    /// manager opens on Global, which may not be what the call resolves.
+    pub context_note: Option<String>,
 }
 
 struct Resolved {
@@ -546,22 +549,50 @@ pub fn precall_target(gui: &mut GuiHandle) -> GuiResult<PrecallOverrideTarget> {
         })
     });
     // A creation-time interview has no feature yet: its project still applies.
+    // That launch names its project, and the launch itself resolves it by that
+    // name (the store's key; creating a duplicate is refused), so use exactly
+    // that lookup. Otherwise a workdir that is a project's own checkout.
     let project = || {
-        app.store
-            .projects
-            .iter()
-            .find(|project| {
-                workdir.is_some_and(|workdir| &project.repo == workdir)
-                    || project_name.is_some_and(|name| &project.name == name)
+        project_name
+            .map(|name| app.store.find_project(name))
+            .unwrap_or_else(|| {
+                workdir.and_then(|workdir| {
+                    app.store
+                        .projects
+                        .iter()
+                        .find(|project| &project.repo == workdir)
+                })
             })
             .map(|project| OverrideContext::Project {
                 project_id: project.id.clone(),
             })
     };
+    let (context, context_note) = match feature.or_else(project) {
+        Some(context) => (context, None),
+        None => (
+            OverrideContext::Global,
+            Some(match (project_name, workdir) {
+                (Some(name), _) => format!(
+                    "Project \"{name}\" for this call was not found, so this opened on Global. \
+                     Choose the right context before editing."
+                ),
+                (None, Some(workdir)) => format!(
+                    "No AMF feature or project matches {}, so this opened on Global. \
+                     Feature and project overrides for this call may differ.",
+                    workdir.display()
+                ),
+                (None, None) => "AMF couldn't tell which feature or project this call runs in, so \
+                     this opened on Global. Feature and project overrides for this call may \
+                     differ."
+                    .into(),
+            }),
+        ),
+    };
     Ok(PrecallOverrideTarget {
         prompt_id: pending.prompt_id.as_str(),
         harness: pending.harness.clone(),
-        context: feature.or_else(project).unwrap_or_default(),
+        context,
+        context_note,
     })
 }
 
@@ -966,11 +997,102 @@ mod tests {
         assert_eq!(target.prompt_id, "plan_interview.round");
         assert_eq!(target.harness, AgentKind::Pi);
         assert_eq!(target.context, fx.feature);
+        assert_eq!(target.context_note, None);
         // Opening the manager leaves the pending call untouched.
         load(&mut fx.gui, &target.context, Some(target.harness)).unwrap();
         assert!(matches!(
             fx.gui.app_for_workflow().mode,
             AppMode::PromptPrecall(_)
         ));
+    }
+    fn park_precall(fx: &mut Fixture, prior: AppMode) {
+        use crate::app::precall::{PendingPrecall, PrecallAction};
+        fx.gui.app_for_workflow().mode = AppMode::PromptPrecall(Box::new(PendingPrecall {
+            action: PrecallAction::PlanRound,
+            prompt_id: PromptId::PlanInterviewRound,
+            harness: AgentKind::Pi,
+            model: None,
+            preview: String::new(),
+            viewing: false,
+            scroll: 0,
+            prior_mode: Box::new(prior),
+        }));
+    }
+
+    fn creation_interview(project_name: &str, workdir: PathBuf) -> AppMode {
+        AppMode::PlanInterview(crate::app::PlanInterviewState::for_feature_creation(
+            crate::app::PreparedFeatureLaunch {
+                model_selection: None,
+                project_name: project_name.into(),
+                feature_name: None,
+                branch: "planned".into(),
+                workdir,
+                is_worktree: true,
+                mode: VibeMode::default(),
+                review: false,
+                plan_mode: true,
+                quick_plan: false,
+                agent: AgentKind::Pi,
+                create_terminal: false,
+                session_name: "Pi 1".into(),
+                enable_chrome: false,
+                remote_control: false,
+                steering_enabled: false,
+                hook_succeeded: None,
+                startup_prompt: None,
+                todo_origin: None,
+                issue_source: None,
+            },
+            Vec::new(),
+        ))
+    }
+
+    #[test]
+    fn precall_target_finds_a_creation_interviews_project_the_way_its_launch_does() {
+        let mut fx = fixture();
+        // A second project whose checkout is the new worktree's path must not
+        // win over the project the launch names.
+        let new_worktree = fx.dir.path().join("planned");
+        {
+            let app = fx.gui.app_for_workflow();
+            app.store.projects.push(Project::new(
+                "Other".into(),
+                new_worktree.clone(),
+                true,
+                AgentKind::Claude,
+            ));
+        }
+        park_precall(&mut fx, creation_interview("Project", new_worktree));
+        let target = precall_target(&mut fx.gui).unwrap();
+        assert_eq!(target.context, fx.project);
+        assert_eq!(target.context_note, None);
+    }
+
+    #[test]
+    fn precall_target_says_why_it_falls_back_to_global() {
+        let mut fx = fixture();
+        let planned = fx.dir.path().join("planned");
+        park_precall(&mut fx, creation_interview("Gone", planned));
+        let target = precall_target(&mut fx.gui).unwrap();
+        assert_eq!(target.context, OverrideContext::Global);
+        let note = target.context_note.unwrap();
+        assert!(
+            note.contains("\"Gone\"") && note.contains("Global"),
+            "{note}"
+        );
+
+        let elsewhere = fx.dir.path().join("elsewhere");
+        let state = crate::app::PlanInterviewState::for_feature(
+            "Feature".into(),
+            "feature".into(),
+            Vec::new(),
+            elsewhere.clone(),
+            AgentKind::Pi,
+        );
+        park_precall(&mut fx, AppMode::PlanInterview(state));
+        let target = precall_target(&mut fx.gui).unwrap();
+        assert_eq!(target.context, OverrideContext::Global);
+        let note = target.context_note.unwrap();
+        assert!(note.contains(&elsewhere.display().to_string()), "{note}");
     }
 }

@@ -173,7 +173,7 @@ each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
-editing-agent handoff, plus standalone Git diffs and saved prompt browsing. Continue to use `amf` for workflows
+editing-agent handoff, plus standalone Git diffs, supervised edits and saved prompt browsing. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -393,6 +393,28 @@ The `gui-review-local-suggestions.txt` scenario verifies confirmed local applica
 and cancellation, source writes and approval invalidation, stale/read-only source
 refusals, progress-save retry and restored application history through real Rust IPC.
 Remaining native interactions and macOS validation are open.
+
+### Supervised edits
+
+A Vibeless agent's hook holds each file change until AMF answers it. When no
+AMF TUI is running, the hook leaves the request on disk and the GUI picks it up:
+the feature gets a count in navigation, a notice offers **Review**, and the
+feature page shows **Supervised edits** while any edit waits (a Vibeless
+feature's **⋯** menu always has it). The panel lists waiting edits with the
+hook's captured diff, the agent's stated reason when it gives one, and layout
+and context controls. **Approve edit**, **Reject edit** (with optional
+feedback, up to 200 characters) and **Cancel edit** each need a second,
+explicit confirmation that states what the agent will do; OpenCode, for
+example, does not forward rejection feedback and treats cancel as a skip.
+Answers name the reviewed revision, so an edit that changed, was answered in
+another window, or whose agent stopped waiting is refused rather than answered
+twice. Closing with unsent feedback asks before discarding it. AMF never writes
+the source itself; the agent does, after reading an approval.
+
+A running TUI receives these requests over its socket and answers them there;
+the GUI does not take that socket over. Explaining an edit with AI also stays
+in the TUI. `gui-supervised-edits.txt` drives the real Claude hook script with
+offline input against an isolated database and checkout.
 
 ## Checks
 

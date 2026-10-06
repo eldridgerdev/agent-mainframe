@@ -69,6 +69,15 @@ the reviewer chose handoff: submitted through `deliver_review_prompt` when the
 TUI setting submits and the session runs, otherwise returned once (via
 `take_completion`) as an unsent composer draft.
 
+`app/supervised_edits.rs` owns Vibeless per-edit approval shared by both
+interfaces: the hook reply format, its IPC-or-file delivery and the captured
+diff loader. `App::read_notification_files` is the one reader of hook
+notification files; the TUI scan and `gui_supervised_edits.rs` both use it.
+The GUI binds no IPC socket, so it answers only file-fallback requests, by a
+stable edit ID and a revision hashed over the request and both captured
+copies. It refuses changed, already-answered and abandoned edits and never
+recreates a departed hook's files.
+
 ## Feature modules
 
 | Feature | Files under `src/app/` | Responsibility |

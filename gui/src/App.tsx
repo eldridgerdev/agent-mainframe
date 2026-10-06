@@ -71,6 +71,7 @@ import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import DiffPanel from "./DiffPanel";
+import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
@@ -222,6 +223,14 @@ export default function App() {
     message: string;
   } | null>(null);
   const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
+  const [supervisedTarget, setSupervisedTarget] = useState<FeatureTarget | null>(null);
+  const supervisedPanel = useRef<SupervisedEditsPanelHandle>(null);
+  function openSupervisedEdits(target: FeatureTarget) {
+    if (supervisedTarget?.project_id === target.project_id && supervisedTarget.feature_id === target.feature_id) return;
+    const proceed = () => setSupervisedTarget(target);
+    if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
+    else proceed();
+  }
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -365,6 +374,8 @@ export default function App() {
       reportError(err);
     }
   }, [queryClient, reportError]);
+
+  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits);
 
   const harnessName = (slug: AgentSlug) =>
     harnesses.data?.find((harness) => harness.slug === slug)?.display_name ?? slug;
@@ -1054,6 +1065,11 @@ export default function App() {
             onToggleCollapsed={toggleCollapsed}
             onResumePlan={() => setPlanMinimized(false)}
             onCreateFeature={setCreateFeatureFor}
+            renderFeatureExtra={(feature) => pendingEdits[feature.id] > 0 && (
+              <span className="nav-count nav-count-attention" title="Edits waiting for review">
+                {pendingEdits[feature.id]}
+              </span>
+            )}
           />
         </nav>
 
@@ -1069,6 +1085,8 @@ export default function App() {
         )}
       </aside>
 
+      {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
+        ref={supervisedPanel} target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} />}
       {learning && (
@@ -1147,6 +1165,8 @@ export default function App() {
             onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             learningBusy={learningBusy}
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
+            onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
@@ -1631,6 +1651,8 @@ function FeatureView({
   onLearning,
   learningBusy,
   onDiff,
+  pendingEdits,
+  onSupervisedEdits,
   onReview,
   reviewBusy,
   onNewSession,
@@ -1665,6 +1687,9 @@ function FeatureView({
   onLearning: () => void;
   learningBusy: boolean;
   onDiff: () => void;
+  /** Supervised edits waiting for an answer in this feature. */
+  pendingEdits: number;
+  onSupervisedEdits: () => void;
   onReview: () => void;
   reviewBusy: boolean;
   onNewSession: () => void;
@@ -1755,6 +1780,10 @@ function FeatureView({
             {project.is_git && <button className="btn btn-secondary" onClick={onDiff}>
               <Icon name="branch" size={12} /> Changes
             </button>}
+            {pendingEdits > 0 && <button className="btn btn-secondary" onClick={onSupervisedEdits}>
+              <Icon name="check" size={12} /> Supervised edits
+              {pendingEdits > 0 && <span className="nav-count nav-count-attention">{pendingEdits}</span>}
+            </button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
               {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
             </button>}
@@ -1787,6 +1816,7 @@ function FeatureView({
               icon="more"
               className="btn btn-secondary btn-icon"
               items={[
+                ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />

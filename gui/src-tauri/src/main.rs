@@ -30,6 +30,9 @@ use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, Learn
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
+use agent_mainframe::gui_supervised_edits::{
+    self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
+};
 use agent_mainframe::gui_terminal::TerminalHandle;
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
 use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
@@ -120,6 +123,46 @@ async fn load_diff(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         target,
         options,
+    )
+}
+
+#[tauri::command]
+async fn supervised_edits_load(
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    context: gui_diff::DiffContext,
+) -> Result<SupervisedEditsView, GuiError> {
+    gui_supervised_edits::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        context,
+    )
+}
+
+#[tauri::command]
+async fn supervised_edit_counts(
+    state: State<'_, AppState>,
+) -> Result<Vec<PendingEditCount>, GuiError> {
+    gui_supervised_edits::pending_counts(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+
+/// Answers an agent waiting on a Vibeless edit. The frontend sends this only
+/// after the reviewer explicitly confirms; the backend refuses a changed,
+/// already-answered or abandoned edit.
+#[tauri::command]
+async fn supervised_edit_respond(
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    edit_id: String,
+    revision: String,
+    decision: SupervisedEditDecision,
+) -> Result<SupervisedEditOutcome, GuiError> {
+    gui_supervised_edits::respond(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        &edit_id,
+        &revision,
+        decision,
     )
 }
 
@@ -880,6 +923,9 @@ fn main() {
             plan_begin_todo_new,
             plan_snapshot,
             plan_act,
+            supervised_edits_load,
+            supervised_edit_counts,
+            supervised_edit_respond,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

@@ -5,14 +5,14 @@ import {
   mkdirSync,
   unlinkSync,
   appendFileSync,
+  rmSync,
+  utimesSync,
 } from "fs"
 import { join, dirname, relative } from "path"
 import { homedir } from "os"
 import { randomUUID } from "crypto"
 
 const NOTIFY_DIR = join(homedir(), ".config", "amf", "notifications")
-const SIGNAL_DIR = join(homedir(), ".config", "amf", "signals")
-const RESPONSE_DIR = join(homedir(), ".config", "amf", "responses")
 const DEBUG_LOG = "/tmp/amf-opencode-change-tracker.log"
 
 function debug(message, data) {
@@ -241,8 +241,6 @@ export const ChangeTracker = async ({ directory }) => {
       const reason = generateReason(tool, oldSnippet, newSnippet, relativePath)
 
       ensureDir(NOTIFY_DIR)
-      ensureDir(SIGNAL_DIR)
-      ensureDir(RESPONSE_DIR)
 
       const history = loadChangeHistory(directory)
       if (tool === "write" && content) {
@@ -253,8 +251,15 @@ export const ChangeTracker = async ({ directory }) => {
         }
       }
 
-      const signalFile = join(SIGNAL_DIR, `${sessionId}.proceed`)
-      const responseFile = join(RESPONSE_DIR, `${sessionId}.json`)
+      // Each waiting write owns its reply paths; a late answer can never
+      // release a later write from this session.
+      const reviewDir = dirname(reviewFiles.originalPath)
+      const signalFile = join(reviewDir, "proceed")
+      const responseFile = join(reviewDir, "response.json")
+      const waiterFile = join(reviewDir, "waiter.json")
+      writeFileSync(waiterFile, JSON.stringify({
+        pid: process.pid, session_id: sessionId, change_id: changeId,
+      }))
       const notification = {
         session_id: sessionId,
         ...amfSessionMetadata(sessionId),
@@ -275,15 +280,57 @@ export const ChangeTracker = async ({ directory }) => {
         proceed_signal: signalFile,
       }
 
-      const notificationFile = join(NOTIFY_DIR, `${sessionId}.json`)
+      const notificationFile = join(NOTIFY_DIR, `${sessionId}-${changeId}.json`)
       writeFileSync(notificationFile, JSON.stringify(notification, null, 2))
 
-      const timeout = 30000
-      const startTime = Date.now()
+      try {
+        const timeout = 30000
+        const startTime = Date.now()
 
-      while (!existsSync(signalFile)) {
-        if (Date.now() - startTime > timeout) {
-          safeUnlink(notificationFile)
+        while (!existsSync(signalFile)) {
+          if (Date.now() - startTime > timeout) {
+            safeUnlink(notificationFile)
+            recordChange(history, {
+              id: changeId,
+              timestamp: new Date().toISOString(),
+              file: relativePath,
+              tool,
+              old_snippet: oldSnippet,
+              new_snippet: newSnippet,
+              reason,
+              session_id: sessionId,
+            })
+            saveChangeHistory(directory, history)
+            return
+          }
+          const now = new Date()
+          utimesSync(waiterFile, now, now)
+          await sleep(100)
+        }
+
+        safeUnlink(signalFile)
+        safeUnlink(notificationFile)
+
+        let finalReason = reason
+        let proceedWithChange = true
+
+        if (existsSync(responseFile)) {
+          try {
+            const response = JSON.parse(readFileSync(responseFile, "utf-8"))
+            if (response.reason) {
+              finalReason = response.reason
+            }
+            if (response.skip === true) {
+              finalReason = null
+            }
+            if (response.reject === true) {
+              proceedWithChange = false
+            }
+          } catch {}
+          safeUnlink(responseFile)
+        }
+
+        if (proceedWithChange) {
           recordChange(history, {
             id: changeId,
             timestamp: new Date().toISOString(),
@@ -291,51 +338,16 @@ export const ChangeTracker = async ({ directory }) => {
             tool,
             old_snippet: oldSnippet,
             new_snippet: newSnippet,
-            reason,
+            reason: finalReason,
             session_id: sessionId,
           })
           saveChangeHistory(directory, history)
-          return
+        } else {
+          throw new Error("Change rejected by user")
         }
-        await sleep(100)
-      }
-
-      safeUnlink(signalFile)
-      safeUnlink(notificationFile)
-
-      let finalReason = reason
-      let proceedWithChange = true
-
-      if (existsSync(responseFile)) {
-        try {
-          const response = JSON.parse(readFileSync(responseFile, "utf-8"))
-          if (response.reason) {
-            finalReason = response.reason
-          }
-          if (response.skip === true) {
-            finalReason = null
-          }
-          if (response.reject === true) {
-            proceedWithChange = false
-          }
-        } catch {}
-        safeUnlink(responseFile)
-      }
-
-      if (proceedWithChange) {
-        recordChange(history, {
-          id: changeId,
-          timestamp: new Date().toISOString(),
-          file: relativePath,
-          tool,
-          old_snippet: oldSnippet,
-          new_snippet: newSnippet,
-          reason: finalReason,
-          session_id: sessionId,
-        })
-        saveChangeHistory(directory, history)
-      } else {
-        throw new Error("Change rejected by user")
+      } finally {
+        safeUnlink(notificationFile)
+        rmSync(reviewDir, { recursive: true, force: true })
       }
     },
   }

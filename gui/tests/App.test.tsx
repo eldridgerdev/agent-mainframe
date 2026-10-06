@@ -592,3 +592,80 @@ it("collects a completed poll result when cancellation starts while the poll is 
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion")).toHaveLength(1);
   } finally { vi.useRealTimers(); client.clear(); }
 });
+
+it("badges a feature with waiting supervised edits and opens them from the feature page", async () => {
+  await openFeature([session("Agent", "claude")]);
+  const initial = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "supervised_edit_counts") return [{
+      project_id: "project", feature_id: "feature", feature_name: "my-feat", count: 2, first_id: "e1", first_path: "src/a.ts",
+    }];
+    if (command === "supervised_edits_load") return { target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", edits: [] };
+    return initial(command, args, options);
+  });
+  const header = await screen.findByRole("button", { name: /Supervised edits\s*2/ }, { timeout: 4000 });
+  expect(within(screen.getByRole("navigation", { name: "Workspace" })).getByTitle("Edits waiting for review").textContent).toBe("2");
+  fireEvent.click(header);
+  expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command, args]) =>
+    command === "supervised_edits_load" && JSON.stringify(args) === JSON.stringify({ target: { project_id: "project", feature_id: "feature" }, context: "standard" }))).toBe(true));
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "supervised_edit_respond")).toBe(false);
+});
+
+
+it.each(["draft", "sending"])("guards an arrival toast target switch with %s in the current review", async (guard) => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const target = { project_id: "project", feature_id: "feature" };
+  const pending = {
+    id: "e1", revision: "r1", kind: "diff-review", path: "src/a.ts", tool: "edit", is_new_file: false,
+    agent_reason: null, diff: null, diff_error: null, old_snippet: "old", new_snippet: "new",
+    requested_at: null, answered: false, unavailable: null,
+    effects: { approve: "Write it", reject: "Reject it", cancel: "Cancel it", feedback_reaches_agent: true },
+  };
+  const first = { target, feature_name: "my-feat", edits: [pending] };
+  let finish!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "supervised_edit_counts") return [];
+    if (command === "supervised_edits_load") return (args as { target: typeof target }).target.feature_id === "feature"
+      ? first : { target: { ...target, feature_id: "other" }, feature_name: "Docs", edits: [] };
+    if (command === "supervised_edit_respond") {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return { message: "Approved src/a.ts", view: { ...first, edits: [{ ...pending, answered: true }] } };
+    }
+    return original(command, args, options);
+  });
+  const counts = [{ ...target, feature_name: "my-feat", count: 1, first_id: "e1", first_path: "src/a.ts" }];
+  await act(async () => { client.setQueryData(["supervised-edit-counts"], counts); });
+  fireEvent.click(await screen.findByRole("button", { name: /Supervised edits\s*1/ }));
+  await screen.findByRole("textbox", { name: "Feedback for the agent" });
+  // This toast was created before the feedback/send state changed.
+  await act(async () => { client.setQueryData(["supervised-edit-counts"], [...counts, {
+    ...target, feature_id: "other", feature_name: "Docs", count: 1, first_id: "e2", first_path: "README.md",
+  }]); });
+  const toast = (await screen.findByText("Docs: the agent wants to change README.md.")).closest(".toast") as HTMLElement;
+  const review = within(toast).getByRole("button", { name: "Review", exact: true });
+  if (guard === "draft") {
+    fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "keep feedback" } });
+    fireEvent.click(review);
+    expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
+    const discard = screen.getByRole("alertdialog", { name: "Discard unsent feedback" });
+    fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
+    expect((screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("keep feedback");
+    fireEvent.click(review);
+    fireEvent.click(screen.getByRole("button", { name: "Discard and switch" }));
+    expect(await screen.findByText("Supervised edits · Docs")).toBeTruthy();
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
+    fireEvent.click(review);
+    expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
+    expect(screen.getByText(/Wait for its result before switching reviews/)).toBeTruthy();
+    expect(screen.queryByText("Supervised edits · Docs")).toBeNull();
+    await act(async () => finish());
+    expect(await screen.findByText(/Approved src\/a.ts/)).toBeTruthy();
+    fireEvent.click(review);
+    expect(await screen.findByText("Supervised edits · Docs")).toBeTruthy();
+  }
+  client.clear();
+});

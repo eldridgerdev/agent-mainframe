@@ -57,6 +57,7 @@ pub mod setup;
 mod skill_picker;
 mod state;
 mod steering;
+pub(crate) mod supervised_edits;
 mod switcher;
 mod sync;
 mod syntax;

@@ -183,69 +183,31 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
         _ => return Ok(()),
     };
 
-    let response = if skip {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "cancel",
-            "reason": null,
-            "skip": true,
-            "reject": false,
-        })
+    use crate::app::supervised_edits::{EditReviewDecision, EditReviewReply, edit_review_response};
+    let decision = if skip {
+        EditReviewDecision::Cancel
     } else if reject {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "reject",
-            "reason": if reason.is_empty() { serde_json::Value::Null } else { serde_json::json!(reason) },
-            "skip": false,
-            "reject": true,
-        })
+        EditReviewDecision::Reject
     } else {
-        serde_json::json!({
-            "type": "review-response",
-            "decision": "proceed",
-            "reason": if reason.is_empty() { serde_json::Value::Null } else { serde_json::json!(reason) },
-            "skip": false,
-            "reject": false,
-        })
+        EditReviewDecision::Approve
     };
-
-    let mut responded_over_ipc = false;
-    if let (Some(req), Some(sock)) = (request_id, reply_socket)
-        && !req.is_empty()
-        && !sock.is_empty()
-    {
-        let mut payload = response.clone();
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("request_id".to_string(), serde_json::json!(req));
-        }
-        if crate::ipc::send(
-            std::path::Path::new(&sock),
-            &serde_json::to_string(&payload).unwrap_or_default(),
-        )
-        .is_ok()
-        {
-            responded_over_ipc = true;
-        } else {
-            app.log_warn(
-                "ipc",
-                "Failed IPC response for change-reason; falling back to files".to_string(),
-            );
-        }
-    }
-
-    if !responded_over_ipc {
-        if let Some(parent) = response_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(
-            &response_file,
-            serde_json::to_string(&response).unwrap_or_default(),
+    let response = edit_review_response(decision, &reason);
+    // A failed response write leaves the proceed signal untouched, so the
+    // hook keeps waiting instead of reading a missing reply as approval.
+    if let Err(err) = app.deliver_edit_review_response(
+        &EditReviewReply {
+            request_id: request_id.as_deref(),
+            reply_socket: reply_socket.as_deref(),
+            response_file: &response_file,
+            proceed_signal: &proceed_signal,
+        },
+        &response,
+    ) {
+        app.report_logged_error(
+            "diff-review",
+            format!("Could not answer the edit review: {err:#}. Review and feedback kept; retry the answer"),
         );
-
-        if let Some(parent) = proceed_signal.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&proceed_signal, "");
+        return Ok(());
     }
 
     app.mode = match return_to_view {
@@ -637,6 +599,71 @@ mod tests {
             .unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn delivery_failure_keeps_review_and_feedback_for_retry() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        app.pending_inputs.push(crate::app::PendingInput {
+            session_id: "sess-1".to_string(),
+            cwd: tmp.path().display().to_string(),
+            message: "Review this".to_string(),
+            notification_type: "diff-review".to_string(),
+            file_path: tmp.path().join("notification.json"),
+            target_file_path: Some("src/main.rs".to_string()),
+            relative_path: Some("src/main.rs".to_string()),
+            change_id: Some("chg-1".to_string()),
+            tool: Some("edit".to_string()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: Some(tmp.path().join("response.json").display().to_string()),
+            project_name: Some("my-project".to_string()),
+            feature_name: Some("my-feature".to_string()),
+            proceed_signal: Some(tmp.path().join("proceed").display().to_string()),
+            request_id: None,
+            reply_socket: None,
+        });
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.editing_feedback = true;
+            state.reason = "keep this feedback".to_string();
+            state.response_file = tmp.path().join("blocked/response.json");
+        }
+        std::fs::write(tmp.path().join("blocked"), "").unwrap();
+        app.pending_inputs[0].response_file = Some(
+            tmp.path()
+                .join("blocked/response.json")
+                .display()
+                .to_string(),
+        );
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        app.scan_notifications_forced();
+        let AppMode::DiffReviewPrompt(state) = &app.mode else {
+            panic!("review must remain open")
+        };
+        assert_eq!(state.reason, "keep this feedback");
+        assert!(state.editing_feedback);
+        assert_eq!(app.pending_inputs.len(), 1);
+        assert!(!tmp.path().join("proceed").exists());
+        assert!(app.message.as_deref().unwrap().contains("retry the answer"));
+        std::fs::remove_file(tmp.path().join("blocked")).unwrap();
+        std::fs::create_dir(tmp.path().join("blocked")).unwrap();
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert!(app.pending_inputs.is_empty());
+        assert!(tmp.path().join("proceed").exists());
+        let response: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(tmp.path().join("blocked/response.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response["decision"], "reject");
+        assert_eq!(response["reason"], "keep this feedback");
     }
 
     #[test]

@@ -31,6 +31,16 @@ are tagged.
   session is running; otherwise it opens there as an unsent draft. Changed
   reviews, checks or agent targets are refused, and unsaved drafts block
   completion. No migration is required.
+- **Answer supervised edits in the desktop GUI.** When a Vibeless agent waits
+  for you to approve a file change and no AMF TUI is running, the feature is
+  badged in navigation and a notice offers **Review**. Open **Supervised
+  edits** on the feature page to read the proposed diff (unified or side by
+  side, with more context), then **Approve edit**, **Reject edit** with optional
+  feedback, or **Cancel edit**. Every answer is confirmed first and states what
+  the agent will do. An edit that changed, was already answered elsewhere, or
+  whose agent stopped waiting is refused. Edits a running TUI received are
+  still answered in the TUI, and AI explanations of an edit remain TUI-only. No
+  migration is required.
 - **Run project checks in desktop Final Review.** Preview and confirm the
   configured check from **Pre-finish summary**, inspect its result and output,
   or cancel it. The review stays open and unsaved drafts are kept. Changed

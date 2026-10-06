@@ -1,0 +1,8 @@
+# Native GUI supervised edits with isolated Git/SQLite; no agents are launched.
+# Pending edits come from AMF's real Claude diff-review hook fed offline input.
+# The helper builds the GUI and installs native capture dependencies in CI.
+# Set AMF_GUI_CAPTURE_REUSE_FRONTEND=1 only to reuse this checkout's dev server.
+note:The isolated TUI confirms the screenshot harness is ready before native supervised-edit proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-supervised-edits-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

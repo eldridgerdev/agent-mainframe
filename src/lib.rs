@@ -19,6 +19,7 @@ pub mod gui_learning;
 pub mod gui_plans;
 pub mod gui_prompts;
 pub mod gui_review;
+pub mod gui_supervised_edits;
 pub mod gui_terminal;
 pub mod gui_todos;
 pub mod project;

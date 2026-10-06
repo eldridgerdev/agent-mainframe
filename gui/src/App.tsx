@@ -348,14 +348,21 @@ export default function App() {
   }, [pushToast, workspace]);
 
   /** Collapse or expand a tree row in the store shared with the TUI, showing
-   *  the change at once and undoing it if the write is refused. */
-  const toggleCollapsed = useCallback((target: CollapseTarget, collapsed: boolean) => {
-    const show = (value: boolean) => queryClient.setQueryData<WorkspaceSnapshot>(
-      SNAPSHOT_KEY, (current) => current && withCollapsed(current, target, value));
-    show(collapsed);
-    setCollapsed(target, collapsed)
-      .then((snapshot) => queryClient.setQueryData(SNAPSHOT_KEY, snapshot))
-      .catch((err) => { show(!collapsed); reportError(err); });
+   *  the change at once and reloading the store's truth if the write is
+   *  refused. */
+  const toggleCollapsed = useCallback(async (target: CollapseTarget, collapsed: boolean) => {
+    // A poll already in flight read the store before this write and would
+    // flip the row back when it lands.
+    await queryClient.cancelQueries({ queryKey: SNAPSHOT_KEY });
+    queryClient.setQueryData<WorkspaceSnapshot>(
+      SNAPSHOT_KEY, (current) => current && withCollapsed(current, target, collapsed));
+    try {
+      queryClient.setQueryData(SNAPSHOT_KEY, await setCollapsed(target, collapsed));
+    } catch (err) {
+      // Not `!collapsed`: a second click may have landed since this one.
+      void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+      reportError(err);
+    }
   }, [queryClient, reportError]);
 
   const harnessName = (slug: AgentSlug) =>

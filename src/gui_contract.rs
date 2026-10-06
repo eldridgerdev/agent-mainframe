@@ -365,6 +365,14 @@ impl GuiHandle {
     /// by this GUI process; an open TUI has its own process and cannot emit
     /// those events into this window.
     pub fn refresh_snapshot(&mut self) -> GuiResult<WorkspaceSnapshot> {
+        self.refresh_store()?;
+        Ok(self.snapshot())
+    }
+
+    /// [`Self::refresh_snapshot`] without building a snapshot, for callers
+    /// that only need the store current: the sidebar it would build reads
+    /// notification directories, the DB, and `amf.json`.
+    pub fn refresh_store(&mut self) -> GuiResult<()> {
         self.app.poll_learning_answers_bg();
         if let Some(db) = &self.app.db {
             let current = db.current_store_version().map_err(GuiError::from)?;
@@ -375,7 +383,7 @@ impl GuiHandle {
                 self.app.store_version = Some(version);
             }
         }
-        Ok(self.snapshot())
+        Ok(())
     }
 
     /// Reconcile the displayed status with live tmux sessions without
@@ -383,7 +391,14 @@ impl GuiHandle {
     /// write (for example after tmux exits), and the GUI does not run the
     /// TUI's background status synchronizer.
     pub fn refresh_live_snapshot(&mut self) -> GuiResult<WorkspaceSnapshot> {
-        let mut snapshot = self.refresh_snapshot()?;
+        self.refresh_store()?;
+        // The sidebar is built once, below, after the status correction.
+        let mut snapshot = WorkspaceSnapshot {
+            projects: self.app.store.projects.clone(),
+            snapshot_at: chrono::Utc::now(),
+            stopped_session_ids: Vec::new(),
+            sidebar: sidebar::SidebarSnapshot::default(),
+        };
         let live_sessions: std::collections::HashSet<String> = self
             .app
             .tmux
@@ -481,7 +496,7 @@ impl GuiHandle {
         &mut self,
         request: CreateFeatureRequest,
     ) -> GuiResult<CreateFeatureResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         Ok(self.app.create_feature_from_request(&request)?)
     }
 
@@ -490,7 +505,7 @@ impl GuiHandle {
         &mut self,
         project_id: &str,
     ) -> GuiResult<Option<AutomationHookPrompt>> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let project = self
             .app
             .store
@@ -549,7 +564,7 @@ impl GuiHandle {
         &mut self,
         target: &FeatureTarget,
     ) -> GuiResult<Vec<NewSessionOption>> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, _) = self.locate(target)?;
         let project = &self.app.store.projects[pi];
         let mut options = self
@@ -582,7 +597,7 @@ impl GuiHandle {
         label: Option<String>,
         approved: bool,
     ) -> GuiResult<AddSessionResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let project_repo = self.app.store.projects[pi].repo.clone();
@@ -655,7 +670,7 @@ impl GuiHandle {
         &mut self,
         target: &SessionTarget,
     ) -> GuiResult<Option<SessionRecoveryOption>> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(target)?;
         let feature = &self.app.store.projects[pi].features[fi];
         let session = &feature.sessions[si];
@@ -692,7 +707,7 @@ impl GuiHandle {
         &mut self,
         target: &SessionTarget,
     ) -> GuiResult<Vec<SavedAgentSession>> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(target)?;
         let feature = &self.app.store.projects[pi].features[fi];
         crate::app::session_ops::saved_sessions_for_kind(
@@ -715,7 +730,7 @@ impl GuiHandle {
         picked_id: Option<String>,
         approved: bool,
     ) -> GuiResult<StartFeatureResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let feature = &self.app.store.projects[pi].features[fi];
@@ -959,7 +974,7 @@ impl GuiHandle {
         target: FeatureTarget,
         approved: bool,
     ) -> GuiResult<StartFeatureResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let feature = &self.app.store.projects[pi].features[fi];
@@ -1022,7 +1037,7 @@ impl GuiHandle {
     ) -> GuiResult<TodoAgentLaunchResponse> {
         use crate::db::todos::{TodoScope, TodoStatus};
 
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let resolved = self
@@ -1214,7 +1229,7 @@ impl GuiHandle {
     ) -> GuiResult<TodoAgentLaunchResponse> {
         use crate::db::todos::{TodoScope, TodoStatus};
 
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         if !matches!(self.app.mode, AppMode::Normal) {
             return Err(GuiError::conflict("Finish the current workflow first"));
         }
@@ -1396,7 +1411,7 @@ impl GuiHandle {
     }
 
     pub fn stop_feature(&mut self, target: FeatureTarget) -> GuiResult<StopFeatureResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let name = self.app.store.projects[pi].features[fi].name.clone();
@@ -1475,7 +1490,7 @@ impl GuiHandle {
     /// starts. Stopping the feature's last running session — the last live
     /// tmux window — stops the feature the way `stop_feature` does.
     pub fn stop_session(&mut self, target: SessionTarget) -> GuiResult<StopSessionResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         self.reconcile_feature_status(pi, fi);
@@ -1555,7 +1570,7 @@ impl GuiHandle {
         target: SessionTarget,
         approved: bool,
     ) -> GuiResult<StartSessionResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         if self.app.block_if_feature_pending_worktree_script(pi, fi) {
@@ -1658,7 +1673,7 @@ impl GuiHandle {
     /// or its last live window — the feature is stopped first, with the same
     /// bookkeeping as [`Self::stop_feature`].
     pub fn remove_session(&mut self, target: SessionTarget) -> GuiResult<RemoveSessionResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi, si) = self.locate_session(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         let feature = &self.app.store.projects[pi].features[fi];
@@ -1730,7 +1745,7 @@ impl GuiHandle {
         todos: Option<TodoDeleteChoice>,
         todo_host: Option<TodoHostChoice>,
     ) -> GuiResult<DeleteFeatureResponse> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         // The deletion is driven through `app.mode`, which is also where an
@@ -1909,7 +1924,7 @@ impl GuiHandle {
     /// duplicating that check here would just be a second place for the two
     /// to disagree.
     pub fn resolve_session_target(&mut self, target: &SessionTarget) -> GuiResult<TerminalTarget> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let (pi, fi) = self.locate(&FeatureTarget {
             project_id: target.project_id.clone(),
             feature_id: target.feature_id.clone(),

@@ -167,7 +167,7 @@ fn entry_key(entry: &LearningListEntry) -> String {
 
 /// Refresh stable target indices before using any selection-dependent engine.
 fn validate(gui: &mut GuiHandle, id: &str, revision: Option<u64>) -> GuiResult<()> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let context = gui
         .learning_context
         .as_ref()
@@ -193,7 +193,7 @@ fn validate(gui: &mut GuiHandle, id: &str, revision: Option<u64>) -> GuiResult<(
 }
 
 pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<LearningView> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     if gui.learning_context.is_some() && matches!(gui.app_for_workflow().mode, AppMode::Learning(_))
     {
         // Repeated opens reuse the reader and its unsent context.

@@ -79,7 +79,7 @@ pub fn load(
     target: FeatureTarget,
     options: DiffOptions,
 ) -> GuiResult<DiffView> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store

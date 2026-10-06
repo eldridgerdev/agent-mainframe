@@ -273,7 +273,7 @@ fn open_state(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Option<V
 }
 
 pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     if let Some(context) = &gui.review_context {
         if context.target.project_id == target.project_id
             && context.target.feature_id == target.feature_id
@@ -561,7 +561,7 @@ pub fn act(
         gui.review_context = None;
         return Ok(None);
     }
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store

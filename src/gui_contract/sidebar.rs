@@ -437,7 +437,7 @@ impl GuiHandle {
         target: CollapseTarget,
         collapsed: bool,
     ) -> GuiResult<WorkspaceSnapshot> {
-        self.refresh_snapshot()?;
+        self.refresh_store()?;
         let apply = |store: &mut ProjectStore| -> bool {
             let Some(project) = store
                 .projects

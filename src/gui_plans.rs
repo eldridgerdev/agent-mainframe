@@ -225,7 +225,7 @@ fn status_of(app: &App) -> PlanStatus {
 /// is owned by `App`; a second target gets a conflict rather than silently
 /// replacing the first interview's unsaved editor state.
 pub fn begin(gui: &mut GuiHandle, target: &FeatureTarget, quick: bool) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let app = gui.app_for_workflow();
     let existing = match &app.mode {
         AppMode::PlanInterview(state) => Some(state),
@@ -274,7 +274,7 @@ pub fn begin_feature_creation(
     request: &CreateFeatureRequest,
     quick: bool,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     begin_feature_creation_core(gui.app_for_workflow(), request, quick, None)
 }
 
@@ -413,7 +413,7 @@ pub fn begin_todo_in_new_feature(
     todo_id: &str,
     request: &CreateFeatureRequest,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let resolved = gui
         .db()?
         .resolve_todo_by_id(todo_id)
@@ -468,7 +468,7 @@ pub fn begin_todo_in_host(
     todo_id: &str,
     target: &FeatureTarget,
 ) -> GuiResult<PlanStatus> {
-    gui.refresh_snapshot()?;
+    gui.refresh_store()?;
     let resolved = gui
         .db()?
         .resolve_todo_by_id(todo_id)

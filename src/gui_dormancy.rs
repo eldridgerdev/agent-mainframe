@@ -18,6 +18,7 @@
 //! list.
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,9 @@ pub enum DormancyRefusal {
     Duplicate,
     Deleted,
     AlreadyStopped,
+    /// AMF still records it as running but its tmux session no longer exists
+    /// (a crash or a tmux server restart), so there is nothing left to stop.
+    SessionGone,
     /// Its tmux session is not the one that was listed.
     Restarted,
     /// Several features share the live tmux session; stopping it would stop
@@ -216,8 +220,13 @@ pub fn load(gui: &mut GuiHandle) -> GuiResult<DormancyView> {
 /// against current state immediately before its stop. One feature's refusal
 /// or failure never stops the rest from being considered; every selected row
 /// gets its own result, in request order.
+///
+/// The handle is locked per feature, not for the batch: a stop can wait on
+/// editor cleanup's grace period, and every other command (terminal input
+/// included) needs the same lock. Releasing it between features is safe
+/// because each one is re-checked from a fresh snapshot anyway.
 pub fn stop(
-    gui: &mut GuiHandle,
+    gui: &Mutex<GuiHandle>,
     selection: Vec<DormantObservation>,
 ) -> GuiResult<Vec<DormancyStopResult>> {
     if selection.is_empty() {
@@ -229,7 +238,10 @@ pub fn stop(
     let mut results = Vec::with_capacity(selection.len());
     for observation in selection {
         let outcome = if seen.insert(observation.target.feature_id.clone()) {
-            stop_one(gui, &observation)
+            stop_one(
+                &mut gui.lock().expect("gui handle mutex poisoned"),
+                &observation,
+            )
         } else {
             refused(
                 DormancyRefusal::Duplicate,
@@ -271,8 +283,14 @@ fn stop_one(gui: &mut GuiHandle, observed: &DormantObservation) -> DormancyStopO
         );
     };
     let feature = &app.store.projects[pi].features[fi];
-    if feature.status == ProjectStatus::Stopped || !app.tmux.session_exists(&feature.tmux_session) {
+    if feature.status == ProjectStatus::Stopped {
         return refused(DormancyRefusal::AlreadyStopped, "It is already stopped");
+    }
+    if !app.tmux.session_exists(&feature.tmux_session) {
+        return refused(
+            DormancyRefusal::SessionGone,
+            "Its tmux session is gone (it may have crashed, or the tmux server restarted), so there is nothing left to stop",
+        );
     }
     if feature.tmux_session != observed.tmux_session {
         return refused(
@@ -434,12 +452,16 @@ mod tests {
     }
 
     struct Fixture {
-        gui: GuiHandle,
+        gui: Mutex<GuiHandle>,
         activity: Activity,
         killed: Activity,
     }
 
     impl Fixture {
+        fn gui(&mut self) -> &mut GuiHandle {
+            self.gui.get_mut().unwrap()
+        }
+
         fn killed(&self) -> Vec<String> {
             self.killed
                 .lock()
@@ -454,14 +476,14 @@ mod tests {
         fn attach_db(&mut self) -> tempfile::NamedTempFile {
             let file = tempfile::NamedTempFile::new().unwrap();
             let db = crate::db::AmfDb::open(file.path()).unwrap();
-            let app = self.gui.app_for_workflow();
+            let app = self.gui().app_for_workflow();
             db.save_store(&app.store).unwrap();
             app.db = Some(db);
             file
         }
 
         fn status(&mut self, id: &str) -> ProjectStatus {
-            let app = self.gui.app_for_workflow();
+            let app = self.gui().app_for_workflow();
             let (pi, fi) = app.store.locate_feature_by_id(None, id).unwrap();
             app.store.projects[pi].features[fi].status.clone()
         }
@@ -495,7 +517,7 @@ mod tests {
             Box::new(MockWorktreeOps::new()),
         );
         Fixture {
-            gui: GuiHandle::from_app(app),
+            gui: Mutex::new(GuiHandle::from_app(app)),
             activity,
             killed,
         }
@@ -530,7 +552,7 @@ mod tests {
     fn lists_only_idle_and_unattended_features_longest_idle_first_with_why() {
         let mut f = fixture();
 
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
 
         assert!(view.enabled);
         assert_eq!((view.idle_minutes, view.unattended_hours), (60, 4));
@@ -553,9 +575,9 @@ mod tests {
     #[test]
     fn switched_off_thresholds_list_nothing_and_say_so() {
         let mut f = fixture();
-        f.gui.app_for_workflow().config.dormant_idle_minutes = 0;
+        f.gui().app_for_workflow().config.dormant_idle_minutes = 0;
 
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
 
         assert!(!view.enabled);
         assert!(view.features.is_empty());
@@ -564,10 +586,10 @@ mod tests {
     #[test]
     fn stops_the_confirmed_selection_through_the_shared_stop() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
 
         let results = stop(
-            &mut f.gui,
+            &f.gui,
             vec![observation(&view, "quiet"), observation(&view, "quieter")],
         )
         .unwrap();
@@ -593,17 +615,17 @@ mod tests {
     #[test]
     fn a_repeated_stop_is_refused_rather_than_stopping_twice() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         let quiet = observation(&view, "quiet");
 
-        let first = stop(&mut f.gui, vec![quiet.clone(), quiet.clone()]).unwrap();
+        let first = stop(&f.gui, vec![quiet.clone(), quiet.clone()]).unwrap();
         assert!(matches!(
             first[0].outcome,
             DormancyStopOutcome::Stopped { .. }
         ));
         assert_eq!(refusal(&first[1].outcome), Some(DormancyRefusal::Duplicate));
 
-        let again = stop(&mut f.gui, vec![quiet]).unwrap();
+        let again = stop(&f.gui, vec![quiet]).unwrap();
         assert_eq!(
             refusal(&again[0].outcome),
             Some(DormancyRefusal::AlreadyStopped)
@@ -614,19 +636,19 @@ mod tests {
     #[test]
     fn stale_selections_are_refused_with_their_reason_and_never_stopped() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         let quiet = observation(&view, "quiet");
         let quieter = observation(&view, "quieter");
 
         // quiet's agent prints something; quieter is opened elsewhere.
         f.activity.lock().unwrap()[0] = idle_for("amf-quiet", 0);
         {
-            let app = f.gui.app_for_workflow();
+            let app = f.gui().app_for_workflow();
             let (pi, fi) = app.store.locate_feature_by_id(None, "quieter").unwrap();
             app.store.projects[pi].features[fi].touch();
         }
 
-        let results = stop(&mut f.gui, vec![quiet, quieter]).unwrap();
+        let results = stop(&f.gui, vec![quiet, quieter]).unwrap();
 
         assert_eq!(
             refusal(&outcome(&results, "quiet")),
@@ -642,7 +664,7 @@ mod tests {
     #[test]
     fn deleted_restarted_and_no_longer_dormant_targets_are_refused() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         let quiet = observation(&view, "quiet");
         let quieter = observation(&view, "quieter");
         let mut gone = quiet.clone();
@@ -651,9 +673,9 @@ mod tests {
         renamed.tmux_session = "amf-some-older-session".to_string();
 
         // Thresholds tightened after listing: quiet (idle 2h) no longer qualifies.
-        f.gui.app_for_workflow().config.dormant_idle_minutes = 5 * 60;
+        f.gui().app_for_workflow().config.dormant_idle_minutes = 5 * 60;
 
-        let results = stop(&mut f.gui, vec![gone, renamed, quiet]).unwrap();
+        let results = stop(&f.gui, vec![gone, renamed, quiet]).unwrap();
 
         assert_eq!(refusal(&results[0].outcome), Some(DormancyRefusal::Deleted));
         assert_eq!(
@@ -668,30 +690,33 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_feature_or_session_is_refused_and_an_empty_request_rejected() {
+    fn a_stopped_feature_or_vanished_session_is_refused_and_an_empty_request_rejected() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         let quiet = observation(&view, "quiet");
         let quieter = observation(&view, "quieter");
         {
-            let app = f.gui.app_for_workflow();
+            let app = f.gui().app_for_workflow();
             let (pi, fi) = app.store.locate_feature_by_id(None, "quiet").unwrap();
             app.store.projects[pi].features[fi].status = ProjectStatus::Stopped;
         }
-        // quieter's tmux session vanished (stopped from a TUI, say).
+        // quieter's tmux session vanished while AMF still records it running
+        // (a crash or a tmux server restart).
         let (tmux, _) = tmux(f.activity.clone(), Arc::new(Mutex::new(HashSet::new())));
-        f.gui.app_for_workflow().tmux = Box::new(tmux);
+        f.gui().app_for_workflow().tmux = Box::new(tmux);
 
-        let results = stop(&mut f.gui, vec![quiet, quieter]).unwrap();
+        let results = stop(&f.gui, vec![quiet, quieter]).unwrap();
 
-        for result in &results {
-            assert_eq!(
-                refusal(&result.outcome),
-                Some(DormancyRefusal::AlreadyStopped)
-            );
-        }
         assert_eq!(
-            stop(&mut f.gui, Vec::new()).unwrap_err().kind,
+            refusal(&outcome(&results, "quiet")),
+            Some(DormancyRefusal::AlreadyStopped)
+        );
+        assert_eq!(
+            refusal(&outcome(&results, "quieter")),
+            Some(DormancyRefusal::SessionGone)
+        );
+        assert_eq!(
+            stop(&f.gui, Vec::new()).unwrap_err().kind,
             GuiErrorKind::Conflict
         );
     }
@@ -699,15 +724,15 @@ mod tests {
     #[test]
     fn a_shared_live_tmux_session_is_refused() {
         let mut f = fixture();
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         let quiet = observation(&view, "quiet");
         {
-            let app = f.gui.app_for_workflow();
+            let app = f.gui().app_for_workflow();
             let (pi, fi) = app.store.locate_feature_by_id(None, "opened").unwrap();
             app.store.projects[pi].features[fi].tmux_session = "amf-quiet".to_string();
         }
 
-        let results = stop(&mut f.gui, vec![quiet]).unwrap();
+        let results = stop(&f.gui, vec![quiet]).unwrap();
 
         assert_eq!(
             refusal(&results[0].outcome),
@@ -748,7 +773,7 @@ mod tests {
 
         let mut f = fixture();
         {
-            let app = f.gui.app_for_workflow();
+            let app = f.gui().app_for_workflow();
             for (id, dir) in [("quiet", &owned_dir), ("quieter", &shared_dir)] {
                 let (pi, fi) = app.store.locate_feature_by_id(None, id).unwrap();
                 app.store.projects[pi].features[fi].workdir = dir.join("worktree");
@@ -756,7 +781,7 @@ mod tests {
         }
         let _db_file = f.attach_db();
         {
-            let db = f.gui.app_for_workflow().db.as_ref().unwrap();
+            let db = f.gui().app_for_workflow().db.as_ref().unwrap();
             db.record_launched_editor(
                 "quiet",
                 None,
@@ -779,12 +804,12 @@ mod tests {
             )
             .unwrap();
         }
-        let view = load(&mut f.gui).unwrap();
+        let view = load(f.gui()).unwrap();
         assert_eq!(view.features.len(), 2);
         assert!(view.features.iter().all(|row| row.editor_alive));
 
         let results = stop(
-            &mut f.gui,
+            &f.gui,
             vec![observation(&view, "quiet"), observation(&view, "quieter")],
         )
         .unwrap();
@@ -818,11 +843,11 @@ mod tests {
     #[test]
     fn editor_cleanup_switched_off_examines_no_editor() {
         let mut f = fixture();
-        f.gui.app_for_workflow().config.kill_editor_on_stop = false;
-        let view = load(&mut f.gui).unwrap();
+        f.gui().app_for_workflow().config.kill_editor_on_stop = false;
+        let view = load(f.gui()).unwrap();
         assert!(!view.kill_editor_on_stop);
 
-        let results = stop(&mut f.gui, vec![observation(&view, "quiet")]).unwrap();
+        let results = stop(&f.gui, vec![observation(&view, "quiet")]).unwrap();
 
         assert!(matches!(
             results[0].outcome,
@@ -834,7 +859,7 @@ mod tests {
     fn opening_a_session_counts_as_attention_and_persists() {
         let mut f = fixture();
         let db_file = f.attach_db();
-        let before = load(&mut f.gui).unwrap();
+        let before = load(f.gui()).unwrap();
         assert!(
             before
                 .features
@@ -843,7 +868,7 @@ mod tests {
         );
 
         note_opened(
-            &mut f.gui,
+            f.gui(),
             &SessionTarget {
                 project_id: PROJECT.to_string(),
                 feature_id: "quiet".to_string(),
@@ -852,7 +877,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = load(&mut f.gui).unwrap();
+        let after = load(f.gui()).unwrap();
         assert!(
             after
                 .features
@@ -870,7 +895,7 @@ mod tests {
         );
         // An unknown target is left alone rather than failing the attach.
         note_opened(
-            &mut f.gui,
+            f.gui(),
             &SessionTarget {
                 project_id: PROJECT.to_string(),
                 feature_id: "gone".to_string(),

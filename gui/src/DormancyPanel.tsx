@@ -91,6 +91,9 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     refetchOnWindowFocus: false,
   });
   const [selected, setSelected] = useState<Record<string, DormantObservation>>({});
+  // The latest rendered selection, for code resuming after an `await`.
+  const selectedNow = useRef(selected);
+  selectedNow.current = selected;
   const [confirming, setConfirming] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [results, setResults] = useState<DormancyStopResult[] | null>(null);
@@ -112,13 +115,18 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
   async function refresh() {
     setError(null);
     const fresh = await query.refetch();
-    if (!fresh.data) return;
+    // A failed refetch still returns the previous data; re-observing the
+    // selection against that would pass the old list off as current. The
+    // query's own error callout says what went wrong.
+    if (fresh.isError || !fresh.data) return;
     // A refreshed row is a fresh observation; a row that left the list leaves
-    // the selection, and the user is told rather than left guessing.
+    // the selection, and the user is told rather than left guessing. Read from
+    // the selection as it is now, not as it was at the click, so a checkbox
+    // toggled while the refetch ran is kept.
     const listed = new Map(fresh.data.features.map((row) => [key(row.observation), row.observation]));
     const kept: Record<string, DormantObservation> = {};
     let dropped = 0;
-    for (const id of Object.keys(selected)) {
+    for (const id of Object.keys(selectedNow.current)) {
       const observation = listed.get(id);
       if (observation) kept[id] = observation; else dropped++;
     }
@@ -191,7 +199,7 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
       <ul>{chosen.map((observation) => <li key={key(observation)}><strong>{observation.feature_name}</strong>{" "}
         <span className="muted">({observation.tmux_session})</span></li>)}</ul>
       <p>{editorPolicy(view)}</p>
-      <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
+      <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its tmux session, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
     </section> : view && (!view.enabled
       ? <EmptyState icon="alert" title="Dormancy detection is off">
           Set dormant_idle_minutes and dormant_last_accessed_hours above 0 in AMF's config to list idle, unattended features.

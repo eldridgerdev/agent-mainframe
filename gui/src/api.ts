@@ -879,8 +879,8 @@ export interface EditorCleanup {
   pending: string[];
   summary: string | null;
 }
-export type DormancyRefusal = "duplicate" | "deleted" | "already_stopped" | "restarted"
-  | "shared_session" | "dormancy_off" | "opened" | "output" | "no_longer_dormant";
+export type DormancyRefusal = "duplicate" | "deleted" | "already_stopped" | "session_gone"
+  | "restarted" | "shared_session" | "dormancy_off" | "opened" | "output" | "no_longer_dormant";
 export type DormancyStopResult = { target: FeatureTarget; feature_name: string } & (
   | { outcome: "stopped"; editors: EditorCleanup | null }
   | { outcome: "refused"; reason: DormancyRefusal; message: string }

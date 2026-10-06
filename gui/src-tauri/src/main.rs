@@ -910,16 +910,22 @@ async fn dormancy_load(state: State<'_, AppState>) -> Result<DormancyView, GuiEr
     gui_dormancy::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
 }
 
-/// Async so editor cleanup's bounded grace period never blocks the window.
+/// Async so editor cleanup's grace period runs off the main thread. The handle
+/// is locked per feature inside `stop`, never for the whole batch, so other
+/// commands (terminal input included) wait for at most one feature's stop.
 #[tauri::command]
 async fn dormancy_stop(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     selection: Vec<DormantObservation>,
 ) -> Result<Vec<DormancyStopResult>, GuiError> {
-    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
-    let results = gui_dormancy::stop(&mut gui, selection)?;
-    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    let results = gui_dormancy::stop(&state.0, selection)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
     Ok(results)
 }
 

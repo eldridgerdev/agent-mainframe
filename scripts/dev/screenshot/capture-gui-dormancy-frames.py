@@ -8,6 +8,7 @@ import hashlib
 import json
 import pathlib
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -82,15 +83,6 @@ def click(text):
     )
 
 
-def select(label, value):
-    evaluate(
-        f"""(()=>{{const label=Array.from(document.querySelectorAll('label')).find(l=>l.querySelector('span')?.textContent==={json.dumps(label)});const el=label.querySelector('select');el.value={json.dumps(value)};el.dispatchEvent(new Event('change',{{bubbles:true}}));}})()"""
-    )
-    wait(
-        '!document.body.innerText.includes("Loading changes…") && !!document.querySelector(".diff-reader")'
-    )
-
-
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
 windows = []
@@ -121,7 +113,6 @@ captured_frames = set()
 
 def capture(name, note, expects, expression=None):
     wait('document.fonts.status==="loaded"')
-    wait('!document.body.innerText.includes("Loading changes…")')
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
@@ -149,10 +140,6 @@ def capture(name, note, expects, expression=None):
     notes.append({"file": name, "note": note, "expects": expects})
     print("PASS:", name, note, flush=True)
 
-
-
-import os
-import sqlite3
 
 dbpath = pathlib.Path(sys.argv[4])
 tmux = ["tmux", "-S", sys.argv[5]]
@@ -193,8 +180,10 @@ try:
         time.sleep(1.5)
     else:
         raise AssertionError(evaluate(f"{panel}.innerText"))
+    # Membership only: every window went silent at the same moment, so the
+    # longest-idle-first order is not observable here (unit tests pin it).
     listed = evaluate(f"Array.from({panel}.querySelectorAll('.dormancy-row-title > strong')).map(e=>e.textContent)")
-    assert listed == ["billing-retry", "docs-refresh", "search-index"] or set(listed) == {"billing-retry", "docs-refresh", "search-index"}, listed
+    assert sorted(listed) == ["billing-retry", "docs-refresh", "search-index"], listed
     capture(
         "001-dormant-list.png",
         "Three running features are idle (no agent output for over a minute) and unopened for over an hour, each with how long and since when. checkout-flow is just as unattended but its agent is printing output, so it is not listed. One row has an AMF-tracked editor open.",

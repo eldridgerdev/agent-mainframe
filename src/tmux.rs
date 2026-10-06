@@ -56,6 +56,67 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
+/// How many lines of tmux history a scroll-back view reads. Shared by the
+/// TUI's scroll mode and the GUI's history view so both show the same reach.
+pub const SCROLLBACK_HISTORY_LINES: i32 = 10_000;
+
+/// What [`TmuxManager::capture_scrollback`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scrollback {
+    /// The pane's program is on the alternate screen, so tmux holds no
+    /// history for what it shows.
+    AlternateScreen,
+    /// History plus the screen, `\n`-separated with SGR escapes, and how
+    /// many lines that is.
+    History { content: String, lines: usize },
+}
+
+/// Mouse reporting a pane's program asked for (DECSET 1000/1002/1003),
+/// and the encoding it wants reports in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseReporting {
+    Off,
+    /// SGR encoding (DECSET 1006): `ESC [ < b ; x ; y M`.
+    Sgr,
+    /// The original X10-style byte encoding: `ESC [ M b x y`.
+    Legacy,
+}
+
+/// The cursor and the modes of a pane that decide how a GUI scrolls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaneTerminalModes {
+    pub cursor_x: u16,
+    pub cursor_y: u16,
+    pub alternate_screen: bool,
+    pub mouse: MouseReporting,
+}
+
+impl PaneTerminalModes {
+    const FORMAT: &'static str =
+        "#{cursor_x} #{cursor_y} #{alternate_on} #{mouse_any_flag} #{mouse_sgr_flag}";
+
+    fn parse(output: &str) -> Option<Self> {
+        let fields: Vec<u16> = output
+            .split_whitespace()
+            .map(|field| field.parse().ok())
+            .collect::<Option<_>>()?;
+        let [cursor_x, cursor_y, alternate, mouse_any, mouse_sgr] = fields[..] else {
+            return None;
+        };
+        let mouse = match (mouse_any != 0, mouse_sgr != 0) {
+            (false, _) => MouseReporting::Off,
+            (true, true) => MouseReporting::Sgr,
+            (true, false) => MouseReporting::Legacy,
+        };
+        Some(Self {
+            cursor_x,
+            cursor_y,
+            alternate_screen: alternate != 0,
+            mouse,
+        })
+    }
+}
+
 pub struct TmuxManager;
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -78,7 +139,7 @@ pub(crate) fn sanitize_tmux_control_line(line: &str) -> &str {
 /// notification's own escaped text -- both consumers of this (the TUI's
 /// control-mode worker and the GUI terminal transport) use it purely as a
 /// dirty-signal for the pane named by `pane_id`, then re-fetch real content
-/// via `capture_pane_ansi`/`capture_pane_for_replay` rather than decoding
+/// via `capture_pane_ansi` (the GUI's `gui_terminal::capture_frame`) rather than decoding
 /// this payload directly; see the inline comment on the control stream in
 /// `App::run_control_mode_view_worker` (`src/app/mod.rs`) for why.
 pub(crate) fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
@@ -1993,29 +2054,41 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Full pane content plus cursor position, encoded as one string ready
-    /// to feed to any terminal emulator (vt100 for the TUI, xterm.js for the
-    /// GUI) immediately after a full reset. `capture-pane` output alone
-    /// carries no cursor-position information, so `cursor_position`'s
-    /// reported column/row is appended as an explicit CUP escape, clamped to
-    /// the given dimensions exactly as the TUI's own `position_parser_cursor`
-    /// does. See `crate::ui::pane::normalize_captured_pane` for why the
-    /// newline handling matters.
+    /// Cursor position plus the terminal modes a GUI needs to route a
+    /// scroll gesture (see [`PaneTerminalModes`]), in one `display-message`.
+    pub fn pane_terminal_modes(session: &str, window: &str) -> Result<PaneTerminalModes> {
+        let target = format!("{}:{}", session, window);
+        let output = Self::command()
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                PaneTerminalModes::FORMAT,
+            ])
+            .output()
+            .context("Failed to read pane terminal modes")?;
+        PaneTerminalModes::parse(&String::from_utf8_lossy(&output.stdout))
+            .with_context(|| format!("tmux did not return terminal modes for {target}"))
+    }
+
+    /// The scroll-back snapshot shared by the TUI's scroll mode
+    /// (`App::toggle_scroll_mode`) and the GUI's history view
+    /// (`gui_terminal::TerminalHandle::history`): the last
+    /// [`SCROLLBACK_HISTORY_LINES`] lines of tmux history plus the screen.
     ///
-    /// Deliberately separate from the TUI's `reseed_control_view_parser`
-    /// (`src/app/mod.rs`) rather than a shared refactor of it: that function
-    /// sits on a timing-sensitive, already-tuned rendering hot path, and this
-    /// GUI-only helper duplicating its ~4 lines of glue is a smaller risk
-    /// than touching it.
-    pub fn capture_pane_for_replay(session: &str, window: &str, cols: u16, rows: u16) -> String {
-        let captured = Self::capture_pane_ansi(session, window).unwrap_or_default();
-        let mut normalized = crate::ui::pane::normalize_captured_pane(&captured);
-        if let Ok((x, y)) = Self::cursor_position(session, window) {
-            let row = y.min(rows.saturating_sub(1)).saturating_add(1);
-            let col = x.min(cols.saturating_sub(1)).saturating_add(1);
-            normalized.push_str(&format!("\x1b[{row};{col}H"));
+    /// A program on the alternate screen (Neovim, OpenCode, `less`) has no
+    /// history in tmux -- tmux stops recording while the alternate screen is
+    /// up, and what `capture-pane -S` would return is the shell output from
+    /// *before* the program started -- so that case is reported rather than
+    /// captured. Each interface decides what scrolling means there.
+    pub fn capture_scrollback(session: &str, window: &str) -> Result<Scrollback> {
+        if Self::is_alternate_screen(session, window) {
+            return Ok(Scrollback::AlternateScreen);
         }
-        normalized
+        let (content, lines) =
+            Self::capture_pane_with_history(session, window, SCROLLBACK_HISTORY_LINES)?;
+        Ok(Scrollback::History { content, lines })
     }
 
     /// Capture pane content with ANSI sequences, including scrollback history
@@ -2945,5 +3018,32 @@ mod tests {
         }
 
         assert_eq!(TmuxManager::pane_default_terminal(), None);
+    }
+
+    #[test]
+    fn pane_terminal_modes_parse_cursor_screen_and_mouse_encoding() {
+        use super::{MouseReporting, PaneTerminalModes};
+
+        let shell = PaneTerminalModes::parse("4 7 0 0 0\n").unwrap();
+        assert_eq!((shell.cursor_x, shell.cursor_y), (4, 7));
+        assert!(!shell.alternate_screen);
+        assert_eq!(shell.mouse, MouseReporting::Off);
+
+        let full_screen = PaneTerminalModes::parse("0 0 1 1 1").unwrap();
+        assert!(full_screen.alternate_screen);
+        assert_eq!(full_screen.mouse, MouseReporting::Sgr);
+        assert_eq!(
+            PaneTerminalModes::parse("0 0 1 1 0").unwrap().mouse,
+            MouseReporting::Legacy
+        );
+        // An SGR flag without any reporting mode asks for nothing.
+        assert_eq!(
+            PaneTerminalModes::parse("0 0 1 0 1").unwrap().mouse,
+            MouseReporting::Off
+        );
+
+        assert_eq!(PaneTerminalModes::parse(""), None);
+        assert_eq!(PaneTerminalModes::parse("1 2 0 0"), None);
+        assert_eq!(PaneTerminalModes::parse("1 2 x 0 0"), None);
     }
 }

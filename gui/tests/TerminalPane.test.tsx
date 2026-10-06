@@ -9,6 +9,8 @@ const term = vi.hoisted(() => ({
   loadAddon: vi.fn(), open: vi.fn(), reset: vi.fn(), write: vi.fn(), refresh: vi.fn(),
   onData: vi.fn(() => ({ dispose: vi.fn() })),
   onResize: vi.fn(() => ({ dispose: vi.fn() })), dispose: vi.fn(),
+  onScroll: vi.fn(() => ({ dispose: vi.fn() })), attachCustomKeyEventHandler: vi.fn(),
+  scrollToBottom: vi.fn(), buffer: { active: { viewportY: 0, baseY: 0 } },
 }));
 vi.mock("@xterm/xterm", () => ({ Terminal: class { constructor() { return term; } } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit = vi.fn(); } }));
@@ -21,6 +23,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 const target = { project_id: "project", feature_id: "feature", session_id: "agent" };
+const frame = (replay: string) => ({ replay, alternate_screen: false, mouse_reporting: false });
 
 it("enables the composer after attachment and disables it on detach", async () => {
   let finishAttach!: (response: unknown) => void;
@@ -30,7 +33,7 @@ it("enables the composer after attachment and disables it on detach", async () =
   const view = render(<TerminalPane target={target} onReadyChange={ready} />);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("attach_terminal", { target, size: { cols: 80, rows: 24 } }));
   expect(ready.mock.calls).toEqual([[false]]);
-  await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: "Agent ready" }));
+  await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: frame("Agent ready") }));
   expect(term.write).toHaveBeenCalledWith("Agent ready");
   expect(ready.mock.calls).toEqual([[false], [true]]);
   view.unmount();
@@ -54,7 +57,7 @@ it("never enables a composer whose attachment finishes after leaving the tab", a
   const view = render(<TerminalPane target={target} onReadyChange={ready} />);
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("attach_terminal", { target, size: { cols: 80, rows: 24 } }));
   view.unmount();
-  await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: "Agent ready" }));
+  await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: frame("Agent ready") }));
   expect(ready.mock.calls.every(([value]) => value === false)).toBe(true);
   expect(invoke).toHaveBeenCalledWith("detach_terminal", { key: "feature:agent", generation: 42 });
   expect(term.write).not.toHaveBeenCalled();

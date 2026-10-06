@@ -5,7 +5,7 @@
 //!
 //! The control-mode stream is used purely as a change notifier here, never
 //! decoded for content -- real content always comes from a fresh
-//! `TmuxManager::capture_pane_for_replay` call, for the exact correctness
+//! `capture_frame` (`capture-pane` plus the cursor), for the exact correctness
 //! reason the TUI's own control-mode worker does this (see the inline
 //! comment on the control stream in `App::run_control_mode_view_worker`,
 //! `src/app/mod.rs`): replaying raw `%output` bytes through a second
@@ -15,6 +15,26 @@
 //! reconnecting is just another `attach` -- a fresh capture already reflects
 //! tmux's current state (including its own scrollback), not a replay log
 //! this module would otherwise have to keep.
+//!
+//! ## Scrolling
+//!
+//! Recapturing the visible pane means xterm.js never accumulates scrollback
+//! of its own, so a GUI scroll gesture is routed explicitly, the same way the
+//! TUI's scroll mode (`App::toggle_scroll_mode`) and the Remote Control PWA's
+//! History view already do it: a read-only snapshot of tmux history
+//! ([`TerminalHandle::history`], built on the shared
+//! [`TmuxManager::capture_scrollback`]) that the frontend loads into xterm's
+//! own scrollback and freezes while the user reads. Nothing is sent to the
+//! pane and tmux copy-mode is never entered, so no tmux state can be left
+//! behind by a closed tab or seen by a TUI attached to the same session.
+//!
+//! The one case where a gesture does reach the program is a full-screen
+//! (alternate-screen) program that has itself asked for mouse reporting --
+//! OpenCode, Neovim. tmux keeps no history for it, and the program scrolls
+//! its own view, so [`TerminalHandle::scroll_program`] forwards a mouse
+//! *wheel report* exactly as a native terminal would -- never a keystroke,
+//! and only after re-reading the pane's modes, so a program that has since
+//! left the alternate screen or turned reporting off receives nothing.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -22,10 +42,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::tmux::{
-    SpawnedTmuxControlClient, TmuxManager, parse_tmux_output_notification,
-    sanitize_tmux_control_line,
+    MouseReporting, PaneTerminalModes, Scrollback, SpawnedTmuxControlClient, TmuxManager,
+    parse_tmux_output_notification, sanitize_tmux_control_line,
 };
 
 /// How often the worker checks for a pending dirty signal and, if set,
@@ -37,6 +58,147 @@ use crate::tmux::{
 /// output: a burst of dozens of `%output` notifications in this window
 /// collapses into one recapture, not dozens of `tmux capture-pane` shells.
 const RECAPTURE_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The most wheel reports one [`TerminalHandle::scroll_program`] call sends,
+/// so a runaway trackpad fling can't flood the program.
+pub const MAX_WHEEL_STEPS: u8 = 10;
+
+/// One full-pane update: the replay string plus the modes the frontend needs
+/// to decide, synchronously inside a wheel event, where a scroll gesture
+/// goes (see the module docs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TerminalFrame {
+    /// Normalized, cursor-positioned content to write after a full reset.
+    pub replay: String,
+    /// The program is on the alternate screen, so tmux has no history of it.
+    pub alternate_screen: bool,
+    /// The program asked for mouse reporting (its own wheel scrolling).
+    pub mouse_reporting: bool,
+}
+
+impl TerminalFrame {
+    /// `modes` is `None` when tmux couldn't report them; the frame then
+    /// renders without a cursor move and claims neither mode, so a scroll
+    /// falls back to the read-only history view rather than input.
+    fn from_capture(
+        captured: &str,
+        modes: Option<PaneTerminalModes>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
+        Self {
+            replay: replay_with_cursor(
+                captured,
+                modes.map(|m| (m.cursor_x, m.cursor_y)),
+                cols,
+                rows,
+            ),
+            alternate_screen: modes.is_some_and(|m| m.alternate_screen),
+            mouse_reporting: modes.is_some_and(|m| m.mouse != MouseReporting::Off),
+        }
+    }
+}
+
+/// A read-only snapshot of the pane's tmux history plus its screen, for the
+/// frontend to load into xterm's scrollback (see the module docs).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TerminalHistory {
+    /// History then screen, cursor-positioned like a [`TerminalFrame`]'s
+    /// replay, so the screen lands on xterm's last rows. Empty when
+    /// `alternate_screen` is set.
+    pub replay: String,
+    /// Lines above the current screen: zero means there is nothing earlier.
+    pub earlier_lines: usize,
+    /// The program is on the alternate screen; tmux has no history for it.
+    pub alternate_screen: bool,
+}
+
+impl TerminalHistory {
+    fn from_scrollback(
+        scrollback: Scrollback,
+        cursor: Option<(u16, u16)>,
+        cols: u16,
+        rows: u16,
+    ) -> Self {
+        match scrollback {
+            Scrollback::AlternateScreen => Self {
+                replay: String::new(),
+                earlier_lines: 0,
+                alternate_screen: true,
+            },
+            Scrollback::History { content, lines } => Self {
+                replay: replay_with_cursor(&content, cursor, cols, rows),
+                earlier_lines: lines.saturating_sub(usize::from(rows)),
+                alternate_screen: false,
+            },
+        }
+    }
+}
+
+/// Direction of one wheel step, as the frontend reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WheelDirection {
+    Up,
+    Down,
+}
+
+/// Captured pane text, normalized for a terminal emulator that has just been
+/// reset, with the cursor placed by an explicit CUP escape -- `capture-pane`
+/// output alone carries no cursor position. The cursor is clamped to the
+/// given dimensions exactly as the TUI's own `position_parser_cursor` does.
+/// See `crate::ui::pane::normalize_captured_pane` for why the newline
+/// handling matters. A history capture puts the screen on the emulator's
+/// last rows, so the same screen-relative CUP is correct for it too.
+fn replay_with_cursor(captured: &str, cursor: Option<(u16, u16)>, cols: u16, rows: u16) -> String {
+    let mut normalized = crate::ui::pane::normalize_captured_pane(captured);
+    if let Some((x, y)) = cursor {
+        let row = y.min(rows.saturating_sub(1)).saturating_add(1);
+        let col = x.min(cols.saturating_sub(1)).saturating_add(1);
+        normalized.push_str(&format!("\x1b[{row};{col}H"));
+    }
+    normalized
+}
+
+/// Deliberately separate from the TUI's `reseed_control_view_parser`
+/// (`src/app/mod.rs`) rather than a shared refactor of it: that function
+/// sits on a timing-sensitive, already-tuned rendering hot path.
+fn capture_frame(session: &str, window: &str, cols: u16, rows: u16) -> TerminalFrame {
+    let captured = TmuxManager::capture_pane_ansi(session, window).unwrap_or_default();
+    let modes = TmuxManager::pane_terminal_modes(session, window).ok();
+    TerminalFrame::from_capture(&captured, modes, cols, rows)
+}
+
+/// The mouse wheel report a native terminal would send for one wheel step at
+/// zero-based cell `(col, row)`, or `None` when the pane's program has not
+/// asked for one: off the alternate screen (tmux history is the scroll view
+/// there) or without mouse reporting (the bytes would arrive as input).
+pub fn wheel_report(
+    modes: &PaneTerminalModes,
+    direction: WheelDirection,
+    col: u16,
+    row: u16,
+) -> Option<String> {
+    if !modes.alternate_screen {
+        return None;
+    }
+    let button: u16 = match direction {
+        WheelDirection::Up => 64,
+        WheelDirection::Down => 65,
+    };
+    let (x, y) = (col.saturating_add(1), row.saturating_add(1));
+    match modes.mouse {
+        MouseReporting::Off => None,
+        MouseReporting::Sgr => Some(format!("\x1b[<{button};{x};{y}M")),
+        // Each field is one byte offset by 32. Clamp to the ASCII range: the
+        // text reaches tmux as UTF-8, where a larger value would arrive as a
+        // two-byte sequence rather than the single byte this encoding means.
+        MouseReporting::Legacy => {
+            let byte = |value: u16| char::from((32 + value).min(126) as u8);
+            Some(format!("\x1b[M{}{}{}", byte(button), byte(x), byte(y)))
+        }
+    }
+}
 
 struct Dims {
     cols: AtomicU32,
@@ -84,20 +246,20 @@ pub struct TerminalHandle {
 impl TerminalHandle {
     /// Attach to `session:window`, returning the handle plus the pane's
     /// current content (already normalized and cursor-positioned -- see
-    /// `TmuxManager::capture_pane_for_replay`) to seed the caller's terminal
+    /// `replay_with_cursor`) to seed the caller's terminal
     /// emulator with before any live update arrives.
     ///
     /// `on_output` is called from a dedicated background thread with a full
-    /// replacement replay string each time the pane changes (debounced, not
-    /// once per notification); the caller resets its terminal emulator and
-    /// writes the given string, exactly like the initial seed.
+    /// replacement frame each time the pane changes (debounced, not once per
+    /// notification); the caller resets its terminal emulator and writes the
+    /// frame's replay, exactly like the initial seed.
     pub fn attach(
         session: &str,
         window: &str,
         cols: u16,
         rows: u16,
-        on_output: impl Fn(String) + Send + 'static,
-    ) -> Result<(Self, String)> {
+        on_output: impl Fn(TerminalFrame) + Send + 'static,
+    ) -> Result<(Self, TerminalFrame)> {
         let (_target_window_id, target_pane_id) =
             TmuxManager::resolve_view_target_ids(session, window)?;
         let client = TmuxManager::spawn_control_mode_view_client(
@@ -108,7 +270,7 @@ impl TerminalHandle {
             rows,
         )?;
 
-        let initial = TmuxManager::capture_pane_for_replay(session, window, cols, rows);
+        let initial = capture_frame(session, window, cols, rows);
 
         let dims = Arc::new(Dims::new(cols, rows));
         let dirty = Arc::new(AtomicBool::new(false));
@@ -164,6 +326,48 @@ impl TerminalHandle {
         TmuxManager::send_key_name(&self.session, &self.window, "Enter")
     }
 
+    /// A read-only snapshot of the pane's tmux history plus its screen (see
+    /// the module docs). Sends nothing to the pane and leaves tmux's modes
+    /// untouched.
+    pub fn history(&self) -> Result<TerminalHistory> {
+        let (cols, rows) = self.dims.get();
+        let scrollback = TmuxManager::capture_scrollback(&self.session, &self.window)?;
+        let cursor = TmuxManager::pane_terminal_modes(&self.session, &self.window)
+            .ok()
+            .map(|modes| (modes.cursor_x, modes.cursor_y));
+        Ok(TerminalHistory::from_scrollback(
+            scrollback, cursor, cols, rows,
+        ))
+    }
+
+    /// Forward `steps` wheel steps at zero-based cell `(col, row)` to a
+    /// full-screen program that asked for mouse reporting. The pane's modes
+    /// are re-read first rather than trusted from the frontend's last frame:
+    /// if the program has left the alternate screen or turned reporting off,
+    /// nothing is sent and this returns `false`.
+    pub fn scroll_program(
+        &self,
+        direction: WheelDirection,
+        steps: u8,
+        col: u16,
+        row: u16,
+    ) -> Result<bool> {
+        let modes = TmuxManager::pane_terminal_modes(&self.session, &self.window)?;
+        let Some(report) = wheel_report(&modes, direction, col, row) else {
+            return Ok(false);
+        };
+        let steps = usize::from(steps.clamp(1, MAX_WHEEL_STEPS));
+        TmuxManager::send_literal(&self.session, &self.window, &report.repeat(steps))?;
+        Ok(true)
+    }
+
+    /// Ask for a fresh frame even if the pane hasn't changed -- the frontend
+    /// leaving its frozen history view wants the current screen, not
+    /// whichever frame it last set aside.
+    pub fn refresh(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
+    }
+
     /// Resize the pane and update the dimensions the worker uses for its
     /// next cursor-position clamp, then force an immediate recapture rather
     /// than waiting for the next `%output`/`%layout-change` notification --
@@ -207,7 +411,7 @@ fn run_worker(
     dims: Arc<Dims>,
     dirty: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
-    on_output: impl Fn(String) + Send + 'static,
+    on_output: impl Fn(TerminalFrame) + Send + 'static,
 ) {
     let mut last_capture = Instant::now();
 
@@ -242,8 +446,7 @@ fn run_worker(
         if dirty.load(Ordering::Relaxed) && last_capture.elapsed() >= RECAPTURE_INTERVAL {
             dirty.store(false, Ordering::Relaxed);
             let (cols, rows) = dims.get();
-            let replay = TmuxManager::capture_pane_for_replay(&session, &window, cols, rows);
-            on_output(replay);
+            on_output(capture_frame(&session, &window, cols, rows));
             last_capture = Instant::now();
         }
     }
@@ -378,11 +581,14 @@ mod tests {
         }
     }
 
-    fn output_collector() -> (impl Fn(String) + Send + 'static, Arc<Mutex<Vec<String>>>) {
+    fn output_collector() -> (
+        impl Fn(TerminalFrame) + Send + 'static,
+        Arc<Mutex<Vec<String>>>,
+    ) {
         let received = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&received);
         (
-            move |text: String| sink.lock().unwrap().push(text),
+            move |frame: TerminalFrame| sink.lock().unwrap().push(frame.replay),
             received,
         )
     }
@@ -402,8 +608,9 @@ mod tests {
         let (_handle, initial) =
             TerminalHandle::attach(&session.name, "main", 80, 24, on_output).unwrap();
 
+        assert!(!initial.alternate_screen && !initial.mouse_reporting);
         assert!(
-            initial.contains("hello-amf-gui"),
+            initial.replay.contains("hello-amf-gui"),
             "initial replay text should contain the pane's existing content: {initial:?}"
         );
     }
@@ -569,5 +776,307 @@ mod tests {
             TmuxManager::session_exists(&session.name),
             "dropping the GUI's terminal attachment must not kill the underlying tmux session"
         );
+    }
+
+    fn modes(alternate_screen: bool, mouse: MouseReporting) -> PaneTerminalModes {
+        PaneTerminalModes {
+            cursor_x: 3,
+            cursor_y: 40,
+            alternate_screen,
+            mouse,
+        }
+    }
+
+    #[test]
+    fn frames_place_the_cursor_and_carry_the_scroll_routing_modes() {
+        let frame = TerminalFrame::from_capture(
+            "one\ntwo\n",
+            Some(modes(true, MouseReporting::Sgr)),
+            80,
+            24,
+        );
+        // The cursor row is clamped to the screen, as the TUI clamps it.
+        assert_eq!(frame.replay, "one\r\ntwo\x1b[24;4H");
+        assert!(frame.alternate_screen && frame.mouse_reporting);
+
+        let unknown = TerminalFrame::from_capture("one\n", None, 80, 24);
+        assert_eq!(unknown.replay, "one");
+        assert!(!unknown.alternate_screen && !unknown.mouse_reporting);
+    }
+
+    #[test]
+    fn history_counts_only_lines_above_the_screen() {
+        let content = (1..=30).map(|n| format!("line-{n}\n")).collect::<String>();
+        let history = TerminalHistory::from_scrollback(
+            Scrollback::History { content, lines: 30 },
+            Some((0, 9)),
+            80,
+            10,
+        );
+        assert_eq!(history.earlier_lines, 20);
+        assert!(!history.alternate_screen);
+        assert!(history.replay.starts_with("line-1\r\nline-2\r\n"));
+        assert!(history.replay.ends_with("line-30\x1b[10;1H"));
+
+        let short = TerminalHistory::from_scrollback(
+            Scrollback::History {
+                content: "prompt$\n".into(),
+                lines: 1,
+            },
+            None,
+            80,
+            10,
+        );
+        assert_eq!(short.earlier_lines, 0);
+
+        let full_screen =
+            TerminalHistory::from_scrollback(Scrollback::AlternateScreen, Some((0, 0)), 80, 10);
+        assert!(full_screen.alternate_screen);
+        assert_eq!(
+            (full_screen.replay.as_str(), full_screen.earlier_lines),
+            ("", 0)
+        );
+    }
+
+    #[test]
+    fn wheel_reports_only_reach_full_screen_programs_that_asked_for_them() {
+        assert_eq!(
+            wheel_report(&modes(true, MouseReporting::Sgr), WheelDirection::Up, 4, 2).as_deref(),
+            Some("\x1b[<64;5;3M")
+        );
+        assert_eq!(
+            wheel_report(
+                &modes(true, MouseReporting::Sgr),
+                WheelDirection::Down,
+                0,
+                0
+            )
+            .as_deref(),
+            Some("\x1b[<65;1;1M")
+        );
+        assert_eq!(
+            wheel_report(
+                &modes(true, MouseReporting::Legacy),
+                WheelDirection::Up,
+                4,
+                2
+            )
+            .as_deref(),
+            Some("\x1b[M`%#")
+        );
+        // Legacy coordinates past the one-byte range clamp instead of
+        // arriving as multi-byte UTF-8.
+        let far = wheel_report(
+            &modes(true, MouseReporting::Legacy),
+            WheelDirection::Down,
+            300,
+            300,
+        )
+        .unwrap();
+        assert!(far.is_ascii(), "{far:?}");
+        assert_eq!(far, "\x1b[Ma~~");
+
+        // A program without mouse reporting would read the bytes as typed
+        // input, and on the normal screen tmux history is the scroll view.
+        assert_eq!(
+            wheel_report(&modes(true, MouseReporting::Off), WheelDirection::Up, 0, 0),
+            None
+        );
+        assert_eq!(
+            wheel_report(&modes(false, MouseReporting::Sgr), WheelDirection::Up, 0, 0),
+            None
+        );
+    }
+
+    /// The screen once the shell has finished drawing: an interactive
+    /// prompt can repaint asynchronously after a command's output lands.
+    fn settled_screen(session: &str) -> String {
+        let mut last = TmuxManager::capture_pane(session, "main").unwrap();
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(200));
+            let now = TmuxManager::capture_pane(session, "main").unwrap();
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+        last
+    }
+
+    fn pane_in_copy_mode(session: &str) -> bool {
+        let output = TmuxManager::command()
+            .args([
+                "display-message",
+                "-t",
+                &format!("{session}:main"),
+                "-p",
+                "#{pane_in_mode}",
+            ])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim() != "0"
+    }
+
+    #[test]
+    fn history_reads_earlier_output_without_touching_the_pane() {
+        let session = TestSession::spawn("history");
+        let (on_output, _received) = output_collector();
+        let (handle, _initial) =
+            TerminalHandle::attach(&session.name, "main", 80, 24, on_output).unwrap();
+        handle
+            // No `$`: the persistent input client's tmux command quoting
+            // expands `$name` (see the report on this increment).
+            .send_input("seq -f history-line-%g 1 200\r")
+            .unwrap();
+        wait_for(Duration::from_secs(10), || {
+            TmuxManager::capture_pane(&session.name, "main")
+                .ok()
+                .filter(|content| content.contains("history-line-200"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the shell never printed the burst: {:?}",
+                TmuxManager::capture_pane(&session.name, "main")
+            )
+        });
+        let before = settled_screen(&session.name);
+
+        let history = handle.history().unwrap();
+
+        assert!(!history.alternate_screen);
+        assert!(
+            history.earlier_lines >= 170,
+            "expected the burst above the screen, got {} earlier lines",
+            history.earlier_lines
+        );
+        assert!(history.replay.contains("history-line-1\r\n"));
+        assert!(history.replay.contains("history-line-200"));
+        // Read-only: no copy-mode, no input, the screen unchanged.
+        assert!(!pane_in_copy_mode(&session.name));
+        assert_eq!(settled_screen(&session.name), before);
+        // A shell on the normal screen never receives wheel reports.
+        assert!(!handle.scroll_program(WheelDirection::Up, 3, 0, 0).unwrap());
+        assert_eq!(settled_screen(&session.name), before);
+    }
+
+    #[test]
+    fn full_screen_programs_get_wheel_reports_only_when_they_ask() {
+        let session = TestSession::spawn("full-screen");
+        let received = tempfile::NamedTempFile::new().unwrap();
+        let path = received.path().display().to_string();
+        let (on_output, _frames) = output_collector();
+        let (handle, _initial) =
+            TerminalHandle::attach(&session.name, "main", 80, 24, on_output).unwrap();
+
+        // Alternate screen without mouse reporting: no history, no input.
+        handle
+            .send_input(&format!(
+                "printf '\\033[?1049h'; stty -echo -icanon; head -c 10 > {path}\r"
+            ))
+            .unwrap();
+        wait_for(Duration::from_secs(10), || {
+            TmuxManager::pane_terminal_modes(&session.name, "main")
+                .ok()
+                .filter(|modes| modes.alternate_screen)
+        })
+        .expect("the program never entered the alternate screen");
+        assert!(handle.history().unwrap().alternate_screen);
+        assert!(!handle.scroll_program(WheelDirection::Up, 1, 4, 2).unwrap());
+
+        // Once it asks for SGR mouse reporting, one wheel step arrives as
+        // exactly one report -- read back by the program itself.
+        handle.send_input("\x03").unwrap();
+        handle
+            .send_input(&format!(
+                "printf '\\033[?1049h\\033[?1000h\\033[?1006h'; stty -echo -icanon; head -c 10 > {path}\r"
+            ))
+            .unwrap();
+        wait_for(Duration::from_secs(10), || {
+            TmuxManager::pane_terminal_modes(&session.name, "main")
+                .ok()
+                .filter(|modes| modes.alternate_screen && modes.mouse == MouseReporting::Sgr)
+        })
+        .expect("the program never asked for mouse reporting");
+        assert!(handle.scroll_program(WheelDirection::Up, 1, 4, 2).unwrap());
+        let report = wait_for(Duration::from_secs(10), || {
+            std::fs::read(received.path())
+                .ok()
+                .filter(|bytes| bytes.len() == 10)
+        })
+        .expect("the program never read a complete wheel report");
+        assert_eq!(report, b"\x1b[<64;5;3M");
+        assert!(!pane_in_copy_mode(&session.name));
+    }
+
+    /// The TUI's own embedded scrolling reads the shared snapshot too: scroll
+    /// mode opens at the bottom of the same tmux history, scrolls within it,
+    /// and still hands a full-screen program its keys (passthrough).
+    #[test]
+    fn tui_scroll_mode_reads_the_shared_history_snapshot() {
+        use crate::app::{App, AppMode, ViewState};
+        use crate::project::{ProjectStore, SessionKind, VibeMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let session = TestSession::spawn("tui-scroll");
+        TmuxManager::send_literal(&session.name, "main", "seq -f tui-line-%g 1 120\r").unwrap();
+        wait_for(Duration::from_secs(10), || {
+            TmuxManager::capture_pane(&session.name, "main")
+                .ok()
+                .filter(|content| content.contains("tui-line-120"))
+        })
+        .expect("the shell never printed the burst");
+        settled_screen(&session.name);
+
+        let store = ProjectStore {
+            version: 5,
+            projects: Vec::new(),
+            session_bookmarks: Vec::new(),
+            available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
+            extra: Default::default(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::Viewing(ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            session.name.clone(),
+            "main".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        ));
+        let view = |app: &App| match &app.mode {
+            AppMode::Viewing(view) => view.clone(),
+            _ => panic!("expected Viewing mode"),
+        };
+
+        app.toggle_scroll_mode(20);
+        let opened = view(&app);
+        assert!(opened.scroll_mode && !opened.scroll_passthrough);
+        assert!(opened.scroll_content.contains("tui-line-1\n"));
+        assert_eq!(opened.scroll_offset, opened.scroll_total_lines - 20);
+        app.scroll_up(5);
+        assert_eq!(view(&app).scroll_offset, opened.scroll_offset - 5);
+        app.toggle_scroll_mode(20);
+        assert!(!view(&app).scroll_mode);
+        assert!(!pane_in_copy_mode(&session.name));
+
+        TmuxManager::send_literal(&session.name, "main", "printf '\\033[?1049h'; sleep 30\r")
+            .unwrap();
+        wait_for(Duration::from_secs(10), || {
+            TmuxManager::pane_terminal_modes(&session.name, "main")
+                .ok()
+                .filter(|modes| modes.alternate_screen)
+        })
+        .expect("the program never entered the alternate screen");
+        app.toggle_scroll_mode(20);
+        let full_screen = view(&app);
+        assert!(full_screen.scroll_mode && full_screen.scroll_passthrough);
+        assert_eq!(full_screen.scroll_total_lines, 0);
     }
 }

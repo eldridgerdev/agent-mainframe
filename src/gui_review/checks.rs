@@ -45,7 +45,9 @@ pub(super) fn cancel(gui: &mut GuiHandle, status: ReviewCheckStatus, output: Str
     if let Some(check) = &mut context.check {
         check.status = status;
         check.output = if completing {
-            format!("Review not completed; nothing was written. {output}")
+            format!(
+                "Review not completed; no feedback round was recorded. Suggestions applied before the check remain in source files. {output}"
+            )
         } else {
             output
         };
@@ -227,7 +229,11 @@ pub fn poll_open(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<Option<Rev
                 Ok(_) if gui.review_context.as_ref().unwrap().completion.is_some() => {
                     gui.review_context.as_mut().unwrap().check_run = None;
                     match super::complete::after_check(gui, outcome) {
-                        Ok(()) => return Ok(None),
+                        Ok(true) => return Ok(None),
+                        Ok(false) => {
+                            gui.review_context.as_mut().unwrap().revision += 1;
+                            return snapshot(gui).map(Some);
+                        }
                         Err(error) => cancel(
                             gui,
                             ReviewCheckStatus::Stale,

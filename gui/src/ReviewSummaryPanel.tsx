@@ -95,14 +95,14 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
       <p>{finish.approved} approved · {finish.needs_work} need work · {finish.skipped} skipped · {finish.file_comments} file comment(s) · {finish.line_comments} line comment(s){finish.general_feedback ? " · overall feedback" : ""}</p>
       {generated && <p role="status">Transfer or discard the generated comment draft before completing.</p>}
       {completing
-        ? <><p role="status">Completing: the configured check is running. Nothing is recorded until it finishes.</p>
+        ? <><p role="status">Completing: the configured check is running. The feedback round is recorded when it finishes. Any suggestions applied before the check remain in source files if you cancel.</p>
           <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel completion</button></>
         : <button className="btn btn-primary" disabled={blocked || generated || confirm || checkConfirm !== null || completeConfirm} onClick={() => setCompleteConfirm(true)}>Complete review…</button>}
       {completeConfirm && !completing && <div className="review-confirm" role="alertdialog" aria-label="Complete Final Review">
         <p>Record this round in .claude/final-review-feedback.md, clear the saved progress and close the review? The round is shared with the TUI's review history.</p>
         <ul>
           {finish.skipped > 0 && <li>{finish.skipped} file(s) have no verdict and are recorded as skipped.</li>}
-          {finish.apply_suggestions > 0 && <li>This review is set to apply suggestions on finish: {finish.apply_suggestions} saved replacement(s) are written to source first.</li>}
+          {finish.apply_suggestions > 0 && <li>This review is set to apply suggestions on finish: {finish.apply_suggestions} saved replacement(s) are written to source before the check. Cancelling completion during the check leaves those source changes in place.</li>}
           {view.check_command
             ? <li>Runs the configured check first, as the terminal review does: <code>{view.check_command}</code>. Pass or fail, its result is recorded; earlier results shown here are not reused.</li>
             : <li>No project check is configured.</li>}

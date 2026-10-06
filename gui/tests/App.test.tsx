@@ -562,3 +562,33 @@ it("finishes a completion whose check ends while polling and stops polling", asy
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion")).toHaveLength(1);
   } finally { vi.useRealTimers(); client.clear(); }
 });
+
+it("collects a completed poll result when cancellation starts while the poll is in flight", async () => {
+  const client = await openFeature([session("Agent", "claude")], [], "idle", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const running = { ...completionBase, check_command: "cargo test", check: { command: "cargo test", status: "running", output: "" },
+    finish: { ...completionBase.finish, completing: true } };
+  let resolvePoll!: (value: null) => void;
+  let rejectAction!: (error: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(running);
+    if (command === "review_snapshot") return new Promise((resolve) => { resolvePoll = resolve; });
+    if (command === "review_act") return new Promise((_, reject) => { rejectAction = reject; });
+    if (command === "review_take_completion") return Promise.resolve({
+      workflow_id: "review-done", message: "Final review complete — draft in Agent",
+      handoff: { target: { project_id: "project", feature_id: "feature", session_id: "Agent" }, draft_prompt: "Address the feedback" },
+    });
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel completion" }));
+    await act(async () => resolvePoll(null));
+    await act(async () => rejectAction({ kind: "conflict", message: "Review is closed" }));
+    expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull();
+    expect(draftInput().value).toBe("Address the feedback");
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_take_completion")).toHaveLength(1);
+  } finally { vi.useRealTimers(); client.clear(); }
+});

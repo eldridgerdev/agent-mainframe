@@ -237,8 +237,13 @@ pub(super) fn start(
         }
     }
     let Some(command) = check_command else {
-        finish(gui, None, deliver);
-        return Ok(Started::Completed);
+        return if finish(gui, None, deliver) {
+            Ok(Started::Completed)
+        } else {
+            Err(GuiError::conflict(
+                "Could not save final review feedback; the review remains open",
+            ))
+        };
     };
     let workdir = ai::state(&gui.app_for_workflow().mode)?.workdir.clone();
     match ReviewCheckRun::spawn(&workdir, &command) {
@@ -259,7 +264,7 @@ pub(super) fn start(
         // Like the TUI, an environment problem does not block finishing: the
         // round records the check as failed.
         Err(e) => {
-            finish(
+            if !finish(
                 gui,
                 Some(CheckOutcome {
                     command,
@@ -267,7 +272,11 @@ pub(super) fn start(
                     output: format!("failed to start: {e}"),
                 }),
                 deliver,
-            );
+            ) {
+                return Err(GuiError::conflict(
+                    "Could not save final review feedback; the review remains open",
+                ));
+            }
             Ok(Started::Completed)
         }
     }
@@ -276,7 +285,7 @@ pub(super) fn start(
 /// The completion's check finished and its result passed the shared
 /// freshness checks. Returns an error, without recording, when the handoff
 /// target changed while it ran.
-pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResult<()> {
+pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResult<bool> {
     let expected = gui
         .review_context
         .as_ref()
@@ -290,18 +299,32 @@ pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResu
         ));
     }
     let pending = gui.review_context.as_mut().unwrap().completion.take();
-    finish(gui, Some(outcome), pending.is_some_and(|p| p.deliver));
-    Ok(())
+    Ok(finish(
+        gui,
+        Some(outcome),
+        pending.is_some_and(|p| p.deliver),
+    ))
 }
 
 /// Record the round with the shared engine, then hand an actionable round's
 /// prompt to the target when the reviewer chose to. Closes the review.
-fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) {
+fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bool {
     let workflow_id = gui.review_context.as_ref().unwrap().id.clone();
     let handoff = handoff(gui);
     let app = gui.app_for_workflow();
     app.message = None;
     let dispatch = app.record_final_review_round(check);
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        let message = app
+            .message
+            .take()
+            .unwrap_or_else(|| "Could not save final review feedback".into());
+        if let Some(check) = &mut gui.review_context.as_mut().unwrap().check {
+            check.status = ReviewCheckStatus::Failed;
+            check.output = format!("Review not completed: {message}");
+        }
+        return false;
+    }
     let (message, handoff) = match (dispatch, handoff) {
         (None, _) => (
             app.message
@@ -365,6 +388,7 @@ fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) {
         message,
         handoff,
     });
+    true
 }
 
 /// Hand the completion to the interface once. A repeated or unrelated request
@@ -504,6 +528,57 @@ mod tests {
         assert!(take_completion(&mut gui, &view.workflow_id).is_none());
         assert!(act(&mut gui, &view, complete(&view, true)).is_err());
         assert_eq!(feedback(&dir).unwrap(), round);
+    }
+
+    #[test]
+    fn feedback_write_failure_keeps_the_review_and_saved_progress() {
+        let (dir, mut gui, view) = rejected(ProjectStatus::Active, None);
+        std::fs::create_dir(dir.path().join("repo/.claude/final-review-feedback.md")).unwrap();
+        let before = progress(&dir);
+        let error = act(&mut gui, &view, complete(&view, true)).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("Could not save final review feedback")
+        );
+        assert!(matches!(
+            gui.app_for_workflow().mode,
+            AppMode::DiffViewer(_)
+        ));
+        assert!(gui.review_context.is_some());
+        assert_eq!(progress(&dir), before);
+        assert!(take_completion(&mut gui, &view.workflow_id).is_none());
+
+        // The all-approved history path must keep the review too.
+        let (dir, mut gui, view) = rejected(ProjectStatus::Active, None);
+        let view = open(
+            &mut gui,
+            &view,
+            ReviewAction::Approve {
+                path: "code.txt".into(),
+            },
+        );
+        let view = open(&mut gui, &view, ReviewAction::SummaryOpen);
+        std::fs::create_dir(dir.path().join("repo/.claude/final-review-feedback.md")).unwrap();
+        assert!(act(&mut gui, &view, complete(&view, false)).is_err());
+        assert!(gui.review_context.is_some());
+        assert!(take_completion(&mut gui, &view.workflow_id).is_none());
+    }
+
+    #[test]
+    fn feedback_write_failure_after_check_returns_an_open_review() {
+        let (dir, mut gui, view) = rejected(ProjectStatus::Active, Some("true"));
+        std::fs::create_dir(dir.path().join("repo/.claude/final-review-feedback.md")).unwrap();
+        let running = open(&mut gui, &view, complete(&view, false));
+        let retained = settle(&mut gui, &running.workflow_id).unwrap();
+        assert!(retained.revision > running.revision);
+        assert!(matches!(
+            retained.check.unwrap().status,
+            ReviewCheckStatus::Failed
+        ));
+        assert!(gui.review_context.is_some());
+        assert!(progress(&dir).is_some());
+        assert!(take_completion(&mut gui, &running.workflow_id).is_none());
     }
 
     #[test]
@@ -712,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_or_stale_completion_checks_write_nothing_and_keep_the_review_open() {
+    fn cancelled_or_stale_completion_checks_record_no_round_and_keep_the_review_open() {
         let (dir, mut gui, view) = rejected(ProjectStatus::Active, Some("sleep 30"));
         let before = progress(&dir);
         let running = open(&mut gui, &view, complete(&view, true));
@@ -722,7 +797,7 @@ mod tests {
         assert!(
             check
                 .output
-                .starts_with("Review not completed; nothing was written.")
+                .starts_with("Review not completed; no feedback round was recorded.")
         );
         assert!(!cancelled.finish.unwrap().completing);
         assert!(feedback(&dir).is_none());
@@ -807,5 +882,35 @@ mod tests {
             "{round}"
         );
         assert!(take_completion(&mut gui, &view.workflow_id).is_some());
+    }
+
+    #[test]
+    fn cancelling_completion_keeps_suggestions_applied_before_the_check() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        let path = crate::app::review::review_progress_path(&repo);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"line_comments":{"code.txt":[{"location":{"old_line":null,"new_line":8},"text":"","suggestion":"crab line","severity":"nit"}]},"apply_suggestions_on_finish":true}"#).unwrap();
+        gui.app_for_workflow()
+            .config
+            .extension
+            .final_review_check_command = Some("sleep 30".into());
+        let view = begin(&mut gui, target).unwrap();
+        let view = open(&mut gui, &view, ReviewAction::SummaryOpen);
+        let running = open(&mut gui, &view, complete(&view, false));
+        let cancelled = open(&mut gui, &running, ReviewAction::CancelCheck);
+        assert!(
+            std::fs::read_to_string(repo.join("code.txt"))
+                .unwrap()
+                .contains("crab line")
+        );
+        assert!(
+            cancelled
+                .check
+                .unwrap()
+                .output
+                .contains("Suggestions applied before the check remain")
+        );
+        assert!(feedback(&dir).is_none());
     }
 }

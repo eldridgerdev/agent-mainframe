@@ -695,9 +695,10 @@ impl App {
     /// open review, write its round (clearing saved progress and recording
     /// the snapshot) and, when the round holds actionable feedback that was
     /// written, return what dispatching it needs instead of dispatching.
-    /// Every other outcome sets `self.message`, returns to the feature view
-    /// and yields `None`. Lets the desktop interface confirm the handoff
-    /// separately while sharing every recording rule with the TUI.
+    /// All-approved rounds close without dispatch and yield `None`. A failed
+    /// feedback write also yields `None`, but leaves the review open with an
+    /// error message so callers can retry. Lets the desktop interface confirm
+    /// the handoff separately while sharing every recording rule with the TUI.
     pub(crate) fn record_final_review_round(
         &mut self,
         check: Option<CheckOutcome>,
@@ -715,45 +716,33 @@ impl App {
             review_harness,
             applied_suggestions,
             suggestion_apply_failures,
-        ) = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+        ) = match &self.mode {
             AppMode::DiffViewer(state) => {
                 // Only failures whose suggestion is still open describe work
                 // the fixing agent is being handed.
                 let suggestion_apply_failures = state.open_suggestion_apply_failures();
                 (
-                    state.workdir,
-                    state.files,
-                    state.decisions,
-                    state.line_comments,
-                    state.file_comments,
-                    state.general_feedback,
-                    state.from_view,
+                    state.workdir.clone(),
+                    state.files.clone(),
+                    state.decisions.clone(),
+                    state.line_comments.clone(),
+                    state.file_comments.clone(),
+                    state.general_feedback.clone(),
+                    state.from_view.clone(),
                     state.fix_target,
-                    state.fix_target_feature_id,
-                    state.review_harness,
-                    state.applied_suggestions,
+                    state.fix_target_feature_id.clone(),
+                    state.review_harness.clone(),
+                    state.applied_suggestions.clone(),
                     suggestion_apply_failures,
                 )
             }
             AppMode::DiffViewerLoading(state) => {
                 // Diff not loaded yet; nothing to summarize.
-                self.mode = AppMode::Viewing(state.from_view);
+                self.mode = AppMode::Viewing(state.from_view.clone());
                 return None;
             }
-            other => {
-                self.mode = other;
-                return None;
-            }
+            _ => return None,
         };
-
-        // The review is over; drop any saved progress so the next review for
-        // this feature starts clean.
-        Self::clear_review_progress(&workdir);
-        // …but record a fingerprint of what was reviewed (even an all-approved
-        // round) so the next review can flag files that changed since.
-        if !files.is_empty() {
-            self.save_review_snapshot(&workdir, &files, &decisions, &line_comments, &file_comments);
-        }
 
         let total = files.len();
         let mut approved = 0usize;
@@ -828,31 +817,38 @@ impl App {
                 &applied_suggestions,
                 &suggestion_apply_failures,
             );
-            let history_error = self
-                .persist_final_review_round(&workdir, &round)
-                .err()
-                .map(|e| format!(" (history not saved: {e})"))
-                .unwrap_or_default();
-            self.message = Some(
-                if total == 0 {
-                    "Final review: no changes against the base branch".to_string()
-                } else {
-                    let check_note = match &check {
-                        Some(c) => format!(" (check `{}` passed)", c.command),
-                        None => String::new(),
-                    };
-                    let local_note =
-                        local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
-                    format!(
-                        "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
-                        if skipped > 0 {
-                            format!(", {skipped} skipped")
-                        } else {
-                            String::new()
-                        }
-                    )
-                } + &history_error,
-            );
+            if let Err(e) = self.persist_final_review_round(&workdir, &round) {
+                self.message = Some(format!("Final review: failed to write feedback file: {e}"));
+                return None;
+            }
+            Self::clear_review_progress(&workdir);
+            if !files.is_empty() {
+                self.save_review_snapshot(
+                    &workdir,
+                    &files,
+                    &decisions,
+                    &line_comments,
+                    &file_comments,
+                );
+            }
+            self.message = Some(if total == 0 {
+                "Final review: no changes against the base branch".to_string()
+            } else {
+                let check_note = match &check {
+                    Some(c) => format!(" (check `{}` passed)", c.command),
+                    None => String::new(),
+                };
+                let local_note =
+                    local_suggestion_summary(&applied_suggestions, &suggestion_apply_failures);
+                format!(
+                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}{local_note}",
+                    if skipped > 0 {
+                        format!(", {skipped} skipped")
+                    } else {
+                        String::new()
+                    }
+                )
+            });
             self.mode = AppMode::Viewing(from_view);
             return None;
         }
@@ -949,8 +945,17 @@ impl App {
 
             if let Err(e) = self.persist_final_review_round(&workdir, &round) {
                 self.message = Some(format!("Final review: failed to write feedback file: {e}"));
-                self.mode = AppMode::Viewing(from_view);
                 return None;
+            }
+            Self::clear_review_progress(&workdir);
+            if !files.is_empty() {
+                self.save_review_snapshot(
+                    &workdir,
+                    &files,
+                    &decisions,
+                    &line_comments,
+                    &file_comments,
+                );
             }
 
             let comment_note = if line_comment_count > 0 {
@@ -991,6 +996,7 @@ impl App {
             } else {
                 String::new()
             };
+            self.mode = AppMode::Viewing(from_view.clone());
             // The caller dispatches the "address the feedback" prompt to the
             // chosen target (the TUI immediately, via `complete_final_review`).
             Some(ReviewFeedbackDispatch {

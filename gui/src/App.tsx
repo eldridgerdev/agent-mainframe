@@ -517,9 +517,10 @@ export default function App() {
       if (polling || reviewPending.current) return;
       polling = true;
       void reviewSnapshot(workflowId).then(async (next) => {
-        if (cancelled || reviewPending.current) return;
-        // A confirmed completion finished with its check.
+        // Null means the backend already closed this review. Always collect
+        // its one-shot result, even if an action began or this effect reset.
         if (next === null) { await finishReview(workflowId); return; }
+        if (cancelled || reviewPending.current) return;
         setReview((current) => current?.workflow_id === workflowId && next.workflow_id === workflowId
           && next.revision > current.revision ? next : current);
       }).catch(() => { /* Explicit actions report conflicts. */ }).finally(() => { polling = false; });

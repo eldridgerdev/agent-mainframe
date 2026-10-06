@@ -857,7 +857,8 @@ it("shows what completing records and hands off, and cancelling or closing sends
   expect(screen.getByText(/1 approved · 1 need work · 1 skipped/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
   const confirm = screen.getByRole("alertdialog", { name: "Complete Final Review" });
-  for (const text of [/1 file\(s\) have no verdict and are recorded as skipped/, /2 saved replacement\(s\) are written to source first/,
+  for (const text of [/1 file\(s\) have no verdict and are recorded as skipped/, /2 saved replacement\(s\) are written to source before the check/,
+    /Cancelling completion during the check leaves those source changes in place/,
     /Runs the configured check first/, /earlier results shown here are not reused/, /GitHub pull request/,
     /sends the "address the feedback" prompt to Claude 1/]) {
     expect(within(confirm).getByText(text)).toBeTruthy();
@@ -917,6 +918,7 @@ it("cancels a completion while its check runs and cannot leave the summary meanw
   expect(screen.queryByRole("button", { name: "Complete review…" })).toBeNull();
   expect((screen.getByRole("button", { name: "Return to review" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(/Completion waits for this check/)).toBeTruthy();
+  expect(screen.getByText(/Any suggestions applied before the check remain in source files if you cancel/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel completion" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "cancel_check" }));
 });

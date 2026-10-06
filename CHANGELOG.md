@@ -166,6 +166,12 @@ Tailscale, and model advice and reasoning levels are available in more places.
   other device on your tailnet may connect (the phone isn't signed in, or an
   access policy shuts it out), the pairing dialog, its setup steps and
   `amf doctor` now say so, instead of showing everything as done.
+- **The pairing dialog checks that its address works.** If the address in
+  the QR code doesn't reach AMF from this computer (Tailscale logged out or
+  not serving AMF, a tunnel that's down, a mistyped `remote_public_url`), the
+  dialog warns under the QR code and suggests the fix, such as running
+  `tailscale up` or pressing `t`. It checks again every few seconds, so the
+  warning goes away once you fix the problem.
 - **New settings for non-standard Tailscale installs.** `remote_tailscale_cli`
   and `remote_tailscale_socket` point AMF at a `tailscale` command or daemon
   socket outside the usual places, such as a `tailscaled` you start
@@ -269,6 +275,9 @@ Tailscale, and model advice and reasoning levels are available in more places.
 - **Missing or invalid setup choices no longer leave an unwanted worktree.**
   Desktop and automation creation requests reject them before creating a
   checkout or claiming a TODO.
+- **An installed AMF Remote no longer hangs on its splash screen** when it
+  can't reach AMF. After a few seconds it opens and shows "Can't reach AMF".
+  It also no longer saves a tunnel's error page in place of the app.
 - **The pairing dialog no longer hides everything under the QR code.** On
   shorter terminals the QR filled the dialog, cutting off the pairing code,
   the address, and the keys. The dialog now fits its content, and shows

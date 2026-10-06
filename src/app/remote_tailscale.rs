@@ -156,11 +156,15 @@ impl App {
 
     fn apply_tailscale_probe(&mut self, status: TailscaleStatus) {
         self.remote_tailscale.probing = false;
-        if self.remote_tailscale.status.as_ref() != Some(&status) {
+        let changed = self.remote_tailscale.status.as_ref() != Some(&status);
+        if changed {
             self.log_debug("remote_server", format!("tailscale: {status:?}"));
         }
         self.remote_tailscale.status = Some(status);
         self.refresh_pairing_url();
+        if changed {
+            self.recheck_failed_pairing_reach();
+        }
     }
 
     fn apply_tailscale_serve(&mut self, outcome: ServeOutcome) {

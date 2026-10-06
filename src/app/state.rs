@@ -1971,6 +1971,11 @@ pub struct RemotePairingState {
     /// Where `url` came from — shown under it, and what decides whether a
     /// later Tailscale probe may replace it (`App::refresh_pairing_url`).
     pub url_source: PairingUrlSource,
+    /// Whether `url` answered as AMF when this computer asked it for
+    /// `/health` (`App::check_pairing_reach`). Advisory: it is checked from
+    /// here, not from the phone, so a pass doesn't promise the phone gets
+    /// through — but a failure means the QR leads nowhere.
+    pub reach: PairingReach,
     /// The session view the dialog was opened over (`Ctrl+Space Q` from a
     /// session), restored on close — the same shape as the bookmark
     /// picker's `from_view`.
@@ -2001,6 +2006,27 @@ pub enum PairingUrlSource {
     /// The server's own bind address: fine on the LAN or over `adb
     /// reverse`, never for install or push.
     Direct,
+}
+
+/// What asking the pairing address for AMF's `/health` from this computer
+/// found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairingReach {
+    /// Not asked: `url_unreachable` already says no phone can open it.
+    NotChecked,
+    Checking,
+    Reachable,
+    /// Something answered, but not with AMF's `ok` — another service, or a
+    /// tunnel whose own error page stands in for an AMF it can't reach.
+    NotAmf(String),
+    /// Nothing answered. Carries a short reason ("timed out").
+    Unreachable(String),
+}
+
+impl PairingReach {
+    pub fn failed(&self) -> bool {
+        matches!(self, PairingReach::NotAmf(_) | PairingReach::Unreachable(_))
+    }
 }
 
 /// The paired-devices list shown by pressing `v` in the pairing dialog.

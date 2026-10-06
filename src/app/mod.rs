@@ -40,6 +40,7 @@ pub(crate) mod remote_actions;
 pub(crate) mod remote_attention;
 pub mod remote_control;
 pub(crate) mod remote_push;
+pub(crate) mod remote_reach;
 pub(crate) mod remote_server;
 pub(crate) mod remote_tailscale;
 pub(crate) mod remote_todos;
@@ -1285,6 +1286,9 @@ pub struct App {
     /// What the local Tailscale looks like, for the pairing QR's address
     /// and its setup steps — see `app/remote_tailscale.rs`.
     pub remote_tailscale: remote_tailscale::RemoteTailscaleState,
+    /// The background `/health` check of the pairing address — see
+    /// `app/remote_reach.rs`.
+    pub remote_reach: remote_reach::RemoteReachState,
     /// Web Push to paired phones — see `app/remote_push.rs`.
     pub remote_push: remote_push::RemotePushState,
     /// The authorized-device table the server checks bearer tokens
@@ -2679,6 +2683,7 @@ impl App {
             remote_server_addr: None,
             pairing_requested: None,
             remote_tailscale: Default::default(),
+            remote_reach: Default::default(),
             remote_push: Default::default(),
             remote_devices: Default::default(),
         };
@@ -2944,6 +2949,7 @@ impl App {
             remote_server_addr: None,
             pairing_requested: None,
             remote_tailscale: Default::default(),
+            remote_reach: Default::default(),
             remote_push: Default::default(),
             remote_devices: Default::default(),
         }

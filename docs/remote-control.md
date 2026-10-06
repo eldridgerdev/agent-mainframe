@@ -145,6 +145,16 @@ In Chrome, use **⋮ → Add to Home screen / Install app** to get an app icon.
 Then open it and tap **Turn on notifications**; **Send test** checks the
 whole path.
 
+While the dialog is open, AMF asks the QR's address for its own `/health`
+from this computer, every 10 seconds until it gets an answer. If the address
+doesn't answer, the dialog says so under the QR and suggests a fix. For a
+`*.ts.net` address that fix comes from Tailscale's state: run `tailscale up`
+when it's logged out, or press `t` when it isn't serving AMF. The check runs
+from this computer, so a pass doesn't prove your phone can connect (it still
+has to be on your tailnet). A failure does mean the phone can't connect
+either. If an installed AMF Remote can't reach AMF, it opens after a few
+seconds and shows "Can't reach AMF" instead of staying on its splash screen.
+
 ## Settings
 
 | Key (`config.json`) | Default | Meaning |

@@ -6,17 +6,32 @@ pub fn https_agent() -> ureq::Agent {
     https_config().new_agent()
 }
 
+/// For a probe that must answer quickly or not at all: `timeout` bounds the
+/// whole call, and an HTTP error status is returned as a response rather than
+/// an `Err`, so the caller can tell "nothing answered" from "something else
+/// answered".
+pub fn probe_agent(timeout: Duration) -> ureq::Agent {
+    tls_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .new_agent()
+}
+
 fn https_config() -> Config {
-    Config::builder()
-        .tls_config(
-            TlsConfig::builder()
-                .provider(TlsProvider::Rustls)
-                .root_certs(RootCerts::PlatformVerifier)
-                .build(),
-        )
+    tls_builder()
         .timeout_connect(Some(Duration::from_secs(10)))
         .timeout_recv_response(Some(Duration::from_secs(15)))
         .build()
+}
+
+fn tls_builder() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+    Config::builder().tls_config(
+        TlsConfig::builder()
+            .provider(TlsProvider::Rustls)
+            .root_certs(RootCerts::PlatformVerifier)
+            .build(),
+    )
 }
 
 #[cfg(test)]

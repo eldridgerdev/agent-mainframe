@@ -15,8 +15,8 @@ use crate::remote_server::{
 use crate::remote_terminal::PaneTarget;
 
 use super::{
-    App, AppMode, PairingDialogStatus, PairingDialogView, PairingUrlSource, RemoteDevicesListState,
-    RemotePairingState, ViewState,
+    App, AppMode, PairingDialogStatus, PairingDialogView, PairingReach, PairingUrlSource,
+    RemoteDevicesListState, RemotePairingState, ViewState,
 };
 
 /// Tests bind here: port 0 asks the OS for any free port, so parallel
@@ -100,6 +100,16 @@ fn phone_cannot_open(source: PairingUrlSource, addr: SocketAddr) -> bool {
     source == PairingUrlSource::Direct && (addr.ip().is_loopback() || addr.ip().is_unspecified())
 }
 
+/// A new address is unchecked until `check_pairing_reach` answers — except
+/// one `phone_cannot_open` already ruled out, which is never asked.
+fn initial_reach(url_unreachable: bool) -> PairingReach {
+    if url_unreachable {
+        PairingReach::NotChecked
+    } else {
+        PairingReach::Checking
+    }
+}
+
 impl App {
     /// Flip the on/off toggle. Never called automatically — the
     /// server-lifecycle decision is that this is on-demand only. The only
@@ -164,7 +174,7 @@ impl App {
     pub fn poll_remote_server_bg(&mut self) -> bool {
         // Drain into a `Vec` first so the borrow of `self.remote_server`
         // ends before we call back into `self` (log/toast) below.
-        let tailscale = self.poll_tailscale_bg();
+        let tailscale = self.poll_tailscale_bg() | self.poll_pairing_reach_bg();
         let events: Vec<RemoteServerEvent> = match &self.remote_server {
             Some(handle) => handle.rx.try_iter().collect(),
             None => return tailscale,
@@ -254,6 +264,7 @@ impl App {
             Some(view) => {
                 self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view));
                 self.probe_tailscale();
+                self.check_pairing_reach();
             }
             None => self.push_toast_info("Close this dialog, then Ctrl+Space Q to pair"),
         }
@@ -288,6 +299,7 @@ impl App {
         self.pairing_requested = None;
         self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, view));
         self.probe_tailscale();
+        self.check_pairing_reach();
         true
     }
 
@@ -318,6 +330,7 @@ impl App {
         if let AppMode::RemotePairing(state) = &mut self.mode {
             let from_view = state.from_view.take();
             self.mode = AppMode::RemotePairing(self.build_pairing_state(addr, from_view));
+            self.check_pairing_reach();
         }
     }
 
@@ -329,6 +342,7 @@ impl App {
         let code = remote_server::generate_pairing_code();
         let (url, url_source) = self.pairing_target(addr);
         let qr_lines = crate::qr::render_qr_lines(&pairing_url(&url, &code)).unwrap_or_default();
+        let url_unreachable = phone_cannot_open(url_source, addr);
         RemotePairingState {
             code,
             url,
@@ -338,8 +352,9 @@ impl App {
             locked: false,
             status: PairingDialogStatus::Waiting,
             view: PairingDialogView::Pairing,
-            url_unreachable: phone_cannot_open(url_source, addr),
+            url_unreachable,
             url_source,
+            reach: initial_reach(url_unreachable),
             from_view,
         }
     }
@@ -381,8 +396,10 @@ impl App {
         state.qr_lines =
             crate::qr::render_qr_lines(&pairing_url(&url, &state.code)).unwrap_or_default();
         state.url_unreachable = phone_cannot_open(url_source, addr);
+        state.reach = initial_reach(state.url_unreachable);
         state.url_source = url_source;
         state.url = url;
+        self.check_pairing_reach();
     }
 
     /// `s` in the pairing dialog: the Tailscale setup walkthrough, with a

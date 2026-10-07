@@ -6,7 +6,8 @@ import TerminalPane from "../src/TerminalPane";
 
 const term = vi.hoisted(() => ({
   cols: 80, rows: 24,
-  loadAddon: vi.fn(), open: vi.fn(), reset: vi.fn(), write: vi.fn(), refresh: vi.fn(),
+  loadAddon: vi.fn(), open: vi.fn(), reset: vi.fn(),
+  write: vi.fn((_data: string, callback?: () => void) => callback?.()), refresh: vi.fn(),
   onData: vi.fn(() => ({ dispose: vi.fn() })),
   onResize: vi.fn(() => ({ dispose: vi.fn() })), dispose: vi.fn(),
   onScroll: vi.fn(() => ({ dispose: vi.fn() })), attachCustomKeyEventHandler: vi.fn(),
@@ -34,7 +35,7 @@ it("enables the composer after attachment and disables it on detach", async () =
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("attach_terminal", { target, size: { cols: 80, rows: 24 } }));
   expect(ready.mock.calls).toEqual([[false]]);
   await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: frame("Agent ready") }));
-  expect(term.write).toHaveBeenCalledWith("Agent ready");
+  expect(term.write).toHaveBeenCalledWith("Agent ready", expect.any(Function));
   expect(ready.mock.calls).toEqual([[false], [true]]);
   view.unmount();
   expect(ready.mock.calls).toEqual([[false], [true], [false]]);

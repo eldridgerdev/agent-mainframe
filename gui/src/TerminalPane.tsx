@@ -155,14 +155,19 @@ export default function TerminalPane({ target, onReadyChange }: {
     // Scroll state. `phase` is authoritative; `setScroll` only mirrors it
     // for the overlay.
     let phase: "live" | "loading" | "history" = "live";
+    // Phase alone cannot identify a load after cancel -> load again.
+    let historyRequest = 0;
     let modes = { alternate: false, mouse: false };
     // Lines to scroll up once a requested history snapshot has loaded.
     let pendingLines = 0;
     // The newest live frame set aside while the user reads history.
     let stashed: TerminalFrame | null = null;
-    // Set while a history snapshot is being written, whose own scrolling
-    // must not read as the user reaching the bottom.
-    let seeding = false;
+    let latestFrame: TerminalFrame | null = null;
+    // xterm resets do not cancel queued writes. Allow only one write at a
+    // time, then reset for the newest desired replay after it completes.
+    let writing = false;
+    type ReplayWrite = { replay: string; isCurrent: () => boolean; complete?: () => void };
+    let pendingWrite: ReplayWrite | null = null;
     const wheel = new WheelAccumulator();
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -175,12 +180,30 @@ export default function TerminalPane({ target, onReadyChange }: {
       }, NOTICE_MS);
     };
 
-    const renderReplay = (replay: string) => {
+    const flushReplay = () => {
+      if (disposed || writing || !pendingWrite) return;
+      const next = pendingWrite;
+      pendingWrite = null;
+      if (!next.isCurrent()) return;
+      writing = true;
       term.reset();
-      term.write(replay);
+      term.write(next.replay, () => {
+        if (disposed) return;
+        if (next.isCurrent()) next.complete?.();
+        writing = false;
+        flushReplay();
+      });
+    };
+    const queueReplay = (next: ReplayWrite) => {
+      pendingWrite = next;
+      flushReplay();
+    };
+    const renderReplay = (replay: string) => {
+      queueReplay({ replay, isCurrent: () => phase === "live" });
     };
 
     const renderFrame = (frame: TerminalFrame) => {
+      latestFrame = frame;
       modes = { alternate: frame.alternate_screen, mouse: frame.mouse_reporting };
       if (phase === "live") {
         renderReplay(frame.replay);
@@ -197,9 +220,10 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     const resumeLive = () => {
       if (phase === "live") return;
+      historyRequest += 1;
       phase = "live";
       pendingLines = 0;
-      const frame = stashed;
+      const frame = latestFrame;
       stashed = null;
       if (frame) renderReplay(frame.replay);
       else term.scrollToBottom();
@@ -225,27 +249,29 @@ export default function TerminalPane({ target, onReadyChange }: {
         return;
       }
       phase = "loading";
+      const request = ++historyRequest;
+      const isCurrent = () => !disposed && request === historyRequest && phase === "loading";
       pendingLines = lines;
       setScroll({ mode: "loading" });
       invoke<TerminalHistory>("terminal_history", { key }).then((history) => {
-        if (disposed || phase !== "loading") return;
+        if (!isCurrent()) return;
         if (history.alternate_screen || history.earlier_lines === 0) {
           resumeLive();
           showNotice(history.alternate_screen ? FULL_SCREEN_NOTICE : "There is no earlier output yet.");
           return;
         }
-        seeding = true;
-        term.reset();
-        term.write(history.replay, () => {
-          seeding = false;
-          if (disposed || phase !== "loading") return;
-          phase = "history";
-          term.scrollLines(-pendingLines);
-          pendingLines = 0;
-          setScroll({ mode: "history", newOutput: stashed !== null });
+        queueReplay({
+          replay: history.replay,
+          isCurrent,
+          complete: () => {
+            phase = "history";
+            term.scrollLines(-pendingLines);
+            pendingLines = 0;
+            setScroll({ mode: "history", newOutput: stashed !== null });
+          },
         });
       }, (err) => {
-        if (disposed || phase !== "loading") return;
+        if (!isCurrent()) return;
         resumeLive();
         showNotice(`Couldn't load earlier output: ${asGuiError(err).message}`);
       });
@@ -307,7 +333,7 @@ export default function TerminalPane({ target, onReadyChange }: {
     // Reaching the bottom of the history by any route (wheel, scrollbar,
     // keys) returns to the live view.
     const onScroll = term.onScroll(() => {
-      if (seeding || phase !== "history") return;
+      if (writing || phase !== "history") return;
       const buffer = term.buffer.active;
       if (buffer.viewportY >= buffer.baseY) resumeLive();
     });

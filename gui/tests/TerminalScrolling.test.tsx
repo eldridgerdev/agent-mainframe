@@ -8,7 +8,9 @@ import { WheelAccumulator, scrollKeyAction } from "../src/terminalScroll";
 
 // A small stand-in for xterm.js that models what scrolling depends on: a
 // buffer whose written lines beyond the screen become scrollback, a viewport
-// position, and the scroll/data/key hooks TerminalPane registers.
+// position, and the scroll/data/key hooks TerminalPane registers. Race tests
+// defer both rendering and completion; reset deliberately leaves writes queued,
+// matching xterm's behavior.
 const fake = vi.hoisted(() => {
   class FakeTerminal {
     static current: FakeTerminal;
@@ -19,6 +21,8 @@ const fake = vi.hoisted(() => {
     lines = 0;
     screen: string[] = [];
     resets = 0;
+    deferWrites = false;
+    writes: { data: string; callback?: () => void }[] = [];
     keyHandler: (event: KeyboardEvent) => boolean = () => true;
     dataHandlers: ((data: string) => void)[] = [];
     scrollHandlers: ((position: number) => void)[] = [];
@@ -39,12 +43,24 @@ const fake = vi.hoisted(() => {
       this.buffer.active.baseY = 0;
     }
     write(data: string, callback?: () => void) {
+      if (this.deferWrites) {
+        this.writes.push({ data, callback });
+        return;
+      }
+      this.applyWrite(data, callback);
+    }
+    finishWrite() {
+      const next = this.writes.shift();
+      if (!next) throw new Error("No pending terminal write");
+      this.applyWrite(next.data, next.callback);
+    }
+    applyWrite(data: string, callback?: () => void) {
       this.screen.push(data);
       this.lines += data.split("\r\n").length;
       this.buffer.active.baseY = Math.max(0, this.lines - this.rows);
       this.buffer.active.viewportY = this.buffer.active.baseY;
       this.fireScroll();
-      if (callback) queueMicrotask(callback);
+      callback?.();
     }
     scrollLines(amount: number) {
       const { baseY } = this.buffer.active;
@@ -119,7 +135,133 @@ async function wheelUp(deltaY = -48) {
   await act(async () => { fireEvent.wheel(surface(), { deltaY }); });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 describe("terminal scroll-back", () => {
+  it("waits for history bytes before resetting and replaying the newest live frame", async () => {
+    await attach();
+    term().deferWrites = true;
+    await wheelUp();
+    const resets = term().resets;
+    act(() => {
+      key_("Escape");
+      emit(frame("older live frame"));
+      emit(frame("newest live frame"));
+    });
+    expect(term().resets).toBe(resets);
+    expect(term().writes.map(({ data }) => data)).toEqual([historyReplay]);
+    act(() => term().finishWrite());
+    expect(term().resets).toBe(resets + 1);
+    expect(term().screen).toEqual([]);
+    act(() => term().finishWrite());
+    expect(term().screen).toEqual(["newest live frame"]);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("restores the last live frame when history is cancelled without new output", async () => {
+    await attach();
+    term().deferWrites = true;
+    await wheelUp();
+    act(() => key_("Escape"));
+    act(() => term().finishWrite());
+    act(() => term().finishWrite());
+    expect(term().screen).toEqual(["live screen"]);
+    expect(term().buffer.active).toEqual({ baseY: 0, viewportY: 0 });
+  });
+
+  it("waits for live write completion before resetting for history", async () => {
+    await attach();
+    term().deferWrites = true;
+    act(() => emit(frame("pending live")));
+    const resets = term().resets;
+    await wheelUp();
+    expect(term().resets).toBe(resets);
+    act(() => term().finishWrite());
+    act(() => term().finishWrite());
+    expect(term().screen).toEqual([historyReplay]);
+    expect(term().buffer.active.viewportY).toBe(73);
+    expect(screen.getByRole("status").textContent).toContain("Viewing earlier output");
+  });
+
+  it.each(["resolve", "reject"] as const)("ignores a cancelled request that later %ss during another load", async (settlement) => {
+    await attach();
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    vi.mocked(invoke).mockImplementation((command) => {
+      if (command === "terminal_history") return commands().filter((name) => name === command).length === 1
+        ? first.promise : second.promise;
+      return Promise.resolve();
+    });
+    await wheelUp();
+    act(() => key_("Escape"));
+    await wheelUp();
+    await act(async () => {
+      if (settlement === "resolve") first.resolve({ replay: "cancelled snapshot", earlier_lines: 10, alternate_screen: false });
+      else first.reject(new Error("cancelled request failed"));
+    });
+    expect(term().screen).toEqual(["live screen"]);
+    expect(screen.getByRole("status").textContent).toContain("Loading earlier output");
+    await act(async () => second.resolve(history));
+    expect(term().screen).toEqual([historyReplay]);
+    expect(term().buffer.active.viewportY).toBe(73);
+    expect(screen.getByRole("status").textContent).toContain("Viewing earlier output");
+  });
+
+  it("ignores a cancelled history write callback while the next request is loading", async () => {
+    await attach();
+    term().deferWrites = true;
+    await wheelUp();
+    act(() => key_("Escape"));
+    const second = deferred<unknown>();
+    vi.mocked(invoke).mockImplementation((command) => command === "terminal_history"
+      ? second.promise : Promise.resolve());
+    await wheelUp();
+    act(() => term().finishWrite());
+    expect(screen.getByRole("status").textContent).toContain("Loading earlier output");
+    expect(term().buffer.active.viewportY).toBe(76);
+    await act(async () => second.resolve({ ...history as object, replay: `${historyReplay}\r\nnew snapshot` }));
+    act(() => term().finishWrite());
+    expect(term().screen).toEqual([`${historyReplay}\r\nnew snapshot`]);
+    expect(term().buffer.active.viewportY).toBe(74);
+    expect(screen.getByRole("status").textContent).toContain("Viewing earlier output");
+  });
+
+  it("replaces cancelled history with a second snapshot resolved before the first write completes", async () => {
+    await attach();
+    term().deferWrites = true;
+    await wheelUp();
+    act(() => key_("Escape"));
+    const secondReplay = `${historyReplay}\r\nsecond snapshot`;
+    history = { replay: secondReplay, earlier_lines: 77, alternate_screen: false };
+    await wheelUp();
+    expect(term().writes.map(({ data }) => data)).toEqual([historyReplay]);
+    act(() => term().finishWrite());
+    expect(screen.getByRole("status").textContent).toContain("Loading earlier output");
+    expect(term().writes.map(({ data }) => data)).toEqual([secondReplay]);
+    act(() => term().finishWrite());
+    expect(term().screen).toEqual([secondReplay]);
+    expect(term().buffer.active.viewportY).toBe(74);
+    expect(screen.getByRole("status").textContent).toContain("Viewing earlier output");
+  });
+
+  it("does not start a queued replay after unmounting with an in-flight write", async () => {
+    const view = await attach();
+    term().deferWrites = true;
+    await wheelUp();
+    act(() => key_("Escape"));
+    const resets = term().resets;
+    view.unmount();
+    act(() => term().finishWrite());
+    expect(term().resets).toBe(resets);
+    expect(term().writes).toEqual([]);
+    expect(invoke).toHaveBeenCalledWith("detach_terminal", { key, generation: 7 });
+  });
+
   it("loads tmux history on wheel up, keeps the reader's place under new output, and jumps back to live", async () => {
     await attach();
 

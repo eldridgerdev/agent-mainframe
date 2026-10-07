@@ -10,6 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Syntax highlighting in the desktop app.** Unified and side-by-side diffs,
+  Final Review, supervised edits and the Learning reader colour code with the
+  same tree-sitter parsers and language detection as the TUI. Lines inside
+  multi-line strings and comments are coloured correctly even when the opening
+  line is outside the hunk. Change backgrounds, line numbers, selection and
+  comments are unchanged. A file header names the language or explains why a
+  file is plain text, and offers to install or repair a missing parser after
+  confirmation, as the TUI's syntax picker does. Colours work in light and dark
+  mode.
+
 ### Fixed
 
 - **Scrolling in desktop terminal tabs.** The mouse wheel, trackpad and
@@ -21,6 +33,10 @@ are tagged.
   never enters tmux copy-mode. Full-screen programs that handle the mouse,
   such as OpenCode and Neovim, receive wheel reports and scroll their own view.
   Other full-screen programs show a notice instead of receiving keys.
+- **Python highlighting.** Grammars that no longer ship optional injection or
+  locals queries (current tree-sitter-python) now load instead of failing, so
+  Python files are highlighted in the TUI and AMF stops trying to reinstall the
+  parser at every start.
 
 ## [v0.49.0] - 2026-10-06
 

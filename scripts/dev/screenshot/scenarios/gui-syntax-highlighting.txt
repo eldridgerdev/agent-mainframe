@@ -1,0 +1,7 @@
+# Native GUI syntax highlighting with a private database, config, Git fixture and tmux server.
+# Parsers install into the private XDG config through the GUI's own command (the TUI picker's
+# installer: git clone from GitHub, then cc). No agent or AI harness runs; source stays untouched.
+note:The isolated TUI confirms the capture harness is ready before native syntax-highlighting proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-syntax.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-syntax-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

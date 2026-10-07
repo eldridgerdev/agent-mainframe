@@ -45,6 +45,17 @@ while `App.tsx` appends the handoff to the session draft after a final workspace
 cache check. Neither browsing nor preparation launches a process or writes the
 library. Library authoring remains a separate workflow.
 
+`src/gui_syntax.rs` highlights GUI diffs, reviews and the Learning reader
+through the TUI's `highlight` service (detection, installed tree-sitter
+parsers, cache). It highlights each diff file's whole base and current
+contents and sends per-line token spans that must reproduce the line text
+exactly, so multi-line strings and comments are classified with full-file
+context. Per-file size limits and a per-projection byte budget bound the
+first, uncached load. `SyntaxInfo` explains plain-text fallbacks, and
+`install` runs the TUI picker's installer on a background thread. The
+frontend's `SyntaxCode.tsx` renders spans as `syn-*` classes coloured by the
+`--syn-*` tokens in `syntax.css`.
+
 `src/gui_prompt_overrides.rs` adapts the headless-prompt override manager
 without touching `App::mode`, so it can sit above an open interview or review
 and its pre-call notice. Rows come from the shared registry and

@@ -260,6 +260,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist an individually stopped feature session",
             MIGRATION_045,
         ),
+        (
+            "Repair PR-comment triage tables that missed the PR# + comment re-key",
+            MIGRATION_046,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1164,6 +1168,44 @@ const MIGRATION_045: &str = "
 ALTER TABLE feature_sessions ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Re-apply 010's triage re-key for databases that never ran it. A dev build
+/// once recorded a different migration in slot 10 of the shared `amf.db`, so
+/// when the re-key shipped there the runner saw the slot as taken and skipped
+/// it — leaving `PRIMARY KEY (pr_number, comment_id, head_sha)`, against which
+/// every triage upsert's `ON CONFLICT(pr_number, comment_id)` fails. Those
+/// slots predate `sql_hash`, so the drift check cannot see it.
+///
+/// An unconditional rebuild is the only way to express "fix the key if it is
+/// wrong" in plain SQL, and it is a no-op on a correct table: the `GROUP BY`
+/// collapses nothing when the key already holds. Per-SHA duplicates collapse
+/// to the most recently updated row, as in 010. The drifted build's own
+/// `idx_pr_comment_triage_pr` goes with the old table. `pr_comment_triage` is referenced by no foreign key, so the drop is safe
+/// inside the migration transaction.
+const MIGRATION_046: &str = "
+CREATE TABLE pr_comment_triage_rekeyed (
+    pr_number      INTEGER NOT NULL,
+    comment_id     INTEGER NOT NULL,
+    head_sha       TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    note           TEXT,
+    updated_at     TEXT NOT NULL,
+    batch_id       TEXT,
+    batch_fix_cost TEXT,
+    PRIMARY KEY (pr_number, comment_id)
+);
+INSERT INTO pr_comment_triage_rekeyed
+    (pr_number, comment_id, head_sha, state, note, updated_at, batch_id,
+     batch_fix_cost)
+SELECT pr_number, comment_id, head_sha, state, note, MAX(updated_at), batch_id,
+       batch_fix_cost
+FROM pr_comment_triage
+GROUP BY pr_number, comment_id;
+DROP TABLE pr_comment_triage;
+ALTER TABLE pr_comment_triage_rekeyed RENAME TO pr_comment_triage;
+CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
+    ON pr_comment_triage(updated_at);
+";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1172,6 +1214,10 @@ mod tests {
     fn migration_039_preserves_features_and_defaults_issue_source_to_none() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(super::MIGRATION_001).unwrap();
+        // 046 rebuilds `pr_comment_triage` (009, re-keyed by 010, extended by 032).
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(super::MIGRATION_010).unwrap();
+        conn.execute_batch(super::MIGRATION_032).unwrap();
         conn.execute_batch(
             "CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
@@ -1206,7 +1252,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1245,7 +1291,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1340,7 +1386,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
     }
 
     #[test]
@@ -1763,7 +1809,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1776,7 +1822,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 45);
+        assert_eq!(rows, 46);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1842,9 +1888,13 @@ mod tests {
             let conn = Connection::open_in_memory().unwrap();
             if let Some(version) = seed_version {
                 // A DB really at v33 has every earlier table; stand up the ones
-                // migrations after 034 alter (035 alters `plan_interviews`).
+                // migrations after 034 alter (035 alters `plan_interviews`,
+                // 046 rebuilds `pr_comment_triage`).
                 conn.execute_batch(super::MIGRATION_001).unwrap();
                 conn.execute_batch(super::MIGRATION_016).unwrap();
+                conn.execute_batch(super::MIGRATION_009).unwrap();
+                conn.execute_batch(super::MIGRATION_010).unwrap();
+                conn.execute_batch(super::MIGRATION_032).unwrap();
                 conn.execute_batch(
                     "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
                         applied_at TEXT NOT NULL, description TEXT NOT NULL);",
@@ -1941,7 +1991,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 45);
+        assert_eq!(version, 46);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
@@ -2031,5 +2081,75 @@ mod tests {
             ],
         );
         assert!(dup.is_err(), "PK should now be (pr_number, comment_id)");
+    }
+
+    /// A database whose slot 10 was taken by a dev build's migration never ran
+    /// 010's re-key, so its triage table is still keyed by head SHA and every
+    /// upsert failed with "ON CONFLICT clause does not match". 046 repairs it.
+    #[test]
+    fn migration_046_repairs_triage_table_that_missed_the_rekey() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        // Recreate the drifted state: the pre-010 key plus 032's columns, the
+        // dev build's index, and 046 not yet applied.
+        conn.execute_batch(
+            "DROP TABLE pr_comment_triage;
+             CREATE TABLE pr_comment_triage (
+                 pr_number  INTEGER NOT NULL,
+                 comment_id INTEGER NOT NULL,
+                 head_sha   TEXT NOT NULL,
+                 state      TEXT NOT NULL,
+                 note       TEXT,
+                 updated_at TEXT NOT NULL, batch_id TEXT, batch_fix_cost TEXT,
+                 PRIMARY KEY (pr_number, comment_id, head_sha)
+             );
+             CREATE INDEX idx_pr_comment_triage_pr
+                 ON pr_comment_triage(pr_number, head_sha);
+             INSERT INTO pr_comment_triage VALUES
+                 (7, 1, 'old', 'fixing', NULL, '2026-01-01 00:00:00', 'b1', '$1'),
+                 (7, 1, 'new', 'done', 'kept', '2026-02-01 00:00:00', 'b2', '$2');
+             DELETE FROM schema_version WHERE version = 46;",
+        )
+        .unwrap();
+        let triage = crate::app::pr_review::TriageState::Skipped;
+        assert!(
+            crate::db::pr_comment_triage::upsert(&conn, 7, "x", 2, triage, None, None).is_err(),
+            "the drifted key should reproduce the upsert failure"
+        );
+
+        super::run(&conn).unwrap();
+
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = conn
+            .prepare(
+                "SELECT comment_id, state, note, batch_id FROM pr_comment_triage
+                 ORDER BY comment_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![(1, "done".into(), Some("kept".into()), Some("b2".into()))]
+        );
+        let stray_index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'idx_pr_comment_triage_pr'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stray_index, 0);
+        crate::db::pr_comment_triage::upsert(&conn, 7, "x", 2, triage, None, None).unwrap();
+        crate::db::pr_comment_triage::upsert(&conn, 7, "y", 2, triage, None, None).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pr_comment_triage WHERE comment_id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "a second head SHA updates the row in place");
     }
 }

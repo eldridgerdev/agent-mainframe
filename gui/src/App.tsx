@@ -67,6 +67,7 @@ import {
 } from "./api";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
+import SessionSidebar from "./SessionSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
@@ -1255,6 +1256,7 @@ export default function App() {
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
@@ -1773,6 +1775,7 @@ function FeatureView({
   pendingEdits,
   onSupervisedEdits,
   onPrTriage,
+  onReusePrompt,
   onReview,
   reviewBusy,
   onNewSession,
@@ -1813,6 +1816,8 @@ function FeatureView({
   pendingEdits: number;
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
+  /** The agent sidebar's prompt reuse: append to that session's draft. */
+  onReusePrompt: (target: SessionTarget, prompt: string) => void;
   onReview: () => void;
   reviewBusy: boolean;
   onNewSession: () => void;
@@ -2025,47 +2030,64 @@ function FeatureView({
         {activeTab === VSCODE_TAB && (
           <div className="page-narrow scroll">{vscodePanel}</div>
         )}
-        {target && isStopped && (
-          <EmptyState
-            icon="terminal"
-            title="This feature is stopped"
-            action={
-              <button className="btn btn-primary"
-                onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
-                disabled={starting || activeLifecycle?.starting}>
-                {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
-                {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
-              </button>
-            }
-          >
-            Starting it from this tab offers to resume this session's saved conversation, if it has one.
-          </EmptyState>
-        )}
-        {target && !isStopped && activeSession && activeLifecycle && !activeSessionRunning && (
-          <EmptyState
-            icon="terminal"
-            title={`${activeSession.label} is stopped`}
-            action={
-              <SessionStartStopButton
-                label={activeSession.label}
-                running={false}
-                {...activeLifecycle}
+        {target && (
+          <div className="session-split">
+            <div className="session-split-main">
+              {isStopped && (
+                <EmptyState
+                  icon="terminal"
+                  title="This feature is stopped"
+                  action={
+                    <button className="btn btn-primary"
+                      onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
+                      disabled={starting || activeLifecycle?.starting}>
+                      {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
+                      {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
+                    </button>
+                  }
+                >
+                  Starting it from this tab offers to resume this session's saved conversation, if it has one.
+                </EmptyState>
+              )}
+              {!isStopped && activeSession && activeLifecycle && !activeSessionRunning && (
+                <EmptyState
+                  icon="terminal"
+                  title={`${activeSession.label} is stopped`}
+                  action={
+                    <SessionStartStopButton
+                      label={activeSession.label}
+                      running={false}
+                      {...activeLifecycle}
+                    />
+                  }
+                >
+                  {activeSession.stopped
+                    ? "It stays stopped when the feature starts, until you start it here. "
+                    : "The rest of the feature is still running. "}
+                  Starting an agent session offers to resume its saved conversation when there is one.
+                </EmptyState>
+              )}
+              {isAgent && (isStopped || !activeSessionRunning) && (
+                <div className="stopped-composer">{composer}</div>
+              )}
+              {!isStopped && (activeSessionRunning || !activeSession) && (
+                <div className="session">
+                  <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
+                  {composer}
+                </div>
+              )}
+            </div>
+            {/* After the main column, so showing or hiding it never moves the
+                terminal in the tree (no reattach, scroll position kept). */}
+            {isAgent && (
+              <SessionSidebar
+                key={sessionKey(target)}
+                target={target}
+                onReusePrompt={(prompt) => onReusePrompt(target, prompt)}
+                onPrTriage={onPrTriage}
+                onSupervisedEdits={onSupervisedEdits}
               />
-            }
-          >
-            {activeSession.stopped
-              ? "It stays stopped when the feature starts, until you start it here. "
-              : "The rest of the feature is still running. "}
-            Starting an agent session offers to resume its saved conversation when there is one.
-          </EmptyState>
-        )}
-        {target && isAgent && (isStopped || !activeSessionRunning) && (
-          <div className="stopped-composer">{composer}</div>
-        )}
-        {target && !isStopped && (activeSessionRunning || !activeSession) && (
-          <div className="session">
-            <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
-            {composer}
+            )}
           </div>
         )}
       </div>

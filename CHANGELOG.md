@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Agent sidebars in desktop session tabs.** Claude, Codex, OpenCode and Pi
+  tabs show usage, context, plans, work, summaries, prompts and TODOs from the
+  same sources as the TUI. Open the plan, reuse the last prompt into an unsent
+  draft or complete the linked TODO. Hide or restore the panel without losing
+  terminal history or your draft; its visibility is remembered for this viewer.
+  The panel works without a TUI and explains which live signals are unavailable.
 - **VS Code, custom sessions and TODOs from the desktop New session dialog.**
   The dialog now offers everything the TUI's session picker does. **VS Code**
   opens the worktree in a new window with the same launch and tracking as the

@@ -461,6 +461,12 @@ impl UsageManager {
         self.data.lock().unwrap().clone()
     }
 
+    /// Seed the cached windows, as a refresh would.
+    #[cfg(test)]
+    pub(crate) fn set_data_for_test(&self, data: UsageData) {
+        *self.data.lock().unwrap() = data;
+    }
+
     pub fn stats_refresh_inflight(&self) -> bool {
         self.stats_refresh_inflight.load(Ordering::Acquire)
     }

@@ -579,7 +579,7 @@ pub fn add_custom_session(
     };
     // Release the reservation on every outcome, including pre-check failure,
     // approval and stale-target errors. The check never holds the GUI lock.
-    let _reservation = CustomSessionAdd { gui, key };
+    let reservation = CustomSessionAdd { gui, key };
     if let Err(output) = config.run_pre_check(&check_dir) {
         return Ok(AddCustomSessionResponse::PreCheckFailed {
             name: config.name.clone(),
@@ -591,6 +591,7 @@ pub fn add_custom_session(
         .lock()
         .expect("gui handle mutex poisoned")
         .create_custom_session(request, &check_dir);
+    drop(reservation);
     result
 }
 

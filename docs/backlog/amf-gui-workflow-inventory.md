@@ -226,9 +226,14 @@ Completed increments and remaining work, in priority order:
     menus and unsent input defer automatic opening while notices/badges remain.
     Escape/Close leaves requests waiting and restores prior focus; manually
     reopening remains available. Confirmed answers advance the oldest-first
-    queue. A GUI-only preference (default on) can disable automatic opening.
+    queue without remounting or moving focus. Manual reviews and reviews with
+    automatic opening disabled remain open, including their empty state. Saved
+    form values do not defer opening; the sidebar explains actual draft/dialog
+    delays. Remaining counts use the fresh panel queue and other features,
+    avoiding stale-count undercounts. A GUI-only preference (default on) can
+    disable automatic opening.
     The loader, revision checks and answer delivery remain shared with the TUI.
-    New popup mounts wait for a fresh hook-file read to avoid showing an older
+    New popup mounts wait for a successful fresh hook-file read to avoid showing an older
     answered edit from cache. All 254 frontend tests (8 new regressions), the
     production build, full normal parallel Rust workspace suite (3,383 library
     and 7 GUI-crate tests; one pre-existing live-GitHub test ignored), formatting,

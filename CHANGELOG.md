@@ -15,7 +15,10 @@ are tagged.
 - **Automatic Vibeless review popups in the desktop app.** Waiting edits now
   open over the current page or agent tab, with the captured diff and a
   1.5-second answer hold by default. Confirmed answers advance the waiting
-  queue. Other dialogs and unsent drafts defer opening; Escape or Close leaves
+  queue without moving focus out of the panel. Manually opened reviews stay
+  open after answers, including when automatic opening is disabled. Saved form
+  values do not defer opening; the sidebar explains delays for unsaved drafts
+  and open dialogs. Escape or Close leaves
   the edit waiting, restores focus and keeps its review badge. Automatic
   opening can be switched off in the popup. No migration is required.
 

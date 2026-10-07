@@ -12,14 +12,14 @@ export const PENDING_EDITS_KEY = ["supervised-edit-counts"];
 export function usePendingEdits(
   pushToast: (toast: Omit<Toast, "id">) => void,
   onOpen: (target: FeatureTarget) => void,
-  popup?: { blocked: boolean; activeTarget: FeatureTarget | null; onOpen: (entry: PendingEditCount) => void },
+  popup?: { blocked: boolean; draftPending?: boolean; activeTarget: FeatureTarget | null;
+    onDeferred?: (reason: string | null) => void; onOpen: (entry: PendingEditCount) => void },
 ): Record<string, number> {
   const counts = useQuery({ queryKey: PENDING_EDITS_KEY, queryFn: supervisedEditCounts, refetchInterval: 2_000, retry: false });
   const latest = useRef({ popup, onOpen, entries: counts.data });
   latest.current = { popup, onOpen, entries: counts.data };
   const announced = useRef<Set<string> | null>(null);
   const opened = useRef(new Set<string>());
-  const dirty = useRef(new Set<HTMLInputElement | HTMLTextAreaElement>());
 
   useEffect(() => {
     if (!counts.data) return;
@@ -47,33 +47,32 @@ export function usePendingEdits(
   }, [counts.data, popup?.activeTarget]);
 
   useEffect(() => {
-    const changed = (event: Event) => {
-      const field = event.target;
-      // xterm's hidden textarea carries terminal input, not an unsaved form.
-      if (!(field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement)
-        || field.closest(".xterm")
-        || (field instanceof HTMLInputElement && !["text", "search", "email", "url", "number", "password"].includes(field.type))) return;
-      if (field.value) dirty.current.add(field);
-      else dirty.current.delete(field);
-    };
     const check = () => {
       const current = latest.current;
-      if (!current.popup || current.popup.blocked || document.querySelector("[role=dialog], [role=alertdialog], [role=menu]")) return;
-      for (const field of dirty.current) {
-        if (!field.isConnected || !field.value) dirty.current.delete(field);
-      }
-      if (dirty.current.size > 0) return;
       const next = current.entries?.find((entry) => !opened.current.has(entry.first_id));
-      if (!next) return;
+      if (!current.popup) return;
+      if (current.popup.blocked || !next) {
+        current.popup.onDeferred?.(null);
+        return;
+      }
+      // Forms own their unsaved state: saved nonempty values are not drafts.
+      // Minimized workflows still protect unsaved work, but their hidden
+      // dialogs do not block a popup once that work has been saved.
+      const draft = current.popup.draftPending || document.querySelector('[data-unsaved-changes="true"]');
+      const modal = Array.from(document.querySelectorAll("[role=dialog], [role=alertdialog], [role=menu]"))
+        .some((element) => !element.closest('[hidden], [aria-hidden="true"]'));
+      if (draft || modal) {
+        current.popup.onDeferred?.(draft
+          ? "Automatic review waits until you save or discard your draft."
+          : "Automatic review waits until you close the dialog or menu.");
+        return;
+      }
+      current.popup.onDeferred?.(null);
       opened.current.add(next.first_id);
       current.popup.onOpen(next);
     };
-    document.addEventListener("input", changed, true);
-    document.addEventListener("change", changed, true);
     const timer = window.setInterval(check, 250);
     return () => {
-      document.removeEventListener("input", changed, true);
-      document.removeEventListener("change", changed, true);
       window.clearInterval(timer);
     };
   }, []);

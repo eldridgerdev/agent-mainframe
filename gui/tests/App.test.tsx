@@ -22,6 +22,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   terminal.ready = true;
+  localStorage.clear();
 });
 
 function session(id: string, kind = "terminal"): FeatureSession {
@@ -664,7 +665,7 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     expect(screen.getByText(/Wait for its result before switching reviews/)).toBeTruthy();
     expect(screen.queryByText("Supervised edits · Docs")).toBeNull();
     await act(async () => finish());
-    expect(await screen.findByText(/Approved src\/a.ts/)).toBeTruthy();
+    expect((await screen.findAllByText(/Approved src\/a.ts/)).length).toBeGreaterThan(0);
     fireEvent.click(review);
     expect(await screen.findByText("Supervised edits · Docs")).toBeTruthy();
   }
@@ -836,6 +837,9 @@ it.each(["draft", "modal"])("defers the popup around a %s and opens after it is 
   await waitingPopup(client);
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
   expect(screen.queryByRole("dialog", { name: "Supervised edits" })).toBeNull();
+  expect(await screen.findByText(blocker === "draft"
+    ? /Automatic review waits until you save or discard your draft/
+    : /Automatic review waits until you close the dialog or menu/)).toBeTruthy();
   if (blocker === "draft") {
     expect(draftInput().value).toBe("Unsent prompt");
     fireEvent.click(screen.getByRole("button", { name: "Clear", exact: true }));
@@ -849,11 +853,17 @@ it("advances the oldest waiting queue only after a confirmed answer", async () =
   await waitingPopup(client, ["e1", "e2"]);
   await screen.findByRole("dialog", { name: "Supervised edits" });
   expect(await screen.findByText("1 more waiting")).toBeTruthy();
+  const popup = screen.getByRole("dialog", { name: "Supervised edits" });
+  popup.focus();
+  const loads = vi.mocked(invoke).mock.calls.filter(([command]) => command === "supervised_edits_load").length;
   expect(screen.getByRole("button", { name: /e1.ts/ }).getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
   fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
   await waitFor(() => expect(screen.getByRole("button", { name: /e2.ts/ }).getAttribute("aria-pressed")).toBe("true"));
-  expect(screen.queryByText("1 more waiting")).toBeNull();
+  await waitFor(() => expect(screen.queryByText("1 more waiting")).toBeNull());
+  expect(screen.getByRole("dialog", { name: "Supervised edits" })).toBe(popup);
+  expect(document.activeElement).toBe(popup);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "supervised_edits_load")).toHaveLength(loads);
   expect(screen.getAllByRole("dialog")).toHaveLength(1);
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "supervised_edit_respond")).toHaveLength(1);
   client.clear();
@@ -870,5 +880,38 @@ it("lets the reviewer disable automatic opening without changing shared TUI conf
   expect(screen.queryByRole("dialog")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: /Supervised edits\s*1/ }));
   expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  client.clear(); localStorage.clear();
+});
+
+
+it.each(["manual", "automatic disabled"])("keeps a %s review mounted through its queue and empty state", async (mode) => {
+  if (mode === "automatic disabled") localStorage.setItem("amf.autoReviewEdits", "off");
+  const client = await openFeature([session("Agent", "claude")]);
+  // A composer draft defers automatic opening, but manual review stays available.
+  fireEvent.change(draftInput(), { target: { value: "Keep this draft" } });
+  await waitingPopup(client, ["e1", "e2"]);
+  fireEvent.click(await screen.findByRole("button", { name: /Supervised edits\s*2/ }));
+  const popup = await screen.findByRole("dialog", { name: "Supervised edits" });
+  await screen.findByRole("button", { name: /e1.ts/ });
+  for (const next of ["e2.ts", null]) {
+    fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
+    if (next) await waitFor(() => expect(screen.getByRole("button", { name: /e2.ts/ }).getAttribute("aria-pressed")).toBe("true"));
+    else await screen.findByText("No edits are waiting for review");
+    expect(screen.getByRole("dialog", { name: "Supervised edits" })).toBe(popup);
+  }
+  expect(draftInput().value).toBe("Keep this draft");
+  client.clear(); localStorage.clear();
+});
+
+it("keeps an automatic review open when its auto-open preference is disabled during review", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  await waitingPopup(client);
+  const popup = await screen.findByRole("dialog", { name: "Supervised edits" });
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Automatically open waiting edits" }));
+  fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
+  await screen.findByText("No edits are waiting for review");
+  expect(screen.getByRole("dialog", { name: "Supervised edits" })).toBe(popup);
   client.clear(); localStorage.clear();
 });

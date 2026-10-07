@@ -393,9 +393,12 @@ export default function App() {
     }
   }, [queryClient, reportError]);
 
+  const [reviewDeferral, setReviewDeferral] = useState<string | null>(null);
   const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits, {
     activeTarget: supervisedTarget,
-    blocked: !autoReviewEdits || supervisedTarget !== null || Object.values(drafts).some((draft) => draft.length > 0),
+    blocked: !autoReviewEdits || supervisedTarget !== null,
+    draftPending: Object.values(drafts).some((draft) => draft.length > 0),
+    onDeferred: setReviewDeferral,
     onOpen: (entry) => {
       setAutomaticEditId(entry.first_id);
       setSupervisedTarget({ project_id: entry.project_id, feature_id: entry.feature_id });
@@ -1087,6 +1090,7 @@ export default function App() {
         </div>
 
         <nav className="nav" aria-label="Workspace">
+          {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
@@ -1183,10 +1187,11 @@ export default function App() {
           setAutoReviewEdits(enabled);
           try { localStorage.setItem("amf.autoReviewEdits", enabled ? "on" : "off"); } catch { /* Keep the preference for this window. */ }
         }}
-        moreWaiting={Math.max(0, Object.values(pendingEdits).reduce((total, count) => total + count, 0) - 1)}
-        onAnswered={(message) => {
+        otherWaiting={Object.entries(pendingEdits).reduce((total, [featureId, count]) =>
+          total + (featureId === supervisedTarget.feature_id ? 0 : count), 0)}
+        onAnswered={(message, hasWaiting) => {
           pushToast({ tone: "info", title: "Edit answered", message: `${message}. The agent continues once its hook reads the answer.` });
-          setSupervisedTarget(null);
+          if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
       {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}

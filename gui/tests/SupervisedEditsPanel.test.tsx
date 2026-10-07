@@ -213,7 +213,7 @@ it("focuses the requested edit, traps Tab and restores terminal focus after dism
   document.body.append(terminal); terminal.focus();
   const onClose = vi.fn();
   const mounted = render(<QueryClientProvider client={client}><SupervisedEditsPanel target={target}
-    initialEditId="edit-2" moreWaiting={2} onClose={onClose} /></QueryClientProvider>);
+    initialEditId="edit-2" otherWaiting={1} onClose={onClose} /></QueryClientProvider>);
   await screen.findByText("2 more waiting");
   expect((await screen.findByRole("button", { name: /b.ts/ })).getAttribute("aria-pressed")).toBe("true");
   expect(document.activeElement).toBe(screen.getByRole("dialog"));
@@ -241,4 +241,49 @@ it("waits for fresh hook files instead of showing the previous popup's cached an
   await act(async () => loaded(view([edit({ id: "edit-2", path: "current.ts" })])));
   expect(await screen.findByRole("button", { name: /current.ts/ })).toBeTruthy();
   expect(screen.queryByText(/is no longer waiting for review/)).toBeNull();
+});
+
+
+it("does not revive cached edits on an initial load failure or misidentify them after retry", async () => {
+  vi.mocked(invoke).mockRejectedValueOnce({ message: "Hook files unavailable" })
+    .mockResolvedValue(view([edit({ id: "edit-2", path: "current.ts" })]));
+  const client = new QueryClient(); clients.push(client);
+  client.setQueryData(["supervised-edits", target.project_id, target.feature_id, "standard"],
+    { ...view([edit({ path: "previous.ts", answered: true })]), feature_name: "Previous cached feature" });
+  render(<QueryClientProvider client={client}><SupervisedEditsPanel target={target}
+    initialEditId="edit-2" onClose={vi.fn()} /></QueryClientProvider>);
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.queryByText(/Previous cached feature/)).toBeNull();
+  expect(screen.queryByText(/previous.ts/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(await screen.findByRole("button", { name: /current.ts/ })).toBeTruthy();
+  expect(screen.queryByText(/is no longer waiting for review/)).toBeNull();
+  expect(screen.queryByText(/previous.ts/)).toBeNull();
+});
+
+
+it.each(["empty", "answered"])("counts all waiting edits elsewhere when the panel is %s", async (state) => {
+  vi.mocked(invoke).mockResolvedValue(view(state === "empty" ? [] : [edit({ answered: true })]));
+  const client = new QueryClient(); clients.push(client);
+  render(<QueryClientProvider client={client}><SupervisedEditsPanel target={target}
+    otherWaiting={2} onClose={vi.fn()} /></QueryClientProvider>);
+  if (state === "empty") await screen.findByText("No edits are waiting for review");
+  else await screen.findByRole("button", { name: /invoice.ts/ });
+  expect(screen.getByText("2 more waiting")).toBeTruthy();
+});
+
+it("updates remaining counts immediately after answering even while feature counts are stale", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_respond") return { message: "Approved", view: view([]) };
+    if (command === "supervised_edit_counts") return new Promise(() => {});
+    return [];
+  });
+  const client = new QueryClient(); clients.push(client);
+  render(<QueryClientProvider client={client}><SupervisedEditsPanel target={target}
+    otherWaiting={2} onClose={vi.fn()} /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Approve edit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
+  await screen.findByText("No edits are waiting for review");
+  expect(screen.getByText("2 more waiting")).toBeTruthy();
 });

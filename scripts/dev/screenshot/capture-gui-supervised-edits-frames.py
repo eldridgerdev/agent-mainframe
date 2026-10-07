@@ -307,8 +307,8 @@ try:
     click("Send approval")
     code, stderr = finish(approve_hook)
     assert code == 0, ("approval did not let the write proceed", code, stderr)
-    wait('!document.querySelector("[role=dialog]")')
-    capture("004-approved-agent-continues.png", "The hook read the approval and let the agent continue (exit 0); the request left the queue and AMF did not write the source itself.", ["Approved the edit to invoice.ts", "Compose prompt"], 'document.querySelectorAll(".nav-count-attention").length===0')
+    wait('document.body.innerText.includes("No edits are waiting for review")')
+    capture("004-approved-agent-continues.png", "The hook read the approval and let the agent continue (exit 0); the request left the queue, the manually opened panel stays open in its empty state, and AMF did not write the source itself.", ["Approved the edit to invoice.ts", "No edits are waiting for review"], 'document.querySelectorAll(".nav-count-attention").length===0')
     assert not approve_file.exists()
     assert (repo / "invoice.ts").read_bytes() == original_source, "AMF wrote source while answering"
 
@@ -327,9 +327,9 @@ try:
     code, stderr = finish(write_hook)
     assert code == 2, ("rejection did not block the write", code, stderr)
     assert f"User rejected this change with feedback: {feedback}" in stderr, stderr
-    wait('!document.querySelector("[role=dialog]")')
+    wait('document.body.innerText.includes("No edits are waiting for review")')
     wait('document.body.innerText.includes("Rejected the edit to credit.ts")')
-    capture("006-rejected-feedback-delivered.png", "The hook blocked the write and handed the feedback to the agent (exit 2 with the reviewer's text); no file was created.", ["Rejected the edit to credit.ts", "Compose prompt"])
+    capture("006-rejected-feedback-delivered.png", "The hook blocked the write and handed the feedback to the agent (exit 2 with the reviewer's text); no file was created, and the manual review remains open for the next request.", ["Rejected the edit to credit.ts", "No edits are waiting for review"])
     assert not (repo / "credit.ts").exists()
 
     guide_hook, guide_file, guide_request = start_hook("Edit", {

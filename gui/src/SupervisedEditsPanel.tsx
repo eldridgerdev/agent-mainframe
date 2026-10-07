@@ -41,12 +41,12 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   target: FeatureTarget;
   onClose: () => void;
   /** Called after an answer is delivered, so navigation counts refresh. */
-  onAnswered?: (message: string) => void;
+  onAnswered?: (message: string, hasWaiting: boolean) => void;
   initialEditId?: string;
-  moreWaiting?: number;
+  otherWaiting?: number;
   autoOpen?: boolean;
   onAutoOpenChange?: (enabled: boolean) => void;
-}>(({ target, onClose, onAnswered, initialEditId, moreWaiting = 0, autoOpen, onAutoOpenChange }, ref) => {
+}>(({ target, onClose, onAnswered, initialEditId, otherWaiting = 0, autoOpen, onAutoOpenChange }, ref) => {
   const container = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
   close.current = () => requestClose();
@@ -66,10 +66,16 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   const answered = useRef(new Set<string>());
   const lastSelected = useRef<SupervisedEdit | null>(null);
 
+  const successfulLoads = useRef(new Set<string>());
+  const loadIdentity = JSON.stringify([target.project_id, target.feature_id, context]);
   const queryKey = ["supervised-edits", target.project_id, target.feature_id, context];
   const query = useQuery({
     queryKey,
-    queryFn: () => supervisedEditsLoad(target, context),
+    queryFn: async () => {
+      const loaded = await supervisedEditsLoad(target, context);
+      successfulLoads.current.add(loadIdentity);
+      return loaded;
+    },
     refetchInterval: 1_500,
     retry: false,
     refetchOnWindowFocus: false,
@@ -78,9 +84,13 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   // A new popup must read the current hook files before showing a cached
   // review. Otherwise the previous popup's answered edit can flash here and
   // produce a misleading "answered elsewhere" notice for the wrong file.
-  const view = query.isFetchedAfterMount ? query.data : undefined;
+  // A failed fetch also counts as fetched-after-mount. Only this popup
+  // successfully reading the hook files makes cached data safe to show.
+  const view = successfulLoads.current.has(loadIdentity) ? query.data : undefined;
   const edits = view?.edits ?? [];
   const edit = edits.find((candidate) => candidate.id === selectedId) ?? edits[0];
+  const waiting = edits.filter((candidate) => !candidate.answered);
+  const moreWaiting = otherWaiting + waiting.length - (edit && !edit.answered ? 1 : 0);
 
   // Own keyboard focus while reviewing, then return to the same terminal or
   // control. Capture Escape so it cannot dismiss another workflow underneath.
@@ -194,6 +204,8 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       const outcome = await supervisedEditRespond(target, confirm, decision);
       answered.current.add(confirm.id);
       queryClient.setQueryData<SupervisedEditsView>(queryKey, outcome.view);
+      const next = outcome.view.edits.find((candidate) => !candidate.answered && candidate.unavailable === null);
+      setSelectedId(next?.id ?? null);
       setFeedback((current) => {
         const next = { ...current };
         delete next[confirm.id];
@@ -203,7 +215,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       setLost(null);
       setConfirm(null);
       void queryClient.invalidateQueries({ queryKey: PENDING_EDITS_KEY });
-      if (!Object.entries(feedback).some(([id, text]) => id !== confirm.id && text.trim())) onAnswered?.(outcome.message);
+      if (!Object.entries(feedback).some(([id, text]) => id !== confirm.id && text.trim())) onAnswered?.(outcome.message, next !== undefined);
     } catch (err) {
       const failure = asGuiError(err);
       setError(failure.message);

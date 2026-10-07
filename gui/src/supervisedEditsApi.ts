@@ -37,6 +37,7 @@ export interface SupervisedEditsView {
   target: FeatureTarget;
   feature_name: string;
   edits: SupervisedEdit[];
+  popup_hold_secs: number;
 }
 
 export interface PendingEditCount {

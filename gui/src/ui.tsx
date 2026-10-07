@@ -151,7 +151,7 @@ export function Modal({
         if (dismissable && event.target === event.currentTarget) onClose();
       }}
     >
-      <div role="dialog" aria-label={label} aria-modal="true" className={`modal modal-${size}`}>
+      <div role="dialog" tabIndex={-1} aria-label={label} aria-modal="true" className={`modal modal-${size}`}>
         <header className="modal-header">
           <div>
             <h2>{title}</h2>

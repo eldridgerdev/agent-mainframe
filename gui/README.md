@@ -449,9 +449,17 @@ Remaining native interactions and macOS validation are open.
 
 A Vibeless agent's hook holds each file change until AMF answers it. When no
 AMF TUI is running, the hook leaves the request on disk and the GUI picks it up:
-the feature gets a count in navigation, a notice offers **Review**, and the
-feature page shows **Supervised edits** while any edit waits (a Vibeless
-feature's **⋯** menu always has it). The panel lists waiting edits with the
+the feature gets a count in navigation and its oldest waiting edit opens in a
+popup over the current page or agent tab. Other dialogs and unsent form input
+or agent drafts defer opening; an arrival notice still offers **Review**.
+The popup waits for the configured `diff_review_popup_hold_secs` (default
+1.5 seconds) before enabling answers, and shows how many more edits are waiting.
+A confirmed answer advances to the next oldest request. Escape or Close leaves
+an edit waiting, restores focus to the prior control or terminal, and keeps its
+badges. Reopen it from **Review**, **Supervised edits** on the feature page, or
+the Vibeless feature's **⋯** menu. **Automatically open waiting edits** in the
+popup disables automatic opening for this GUI installation; it is on by
+default and does not change TUI configuration. The panel lists waiting edits with the
 hook's captured diff, the agent's stated reason when it gives one, and layout
 and context controls. **Approve edit**, **Reject edit** (with optional
 feedback, up to 200 characters) and **Cancel edit** each need a second,

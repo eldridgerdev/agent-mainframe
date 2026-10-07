@@ -151,6 +151,10 @@ def capture(name, note, expects, expression=None, allow_alert=False):
         assert not evaluate('!!document.querySelector("[role=alert]")'), body
     if expression:
         assert evaluate(expression), expression
+    # Focus restoration is asserted before this call. Blur only the terminal
+    # while taking the image so its blinking cursor cannot prevent two stable
+    # frames or outlive the short result toast. This sends no input to tmux.
+    evaluate('if(document.activeElement?.classList.contains("xterm-helper-textarea")) document.activeElement.blur()')
     # WebKit can paint well after the DOM settles under a software renderer.
     # Keep grabbing until two grabs agree and differ from every earlier frame.
     previous = None
@@ -164,6 +168,9 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     else:
         raise AssertionError(f"The native window never painted a new stable frame for {name}")
     captured_frames.add(digest)
+    body = evaluate("document.body.innerText")
+    for text in expects:
+        assert text in body, ("Expected text disappeared before the frame painted", text, body)
     (out / name.replace(".png", ".txt")).write_text(body)
     notes.append({"file": name, "note": note, "expects": expects})
     print("PASS:", name, note, flush=True)
@@ -229,7 +236,7 @@ def finish(hook):
 
 
 def open_feature():
-    evaluate('document.querySelector("button.nav-item[title^=\\"Round invoice totals\\"]").click()')
+    evaluate('document.querySelector("button.tree-name[title^=\\"Round invoice totals\\"]").click()')
     wait('document.body.innerText.includes("Final Review")')
 
 
@@ -243,13 +250,24 @@ def confirm_open():
     evaluate('document.querySelector("[role=alertdialog][aria-label=\\"Confirm answer\\"]").scrollIntoView({block:"nearest"})')
 
 
+tmux = ["tmux", "-S", os.environ["AMF_TMUX_SOCKET"]]
+subprocess.run(tmux + ["new-session", "-d", "-s", "amf-gui-shot-unused", "-n", "claude", "-x", "120", "-y", "30",
+                      "printf 'Offline Claude stand-in: waiting for a supervised edit\\n'; sleep 600"], check=True)
+with sqlite3.connect(dbpath) as db:
+    db.execute("UPDATE features SET status='idle' WHERE id='shot-feature'")
+    db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
+               ("shot-agent", "shot-feature", "claude", "Claude", "claude", "2026-10-07T00:00:00Z", 0))
+    db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
+
 original_source = (repo / "invoice.ts").read_bytes()
 try:
     window.configure(x=0, y=0, width=1450, height=1000)
     x.sync()
-    wait('!!document.querySelector("button.nav-item[title^=\\"Round invoice totals\\"]")')
+    wait('!!document.querySelector("button.tree-name[title^=\\"Round invoice totals\\"]")')
     open_feature()
     wait('document.body.innerText.includes("Vibeless")')
+    wait('!!document.querySelector(".xterm-screen")')
+    evaluate('document.querySelector(".xterm-helper-textarea").focus()')
     # Let the first count poll settle so the arrival below is announced.
     time.sleep(2.5)
 
@@ -262,16 +280,26 @@ try:
     assert approve_request["type"] == "diff-review"
     wait('document.querySelector(".nav-count-attention")?.textContent==="1"')
     wait('document.body.innerText.includes("Edit waiting for review")')
-    capture("001-waiting-edit-announced.png", "A Vibeless agent's hook is holding an edit: the feature is badged in navigation and on its Supervised edits action, and a notice offers to review it.", ["Edit waiting for review", "Round invoice totals: the agent wants to change invoice.ts.", "Supervised edits"], 'document.querySelectorAll(".nav-count-attention").length===2')
+    wait('!!document.querySelector("[role=dialog][aria-label=\\"Supervised edits\\"]")')
+    edit_ready("invoice.ts")
+    assert evaluate('document.activeElement.closest(".supervised-popup")!==null'), "The popup did not take focus"
+    capture("000-popup-over-agent.png", "A waiting Vibeless edit opens automatically over the running offline agent tab, with its captured diff. The reviewer has not clicked Review or answered the hook.", ["Supervised edits · Round invoice totals", "invoice.ts", "Approve edit", "Reject edit"], '!!document.querySelector(".xterm-screen")')
+    assert approve_hook.poll() is None, "Automatic opening answered the hook"
+    evaluate('document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}))')
+    wait('!document.querySelector("[role=dialog]")')
+    assert evaluate('document.activeElement.classList.contains("xterm-helper-textarea")'), "Dismissal did not restore terminal focus"
+    assert approve_hook.poll() is None, "Dismissing answered the hook"
+    capture("001-waiting-edit-announced.png", "Dismissing the popup restores the agent terminal without answering: the hook stays blocked, and the feature badges and Supervised edits action still reopen it.", ["Supervised edits", "Compose prompt"], 'document.querySelectorAll(".nav-count-attention").length===2')
 
-    # The arrival notice's own action opens the panel.
-    evaluate('document.querySelector(".toast button.btn-sm:not([aria-label])").click()')
+    # Reopen through the feature action, which remains after the toast expires.
+    evaluate('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim().startsWith("Supervised edits")).click()')
     edit_ready("invoice.ts")
     select("Layout", "split")
     wait('!!document.querySelector("table.diff-split")')
     capture("002-pending-edit-diff.png", "The panel shows the exact change the hook captured, from the hook's own original and proposed copies, in a side-by-side diff.", ["Supervised edits · Round invoice totals", "invoice.ts", "Edit", "Waiting", "Credits (negative subtotals) carry no tax.", "Approve edit", "Reject edit", "Cancel edit"])
     assert approve_hook.poll() is None, "Opening the panel answered the hook"
 
+    wait('!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Approve edit").disabled')
     click("Approve edit")
     confirm_open()
     capture("003-approval-confirmation.png", "Answering an agent is a separate, explicit step that states the effect before anything is sent.", ["Approve this edit?", "The agent writes this change.", "Send approval", "Back"])
@@ -279,8 +307,8 @@ try:
     click("Send approval")
     code, stderr = finish(approve_hook)
     assert code == 0, ("approval did not let the write proceed", code, stderr)
-    wait('document.body.innerText.includes("No edits are waiting for review")')
-    capture("004-approved-agent-continues.png", "The hook read the approval and let the agent continue (exit 0); the request left the queue and AMF did not write the source itself.", ["Approved the edit to invoice.ts", "No edits are waiting for review"], 'document.querySelectorAll(".nav-count-attention").length===0')
+    wait('!document.querySelector("[role=dialog]")')
+    capture("004-approved-agent-continues.png", "The hook read the approval and let the agent continue (exit 0); the request left the queue and AMF did not write the source itself.", ["Approved the edit to invoice.ts", "Compose prompt"], 'document.querySelectorAll(".nav-count-attention").length===0')
     assert not approve_file.exists()
     assert (repo / "invoice.ts").read_bytes() == original_source, "AMF wrote source while answering"
 
@@ -291,6 +319,7 @@ try:
     })
     edit_ready("credit.ts")
     fill("Feedback for the agent", feedback)
+    wait('!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Reject edit").disabled')
     click("Reject edit")
     confirm_open()
     capture("005-new-file-rejection-feedback.png", "A proposed new file is shown as added in unified layout; rejecting it previews the exact feedback the agent will receive.", ["credit.ts", "new file", "Reject this edit?", "receives your feedback", feedback, "Send rejection"], '!!document.querySelector("table[aria-label=\\"Unified hunk\\"]")')
@@ -298,9 +327,9 @@ try:
     code, stderr = finish(write_hook)
     assert code == 2, ("rejection did not block the write", code, stderr)
     assert f"User rejected this change with feedback: {feedback}" in stderr, stderr
-    wait('document.body.innerText.includes("No edits are waiting for review")')
+    wait('!document.querySelector("[role=dialog]")')
     wait('document.body.innerText.includes("Rejected the edit to credit.ts")')
-    capture("006-rejected-feedback-delivered.png", "The hook blocked the write and handed the feedback to the agent (exit 2 with the reviewer's text); no file was created.", ["Rejected the edit to credit.ts", "No edits are waiting for review"])
+    capture("006-rejected-feedback-delivered.png", "The hook blocked the write and handed the feedback to the agent (exit 2 with the reviewer's text); no file was created.", ["Rejected the edit to credit.ts", "Compose prompt"])
     assert not (repo / "credit.ts").exists()
 
     guide_hook, guide_file, guide_request = start_hook("Edit", {
@@ -309,6 +338,7 @@ try:
         "new_string": "Invoice calculations, rounded to cents.",
     })
     edit_ready("GUIDE.md")
+    wait('!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Approve edit").disabled')
     click("Approve edit")
     confirm_open()
     # Another interface answers first. Pause the hook so the answer is still
@@ -323,12 +353,17 @@ try:
     os.killpg(guide_hook.pid, signal.SIGCONT)
     code, stderr = finish(guide_hook)
     assert code == 2 and "Answered in the TUI" in stderr, (code, stderr)
-    wait('document.body.innerText.includes("is no longer waiting for review")')
+    wait('document.body.innerText.includes("The edit to GUIDE.md is no longer waiting for review")')
+    wait('document.body.innerText.includes("No edits are waiting for review")')
     capture("007-answered-elsewhere-refused.png", "An edit answered from another interface is refused rather than answered twice: the GUI keeps the first answer intact and says the edit has left the queue.", ["already answered", "The edit to GUIDE.md is no longer waiting for review", "No edits are waiting for review"], None, allow_alert=True)
     assert not guide_file.exists()
     assert (repo / "invoice.ts").read_bytes() == original_source
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]}) + "\n" for n in notes))
 finally:
+    subprocess.run(tmux + ["kill-server"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with sqlite3.connect(dbpath) as db:
+        db.execute("DELETE FROM feature_sessions WHERE id='shot-agent'")
+        db.execute("UPDATE features SET status='stopped' WHERE id='shot-feature'")
     for hook in hooks:
         if hook.poll() is None:
             try:

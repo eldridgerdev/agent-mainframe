@@ -3,50 +3,17 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DiffOptions, FeatureTarget, asGuiError } from "./api";
 import { Hunk } from "./DiffPanel";
 import { EmptyState, Field, Icon, Modal, Spinner } from "./ui";
-import type { Toast } from "./ui";
 import {
   MAX_FEEDBACK_CHARS,
-  PendingEditCount,
   SupervisedEdit,
   SupervisedEditDecision,
   SupervisedEditsView,
-  supervisedEditCounts,
   supervisedEditRespond,
   supervisedEditsLoad,
 } from "./supervisedEditsApi";
 
-export const PENDING_EDITS_KEY = ["supervised-edit-counts"];
-
-/** Waiting supervised edits per feature id, polled for navigation badges.
- * A newly waiting edit raises one notice, since its agent is blocked until
- * someone answers it. */
-export function usePendingEdits(
-  pushToast: (toast: Omit<Toast, "id">) => void,
-  onOpen: (target: FeatureTarget) => void,
-): Record<string, number> {
-  const counts = useQuery({ queryKey: PENDING_EDITS_KEY, queryFn: supervisedEditCounts, refetchInterval: 2_000, retry: false });
-  const announced = useRef<Set<string> | null>(null);
-  const open = useRef(onOpen);
-  open.current = onOpen;
-  useEffect(() => {
-    if (!counts.data) return;
-    const seen = announced.current;
-    announced.current = new Set(counts.data.map((entry) => entry.first_id));
-    // The first poll describes what was already waiting; only arrivals after
-    // it are announced, and each request at most once.
-    if (seen === null) return;
-    for (const entry of counts.data.filter((candidate: PendingEditCount) => !seen.has(candidate.first_id))) {
-      pushToast({
-        tone: "info",
-        title: "Edit waiting for review",
-        message: `${entry.feature_name}: the agent wants to change ${entry.first_path}.`,
-        action: { label: "Review", onClick: () => open.current({ project_id: entry.project_id, feature_id: entry.feature_id }) },
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [counts.data]);
-  return Object.fromEntries((counts.data ?? []).map((entry) => [entry.feature_id, entry.count]));
-}
+export { PENDING_EDITS_KEY, usePendingEdits } from "./usePendingEdits";
+import { PENDING_EDITS_KEY } from "./usePendingEdits";
 
 type DecisionKind = SupervisedEditDecision["kind"];
 
@@ -74,12 +41,19 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   target: FeatureTarget;
   onClose: () => void;
   /** Called after an answer is delivered, so navigation counts refresh. */
-  onAnswered?: () => void;
-}>(({ target, onClose, onAnswered }, ref) => {
+  onAnswered?: (message: string) => void;
+  initialEditId?: string;
+  moreWaiting?: number;
+  autoOpen?: boolean;
+  onAutoOpenChange?: (enabled: boolean) => void;
+}>(({ target, onClose, onAnswered, initialEditId, moreWaiting = 0, autoOpen, onAutoOpenChange }, ref) => {
+  const container = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = () => requestClose();
   const queryClient = useQueryClient();
   const [context, setContext] = useState<DiffOptions["context"]>("standard");
   const [split, setSplit] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialEditId ?? null);
   const [feedback, setFeedback] = useState<Record<string, string>>({});
   const feedbackPaths = useRef<Record<string, string>>({});
   const [confirm, setConfirm] = useState<{ id: string; revision: string; kind: DecisionKind } | null>(null);
@@ -99,10 +73,54 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
     refetchInterval: 1_500,
     retry: false,
     refetchOnWindowFocus: false,
+    refetchOnMount: "always",
   });
-  const view = query.data;
+  // A new popup must read the current hook files before showing a cached
+  // review. Otherwise the previous popup's answered edit can flash here and
+  // produce a misleading "answered elsewhere" notice for the wrong file.
+  const view = query.isFetchedAfterMount ? query.data : undefined;
   const edits = view?.edits ?? [];
   const edit = edits.find((candidate) => candidate.id === selectedId) ?? edits[0];
+
+  // Own keyboard focus while reviewing, then return to the same terminal or
+  // control. Capture Escape so it cannot dismiss another workflow underneath.
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null;
+    container.current?.querySelector<HTMLElement>("[role=dialog]")?.focus();
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        close.current();
+      } else if (event.key === "Tab") {
+        const controls = Array.from(container.current?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)",
+        ) ?? []);
+        const index = controls.indexOf(document.activeElement as HTMLElement);
+        if (index < 0 || (!event.shiftKey && index === controls.length - 1) || (event.shiftKey && index === 0)) {
+          event.preventDefault();
+          controls[event.shiftKey ? controls.length - 1 : 0]?.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", key, true);
+    return () => {
+      document.removeEventListener("keydown", key, true);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, []);
+
+  const [readyEdit, setReadyEdit] = useState<string | null>(null);
+  const holdIdentity = edit ? `${edit.id}:${edit.revision}` : null;
+  const holdSecs = view?.popup_hold_secs ?? 1.5;
+  useEffect(() => {
+    setReadyEdit(null);
+    if (!holdIdentity) return;
+    const delay = Number.isFinite(holdSecs) ? Math.max(0, holdSecs) * 1000 : 1500;
+    const timer = window.setTimeout(() => setReadyEdit(holdIdentity), delay);
+    return () => window.clearTimeout(timer);
+  }, [holdIdentity, holdSecs]);
+  const holding = holdSecs > 0 && holdIdentity !== null && readyEdit !== holdIdentity;
 
   // The edit being read can vanish (answered in another window, or its agent
   // stopped) or change underneath the reviewer. Say so, and never let an
@@ -160,7 +178,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   }
 
   async function send() {
-    if (!confirm || !edit || inFlight.current) return;
+    if (!confirm || !edit || inFlight.current || holding) return;
     if (edit.id !== confirm.id || edit.revision !== confirm.revision) {
       setConfirm(null);
       setNotice("This edit changed while you were confirming. Review it again before answering.");
@@ -185,7 +203,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       setLost(null);
       setConfirm(null);
       void queryClient.invalidateQueries({ queryKey: PENDING_EDITS_KEY });
-      onAnswered?.();
+      if (!Object.entries(feedback).some(([id, text]) => id !== confirm.id && text.trim())) onAnswered?.(outcome.message);
     } catch (err) {
       const failure = asGuiError(err);
       setError(failure.message);
@@ -200,10 +218,16 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   const newFile = edit?.is_new_file || edit?.diff?.status === "added";
   const layoutSplit = split && !newFile;
 
-  return <Modal label="Supervised edits" title={view ? `Supervised edits · ${view.feature_name}` : "Supervised edits"}
+  return <div ref={container} className="supervised-popup"><Modal label="Supervised edits" title={view ? `Supervised edits · ${view.feature_name}` : "Supervised edits"}
     subtitle="Vibeless agents wait for your answer before writing each file change." size="xl"
     onClose={requestClose} dismissable={!sending}
     footer={<button className="btn btn-secondary" disabled={sending} onClick={requestClose}>Close</button>}>
+    {onAutoOpenChange && <label className="switch-row">
+      <input type="checkbox" checked={autoOpen} onChange={(event) => onAutoOpenChange(event.target.checked)} />
+      <span>Automatically open waiting edits</span>
+    </label>}
+    {moreWaiting > 0 && <p role="status">{moreWaiting} more waiting</p>}
+    {holding && <p role="status" className="callout callout-warning">Review hold · answers available after {holdSecs} seconds.</p>}
     <div className="diff-controls">
       <Field label="Layout"><select value={layoutSplit ? "split" : "unified"} disabled={newFile}
         onChange={(event) => setSplit(event.target.value === "split")}>
@@ -214,7 +238,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       </select></Field>
       <button className="btn btn-secondary btn-sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Refresh</button>
     </div>
-    {query.isLoading && <p role="status"><Spinner /> Loading pending edits…</p>}
+    {!view && query.isFetching && <p role="status"><Spinner /> Loading pending edits…</p>}
     {query.error && <p role="alert">{asGuiError(query.error).message}</p>}
     {notice && <p role="status" className="callout callout-accent">{notice}</p>}
     {lost && <p role="status" className="callout callout-warning">{lost}</p>}
@@ -275,7 +299,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
               </p>}
               <div className="supervised-actions">
                 <button className="btn btn-ghost" disabled={sending} onClick={() => setConfirm(null)}>Back</button>
-                <button className={`btn ${CONFIRM[confirm.kind].tone}`} disabled={sending} onClick={() => void send()}>
+                <button className={`btn ${CONFIRM[confirm.kind].tone}`} disabled={sending || holding} onClick={() => void send()}>
                   {sending && <Spinner />}{CONFIRM[confirm.kind].button}
                 </button>
               </div>
@@ -283,14 +307,14 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
             : <div className="supervised-actions">
               {(["approve", "reject", "cancel"] as const).map((kind) => <button key={kind}
                 className={`btn ${kind === "approve" ? "btn-primary" : kind === "reject" ? "btn-danger" : "btn-secondary"}`}
-                disabled={blocked} onClick={() => { setError(null); setNotice(null); setConfirm({ id: edit.id, revision: edit.revision, kind }); }}>
+                disabled={blocked || holding} onClick={() => { setError(null); setNotice(null); setConfirm({ id: edit.id, revision: edit.revision, kind }); }}>
                 {kind === "approve" && <Icon name="check" size={12} />}
                 {kind === "approve" ? "Approve edit" : kind === "reject" ? "Reject edit" : "Cancel edit"}
               </button>)}
             </div>}
         </section>}
       </div>)}
-  </Modal>;
+  </Modal></div>;
 });
 
 export default SupervisedEditsPanel;

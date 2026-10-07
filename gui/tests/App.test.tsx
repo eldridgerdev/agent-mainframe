@@ -601,7 +601,7 @@ it("badges a feature with waiting supervised edits and opens them from the featu
     if (command === "supervised_edit_counts") return [{
       project_id: "project", feature_id: "feature", feature_name: "my-feat", count: 2, first_id: "e1", first_path: "src/a.ts",
     }];
-    if (command === "supervised_edits_load") return { target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", edits: [] };
+    if (command === "supervised_edits_load") return { target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", popup_hold_secs: 0, edits: [] };
     return initial(command, args, options);
   });
   const header = await screen.findByRole("button", { name: /Supervised edits\s*2/ }, { timeout: 4000 });
@@ -624,7 +624,7 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     requested_at: null, answered: false, unavailable: null,
     effects: { approve: "Write it", reject: "Reject it", cancel: "Cancel it", feedback_reaches_agent: true },
   };
-  const first = { target, feature_name: "my-feat", edits: [pending] };
+  const first = { target, feature_name: "my-feat", popup_hold_secs: 0, edits: [pending] };
   let finish!: () => void;
   vi.mocked(invoke).mockImplementation(async (command, args, options) => {
     if (command === "supervised_edit_counts") return [];
@@ -783,4 +783,92 @@ it("opens PR Triage from a Git feature without starting it and closes through it
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_act", { workflowId: "triage-id", revision: 2, action: { kind: "close" } });
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "add_session")).toBe(false);
   client.clear();
+});
+
+async function waitingPopup(client: QueryClient, entries = ["e1"]) {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let waiting = entries;
+  const target = { project_id: "project", feature_id: "feature" };
+  const edit = (id: string) => ({
+    id, revision: `rev-${id}`, kind: "diff-review", path: `${id}.ts`, tool: "edit", is_new_file: false,
+    agent_reason: "Check rounding", diff: null, diff_error: null, old_snippet: "before", new_snippet: "after",
+    requested_at: 1, answered: false, unavailable: null,
+    effects: { approve: "Write it", reject: "Reject it", cancel: "Cancel it", feedback_reaches_agent: true },
+  });
+  const counts = () => waiting.length ? [{ ...target, feature_name: "my-feat", count: waiting.length,
+    first_id: waiting[0], first_path: `${waiting[0]}.ts` }] : [];
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "supervised_edit_counts") return counts();
+    if (command === "supervised_edits_load") return { target, feature_name: "my-feat", popup_hold_secs: 0, edits: waiting.map(edit) };
+    if (command === "supervised_edit_respond") {
+      waiting = waiting.filter((id) => id !== (args as { editId: string }).editId);
+      return { message: "Approved", view: { target, feature_name: "my-feat", popup_hold_secs: 0, edits: waiting.map(edit) } };
+    }
+    return original(command, args, options);
+  });
+  await act(async () => { client.setQueryData(["supervised-edit-counts"], counts()); });
+}
+
+it("automatically opens over an agent tab, dismisses without answering and restores focus", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const terminal = screen.getByRole("button", { name: "Connect terminal" }); terminal.focus();
+  await waitingPopup(client);
+  const dialog = await screen.findByRole("dialog", { name: "Supervised edits" });
+  expect(document.activeElement).toBe(dialog);
+  expect(screen.getByRole("tab", { name: /Agent/ }).getAttribute("aria-selected")).toBe("true");
+  fireEvent.keyDown(dialog, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(document.activeElement).toBe(terminal);
+  await act(async () => { await client.refetchQueries({ queryKey: ["supervised-edit-counts"] }); });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.getByRole("button", { name: /Supervised edits\s*1/ })).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "supervised_edit_respond")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: /Supervised edits\s*1/ }));
+  expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  client.clear();
+});
+
+it.each(["draft", "modal"])("defers the popup around a %s and opens after it is cleared", async (blocker) => {
+  const client = await openFeature([session("Agent", "claude")]);
+  if (blocker === "draft") fireEvent.change(draftInput(), { target: { value: "Unsent prompt" } });
+  else fireEvent.click(screen.getByRole("button", { name: "New project" }));
+  await waitingPopup(client);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  expect(screen.queryByRole("dialog", { name: "Supervised edits" })).toBeNull();
+  if (blocker === "draft") {
+    expect(draftInput().value).toBe("Unsent prompt");
+    fireEvent.click(screen.getByRole("button", { name: "Clear", exact: true }));
+  } else fireEvent.keyDown(document, { key: "Escape" });
+  expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  client.clear();
+});
+
+it("advances the oldest waiting queue only after a confirmed answer", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  await waitingPopup(client, ["e1", "e2"]);
+  await screen.findByRole("dialog", { name: "Supervised edits" });
+  expect(await screen.findByText("1 more waiting")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /e1.ts/ }).getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(screen.getByRole("button", { name: "Approve edit" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: /e2.ts/ }).getAttribute("aria-pressed")).toBe("true"));
+  expect(screen.queryByText("1 more waiting")).toBeNull();
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "supervised_edit_respond")).toHaveLength(1);
+  client.clear();
+});
+
+it("lets the reviewer disable automatic opening without changing shared TUI configuration", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  await waitingPopup(client);
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Automatically open waiting edits" }));
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(localStorage.getItem("amf.autoReviewEdits")).toBe("off");
+  await waitingPopup(client, ["e2"]);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /Supervised edits\s*1/ }));
+  expect(await screen.findByRole("dialog", { name: "Supervised edits" })).toBeTruthy();
+  client.clear(); localStorage.clear();
 });

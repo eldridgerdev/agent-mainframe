@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Automatic Vibeless review popups in the desktop app.** Waiting edits now
+  open over the current page or agent tab, with the captured diff and a
+  1.5-second answer hold by default. Confirmed answers advance the waiting
+  queue. Other dialogs and unsent drafts defer opening; Escape or Close leaves
+  the edit waiting, restores focus and keeps its review badge. Automatic
+  opening can be switched off in the popup. No migration is required.
+
 - **VS Code, custom sessions and TODOs from the desktop New session dialog.**
   The dialog now offers everything the TUI's session picker does. **VS Code**
   opens the worktree in a new window with the same launch and tracking as the
@@ -38,6 +45,10 @@ are tagged.
   mode.
 
 ### Fixed
+
+- **Fresh desktop edit reviews.** Reopening supervised edits waits for the
+  current request, preventing a previously answered edit and a notice for the
+  wrong file from briefly appearing.
 
 - **Scrolling in desktop terminal tabs.** The mouse wheel, trackpad and
   Shift+PageUp now scroll back through earlier output in Claude, Codex, Pi,

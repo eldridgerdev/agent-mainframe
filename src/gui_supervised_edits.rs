@@ -75,6 +75,8 @@ pub struct SupervisedEditsView {
     pub target: FeatureTarget,
     pub feature_name: String,
     pub edits: Vec<SupervisedEditView>,
+    /// Match the TUI safety hold before a newly displayed edit can be answered.
+    pub popup_hold_secs: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,7 +307,9 @@ pub fn load(
     .into_iter()
     .map(|edit| edit.view)
     .collect();
+    let popup_hold_secs = gui.app_for_workflow().config.diff_review_popup_hold_secs;
     Ok(SupervisedEditsView {
+        popup_hold_secs,
         target,
         feature_name,
         edits,
@@ -531,7 +535,9 @@ mod tests {
         let hook = claude_hook(&repo, dir.path(), "101", &proposed(&repo));
         let source_before = std::fs::read_to_string(repo.join("code.txt")).unwrap();
 
+        gui.app_for_workflow().config.diff_review_popup_hold_secs = 2.75;
         let view = load(&mut gui, target.clone(), DiffContext::Standard).unwrap();
+        assert_eq!(view.popup_hold_secs, 2.75);
         assert_eq!(view.edits.len(), 1);
         let edit = &view.edits[0];
         assert_eq!(edit.path, "code.txt");

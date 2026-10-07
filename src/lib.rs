@@ -22,6 +22,7 @@ pub mod gui_pr_triage;
 pub mod gui_prompt_overrides;
 pub mod gui_prompts;
 pub mod gui_review;
+pub mod gui_sessions;
 pub mod gui_supervised_edits;
 pub mod gui_syntax;
 pub mod gui_terminal;

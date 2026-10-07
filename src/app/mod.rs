@@ -2048,9 +2048,12 @@ impl App {
                     if let Some(rest) = line.strip_prefix("%pause ") {
                         let paused_pane = rest.trim();
                         if paused_pane == target_pane_id {
-                            let _ = client.send_command(&format!(
-                                "refresh-client -A {paused_pane}:continue\n"
-                            ));
+                            let _ = client.send_command(
+                                &crate::tmux::TmuxManager::refresh_client_pane_command(
+                                    paused_pane,
+                                    "continue",
+                                ),
+                            );
                             pane_dirty = true;
                         }
                         continue;

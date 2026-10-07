@@ -171,7 +171,8 @@ On Windows, build from source inside WSL2 the same way, after step 1 of
 The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
-and Neovim sessions, session terminals, TODO lists and agent starts,
+Neovim, VS Code, TODOs and configured custom sessions, session terminals, TODO
+lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
 editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing,
 dormant-feature stops and a first PR Triage slice, with syntax highlighting in
@@ -289,6 +290,21 @@ text. Native macOS validation remains open.
 Use **New session** on a feature page to start another agent, terminal, or
 Neovim session. You can name it or use the next default name; the new tab opens
 when creation succeeds. The picker shows the agents allowed for that project.
+It also lists everything else the TUI's session picker offers:
+
+- **VS Code** opens the worktree with `code --new-window`, as the TUI does, and
+  is greyed out when `code` isn't on `PATH`. The feature's **VS Code** tab lists
+  the windows AMF launched. AMF closes the ones it opened when the feature
+  stops, or when you choose **Close windows AMF opened**. A window VS Code
+  handed to an instance AMF didn't start is never closed.
+- **TODOs** adds the feature's TODOs session; the list itself is always on the
+  TODOs tab.
+- **Configured sessions** come from the project's `amf.json` (merged with your
+  global config). Each shows its icon, description, command, working
+  directory, pre-check, on-stop command and whether it opens on create. If the
+  `pre_check` fails, the dialog shows its output and nothing is created.
+  Sessions with `autolaunch` open their tab straight away; others are added
+  without switching tabs.
 If tmux exits unexpectedly, the GUI shows the affected features as stopped.
 Start a feature to recreate its tmux session; when a saved Claude, Codex, or
 OpenCode session is available, the GUI offers to resume it, start fresh, or

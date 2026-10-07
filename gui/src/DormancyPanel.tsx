@@ -36,7 +36,7 @@ function editorPolicy(view: DormancyView): string {
     : "Editor cleanup is off (kill_editor_on_stop), so no editor window is examined or closed.";
 }
 
-function EditorReport({ editors }: { editors: EditorCleanup | null }) {
+export function EditorReport({ editors }: { editors: EditorCleanup | null }) {
   if (!editors) return <p className="muted">Editor cleanup is off; no editor was examined.</p>;
   const lines = [
     ...editors.killed.map((editor) => `Closed ${editor.name} (${editor.processes} process${editor.processes === 1 ? "" : "es"} ended)`),

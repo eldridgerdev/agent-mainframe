@@ -24,9 +24,9 @@ use agent_mainframe::gui_contract::session_sidebar::{
 use agent_mainframe::gui_contract::sidebar::{CollapseTarget, SidebarClock};
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
-    NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
-    StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
-    TodoDeleteChoice, TodoHostChoice, WorkspaceSnapshot,
+    RemoveSessionResponse, SessionTarget, StartFeatureResponse, StartSessionResponse,
+    StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse, TodoDeleteChoice,
+    TodoHostChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
@@ -40,6 +40,10 @@ use agent_mainframe::gui_prompt_overrides::{
 };
 use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePrompt};
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
+use agent_mainframe::gui_sessions::{
+    self, AddCustomSessionRequest, AddCustomSessionResponse, CloseEditorsResponse,
+    NewSessionOptions, OpenVscodeResponse,
+};
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
@@ -432,15 +436,11 @@ fn start_feature(
 }
 
 #[tauri::command]
-fn new_session_options(
-    state: State<AppState>,
+async fn new_session_options(
+    state: State<'_, AppState>,
     target: FeatureTarget,
-) -> Result<Vec<NewSessionOption>, GuiError> {
-    state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .new_session_options(&target)
+) -> Result<NewSessionOptions, GuiError> {
+    gui_sessions::new_session_options(&state.0, &target)
 }
 
 #[tauri::command]
@@ -454,6 +454,54 @@ fn add_session(
 ) -> Result<AddSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.add_session(target, kind, label, approved)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+/// Async (off the main thread): the custom session's `pre_check` and the
+/// `code` CLI can take a while.
+#[tauri::command]
+async fn add_custom_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: AddCustomSessionRequest,
+) -> Result<AddCustomSessionResponse, GuiError> {
+    let response = gui_sessions::add_custom_session(&state.0, request)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
+    Ok(response)
+}
+
+#[tauri::command]
+async fn open_vscode(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    approved: bool,
+) -> Result<OpenVscodeResponse, GuiError> {
+    let response = gui_sessions::open_vscode(&state.0, target, approved)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
+    Ok(response)
+}
+
+#[tauri::command]
+async fn close_editors(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    seen: Vec<String>,
+) -> Result<CloseEditorsResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.close_editors(target, seen)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
@@ -1197,6 +1245,9 @@ fn main() {
             session_sidebar,
             session_sidebar_plan,
             session_sidebar_complete_todo,
+            add_custom_session,
+            open_vscode,
+            close_editors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

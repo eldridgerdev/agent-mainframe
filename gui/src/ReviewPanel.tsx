@@ -4,6 +4,7 @@ import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import ReviewSummaryPanel from "./ReviewSummaryPanel";
 import { Field, Modal, Spinner } from "./ui";
+import { SyntaxBadge } from "./SyntaxCode";
 
 type Editor = { kind: "comment" | "reject" | "general" | "line_comment" | "suggestion"; span?: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
 
@@ -11,10 +12,12 @@ function locationLabel(location: ReviewLocation) {
   return location.new_line !== null ? `line ${location.new_line}` : `base line ${location.old_line}`;
 }
 
-export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onEditPrompt }: {
+export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onEditPrompt, onSyntaxInstalled }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
   /** Opens the prompt override manager on the pending call's prompt. */
   onEditPrompt?: () => void;
+  /** Re-reads the review after a parser install, so its files gain colours. */
+  onSyntaxInstalled?: () => void;
 }) {
   const ai = view.ai;
   const history = view.history;
@@ -283,6 +286,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
             <button className="btn btn-secondary btn-sm" disabled={busy || pending !== null} onClick={() => request({ kind: "skip", path: file.diff.path })}>Skip file</button>
             <button className="btn btn-secondary btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("reject")}>Reject file</button>
             <button className="btn btn-ghost btn-sm" disabled={busy || ai.question_running || dirty || pending !== null} onClick={() => edit("comment")}>Edit file comment</button>
+            <SyntaxBadge info={file.diff.syntax} onInstalled={onSyntaxInstalled} />
           </div>
           <div className="review-line-controls">
             <button className="btn btn-secondary btn-sm" disabled={busy || ai.running || dirty || pending !== null || file.diff.is_binary || !!file.notes || !!file.walkthrough}

@@ -174,7 +174,8 @@ project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
 and Neovim sessions, session terminals, TODO lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
 editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing,
-dormant-feature stops and a first PR Triage slice. Continue to use `amf` for workflows
+dormant-feature stops and a first PR Triage slice, with syntax highlighting in
+diffs, reviews and the Learning reader. Continue to use `amf` for workflows
 marked Planned.
 
 Both interfaces read the existing `~/.config/amf/amf.db`. The GUI checks for
@@ -449,6 +450,29 @@ A running TUI receives these requests over its socket and answers them there;
 the GUI does not take that socket over. Explaining an edit with AI also stays
 in the TUI. `gui-supervised-edits.txt` drives the real Claude hook script with
 offline input against an isolated database and checkout.
+
+### Syntax highlighting
+
+Diffs, Final Review and the Learning reader colour source code with the TUI's
+own tree-sitter parsers, so both interfaces agree on each file's language
+(extension, special file name or shebang) and share one parser install under
+`~/.config/amf/tree-sitter`. Each diff line is coloured with its whole file as
+context, so a changed line inside a multi-line string or block comment is
+classified correctly even when the hunk does not show where it opened. Added,
+removed and selected rows keep their backgrounds, and line numbers, selection
+and comments work as before.
+
+The file header names the language, or says why a file is plain text: no
+supported language, a parser that is not installed or needs repair, or a file
+too large to highlight (over 10,000 lines or 1 MiB, or past a 4 MiB budget
+for one change set). Binary files stay plain. **Install … parser** does what
+the TUI's syntax picker (`i`) does: after you confirm, AMF clones the grammar
+from GitHub and compiles it with `cc`; the view reloads with colours when it
+finishes. Highlight colours are `--syn-*` CSS tokens in `src/syntax.css`, with
+light and dark values that keep 4.5:1 contrast on every code background.
+`gui-syntax-highlighting.txt` captures Python, Rust, TypeScript, Markdown and
+unknown-extension diffs, a review line comment and the Learning reader in light
+and dark.
 
 ### Dormant features
 

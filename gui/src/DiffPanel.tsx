@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff } from "./api";
 import { Field, Modal, Spinner } from "./ui";
+import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** Align runs of removed/added rows; marker rows retain their own position. */
 function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
@@ -35,14 +36,14 @@ export function Hunk({ hunk, split, selection }: { hunk: DiffHunk; split: boolea
     {split ? <table className="diff-lines diff-split" aria-label="Side-by-side hunk"><tbody>
       {splitRows(hunk.lines).map(([old, next], index) => old?.kind === "marker" ? <tr key={index}><td colSpan={4} className="diff-text diff-marker"><code>{old.text}</code></td></tr> : <tr key={index}>
         <td className="diff-number">{number(old, "old_line")}</td>
-        <td className={`diff-text diff-${old?.kind ?? "empty"}${selected(old)}`}><code>{old?.text}</code></td>
+        <td className={`diff-text diff-${old?.kind ?? "empty"}${selected(old)}`}>{old && <SyntaxCode text={old.text} spans={old.syntax} />}</td>
         <td className="diff-number">{number(next, "new_line")}</td>
-        <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}><code>{next?.text}</code></td>
+        <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}>{next && <SyntaxCode text={next.text} spans={next.syntax} />}</td>
       </tr>)}
     </tbody></table> : <table className="diff-lines" aria-label="Unified hunk"><tbody>
       {hunk.lines.map((line, index) => <tr key={index} className={`diff-${line.kind}${selected(line)}`}>
         <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
-        <td className="diff-text"><code>{line.text}</code></td>
+        <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} /></td>
       </tr>)}
     </tbody></table>}
   </section>;
@@ -114,6 +115,7 @@ export default function DiffPanel({ target, onClose }: { target: FeatureTarget; 
                 <button className="btn btn-ghost btn-sm" disabled={hunk === 0} onClick={() => jump(hunk - 1)}>Previous hunk</button>
                 <button className="btn btn-ghost btn-sm" disabled={hunk + 1 >= file.hunks.length} onClick={() => jump(hunk + 1)}>Next hunk</button>
                 {file.hunks.length > 0 && <span>Hunk {hunk + 1} of {file.hunks.length}</span>}
+                <SyntaxBadge info={file.syntax} onInstalled={() => void query.refetch()} />
               </div>
               <div ref={content} className="diff-code">
                 {file.hunks.length > 0 && <details className="diff-metadata"><summary>Patch metadata</summary><pre>{file.patch.split("\n@@")[0]}</pre></details>}

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { SyntaxInfo, SyntaxSpan } from "./syntaxApi";
 
 // Mirrors `gui_contract`/`automation`'s Rust types (src/gui_contract.rs,
 // src/automation.rs). Kept in one place so the rest of the frontend imports
@@ -618,6 +619,9 @@ export interface LearningView {
   content_path: string | null;
   content: string[];
   content_line_labels: string[];
+  /** Highlight spans per `content` row; absent or null rows are plain. */
+  content_syntax?: (SyntaxSpan[] | null)[];
+  syntax?: SyntaxInfo | null;
   content_error: string | null;
   anchor: string;
   /** 1-based inclusive rows of `content` under a line or hunk anchor. */
@@ -669,6 +673,8 @@ export interface DiffLine {
   text: string;
   old_line: number | null;
   new_line: number | null;
+  /** Token spans covering `text` (prefix included); absent or null is plain. */
+  syntax?: SyntaxSpan[] | null;
 }
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface DiffFile {
@@ -680,6 +686,8 @@ export interface DiffFile {
   is_binary: boolean;
   hunks: DiffHunk[];
   patch: string;
+  /** Detected language and whether the lines carry highlight spans. */
+  syntax?: SyntaxInfo;
 }
 export interface DiffView {
   target: FeatureTarget;

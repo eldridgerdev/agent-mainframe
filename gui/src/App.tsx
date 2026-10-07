@@ -237,10 +237,15 @@ export default function App() {
   } | null>(null);
   const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
   const [supervisedTarget, setSupervisedTarget] = useState<FeatureTarget | null>(null);
+  const [autoReviewEdits, setAutoReviewEdits] = useState(() => {
+    try { return localStorage.getItem("amf.autoReviewEdits") !== "off"; }
+    catch { return true; }
+  });
+  const [automaticEditId, setAutomaticEditId] = useState<string | null>(null);
   const supervisedPanel = useRef<SupervisedEditsPanelHandle>(null);
   function openSupervisedEdits(target: FeatureTarget) {
     if (supervisedTarget?.project_id === target.project_id && supervisedTarget.feature_id === target.feature_id) return;
-    const proceed = () => setSupervisedTarget(target);
+    const proceed = () => { setAutomaticEditId(null); setSupervisedTarget(target); };
     if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
     else proceed();
   }
@@ -389,7 +394,17 @@ export default function App() {
     }
   }, [queryClient, reportError]);
 
-  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits);
+  const [reviewDeferral, setReviewDeferral] = useState<string | null>(null);
+  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits, {
+    activeTarget: supervisedTarget,
+    blocked: !autoReviewEdits || supervisedTarget !== null,
+    draftPending: Object.values(drafts).some((draft) => draft.length > 0),
+    onDeferred: setReviewDeferral,
+    onOpen: (entry) => {
+      setAutomaticEditId(entry.first_id);
+      setSupervisedTarget({ project_id: entry.project_id, feature_id: entry.feature_id });
+    },
+  });
 
   const harnessName = (slug: AgentSlug) =>
     harnesses.data?.find((harness) => harness.slug === slug)?.display_name ?? slug;
@@ -1076,6 +1091,7 @@ export default function App() {
         </div>
 
         <nav className="nav" aria-label="Workspace">
+          {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
@@ -1167,7 +1183,18 @@ export default function App() {
       </aside>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
-        ref={supervisedPanel} target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
+        ref={supervisedPanel} target={supervisedTarget} initialEditId={automaticEditId ?? undefined}
+        autoOpen={autoReviewEdits} onAutoOpenChange={(enabled) => {
+          setAutoReviewEdits(enabled);
+          try { localStorage.setItem("amf.autoReviewEdits", enabled ? "on" : "off"); } catch { /* Keep the preference for this window. */ }
+        }}
+        otherWaiting={Object.entries(pendingEdits).reduce((total, [featureId, count]) =>
+          total + (featureId === supervisedTarget.feature_id ? 0 : count), 0)}
+        onAnswered={(message, hasWaiting) => {
+          pushToast({ tone: "info", title: "Edit answered", message: `${message}. The agent continues once its hook reads the answer.` });
+          if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
+        }}
+        onClose={() => setSupervisedTarget(null)} />}
       {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
         onOpenFeature={(target) => {
           setShowDormancy(false);

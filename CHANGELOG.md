@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Fresh context from desktop agent sidebars.** Edit a continuation seeded
+  from the feature’s plan, changed files and saved context, then open a new
+  agent tab with an unsent draft. Your original session stays open. Resource
+  warnings require approval, and changed context is refused before launch.
+  No migration is required.
+
 - **Automatic Vibeless review popups in the desktop app.** Waiting edits now
   open over the current page or agent tab, with the captured diff and a
   1.5-second answer hold by default. Confirmed answers advance the waiting

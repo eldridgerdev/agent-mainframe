@@ -1,0 +1,5 @@
+# Native fresh-context proof; private SQLite/Git/tmux and offline agent.
+note:The isolated setup is ready; the native GUI runs without a TUI.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-fresh-context.sh" "$OUT_DIR"

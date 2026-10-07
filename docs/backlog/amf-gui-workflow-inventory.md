@@ -139,8 +139,20 @@ Completed increments and remaining work, in priority order:
   scrollback and composer mounted and resizes its pane. Eight asserted offline
   native frames cover Claude, Codex and Pi; OpenCode ordering and all four
   contracts have automated coverage. Project-sidebar controls and keyboard
-  shortcuts, fresh-context, dark/custom themes, native OpenCode and macOS proof
+  shortcuts, dark/custom themes, native OpenCode and macOS proof
   remain open. This completes the agent-sidebar part of show/hide sidebars.
+
+- [x] **GUI fresh context (2026-10-07).** The Context section opens an
+  editable shared continuation seed, starts a new session with the feature's
+  configured harness and selects its unsent composer draft. Original sessions
+  stay open. Cancellation protects edited text; resource warnings require
+  explicit approval. Stale/deleted/reassigned sources and repeated submissions
+  are refused before launch. Native proof scenario: `gui-fresh-context.txt`.
+  Validation: three Rust regressions and five frontend interactions; the full
+  parallel workspace suite (3,399 library + 7 GUI tests), all 286 frontend
+  tests, production build, formatting and strict workspace/all-target Clippy
+  pass. Native proof uses isolated fixtures and sends no agent input.
+  macOS runtime validation remains open.
 
 - [x] **Final Review line/range comments and suggestion editing.** Select lines
   in unified or split diffs, edit prose and replacement code, resolve/reopen

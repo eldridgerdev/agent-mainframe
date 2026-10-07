@@ -23,6 +23,7 @@ use crate::automation::{
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
+pub mod fresh_context;
 pub mod session_sidebar;
 pub mod sidebar;
 
@@ -2397,6 +2398,160 @@ mod tests {
         assert_eq!(
             gui.app.store.projects[0].features[0].status,
             ProjectStatus::Idle
+        );
+    }
+
+    fn fresh_context_fixture(launch: bool) -> (tempfile::TempDir, GuiHandle, SessionTarget) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        let feature = &mut store.projects[0].features[0];
+        feature.workdir = dir.path().to_path_buf();
+        feature.summary = Some("Continue the invoice work".into());
+        let sid = feature.add_session(SessionKind::Claude).id.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_list_panes().returning(Vec::new);
+        tmux.expect_create_window()
+            .times(usize::from(launch))
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .times(usize::from(launch))
+            .returning(|_, _, _, resume, _| {
+                assert!(resume.is_none());
+                Ok(())
+            });
+        (
+            dir,
+            handle(store, tmux),
+            SessionTarget {
+                project_id: PROJECT_ID.into(),
+                feature_id: FEATURE_ID.into(),
+                session_id: sid,
+            },
+        )
+    }
+
+    #[test]
+    fn fresh_context_launch_keeps_source_and_returns_unsent_draft_once() {
+        use super::fresh_context::FreshContextRequest;
+        let (_dir, mut gui, target) = fresh_context_fixture(true);
+        let original_mode = std::mem::discriminant(&gui.app.mode);
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        assert!(preview.prompt.contains("Continue the invoice work"));
+        assert!(preview.prompt.contains("Grill me"));
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 1);
+        let result = gui
+            .fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: "My edited continuation".into(),
+                    approved: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.draft_prompt, "My edited continuation");
+        assert_ne!(result.target.session_id, target.session_id);
+        assert_eq!(std::mem::discriminant(&gui.app.mode), original_mode);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert_eq!(feature.sessions[0].id, target.session_id);
+        assert_eq!(feature.sessions[1].label, "Fresh Context");
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision,
+                    prompt: "Again".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap().label,
+            "Fresh Context 2"
+        );
+    }
+
+    #[test]
+    fn fresh_context_resource_warning_leaves_sessions_untouched_until_approved() {
+        use super::fresh_context::FreshContextRequest;
+        let _lease_lock = crate::resources::limits::lock_lease_tests();
+        assert_eq!(crate::resources::limits::wait_for_in_flight(0), 0);
+        let _lease = crate::resources::limits::HeadlessLease::acquire();
+        let (_dir, mut gui, target) = fresh_context_fixture(true);
+        gui.app.config.max_concurrent_agents = 1;
+        gui.app.config.low_memory_warn_mb = 0;
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        let error = gui
+            .fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: preview.prompt.clone(),
+                    approved: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::NeedsApproval);
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 1);
+        gui.fresh_context_start(
+            &target,
+            FreshContextRequest {
+                revision: preview.revision,
+                prompt: preview.prompt,
+                approved: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 2);
+    }
+
+    #[test]
+    fn fresh_context_refuses_changed_source_empty_prompt_and_non_agent() {
+        use super::fresh_context::FreshContextRequest;
+        let (_dir, mut gui, target) = fresh_context_fixture(false);
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: "  ".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        gui.app.store.projects[0].features[0].summary = Some("Changed elsewhere".into());
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision,
+                    prompt: "Continue".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        gui.app.store.projects[0].features[0].sessions[0].kind = SessionKind::Terminal;
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap_err().kind,
+            GuiErrorKind::Conflict
+        );
+        let mut missing = target;
+        missing.session_id = "gone".into();
+        assert_eq!(
+            gui.fresh_context_preview(&missing).unwrap_err().kind,
+            GuiErrorKind::NotFound
         );
     }
 

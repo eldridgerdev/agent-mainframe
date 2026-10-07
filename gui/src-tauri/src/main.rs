@@ -18,6 +18,9 @@ use agent_mainframe::automation::{
     AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
     CreateProjectResponse,
 };
+use agent_mainframe::gui_contract::fresh_context::{
+    FreshContextPreview, FreshContextRequest, FreshContextResponse,
+};
 use agent_mainframe::gui_contract::session_sidebar::{
     CompleteSidebarTodo, SessionPlanView, SessionSidebarView,
 };
@@ -1139,6 +1142,31 @@ fn session_sidebar(
 }
 
 #[tauri::command]
+fn fresh_context_preview(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<FreshContextPreview, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .fresh_context_preview(&target)
+}
+
+#[tauri::command]
+fn fresh_context_start(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+    request: FreshContextRequest,
+) -> Result<FreshContextResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.fresh_context_start(&target, request)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
 fn session_sidebar_plan(
     state: State<AppState>,
     target: SessionTarget,
@@ -1244,6 +1272,8 @@ fn main() {
             syntax_install,
             session_sidebar,
             session_sidebar_plan,
+            fresh_context_preview,
+            fresh_context_start,
             session_sidebar_complete_todo,
             add_custom_session,
             open_vscode,

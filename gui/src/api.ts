@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { SyntaxInfo, SyntaxSpan } from "./syntaxApi";
+import type { FeatureEditor, NewSessionOptions } from "./sessionsApi";
 
 // Mirrors `gui_contract`/`automation`'s Rust types (src/gui_contract.rs,
 // src/automation.rs). Kept in one place so the rest of the frontend imports
@@ -93,6 +94,8 @@ export interface SidebarFeature {
   thinking: boolean;
   waiting_for_input: boolean;
   pending_input: boolean;
+  /** VS Code windows AMF launched for this feature (sessionsApi). */
+  editors: FeatureEditor[];
 }
 
 export interface SidebarContext {
@@ -249,11 +252,13 @@ export interface StopSessionResponse {
   message: string;
 }
 
-export type NewSessionKind = AgentSlug | "terminal" | "nvim";
+export type NewSessionKind = AgentSlug | "terminal" | "nvim" | "vscode" | "todos";
 
 export interface NewSessionOption {
   kind: NewSessionKind;
   label: string;
+  /** Why the TUI picker would grey it out (no `code` CLI). */
+  disabled: string | null;
 }
 
 export interface AddSessionResponse {
@@ -261,7 +266,7 @@ export interface AddSessionResponse {
   label: string;
 }
 
-export function newSessionOptions(target: FeatureTarget): Promise<NewSessionOption[]> {
+export function newSessionOptions(target: FeatureTarget): Promise<NewSessionOptions> {
   return invoke("new_session_options", { target });
 }
 

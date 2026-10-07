@@ -121,6 +121,18 @@ open. OpenCode uses reply paths unique to each change and a waiting lease with
 process, session and change ownership, refreshed while its hook polls. The GUI
 requires a live owner and a fresh lease before answering OpenCode requests.
 
+`gui_sessions.rs` gives the GUI the rest of the TUI's session picker. VS Code
+goes through `App::launch_vscode_window`, the picker's tracked launch (the
+`code` CLI is a test seam, `session_ops::vscode_cli`). The feature's
+`launched_editors` rows are projected into the sidebar snapshot, and closing
+them calls `App::kill_tracked_editors` after checking the rows the user
+confirmed. Custom sessions are re-read from the effective `amf.json` and
+matched by a config revision. Their `pre_check` runs between two holds of the
+GUI lock, and they are created by `App::add_custom_session_identified`, which
+shares its window launch with the TUI's add. `with_feature_started_for_add`
+stops a feature that an add started, if the add then fails, for terminals,
+editors and custom sessions alike.
+
 `gui_dormancy.rs` lists the shared `app::dormant` scan with the readings
 each row was decided on. Its confirmed stop re-checks every selected feature
 against those readings and the current scan, then calls the TUI's stop

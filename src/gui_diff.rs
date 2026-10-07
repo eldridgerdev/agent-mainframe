@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::diff::{self, DiffFileStatus, DiffLineKind};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
+use crate::gui_syntax::{DiffHighlights, HighlightBudget, SyntaxInfo, SyntaxLine};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -38,6 +39,9 @@ pub struct DiffLineView {
     pub text: String,
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,
+    /// Token spans covering `text`, coloured with whole-file context; `None`
+    /// renders the text plain (see `DiffFileView::syntax` for why).
+    pub syntax: SyntaxLine,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,6 +61,8 @@ pub struct DiffFileView {
     pub hunks: Vec<DiffHunkView>,
     /// Retains mode changes and rename metadata even when there are no hunks.
     pub patch: String,
+    /// The detected language and whether its lines carry highlight spans.
+    pub syntax: SyntaxInfo,
 }
 
 #[derive(Debug, Serialize)]
@@ -118,10 +124,11 @@ pub fn load(
         DiffContext::Expanded => 10,
         DiffContext::Full => usize::MAX,
     };
+    let mut budget = HighlightBudget::view();
     let files = snapshot
         .files
         .into_iter()
-        .map(|file| file_view(file, context))
+        .map(|file| file_view_budgeted(file, context, &mut budget))
         .collect();
     Ok(DiffView {
         target,
@@ -146,6 +153,16 @@ pub fn load(
 }
 
 pub(crate) fn file_view(file: crate::diff::DiffFile, context: usize) -> DiffFileView {
+    file_view_budgeted(file, context, &mut HighlightBudget::view())
+}
+
+/// [`file_view`] for one file of a larger projection that shares `budget`.
+pub(crate) fn file_view_budgeted(
+    file: crate::diff::DiffFile,
+    context: usize,
+    budget: &mut HighlightBudget,
+) -> DiffFileView {
+    let highlights = DiffHighlights::for_file(&file, budget);
     let hunks = file.hunks_with_context(context).unwrap_or(file.hunks);
     let hunks = hunks
         .into_iter()
@@ -157,16 +174,21 @@ pub(crate) fn file_view(file: crate::diff::DiffFile, context: usize) -> DiffFile
                     .lines
                     .into_iter()
                     .zip(locations)
-                    .map(|(line, location)| DiffLineView {
-                        kind: match line.kind {
-                            DiffLineKind::Context => "context",
-                            DiffLineKind::Added => "added",
-                            DiffLineKind::Removed => "removed",
-                            DiffLineKind::NoNewlineMarker => "marker",
-                        },
-                        text: line.text,
-                        old_line: location.and_then(|l| l.old_line),
-                        new_line: location.and_then(|l| l.new_line),
+                    .map(|(line, location)| {
+                        let old_line = location.and_then(|l| l.old_line);
+                        let new_line = location.and_then(|l| l.new_line);
+                        DiffLineView {
+                            kind: match line.kind {
+                                DiffLineKind::Context => "context",
+                                DiffLineKind::Added => "added",
+                                DiffLineKind::Removed => "removed",
+                                DiffLineKind::NoNewlineMarker => "marker",
+                            },
+                            syntax: highlights.line(&line.kind, &line.text, old_line, new_line),
+                            text: line.text,
+                            old_line,
+                            new_line,
+                        }
                     })
                     .collect(),
             }
@@ -189,6 +211,7 @@ pub(crate) fn file_view(file: crate::diff::DiffFile, context: usize) -> DiffFile
         is_binary: file.is_binary,
         hunks,
         patch: file.patch,
+        syntax: highlights.info,
     }
 }
 
@@ -447,6 +470,38 @@ pub(crate) mod tests {
                 .iter()
                 .any(|l| l.kind == "marker" && l.old_line.is_none() && l.new_line.is_none())
         );
+    }
+
+    #[test]
+    fn every_file_reports_its_syntax_state_and_uncoloured_lines_stay_plain() {
+        use crate::gui_syntax::SyntaxStatus;
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        std::fs::write(repo.join("lib.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(repo.join("deploy"), "#!/usr/bin/env python3\nprint(1)\n").unwrap();
+        std::fs::write(repo.join("image.bin"), b"\0binary\0").unwrap();
+        git(&repo, &["add", "image.bin"]);
+        let view = load(&mut gui, target, DiffOptions::default()).unwrap();
+        let file = |path: &str| view.files.iter().find(|f| f.path == path).unwrap();
+        // The test sandbox installs no parsers: a supported language says so
+        // and names the parser an install would fetch.
+        assert_eq!(file("lib.rs").syntax.status, SyntaxStatus::NotInstalled);
+        assert_eq!(file("lib.rs").syntax.language.as_deref(), Some("Rust"));
+        assert_eq!(file("lib.rs").syntax.language_key.as_deref(), Some("rust"));
+        assert_eq!(file("deploy").syntax.language.as_deref(), Some("Python"));
+        assert_eq!(file("code.txt").syntax.status, SyntaxStatus::Unsupported);
+        assert_eq!(file("code.txt").syntax.language, None);
+        assert_eq!(file("image.bin").syntax.status, SyntaxStatus::Binary);
+        assert!(
+            view.files
+                .iter()
+                .flat_map(|f| &f.hunks)
+                .flat_map(|h| &h.lines)
+                .all(|l| l.syntax.is_none())
+        );
+        let json = serde_json::to_value(&view.files[0]).unwrap();
+        assert!(json["syntax"]["status"].is_string());
+        assert!(json["hunks"][0]["lines"][0]["syntax"].is_null());
     }
 
     #[test]

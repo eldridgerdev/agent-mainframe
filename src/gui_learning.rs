@@ -78,6 +78,11 @@ pub struct LearningView {
     pub content_path: Option<String>,
     pub content: Vec<String>,
     pub content_line_labels: Vec<String>,
+    /// Highlight spans per `content` row (whole-file context in both
+    /// scopes); `None` rows render plain.
+    pub content_syntax: Vec<crate::gui_syntax::SyntaxLine>,
+    /// The shown file's language and highlight state; `None` with no file.
+    pub syntax: Option<crate::gui_syntax::SyntaxInfo>,
     pub content_error: Option<String>,
     pub anchor: String,
     /// 1-based inclusive rows of `content` the anchor covers, for a line or
@@ -275,6 +280,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
     } else {
         Vec::new()
     };
+    let (content_syntax, syntax) = content_syntax(s);
     let starters = crate::app::learning::starter_questions_for(s.anchor)
         .into_iter()
         .filter_map(|i| crate::app::learning::STARTER_QUESTIONS.get(i))
@@ -350,6 +356,8 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
         } else {
             (1..=s.content.len()).map(|n| n.to_string()).collect()
         },
+        content_syntax,
+        syntax,
         content_error: s.content_error.clone(),
         anchor: s.anchor.describe(s.content_path.as_deref()),
         selection,
@@ -775,6 +783,56 @@ pub fn launch_agent(
     })
 }
 
+/// Highlight spans for the reader's rows. The repository view highlights
+/// the file it shows; branch changes read each row's side of the selected
+/// diff file, so removed rows keep the base file's context.
+fn content_syntax(
+    s: &crate::app::LearningViewState,
+) -> (
+    Vec<crate::gui_syntax::SyntaxLine>,
+    Option<crate::gui_syntax::SyntaxInfo>,
+) {
+    use crate::gui_syntax::{DiffHighlights, HighlightBudget, source_lines};
+    if s.content_error.is_some() {
+        return (Vec::new(), None);
+    }
+    if s.scope == BrowseScope::BranchChanges {
+        let Some(file) = s.selected_diff_file() else {
+            return (Vec::new(), None);
+        };
+        let highlights = DiffHighlights::for_file(file, &mut HighlightBudget::view());
+        let rows = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| {
+                hunk.lines
+                    .iter()
+                    .zip(crate::diff::line_locations_in_hunk(hunk))
+                    .filter(|(line, _)| {
+                        !matches!(line.kind, crate::diff::DiffLineKind::NoNewlineMarker)
+                    })
+                    .map(|(line, location)| {
+                        highlights.line(
+                            &line.kind,
+                            &line.text,
+                            location.and_then(|l| l.old_line),
+                            location.and_then(|l| l.new_line),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        return (rows, Some(highlights.info));
+    }
+    match s.content_path.as_deref() {
+        Some(path) => {
+            let (rows, info) = source_lines(std::path::Path::new(path), &s.content);
+            (rows, Some(info))
+        }
+        None => (Vec::new(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,6 +915,11 @@ mod tests {
             LearningAction::SelectEntry {
                 key: "file:README.md".into(),
             },
+        );
+        assert_eq!(view.content_syntax.len(), view.content.len());
+        assert_eq!(
+            view.syntax.as_ref().and_then(|s| s.language.as_deref()),
+            Some("Markdown")
         );
         let view = apply(
             &mut gui,
@@ -1138,6 +1201,13 @@ mod tests {
             .position(|line| line == "+changed")
             .unwrap();
         assert_eq!(view.content_line_labels[added], "+2");
+        // One highlight row per reader row; with no parser installed in the
+        // test sandbox, the Markdown file says so and stays plain.
+        assert_eq!(view.content_syntax.len(), view.content.len());
+        assert!(view.content_syntax.iter().all(Option::is_none));
+        let syntax = view.syntax.clone().unwrap();
+        assert_eq!(syntax.language.as_deref(), Some("Markdown"));
+        assert_eq!(syntax.status, crate::gui_syntax::SyntaxStatus::NotInstalled);
         let view = apply(
             &mut gui,
             &view,

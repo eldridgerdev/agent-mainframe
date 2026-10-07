@@ -40,6 +40,7 @@ use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
+use agent_mainframe::gui_syntax::{self, SyntaxInstallView};
 use agent_mainframe::gui_terminal::{
     TerminalFrame, TerminalHandle, TerminalHistory, WheelDirection,
 };
@@ -175,6 +176,20 @@ async fn load_diff(
         target,
         options,
     )
+}
+
+/// Progress of the GUI's parser install, polled while one runs.
+#[tauri::command]
+fn syntax_install_status() -> SyntaxInstallView {
+    gui_syntax::install_status()
+}
+
+/// Installs a syntax parser with the TUI picker's installer on a background
+/// thread. The frontend sends this only after the user confirms the clone
+/// and compile; the shared GUI handle is not locked while it runs.
+#[tauri::command]
+fn syntax_install(language: String) -> Result<SyntaxInstallView, GuiError> {
+    gui_syntax::install(&language)
 }
 
 #[tauri::command]
@@ -1139,6 +1154,8 @@ fn main() {
             pr_triage_begin,
             pr_triage_snapshot,
             pr_triage_act,
+            syntax_install_status,
+            syntax_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

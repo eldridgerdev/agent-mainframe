@@ -40,9 +40,10 @@ export type SupervisedEditsPanelHandle = {
 const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   target: FeatureTarget;
   onClose: () => void;
-  /** Called after an answer is delivered, so navigation counts refresh. */
+  /** Reports delivery and whether this feature still has an answerable edit. */
   onAnswered?: (message: string, hasWaiting: boolean) => void;
   initialEditId?: string;
+  /** Counts only other features; the current feature uses the fresh view. */
   otherWaiting?: number;
   autoOpen?: boolean;
   onAutoOpenChange?: (enabled: boolean) => void;

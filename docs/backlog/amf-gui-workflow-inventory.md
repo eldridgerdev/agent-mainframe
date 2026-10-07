@@ -133,6 +133,15 @@ Completed increments and remaining work, in priority order:
   which uses a private HOME, database, Git checkouts and tmux server and an
   offline, read-only `gh`.
 
+- [x] **Agent session sidebar (2026-10-07, PR #704).** Shared per-harness
+  sections, read-only plan opening, prompt viewing/reuse and confirmed linked-TODO
+  completion work without a TUI. Viewer-local hide/restore keeps the terminal,
+  scrollback and composer mounted and resizes its pane. Eight asserted offline
+  native frames cover Claude, Codex and Pi; OpenCode ordering and all four
+  contracts have automated coverage. Project-sidebar controls and keyboard
+  shortcuts, fresh-context, dark/custom themes, native OpenCode and macOS proof
+  remain open. This completes the agent-sidebar part of show/hide sidebars.
+
 - [x] **Final Review line/range comments and suggestion editing.** Select lines
   in unified or split diffs, edit prose and replacement code, resolve/reopen
   kept threads, and pause/resume their shared progress. Command/component tests

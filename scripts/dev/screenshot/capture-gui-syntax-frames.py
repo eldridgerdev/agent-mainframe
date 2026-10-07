@@ -328,21 +328,20 @@ try:
     click("Final Review")
     wait('!!document.querySelector(".diff-file")', timeout=20)
     choose_file("src/lib.rs")
-    line = line_of("src/lib.rs", "let cents = ")
+    line = line_of("src/lib.rs", "credit notes carry a negative total")
     label = f"Select line {line}"
     evaluate(f"document.querySelector('button[aria-label={json.dumps(label)}]').click()")
     wait(f"document.querySelector('button[aria-label={json.dumps(label)}]')?.getAttribute('aria-pressed')==='true'")
     click("Comment on selection")
-    fill("Line comment", "Clamping hides credit notes; keep the sign and document it.")
+    fill("Line comment", "total_cents clamps at zero, so this rule is not enforced yet.")
     click("Save comment")
     wait('!document.querySelector(".review-editor")')
     evaluate('Array.from(document.querySelectorAll("details")).forEach(d=>d.open=true)')
-    evaluate('document.querySelector(".diff-lines .review-line-selected")?.scrollIntoView({block:"center"})')
     capture(
         "007-review-line-comment.png",
-        "Final Review keeps highlighting with a saved line comment anchored to the selected, coloured line.",
-        ["Rust", f"line {line} [", "Clamping hides credit notes"],
-        row_has("let cents", "keyword", ".diff-lines .review-line-selected"),
+        "Final Review keeps highlighting with a saved line comment anchored to the selected line, which stays a comment although the block comment opened above the hunk.",
+        ["Rust", f"line {line} [", "total_cents clamps at zero"],
+        row_has("credit notes carry a negative total", "comment", ".diff-lines .review-line-selected"),
     )
     saved = json.loads(progress_path.read_text())["line_comments"]["src/lib.rs"]
     assert saved[0]["location"] == {"old_line": None, "new_line": line}, saved
@@ -402,12 +401,11 @@ try:
     wait('!!document.querySelector(".diff-file")', timeout=20)
     choose_file("src/lib.rs")
     evaluate('Array.from(document.querySelectorAll("details")).forEach(d=>d.open=true)')
-    evaluate('Array.from(document.querySelectorAll(".diff-code code")).find(c=>c.textContent.includes("let cents"))?.scrollIntoView({block:"center"})')
     capture(
         "012-review-line-comment-dark.png",
-        "The resumed review restores the saved line comment beside the dark-mode highlighted diff.",
-        ["Rust", f"line {line} [", "Clamping hides credit notes"],
-        row_has("let cents", "keyword"),
+        "The resumed review restores the saved line comment above the dark-mode highlighted diff.",
+        ["Rust", f"line {line} [", "total_cents clamps at zero"],
+        row_has("credit notes carry a negative total", "comment"),
     )
     click("Pause review")
     wait('!document.querySelector(".diff-reader")')

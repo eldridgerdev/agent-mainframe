@@ -294,6 +294,12 @@ where
     ))
 }
 
+/// Whether an installed parser actually loaded: its library opened and its
+/// queries compiled. An install that fails here highlights nothing.
+pub fn parser_loads(language: HighlightLanguage) -> bool {
+    with_registry(|registry| Ok(registry.config(language).is_some())).unwrap_or(false)
+}
+
 pub fn reset_registry() {
     if let Some(registry) = REGISTRY.get()
         && let Ok(mut guard) = registry.lock()
@@ -543,13 +549,6 @@ fn read_query_file(root: &Path, relative: &str) -> Result<String> {
         .with_context(|| format!("failed to read {}", root.join(relative).display()))
 }
 
-fn read_optional_query_file(root: &Path, relative: &str) -> Result<String> {
-    if relative.is_empty() {
-        return Ok(String::new());
-    }
-    read_query_file(root, relative)
-}
-
 fn read_existing_query_file(root: &Path, relative: &str) -> Result<Option<String>> {
     if relative.is_empty() {
         return Ok(None);
@@ -606,8 +605,10 @@ fn load_injections_query(
     grammar: &HighlightGrammarSpec,
 ) -> Result<String> {
     let mut parts = Vec::new();
-    let base = read_optional_query_file(source_dir, grammar.injections_query)?;
-    if !base.is_empty() {
+    // Injections and locals are optional refinements; grammars whose
+    // repository dropped the file (tree-sitter-python's `HEAD` has neither)
+    // still highlight from `highlights.scm` alone.
+    if let Some(base) = read_existing_query_file(source_dir, grammar.injections_query)? {
         parts.push(base);
     }
 
@@ -630,8 +631,7 @@ fn load_locals_query(
     grammar: &HighlightGrammarSpec,
 ) -> Result<String> {
     let mut parts = Vec::new();
-    let base = read_optional_query_file(source_dir, grammar.locals_query)?;
-    if !base.is_empty() {
+    if let Some(base) = read_existing_query_file(source_dir, grammar.locals_query)? {
         parts.push(base);
     }
 
@@ -926,6 +926,42 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Skipping missing source file"))
         );
+    }
+
+    #[test]
+    fn missing_optional_queries_do_not_break_a_grammar() {
+        // tree-sitter-python's HEAD ships highlights.scm only. Its spec still
+        // names injections and locals, which must read as empty rather than
+        // fail the whole parser (and trigger a reinstall at every startup).
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("queries")).unwrap();
+        std::fs::write(
+            dir.path().join("queries/highlights.scm"),
+            "(string) @string",
+        )
+        .unwrap();
+        let grammar = &HighlightLanguage::Python.package_spec().grammars[0];
+        assert!(!grammar.injections_query.is_empty() && !grammar.locals_query.is_empty());
+        assert_eq!(
+            load_injections_query(dir.path(), HighlightLanguage::Python, grammar).unwrap(),
+            ""
+        );
+        assert_eq!(
+            load_locals_query(dir.path(), HighlightLanguage::Python, grammar).unwrap(),
+            ""
+        );
+        std::fs::write(
+            dir.path().join("queries/locals.scm"),
+            "(identifier) @local.reference",
+        )
+        .unwrap();
+        assert_eq!(
+            load_locals_query(dir.path(), HighlightLanguage::Python, grammar).unwrap(),
+            "(identifier) @local.reference"
+        );
+        // The highlights query itself stays required.
+        std::fs::remove_file(dir.path().join("queries/highlights.scm")).unwrap();
+        assert!(load_highlights_query(dir.path(), HighlightLanguage::Python, grammar).is_err());
     }
 
     #[test]

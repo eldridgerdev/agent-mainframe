@@ -1,3 +1,4 @@
+pub(crate) mod agent_sidebar;
 pub(crate) mod ai_review;
 pub(crate) mod attention;
 mod automation;

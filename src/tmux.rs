@@ -1084,6 +1084,17 @@ impl TmuxManager {
         })
     }
 
+    /// A control-mode `refresh-client -A` line for one pane. The `%pane:action`
+    /// argument must be quoted: tmux's command parser reads a bare word that
+    /// starts with `%` as a directive (`%if`, `%hidden`, ...) unless it is all
+    /// digits, so an unquoted `%12:on` is a "parse error: syntax error".
+    pub(crate) fn refresh_client_pane_command(pane_id: &str, action: &str) -> String {
+        format!(
+            "refresh-client -A {}\n",
+            Self::tmux_command_quote(&format!("{pane_id}:{action}"))
+        )
+    }
+
     fn tmux_command_quote(value: &str) -> String {
         let mut quoted = String::with_capacity(value.len() + 2);
         quoted.push('"');
@@ -1476,7 +1487,7 @@ impl TmuxManager {
         let target = format!("{session}:{window}");
         let quoted_target = Self::tmux_command_quote(&target);
         client.send_command(&format!("select-window -t {quoted_target}\n"))?;
-        client.send_command(&format!("refresh-client -A {pane_id}:on\n"))?;
+        client.send_command(&Self::refresh_client_pane_command(pane_id, "on"))?;
         client.send_command(&format!("refresh-client -C {cols},{rows}\n"))?;
         let ready_token = format!("__AMF_VIEW_READY__{}__", std::process::id());
         client.send_command(&format!("display-message -p {ready_token}\n"))?;
@@ -2586,6 +2597,15 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn refresh_client_pane_command_quotes_the_percent_pane_id() {
+        // Unquoted, tmux parses `%12:on` as a `%`-directive and rejects it.
+        assert_eq!(
+            TmuxManager::refresh_client_pane_command("%12", "on"),
+            "refresh-client -A \"%12:on\"\n"
+        );
+    }
 
     #[test]
     fn a_rebuilt_or_deleted_binary_never_becomes_a_dead_amf_bin() {

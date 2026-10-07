@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Agent sidebars in desktop session tabs.** Claude, Codex, OpenCode and Pi
+  tabs show usage, context, plans, work, summaries, prompts and TODOs from the
+  same sources as the TUI. Open the plan, reuse the last prompt into an unsent
+  draft or complete the linked TODO. Hide or restore the panel without losing
+  terminal history or your draft; its visibility is remembered for this viewer.
+  The panel works without a TUI and explains which live signals are unavailable.
+
 - **Syntax highlighting in the desktop app.** Unified and side-by-side diffs,
   Final Review, supervised edits and the Learning reader colour code with the
   same tree-sitter parsers and language detection as the TUI. Lines inside

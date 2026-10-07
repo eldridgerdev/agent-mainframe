@@ -184,6 +184,31 @@ one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
 
+Agent tabs also have a right-hand **Claude Sidebar**, **Codex Sidebar**,
+**Opencode Sidebar** or **Pi Sidebar**. Sections follow the TUI's order:
+Status, Usage, Context, Plan, Issue, PR Triage, Work, Summary, Prompt, Todos
+and Active TODO (OpenCode puts Summary last). Empty sections are omitted;
+usage windows exist only for supported accounts, and the plan placeholder
+matches the TUI. **Open** reads the current plan, **View** expands the last
+prompt and **Reuse** appends it to the unsent composer draft. **Complete**
+confirms completion of the session's linked AMF TODO. **Triage** and **Review**
+open their existing workflows.
+
+The header's hide button leaves a **Sidebar** rail to restore the panel.
+This viewer's preference survives restarts, separately from shared TUI state.
+Toggling refits the terminal through its usual tmux resize path and preserves
+scrollback and drafts. Colours use overridable `--sb-*` CSS tokens. The projects
+sidebar toggle and keyboard shortcuts remain a separate planned increment.
+
+The GUI runs its own shared collectors: token/cost and context reads, account
+usage, transcript/storage prompt/model/todos, plan files, persisted summaries,
+issue and PR data, notification files and thinking markers. It does not require
+a running TUI. TUI attention reasons, tool-call IPC and Codex live reasoning
+are omitted, with an explanatory note. TUI-owned summary/AI-review workers and
+IPC-only review activity are not reported as current. The per-field source
+matrix is in `src/gui_contract/session_sidebar.rs`. Native offline proof:
+`scripts/dev/screenshot/scenarios/gui-session-sidebar.txt`.
+
 The sidebar is the TUI dashboard tree. Each project shows its shortened path,
 an add-feature hint when it is empty, and any minimized creation-time plan.
 Each feature row shows the TUI's status glyph (worktree script, deletion in

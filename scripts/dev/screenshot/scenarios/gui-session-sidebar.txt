@@ -1,0 +1,6 @@
+# Native per-session sidebar; private SQLite/Git/HOME/tmux and offline harness/gh.
+# No paid agents or GitHub writes. Native frame driver asserts every claim.
+note:The isolated TUI setup is ready; native GUI collectors run independently in a private instance.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-session-sidebar.sh" "$OUT_DIR"

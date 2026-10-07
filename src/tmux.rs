@@ -907,6 +907,33 @@ impl TmuxManager {
         }
     }
 
+    fn load_buffer_from_stdin(text: &str) -> Result<()> {
+        let mut child = Self::command()
+            .args(["load-buffer", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to set tmux buffer")?;
+        // Always reap the child, even if the write fails: tmux exiting early
+        // (e.g. no server) surfaces as a broken pipe here, and its stderr is
+        // the more useful error.
+        let written = child
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut stdin| stdin.write_all(text.as_bytes()));
+        let output = child
+            .wait_with_output()
+            .context("Failed to set tmux buffer")?;
+        if !output.status.success() {
+            bail!(
+                "{}",
+                Self::command_error(&output, "tmux load-buffer failed")
+            );
+        }
+        written.context("Failed to write text to tmux load-buffer")
+    }
+
     fn output_indicates_socket_startup_failure(output: &Output) -> bool {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2297,12 +2324,10 @@ impl TmuxManager {
     pub fn paste_text(session: &str, window: &str, text: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
 
-        // Load text into a tmux paste buffer
-        Self::run(
-            &["set-buffer", "--", text],
-            "Failed to set tmux buffer",
-            "tmux set-buffer failed",
-        )?;
+        // Load text into a tmux paste buffer through stdin, not argv: Linux
+        // caps a single argument at 128 KiB (MAX_ARG_STRLEN), so a large
+        // paste passed to `set-buffer` fails to spawn with E2BIG.
+        Self::load_buffer_from_stdin(text)?;
 
         // Paste with -p flag for bracketed paste indicators
         Self::run(

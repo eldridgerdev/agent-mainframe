@@ -188,7 +188,8 @@ fn project_config_names(repo: &std::path::Path) -> Result<HashSet<String>, Strin
 }
 
 /// The feature's tracked editor windows, from its `launched_editors` rows.
-/// A dead window AMF owned is left out (the next stop or launch forgets it).
+/// Dead processes and launches with no identified process past the resolve
+/// window are left out. Their rows remain available for cleanup on launch.
 pub(crate) fn feature_editors(app: &App, rows: &[LaunchedEditor]) -> Vec<FeatureEditor> {
     let now = Utc::now();
     let resolve_window =
@@ -214,6 +215,11 @@ pub(crate) fn feature_editors(app: &App, rows: &[LaunchedEditor]) -> Vec<Feature
                 // Another process's launch, still within its resolve window.
                 None if row.pid <= 0 && now - row.started_at < resolve_window => {
                     FeatureEditorState::Opening
+                }
+                _ if row.pid <= 0 && now - row.started_at >= resolve_window => {
+                    // There is no process whose liveness we can check. This
+                    // launch record cannot claim a window is still open.
+                    return None;
                 }
                 _ => {
                     if row.pid > 0 && !crate::resources::procs::pid_alive(row.pid) {
@@ -251,11 +257,44 @@ fn closable(editors: &[FeatureEditor], app: &App, feature_id: &str) -> Vec<Strin
         .collect()
 }
 
+/// Probe the CLI before taking the GUI lock. Call from an async command so
+/// waiting for `code --version` cannot block the window's main thread.
+pub fn new_session_options(
+    gui: &Mutex<GuiHandle>,
+    target: &FeatureTarget,
+) -> GuiResult<NewSessionOptions> {
+    let vscode_available = vscode_cli_available();
+    gui.lock()
+        .expect("gui handle mutex poisoned")
+        .new_session_options(target, vscode_available)
+}
+
+/// Check the slow CLI before locking; the launch only spawns the process
+/// and resolves window ownership in the background.
+pub fn open_vscode(
+    gui: &Mutex<GuiHandle>,
+    target: FeatureTarget,
+    approved: bool,
+) -> GuiResult<OpenVscodeResponse> {
+    if !vscode_cli_available() {
+        return Err(GuiError::conflict(
+            "VS Code's `code` command was not found in PATH",
+        ));
+    }
+    gui.lock()
+        .expect("gui handle mutex poisoned")
+        .open_vscode(target, approved)
+}
+
 impl GuiHandle {
     /// The TUI picker's choices for this feature: allowed agents, Terminal,
     /// Neovim, VS Code (disabled without the `code` CLI), TODOs while the
     /// feature has none, then the configured custom sessions.
-    pub fn new_session_options(&mut self, target: &FeatureTarget) -> GuiResult<NewSessionOptions> {
+    fn new_session_options(
+        &mut self,
+        target: &FeatureTarget,
+        vscode_available: bool,
+    ) -> GuiResult<NewSessionOptions> {
         self.refresh_store()?;
         let (pi, fi) = self.locate(target)?;
         let app = self.app_for_workflow();
@@ -279,7 +318,7 @@ impl GuiHandle {
         builtin.push(option(SessionKind::Terminal, "Terminal"));
         builtin.push(option(SessionKind::Nvim, "Neovim"));
         builtin.push(NewSessionOption {
-            disabled: (!vscode_cli_available()).then(|| "code not found in PATH".to_string()),
+            disabled: (!vscode_available).then(|| "code not found in PATH".to_string()),
             ..option(SessionKind::Vscode, "VS Code")
         });
         if !has_todos {
@@ -452,7 +491,7 @@ impl GuiHandle {
     /// The picker's VS Code entry. A stopped feature is started first (past
     /// the resource gate), as the TUI does; a launch still resolving for
     /// this feature refuses a second one.
-    pub fn open_vscode(
+    fn open_vscode(
         &mut self,
         target: FeatureTarget,
         approved: bool,
@@ -465,11 +504,6 @@ impl GuiHandle {
             app.message = None;
             return Err(GuiError::conflict(
                 "Wait for the feature's worktree setup to finish before opening VS Code",
-            ));
-        }
-        if !vscode_cli_available() {
-            return Err(GuiError::conflict(
-                "VS Code's `code` command was not found in PATH",
             ));
         }
         app.prune_resolved_editor_launches();

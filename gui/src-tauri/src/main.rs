@@ -433,15 +433,11 @@ fn start_feature(
 }
 
 #[tauri::command]
-fn new_session_options(
-    state: State<AppState>,
+async fn new_session_options(
+    state: State<'_, AppState>,
     target: FeatureTarget,
 ) -> Result<NewSessionOptions, GuiError> {
-    state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .new_session_options(&target)
+    gui_sessions::new_session_options(&state.0, &target)
 }
 
 #[tauri::command]
@@ -484,9 +480,13 @@ async fn open_vscode(
     target: FeatureTarget,
     approved: bool,
 ) -> Result<OpenVscodeResponse, GuiError> {
-    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
-    let response = gui.open_vscode(target, approved)?;
-    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    let response = gui_sessions::open_vscode(&state.0, target, approved)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
     Ok(response)
 }
 

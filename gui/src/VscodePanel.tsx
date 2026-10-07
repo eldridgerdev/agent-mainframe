@@ -18,7 +18,7 @@ function explain(editor: FeatureEditor): string {
         ? "AMF opened this window and closes it, with its language servers, when the feature stops."
         : "AMF opened this window. Closing editors on stop is off (kill_editor_on_stop), so stopping the feature leaves it open.";
     case "opening":
-      return "Waiting for the window to appear so AMF can identify it. A window that never appears on this machine (a remote one, say) is left as not AMF's.";
+      return "Waiting for the window to appear so AMF can identify it. A window that cannot be identified on this machine is removed from this list after the lookup finishes.";
     case "not_owned":
       return "VS Code handed the folder to a window AMF did not open, or the window is not on this machine. AMF never closes it.";
   }
@@ -111,7 +111,7 @@ export default function VscodePanel({
       )}
 
       {editors.length === 0 ? (
-        <EmptyState icon="file" title="No VS Code window is open for this feature">
+        <EmptyState icon="file" title="No tracked VS Code window for this feature">
           Opens <span className="mono">{workdir}</span> with <span className="mono">code --new-window</span>.
         </EmptyState>
       ) : (

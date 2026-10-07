@@ -1236,6 +1236,7 @@ export default function App() {
 
         {view?.kind === "feature" && selectedProject && selectedFeature && (
           <FeatureView
+            key={selectedFeature.id}
             project={selectedProject}
             feature={selectedFeature}
             harnessName={harnessName}
@@ -1261,6 +1262,7 @@ export default function App() {
             editors={workspace.data?.sidebar?.features[selectedFeature.id]?.editors ?? []}
             vscodePanel={
               <VscodePanel
+                key={selectedFeature.id}
                 target={{ project_id: selectedProject.id, feature_id: selectedFeature.id }}
                 workdir={selectedFeature.workdir}
                 editors={workspace.data?.sidebar?.features[selectedFeature.id]?.editors ?? []}

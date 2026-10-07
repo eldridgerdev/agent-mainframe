@@ -126,8 +126,48 @@ fn stub_cli(dir: &Path) -> PathBuf {
     path
 }
 
+#[test]
+fn vscode_probes_run_before_acquiring_the_gui_mutex() {
+    for opening in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let cli = stub_cli(bin.path());
+        std::fs::write(
+            &cli,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then touch \"$(dirname \"$0\")/probed\"; fi\nexit 0\n",
+        )
+        .unwrap();
+        let gui = Arc::new(Mutex::new(handle(
+            root.path(),
+            ProjectStatus::Idle,
+            running_tmux(),
+        )));
+        let held = gui.lock().unwrap();
+        let worker_gui = gui.clone();
+        let worker = std::thread::spawn(move || {
+            let _seams = Seams::new(Some(cli), None);
+            if opening {
+                open_vscode(&worker_gui, target(), false).map(|_| ())
+            } else {
+                new_session_options(&worker_gui, &target()).map(|_| ())
+            }
+        });
+        let marker = bin.path().join("probed");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let probed_while_locked = marker.exists();
+        drop(held);
+        worker.join().unwrap().unwrap();
+        assert!(probed_while_locked, "CLI probe waited for the GUI mutex");
+    }
+}
+
 fn request(gui: &mut GuiHandle, name: &str) -> AddCustomSessionRequest {
-    let options = gui.new_session_options(&target()).unwrap();
+    let options = gui
+        .new_session_options(&target(), vscode_cli_available())
+        .unwrap();
     let option = options
         .custom
         .iter()
@@ -166,7 +206,9 @@ fn options_follow_the_tui_picker_and_list_configured_sessions() {
     // `App::new_for_test` resets the global config seam.
     set_test_global_extension_config(Some(global));
 
-    let options = gui.new_session_options(&target()).unwrap();
+    let options = gui
+        .new_session_options(&target(), vscode_cli_available())
+        .unwrap();
 
     let kinds: Vec<_> = options.builtin.iter().map(|o| o.kind.clone()).collect();
     assert_eq!(
@@ -211,7 +253,9 @@ fn vscode_is_offered_with_a_runnable_cli_and_todos_only_once() {
     let mut gui = handle(root.path(), ProjectStatus::Idle, running_tmux());
     gui.app_for_workflow().store.projects[0].features[0].add_session(SessionKind::Todos);
 
-    let options = gui.new_session_options(&target()).unwrap();
+    let options = gui
+        .new_session_options(&target(), vscode_cli_available())
+        .unwrap();
 
     let vscode = options
         .builtin
@@ -229,7 +273,9 @@ fn an_unreadable_project_config_is_reported_not_silently_dropped() {
     let mut gui = handle(root.path(), ProjectStatus::Idle, running_tmux());
     std::fs::write(root.path().join("amf.json"), "{ not json").unwrap();
 
-    let options = gui.new_session_options(&target()).unwrap();
+    let options = gui
+        .new_session_options(&target(), vscode_cli_available())
+        .unwrap();
 
     assert!(options.custom.is_empty());
     let warning = options.config_warning.unwrap();
@@ -431,9 +477,9 @@ fn vscode_without_its_cli_is_refused_before_anything_starts() {
     // A stopped feature: starting it would need create_session_with_window.
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().return_const(false);
-    let mut gui = handle(root.path(), ProjectStatus::Stopped, tmux);
+    let gui = handle(root.path(), ProjectStatus::Stopped, tmux);
 
-    let error = gui.open_vscode(target(), true).unwrap_err();
+    let error = open_vscode(&Mutex::new(gui), target(), true).unwrap_err();
 
     assert_eq!(error.kind, GuiErrorKind::Conflict);
     assert!(error.message.contains("`code`"), "{}", error.message);
@@ -509,6 +555,31 @@ fn listed_editor_states_follow_ownership_and_liveness() {
     assert_eq!(state(&fresh), Some(FeatureEditorState::Opening));
 }
 
+#[test]
+fn unresolved_editor_rows_expire_without_hiding_live_foreign_windows() {
+    let root = tempfile::tempdir().unwrap();
+    let _seams = Seams::new(None, None);
+    let mut gui = handle(root.path(), ProjectStatus::Idle, running_tmux());
+    let db_file = attach_db(&mut gui);
+    let workdir = root.path().join("worktree");
+    let unknown = record(&mut gui, 0, false, &workdir);
+    let foreign = record(&mut gui, std::process::id() as i64, false, &workdir);
+    rusqlite::Connection::open(db_file.path())
+        .unwrap()
+        .execute(
+            "UPDATE launched_editors SET started_at = '2020-01-01T00:00:00Z'",
+            [],
+        )
+        .unwrap();
+
+    let editors = gui.snapshot().sidebar.features[FEATURE_ID].editors.clone();
+    assert!(!editors.iter().any(|editor| editor.id == unknown));
+    assert_eq!(editors.len(), 1);
+    assert_eq!(editors[0].id, foreign);
+    assert_eq!(editors[0].state, FeatureEditorState::NotOwned);
+    assert!(!editors[0].closes_with_feature);
+}
+
 /// A live process with VS Code's shape on the worktree, which this test
 /// owns: AMF's identity check accepts it exactly as it would a real window.
 fn lookalike(dir: &Path, workdir: &Path) -> crate::resources::test_support::TestChild {
@@ -540,8 +611,8 @@ fn closing_editors_closes_only_owned_windows_and_refuses_an_unseen_one() {
     let pid = child.id() as i64;
     std::thread::sleep(std::time::Duration::from_millis(200));
     let owned = record(&mut gui, pid, true, &workdir);
-    // Handed to someone else's instance: listed, never closed.
-    let foreign = record(&mut gui, 0, false, &workdir);
+    // A live instance AMF does not own: listed, never closed.
+    let foreign = record(&mut gui, std::process::id() as i64, false, &workdir);
     rusqlite::Connection::open(db_file.path())
         .unwrap()
         .execute(

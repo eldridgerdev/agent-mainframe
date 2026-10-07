@@ -18,6 +18,9 @@ use agent_mainframe::automation::{
     AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
     CreateProjectResponse,
 };
+use agent_mainframe::gui_contract::session_sidebar::{
+    CompleteSidebarTodo, SessionPlanView, SessionSidebarView,
+};
 use agent_mainframe::gui_contract::sidebar::{CollapseTarget, SidebarClock};
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
@@ -1071,6 +1074,41 @@ async fn pr_triage_act(
     )
 }
 
+/// The agent sidebar for one agent tab. Drives the same background sources
+/// the dashboard sidebar does, plus this feature's sidebar load and the
+/// usage windows, then answers from this process's caches.
+#[tauri::command]
+fn session_sidebar(
+    state: State<AppState>,
+    sources: State<SidebarSources>,
+    target: SessionTarget,
+) -> Result<SessionSidebarView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.drive_sidebar_sources(&mut sources.0.lock().expect("sidebar clock mutex poisoned"));
+    gui.refresh_session_sidebar_sources(&target)?;
+    gui.refresh_usage_windows();
+    gui.session_sidebar(&target)
+}
+
+#[tauri::command]
+fn session_sidebar_plan(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<SessionPlanView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.session_sidebar_plan(&target)
+}
+
+#[tauri::command]
+fn session_sidebar_complete_todo(
+    state: State<AppState>,
+    target: SessionTarget,
+    request: CompleteSidebarTodo,
+) -> Result<String, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.session_sidebar_complete_todo(&target, request)
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -1156,6 +1194,9 @@ fn main() {
             pr_triage_act,
             syntax_install_status,
             syntax_install,
+            session_sidebar,
+            session_sidebar_plan,
+            session_sidebar_complete_todo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

@@ -2891,23 +2891,7 @@ impl App {
             return Ok(());
         };
 
-        let outcome = (|| -> Result<&'static str> {
-            let Some(db) = &self.db else {
-                anyhow::bail!("TODO persistence is unavailable");
-            };
-            let Some(mut todo) = db.find_todo_by_id(&state.todo_id)? else {
-                anyhow::bail!("the referenced TODO was deleted");
-            };
-            if todo.work.status == TodoStatus::Completed {
-                return Ok("Referenced TODO was already complete");
-            }
-            // Route the status change through `TodoWorkState` so this shares
-            // the manual-completion contract (association retained, same as
-            // `cycle_manually`) rather than hand-writing the field.
-            todo.work.complete();
-            db.update_todo(&todo)?;
-            Ok("Marked referenced TODO complete")
-        })();
+        let outcome = self.complete_referenced_todo(&state.todo_id);
 
         self.mode = AppMode::Viewing(state.view);
         self.refresh_active_todos_sidebar_cache();
@@ -2918,6 +2902,27 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Mark a session's referenced TODO complete: the shared engine behind
+    /// the TUI's `leader z` confirmation and the GUI session sidebar's
+    /// Active TODO action. Keeps the session association.
+    pub(crate) fn complete_referenced_todo(&self, todo_id: &str) -> Result<&'static str> {
+        let Some(db) = &self.db else {
+            anyhow::bail!("TODO persistence is unavailable");
+        };
+        let Some(mut todo) = db.find_todo_by_id(todo_id)? else {
+            anyhow::bail!("the referenced TODO was deleted");
+        };
+        if todo.work.status == TodoStatus::Completed {
+            return Ok("Referenced TODO was already complete");
+        }
+        // Route the status change through `TodoWorkState` so this shares
+        // the manual-completion contract (association retained, same as
+        // `cycle_manually`) rather than hand-writing the field.
+        todo.work.complete();
+        db.update_todo(&todo)?;
+        Ok("Marked referenced TODO complete")
     }
 
     pub(crate) fn cancel_todo_reference_completion(&mut self) {

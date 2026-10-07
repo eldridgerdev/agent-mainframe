@@ -23,6 +23,7 @@ use crate::automation::{
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
+pub mod session_sidebar;
 pub mod sidebar;
 
 /// A structured, serializable error every GUI-facing operation returns

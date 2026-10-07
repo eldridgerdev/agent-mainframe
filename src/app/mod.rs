@@ -119,6 +119,7 @@ pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 pub use toast::Toast;
+pub(crate) use todos::ReferencedTodoDeleted;
 
 pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
 /// Cadence for the main loop's idle drift-correction reseed. The view
@@ -1029,7 +1030,8 @@ pub struct App {
     pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
     /// The sidebar's "Current: <path>" line for each feature's effective
-    /// plan (see `app::plan::resolve_effective_plan`). Populated by the
+    /// plan (see `app::plan::resolve_effective_plan`); no entry means no
+    /// plan resolved (or none has loaded yet). Populated by the
     /// background sidebar-load pipeline, never resolved on the render
     /// thread — the resolution touches the filesystem (an `is_file` check
     /// and, for a manual selection, a `canonicalize`), and `draw()` runs
@@ -1320,7 +1322,7 @@ struct SidebarLoadResult {
     latest_prompt: Option<String>,
     model_text: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
-    plan_text: String,
+    plan_text: Option<String>,
 }
 
 type SidebarLoadTask = Box<dyn FnOnce() + Send + 'static>;
@@ -3142,8 +3144,13 @@ impl App {
                 self.sidebar_model_cache.remove(&result.tmux_session);
             }
 
-            self.sidebar_effective_plan_cache
-                .insert(result.tmux_session.clone(), result.plan_text);
+            if let Some(plan_text) = result.plan_text {
+                self.sidebar_effective_plan_cache
+                    .insert(result.tmux_session.clone(), plan_text);
+            } else {
+                self.sidebar_effective_plan_cache
+                    .remove(&result.tmux_session);
+            }
 
             if let Some(data) = result.opencode_sidebar {
                 self.opencode_sidebar_cache
@@ -4202,7 +4209,7 @@ impl SidebarLoadRequest {
                 latest_prompt: None,
                 model_text: None,
                 opencode_sidebar: None,
-                plan_text: String::new(),
+                plan_text: None,
             };
         }
 

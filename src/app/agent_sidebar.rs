@@ -715,6 +715,14 @@ pub(crate) fn plan_sidebar_text(app: &App, feature: &Feature) -> String {
         .unwrap_or_else(|| "No plan selected".to_string())
 }
 
+/// Whether the background sidebar load found an effective plan for
+/// `feature` — the same cache, and the same off-the-hot-path reason, as
+/// [`plan_sidebar_text`].
+pub(crate) fn plan_sidebar_has_plan(app: &App, feature: &Feature) -> bool {
+    app.sidebar_effective_plan_cache
+        .contains_key(&feature.tmux_session)
+}
+
 pub(crate) fn append_model_status_line(
     mut status_text: String,
     model_text: Option<&str>,

@@ -25,6 +25,19 @@ use crate::app::{
 use crate::db::todos::{Todo, TodoPriority, TodoScope, TodoStatus, TodoWorkState};
 use crate::project::ProjectStore;
 
+/// The TODO a session references no longer exists. Carried through `anyhow`
+/// so a caller can `downcast_ref` it rather than match on the message.
+#[derive(Debug)]
+pub(crate) struct ReferencedTodoDeleted;
+
+impl std::fmt::Display for ReferencedTodoDeleted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the referenced TODO was deleted")
+    }
+}
+
+impl std::error::Error for ReferencedTodoDeleted {}
+
 /// The selected TODO and the overlay context needed to act on it, gathered in
 /// one read so callers do not re-borrow `self.mode` field by field.
 pub(crate) struct SelectedTodoContext {
@@ -2906,13 +2919,14 @@ impl App {
 
     /// Mark a session's referenced TODO complete: the shared engine behind
     /// the TUI's `leader z` confirmation and the GUI session sidebar's
-    /// Active TODO action. Keeps the session association.
+    /// Active TODO action. Keeps the session association. A TODO that no
+    /// longer exists fails with [`ReferencedTodoDeleted`].
     pub(crate) fn complete_referenced_todo(&self, todo_id: &str) -> Result<&'static str> {
         let Some(db) = &self.db else {
             anyhow::bail!("TODO persistence is unavailable");
         };
         let Some(mut todo) = db.find_todo_by_id(todo_id)? else {
-            anyhow::bail!("the referenced TODO was deleted");
+            return Err(ReferencedTodoDeleted.into());
         };
         if todo.work.status == TodoStatus::Completed {
             return Ok("Referenced TODO was already complete");

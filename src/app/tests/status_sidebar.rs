@@ -78,7 +78,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 deletions: Some(1),
                 files: Some(1),
             }),
-            plan_text: "Current: AMF_PLAN.md".to_string(),
+            plan_text: Some("Current: AMF_PLAN.md".to_string()),
         })
         .unwrap();
 
@@ -886,7 +886,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
                 deletions: None,
                 files: None,
             }),
-            plan_text: "No plan selected".to_string(),
+            plan_text: None,
         })
         .unwrap();
 

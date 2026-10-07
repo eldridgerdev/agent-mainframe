@@ -264,7 +264,15 @@ impl TerminalHandle {
             TmuxManager::resolve_view_target_ids(session, window)?;
         // The shared control client uses ignore-size. Apply the GUI layout
         // before capturing, including space reserved for the agent sidebar.
-        TmuxManager::resize_pane(session, window, cols, rows)?;
+        // Cosmetic only: a failed resize leaves the window at its old size,
+        // which is no reason to refuse a terminal that can otherwise attach.
+        if let Err(error) = TmuxManager::resize_pane(session, window, cols, rows) {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Warn,
+                "tmux",
+                &format!("GUI attach couldn't resize {session}:{window} to {cols}x{rows}: {error}"),
+            );
+        }
         let client = TmuxManager::spawn_control_mode_view_client(
             session,
             window,

@@ -21,6 +21,9 @@ out = pathlib.Path(sys.argv[1]).resolve()
 pid = int(sys.argv[2])
 dbpath = pathlib.Path(sys.argv[4])
 tmux = ["tmux", "-S", str(dbpath.parents[2] / "sidebar-tmux.sock")]
+# The fixture makes the session name unique per run; read it back.
+with sqlite3.connect(dbpath) as db:
+    round_tmux = db.execute("SELECT tmux_session FROM features WHERE id='f-round'").fetchone()[0]
 
 for attempt in range(100):
     try:
@@ -163,7 +166,7 @@ def fill(value):
 
 
 def pane_width():
-    return int(subprocess.check_output(tmux + ["display-message", "-p", "-t", "amf-session-sidebar-round-totals:claude", "#{pane_width}"], text=True).strip())
+    return int(subprocess.check_output(tmux + ["display-message", "-p", "-t", f"{round_tmux}:claude", "#{pane_width}"], text=True).strip())
 
 
 try:

@@ -225,7 +225,9 @@ impl GuiHandle {
             running_tool: false,
             codex_live: None,
             thinking: running
-                && app.thinking_from_shared_sources(&feature.tmux_session, &feature.agent),
+                && crate::app::session_ops::agent_for_session_kind(&session.kind).is_some_and(
+                    |agent| app.thinking_from_shared_sources(&feature.tmux_session, &agent),
+                ),
             summary_generating: app.summary_state.generating.contains(&feature.tmux_session),
             pr_review_working: app
                 .dedicated_review_session_working_for_workdir(&feature.workdir)
@@ -242,7 +244,7 @@ impl GuiHandle {
             .map(|reference| reference.todo_id.clone())
             .filter(|_| app.db.is_some());
         let actions = ActionContext {
-            has_plan: crate::app::plan::resolve_effective_plan(feature).is_some(),
+            has_plan: crate::app::agent_sidebar::plan_sidebar_has_plan(app, feature),
             is_git: project.is_git,
             todo_id,
         };
@@ -300,12 +302,11 @@ impl GuiHandle {
             })
             .map_err(|error| GuiError::not_found(format!("Couldn't read the plan: {error}")))?;
         let truncated = bytes.len() > PLAN_VIEW_MAX_BYTES;
-        let mut markdown =
-            String::from_utf8_lossy(&bytes[..bytes.len().min(PLAN_VIEW_MAX_BYTES)]).into_owned();
+        let mut kept = &bytes[..bytes.len().min(PLAN_VIEW_MAX_BYTES)];
         if truncated {
-            // A cut can split a character; lossy decoding marks it, drop it.
-            markdown = markdown.trim_end_matches('\u{fffd}').to_string();
+            kept = &kept[..split_char_start(kept).unwrap_or(kept.len())];
         }
+        let markdown = String::from_utf8_lossy(kept).into_owned();
         let path = plan
             .path()
             .strip_prefix(&feature.workdir)
@@ -344,7 +345,10 @@ impl GuiHandle {
             .app
             .complete_referenced_todo(&request.todo_id)
             .map_err(|error| {
-                if error.to_string().contains("deleted") {
+                if error
+                    .downcast_ref::<crate::app::ReferencedTodoDeleted>()
+                    .is_some()
+                {
                     GuiError::not_found(format!("Couldn't complete the TODO: {error}"))
                 } else {
                     GuiError::from(error)
@@ -352,6 +356,20 @@ impl GuiHandle {
             })?;
         self.app.refresh_active_todos_sidebar_cache();
         Ok(message.to_string())
+    }
+}
+
+/// Where `bytes` ends partway through a UTF-8 character -- what a byte-count
+/// cut leaves behind -- the index that character starts at. `None` when the
+/// last character is complete, or is invalid in its own right: the file's
+/// own bad bytes still decode to U+FFFD rather than being dropped.
+fn split_char_start(bytes: &[u8]) -> Option<usize> {
+    // A character is at most 4 bytes, so its lead byte is in the last 4.
+    let window = bytes.len().saturating_sub(4);
+    let lead = window + bytes[window..].iter().rposition(|b| b & 0xC0 != 0x80)?;
+    match std::str::from_utf8(&bytes[lead..]) {
+        Err(error) if error.error_len().is_none() => Some(lead),
+        _ => None,
     }
 }
 
@@ -908,6 +926,35 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_reads_thinking_from_its_own_harness_not_the_features() {
+        // An OpenCode tab in a Claude feature: thinking comes from OpenCode
+        // storage, which the Claude marker file would never reflect.
+        let dir = tempfile::tempdir().unwrap();
+        let feat = feature(
+            dir.path(),
+            AgentKind::Claude,
+            vec![session("oc", SessionKind::Opencode)],
+        );
+        let tmux_session = feat.tmux_session.clone();
+        let mut gui = gui_with(feat, dir.path(), true);
+        gui.app.opencode_sidebar_cache.insert(
+            tmux_session,
+            OpencodeSidebarData {
+                session_id: "ses_1".into(),
+                status: Some("busy".into()),
+                ..Default::default()
+            },
+        );
+
+        let view = gui.session_sidebar(&target("oc")).unwrap();
+
+        assert!(
+            fields(section(&view, SidebarSectionKind::Status))
+                .contains(&field("Activity", "Thinking"))
+        );
+    }
+
+    #[test]
     fn claude_todo_lines_parse_into_progress_and_items() {
         assert_eq!(
             todo_line("Todos", "█████░░░ 3/5"),
@@ -1071,6 +1118,18 @@ mod tests {
         let active = section(&view, SidebarSectionKind::ActiveTodo);
         assert_eq!(fields(active), vec![field("State", "completed")]);
         assert!(active.actions.is_empty());
+
+        // Deleted underneath the panel: NotFound, not an internal error.
+        gui.app.db.as_ref().unwrap().delete_todo(&todo.id).unwrap();
+        let deleted = gui
+            .session_sidebar_complete_todo(
+                &target("claude"),
+                CompleteSidebarTodo {
+                    todo_id: todo.id.clone(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(deleted.kind, super::super::GuiErrorKind::NotFound);
     }
 
     #[test]
@@ -1101,6 +1160,20 @@ mod tests {
             std::fs::read_to_string(dir.path().join("AMF_PLAN.md")).unwrap(),
             oversized
         );
+    }
+
+    #[test]
+    fn a_truncated_plan_drops_only_the_character_the_cut_split() {
+        // "é" is 2 bytes and "🙂" 4: each cut leaves a partial lead.
+        assert_eq!(split_char_start(b"ab\xc3"), Some(2));
+        assert_eq!(split_char_start(b"ab\xf0\x9f\x99"), Some(2));
+        assert_eq!(split_char_start("abé".as_bytes()), None);
+        assert_eq!(split_char_start(b""), None);
+        // Replacement characters the file really ends in are content.
+        assert_eq!(split_char_start("ab\u{fffd}\u{fffd}".as_bytes()), None);
+        // So are invalid bytes of its own, at the end or before a split.
+        assert_eq!(split_char_start(b"ab\xff"), None);
+        assert_eq!(split_char_start(b"a\xff\xc3"), Some(2));
     }
 
     #[test]

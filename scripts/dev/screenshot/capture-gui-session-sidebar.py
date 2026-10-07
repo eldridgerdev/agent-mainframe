@@ -6,6 +6,11 @@ config/state (database, global notifications), a private tmux server and an
 offline `gh` that answers only the PR sweep's read-only queries. No agent is
 launched and nothing reaches GitHub. Only owned GUI/Vite process groups and the
 private tmux server are stopped on exit.
+
+One file lives outside the scratch directory: the thinking marker. AMF's hooks
+and readers hard-code `/tmp/amf-thinking/<tmux session>`, so the fixture writes
+one there, under a tmux session name made unique with this run's PID so it can
+never be a real AMF session's marker, and removes it on exit.
 """
 
 import json
@@ -138,7 +143,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-sidebar-") as temporary:
     ]
     (codex_dir / f"rollout-{codex_id}.jsonl").write_text("".join(json.dumps(event | {"timestamp": now}) + "\n" for event in events))
     tmux = ["tmux", "-S", env["AMF_TMUX_SOCKET"]]
-    tmux_name = "amf-session-sidebar-round-totals"
+    # PID-suffixed: the name keys the shared thinking marker below.
+    tmux_name = f"amf-session-sidebar-round-totals-{os.getpid()}"
     harness = str(workspace / "scripts/dev/screenshot/fixtures/gui-scroll-harness.py")
 
     def offline_window(window):
@@ -148,7 +154,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-sidebar-") as temporary:
 
     # The hooks' thinking marker for round-totals, kept fresh the way a busy
     # agent's tool calls keep it fresh.
-    marker = pathlib.Path("/tmp/amf-thinking/amf-session-sidebar-round-totals")
+    marker = pathlib.Path("/tmp/amf-thinking") / tmux_name
     stop_marker = threading.Event()
 
     def keep_thinking():
@@ -212,7 +218,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-sidebar-") as temporary:
             ("f-round", "p-invoice", "round-totals", "round-totals", worktree["round-totals"], 1,
              tmux_name, "vibeless", 1, 1, "idle", None, None, "Round totals", 0, ago(minutes=5), 0, None),
             ("f-release", "p-invoice", "release-prep", "release-prep", repo, 0,
-             "amf-session-sidebar-release-prep", "supervibe", 0, 0, "stopped", None, None, None, 1, ago(days=2), 1, None),
+             f"amf-session-sidebar-release-prep-{os.getpid()}", "supervibe", 0, 0, "stopped", None, None, None, 1, ago(days=2), 1, None),
         ]
         sessions_rows = [
             ("s-claude", "f-round", "claude", "Claude 1", "claude", "sess-round", 0),

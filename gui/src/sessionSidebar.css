@@ -1,0 +1,254 @@
+/*
+ * The agent sidebar beside an agent tab (SessionSidebar.tsx), the GUI
+ * counterpart of the TUI's per-harness sidebar. Colours are `--sb-*` tokens
+ * built on the shared palette, so the dark-theme and custom-theme work can
+ * retune the panel by overriding tokens rather than rules. Section accents
+ * follow the TUI's (`ui/pane.rs::sidebar_section_color`): Status and Plan
+ * warn, Usage/Todos succeed, Work is primary, Summary/PR Triage inform, and
+ * Context takes its band.
+ */
+:root {
+  --sb-width: 300px;
+  --sb-rail-width: 30px;
+  --sb-harness-claude: #c4643f;
+  --sb-harness-codex: #0e8a6a;
+  --sb-harness-opencode: #5562e8;
+  --sb-harness-pi: var(--accent);
+  --sb-accent-status: var(--amber);
+  --sb-accent-usage: var(--green);
+  --sb-accent-plan: var(--amber);
+  --sb-accent-issue: var(--text-faint);
+  --sb-accent-pr: #1d7fb8;
+  --sb-accent-work: var(--accent);
+  --sb-accent-summary: #1d7fb8;
+  --sb-accent-prompt: #8a4fd0;
+  --sb-accent-todos: var(--green);
+  --sb-tone-ready: var(--green);
+  --sb-tone-waiting: var(--amber);
+  --sb-tone-busy: var(--accent);
+  --sb-tone-pr-working: var(--amber);
+  --sb-tone-muted: var(--text-faint);
+  --sb-tone-detail: var(--text-muted);
+  --sb-tone-todo: var(--green);
+  --sb-tone-stopped: var(--text-faint);
+  --sb-usage-low: var(--green);
+  --sb-usage-medium: var(--amber);
+  --sb-usage-high: var(--red);
+  --sb-track: var(--surface-3);
+  --sb-ctx-normal: var(--green);
+  --sb-ctx-warning: var(--amber);
+  --sb-ctx-critical: var(--red);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --sb-harness-claude: #e08a66;
+    --sb-harness-codex: #3cc49c;
+    --sb-harness-opencode: #8f99ff;
+    --sb-accent-pr: #6cb6ff;
+    --sb-accent-summary: #6cb6ff;
+    --sb-accent-prompt: #c79bf5;
+  }
+}
+
+/* The agent tab: terminal and composer on the left, the sidebar on the
+   right. The main column keeps its place in the tree whether or not a
+   sidebar is shown, so toggling never remounts the terminal. */
+.session-split { flex: 1; min-height: 0; min-width: 0; display: flex; }
+.session-split-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+.agent-sidebar {
+  --sb-accent: var(--border-strong);
+  flex: 0 0 var(--sb-width);
+  width: var(--sb-width);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 14px 20px 20px -8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--sb-accent);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.agent-sidebar[data-harness="claude"] { --sb-accent: var(--sb-harness-claude); }
+.agent-sidebar[data-harness="codex"] { --sb-accent: var(--sb-harness-codex); }
+.agent-sidebar[data-harness="opencode"] { --sb-accent: var(--sb-harness-opencode); }
+.agent-sidebar[data-harness="pi"] { --sb-accent: var(--sb-harness-pi); }
+
+.agent-sidebar-collapsed {
+  flex: 0 0 var(--sb-rail-width);
+  width: var(--sb-rail-width);
+  border-top-width: 1px;
+}
+.agent-sidebar-rail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.agent-sidebar-rail:hover { color: var(--text); background: var(--surface-2); }
+.agent-sidebar-rail-label { writing-mode: vertical-rl; font-size: 12px; letter-spacing: 0.04em; }
+.agent-sidebar-flip { display: inline-flex; transform: rotate(180deg); }
+
+.agent-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-sidebar-head h2 { margin: 0; font-size: 13px; font-weight: 700; color: var(--sb-accent); }
+.agent-sidebar-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-sidebar-loading { display: flex; align-items: center; gap: 8px; margin: 4px; color: var(--text-muted); font-size: 12.5px; }
+.agent-sidebar-error { margin: 0; padding: 8px 10px; border-radius: var(--radius); font-size: 12.5px; color: var(--red); background: var(--red-soft); }
+.agent-sidebar-note { margin: 2px 2px 0; font-size: 11.5px; line-height: 1.45; color: var(--text-faint); }
+
+.sb-section {
+  --sb-section-accent: var(--border-strong);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--sb-section-accent);
+  border-radius: var(--radius);
+  padding: 7px 10px 8px;
+  background: var(--surface);
+}
+.sb-status { --sb-section-accent: var(--sb-accent-status); }
+.sb-usage { --sb-section-accent: var(--sb-accent-usage); }
+.sb-plan { --sb-section-accent: var(--sb-accent-plan); }
+.sb-issue { --sb-section-accent: var(--sb-accent-issue); }
+.sb-pr_triage { --sb-section-accent: var(--sb-accent-pr); }
+.sb-work { --sb-section-accent: var(--sb-accent-work); }
+.sb-summary { --sb-section-accent: var(--sb-accent-summary); }
+.sb-prompt { --sb-section-accent: var(--sb-accent-prompt); }
+.sb-todos, .sb-active_todo { --sb-section-accent: var(--sb-accent-todos); }
+.sb-section[data-band="normal"] { --sb-section-accent: var(--sb-ctx-normal); }
+.sb-section[data-band="warning"] { --sb-section-accent: var(--sb-ctx-warning); }
+.sb-section[data-band="critical"] { --sb-section-accent: var(--sb-ctx-critical); }
+
+.sb-section-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
+.sb-section-head h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--sb-section-accent);
+}
+.sb-actions, .sb-action-group { display: inline-flex; gap: 4px; }
+.sb-action {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.sb-action:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+.sb-action:disabled { opacity: 0.55; cursor: default; }
+
+.sb-lines { display: flex; flex-direction: column; gap: 2px; }
+.sb-line { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.sb-label { color: var(--text-muted); margin-right: 6px; }
+.sb-label::after { content: ":"; }
+.sb-strong { font-weight: 650; }
+.tone-ready, .tone-state_active { color: var(--sb-tone-ready); }
+.tone-waiting, .tone-state_idle { color: var(--sb-tone-waiting); }
+.tone-busy, .tone-generating, .tone-hint { color: var(--sb-tone-busy); }
+.tone-pr_working { color: var(--sb-tone-pr-working); }
+.tone-muted { color: var(--sb-tone-muted); }
+.tone-detail { color: var(--sb-tone-detail); }
+.tone-todo { color: var(--sb-tone-todo); }
+.tone-state_stopped { color: var(--sb-tone-stopped); }
+
+/* The Active TODO names the item; its title is clamped to two lines, as in
+   the TUI. */
+.sb-active_todo .sb-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sb-bar { display: flex; align-items: center; gap: 8px; }
+.sb-bar-label { width: 20px; color: var(--text-muted); font-family: var(--mono); font-size: 11.5px; }
+.sb-track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--sb-track);
+  overflow: hidden;
+}
+.sb-fill { position: absolute; inset: 0 auto 0 0; border-radius: inherit; }
+.usage-low, .sb-fill-todo { background: var(--sb-usage-low); }
+.usage-medium { background: var(--sb-usage-medium); }
+.usage-high { background: var(--sb-usage-high); }
+.usage-text-low { color: var(--sb-usage-low); }
+.usage-text-medium { color: var(--sb-usage-medium); }
+.usage-text-high { color: var(--sb-usage-high); }
+.sb-bar-pct { min-width: 34px; text-align: right; font-weight: 650; font-size: 12px; font-variant-numeric: tabular-nums; }
+.sb-bar-reset { color: var(--text-faint); font-size: 11.5px; min-width: 22px; }
+
+.sb-context-meter { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
+.ctx-fill-normal { background: var(--sb-ctx-normal); }
+.ctx-fill-warning { background: var(--sb-ctx-warning); }
+.ctx-fill-critical { background: var(--sb-ctx-critical); }
+.sb-context-detail { margin: 0; font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.sb-chip {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+.sb-chip-stale { font-style: italic; }
+.sb-hint { margin: 0; font-size: 11.5px; color: var(--sb-tone-busy); }
+
+.sb-item { display: flex; gap: 6px; }
+.sb-item-mark { flex: 0 0 auto; width: 12px; text-align: center; }
+.sb-item-done { color: var(--text-muted); }
+.sb-item-done .sb-item-mark { color: var(--sb-tone-todo); }
+.sb-item-active .sb-item-mark { color: var(--sb-tone-busy); font-weight: 700; }
+.sb-item-pending .sb-item-mark { color: var(--text-faint); }
+.sb-more { color: var(--text-faint); font-size: 11.5px; }
+
+.sb-prompt-full {
+  margin: 6px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sb-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+.sb-outcome { margin: 6px 0 0; font-size: 11.5px; }
+.sb-outcome-ok { color: var(--sb-tone-ready); }
+.sb-outcome-error { color: var(--red); }
+
+/* A narrow window gives the terminal priority; the rail stays reachable. */
+@media (max-width: 720px) {
+  .agent-sidebar:not(.agent-sidebar-collapsed) { --sb-width: 240px; }
+}

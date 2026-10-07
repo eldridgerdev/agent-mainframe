@@ -237,8 +237,8 @@ fi
 if [[ -z "$AMF_BIN" ]]; then
     AMF_BIN="$REPO_ROOT/target/debug/amf"
     if [[ ! -x "$AMF_BIN" ]]; then
-        echo "amf binary not found, building (cargo build -j 2)..." >&2
-        (cd "$REPO_ROOT" && cargo build -j 2)
+        echo "amf binary not found, building (cargo build --locked)..." >&2
+        (cd "$REPO_ROOT" && cargo build --locked)
     fi
 elif [[ "$AMF_BIN" != /* ]]; then
     # tmux starts the pane in the scratch root, so resolve the documented

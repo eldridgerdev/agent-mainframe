@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::app::{TextSelection, ViewState};
 use crate::context_display::format_context_indicator;
-use crate::context_tracking::{ContextBand, SessionContextSnapshot};
+use crate::context_tracking::ContextBand;
 use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
@@ -57,34 +57,11 @@ const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
 const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 
-#[derive(Debug, Clone)]
-pub(crate) struct AgentSidebarData {
-    pub agent_kind: SessionKind,
-    pub status_text: String,
-    /// Account-level rate-limit windows for this harness (the same `5h`/`7d`
-    /// figures the dashboard status bar shows), one small bar per line. `None` when the
-    /// harness has no usage source or the cache is not warm yet — the box is
-    /// then omitted entirely.
-    pub usage_text: Option<String>,
-    #[allow(dead_code)] // populated but not rendered yet
-    pub model_text: Option<String>,
-    pub prompt_text: String,
-    pub work_text: Option<String>,
-    pub todos_text: Option<String>,
-    /// The current session's TODO-menu-originated reference, resolved from
-    /// AMF's TODO DB.
-    pub active_todos_text: Option<String>,
-    /// Whether the *currently viewed* session itself carries a menu-launched
-    /// TODO reference. `leader z` acts only on the current
-    /// session, so the header affordance is shown only when this is true.
-    pub active_todo_affordance: bool,
-    pub summary_text: String,
-    pub issue_source_text: Option<String>,
-    pub pr_triage_text: Option<String>,
-    pub plan_text: String,
-    pub context_snapshot: Option<SessionContextSnapshot>,
-    pub context_hint_visible: bool,
-}
+pub(crate) use crate::app::agent_sidebar::AgentSidebarData;
+use crate::app::agent_sidebar::{
+    SidebarSectionKind, SidebarTone, parse_usage_bar_line, sidebar_section_bodies, sidebar_title,
+    sidebar_value_tone,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ContentLayout {
@@ -690,150 +667,92 @@ fn draw_agent_sidebar(
 }
 
 fn sidebar_sections(data: &AgentSidebarData, section_width: u16) -> Vec<SidebarSection> {
-    let mut sections = Vec::new();
-
-    if !data.status_text.trim().is_empty() {
-        sections.push(SidebarSection::new(
-            "Status",
-            data.status_text.clone(),
-            Constraint::Length(status_section_height(&data.status_text, section_width)),
-        ));
-    }
-
-    if let Some(usage_text) = data
-        .usage_text
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        sections.push(SidebarSection::new(
-            "Usage",
-            usage_text.to_string(),
-            Constraint::Length(usage_section_height(usage_text, section_width)),
-        ));
-    }
-
-    if let Some(snapshot) = data.context_snapshot.as_ref() {
-        let indicator = format_context_indicator(snapshot);
-        // The reading is always shown. The fresh-context call to action lives
-        // only in the section's title-top hint (`<leader F>`, set below) —
-        // the same place every other sidebar section advertises its
-        // shortcut — so it isn't repeated in the body. The reading carries
-        // no `Usage:` label of its own now that a dedicated `Usage` section
-        // sits directly above it.
-        let body = indicator.text.clone();
-        let height = sidebar_section_height(&body, section_width, 1, 3);
-        sections.push(
-            SidebarSection::new("Context", body, Constraint::Length(height))
-                .with_accent_band(indicator.band),
-        );
-    }
-
-    if !data.plan_text.trim().is_empty() {
-        sections.push(SidebarSection::new(
-            "Plan",
-            data.plan_text.clone(),
-            Constraint::Length(sidebar_section_height(&data.plan_text, section_width, 1, 2)),
-        ));
-    }
-
-    if let Some(issue_source_text) = data
-        .issue_source_text
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        sections.push(SidebarSection::new(
-            "Issue",
-            issue_source_text.to_string(),
-            Constraint::Length(sidebar_section_height(
-                issue_source_text,
-                section_width,
-                3,
-                5,
-            )),
-        ));
-    }
-
-    if let Some(pr_triage_text) = data
-        .pr_triage_text
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        sections.push(SidebarSection::new(
-            "PR Triage",
-            pr_triage_text.to_string(),
-            Constraint::Length(sidebar_section_height(pr_triage_text, section_width, 2, 6)),
-        ));
-    }
-
-    let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
-
-    if let Some(work_text) = data.work_text.as_deref() {
-        sections.push(SidebarSection::new(
-            "Work",
-            work_text.to_string(),
-            Constraint::Length(sidebar_section_height(work_text, section_width, 2, 6)),
-        ));
-    }
-    if !is_opencode && !data.summary_text.trim().is_empty() {
-        sections.push(SidebarSection::new(
-            "Summary",
-            data.summary_text.clone(),
-            Constraint::Length(summary_section_height(&data.summary_text, section_width)),
-        ));
-    }
-    if !data.prompt_text.trim().is_empty() {
-        sections.push(SidebarSection::new(
-            "Prompt",
-            data.prompt_text.clone(),
-            Constraint::Length(prompt_section_height(&data.prompt_text, section_width)),
-        ));
-    }
-    if let Some(todos_text) = data.todos_text.as_deref() {
-        sections.push(SidebarSection::new(
-            "Todos",
-            todos_text.to_string(),
-            Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 13)),
-        ));
-    }
-    if let Some(active_todos_text) = data.active_todos_text.as_deref() {
-        // The box only needs to name the TODO, not carry its whole body: clamp
-        // the title (the first line) to two wrapped lines and keep the `State:`
-        // row that follows verbatim.
-        let inner_width = section_width.saturating_sub(2).max(1) as usize;
-        let (title, rest) = match active_todos_text.split_once('\n') {
-            Some((title, rest)) => (title, Some(rest)),
-            None => (active_todos_text, None),
-        };
-        let clamped_title = clamp_to_lines(title, inner_width, 2);
-        let body = match rest {
-            Some(rest) => format!("{clamped_title}\n{rest}"),
-            None => clamped_title,
-        };
-        sections.push(SidebarSection::new(
-            "Active TODO",
-            body.clone(),
-            Constraint::Length(sidebar_section_height(&body, section_width, 2, 3)),
-        ));
-    }
-    if is_opencode && !data.summary_text.trim().is_empty() {
-        sections.push(SidebarSection::new(
-            "Summary",
-            data.summary_text.clone(),
-            Constraint::Length(summary_section_height(&data.summary_text, section_width)),
-        ));
-    }
-
-    sections
+    // Which sections appear, and in what order, is shared with the desktop
+    // GUI (`app::agent_sidebar::sidebar_section_bodies`); only the heights
+    // and the Active TODO title clamp are this renderer's.
+    sidebar_section_bodies(data)
+        .into_iter()
+        .map(|(kind, body)| {
+            let title = kind.title();
+            match kind {
+                SidebarSectionKind::Status => {
+                    let height = status_section_height(&body, section_width);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Usage => {
+                    let height = usage_section_height(&body, section_width);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Context => {
+                    // The reading is always shown. The fresh-context call to
+                    // action lives only in the section's title-top hint
+                    // (`<leader F>`), the same place every other sidebar
+                    // section advertises its shortcut, so it isn't repeated in
+                    // the body.
+                    let height = sidebar_section_height(&body, section_width, 1, 3);
+                    let section = SidebarSection::new(title, body, Constraint::Length(height));
+                    match data.context_snapshot.as_ref() {
+                        Some(snapshot) => {
+                            section.with_accent_band(format_context_indicator(snapshot).band)
+                        }
+                        None => section,
+                    }
+                }
+                SidebarSectionKind::Plan => {
+                    let height = sidebar_section_height(&body, section_width, 1, 2);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Issue => {
+                    let height = sidebar_section_height(&body, section_width, 3, 5);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::PrTriage | SidebarSectionKind::Work => {
+                    let height = sidebar_section_height(&body, section_width, 2, 6);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Summary => {
+                    let height = summary_section_height(&body, section_width);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Prompt => {
+                    let height = prompt_section_height(&body, section_width);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::Todos => {
+                    let height = sidebar_section_height(&body, section_width, 2, 13);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+                SidebarSectionKind::ActiveTodo => {
+                    // The box only needs to name the TODO, not carry its whole
+                    // body: clamp the title (the first line) to two wrapped
+                    // lines and keep the `State:` row that follows verbatim.
+                    let inner_width = section_width.saturating_sub(2).max(1) as usize;
+                    let (todo_title, rest) = match body.split_once('\n') {
+                        Some((todo_title, rest)) => (todo_title, Some(rest)),
+                        None => (body.as_str(), None),
+                    };
+                    let clamped_title = clamp_to_lines(todo_title, inner_width, 2);
+                    let body = match rest {
+                        Some(rest) => format!("{clamped_title}\n{rest}"),
+                        None => clamped_title,
+                    };
+                    let height = sidebar_section_height(&body, section_width, 2, 3);
+                    SidebarSection::new(title, body, Constraint::Length(height))
+                }
+            }
+        })
+        .collect()
 }
 
 fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static str, Color) {
-    match agent_kind {
-        SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
-        SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
-        SessionKind::Opencode => ("Opencode Sidebar", theme.session_icon_opencode.to_color()),
-        SessionKind::Pi => ("Pi Sidebar", theme.primary.to_color()),
-        _ => ("Harness Sidebar", theme.border.to_color()),
-    }
+    let color = match agent_kind {
+        SessionKind::Claude => theme.session_icon_claude.to_color(),
+        SessionKind::Codex => theme.session_icon_codex.to_color(),
+        SessionKind::Opencode => theme.session_icon_opencode.to_color(),
+        SessionKind::Pi => theme.primary.to_color(),
+        _ => theme.border.to_color(),
+    };
+    (sidebar_title(agent_kind), color)
 }
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
@@ -1052,83 +971,49 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
 fn usage_bar_line_spans<'a>(line: &str, theme: &Theme) -> Option<Vec<Span<'a>>> {
     use crate::usage::{USAGE_BAR_EMPTY, USAGE_BAR_FILLED};
 
-    let (label, rest) = line.split_once(' ')?;
-    let bar_len: usize = rest
-        .chars()
-        .take_while(|c| *c == USAGE_BAR_FILLED || *c == USAGE_BAR_EMPTY)
-        .map(char::len_utf8)
-        .sum();
-    if bar_len == 0 {
-        return None;
-    }
-    let (bar, tail) = rest.split_at(bar_len);
-    let (pct_text, reset) = tail.trim_start().split_once('%')?;
-    let pct: f64 = pct_text.parse().ok()?;
-    let color = super::status::utilization_color(pct, theme);
-    let filled: String = bar.chars().filter(|c| *c == USAGE_BAR_FILLED).collect();
-    let empty: String = bar.chars().filter(|c| *c == USAGE_BAR_EMPTY).collect();
+    let bar = parse_usage_bar_line(line)?;
+    let color = super::status::utilization_color(bar.percent, theme);
 
     Some(vec![
         Span::styled(
-            format!("{label} "),
+            format!("{} ", bar.label),
             Style::default().fg(theme.text_muted.to_color()),
         ),
-        Span::styled(filled, Style::default().fg(color)),
-        Span::styled(empty, Style::default().fg(theme.scrollbar.to_color())),
         Span::styled(
-            format!(" {pct_text}%"),
+            USAGE_BAR_FILLED.to_string().repeat(bar.filled),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            USAGE_BAR_EMPTY.to_string().repeat(bar.empty),
+            Style::default().fg(theme.scrollbar.to_color()),
+        ),
+        Span::styled(
+            format!(" {}%", bar.percent_text),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            reset.to_string(),
+            bar.reset.to_string(),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ])
 }
 
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
-    let lower = value.to_lowercase();
-    let color = if label == "State" {
-        match lower.as_str() {
-            "active" => theme.status_active.to_color(),
-            "idle" => theme.status_idle.to_color(),
-            "stopped" => theme.status_stopped.to_color(),
-            _ => theme.text.to_color(),
-        }
-    } else if lower.contains("waiting") {
-        theme.status_waiting.to_color()
-    } else if lower.contains("thinking") || lower.contains("running tool") {
-        theme.info.to_color()
-    } else if title == "PR Triage" && (lower.contains("working") || lower.contains("running")) {
-        theme.warning.to_color()
-    } else if lower.contains("ready") {
-        theme.success.to_color()
-    } else if lower.contains("generating") {
-        theme.info.to_color()
-    } else if lower.contains("unavailable") || lower.contains("no summary yet") {
-        theme.text_muted.to_color()
-    } else if label == "Hint" {
-        theme.info.to_color()
-    } else if title == "Todos" {
-        theme.success.to_color()
-    } else if title == "Prompt" || title == "Summary" {
-        theme.text.to_color()
-    } else if label == "Usage" {
-        theme.status_detail.to_color()
-    } else {
-        theme.text.to_color()
+    let (tone, emphasised) = sidebar_value_tone(title, label, value);
+    let color = match tone {
+        SidebarTone::Plain => theme.text.to_color(),
+        SidebarTone::Muted => theme.text_muted.to_color(),
+        SidebarTone::StateActive => theme.status_active.to_color(),
+        SidebarTone::StateIdle => theme.status_idle.to_color(),
+        SidebarTone::StateStopped => theme.status_stopped.to_color(),
+        SidebarTone::Waiting => theme.status_waiting.to_color(),
+        SidebarTone::Busy | SidebarTone::Generating | SidebarTone::Hint => theme.info.to_color(),
+        SidebarTone::PrWorking => theme.warning.to_color(),
+        SidebarTone::Ready | SidebarTone::Todo => theme.success.to_color(),
+        SidebarTone::Detail => theme.status_detail.to_color(),
     };
-
     let mut style = Style::default().fg(color);
-    if label == "State"
-        || lower.contains("waiting")
-        || lower.contains("thinking")
-        || lower.contains("running tool")
-        || lower.contains("ready")
-        || lower.contains("generating")
-        || label == "Hint"
-        || (title == "PR Triage" && (lower.contains("working") || lower.contains("running")))
-    {
+    if emphasised {
         style = style.add_modifier(Modifier::BOLD);
     }
     style
@@ -1522,6 +1407,7 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Option<ratatui::style::Color> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_tracking::SessionContextSnapshot;
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_view(session_kind: crate::project::SessionKind) -> ViewState {

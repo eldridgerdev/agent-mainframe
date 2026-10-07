@@ -10,8 +10,50 @@ use crate::tmux::TmuxManager;
 /// process, and how often to look. Generous because a cold VS Code start is
 /// several seconds; the wait happens on a background thread, so it costs the
 /// UI nothing.
-const VSCODE_OWNER_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const VSCODE_OWNER_RESOLVE_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
 const VSCODE_OWNER_RESOLVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+#[cfg(test)]
+thread_local! {
+    /// A stand-in `code` executable for this test thread. Unset, tests get a
+    /// name that can never resolve, so no test can reach a real VS Code.
+    pub(crate) static TEST_VSCODE_CLI: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The VS Code CLI AMF launches: `code` on `PATH`.
+pub(crate) fn vscode_cli() -> std::ffi::OsString {
+    #[cfg(test)]
+    {
+        TEST_VSCODE_CLI
+            .with(|cli| cli.borrow().clone())
+            .map(std::ffi::OsString::from)
+            .unwrap_or_else(|| "amf-test-no-vscode-cli".into())
+    }
+    #[cfg(not(test))]
+    {
+        "code".into()
+    }
+}
+
+/// Whether the VS Code CLI can be run at all: the TUI's startup check.
+pub(crate) fn vscode_cli_available() -> bool {
+    std::process::Command::new(vscode_cli())
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// A VS Code window AMF just asked for.
+#[derive(Debug, Clone)]
+pub(crate) struct VscodeLaunch {
+    pub workdir: std::path::PathBuf,
+    /// The `launched_editors` row tracking it, when a database is attached.
+    pub record_id: Option<String>,
+}
 
 pub(crate) fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
     match agent {
@@ -747,29 +789,144 @@ impl App {
         let command = session.command.clone();
 
         if self.tmux.session_exists(&tmux_session) {
-            self.tmux.create_window(&tmux_session, &window, &workdir)?;
-
-            // Set up status directory and env vars for
-            // the custom session, wrapped via env+bash
-            // for shell portability (fish, zsh, etc.)
-            let status_dir = crate::extension::generated_amf_subdir(&workdir, "session-status");
-
-            let status_dir_str = status_dir.to_string_lossy().into_owned();
-            let env_prefix = TmuxManager::shell_env_prefix(&[
-                ("AMF_SESSION_ID", &session_id),
-                ("AMF_STATUS_DIR", &status_dir_str),
-            ]);
-            let shell_cmd = if let Some(ref cmd) = command {
-                format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
-            } else {
-                env_prefix
-            };
-            self.tmux
-                .run_shell_command(&tmux_session, &window, &shell_cmd)?;
+            self.start_custom_session_window(
+                &tmux_session,
+                &window,
+                &workdir,
+                &session_id,
+                command.as_deref(),
+            )?;
         }
 
         self.save()?;
         Ok(config.autolaunch.unwrap_or(false))
+    }
+
+    /// Open a custom session's window and run its command with the status
+    /// environment, wrapped via env+bash for shell portability (fish, zsh,
+    /// etc.).
+    fn start_custom_session_window(
+        &self,
+        tmux_session: &str,
+        window: &str,
+        workdir: &std::path::Path,
+        session_id: &str,
+        command: Option<&str>,
+    ) -> Result<()> {
+        self.tmux.create_window(tmux_session, window, workdir)?;
+
+        let status_dir = crate::extension::generated_amf_subdir(workdir, "session-status");
+        let status_dir_str = status_dir.to_string_lossy().into_owned();
+        let env_prefix = TmuxManager::shell_env_prefix(&[
+            ("AMF_SESSION_ID", session_id),
+            ("AMF_STATUS_DIR", &status_dir_str),
+        ]);
+        let shell_cmd = if let Some(cmd) = command {
+            format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
+        } else {
+            env_prefix
+        };
+        self.tmux
+            .run_shell_command(tmux_session, window, &shell_cmd)
+    }
+
+    /// GUI variant of [`Self::add_custom_session_type_named`]: the caller has
+    /// already run the `pre_check` and cleared the resource gate, and needs
+    /// the new session's stable ID. A failure closes the new window, and the
+    /// feature too when this add is what started it.
+    pub(crate) fn add_custom_session_identified(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        config: &crate::extension::CustomSessionConfig,
+        label: String,
+    ) -> Result<String> {
+        self.with_feature_started_for_add(pi, fi, |app| {
+            let window_hint = config
+                .window_name
+                .clone()
+                .unwrap_or_else(|| slugify(&config.name));
+            let feature = &mut app.store.projects[pi].features[fi];
+            let tmux_session = feature.tmux_session.clone();
+            let workdir = config
+                .working_dir
+                .as_ref()
+                .map(|rel| feature.workdir.join(rel))
+                .unwrap_or_else(|| feature.workdir.clone());
+            let session_record = feature
+                .add_custom_session_named(
+                    label,
+                    window_hint,
+                    config.command.clone(),
+                    config.on_stop.clone(),
+                    config.pre_check.clone(),
+                )
+                .clone();
+            let feature_id = feature.id.clone();
+
+            if let Err(error) = app.start_custom_session_window(
+                &tmux_session,
+                &session_record.tmux_window,
+                &workdir,
+                &session_record.id,
+                session_record.command.as_deref(),
+            ) {
+                let _ = app
+                    .tmux
+                    .kill_window(&tmux_session, &session_record.tmux_window);
+                app.store.projects[pi].features[fi]
+                    .sessions
+                    .retain(|session| session.id != session_record.id);
+                return Err(error);
+            }
+
+            let feature = &mut app.store.projects[pi].features[fi];
+            feature.collapsed = false;
+            let si = feature.sessions.len() - 1;
+            app.selection = Selection::Session(pi, fi, si);
+            app.save_new_builtin_tmux_session(&feature_id, &tmux_session, &session_record)?;
+            Ok(session_record.id)
+        })
+    }
+
+    /// Bring the feature up for an add, then run `add`. When `add` fails and
+    /// this call is what started the feature, stop it again: a failed
+    /// request (including a save conflict) must not leave an unexpectedly
+    /// running feature behind.
+    pub(crate) fn with_feature_started_for_add<T>(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        add: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let feature_id = self.store.projects[pi].features[fi].id.clone();
+        let created_feature_session =
+            self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
+        let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
+        let result = add(self);
+        if result.is_err() && created_feature_session {
+            self.tmux.kill_session(&tmux_session)?;
+            if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id)
+                && self.store.projects[pi].features[fi].tmux_session == tmux_session
+            {
+                let feature = &mut self.store.projects[pi].features[fi];
+                feature.status = ProjectStatus::Stopped;
+                feature.touch();
+                let _ = self.save_reapplying(|store| {
+                    let Some((pi, fi)) = store.locate_feature_by_id(None, &feature_id) else {
+                        return false;
+                    };
+                    let feature = &mut store.projects[pi].features[fi];
+                    if feature.tmux_session != tmux_session {
+                        return false;
+                    }
+                    feature.status = ProjectStatus::Stopped;
+                    feature.touch();
+                    true
+                })?;
+            }
+        }
+        result
     }
 
     pub fn add_builtin_session(&mut self, pi: usize, fi: usize, kind: SessionKind) -> Result<()> {
@@ -869,41 +1026,13 @@ impl App {
         if !matches!(kind, SessionKind::Terminal | SessionKind::Nvim) {
             anyhow::bail!("unsupported builtin tmux session type");
         }
-        let feature_id = self.store.projects[pi].features[fi].id.clone();
-        let created_feature_session =
-            self.ensure_feature_running_for_new_session(pi, fi, StartIntent::Approved)?;
-        let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
-        let result = match kind {
-            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, Some(label)),
-            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, Some(label)),
+        // The add may start this feature as well as opening a new window;
+        // the helper stops it again if the add then fails.
+        self.with_feature_started_for_add(pi, fi, |app| match kind {
+            SessionKind::Terminal => app.add_terminal_session_for_picker(pi, fi, Some(label)),
+            SessionKind::Nvim => app.add_nvim_session_for_picker(pi, fi, Some(label)),
             _ => unreachable!("validated above"),
-        };
-        if result.is_err() && created_feature_session {
-            // The add started this feature as well as opening a new window.
-            // Closing only the window would leave an unexpectedly running
-            // feature after a failed request (including a save conflict).
-            self.tmux.kill_session(&tmux_session)?;
-            if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id)
-                && self.store.projects[pi].features[fi].tmux_session == tmux_session
-            {
-                let feature = &mut self.store.projects[pi].features[fi];
-                feature.status = ProjectStatus::Stopped;
-                feature.touch();
-                let _ = self.save_reapplying(|store| {
-                    let Some((pi, fi)) = store.locate_feature_by_id(None, &feature_id) else {
-                        return false;
-                    };
-                    let feature = &mut store.projects[pi].features[fi];
-                    if feature.tmux_session != tmux_session {
-                        return false;
-                    }
-                    feature.status = ProjectStatus::Stopped;
-                    feature.touch();
-                    true
-                })?;
-            }
-        }
-        result
+        })
     }
 
     /// Add a native TODOs session under the given feature and create the
@@ -1125,17 +1254,21 @@ impl App {
     }
 
     fn add_vscode_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
-        if std::process::Command::new("code")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
+        if !vscode_cli_available() {
             self.message = Some("Error: code (VSCode CLI) is not installed".into());
             return Ok(());
         }
 
+        let workdir = self.launch_vscode_window(pi, fi)?.workdir;
+        self.message = Some(format!("Opened VSCode in {}", workdir.display()));
+
+        Ok(())
+    }
+
+    /// Open the feature's worktree in a new VS Code window and track it —
+    /// the TUI picker's launch, shared with the GUI. The caller has already
+    /// checked that the CLI runs and started the feature.
+    pub(crate) fn launch_vscode_window(&mut self, pi: usize, fi: usize) -> Result<VscodeLaunch> {
         let feature = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(f) => f,
             None => anyhow::bail!("feature not found"),
@@ -1153,7 +1286,7 @@ impl App {
         // folder is handed to whatever window happens to be running, which AMF
         // must never close on the user's behalf.
         let command = format!("code --new-window {}", workdir.display());
-        std::process::Command::new("code")
+        std::process::Command::new(vscode_cli())
             .arg("--new-window")
             .arg(&workdir)
             .stdout(std::process::Stdio::null())
@@ -1161,11 +1294,9 @@ impl App {
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
 
-        self.record_vscode_launch(&feature_id, &workdir, &command, before);
+        let record_id = self.record_vscode_launch(&feature_id, &workdir, &command, before);
 
-        self.message = Some(format!("Opened VSCode in {}", workdir.display()));
-
-        Ok(())
+        Ok(VscodeLaunch { workdir, record_id })
     }
 
     /// Record the launch, then resolve which process it produced in the
@@ -1193,10 +1324,8 @@ impl App {
         workdir: &std::path::Path,
         command: &str,
         before: Vec<i64>,
-    ) {
-        let Some(db) = self.db.as_ref() else {
-            return;
-        };
+    ) -> Option<String> {
+        let db = self.db.as_ref()?;
 
         // Drop records whose process is gone (closed window, reboot) so
         // repeated launches don't pile up rows for one worktree.
@@ -1221,8 +1350,9 @@ impl App {
         );
         let Ok(record) = record else {
             self.log_warn("editor", "failed to record the VSCode launch".to_string());
-            return;
+            return None;
         };
+        let record_id = record.id.clone();
 
         let db_path = db.path.clone();
         let workdir = workdir.to_path_buf();
@@ -1278,6 +1408,7 @@ impl App {
                 let _ = db.set_launched_editor_owner(&record.id, found.pid, true, &started);
             }
         });
+        Some(record_id)
     }
 
     fn add_agent_session_for_picker(

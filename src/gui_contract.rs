@@ -295,6 +295,8 @@ pub struct SavedAgentSession {
 pub struct NewSessionOption {
     pub kind: SessionKind,
     pub label: String,
+    /// Why the TUI picker would grey this out (e.g. no `code` CLI).
+    pub disabled: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +326,8 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     app: App,
+    /// Configured-session launches whose pre-check is running outside the lock.
+    pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
     pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
     /// A completed review's result, until the interface takes it once.
@@ -335,6 +339,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -351,6 +356,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -526,7 +532,7 @@ impl GuiHandle {
             .flatten())
     }
 
-    fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
+    pub(crate) fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
         self.app
             .store
             .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -552,7 +558,7 @@ impl GuiHandle {
         Ok((pi, fi, si))
     }
 
-    fn reject_ambiguous_live_session(&self, pi: usize, fi: usize) -> GuiResult<()> {
+    pub(crate) fn reject_ambiguous_live_session(&self, pi: usize, fi: usize) -> GuiResult<()> {
         let feature = &self.app.store.projects[pi].features[fi];
         if self.app.feature_tmux_session_is_shared(pi, fi)
             && self.app.tmux.session_exists(&feature.tmux_session)
@@ -564,39 +570,6 @@ impl GuiHandle {
         Ok(())
     }
 
-    /// Match the TUI's per-repository harness picker, plus GUI-viewable
-    /// terminal/editor panes. External VS Code windows and configured custom
-    /// sessions need separate GUI workflows.
-    pub fn new_session_options(
-        &mut self,
-        target: &FeatureTarget,
-    ) -> GuiResult<Vec<NewSessionOption>> {
-        self.refresh_store()?;
-        let (pi, _) = self.locate(target)?;
-        let project = &self.app.store.projects[pi];
-        let mut options = self
-            .app
-            .allowed_agents_for_repo(&project.repo)
-            .into_iter()
-            .map(|agent| {
-                let label = agent.display_name().to_string();
-                let kind = crate::app::session_ops::session_kind_for_agent(&agent);
-                NewSessionOption { kind, label }
-            })
-            .collect::<Vec<_>>();
-        options.extend([
-            NewSessionOption {
-                kind: SessionKind::Terminal,
-                label: "Terminal".to_string(),
-            },
-            NewSessionOption {
-                kind: SessionKind::Nvim,
-                label: "Neovim".to_string(),
-            },
-        ]);
-        Ok(options)
-    }
-
     pub fn add_session(
         &mut self,
         target: FeatureTarget,
@@ -606,6 +579,10 @@ impl GuiHandle {
     ) -> GuiResult<AddSessionResponse> {
         self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
+        if kind == SessionKind::Todos {
+            // Native, with no tmux window: see `gui_sessions`.
+            return self.add_todos_session(target, label);
+        }
         self.reject_ambiguous_live_session(pi, fi)?;
         let project_repo = self.app.store.projects[pi].repo.clone();
         let agent = match kind {
@@ -616,7 +593,7 @@ impl GuiHandle {
             SessionKind::Terminal | SessionKind::Nvim => None,
             _ => {
                 return Err(GuiError::conflict(
-                    "This session type is not available in the GUI",
+                    "Open VS Code and custom sessions through their own requests",
                 ));
             }
         };
@@ -1018,7 +995,7 @@ impl GuiHandle {
         })
     }
 
-    fn require_start_approval(&self, action: &str) -> GuiResult<()> {
+    pub(crate) fn require_start_approval(&self, action: &str) -> GuiResult<()> {
         if let StartPreconditions::NeedsConfirm {
             over_limit,
             low_memory,
@@ -2102,6 +2079,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -2125,6 +2103,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -3975,6 +3954,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -4171,6 +4151,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,
                 review_completion: None,

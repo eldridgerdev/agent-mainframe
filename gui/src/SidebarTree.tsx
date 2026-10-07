@@ -132,6 +132,8 @@ export interface SidebarTreeProps {
   onSelectProject: (projectId: string) => void;
   onSelectFeature: (projectId: string, featureId: string) => void;
   onSelectSession: (target: SessionTarget, kind: string) => void;
+  /** Open a feature's VS Code tab (its tracked editor windows). */
+  onSelectEditors?: (projectId: string, featureId: string) => void;
   onToggleCollapsed: (target: CollapseTarget, collapsed: boolean) => void;
   onResumePlan: () => void;
   onCreateFeature: (projectId: string) => void;
@@ -260,6 +262,17 @@ function FeatureNode({
   if (derived) chips.push({ key: "age", text: derived.created_age, className: "tree-chip-age", title: feature.created_at ? `Created ${feature.created_at}` : undefined });
   if (hasSessions) chips.push({ key: "sessions", text: `${feature.sessions.length} ${feature.sessions.length === 1 ? "session" : "sessions"}` });
   if (stopped > 0) chips.push({ key: "stopped", text: `${stopped} stopped`, className: "tree-chip-stopped", title: "Sessions stopped on their own" });
+  const editors = derived?.editors ?? [];
+  if (editors.length > 0) {
+    const opening = editors.some((editor) => editor.state === "opening");
+    chips.push({
+      key: "vscode",
+      text: <>{"\ue70c"} {opening ? "VS Code opening…" : editors.length === 1 ? "VS Code" : `VS Code ×${editors.length}`}</>,
+      className: "tree-chip-vscode tree-chip-action",
+      title: "VS Code windows AMF opened for this feature",
+      onClick: props.onSelectEditors && (() => props.onSelectEditors?.(project.id, feature.id)),
+    });
+  }
 
   const tooltip = [
     feature.nickname ? `${feature.nickname} (${feature.branch})` : feature.name,

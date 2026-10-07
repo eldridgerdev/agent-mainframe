@@ -12,6 +12,21 @@ are tagged.
 
 ### Added
 
+- **VS Code, custom sessions and TODOs from the desktop New session dialog.**
+  The dialog now offers everything the TUI's session picker does. **VS Code**
+  opens the worktree in a new window with the same launch and tracking as the
+  TUI, so stopping the feature still closes windows AMF opened and leaves
+  others alone. A **VS Code** tab (and a sidebar chip) lists those windows,
+  says which ones AMF can close, and closes them after confirmation.
+  **Configured sessions** from the project's `amf.json` are listed with their
+  icon, description, command, working directory, pre-check, on-stop command
+  and autolaunch. A failed `pre_check` is shown in the dialog with its output,
+  and nothing is created. The new session's terminal attaches like any other.
+  A session removed or changed in `amf.json` after the dialog opened is refused
+  rather than created from the old entry. Repeated custom-session requests
+  are refused while the first pre-check runs. **TODOs** adds the feature's TODOs
+  session.
+
 - **Syntax highlighting in the desktop app.** Unified and side-by-side diffs,
   Final Review, supervised edits and the Learning reader colour code with the
   same tree-sitter parsers and language detection as the TUI. Lines inside

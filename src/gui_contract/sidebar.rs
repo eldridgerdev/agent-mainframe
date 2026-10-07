@@ -90,6 +90,8 @@ pub struct SidebarFeature {
     pub waiting_for_input: bool,
     /// A waiting request other than a diff review: the TUI's `?` marker.
     pub pending_input: bool,
+    /// Editor windows AMF launched for this feature (`gui_sessions`).
+    pub editors: Vec<crate::gui_sessions::FeatureEditor>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -174,6 +176,18 @@ pub(crate) fn project_sidebar(app: &App, projects: &[Project]) -> SidebarSnapsho
         .as_ref()
         .and_then(|db| db.load_all_pr_terminal_state().ok())
         .unwrap_or_default();
+    let mut launched_editors = HashMap::<String, Vec<_>>::new();
+    for editor in app
+        .db
+        .as_ref()
+        .and_then(|db| db.all_launched_editors().ok())
+        .unwrap_or_default()
+    {
+        launched_editors
+            .entry(editor.feature_id.clone())
+            .or_default()
+            .push(editor);
+    }
 
     for project in projects {
         sidebar.projects.insert(
@@ -243,6 +257,10 @@ pub(crate) fn project_sidebar(app: &App, projects: &[Project]) -> SidebarSnapsho
                     waiting_for_input: requests.is_some(),
                     pending_input: requests
                         .is_some_and(|kinds| kinds.iter().any(|kind| kind != "diff-review")),
+                    editors: launched_editors
+                        .get(&feature.id)
+                        .map(|rows| crate::gui_sessions::feature_editors(app, rows))
+                        .unwrap_or_default(),
                 },
             );
 

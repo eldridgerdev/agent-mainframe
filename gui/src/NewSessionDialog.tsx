@@ -159,7 +159,7 @@ export default function NewSessionDialog({
       {builtin?.kind === "vscode" && (
         <p className="muted new-session-note">
           Opens this worktree in a new VS Code window. AMF tracks the window and closes it when the
-          feature stops, unless VS Code handed the folder to a window AMF did not open.
+          feature stops when editor cleanup is enabled and the window can still be safely identified.
         </p>
       )}
       {builtin?.kind === "todos" && (

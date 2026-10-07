@@ -565,11 +565,21 @@ pub fn add_custom_session(
     gui: &Mutex<GuiHandle>,
     request: AddCustomSessionRequest,
 ) -> GuiResult<AddCustomSessionResponse> {
+    let key = (request.target.feature_id.clone(), request.name.clone());
     let (config, check_dir) = {
         let mut gui = gui.lock().expect("gui handle mutex poisoned");
         let (_, _, config, check_dir) = gui.resolve_custom_session(&request)?;
+        if !gui.custom_session_adds.insert(key.clone()) {
+            return Err(GuiError::conflict(format!(
+                "'{}' is already being added to this feature; wait for its pre-check",
+                request.name
+            )));
+        }
         (config, check_dir)
     };
+    // Release the reservation on every outcome, including pre-check failure,
+    // approval and stale-target errors. The check never holds the GUI lock.
+    let _reservation = CustomSessionAdd { gui, key };
     if let Err(output) = config.run_pre_check(&check_dir) {
         return Ok(AddCustomSessionResponse::PreCheckFailed {
             name: config.name.clone(),
@@ -577,9 +587,24 @@ pub fn add_custom_session(
             output,
         });
     }
-    gui.lock()
+    let result = gui
+        .lock()
         .expect("gui handle mutex poisoned")
-        .create_custom_session(request, &check_dir)
+        .create_custom_session(request, &check_dir);
+    result
+}
+
+struct CustomSessionAdd<'a> {
+    gui: &'a Mutex<GuiHandle>,
+    key: (String, String),
+}
+
+impl Drop for CustomSessionAdd<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut gui) = self.gui.lock() {
+            gui.custom_session_adds.remove(&self.key);
+        }
+    }
 }
 
 #[cfg(test)]

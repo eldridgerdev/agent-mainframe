@@ -23,7 +23,8 @@ are tagged.
   and autolaunch. A failed `pre_check` is shown in the dialog with its output,
   and nothing is created. The new session's terminal attaches like any other.
   A session removed or changed in `amf.json` after the dialog opened is refused
-  rather than created from the old entry. **TODOs** adds the feature's TODOs
+  rather than created from the old entry. Repeated custom-session requests
+  are refused while the first pre-check runs. **TODOs** adds the feature's TODOs
   session.
 
 - **Syntax highlighting in the desktop app.** Unified and side-by-side diffs,

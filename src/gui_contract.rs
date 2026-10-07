@@ -326,6 +326,8 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     app: App,
+    /// Configured-session launches whose pre-check is running outside the lock.
+    pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
     pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
     /// A completed review's result, until the interface takes it once.
@@ -337,6 +339,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -353,6 +356,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -2075,6 +2079,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -2098,6 +2103,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -3948,6 +3954,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -4144,6 +4151,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,
                 review_completion: None,

@@ -316,7 +316,32 @@ fn a_failing_pre_check_reports_its_output_and_creates_nothing() {
         other => panic!("expected a pre_check failure: {other:?}"),
     }
     let gui = gui.into_inner().unwrap();
+    assert!(gui.custom_session_adds.is_empty());
     assert_eq!(gui.snapshot().projects[0].features[0].sessions.len(), 1);
+}
+
+#[test]
+fn a_duplicate_custom_add_is_refused_while_its_check_runs() {
+    let root = tempfile::tempdir().unwrap();
+    let _seams = Seams::new(None, None);
+    let mut gui = handle(root.path(), ProjectStatus::Idle, running_tmux());
+    let request = request(&mut gui, "Database");
+    let key = (request.target.feature_id.clone(), request.name.clone());
+    gui.custom_session_adds.insert(key.clone());
+    let gui = Mutex::new(gui);
+
+    // Database's check always fails: Conflict proves the duplicate never ran it.
+    let error = add_custom_session(&gui, request.clone()).unwrap_err();
+    assert_eq!(error.kind, GuiErrorKind::Conflict);
+    assert!(error.message.contains("already being added"));
+    assert!(gui.lock().unwrap().custom_session_adds.contains(&key));
+
+    gui.lock().unwrap().custom_session_adds.remove(&key);
+    assert!(matches!(
+        add_custom_session(&gui, request).unwrap(),
+        AddCustomSessionResponse::PreCheckFailed { .. }
+    ));
+    assert!(gui.lock().unwrap().custom_session_adds.is_empty());
 }
 
 #[test]

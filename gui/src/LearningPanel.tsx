@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { AgentSlug, LearningAction, LearningView } from "./api";
 import Markdown from "./Markdown";
 import { Field, Icon, Modal, Spinner } from "./ui";
+import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** The question draft stays local across backend polls and navigation. */
 export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: {
@@ -81,6 +82,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: 
               onClick={() => { setRangeStart(null); void onAct({ kind: "file_anchor" }); }}>Ask about file</button>
             <button className="btn btn-ghost btn-sm" disabled={busy}
               onClick={() => { setRangeStart(null); void onAct({ kind: "project_anchor" }); }}>Ask about project</button>
+            <SyntaxBadge info={view.content_path ? view.syntax : null} />
           </div>
           {view.content_error ? <p role="alert">{view.content_error}</p> : (
             <div className="learning-code">
@@ -101,7 +103,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: 
                       if (!e.shiftKey) setRangeStart(line);
                       void onAct({ kind: "lines_anchor", start, end });
                     }}>
-                    <span className="learning-line-number">{view.content_line_labels[index]}</span><code>{line || " "}</code>
+                    <span className="learning-line-number">{view.content_line_labels[index]}</span><SyntaxCode text={line || " "} spans={view.content_syntax?.[index]} />
                   </button>
                 </Fragment>;
               })}

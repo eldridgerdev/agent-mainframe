@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{AppMode, DiffViewerState, ReviewDecision, ViewState};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
-use crate::gui_diff::{DiffFileView, file_view};
+use crate::gui_diff::{DiffFileView, file_view_budgeted};
+use crate::gui_syntax::HighlightBudget;
 use crate::project::SessionKind;
 
 mod ai;
@@ -341,6 +342,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
     let state = ai::state(&app.mode)?;
     let mut ai = ai::view(app)?;
     ai.ready_comment = ready_comment;
+    let mut budget = HighlightBudget::view();
     let files = state
         .files
         .iter()
@@ -354,7 +356,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
                 None => ("undecided", String::new(), Severity::default()),
             };
             ReviewFileView {
-                diff: file_view(file.clone(), 3),
+                diff: file_view_budgeted(file.clone(), 3, &mut budget),
                 verdict,
                 feedback,
                 severity,

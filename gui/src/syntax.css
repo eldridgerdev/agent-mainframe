@@ -1,0 +1,62 @@
+/*
+ * Syntax highlighting colours for diffs, Final Review and the Learning
+ * reader. The backend sends tree-sitter token classes (src/gui_syntax.rs);
+ * each class maps to one of thirteen roles, the same roles the TUI palette
+ * uses (src/highlight/theme.rs). A theme overrides the `--syn-*` role tokens
+ * below rather than the class rules. Every role keeps at least 4.5:1
+ * contrast on the code surface and on the added, removed and selected row
+ * backgrounds in both modes (gui/tests/syntaxContrast.test.ts).
+ */
+:root {
+  --syn-plain: inherit;
+  --syn-comment: #5a6574;
+  --syn-keyword: #7c3aed;
+  --syn-function: #1d4ed8;
+  --syn-string: #0f6b3a;
+  --syn-number: #a14a00;
+  --syn-type: #0e6a80;
+  --syn-property: #9a2c55;
+  --syn-tag: #b42318;
+  --syn-accent: #7a3fd1;
+  --syn-builtin: #a3195b;
+  --syn-parameter: #9a3412;
+  --syn-punctuation: #57606a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --syn-comment: #8b95b3;
+    --syn-keyword: #bb9af7;
+    --syn-function: #7aa2f7;
+    --syn-string: #9ece6a;
+    --syn-number: #ff9e64;
+    --syn-type: #e0af68;
+    --syn-property: #f7768e;
+    --syn-tag: #7dcfff;
+    --syn-accent: #b38ef4;
+    --syn-builtin: #ff757f;
+    --syn-parameter: #f2a670;
+    --syn-punctuation: #9aa8ce;
+  }
+}
+
+.syn-variable { color: var(--syn-plain); }
+.syn-comment { color: var(--syn-comment); font-style: italic; }
+.syn-keyword { color: var(--syn-keyword); font-weight: 600; }
+.syn-function, .syn-function-builtin, .syn-constructor { color: var(--syn-function); }
+.syn-string, .syn-string-special { color: var(--syn-string); }
+.syn-number, .syn-constant { color: var(--syn-number); }
+.syn-type, .syn-type-builtin { color: var(--syn-type); }
+.syn-property { color: var(--syn-property); }
+.syn-tag { color: var(--syn-tag); font-weight: 600; }
+.syn-attribute, .syn-embedded, .syn-module, .syn-operator, .syn-punctuation-special { color: var(--syn-accent); }
+.syn-constant-builtin, .syn-property-builtin, .syn-variable-builtin { color: var(--syn-builtin); }
+.syn-variable-parameter { color: var(--syn-parameter); font-style: italic; }
+.syn-punctuation, .syn-punctuation-bracket, .syn-punctuation-delimiter { color: var(--syn-punctuation); }
+
+.syntax-badge { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.syntax-chip { padding: 1px 7px; border-radius: 999px; background: var(--surface-2); font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+.syntax-chip-on { color: var(--accent); background: var(--accent-soft); }
+.syntax-install { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
+.syntax-install p { margin: 0; flex-basis: 100%; }
+.syntax-install-output { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; color: var(--text-faint); }

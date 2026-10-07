@@ -579,6 +579,16 @@ export default function App() {
     finally { reviewPending.current = false; setReviewBusy(false); }
   }
 
+  /** Re-read the open review after a parser install so its files gain colours. */
+  async function refreshReviewSyntax() {
+    const workflowId = review?.workflow_id;
+    if (!workflowId || reviewPending.current) return;
+    try {
+      const next = await reviewSnapshot(workflowId);
+      if (next) setReview((current) => current?.workflow_id === workflowId && next.revision >= current.revision ? next : current);
+    } catch { /* The next action reports a closed or changed review. */ }
+  }
+
   /** Close a completed review and apply its handoff exactly once. */
   async function finishReview(workflowId: string) {
     const done = await reviewTakeCompletion(workflowId);
@@ -1132,7 +1142,7 @@ export default function App() {
         }} />}
       {prTriageTarget && <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} />}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
-      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} />}
+      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
         <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
           onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}

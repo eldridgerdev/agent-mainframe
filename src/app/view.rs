@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use super::*;
-use crate::tmux::TmuxManager;
+use crate::tmux::{Scrollback, TmuxManager};
 
 /// Result of the background scan started by
 /// [`App::open_latest_prompt_from_view`], delivered through
@@ -1112,18 +1112,18 @@ impl App {
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.scroll_mode = !view.scroll_mode;
             if view.scroll_mode {
-                let is_alternate = TmuxManager::is_alternate_screen(&view.session, &view.window);
-                view.scroll_passthrough = is_alternate;
+                // The same snapshot the GUI's history view reads
+                // (`gui_terminal::TerminalHandle::history`).
+                let scrollback = TmuxManager::capture_scrollback(&view.session, &view.window);
+                view.scroll_passthrough = matches!(scrollback, Ok(Scrollback::AlternateScreen));
 
-                if !is_alternate {
-                    let (content, lines) =
-                        TmuxManager::capture_pane_with_history(&view.session, &view.window, 10000)
-                            .unwrap_or((String::new(), 0));
+                if let Ok(Scrollback::History { content, lines }) = scrollback {
                     view.scroll_content = content;
                     view.scroll_total_lines = lines;
                     let max_offset = lines.saturating_sub(visible_rows as usize);
                     view.scroll_offset = max_offset;
                 } else {
+                    // Passthrough, or a failed capture (an empty snapshot).
                     view.scroll_content.clear();
                     view.scroll_total_lines = 0;
                     view.scroll_offset = 0;

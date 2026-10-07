@@ -40,7 +40,9 @@ use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
-use agent_mainframe::gui_terminal::TerminalHandle;
+use agent_mainframe::gui_terminal::{
+    TerminalFrame, TerminalHandle, TerminalHistory, WheelDirection,
+};
 use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
 use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
 use serde::{Deserialize, Serialize};
@@ -546,7 +548,7 @@ struct AttachTerminalResponse {
     /// Passed back to `detach_terminal` so it removes this attachment and
     /// never a newer one for the same session.
     generation: u64,
-    initial: String,
+    initial: TerminalFrame,
 }
 
 #[derive(Deserialize)]
@@ -585,8 +587,8 @@ fn attach_terminal(
         &terminal_target.tmux_window,
         size.cols,
         size.rows,
-        move |replay| {
-            if let Err(err) = emit_app.emit(&event_name, replay) {
+        move |frame| {
+            if let Err(err) = emit_app.emit(&event_name, frame) {
                 eprintln!("amf-gui: failed to emit {event_name}: {err}");
             }
         },
@@ -656,6 +658,61 @@ fn resize_terminal(
         .get(&key)
         .ok_or_else(|| not_found(format!("No attached terminal for '{key}'")))?;
     handle.resize(size.cols, size.rows).map_err(GuiError::from)
+}
+
+/// A read-only snapshot of the pane's tmux history for the frontend's
+/// scroll-back view (see `gui_terminal`'s module docs). Sends nothing to the
+/// pane.
+#[tauri::command]
+fn terminal_history(
+    terminals: State<TerminalState>,
+    key: String,
+) -> Result<TerminalHistory, GuiError> {
+    let terminals = terminals
+        .0
+        .lock()
+        .expect("terminal registry mutex poisoned");
+    let handle = terminals
+        .get(&key)
+        .ok_or_else(|| not_found(format!("No attached terminal for '{key}'")))?;
+    handle.history().map_err(GuiError::from)
+}
+
+/// Forward wheel steps to a full-screen program that asked for mouse
+/// reporting; `false` (nothing sent) once it no longer does.
+#[tauri::command]
+fn terminal_wheel(
+    terminals: State<TerminalState>,
+    key: String,
+    direction: WheelDirection,
+    steps: u8,
+    col: u16,
+    row: u16,
+) -> Result<bool, GuiError> {
+    let terminals = terminals
+        .0
+        .lock()
+        .expect("terminal registry mutex poisoned");
+    let handle = terminals
+        .get(&key)
+        .ok_or_else(|| not_found(format!("No attached terminal for '{key}'")))?;
+    handle
+        .scroll_program(direction, steps, col, row)
+        .map_err(GuiError::from)
+}
+
+/// Ask for a fresh frame, for a pane returning from its scroll-back view.
+/// A pane that has since detached has nothing to refresh, which is fine.
+#[tauri::command]
+fn terminal_refresh(terminals: State<TerminalState>, key: String) {
+    if let Some(handle) = terminals
+        .0
+        .lock()
+        .expect("terminal registry mutex poisoned")
+        .get(&key)
+    {
+        handle.refresh();
+    }
 }
 
 /// Explicit detach, for a pane the frontend is done with before the window
@@ -1052,6 +1109,9 @@ fn main() {
             terminal_submit_prompt,
             resize_terminal,
             detach_terminal,
+            terminal_history,
+            terminal_wheel,
+            terminal_refresh,
             todo_list,
             todo_add,
             todo_set_status,

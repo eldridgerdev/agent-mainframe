@@ -213,6 +213,18 @@ to interact directly with the harness; shell and editor tabs use direct input.
 Stopped agent tabs also show their editable draft, with sending disabled until
 that session starts and its terminal connects.
 
+Scroll a terminal tab with the mouse wheel, a trackpad or **Shift+PageUp** to
+read earlier output. In Claude, Codex, Pi and shell tabs, this loads the pane's
+tmux history (the same history the TUI's scroll mode shows). While you read,
+live output pauses so your place stays put, and a banner says when new output
+has arrived below. **PageUp**, **PageDown**, **Home** and **End** then scroll
+the history. **Jump to latest**, **Esc**, **Shift+End**, scrolling back to the
+bottom or typing returns to the live view. Scrolling never sends keys to the
+agent and doesn't use tmux copy-mode, so a TUI viewing the same session is
+unaffected. Full-screen programs that use the mouse, such as OpenCode and
+Neovim, receive the wheel and scroll their own view. Other full-screen programs
+keep no scrollback here, so use their own keys.
+
 Open **Prompt library** in workspace navigation or an agent composer. The current project or feature determines the initial library scope;
 you can switch to another scope or just user/global templates. Search matches
 names and bodies, with `#tag` filtering. Source badges distinguish user, global,

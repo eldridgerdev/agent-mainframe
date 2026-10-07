@@ -10,7 +10,17 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Scrolling in desktop terminal tabs.** The mouse wheel, trackpad and
+  Shift+PageUp now scroll back through earlier output in Claude, Codex, Pi,
+  shell and other normal-screen tabs, using the same tmux history as the TUI's
+  scroll mode. While you read, new output doesn't move your place; a banner
+  reports new output below. Return with **Jump to latest**, Esc, Shift+End,
+  scrolling to the bottom or typing. Scrolling never types into the agent and
+  never enters tmux copy-mode. Full-screen programs that handle the mouse,
+  such as OpenCode and Neovim, receive wheel reports and scroll their own view.
+  Other full-screen programs show a notice instead of receiving keys.
 
 ## [v0.49.0] - 2026-10-06
 

@@ -5,6 +5,11 @@ import "@xterm/xterm/css/xterm.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { asGuiError } from "./api";
+import { Icon } from "./ui";
+import {
+  MAX_WHEEL_STEPS, SCROLLBACK_LINES, WheelAccumulator, scrollKeyAction,
+  type TerminalFrame, type TerminalHistory,
+} from "./terminalScroll";
 
 // Matches the app's dark surface so the terminal reads as part of the window
 // in either colour scheme.
@@ -73,8 +78,18 @@ interface AttachTerminalResponse {
   // Identifies this attachment among any others for the same session, so
   // our detach can never remove a newer pane's handle.
   generation: number;
-  initial: string;
+  initial: TerminalFrame;
 }
+
+/** What the scroll-back overlay shows; the effect keeps the authoritative state. */
+type ScrollView =
+  | { mode: "live" }
+  | { mode: "loading" }
+  | { mode: "history"; newOutput: boolean };
+
+const FULL_SCREEN_NOTICE =
+  "This program fills the screen and keeps no scrollback here. Use its own keys to scroll.";
+const NOTICE_MS = 4000;
 
 // Task 6 ("Implement the GUI terminal transport"): the actual transport
 // correctness (Unicode, escape sequences, high output volume, cleanup) is
@@ -82,15 +97,29 @@ interface AttachTerminalResponse {
 // not here -- this component's job is proving the wiring works end to end
 // through xterm.js and Tauri's IPC/event boundary, which those Rust-only
 // tests cannot exercise.
+//
+// Scrolling: every live update replaces the whole screen, so xterm never
+// builds scrollback of its own. Scrolling up (wheel, trackpad, Shift+PageUp)
+// instead loads a read-only snapshot of tmux's history into xterm's
+// scrollback and freezes there -- live updates are set aside, not drawn --
+// until the user scrolls back to the bottom, presses Esc/Shift+End or
+// "Jump to latest", or types. Nothing reaches the program except, for a
+// full-screen program that asked for mouse reporting, the wheel reports a
+// native terminal would send it. See `src/gui_terminal.rs`'s module docs.
 export default function TerminalPane({ target, onReadyChange }: {
   target: SessionTarget;
   onReadyChange?: (ready: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [scroll, setScroll] = useState<ScrollView>({ mode: "live" });
+  const [notice, setNotice] = useState<string | null>(null);
+  const jumpToLatest = useRef<() => void>(() => {});
 
   useEffect(() => {
     setError(null);
+    setScroll({ mode: "live" });
+    setNotice(null);
     onReadyChange?.(false);
     // Computed the same way the backend's `terminal_key` does, so the event
     // listener can be registered *before* `attach_terminal` returns -- if we
@@ -104,6 +133,7 @@ export default function TerminalPane({ target, onReadyChange }: {
       fontFamily: TERMINAL_FONT,
       fontSize: 13,
       lineHeight: 1.15,
+      scrollback: SCROLLBACK_LINES,
       theme: TERMINAL_THEME,
     });
     const fit = new FitAddon();
@@ -120,20 +150,140 @@ export default function TerminalPane({ target, onReadyChange }: {
     let attached = false;
     let generation: number | null = null;
     let unlisten: (() => void) | undefined;
-    let newestBeforeInitial: string | null = null;
+    let newestBeforeInitial: TerminalFrame | null = null;
 
-    const renderReplay = (replay: string) => {
+    // Scroll state. `phase` is authoritative; `setScroll` only mirrors it
+    // for the overlay.
+    let phase: "live" | "loading" | "history" = "live";
+    // Phase alone cannot identify a load after cancel -> load again.
+    let historyRequest = 0;
+    let modes = { alternate: false, mouse: false };
+    // Lines to scroll up once a requested history snapshot has loaded.
+    let pendingLines = 0;
+    // The newest live frame set aside while the user reads history.
+    let stashed: TerminalFrame | null = null;
+    let latestFrame: TerminalFrame | null = null;
+    // xterm resets do not cancel queued writes. Allow only one write at a
+    // time, then reset for the newest desired replay after it completes.
+    let writing = false;
+    type ReplayWrite = { replay: string; isCurrent: () => boolean; complete?: () => void };
+    let pendingWrite: ReplayWrite | null = null;
+    const wheel = new WheelAccumulator();
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const showNotice = (text: string) => {
+      if (disposed) return;
+      setNotice(text);
+      clearTimeout(noticeTimer);
+      noticeTimer = setTimeout(() => {
+        if (!disposed) setNotice(null);
+      }, NOTICE_MS);
+    };
+
+    const flushReplay = () => {
+      if (disposed || writing || !pendingWrite) return;
+      const next = pendingWrite;
+      pendingWrite = null;
+      if (!next.isCurrent()) return;
+      writing = true;
       term.reset();
-      term.write(replay);
+      term.write(next.replay, () => {
+        if (disposed) return;
+        if (next.isCurrent()) next.complete?.();
+        writing = false;
+        flushReplay();
+      });
+    };
+    const queueReplay = (next: ReplayWrite) => {
+      pendingWrite = next;
+      flushReplay();
+    };
+    const renderReplay = (replay: string) => {
+      queueReplay({ replay, isCurrent: () => phase === "live" });
+    };
+
+    const renderFrame = (frame: TerminalFrame) => {
+      latestFrame = frame;
+      modes = { alternate: frame.alternate_screen, mouse: frame.mouse_reporting };
+      if (phase === "live") {
+        renderReplay(frame.replay);
+        return;
+      }
+      // Reading earlier output: keep the user's position and say there is
+      // more, rather than redrawing underneath them.
+      stashed = frame;
+      if (phase === "history") {
+        setScroll((view) => view.mode === "history" && !view.newOutput
+          ? { mode: "history", newOutput: true } : view);
+      }
+    };
+
+    const resumeLive = () => {
+      if (phase === "live") return;
+      historyRequest += 1;
+      phase = "live";
+      pendingLines = 0;
+      const frame = latestFrame;
+      stashed = null;
+      if (frame) renderReplay(frame.replay);
+      else term.scrollToBottom();
+      if (!disposed) setScroll({ mode: "live" });
+      // The set-aside frame may predate the history snapshot; ask for the
+      // current screen rather than trusting it.
+      if (attached) void invoke("terminal_refresh", { key }).catch(() => {});
+    };
+    jumpToLatest.current = resumeLive;
+
+    const scrollBack = (lines: number) => {
+      if (phase === "history") {
+        term.scrollLines(-lines);
+        return;
+      }
+      if (phase === "loading") {
+        pendingLines += lines;
+        return;
+      }
+      if (!attached) return;
+      if (modes.alternate) {
+        showNotice(FULL_SCREEN_NOTICE);
+        return;
+      }
+      phase = "loading";
+      const request = ++historyRequest;
+      const isCurrent = () => !disposed && request === historyRequest && phase === "loading";
+      pendingLines = lines;
+      setScroll({ mode: "loading" });
+      invoke<TerminalHistory>("terminal_history", { key }).then((history) => {
+        if (!isCurrent()) return;
+        if (history.alternate_screen || history.earlier_lines === 0) {
+          resumeLive();
+          showNotice(history.alternate_screen ? FULL_SCREEN_NOTICE : "There is no earlier output yet.");
+          return;
+        }
+        queueReplay({
+          replay: history.replay,
+          isCurrent,
+          complete: () => {
+            phase = "history";
+            term.scrollLines(-pendingLines);
+            pendingLines = 0;
+            setScroll({ mode: "history", newOutput: stashed !== null });
+          },
+        });
+      }, (err) => {
+        if (!isCurrent()) return;
+        resumeLive();
+        showNotice(`Couldn't load earlier output: ${asGuiError(err).message}`);
+      });
     };
 
     // Tauri's `listen` registration is async. Wait for it before attaching,
-    // then retain the newest full-pane replay received before the attach
+    // then retain the newest full-pane frame received before the attach
     // response so an older initial capture cannot overwrite newer output.
     void (async () => {
       try {
-        unlisten = await listen<string>(`terminal-output:${key}`, (event) => {
-          if (attached) renderReplay(event.payload);
+        unlisten = await listen<TerminalFrame>(`terminal-output:${key}`, (event) => {
+          if (attached) renderFrame(event.payload);
           else newestBeforeInitial = event.payload;
         });
         if (disposed) {
@@ -150,8 +300,8 @@ export default function TerminalPane({ target, onReadyChange }: {
           return;
         }
         generation = response.generation;
-        renderReplay(response.initial);
-        if (newestBeforeInitial !== null) renderReplay(newestBeforeInitial);
+        renderFrame(response.initial);
+        if (newestBeforeInitial !== null) renderFrame(newestBeforeInitial);
         newestBeforeInitial = null;
         attached = true;
         onReadyChange?.(true);
@@ -164,6 +314,8 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     const onData = term.onData((data) => {
       if (attached) {
+        // Typing means the user is back with the program: show it live.
+        resumeLive();
         void invoke("terminal_input", { key, text: data }).catch((err) => {
           if (!disposed) setError(asGuiError(err).message);
         });
@@ -178,6 +330,69 @@ export default function TerminalPane({ target, onReadyChange }: {
       }
     });
 
+    // Reaching the bottom of the history by any route (wheel, scrollbar,
+    // keys) returns to the live view.
+    const onScroll = term.onScroll(() => {
+      if (writing || phase !== "history") return;
+      const buffer = term.buffer.active;
+      if (buffer.viewportY >= buffer.baseY) resumeLive();
+    });
+
+    term.attachCustomKeyEventHandler((event) => {
+      const action = scrollKeyAction(event, phase !== "live");
+      if (!action) return true;
+      if (event.type === "keydown") {
+        const page = Math.max(1, term.rows - 1);
+        if (action === "pageUp") scrollBack(page);
+        else if (action === "top") {
+          if (phase === "history") term.scrollToTop();
+          else scrollBack(SCROLLBACK_LINES);
+        } else if (action === "latest") resumeLive();
+        else if (phase === "history") {
+          const buffer = term.buffer.active;
+          if (buffer.viewportY + page >= buffer.baseY) resumeLive();
+          else term.scrollLines(page);
+        }
+      }
+      // Handled here, so never sent to the program.
+      return false;
+    });
+
+    // Captured on the container, before xterm's own wheel handling. While
+    // reading history xterm scrolls its scrollback natively; otherwise the
+    // gesture is routed here and xterm never sees it -- in particular it
+    // never gets to turn a wheel into arrow keys for the program.
+    const onWheel = (event: WheelEvent) => {
+      if (!attached || phase === "history") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const surface = term.element ?? containerRef.current;
+      const rect = surface?.getBoundingClientRect();
+      const cellHeight = rect && term.rows > 0 ? rect.height / term.rows : 0;
+      const steps = wheel.steps(event, cellHeight, term.rows);
+      if (steps === 0) return;
+      if (modes.alternate) {
+        if (!modes.mouse) {
+          showNotice(FULL_SCREEN_NOTICE);
+          return;
+        }
+        const cellWidth = rect && term.cols > 0 ? rect.width / term.cols : 0;
+        const cell = (offset: number, size: number, count: number) =>
+          size > 0 ? Math.min(count - 1, Math.max(0, Math.floor(offset / size))) : 0;
+        void invoke<boolean>("terminal_wheel", {
+          key,
+          direction: steps < 0 ? "up" : "down",
+          steps: Math.min(Math.abs(steps), MAX_WHEEL_STEPS),
+          col: cell(event.clientX - (rect?.left ?? 0), cellWidth, term.cols),
+          row: cell(event.clientY - (rect?.top ?? 0), cellHeight, term.rows),
+        }).catch((err) => showNotice(`Couldn't scroll: ${asGuiError(err).message}`));
+        return;
+      }
+      if (steps < 0) scrollBack(-steps);
+    };
+    const container = containerRef.current;
+    container?.addEventListener("wheel", onWheel, { capture: true, passive: false });
+
     // Refit on any container size change (window resize, sidebar, the draft
     // composer opening), not only window resizes.
     const observer = new ResizeObserver(() => {
@@ -191,10 +406,14 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     return () => {
       disposed = true;
+      jumpToLatest.current = () => {};
+      clearTimeout(noticeTimer);
       onReadyChange?.(false);
       observer.disconnect();
+      container?.removeEventListener("wheel", onWheel, { capture: true });
       onData.dispose();
       onResize.dispose();
+      onScroll.dispose();
       unlisten?.();
       unlisten = undefined;
       if (attached) void invoke("detach_terminal", { key, generation }).catch(() => {});
@@ -208,6 +427,34 @@ export default function TerminalPane({ target, onReadyChange }: {
         <p role="alert" className="term-error">Terminal connection failed: {error}</p>
       )}
       <div ref={containerRef} className="term-surface" />
+      {scroll.mode !== "live" ? (
+        <div className="term-scrollback" role="status">
+          <Icon name="arrowUp" size={13} />
+          <span>
+            {scroll.mode === "loading" ? "Loading earlier output…" : "Viewing earlier output"}
+            {scroll.mode === "history" && scroll.newOutput && (
+              <strong className="term-scrollback-new"> · New output below</strong>
+            )}
+          </span>
+          {scroll.mode === "history" && (<>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              title="Return to live output (Esc or Shift+End in the terminal)"
+              aria-keyshortcuts="Escape Shift+End"
+              // Keep focus where it was -- the terminal or the composer.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => jumpToLatest.current()}
+            >
+              <Icon name="arrowDown" size={12} />
+              Jump to latest
+            </button>
+            <span className="term-scrollback-keys">or <kbd>Esc</kbd></span>
+          </>)}
+        </div>
+      ) : notice ? (
+        <div className="term-scrollback term-scrollback-notice" role="status">{notice}</div>
+      ) : null}
     </div>
   );
 }

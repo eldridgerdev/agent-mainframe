@@ -1,0 +1,7 @@
+# Native GUI terminal-scrolling proof with a private database, checkout and tmux server.
+# Two offline harness fixtures (a long transcript and a full-screen program)
+# stand in for agents; no paid agent or model is invoked.
+note:The isolated TUI confirms the screenshot harness is ready before the native GUI capture starts.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/capture-gui-terminal-scrolling.sh" "$OUT_DIR"

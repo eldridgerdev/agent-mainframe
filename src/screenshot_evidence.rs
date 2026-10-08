@@ -182,7 +182,6 @@ fn open_directory(path: &Path, create: bool) -> Result<std::fs::File> {
 }
 
 pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     let directory = open_directory(path.parent().context("Missing evidence parent")?, false)?;
     let name = std::ffi::CString::new(
@@ -190,6 +189,15 @@ pub(crate) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
             .context("Missing evidence filename")?
             .as_bytes(),
     )?;
+    read_bounded_at(&directory, &name, limit)
+}
+
+fn read_bounded_at(
+    directory: &std::fs::File,
+    name: &std::ffi::CStr,
+    limit: u64,
+) -> Result<Vec<u8>> {
+    use std::os::fd::{AsRawFd, FromRawFd};
     let fd = unsafe {
         libc::openat(
             directory.as_raw_fd(),
@@ -590,10 +598,26 @@ pub(crate) fn remove_owned_directory(owner: &EvidenceOwner) -> Result<()> {
         return Err(std::io::Error::last_os_error().into());
     }
     let directory = unsafe { std::fs::File::from_raw_fd(fd) };
+    validate_directory_owner(&directory, owner)?;
     remove_directory_contents(&directory, 0, &mut 20_000, std::time::Instant::now())?;
+    // Keep ownership metadata until all other contents have been removed so
+    // bounded or partial cleanup can safely be retried.
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), c"owner.json".as_ptr(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
     if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    Ok(())
+}
+
+fn validate_directory_owner(directory: &std::fs::File, owner: &EvidenceOwner) -> Result<()> {
+    let stored: EvidenceOwner =
+        serde_json::from_slice(&read_bounded_at(directory, c"owner.json", METADATA_BYTES)?)?;
+    ensure!(
+        &stored == owner,
+        "Evidence ownership changed; refusing cleanup"
+    );
     Ok(())
 }
 
@@ -609,7 +633,10 @@ fn remove_directory_contents(
         "Cleanup nesting limit reached; remove unexpected nested directories and retry"
     );
     loop {
-        let names = directory_names(directory, 1000)?;
+        let names: Vec<_> = directory_names(directory, 1000)?
+            .into_iter()
+            .filter(|name| depth != 0 || name.as_bytes() != b"owner.json")
+            .collect();
         if names.is_empty() {
             return Ok(());
         }
@@ -715,6 +742,60 @@ mod tests {
             created_at: Utc::now(),
         }
     }
+    #[test]
+    fn cleanup_rejects_replaced_scope_and_invalid_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = owner(temp.path());
+        publish(&owner, 20);
+        let original = temp.path().join("original");
+        fs::rename(owner.directory(), &original).unwrap();
+        fs::create_dir(owner.directory()).unwrap();
+        let keep = owner.directory().join("keep.txt");
+        fs::write(&keep, "replacement").unwrap();
+        let mut replacement = owner.clone();
+        replacement.session_id = "different-session".into();
+        let metadata = owner.directory().join("owner.json");
+        fs::write(&metadata, serde_json::to_vec(&replacement).unwrap()).unwrap();
+        assert!(remove_owned_directory(&owner).is_err());
+        assert!(keep.exists());
+        fs::write(&metadata, b"{").unwrap();
+        assert!(remove_owned_directory(&owner).is_err());
+        assert!(keep.exists());
+        fs::remove_file(&metadata).unwrap();
+        assert!(remove_owned_directory(&owner).is_err());
+        assert!(keep.exists());
+        std::os::unix::fs::symlink(original.join("owner.json"), &metadata).unwrap();
+        assert!(remove_owned_directory(&owner).is_err());
+        assert!(keep.exists());
+        fs::remove_dir_all(owner.directory()).unwrap();
+        fs::rename(original, owner.directory()).unwrap();
+        remove_owned_directory(&owner).unwrap();
+        assert!(!owner.directory().exists());
+    }
+
+    #[test]
+    fn cleanup_reads_ownership_from_opened_directory_and_preserves_it_for_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = owner(temp.path());
+        publish(&owner, 20);
+        let directory = open_directory(&owner.directory(), false).unwrap();
+        let original = temp.path().join("original");
+        fs::rename(owner.directory(), &original).unwrap();
+        fs::create_dir(owner.directory()).unwrap();
+        // A matching path-based read must not authorize this opened replacement.
+        let replacement = open_directory(&owner.directory(), false).unwrap();
+        fs::rename(owner.directory(), temp.path().join("replacement")).unwrap();
+        fs::rename(original, owner.directory()).unwrap();
+        assert!(validate_directory_owner(&replacement, &owner).is_err());
+        validate_directory_owner(&directory, &owner).unwrap();
+        assert!(
+            remove_directory_contents(&directory, 0, &mut 0, std::time::Instant::now()).is_err()
+        );
+        validate_directory_owner(&directory, &owner).unwrap();
+        remove_owned_directory(&owner).unwrap();
+        assert!(!owner.directory().exists());
+    }
+
     pub(crate) fn publish(owner: &EvidenceOwner, color: u8) {
         ensure_directory(owner).unwrap();
         let mut bytes = Cursor::new(Vec::new());

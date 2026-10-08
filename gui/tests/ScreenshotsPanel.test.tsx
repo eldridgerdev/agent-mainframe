@@ -48,3 +48,30 @@ it("clears cached images when the current feature disappears during refresh", as
   expect(await screen.findByText("Feature deleted")).toBeTruthy();
   expect(screen.queryByText("Ready state")).toBeNull();
 });
+
+it.each(["refresh", "cleanup"])("keeps remaining screenshots accessible when %s reduces the page count", async (action) => {
+  mock();
+  let items = Array.from({ length: 45 }, (_, index) => ({ ...item, key: `scope:image-${index}`, image_id: `image-${index}`, caption: `Image ${index}` }));
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "screenshots_list" ? Promise.resolve({ ...listing, items }) : original(command, args, options));
+  render(<ScreenshotsPanel onClose={() => {}} />);
+  expect(await screen.findByText("Image 0")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+  fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+  expect(screen.getByText("Page 3")).toBeTruthy();
+  items = items.slice(0, 21);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh screenshots" }));
+  expect(await screen.findByText("Page 2")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "View screenshot Image 20" })).toBeTruthy();
+  items = items.slice(0, 20);
+  if (action === "cleanup") {
+    fireEvent.click(screen.getByRole("button", { name: "Screenshot cleanup…" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clean up this scope…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete screenshots" }));
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Refresh screenshots" }));
+  }
+  expect(await screen.findByRole("button", { name: "View screenshot Image 0" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Next page" })).toBeNull();
+  expect(screen.getAllByRole("button", { name: /^View screenshot Image/ })).toHaveLength(20);
+});

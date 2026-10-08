@@ -44,6 +44,10 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
     return () => { live = false; generation.current++; window.clearInterval(timer); };
   }, [refresh]);
   const items = listing?.items ?? [];
+  const currentPage = Math.min(page, Math.max(0, Math.ceil(items.length / 20) - 1));
+  useEffect(() => {
+    if (listing && page !== currentPage) setPage(currentPage);
+  }, [listing, page, currentPage]);
   const selected = items.find((item) => item.key === selectedKey) ?? null;
   const selectedIndex = selected ? items.indexOf(selected) : -1;
   const closeImage = useCallback(() => { setSelectedKey(null); window.requestAnimationFrame(() => Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-screenshot-key]")).find((button) => button.dataset.screenshotKey === trigger.current)?.focus()); }, []);
@@ -81,14 +85,14 @@ export default function ScreenshotsPanel({ target = null, sessionId = null, onCl
       {listing && items.length === 0 && <p>No completed screenshots. New Claude/Codex launches receive their evidence destination. Capture requires an explicit request for visual validation.</p>}
       {listing?.truncated && <p role="status">The evidence processing limit was reached. Clean up older scopes to view more.</p>}
       <div className="screenshot-grid">
-        {items.slice(page * 20, (page + 1) * 20).map((item) => <article className="screenshot-card" key={item.key}>
+        {items.slice(currentPage * 20, (currentPage + 1) * 20).map((item) => <article className="screenshot-card" key={item.key}>
           <button className="screenshot-open" data-screenshot-key={item.key} aria-label={`View screenshot ${item.caption || item.image_id}`} onClick={() => { trigger.current = item.key; setSelectedKey(item.key); }}>
             <ScreenshotImage identity={`${item.key}:${item.sha256}`} caption={item.caption || item.image_id} load={() => screenshotImage(item, true)} /><strong>{item.caption || item.image_id}</strong>
           </button>
           <p className="small muted">{item.owner.feature_name} · {item.owner.session_label}</p><p className="small mono">{item.owner.session_id}</p>
         </article>)}
       </div>
-      {items.length > 20 && <div className="row"><button disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Previous page</button><span>Page {page + 1}</span><button disabled={(page + 1) * 20 >= items.length} onClick={() => setPage((p) => p + 1)}>Next page</button></div>}
+      {items.length > 20 && <div className="row"><button disabled={currentPage === 0} onClick={() => setPage((p) => p - 1)}>Previous page</button><span>Page {currentPage + 1}</span><button disabled={(currentPage + 1) * 20 >= items.length} onClick={() => setPage((p) => p + 1)}>Next page</button></div>}
       {!!listing?.issues.length && <details><summary>Incomplete or unsupported evidence ({listing.issues.length})</summary>{listing.issues.map((issue, i) => <p key={i}>{issue.file}: {issue.message}</p>)}</details>}
       {cleanup && <section aria-label="Screenshot cleanup" className="callout">
         <p>Cleanup removes only the selected producing scope. Retained root and non-git evidence stays until you choose cleanup. Restart its agent session to receive a new destination afterward.</p>

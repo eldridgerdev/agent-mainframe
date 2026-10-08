@@ -320,8 +320,10 @@ fn append_guidance_from_configs(
         if matches!(pair[0].as_str(), "-c" | "--config")
             && let Some(value) = pair[1].strip_prefix("developer_instructions=")
         {
-            effective = toml::from_str::<toml::Value>(&format!("v={value}"))?
-                .get("v")
+            effective = toml::from_str::<toml::Value>(&format!("v={value}"))
+                .ok()
+                .as_ref()
+                .and_then(|parsed| parsed.get("v"))
                 .and_then(|v| v.as_str())
                 .unwrap_or(value)
                 .into();
@@ -493,6 +495,42 @@ mod screenshot_tests {
                 .contains("local-model")
         );
     }
+    #[test]
+    fn evidence_guidance_preserves_raw_cli_instruction_overrides() {
+        for flag in ["-c", "--config"] {
+            for value in [
+                "Follow our conventions",
+                "Unmatched \"quote",
+                "'Quoted instructions'",
+            ] {
+                let args = append_guidance_from_configs(
+                    &[],
+                    "Evidence",
+                    vec![flag.into(), format!("developer_instructions={value}")],
+                )
+                .unwrap();
+                let parsed: toml::Value = toml::from_str(
+                    args.last()
+                        .unwrap()
+                        .strip_prefix("developer_instructions=")
+                        .map(|value| format!("v={value}"))
+                        .unwrap()
+                        .as_str(),
+                )
+                .unwrap();
+                let expected = if value == "'Quoted instructions'" {
+                    "Quoted instructions"
+                } else {
+                    value
+                };
+                assert_eq!(
+                    parsed["v"].as_str(),
+                    Some(format!("{expected}\n\nEvidence").as_str())
+                );
+            }
+        }
+    }
+
     #[test]
     fn evidence_guidance_preserves_config_and_cli_instructions() {
         let dir = tempfile::tempdir().unwrap();

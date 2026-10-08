@@ -1173,6 +1173,13 @@ fn artifacts(
     Ok(found)
 }
 
+fn run_belongs_to_pr(run: &Value, number: u32) -> bool {
+    run["pull_requests"].as_array().is_some_and(|prs| {
+        prs.iter()
+            .any(|pr| pr["number"].as_u64() == Some(u64::from(number)))
+    })
+}
+
 pub(crate) fn retrieve(
     context: &PrContext,
     request_id: String,
@@ -1249,13 +1256,7 @@ pub(crate) fn retrieve(
             result.listing.more_runs = values.len() == 100;
             result.listing.runs = values
                 .iter()
-                .filter(|v| {
-                    v["head_sha"].as_str() == Some(&context.head_sha)
-                        || v["pull_requests"].as_array().is_some_and(|prs| {
-                            prs.iter()
-                                .any(|p| p["number"].as_u64() == Some(u64::from(context.number)))
-                        })
-                })
+                .filter(|v| run_belongs_to_pr(v, context.number))
                 .map(run_choice)
                 .collect();
         }
@@ -1300,6 +1301,7 @@ pub(crate) fn retrieve(
                             .filter(|v| {
                                 v["head_sha"].as_str() == Some(&context.head_sha)
                                     && v["status"].as_str() == Some("completed")
+                                    && run_belongs_to_pr(v, context.number)
                             })
                             .map(run_choice),
                     );
@@ -1991,9 +1993,9 @@ mod tests {
         let mut f = fixture("");
         let runs = json!([
             {"id":1,"head_sha":"old","status":"completed","created_at":"2026-10-07T04:00:00Z","pull_requests":[{"number":1}]},
-            {"id":2,"head_sha":"current","status":"in_progress","created_at":"2026-10-07T03:00:00Z"},
-            {"id":3,"head_sha":"current","status":"completed","created_at":"2026-10-07T02:00:00Z"},
-            {"id":4,"head_sha":"current","status":"completed","conclusion":"failure","run_attempt":2,"created_at":"2026-10-07T01:00:00Z"}]);
+            {"id":2,"head_sha":"current","pull_requests":[{"number":1}],"status":"in_progress","created_at":"2026-10-07T03:00:00Z"},
+            {"id":3,"head_sha":"current","pull_requests":[{"number":1}],"status":"completed","created_at":"2026-10-07T02:00:00Z"},
+            {"id":4,"head_sha":"current","pull_requests":[{"number":1}],"status":"completed","conclusion":"failure","run_attempt":2,"created_at":"2026-10-07T01:00:00Z"}]);
         f.responses.insert(
             "repos/base/repo/actions/runs?per_page=100&page=1".into(),
             json!({"workflow_runs":runs}),
@@ -2025,10 +2027,64 @@ mod tests {
         assert!(old.listing.items.is_empty());
     }
     #[test]
+    fn same_commit_runs_require_selected_pr_association() {
+        let mut f = fixture("");
+        let runs = json!([
+            {"id":10,"head_sha":"current","status":"completed","created_at":"2026-10-08T00:00:00Z"},
+            {"id":11,"head_sha":"current","status":"completed","created_at":"2026-10-08T00:00:00Z","pull_requests":[]},
+            {"id":12,"head_sha":"current","status":"completed","created_at":"2026-10-08T00:00:00Z","pull_requests":[{"number":2}]},
+            {"id":13,"head_sha":"current","status":"completed","pull_requests":[{"number":2},{"number":1}]},
+            {"id":14,"head_sha":"old","status":"completed","pull_requests":[{"number":1}]}
+        ]);
+        for query in ["", "head_sha=current&status=completed&"] {
+            f.responses.insert(
+                format!("repos/base/repo/actions/runs?{query}per_page=100&page=1"),
+                json!({"workflow_runs":runs}),
+            );
+        }
+        f.responses.insert(
+            "repos/base/repo/actions/runs/13/artifacts?per_page=100&page=1".into(),
+            json!({"artifacts":[{"id":130,"expired":false,"name":"visual"}]}),
+        );
+        f.downloads.insert(
+            "https://api.github.com/repos/base/repo/actions/artifacts/130/zip".into(),
+            zip(&[("ready.png", png())]),
+        );
+        let result = retrieve(&context(), "request".into(), None, 1, &f).unwrap();
+        assert_eq!(result.listing.selected_run, Some(13));
+        assert_eq!(
+            result
+                .listing
+                .runs
+                .iter()
+                .map(|run| run.id)
+                .collect::<Vec<_>>(),
+            vec![13, 14]
+        );
+        for id in [10, 11, 12] {
+            assert!(retrieve(&context(), "request".into(), Some(id), 1, &f).is_err());
+            assert!(
+                !f.calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|call| call.contains(&format!("/actions/runs/{id}/artifacts")))
+            );
+        }
+        assert!(
+            !f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| call.contains("/actions/runs/14/artifacts"))
+        );
+    }
+
+    #[test]
     fn rerun_started_later_wins_across_pages_and_older_page_is_selectable() {
         let mut f = fixture("");
-        let page_one: Vec<_> = (1..=100).map(|id| json!({"id":id,"head_sha":"current","status":"completed","created_at":"2026-10-01T00:00:00Z"})).collect();
-        let rerun = json!({"id":900,"name":"Rerun","head_sha":"current","status":"completed","run_attempt":3,"created_at":"2026-09-01T00:00:00Z","run_started_at":"2026-10-07T01:00:00Z"});
+        let page_one: Vec<_> = (1..=100).map(|id| json!({"id":id,"head_sha":"current","pull_requests":[{"number":1}],"status":"completed","created_at":"2026-10-01T00:00:00Z"})).collect();
+        let rerun = json!({"id":900,"name":"Rerun","head_sha":"current","pull_requests":[{"number":1}],"status":"completed","run_attempt":3,"created_at":"2026-09-01T00:00:00Z","run_started_at":"2026-10-07T01:00:00Z"});
         for query in ["", "head_sha=current&status=completed&"] {
             f.responses.insert(
                 format!("repos/base/repo/actions/runs?{query}per_page=100&page=1"),

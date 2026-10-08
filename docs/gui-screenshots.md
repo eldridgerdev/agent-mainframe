@@ -43,7 +43,9 @@ and HTML galleries do not render in the viewer. GitHub's HTML image markup is
 supported when it references a supported image. Gallery links open in your
 browser using its authentication. Private attachments are retrieved as images.
 
-GitHub CLI authentication is reused for GitHub sources. Private attachment and
+GitHub CLI authentication is reused for GitHub sources. If an uploaded image
+returns an HTML page or fails to download, AMF asks GitHub's authenticated API
+for a fresh image URL and retries automatically. Private attachment and
 artifact support is implemented but **live authenticated private-source
 validation is still pending**. GitHub Enterprise hosts are currently unsupported.
 Images, archives and history are bounded; source errors and limit notices stay

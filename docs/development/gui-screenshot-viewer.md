@@ -96,6 +96,13 @@ The product choices in the last subsection were confirmed by the user.
   no GitHub credentials. Bound time, bytes and redirect depth; restrict protocols
   to HTTP(S), prevent credential forwarding to another origin, and prevent
   remote URLs from reaching local/private network addresses.
+- If a GitHub attachment download fails or returns HTML, render that single
+  image through the authenticated [Markdown API](https://docs.github.com/en/rest/markdown/markdown)
+  in the PR's repository context, then retrieve the resulting GitHub image URL
+  without forwarding the CLI token. GitHub can return a short-lived signed URL
+  even when the original upload endpoint does not serve image bytes. Resolve
+  again on retry; never store or display the signed URL. Accept exactly one
+  HTTPS image on GitHub's user-image hosts. Browser cookies are not read.
 - Renew source-specific retrieval URLs from stable identities on retry. Do
   not persist signed URLs as identities or include credentials in logs or
   frontend errors. GitHub documents the repository contents `ref` parameter
@@ -244,6 +251,10 @@ It does not capture or publish screenshot proof. On 2026-10-07 it passed:
   gallery URL.
 - Live public GitHub user-attachment retrieval, redirects and thumbnail decoding
   through the production HTTP adapter, using the README attachment as a fixture.
+- Authenticated single-image Markdown rendering for public PR #654 returned a
+  signed GitHub image URL; fetching it without a token returned PNG bytes. Unit
+  fixtures cover the failed/HTML attachment fallback and fresh URL resolution on
+  retry. The reported coworker-image failure on macOS remains unverified.
 - Live public Actions artifact download, redirect, archive validation and
   thumbnail transport (artifact 11515311988). This proves the public download
   path; PR/run association and default policy are covered by source fixtures.

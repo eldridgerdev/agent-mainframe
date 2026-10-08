@@ -443,6 +443,10 @@ impl CancellableGithub {
     }
 }
 impl EvidenceGithub for CancellableGithub {
+    fn attachment_redirect(&self, context: &PrContext, source: &str) -> anyhow::Result<String> {
+        self.check()?;
+        self.inner.attachment_redirect(context, source)
+    }
     fn json(&self, workdir: &std::path::Path, endpoint: &str) -> anyhow::Result<serde_json::Value> {
         self.check()?;
         self.inner.json(workdir, endpoint)

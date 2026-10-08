@@ -105,6 +105,9 @@ pub(crate) trait EvidenceGithub: Send + Sync {
     fn json(&self, workdir: &Path, endpoint: &str) -> Result<Value>;
     fn raw(&self, workdir: &Path, endpoint: &str, limit: u64) -> Result<Vec<u8>>;
     fn http(&self, workdir: &Path, url: &str, authenticated: bool, limit: u64) -> Result<Download>;
+    fn attachment_redirect(&self, _context: &PrContext, _source: &str) -> Result<String> {
+        bail!("GitHub attachment URL refresh is unavailable")
+    }
 }
 pub(crate) struct GithubEvidence;
 pub(crate) struct Download {
@@ -276,6 +279,43 @@ fn attachment_url(url: &Url) -> bool {
 }
 
 impl EvidenceGithub for GithubEvidence {
+    fn attachment_redirect(&self, context: &PrContext, source: &str) -> Result<String> {
+        repo_slug(&context.owner)?;
+        repo_slug(&context.repo)?;
+        let source_url = validated_url(source)?;
+        ensure!(
+            source_url.scheme() == "https" && attachment_url(&source_url),
+            "Unsupported attachment source"
+        );
+        // Render only this image through the authenticated API. GitHub replaces
+        // protected upload URLs with short-lived, signed download URLs. This
+        // operation creates no comment and needs no browser session or cookies.
+        let text = format!(
+            "text=<img src=\"{}\">",
+            source_url
+                .as_str()
+                .replace('&', "&amp;")
+                .replace('"', "&quot;")
+        );
+        let repository = format!("context={}/{}", context.owner, context.repo);
+        let html = gh(
+            &context.workdir,
+            &[
+                "api",
+                "markdown",
+                "-H",
+                "Accept: text/html",
+                "-f",
+                &text,
+                "-f",
+                "mode=gfm",
+                "-f",
+                &repository,
+            ],
+            64 * 1024,
+        )?;
+        rendered_attachment_url(std::str::from_utf8(&html)?, &source_url)
+    }
     fn json(&self, workdir: &Path, endpoint: &str) -> Result<Value> {
         Ok(serde_json::from_slice(&gh(
             workdir,
@@ -396,6 +436,33 @@ impl EvidenceGithub for GithubEvidence {
         }
         bail!("Source exceeded redirect limit")
     }
+}
+
+fn rendered_attachment_url(html: &str, source: &Url) -> Result<String> {
+    let fragment = scraper::Html::parse_fragment(html);
+    let selector = scraper::Selector::parse("img[src]").unwrap();
+    let mut images = fragment.select(&selector);
+    let image = images
+        .next()
+        .context("GitHub did not return an attachment image URL")?;
+    ensure!(
+        images.next().is_none(),
+        "GitHub returned ambiguous attachment images"
+    );
+    let url = validated_url(image.value().attr("src").unwrap())?;
+    ensure!(
+        url.scheme() == "https"
+            && matches!(
+                url.host_str(),
+                Some(
+                    "private-user-images.githubusercontent.com"
+                        | "user-images.githubusercontent.com"
+                )
+            )
+            && url != *source,
+        "GitHub did not return a refreshed attachment download URL"
+    );
+    Ok(url.into())
 }
 
 #[derive(Debug, Clone)]
@@ -1235,10 +1302,20 @@ pub(crate) fn resource_image(
             );
         }
         Resource::Url(url, auth) => {
-            return decode_download(
-                github.http(&context.workdir, url, *auth, IMAGE_BYTES)?,
-                thumbnail,
-            );
+            let download = github.http(&context.workdir, url, *auth, IMAGE_BYTES);
+            // API authentication does not guarantee that the web upload endpoint
+            // serves image bytes with the same token. Ask the API for a fresh
+            // signed URL before reporting a refused or HTML download as failure.
+            if *auth && (download.is_err() || download.as_ref().is_ok_and(html_download)) {
+                let refreshed = github.attachment_redirect(context, url)?;
+                return decode_download(
+                    // The signature authorizes this download; never forward the
+                    // user's GitHub token to a rendered image/CDN URL.
+                    github.http(&context.workdir, &refreshed, false, IMAGE_BYTES)?,
+                    thumbnail,
+                );
+            }
+            return decode_download(download?, thumbnail);
         }
         Resource::Repository {
             owner,
@@ -1257,6 +1334,19 @@ pub(crate) fn resource_image(
     crate::screenshot_evidence::decode(&bytes, thumbnail)
 }
 
+fn html_download(download: &Download) -> bool {
+    if image::guess_format(&download.bytes).is_ok() {
+        return false;
+    }
+    let prefix = String::from_utf8_lossy(&download.bytes[..download.bytes.len().min(256)])
+        .trim_start()
+        .to_ascii_lowercase();
+    let media = download.content_type.split(';').next().unwrap_or("").trim();
+    matches!(media, "text/html" | "application/xhtml+xml")
+        || prefix.starts_with("<!doctype html")
+        || prefix.starts_with("<html")
+}
+
 fn decode_download(
     download: Download,
     thumbnail: bool,
@@ -1264,15 +1354,10 @@ fn decode_download(
     // Some attachment failures return a successful HTML/login response. Do not
     // describe that response as an unsupported image or expose its body.
     if image::guess_format(&download.bytes).is_err() {
-        let prefix = String::from_utf8_lossy(&download.bytes[..download.bytes.len().min(256)])
-            .trim_start()
-            .to_ascii_lowercase();
         let media = download.content_type.split(';').next().unwrap_or("").trim();
         ensure!(
-            !matches!(media, "text/html" | "application/xhtml+xml")
-                && !prefix.starts_with("<!doctype html")
-                && !prefix.starts_with("<html"),
-            "Image source returned an HTML page instead of image bytes; check the attachment URL and gh authentication, then retry"
+            !html_download(&download),
+            "Image source returned an HTML page instead of image bytes; retry or open the image on GitHub"
         );
         ensure!(
             media != "application/json",
@@ -1413,6 +1498,153 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+
+    struct AttachmentFixture {
+        initial: &'static str,
+        refresh_fails: bool,
+        calls: Mutex<Vec<String>>,
+    }
+    const UPLOAD: &str = "https://github.com/user-attachments/assets/protected";
+    const SIGNED: &str =
+        "https://private-user-images.githubusercontent.com/1/image.png?jwt=temporary";
+    impl EvidenceGithub for AttachmentFixture {
+        fn json(&self, _: &Path, _: &str) -> Result<Value> {
+            bail!("Unexpected repository metadata read")
+        }
+        fn raw(&self, _: &Path, _: &str, _: u64) -> Result<Vec<u8>> {
+            bail!("Unexpected repository file read")
+        }
+        fn attachment_redirect(&self, context: &PrContext, source: &str) -> Result<String> {
+            assert_eq!((&*context.owner, &*context.repo), ("base", "repo"));
+            assert_eq!(source, UPLOAD);
+            self.calls.lock().unwrap().push("refresh".into());
+            ensure!(!self.refresh_fails, "GitHub attachment unavailable");
+            Ok(SIGNED.into())
+        }
+        fn http(&self, _: &Path, url: &str, auth: bool, limit: u64) -> Result<Download> {
+            assert_eq!(limit, IMAGE_BYTES);
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("http {auth} {url}"));
+            let (bytes, media) = if url == SIGNED {
+                assert!(
+                    !auth,
+                    "Signed downloads must never receive the GitHub token"
+                );
+                (png(), "image/png")
+            } else {
+                match self.initial {
+                    "denied" => bail!("Source returned HTTP 404"),
+                    "html" => (b"<!doctype html><html>Sign in</html>".to_vec(), "text/html"),
+                    "invalid" => (b"unsupported image".to_vec(), "image/png"),
+                    _ => (png(), "text/html"),
+                }
+            };
+            Ok(Download {
+                bytes,
+                final_url: url.into(),
+                content_type: media.into(),
+            })
+        }
+    }
+
+    #[test]
+    fn refused_or_html_attachments_refresh_signed_urls_without_forwarding_credentials() {
+        for initial in ["html", "denied"] {
+            let github = AttachmentFixture {
+                initial,
+                refresh_fails: false,
+                calls: Mutex::new(vec![]),
+            };
+            let image = inline_image(&context(), UPLOAD, &github).unwrap();
+            assert_eq!(image.width, 2);
+            assert_eq!(
+                *github.calls.lock().unwrap(),
+                [
+                    format!("http true {UPLOAD}"),
+                    "refresh".into(),
+                    format!("http false {SIGNED}")
+                ]
+            );
+            // Retrying resolves again rather than reusing an expiring signature.
+            inline_image(&context(), UPLOAD, &github).unwrap();
+            assert_eq!(
+                github
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| *call == "refresh")
+                    .count(),
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn attachment_refresh_is_bounded_and_does_not_mask_image_or_unrelated_source_errors() {
+        for initial in ["valid", "invalid"] {
+            let github = AttachmentFixture {
+                initial,
+                refresh_fails: false,
+                calls: Mutex::new(vec![]),
+            };
+            assert_eq!(
+                inline_image(&context(), UPLOAD, &github).is_ok(),
+                initial == "valid"
+            );
+            assert_eq!(github.calls.lock().unwrap().len(), 1);
+        }
+        let github = AttachmentFixture {
+            initial: "html",
+            refresh_fails: true,
+            calls: Mutex::new(vec![]),
+        };
+        assert!(
+            inline_image(&context(), UPLOAD, &github)
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        assert_eq!(github.calls.lock().unwrap().len(), 2);
+        let github = AttachmentFixture {
+            initial: "html",
+            refresh_fails: false,
+            calls: Mutex::new(vec![]),
+        };
+        let error = inline_image(&context(), "https://example.com/image.png", &github)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("HTML page"));
+        assert!(!error.contains("gh authentication"));
+        assert_eq!(github.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rendered_attachment_urls_accept_one_github_image_and_reject_unsafe_destinations() {
+        let source = validated_url(UPLOAD).unwrap();
+        assert_eq!(
+            rendered_attachment_url(
+                &format!("<a href=\"{SIGNED}\"><img src=\"{SIGNED}&amp;extra=1\"></a>"),
+                &source
+            )
+            .unwrap(),
+            format!("{SIGNED}&extra=1")
+        );
+        for html in [
+            "<html>Sign in</html>".to_string(),
+            format!("<img src=\"{SIGNED}\"><img src=\"{SIGNED}\">"),
+            format!("<img src=\"{UPLOAD}\">"),
+            "<img src=\"https://example.com/image.png\">".into(),
+            "<img src=\"http://private-user-images.githubusercontent.com/image.png\">".into(),
+            "<img src=\"https://token@private-user-images.githubusercontent.com/image.png\">"
+                .into(),
+            "<img src=\"http://127.0.0.1/image.png\">".into(),
+        ] {
+            assert!(rendered_attachment_url(&html, &source).is_err());
+        }
     }
     #[test]
     fn inline_uploaded_images_decode_bytes_without_filename_extensions_or_description_reads() {

@@ -371,6 +371,23 @@ fn run_notify_fallbacks(
     }
 }
 
+fn capture_reply_draft_in_store(
+    path: &std::path::Path,
+    number: u32,
+    comment: u64,
+    request: &str,
+    body: &str,
+) -> Result<()> {
+    if !path.is_file() {
+        anyhow::bail!("AMF reply-draft store is unavailable");
+    }
+    let db = db::AmfDb::open(path)?;
+    if !db.capture_pr_comment_reply_draft(number, comment, request, body)? {
+        anyhow::bail!("Reply draft refused: this fix request is stale or unknown");
+    }
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -414,7 +431,17 @@ pub fn run() -> Result<()> {
             "draft_request_id": request_id,
             "body": body,
         });
-        ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?)?;
+        if ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?).is_err() {
+            // A standalone GUI does not bind the TUI socket. The same SQLite
+            // request-id guard accepts receipts without launching another AMF.
+            capture_reply_draft_in_store(
+                &project::db_path(),
+                pr_number,
+                comment_id,
+                &request_id,
+                body,
+            )?;
+        }
         return Ok(());
     }
 
@@ -2225,6 +2252,30 @@ mod tests {
     fn read_settings(path: &std::path::Path) -> serde_json::Value {
         let s = fs::read_to_string(path).unwrap();
         serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn reply_draft_fallback_requires_existing_store_and_current_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amf.db");
+        assert!(super::capture_reply_draft_in_store(&path, 7, 101, "request", "Fixed").is_err());
+        assert!(!path.exists());
+        let db = crate::db::AmfDb::open(&path).unwrap();
+        db.begin_pr_comment_reply_draft(7, 101, "current", "head", None)
+            .unwrap();
+        assert!(super::capture_reply_draft_in_store(&path, 7, 101, "old", "Wrong").is_err());
+        super::capture_reply_draft_in_store(
+            &path,
+            7,
+            101,
+            "current",
+            "Fixed through standalone GUI",
+        )
+        .unwrap();
+        assert_eq!(
+            db.load_pr_comment_reply_draft(7, 101).unwrap().as_deref(),
+            Some("Fixed through standalone GUI")
+        );
     }
 
     #[test]

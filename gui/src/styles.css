@@ -1364,6 +1364,8 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .pr-description { margin: 12px 0 20px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
 .pr-description > summary { cursor: pointer; font-weight: 600; }
 .pr-inline-image { display: inline-block; max-width: 100%; vertical-align: middle; }
+.pr-image-access { display: block; margin-top: .35rem; }
+.pr-image-access-row { display: block; }
 .pr-image-open { display: block; border: 0; padding: 0; background: transparent; cursor: zoom-in; max-width: 100%; }
 .pr-image-open img { display: block; max-width: 100%; height: auto; max-height: 70vh; object-fit: contain; }
 .pr-markdown table { border-collapse: collapse; }

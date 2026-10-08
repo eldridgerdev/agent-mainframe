@@ -116,6 +116,65 @@ pub(crate) struct Download {
     pub content_type: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct GithubAccessCheck {
+    pub name: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+/// Diagnose the credentials actually used by this process, independently of
+/// repository and attachment access. Results never contain tokens or signed URLs.
+pub(crate) fn check_pr_image_access(
+    context: &PrContext,
+    source: &str,
+    github: &dyn EvidenceGithub,
+) -> Vec<GithubAccessCheck> {
+    let mut checks = Vec::new();
+    let account = github.json(&context.workdir, "user").and_then(|user| {
+        let login = user["login"]
+            .as_str()
+            .context("GitHub did not return an account")?;
+        repo_slug(login)?;
+        Ok(login.to_owned())
+    });
+    checks.push(GithubAccessCheck {
+        name: "GitHub account".into(),
+        passed: account.is_ok(),
+        detail: match account {
+            Ok(login) => format!("Authenticated as {login}"),
+            Err(_) => {
+                "AMF could not verify a GitHub user account; check the PR access result below"
+                    .into()
+            }
+        },
+    });
+    let pr = pr_document(context, github);
+    checks.push(GithubAccessCheck {
+        name: "PR access".into(),
+        passed: pr.is_ok(),
+        detail: if pr.is_ok() {
+            format!("Can read {}/{} PR #{} at the selected head", context.owner, context.repo, context.number)
+        } else {
+            "AMF could not read this PR at the selected head; check repository access or refresh the PR".into()
+        },
+    });
+    if pr.is_err() {
+        return checks;
+    }
+    let image = inline_image(context, source, github);
+    checks.push(GithubAccessCheck {
+        name: "Image access".into(),
+        passed: image.is_ok(),
+        detail: if image.is_ok() {
+            "Image retrieved and decoded successfully; retry the image to display it".into()
+        } else {
+            "PR access passed, but image retrieval failed; the attachment URL, image access, format or network response needs investigation".into()
+        },
+    });
+    checks
+}
+
 struct GhChild(std::process::Child, bool);
 impl Drop for GhChild {
     fn drop(&mut self) {
@@ -1491,6 +1550,58 @@ mod tests {
             downloads: HashMap::new(),
             calls: Mutex::new(vec![]),
         }
+    }
+    #[test]
+    fn image_access_check_distinguishes_authenticated_accounts_pr_access_and_image_failures() {
+        let mut github = fixture("");
+        github
+            .responses
+            .insert("user".into(), json!({"login":"coworker"}));
+        let checks = check_pr_image_access(&context(), UPLOAD, &github);
+        assert_eq!(checks.len(), 3);
+        assert!(checks[0].passed && checks[0].detail.contains("coworker"));
+        assert!(checks[1].passed);
+        assert!(!checks[2].passed);
+        assert!(checks[2].detail.contains("PR access passed"));
+        assert!(!checks[2].detail.contains("jwt="));
+
+        github.downloads.insert(UPLOAD.into(), png());
+        assert!(
+            check_pr_image_access(&context(), UPLOAD, &github)
+                .iter()
+                .all(|check| check.passed)
+        );
+
+        github.responses.remove("repos/base/repo/pulls/1");
+        github.calls.lock().unwrap().clear();
+        let checks = check_pr_image_access(&context(), UPLOAD, &github);
+        assert_eq!(checks.len(), 2);
+        assert!(checks[0].passed && !checks[1].passed);
+        assert_eq!(
+            *github.calls.lock().unwrap(),
+            ["user", "repos/base/repo/pulls/1"]
+        );
+
+        github.responses.remove("user");
+        github.calls.lock().unwrap().clear();
+        let checks = check_pr_image_access(&context(), UPLOAD, &github);
+        assert_eq!(checks.len(), 2);
+        assert!(!checks[0].passed);
+        assert!(!checks[1].passed);
+        assert_eq!(
+            *github.calls.lock().unwrap(),
+            ["user", "repos/base/repo/pulls/1"]
+        );
+
+        // Installation tokens can read a PR without exposing a user account.
+        github.responses.insert(
+            "repos/base/repo/pulls/1".into(),
+            json!({"head":{"sha":"current"}}),
+        );
+        let checks = check_pr_image_access(&context(), UPLOAD, &github);
+        assert_eq!(checks.len(), 3);
+        assert!(!checks[0].passed);
+        assert!(checks[1].passed && checks[2].passed);
     }
     fn png() -> Vec<u8> {
         let mut out = Cursor::new(Vec::new());

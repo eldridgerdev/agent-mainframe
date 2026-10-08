@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import PrMarkdown, { PrDescription } from "../src/PrMarkdown";
-import type { ImageData } from "../src/screenshotsApi";
+import type { GithubAccessCheck, ImageData } from "../src/screenshotsApi";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const image = { data_url: "data:image/png;base64,AA==", width: 4, height: 3 };
@@ -42,6 +42,42 @@ it("retries a failed image in place", async () => {
   expect(await screen.findByRole("alert")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Retry image" }));
   expect(await screen.findByRole("img", { name: "Upload" })).toBeTruthy();
+});
+
+it("checks the account, PR and image independently without treating an image failure as a login failure", async () => {
+  const checks: GithubAccessCheck[] = [
+    { name: "GitHub account", passed: true, detail: "Authenticated as coworker" },
+    { name: "PR access", passed: true, detail: "Can read this PR" },
+    { name: "Image access", passed: false, detail: "Authentication and PR access passed, but image retrieval failed" },
+  ];
+  vi.mocked(invoke).mockImplementation((command) => command === "screenshots_check_access"
+    ? Promise.resolve(checks) : Promise.reject({ message: "Image source returned HTML" }));
+  render(<PrMarkdown {...props} source="![Upload](https://github.com/user-attachments/assets/file)" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Check access" }));
+  expect(await screen.findByText(/Passed — GitHub account: Authenticated as coworker/)).toBeTruthy();
+  expect(screen.getByText(/Passed — PR access/)).toBeTruthy();
+  expect(screen.getByText(/Failed — Image access/)).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("screenshots_check_access", {
+    workflowId: "triage", source: "https://github.com/user-attachments/assets/file",
+  });
+});
+
+it("rejects delayed access checks after changing PR and clears their results on image retry", async () => {
+  let complete!: (value: GithubAccessCheck[]) => void;
+  const pending = new Promise<GithubAccessCheck[]>((resolve) => { complete = resolve; });
+  vi.mocked(invoke).mockImplementation((command, args) => command === "screenshots_check_access"
+    ? (args as { workflowId: string }).workflowId === "old" ? pending : Promise.reject({ kind: "internal", message: "Check timed out" })
+    : Promise.reject({ message: "Image source returned HTML" }));
+  const view = render(<PrMarkdown {...props} workflowId="old" identity="old" source="![Old](./old.png)" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Check access" }));
+  expect(screen.getByRole("button", { name: "Checking access…" }).hasAttribute("disabled")).toBe(true);
+  view.rerender(<PrMarkdown {...props} source="![New](./new.png)" />);
+  fireEvent.click(await screen.findByRole("button", { name: "Check access" }));
+  expect(await screen.findByText(/Failed — Access check: Check timed out/)).toBeTruthy();
+  complete([{ name: "GitHub account", passed: true, detail: "Old account" }]);
+  await waitFor(() => expect(screen.queryByText(/Old account/)).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "Retry image" }));
+  await waitFor(() => expect(screen.queryByText(/Check timed out/)).toBeNull());
 });
 
 it("does not apply an old description after switching PRs", async () => {

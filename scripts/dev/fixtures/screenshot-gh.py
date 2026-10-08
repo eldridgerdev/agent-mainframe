@@ -27,6 +27,8 @@ def out(value):
 
 
 if "--method" not in args and not any("mutation" in a for a in args):
+    if args[:2] == ["api", "user"]:
+        out(dict(login="fixture-reviewer"))
     if args[:2] == ["pr", "view"] and ("11" in args or live_artifact):
         number = 11 if "11" in args else 12
         repo = (

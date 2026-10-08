@@ -103,6 +103,13 @@ The product choices in the last subsection were confirmed by the user.
   even when the original upload endpoint does not serve image bytes. Resolve
   again on retry; never store or display the signed URL. Accept exactly one
   HTTPS image on GitHub's user-image hosts. Browser cookies are not read.
+- A failed inline image offers **Check access**. On a blocking worker, read the
+  authenticated account from `GET /user`, read the selected PR at its current
+  head, then try retrieving/decoding the specific image through the normal
+  adapter. Keep those results separate: a user-account read can fail for an
+  installation token that still has PR/image access. Recheck the workflow/PR
+  context before returning, and discard frontend results after retry/unmount.
+  Diagnostics expose neither tokens nor signed download URLs.
 - Renew source-specific retrieval URLs from stable identities on retry. Do
   not persist signed URLs as identities or include credentials in logs or
   frontend errors. GitHub documents the repository contents `ref` parameter

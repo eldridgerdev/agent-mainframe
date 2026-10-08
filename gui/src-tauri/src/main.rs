@@ -1223,6 +1223,30 @@ async fn screenshots_pr_document(
 }
 
 #[tauri::command]
+async fn screenshots_check_access(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    source: String,
+) -> Result<Vec<gui_screenshots::GithubAccessCheck>, GuiError> {
+    let read = gui_screenshots::plan_inline_image(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        source,
+    )?;
+    let (read, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = read.check_access();
+        (read, result)
+    })
+    .await
+    .map_err(|e| GuiError::from(anyhow::anyhow!("GitHub access check stopped: {e}")))?;
+    gui_screenshots::finish_inline_image(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &read,
+    )?;
+    result
+}
+
+#[tauri::command]
 async fn screenshots_inline_image(
     state: State<'_, AppState>,
     workflow_id: String,
@@ -1267,6 +1291,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             screenshots_pr_document,
             screenshots_inline_image,
+            screenshots_check_access,
             screenshots_remote_list,
             screenshots_remote_image,
             screenshots_remote_close,

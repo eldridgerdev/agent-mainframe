@@ -48,6 +48,9 @@ returns an HTML page or fails to download, AMF asks GitHub's authenticated API
 for a fresh image URL and retries automatically. Private attachment and
 artifact support is implemented but **live authenticated private-source
 validation is still pending**. GitHub Enterprise hosts are currently unsupported.
+Use **Check access** beside a failed PR image to check AMF's GitHub account,
+access to the current PR, and retrieval of that image separately. The check
+uses the existing CLI credentials and reports no tokens or signed URLs.
 Images, archives and history are bounded; source errors and limit notices stay
 visible. See [coverage and acceptance](development/gui-screenshot-viewer.md) for
 verified cases and the native check command.

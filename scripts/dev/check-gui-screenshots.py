@@ -561,6 +561,15 @@ export function formatTotal(total: number): string {
                 break
             time.sleep(0.1)
         assert view["stage"] == "review"
+        access = invoke(
+            "screenshots_check_access",
+            dict(workflowId=view["workflow_id"], source="./ready.png"),
+        )
+        assert [check["name"] for check in access] == [
+            "GitHub account", "PR access", "Image access"
+        ]
+        assert all(check["passed"] for check in access)
+        checks.append("Account, PR and image access diagnostics succeed through actual IPC with isolated credentials")
         (gh_state / "delay.txt").write_text("1")
         evaluate(
             "window.previousPrResult=null;window.__TAURI_INTERNALS__.invoke('screenshots_pr_document',"

@@ -20,3 +20,5 @@ export const screenshotCleanup = (scopeId: string) => invoke<void>("screenshots_
 export const openScreenshotBrowser = (url: string) => invoke<void>("screenshots_open_browser", { url });
 export const prDescription = (workflowId: string) => invoke<string>("screenshots_pr_document", { workflowId });
 export const inlinePrImage = (workflowId: string, source: string) => invoke<ImageData>("screenshots_inline_image", { workflowId, source });
+export interface GithubAccessCheck { name: string; passed: boolean; detail: string }
+export const checkPrImageAccess = (workflowId: string, source: string) => invoke<GithubAccessCheck[]>("screenshots_check_access", { workflowId, source });

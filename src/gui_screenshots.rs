@@ -164,7 +164,7 @@ pub fn plan_cleanup(gui: &mut GuiHandle, scope_id: &str) -> GuiResult<CleanupRea
 }
 
 pub use crate::screenshot_sources::{
-    BrowserGallery, RemoteItem, RemoteListing, RunChoice, SourceIssue,
+    BrowserGallery, GithubAccessCheck, RemoteItem, RemoteListing, RunChoice, SourceIssue,
 };
 use crate::screenshot_sources::{EvidenceGithub, GithubEvidence, PrContext, Resource, Retrieved};
 use std::sync::Arc;
@@ -378,6 +378,14 @@ impl InlineImageRead {
         let _permit = crate::screenshot_evidence::image_worker().map_err(GuiError::from)?;
         crate::screenshot_sources::inline_image(&self.context, &self.source, &GithubEvidence)
             .map_err(GuiError::from)
+    }
+    pub fn check_access(&self) -> GuiResult<Vec<GithubAccessCheck>> {
+        let _permit = crate::screenshot_evidence::image_worker().map_err(GuiError::from)?;
+        Ok(crate::screenshot_sources::check_pr_image_access(
+            &self.context,
+            &self.source,
+            &GithubEvidence,
+        ))
     }
 }
 pub fn plan_inline_image(

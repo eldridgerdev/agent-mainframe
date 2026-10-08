@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
 import { asGuiError } from "./api";
-import { ImageData, inlinePrImage, openScreenshotBrowser, prDescription } from "./screenshotsApi";
+import { GithubAccessCheck, ImageData, checkPrImageAccess, inlinePrImage, openScreenshotBrowser, prDescription } from "./screenshotsApi";
 import { Spinner } from "./ui";
 
 export type OpenPrImage = (image: ImageData, caption: string, trigger: HTMLElement) => void;
@@ -15,6 +15,9 @@ function InlinePrImage({ workflowId, source, caption, onOpen }: {
   const [image, setImage] = useState<ImageData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const [access, setAccess] = useState<GithubAccessCheck[] | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(false);
+  const accessRequest = useRef(0);
   const host = useRef<HTMLSpanElement>(null);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
   useEffect(() => {
@@ -33,11 +36,27 @@ function InlinePrImage({ workflowId, source, caption, onOpen }: {
     let live = true;
     setImage(null);
     setError(null);
+    setAccess(null);
+    setCheckingAccess(false);
     inlinePrImage(workflowId, source)
       .then((value) => { if (live) setImage(value); })
       .catch((err) => { if (live) setError(asGuiError(err).message); });
-    return () => { live = false; };
+    return () => { live = false; accessRequest.current += 1; };
   }, [workflowId, source, retry, visible]);
+
+  const checkAccess = () => {
+    const request = ++accessRequest.current;
+    setCheckingAccess(true);
+    setAccess(null);
+    checkPrImageAccess(workflowId, source)
+      .then((checks) => { if (request === accessRequest.current) setAccess(checks); })
+      .catch((err) => {
+        if (request === accessRequest.current) {
+          setAccess([{ name: "Access check", passed: false, detail: asGuiError(err).message }]);
+        }
+      })
+      .finally(() => { if (request === accessRequest.current) setCheckingAccess(false); });
+  };
 
   return <span ref={host} className="pr-inline-image">
     {image ? <button type="button" className="pr-image-open" aria-label={`Enlarge image: ${caption}`}
@@ -47,7 +66,15 @@ function InlinePrImage({ workflowId, source, caption, onOpen }: {
       {caption}: {error}{" "}
       <button type="button" className="btn btn-secondary btn-sm" onClick={(event) => {
         event.preventDefault(); event.stopPropagation(); setRetry((value) => value + 1);
-      }}>Retry image</button>
+      }}>Retry image</button>{" "}
+      <button type="button" className="btn btn-secondary btn-sm" disabled={checkingAccess} onClick={(event) => {
+        event.preventDefault(); event.stopPropagation(); checkAccess();
+      }}>{checkingAccess ? "Checking access…" : "Check access"}</button>
+      {access && <span className="pr-image-access" role="status">
+        {access.map((check) => <span className="pr-image-access-row" key={check.name}>
+          {check.passed ? "Passed" : "Failed"} — {check.name}: {check.detail}
+        </span>)}
+      </span>}
     </span> : <span role="status"><Spinner /> Loading {caption}…</span>}
   </span>;
 }

@@ -915,3 +915,37 @@ it("keeps an automatic review open when its auto-open preference is disabled dur
   expect(screen.getByRole("dialog", { name: "Supervised edits" })).toBe(popup);
   client.clear(); localStorage.clear();
 });
+
+
+it("hands a PR fix to the chosen agent composer once while preserving both sessions' drafts", async () => {
+  const client = await openFeature([session("Claude", "claude"), session("Codex", "codex")], [], "stopped", true);
+  fireEvent.change(draftInput(), { target: { value: "Claude reminder" } });
+  fireEvent.click(screen.getByRole("tab", { name: /Codex/ }));
+  fireEvent.change(draftInput(), { target: { value: "Codex reminder" } });
+  fireEvent.click(screen.getByRole("tab", { name: /Claude/ }));
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const target = { project_id: "project", feature_id: "feature", session_id: "Codex" };
+  const view = {
+    workflow_id: "triage-id", revision: 2, target, feature_name: "my-feat", branch: "my-feat", stage: "review",
+    picker: null, loading_pr: null, precall: null, reply: null, write_confirm: null, handoff: null,
+    fix_targets: [{ target, label: "Codex", harness: "codex", stopped: true }],
+    fix_draft: { comment_id: 1, target, prompt: "Fix rounding" },
+    harnesses: ["codex"], default_harness: "codex", error: null, notice: null,
+    review: { number: 12, head_ref: "my-feat", head_sha: "abc", open_count: 1, total: 1, fetched_at: "", sort: "fetch_order", hide_resolved: false, comments: [], investigating: null },
+  };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "pr_triage_begin") return Promise.resolve(view);
+    if (command === "pr_triage_act") return Promise.resolve({ ...view, handoff: { target, draft_prompt: "Fix rounding" } });
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "PR Triage", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open in agent composer" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
+  expect(draftInput().value).toBe("Codex reminder\n\nFix rounding");
+  expect(document.activeElement).toBe(draftInput());
+  fireEvent.click(screen.getByRole("tab", { name: /Claude/ }));
+  expect(draftInput().value).toBe("Claude reminder");
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "start_session")).toBe(false);
+  client.clear();
+});

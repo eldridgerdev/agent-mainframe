@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     with socket.socket() as inspector_socket:
         inspector_socket.bind(("127.0.0.1", 0))
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
+    fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     config = scratch / "config"
     state = scratch / "state"
     repo = scratch / "demo-api"
@@ -212,6 +213,10 @@ export function formatTotal(total: number): string {
                     stamp,
                 ),
             )
+            if fix_draft_proof:
+                for index, harness in enumerate(["claude", "codex"]):
+                    db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
+                               (f"shot-{harness}", "shot-feature", harness, f"{harness.title()} 1", f"{harness}-1", stamp, index))
             version = db.execute(
                 "SELECT value FROM store_meta WHERE key='store_version'"
             ).fetchone()
@@ -222,7 +227,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot/capture-gui-pr-triage-frames.py"),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py")),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -239,7 +244,7 @@ export function formatTotal(total: number): string {
                 == "stopped"
             )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == 0
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")

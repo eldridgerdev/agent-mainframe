@@ -4287,6 +4287,7 @@ mod tests {
         if let Some(worktree_create_succeeds) = worktree_create_succeeds {
             worktree.expect_create().times(1).returning(move |_, _, _| {
                 if worktree_create_succeeds {
+                    std::fs::create_dir_all(&workdir)?;
                     Ok(workdir.clone())
                 } else {
                     anyhow::bail!("worktree creation failed")

@@ -332,6 +332,9 @@ impl App {
                             "Could not remove worktree '{}': {err}. Project retained; some sessions or worktrees may already have been removed. Retry deletion after fixing the error.",
                             workdir.display()
                         ))?;
+                        self.screenshot_worktree_deleted(&workdir)?;
+                    } else if !workdir.exists() {
+                        self.screenshot_worktree_deleted(&workdir)?;
                     }
                 }
                 self.clear_pr_association_for_deleted_feature(&feature_id, &repo, &branch);

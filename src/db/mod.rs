@@ -14,6 +14,7 @@ pub mod prompt_overrides;
 pub mod prompt_templates;
 pub mod remote_devices;
 pub mod remote_push;
+pub(crate) mod screenshot_evidence;
 mod session_status;
 pub mod store;
 pub mod todos;

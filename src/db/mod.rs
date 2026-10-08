@@ -359,6 +359,24 @@ impl AmfDb {
         )
     }
 
+    pub fn snapshot_pr_comment_reply_draft(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+    ) -> Result<Option<pr_comment_triage::ReplyDraftSnapshot>> {
+        pr_comment_triage::snapshot_reply_draft(&self.conn, pr_number, comment_id)
+    }
+
+    pub fn restore_pr_comment_reply_draft(
+        &self,
+        pr_number: u32,
+        comment_id: u64,
+        request_id: &str,
+        prior: Option<&pr_comment_triage::ReplyDraftSnapshot>,
+    ) -> Result<()> {
+        pr_comment_triage::restore_reply_draft(&self.conn, pr_number, comment_id, request_id, prior)
+    }
+
     pub fn capture_pr_comment_reply_draft(
         &self,
         pr_number: u32,

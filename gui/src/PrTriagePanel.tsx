@@ -141,7 +141,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   return (
     <Modal label="PR Triage" size="xl" dismissable={!busy} onClose={close}
       title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
-      subtitle="Read review feedback, investigate it, prepare an agent fix draft, and reply. GitHub writes and AI calls always ask first.">
+      subtitle="Read review feedback, investigate it, prepare or send an agent fix, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <div className="callout callout-warning" role="alert">
         <p>Discard your unsent fix, reply or investigation text and close PR Triage?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
@@ -234,12 +234,20 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
         </section>}
 
         {view?.fix_draft && fixPrompt && <section className="review-editor" aria-label="Fix draft" ref={reveal}>
-          <p>Prepare an unsent fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
-            Review it in the agent composer, then send it when ready. Existing unsent text is kept. No agent starts and nothing posts to GitHub.</p>
-          <Field label="Fix prompt"><textarea rows={8} value={fixPrompt.text} disabled={busy}
+          <p>Prepare a fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
+            Open it in the agent composer to review and send it yourself (existing unsent text is kept), or preview and send it straight to the running agent. No agent starts and nothing posts to GitHub.</p>
+          <Field label="Fix prompt"><textarea rows={8} value={fixPrompt.text} disabled={busy || !!view.fix_draft.submission_prompt}
             onChange={(event) => setFixPrompt({ ...fixPrompt, text: event.target.value })} /></Field>
-          <button className="btn btn-primary" disabled={busy || !fixPrompt.text.trim() || !onHandoff}
+          <button className="btn btn-primary" disabled={busy || !!view.fix_draft.submission_prompt || !fixPrompt.text.trim() || !onHandoff}
             onClick={() => void act({ kind: "confirm_fix_draft", prompt: fixPrompt.text })}>Open in agent composer</button>
+          {!view.fix_draft.submission_prompt && <button className="btn btn-secondary" disabled={busy || !fixPrompt.text.trim()}
+            onClick={() => void act({ kind: "prepare_fix_submission", prompt: fixPrompt.text })}>Preview send to agent…</button>}
+          {view.fix_draft.submission_prompt && <div role="alertdialog" aria-label="Send fix to agent" className="review-confirm">
+            <p>Send this exact prompt to the selected running agent and mark the comment Fixing? This clears its terminal input line. It asks the agent to return a reply draft; nothing posts to GitHub.</p>
+            <pre className="doc pr-posted">{view.fix_draft.submission_prompt}</pre>
+            <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_fix_submission" })}>Send fix to agent</button>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_fix_submission" })}>Back to fix prompt</button>
+          </div>}
           <button className="btn btn-secondary" disabled={busy} onClick={() => {
             if (fixPrompt.text !== fixPrompt.seed) setConfirmDiscardFix(true);
             else void act({ kind: "cancel_fix_draft" });

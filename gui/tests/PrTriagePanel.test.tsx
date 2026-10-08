@@ -298,3 +298,37 @@ it("explains how to get a fix target when a feature has no agent sessions", asyn
   expect(await screen.findByText("Add an agent session to this feature to prepare a fix draft.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Prepare fix…" })).toBeNull();
 });
+
+it("previews the receipt-bearing prompt and requires explicit send without closing triage", async () => {
+  const close = vi.fn(); const handoff = vi.fn();
+  const preview = { ...fixDraft, revision: 5, fix_draft: { ...fixDraft.fix_draft!, submission_prompt: "Edited instruction\n\namf reply-draft --request-id current" } };
+  backend(fixDraft, action => action.kind === "prepare_fix_submission" ? preview : { ...fixView, revision: 6, notice: "Fix sent to the agent." });
+  render(<PrTriagePanel target={target} onClose={close} onHandoff={handoff} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  fireEvent.change(prompt, { target: { value: "Edited instruction" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Send fix to agent" });
+  expect(confirm.textContent).toContain("amf reply-draft --request-id current");
+  expect(actions()[0].action).toEqual({ kind: "prepare_fix_submission", prompt: "Edited instruction" });
+  expect((prompt as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Open in agent composer" }) as HTMLButtonElement).disabled).toBe(true);
+  const send = within(confirm).getByRole("button", { name: "Send fix to agent" });
+  fireEvent.click(send); fireEvent.click(send);
+  await screen.findByText("Fix sent to the agent.");
+  expect(actions().filter(a => a.action.kind === "confirm_fix_submission")).toHaveLength(1);
+  expect(close).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
+});
+
+it("cancels submission preview while retaining the edited fix prompt", async () => {
+  const preview = { ...fixDraft, fix_draft: { ...fixDraft.fix_draft!, submission_prompt: "Exact prompt with receipt" } };
+  backend(fixDraft, action => action.kind === "prepare_fix_submission" ? preview : fixDraft);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  fireEvent.change(prompt, { target: { value: "Keep my edited instruction" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Back to fix prompt" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Send fix to agent" })).toBeNull());
+  expect((prompt as HTMLTextAreaElement).value).toBe("Keep my edited instruction");
+  expect((prompt as HTMLTextAreaElement).disabled).toBe(false);
+  expect(actions().at(-1)?.action.kind).toBe("cancel_fix_submission");
+});

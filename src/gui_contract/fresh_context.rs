@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::project::{AgentKind, SessionKind};
 
-use super::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
+use super::{FeatureTarget, GuiError, GuiErrorKind, GuiHandle, GuiResult, SessionTarget};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FreshContextPreview {
@@ -27,46 +27,28 @@ pub struct FreshContextResponse {
     pub draft_prompt: String,
 }
 
+/// What a start must still agree with: which session it continues from and
+/// what the new session will be. The seed is deliberately not part of it.
+struct FreshContextSource {
+    revision: String,
+    label: String,
+}
+
 impl GuiHandle {
     pub fn fresh_context_preview(
         &mut self,
         target: &SessionTarget,
     ) -> GuiResult<FreshContextPreview> {
-        self.refresh_store()?;
+        let source = self.fresh_context_source(target)?;
         let (pi, fi, si) = self.locate_session(target)?;
         let feature = &self.app.store.projects[pi].features[fi];
-        let session = &feature.sessions[si];
-        if !session.kind.is_agent_harness() {
-            return Err(GuiError::conflict(
-                "Fresh context starts from an agent session",
-            ));
-        }
-        let prompt = self.app.fresh_context_seed(feature, &session.tmux_window);
-        let label = self.app.fresh_context_label(feature);
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        // Session membership also makes a successful request single-use. Do
-        // not hash volatile token counts or status readings from collectors.
-        format!(
-            "{:?}",
-            (
-                target,
-                &feature.workdir,
-                &feature.agent,
-                &session.kind,
-                &session.tmux_window,
-                &feature.tmux_session
-            )
-        )
-        .hash(&mut hash);
-        for item in &feature.sessions {
-            item.id.hash(&mut hash);
-        }
-        prompt.hash(&mut hash);
-        label.hash(&mut hash);
+        let prompt = self
+            .app
+            .fresh_context_seed(feature, &feature.sessions[si].tmux_window);
         Ok(FreshContextPreview {
-            revision: format!("{:016x}", hash.finish()),
+            revision: source.revision,
             prompt,
-            label,
+            label: source.label,
         })
     }
 
@@ -75,15 +57,16 @@ impl GuiHandle {
         target: &SessionTarget,
         request: FreshContextRequest,
     ) -> GuiResult<FreshContextResponse> {
-        let preview = self.fresh_context_preview(target)?;
-        if preview.revision != request.revision {
+        if request.prompt.trim().is_empty() {
+            return Err(GuiError {
+                kind: GuiErrorKind::Internal,
+                message: "Enter a continuation prompt before starting".into(),
+            });
+        }
+        let source = self.fresh_context_source(target)?;
+        if source.revision != request.revision {
             return Err(GuiError::conflict(
                 "The fresh-context source changed. Reload the context and review your draft before starting.",
-            ));
-        }
-        if request.prompt.trim().is_empty() {
-            return Err(GuiError::conflict(
-                "Enter a continuation prompt before starting",
             ));
         }
         let (pi, fi, _) = self.locate_session(target)?;
@@ -100,12 +83,51 @@ impl GuiHandle {
                 feature_id: target.feature_id.clone(),
             },
             kind,
-            Some(preview.label),
+            Some(source.label),
             request.approved,
         )?;
         Ok(FreshContextResponse {
             target: added.target,
             draft_prompt: request.prompt,
+        })
+    }
+
+    fn fresh_context_source(&mut self, target: &SessionTarget) -> GuiResult<FreshContextSource> {
+        self.refresh_store()?;
+        let (pi, fi, si) = self.locate_session(target)?;
+        let feature = &self.app.store.projects[pi].features[fi];
+        let session = &feature.sessions[si];
+        if !session.kind.is_agent_harness() {
+            return Err(GuiError::conflict(
+                "Fresh context starts from an agent session",
+            ));
+        }
+        let label = self.app.fresh_context_label(feature);
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        // Structural identity only. The seed (changed files, latest prompt)
+        // moves whenever the source agent works, which is exactly when fresh
+        // context is reached for, and start sends the user's draft rather
+        // than the seed anyway. Session membership makes a successful
+        // request single-use.
+        format!(
+            "{:?}",
+            (
+                target,
+                &feature.workdir,
+                &feature.agent,
+                &session.kind,
+                &session.tmux_window,
+                &feature.tmux_session
+            )
+        )
+        .hash(&mut hash);
+        for item in &feature.sessions {
+            item.id.hash(&mut hash);
+        }
+        label.hash(&mut hash);
+        Ok(FreshContextSource {
+            revision: format!("{:016x}", hash.finish()),
+            label,
         })
     }
 }

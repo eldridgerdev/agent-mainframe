@@ -2511,7 +2511,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_context_refuses_changed_source_empty_prompt_and_non_agent() {
+    fn fresh_context_refuses_structural_change_empty_prompt_and_non_agent() {
         use super::fresh_context::FreshContextRequest;
         let (_dir, mut gui, target) = fresh_context_fixture(false);
         let preview = gui.fresh_context_preview(&target).unwrap();
@@ -2526,9 +2526,16 @@ mod tests {
             )
             .unwrap_err()
             .kind,
-            GuiErrorKind::Conflict
+            GuiErrorKind::Internal
         );
+        // The source agent keeps working while the dialog is open; seed
+        // inputs moving must not invalidate the draft.
         gui.app.store.projects[0].features[0].summary = Some("Changed elsewhere".into());
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap().revision,
+            preview.revision
+        );
+        gui.app.store.projects[0].features[0].agent = AgentKind::Codex;
         assert_eq!(
             gui.fresh_context_start(
                 &target,

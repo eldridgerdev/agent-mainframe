@@ -20,10 +20,6 @@ from Xlib import display
 out = pathlib.Path(sys.argv[1]).resolve()
 pid = int(sys.argv[2])
 dbpath = pathlib.Path(sys.argv[4])
-tmux = ["tmux", "-S", str(dbpath.parents[2] / "sidebar-tmux.sock")]
-# The fixture makes the session name unique per run; read it back.
-with sqlite3.connect(dbpath) as db:
-    round_tmux = db.execute("SELECT tmux_session FROM features WHERE id='f-round'").fetchone()[0]
 
 for attempt in range(100):
     try:
@@ -74,22 +70,6 @@ def nav_has(text):
 def click_nav(name):
     """Click a tree button by its exact accessible text or aria-label."""
     evaluate(f"""(()=>{{const b=Array.from({NAV}.querySelectorAll('button')).find(b=>(b.getAttribute('aria-label')||b.textContent.trim())==={json.dumps(name)});if(!b)throw new Error('no button '+{json.dumps(name)});b.click();}})()""")
-
-
-def click_session(label):
-    evaluate(f"""Array.from({NAV}.querySelectorAll('.tree-session-label')).find(l=>l.textContent==={json.dumps(label)}).closest('button').click()""")
-
-
-def click(text):
-    evaluate(f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()')
-
-
-def glyph(feature):
-    return evaluate(f"""(()=>{{const b=Array.from({NAV}.querySelectorAll('.tree-name')).find(b=>b.textContent.trim()==={json.dumps(feature)});return b.closest('.tree-row').querySelector('.tree-glyph').getAttribute('aria-label');}})()""")
-
-
-def marker(feature):
-    return evaluate(f"""(()=>{{const b=Array.from({NAV}.querySelectorAll('.tree-name')).find(b=>b.textContent.trim()==={json.dumps(feature)});return !!b.closest('.tree-row').querySelector('.tree-pending');}})()""")
 
 
 def db_value(sql):
@@ -150,25 +130,8 @@ def capture(name, note, expects, expression=None, allow_alert=False):
     print("PASS:", name, note, flush=True)
 
 
-SB = "document.querySelector('.agent-sidebar')"
-BODY = SB + ".querySelector('.agent-sidebar-body')"
-
-
-def aria(name):
-    evaluate(f"document.querySelector('button[aria-label={json.dumps(name)}]').click()")
-
-
 def sidebar_button(section, name):
     evaluate(f"Array.from(document.querySelector('.sb-{section}').querySelectorAll('button')).find(b=>b.textContent.trim()==={json.dumps(name)}).click()")
-
-
-def fill(value):
-    evaluate(f"""(()=>{{const el=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,{json.dumps(value)});el.dispatchEvent(new Event('input',{{bubbles:true}}));}})()""")
-
-
-def pane_width():
-    return int(subprocess.check_output(tmux + ["display-message", "-p", "-t", f"{round_tmux}:claude", "#{pane_width}"], text=True).strip())
-
 
 
 def button(name):
@@ -203,19 +166,26 @@ try:
         'Cancelling an edited prompt asks before discarding it; Keep editing retains the continuation and creates no session.',
         ['Discard your edited continuation prompt?', 'Discard draft', 'Keep editing'])
     button('Keep editing')
-    # Change a source artifact externally, then drive the real conflict path.
-    with sqlite3.connect(dbpath) as db:
-        db.execute("UPDATE features SET summary='Updated rounding summary' WHERE id='f-round'")
-        db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
+    # Switch the harness the new session would launch externally, then drive
+    # the real conflict path.
+    def shared_write(sql):
+        with sqlite3.connect(dbpath) as db:
+            db.execute(sql)
+            db.execute("UPDATE store_meta SET value=CAST(value AS INTEGER)+1 WHERE key='store_version'")
+    shared_write("UPDATE features SET agent='codex' WHERE id='f-round'")
     button('Start fresh context')
     wait("document.querySelector('[role=alert]')?.innerText.includes('source changed')")
     assert db_value("SELECT COUNT(*) FROM feature_sessions WHERE feature_id='f-round'") == 2
     capture('004-stale-source-refused.png',
-        'A summary changed through the shared database is refused before launch. The edited prompt remains for reload and review.',
+        'Switching the feature harness through the shared database is refused before launch. The edited prompt remains for reload and review.',
         ['fresh-context source changed', 'Reload context (keep draft)'], allow_alert=True)
+    # The fixture only has a Claude stand-in, so switch back before relaunching.
+    shared_write("UPDATE features SET agent='claude' WHERE id='f-round'")
     button('Reload context (keep draft)')
     time.sleep(1)
     assert evaluate("document.querySelector('textarea[aria-label=\"Continuation prompt\"]').value") == seed + '\nCheck negative invoice totals first.'
+    # Seed inputs moving while the source agent works must not refuse the draft.
+    shared_write("UPDATE features SET summary='Updated rounding summary' WHERE id='f-round'")
     button('Start fresh context')
     wait("document.querySelector('.composer textarea')?.value.includes('Check negative invoice totals first.')")
     wait("document.querySelector('.xterm-rows')?.innerText.includes('Waiting for the next instruction')")

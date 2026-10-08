@@ -26,7 +26,7 @@ export default function FreshContextDialog({ target, onCreated, onClose }: {
   const dirty = draft !== null && draft !== preview.data?.prompt;
   const close = () => { if (busy.current) return; if (dirty) setDiscard(true); else onClose(); };
   const start = async (approved = false) => {
-    if (busy.current || !preview.data || preview.isFetching || !text.trim()) return;
+    if (busy.current || discard || !preview.data || preview.isFetching || !text.trim()) return;
     busy.current = true;
     setPending(true); setError(null);
     try {
@@ -44,7 +44,7 @@ export default function FreshContextDialog({ target, onCreated, onClose }: {
   return <Modal label="Fresh context" title="Fresh context" size="lg" onClose={close}
     footer={<>
       <button className="btn btn-secondary" disabled={pending} onClick={close}>Cancel</button>
-      <button className="btn btn-primary" disabled={pending || preview.isFetching || !preview.data || !!preview.error || !text.trim() || !!approval}
+      <button className="btn btn-primary" disabled={pending || discard || preview.isFetching || !preview.data || !!preview.error || !text.trim() || !!approval}
         onClick={() => void start()}>{pending ? "Starting…" : "Start fresh context"}</button>
     </>}>
     <div data-unsaved-changes={dirty}>
@@ -60,13 +60,13 @@ export default function FreshContextDialog({ target, onCreated, onClose }: {
         onClick={() => { setApproval(null); setError(null); void preview.refetch(); }}>Reload context (keep draft)</button>}
       {approval && <div role="alertdialog" aria-label="Resource warning">
         <p>{approval}</p>
-        <button className="btn btn-primary" disabled={pending} onClick={() => void start(true)}>Start anyway</button>
+        <button className="btn btn-primary" disabled={pending || discard} onClick={() => void start(true)}>Start anyway</button>
         <button className="btn btn-secondary" disabled={pending} onClick={() => setApproval(null)}>Keep editing</button>
       </div>}
       {discard && <div role="alertdialog" aria-label="Discard continuation draft">
         <p>Discard your edited continuation prompt?</p>
-        <button className="btn btn-danger" onClick={onClose}>Discard draft</button>
-        <button className="btn btn-secondary" onClick={() => setDiscard(false)}>Keep editing</button>
+        <button className="btn btn-danger" disabled={pending} onClick={() => { if (!busy.current) onClose(); }}>Discard draft</button>
+        <button className="btn btn-secondary" disabled={pending} onClick={() => setDiscard(false)}>Keep editing</button>
       </div>}
     </div>
   </Modal>;

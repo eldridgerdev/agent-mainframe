@@ -12,6 +12,44 @@ are tagged.
 
 ### Added
 
+- **Fresh context from desktop agent sidebars.** Edit a continuation seeded
+  from the feature’s plan, changed files and saved context, then open a new
+  agent tab with an unsent draft. Your original session stays open. Resource
+  warnings require approval, and changed context is refused before launch.
+  No migration is required.
+
+- **Automatic Vibeless review popups in the desktop app.** Waiting edits now
+  open over the current page or agent tab, with the captured diff and a
+  1.5-second answer hold by default. Confirmed answers advance the waiting
+  queue without moving focus out of the panel. Manually opened reviews stay
+  open after answers, including when automatic opening is disabled. Saved form
+  values do not defer opening; the sidebar explains delays for unsaved drafts
+  and open dialogs. Escape or Close leaves
+  the edit waiting, restores focus and keeps its review badge. Automatic
+  opening can be switched off in the popup. No migration is required.
+
+- **Agent sidebars in desktop session tabs.** Claude, Codex, OpenCode and Pi
+  tabs show usage, context, plans, work, summaries, prompts and TODOs from the
+  same sources as the TUI. Open the plan, reuse the last prompt into an unsent
+  draft or complete the linked TODO. Hide or restore the panel without losing
+  terminal history or your draft; its visibility is remembered for this viewer.
+  The panel works without a TUI and explains which live signals are unavailable.
+
+- **VS Code, custom sessions and TODOs from the desktop New session dialog.**
+  The dialog now offers everything the TUI's session picker does. **VS Code**
+  opens the worktree in a new window with the same launch and tracking as the
+  TUI, so stopping the feature still closes windows AMF opened and leaves
+  others alone. A **VS Code** tab (and a sidebar chip) lists those windows,
+  says which ones AMF can close, and closes them after confirmation.
+  **Configured sessions** from the project's `amf.json` are listed with their
+  icon, description, command, working directory, pre-check, on-stop command
+  and autolaunch. A failed `pre_check` is shown in the dialog with its output,
+  and nothing is created. The new session's terminal attaches like any other.
+  A session removed or changed in `amf.json` after the dialog opened is refused
+  rather than created from the old entry. Repeated custom-session requests
+  are refused while the first pre-check runs. **TODOs** adds the feature's TODOs
+  session.
+
 - **Syntax highlighting in the desktop app.** Unified and side-by-side diffs,
   Final Review, supervised edits and the Learning reader colour code with the
   same tree-sitter parsers and language detection as the TUI. Lines inside
@@ -23,6 +61,10 @@ are tagged.
   mode.
 
 ### Fixed
+
+- **Fresh desktop edit reviews.** Reopening supervised edits waits for the
+  current request, preventing a previously answered edit and a notice for the
+  wrong file from briefly appearing.
 
 - **Scrolling in desktop terminal tabs.** The mouse wheel, trackpad and
   Shift+PageUp now scroll back through earlier output in Claude, Codex, Pi,

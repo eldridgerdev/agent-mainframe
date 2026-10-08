@@ -90,6 +90,8 @@ pub struct SidebarFeature {
     pub waiting_for_input: bool,
     /// A waiting request other than a diff review: the TUI's `?` marker.
     pub pending_input: bool,
+    /// Editor windows AMF launched for this feature (`gui_sessions`).
+    pub editors: Vec<crate::gui_sessions::FeatureEditor>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -174,6 +176,18 @@ pub(crate) fn project_sidebar(app: &App, projects: &[Project]) -> SidebarSnapsho
         .as_ref()
         .and_then(|db| db.load_all_pr_terminal_state().ok())
         .unwrap_or_default();
+    let mut launched_editors = HashMap::<String, Vec<_>>::new();
+    for editor in app
+        .db
+        .as_ref()
+        .and_then(|db| db.all_launched_editors().ok())
+        .unwrap_or_default()
+    {
+        launched_editors
+            .entry(editor.feature_id.clone())
+            .or_default()
+            .push(editor);
+    }
 
     for project in projects {
         sidebar.projects.insert(
@@ -241,8 +255,13 @@ pub(crate) fn project_sidebar(app: &App, projects: &[Project]) -> SidebarSnapsho
                     thinking: feature.status != ProjectStatus::Stopped
                         && app.thinking_from_shared_sources(&feature.tmux_session, &feature.agent),
                     waiting_for_input: requests.is_some(),
-                    pending_input: requests
-                        .is_some_and(|kinds| kinds.iter().any(|kind| kind != "diff-review")),
+                    pending_input: requests.is_some_and(|requests| {
+                        requests.iter().any(|request| request.kind != "diff-review")
+                    }),
+                    editors: launched_editors
+                        .get(&feature.id)
+                        .map(|rows| crate::gui_sessions::feature_editors(app, rows))
+                        .unwrap_or_default(),
                 },
             );
 
@@ -302,32 +321,53 @@ struct NotificationHeader {
     notification_type: Option<String>,
     amf_session: Option<String>,
     cwd: Option<String>,
+    message: Option<String>,
+    #[serde(skip)]
+    modified: Option<SystemTime>,
 }
 
-/// Notification kinds waiting on disk, per feature id. Reads the same two
-/// places the TUI's file scan does (each feature's `.claude/notifications/`,
-/// then the global directory matched by AMF session, then cwd) and never
-/// removes, answers or collapses anything.
-fn waiting_requests(projects: &[Project]) -> HashMap<String, Vec<String>> {
-    let mut waiting: HashMap<String, Vec<String>> = HashMap::new();
+/// One hook request waiting on disk, read without consuming it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WaitingRequest {
+    pub kind: String,
+    pub message: String,
+    modified: Option<SystemTime>,
+}
+
+impl From<NotificationHeader> for WaitingRequest {
+    fn from(header: NotificationHeader) -> Self {
+        Self {
+            kind: header.notification_type.unwrap_or_default(),
+            message: header.message.unwrap_or_default(),
+            modified: header.modified,
+        }
+    }
+}
+
+/// Requests waiting on disk, per feature id, oldest first. Reads the same
+/// two places the TUI's file scan does (each feature's
+/// `.claude/notifications/`, then the global directory matched by AMF
+/// session, then cwd) and never removes, answers or collapses anything.
+pub(crate) fn waiting_requests(projects: &[Project]) -> HashMap<String, Vec<WaitingRequest>> {
+    let mut waiting: HashMap<String, Vec<WaitingRequest>> = HashMap::new();
     let now = SystemTime::now();
     for feature in projects.iter().flat_map(|project| &project.features) {
         for header in read_headers(&feature.workdir.join(".claude").join("notifications"), now) {
             waiting
                 .entry(feature.id.clone())
                 .or_default()
-                .push(header.notification_type.unwrap_or_default());
+                .push(header.into());
         }
     }
     let global = crate::project::amf_config_dir().join("notifications");
     for header in read_headers(&global, now) {
         let cwd = PathBuf::from(header.cwd.as_deref().unwrap_or_default());
         if let Some(feature_id) = owning_feature(projects, header.amf_session.as_deref(), &cwd) {
-            waiting
-                .entry(feature_id)
-                .or_default()
-                .push(header.notification_type.unwrap_or_default());
+            waiting.entry(feature_id).or_default().push(header.into());
         }
+    }
+    for requests in waiting.values_mut() {
+        requests.sort_by_key(|request| request.modified);
     }
     waiting
 }
@@ -347,8 +387,12 @@ fn read_headers(dir: &Path, now: SystemTime) -> Vec<NotificationHeader> {
                 .and_then(|modified| now.duration_since(modified).ok())
                 .is_some_and(|age| age > NOTIFICATION_MAX_AGE)
         })
-        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-        .filter_map(|data| serde_json::from_str(&data).ok())
+        .filter_map(|entry| {
+            let data = std::fs::read_to_string(entry.path()).ok()?;
+            let mut header: NotificationHeader = serde_json::from_str(&data).ok()?;
+            header.modified = entry.metadata().and_then(|meta| meta.modified()).ok();
+            Some(header)
+        })
         .collect()
 }
 

@@ -91,18 +91,16 @@ pub(crate) fn validate_selected_plan_path(
 }
 
 /// The sidebar's "Current: <path>" line for a feature's effective plan, or
-/// "No plan selected" when none resolves. Shares the same filesystem-I/O
-/// caveat as [`resolve_effective_plan_for`].
+/// `None` when none resolves. Shares the same filesystem-I/O caveat as
+/// [`resolve_effective_plan_for`].
 pub(crate) fn plan_sidebar_display_text(
     workdir: &Path,
     selected_plan_path: Option<&Path>,
-) -> String {
-    let Some(plan) = resolve_effective_plan_for(workdir, selected_plan_path) else {
-        return "No plan selected".to_string();
-    };
+) -> Option<String> {
+    let plan = resolve_effective_plan_for(workdir, selected_plan_path)?;
     let path = plan.path();
     let label = path.strip_prefix(workdir).unwrap_or(path);
-    format!("Current: {}", label.display())
+    Some(format!("Current: {}", label.display()))
 }
 
 pub(crate) fn is_markdown_path(path: &Path) -> bool {
@@ -210,10 +208,7 @@ mod tests {
     #[test]
     fn plan_sidebar_display_text_reports_no_plan_when_none_resolves() {
         let workdir = TempDir::new().unwrap();
-        assert_eq!(
-            plan_sidebar_display_text(workdir.path(), None),
-            "No plan selected"
-        );
+        assert_eq!(plan_sidebar_display_text(workdir.path(), None), None);
     }
 
     #[test]
@@ -222,8 +217,8 @@ mod tests {
         fs::write(workdir.path().join(DEFAULT_PLAN_FILE), "# Current\n").unwrap();
 
         assert_eq!(
-            plan_sidebar_display_text(workdir.path(), None),
-            "Current: AMF_PLAN.md"
+            plan_sidebar_display_text(workdir.path(), None).as_deref(),
+            Some("Current: AMF_PLAN.md")
         );
     }
 

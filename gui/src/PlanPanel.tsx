@@ -51,6 +51,8 @@ export default function PlanPanel({
 
   useEffect(() => setConfirmCancel(false), [view.step_key]);
 
+  const unsaved = text !== view.editor_text || selectedOption !== view.selected_option
+    || (view.phase === "brief" && docPath.length > 0);
   const input = { text, selected_option: selectedOption };
   const edit = (rows = 8, placeholder?: string) => (
     <textarea
@@ -84,7 +86,7 @@ export default function PlanPanel({
 
   if (precall) {
     return (
-      <section className="plan">
+      <section className="plan" data-unsaved-changes={unsaved}>
         <div role="dialog" aria-label="Approve planning agent call" className="precall">
           <div className="callout callout-accent">
             <Icon name="sparkles" />
@@ -112,7 +114,7 @@ export default function PlanPanel({
   }
 
   return (
-    <section className="plan">
+    <section className="plan" data-unsaved-changes={unsaved}>
       {PHASE_TITLE[view.phase] && (
         <div className="plan-phase">
           <span className="tag tag-accent">{PHASE_TITLE[view.phase]}</span>

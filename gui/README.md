@@ -171,7 +171,8 @@ On Windows, build from source inside WSL2 the same way, after step 1 of
 The [workflow inventory](../docs/backlog/amf-gui-workflow-inventory.md) labels
 each available, limited, and planned GUI workflow. The GUI currently supports
 project and feature creation, additional Claude, Codex, OpenCode, Pi, terminal,
-and Neovim sessions, session terminals, TODO lists and agent starts,
+Neovim, VS Code, TODOs and configured custom sessions, session terminals, TODO
+lists and agent starts,
 Full and Quick Plan interviews, and Learning with persisted Q&A and an explicit
 editing-agent handoff, plus standalone Git diffs, supervised edits, saved prompt browsing,
 dormant-feature stops and a first PR Triage slice, with syntax highlighting in
@@ -183,6 +184,41 @@ external workspace and TODO changes every two seconds. Each feature page has
 one tab per session; leaving a session's tab detaches the GUI's view and leaves
 the tmux agent session running, while Stop ends the feature session. Agent
 starts that hit AMF's resource warning ask for explicit approval.
+
+Agent tabs also have a right-hand **Claude Sidebar**, **Codex Sidebar**,
+**Opencode Sidebar** or **Pi Sidebar**. Sections follow the TUI's order:
+Status, Usage, Context, Plan, Issue, PR Triage, Work, Summary, Prompt, Todos
+and Active TODO (OpenCode puts Summary last). Empty sections are omitted;
+usage windows exist only for supported accounts, and the plan placeholder
+matches the TUI. **Open** reads the current plan, **View** expands the last
+prompt and **Reuse** appends it to the unsent composer draft. **Complete**
+confirms completion of the session's linked AMF TODO. **Triage** and **Review**
+open their existing workflows.
+
+The header's hide button leaves a **Sidebar** rail to restore the panel.
+This viewer's preference survives restarts, separately from shared TUI state.
+Toggling refits the terminal through its usual tmux resize path and preserves
+scrollback and drafts. Colours use overridable `--sb-*` CSS tokens. The projects
+sidebar toggle and keyboard shortcuts remain a separate planned increment.
+
+The GUI runs its own shared collectors: token/cost and context reads, account
+usage, transcript/storage prompt/model/todos, plan files, persisted summaries,
+issue and PR data, notification files and thinking markers. It does not require
+a running TUI. TUI attention reasons, tool-call IPC and Codex live reasoning
+are omitted, with an explanatory note. TUI-owned summary/AI-review workers and
+IPC-only review activity are not reported as current. The per-field source
+matrix is in `src/gui_contract/session_sidebar.rs`. Native offline proof:
+`scripts/dev/screenshot/scenarios/gui-session-sidebar.txt`.
+
+**Fresh context** in the Context section opens an editable continuation from
+that feature's plan, changed files, summary and known prompt, using the same
+builder as TUI leader F. **Start fresh context** uses the feature's configured
+harness and opens a new tab with the continuation as an unsent composer draft;
+your original session stays open. Resource warnings require **Start anyway**.
+If the source changes while editing, reload context and review the retained
+draft before retrying. Cancel creates no session and asks before discarding an
+edited continuation. Native offline proof:
+`scripts/dev/screenshot/scenarios/gui-fresh-context.txt`.
 
 The sidebar is the TUI dashboard tree. Each project shows its shortened path,
 an add-feature hint when it is empty, and any minimized creation-time plan.
@@ -264,6 +300,21 @@ text. Native macOS validation remains open.
 Use **New session** on a feature page to start another agent, terminal, or
 Neovim session. You can name it or use the next default name; the new tab opens
 when creation succeeds. The picker shows the agents allowed for that project.
+It also lists everything else the TUI's session picker offers:
+
+- **VS Code** opens the worktree with `code --new-window`, as the TUI does, and
+  is greyed out when `code` isn't on `PATH`. The feature's **VS Code** tab lists
+  the windows AMF launched. AMF closes the ones it opened when the feature
+  stops, or when you choose **Close windows AMF opened**. A window VS Code
+  handed to an instance AMF didn't start is never closed.
+- **TODOs** adds the feature's TODOs session; the list itself is always on the
+  TODOs tab.
+- **Configured sessions** come from the project's `amf.json` (merged with your
+  global config). Each shows its icon, description, command, working
+  directory, pre-check, on-stop command and whether it opens on create. If the
+  `pre_check` fails, the dialog shows its output and nothing is created.
+  Sessions with `autolaunch` open their tab straight away; others are added
+  without switching tabs.
 If tmux exits unexpectedly, the GUI shows the affected features as stopped.
 Start a feature to recreate its tmux session; when a saved Claude, Codex, or
 OpenCode session is available, the GUI offers to resume it, start fresh, or
@@ -433,9 +484,24 @@ Remaining native interactions and macOS validation are open.
 
 A Vibeless agent's hook holds each file change until AMF answers it. When no
 AMF TUI is running, the hook leaves the request on disk and the GUI picks it up:
-the feature gets a count in navigation, a notice offers **Review**, and the
-feature page shows **Supervised edits** while any edit waits (a Vibeless
-feature's **⋯** menu always has it). The panel lists waiting edits with the
+the feature gets a count in navigation and its oldest waiting edit opens in a
+popup over the current page or agent tab. Other dialogs and unsent form input
+or agent drafts defer opening; the sidebar explains the delay, and an arrival
+notice still offers **Review**. Saved form values do not block opening.
+The popup waits for the configured `diff_review_popup_hold_secs` (default
+1.5 seconds) before enabling answers, and shows how many more edits are waiting.
+A confirmed answer advances within the feature without remounting the popup or
+moving focus. Manually opened reviews, and reviews with automatic opening
+disabled, stay open after the last answer. Automatically opened reviews close
+when their feature has no answerable edits left. Remaining-edit counts use the
+current panel queue and all waiting edits in other features. A new popup shows
+review data only after a successful hook-file read; a failed read offers retry.
+Escape or Close leaves
+an edit waiting, restores focus to the prior control or terminal, and keeps its
+badges. Reopen it from **Review**, **Supervised edits** on the feature page, or
+the Vibeless feature's **⋯** menu. **Automatically open waiting edits** in the
+popup disables automatic opening for this GUI installation; it is on by
+default and does not change TUI configuration. The panel lists waiting edits with the
 hook's captured diff, the agent's stated reason when it gives one, and layout
 and context controls. **Approve edit**, **Reject edit** (with optional
 feedback, up to 200 characters) and **Cancel edit** each need a second,

@@ -23,6 +23,8 @@ use crate::automation::{
 };
 use crate::project::{AgentKind, Project, ProjectStatus, SessionKind, TodoSessionReference};
 
+pub mod fresh_context;
+pub mod session_sidebar;
 pub mod sidebar;
 
 /// A structured, serializable error every GUI-facing operation returns
@@ -295,6 +297,8 @@ pub struct SavedAgentSession {
 pub struct NewSessionOption {
     pub kind: SessionKind,
     pub label: String,
+    /// Why the TUI picker would grey this out (e.g. no `code` CLI).
+    pub disabled: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -324,6 +328,8 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     app: App,
+    /// Configured-session launches whose pre-check is running outside the lock.
+    pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
     pub(crate) review_context: Option<crate::gui_review::ReviewContext>,
     /// A completed review's result, until the interface takes it once.
@@ -335,6 +341,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -351,6 +358,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -526,7 +534,7 @@ impl GuiHandle {
             .flatten())
     }
 
-    fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
+    pub(crate) fn locate(&self, target: &FeatureTarget) -> GuiResult<(usize, usize)> {
         self.app
             .store
             .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -552,7 +560,7 @@ impl GuiHandle {
         Ok((pi, fi, si))
     }
 
-    fn reject_ambiguous_live_session(&self, pi: usize, fi: usize) -> GuiResult<()> {
+    pub(crate) fn reject_ambiguous_live_session(&self, pi: usize, fi: usize) -> GuiResult<()> {
         let feature = &self.app.store.projects[pi].features[fi];
         if self.app.feature_tmux_session_is_shared(pi, fi)
             && self.app.tmux.session_exists(&feature.tmux_session)
@@ -564,39 +572,6 @@ impl GuiHandle {
         Ok(())
     }
 
-    /// Match the TUI's per-repository harness picker, plus GUI-viewable
-    /// terminal/editor panes. External VS Code windows and configured custom
-    /// sessions need separate GUI workflows.
-    pub fn new_session_options(
-        &mut self,
-        target: &FeatureTarget,
-    ) -> GuiResult<Vec<NewSessionOption>> {
-        self.refresh_store()?;
-        let (pi, _) = self.locate(target)?;
-        let project = &self.app.store.projects[pi];
-        let mut options = self
-            .app
-            .allowed_agents_for_repo(&project.repo)
-            .into_iter()
-            .map(|agent| {
-                let label = agent.display_name().to_string();
-                let kind = crate::app::session_ops::session_kind_for_agent(&agent);
-                NewSessionOption { kind, label }
-            })
-            .collect::<Vec<_>>();
-        options.extend([
-            NewSessionOption {
-                kind: SessionKind::Terminal,
-                label: "Terminal".to_string(),
-            },
-            NewSessionOption {
-                kind: SessionKind::Nvim,
-                label: "Neovim".to_string(),
-            },
-        ]);
-        Ok(options)
-    }
-
     pub fn add_session(
         &mut self,
         target: FeatureTarget,
@@ -606,6 +581,10 @@ impl GuiHandle {
     ) -> GuiResult<AddSessionResponse> {
         self.refresh_store()?;
         let (pi, fi) = self.locate(&target)?;
+        if kind == SessionKind::Todos {
+            // Native, with no tmux window: see `gui_sessions`.
+            return self.add_todos_session(target, label);
+        }
         self.reject_ambiguous_live_session(pi, fi)?;
         let project_repo = self.app.store.projects[pi].repo.clone();
         let agent = match kind {
@@ -616,7 +595,7 @@ impl GuiHandle {
             SessionKind::Terminal | SessionKind::Nvim => None,
             _ => {
                 return Err(GuiError::conflict(
-                    "This session type is not available in the GUI",
+                    "Open VS Code and custom sessions through their own requests",
                 ));
             }
         };
@@ -1018,7 +997,7 @@ impl GuiHandle {
         })
     }
 
-    fn require_start_approval(&self, action: &str) -> GuiResult<()> {
+    pub(crate) fn require_start_approval(&self, action: &str) -> GuiResult<()> {
         if let StartPreconditions::NeedsConfirm {
             over_limit,
             low_memory,
@@ -2102,6 +2081,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -2125,6 +2105,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -2417,6 +2398,167 @@ mod tests {
         assert_eq!(
             gui.app.store.projects[0].features[0].status,
             ProjectStatus::Idle
+        );
+    }
+
+    fn fresh_context_fixture(launch: bool) -> (tempfile::TempDir, GuiHandle, SessionTarget) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Idle);
+        store.projects[0].repo = dir.path().to_path_buf();
+        let feature = &mut store.projects[0].features[0];
+        feature.workdir = dir.path().to_path_buf();
+        feature.summary = Some("Continue the invoice work".into());
+        let sid = feature.add_session(SessionKind::Claude).id.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists().return_const(true);
+        tmux.expect_list_panes().returning(Vec::new);
+        tmux.expect_create_window()
+            .times(usize::from(launch))
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .times(usize::from(launch))
+            .returning(|_, _, _, resume, _| {
+                assert!(resume.is_none());
+                Ok(())
+            });
+        (
+            dir,
+            handle(store, tmux),
+            SessionTarget {
+                project_id: PROJECT_ID.into(),
+                feature_id: FEATURE_ID.into(),
+                session_id: sid,
+            },
+        )
+    }
+
+    #[test]
+    fn fresh_context_launch_keeps_source_and_returns_unsent_draft_once() {
+        use super::fresh_context::FreshContextRequest;
+        let (_dir, mut gui, target) = fresh_context_fixture(true);
+        let original_mode = std::mem::discriminant(&gui.app.mode);
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        assert!(preview.prompt.contains("Continue the invoice work"));
+        assert!(preview.prompt.contains("Grill me"));
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 1);
+        let result = gui
+            .fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: "My edited continuation".into(),
+                    approved: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(result.draft_prompt, "My edited continuation");
+        assert_ne!(result.target.session_id, target.session_id);
+        assert_eq!(std::mem::discriminant(&gui.app.mode), original_mode);
+        let feature = &gui.app.store.projects[0].features[0];
+        assert_eq!(feature.sessions[0].id, target.session_id);
+        assert_eq!(feature.sessions[1].label, "Fresh Context");
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision,
+                    prompt: "Again".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap().label,
+            "Fresh Context 2"
+        );
+    }
+
+    #[test]
+    fn fresh_context_resource_warning_leaves_sessions_untouched_until_approved() {
+        use super::fresh_context::FreshContextRequest;
+        let _lease_lock = crate::resources::limits::lock_lease_tests();
+        assert_eq!(crate::resources::limits::wait_for_in_flight(0), 0);
+        let _lease = crate::resources::limits::HeadlessLease::acquire();
+        let (_dir, mut gui, target) = fresh_context_fixture(true);
+        gui.app.config.max_concurrent_agents = 1;
+        gui.app.config.low_memory_warn_mb = 0;
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        let error = gui
+            .fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: preview.prompt.clone(),
+                    approved: false,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::NeedsApproval);
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 1);
+        gui.fresh_context_start(
+            &target,
+            FreshContextRequest {
+                revision: preview.revision,
+                prompt: preview.prompt,
+                approved: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(gui.app.store.projects[0].features[0].sessions.len(), 2);
+    }
+
+    #[test]
+    fn fresh_context_refuses_structural_change_empty_prompt_and_non_agent() {
+        use super::fresh_context::FreshContextRequest;
+        let (_dir, mut gui, target) = fresh_context_fixture(false);
+        let preview = gui.fresh_context_preview(&target).unwrap();
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision.clone(),
+                    prompt: "  ".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Internal
+        );
+        // The source agent keeps working while the dialog is open; seed
+        // inputs moving must not invalidate the draft.
+        gui.app.store.projects[0].features[0].summary = Some("Changed elsewhere".into());
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap().revision,
+            preview.revision
+        );
+        gui.app.store.projects[0].features[0].agent = AgentKind::Codex;
+        assert_eq!(
+            gui.fresh_context_start(
+                &target,
+                FreshContextRequest {
+                    revision: preview.revision,
+                    prompt: "Continue".into(),
+                    approved: true,
+                }
+            )
+            .unwrap_err()
+            .kind,
+            GuiErrorKind::Conflict
+        );
+        gui.app.store.projects[0].features[0].sessions[0].kind = SessionKind::Terminal;
+        assert_eq!(
+            gui.fresh_context_preview(&target).unwrap_err().kind,
+            GuiErrorKind::Conflict
+        );
+        let mut missing = target;
+        missing.session_id = "gone".into();
+        assert_eq!(
+            gui.fresh_context_preview(&missing).unwrap_err().kind,
+            GuiErrorKind::NotFound
         );
     }
 
@@ -3975,6 +4117,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
             review_completion: None,
@@ -4172,6 +4315,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,
                 review_completion: None,

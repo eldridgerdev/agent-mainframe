@@ -152,7 +152,7 @@ export default function TodoPanel({
   }
 
   return (
-    <section className="todo-panel" aria-label={title}>
+    <section className="todo-panel" aria-label={title} data-unsaved-changes={draft.length > 0}>
       <header className="panel-header">
         <div>
           <h3>{title}</h3>

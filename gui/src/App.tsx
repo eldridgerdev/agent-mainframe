@@ -17,7 +17,6 @@ import {
   learningLaunchAgent,
   AgentSlug,
   NewSessionKind,
-  NewSessionOption,
   CollapseTarget,
   CreateFeatureRequest,
   Feature,
@@ -40,7 +39,6 @@ import {
   TodoHostPrompt,
   WorkspaceSnapshot,
   asGuiError,
-  addSession,
   createFeature,
   createProject,
   deleteFeature,
@@ -69,6 +67,7 @@ import {
 } from "./api";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
+import SessionSidebar from "./SessionSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
@@ -81,7 +80,9 @@ import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
-import NewSessionDialog from "./NewSessionDialog";
+import NewSessionDialog, { PreCheckFailure } from "./NewSessionDialog";
+import VscodePanel from "./VscodePanel";
+import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
 import SidebarTree, { byStatus, withCollapsed } from "./SidebarTree";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
@@ -113,6 +114,8 @@ const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
+// The VS Code windows tab: no session row and no tmux pane (gui_sessions).
+const VSCODE_TAB = "vscode";
 // A session a launch just created can take a snapshot or two to appear. Only
 // that launch's session is shown ahead of the snapshot, and only for this
 // long, so a session removed elsewhere (killed from the TUI, say) can't leave
@@ -196,12 +199,13 @@ export default function App() {
   const [newSessionDialog, setNewSessionDialog] = useState<{
     target: FeatureTarget;
     preferredKind: NewSessionKind;
-    options: NewSessionOption[];
+    options: NewSessionOptions;
+    preCheckFailure: PreCheckFailure | null;
   } | null>(null);
   const [newSessionLoading, setNewSessionLoading] = useState(false);
   const [pendingAddSessionApproval, setPendingAddSessionApproval] = useState<{
     target: FeatureTarget;
-    kind: NewSessionKind;
+    choice: SessionChoice;
     label: string | null;
     message: string;
   } | null>(null);
@@ -234,10 +238,15 @@ export default function App() {
   } | null>(null);
   const [diffTarget, setDiffTarget] = useState<FeatureTarget | null>(null);
   const [supervisedTarget, setSupervisedTarget] = useState<FeatureTarget | null>(null);
+  const [autoReviewEdits, setAutoReviewEdits] = useState(() => {
+    try { return localStorage.getItem("amf.autoReviewEdits") !== "off"; }
+    catch { return true; }
+  });
+  const [automaticEditId, setAutomaticEditId] = useState<string | null>(null);
   const supervisedPanel = useRef<SupervisedEditsPanelHandle>(null);
   function openSupervisedEdits(target: FeatureTarget) {
     if (supervisedTarget?.project_id === target.project_id && supervisedTarget.feature_id === target.feature_id) return;
-    const proceed = () => setSupervisedTarget(target);
+    const proceed = () => { setAutomaticEditId(null); setSupervisedTarget(target); };
     if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
     else proceed();
   }
@@ -395,7 +404,17 @@ export default function App() {
     }
   }, [queryClient, reportError]);
 
-  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits);
+  const [reviewDeferral, setReviewDeferral] = useState<string | null>(null);
+  const pendingEdits = usePendingEdits(pushToast, openSupervisedEdits, {
+    activeTarget: supervisedTarget,
+    blocked: !autoReviewEdits || supervisedTarget !== null,
+    draftPending: Object.values(drafts).some((draft) => draft.length > 0),
+    onDeferred: setReviewDeferral,
+    onOpen: (entry) => {
+      setAutomaticEditId(entry.first_id);
+      setSupervisedTarget({ project_id: entry.project_id, feature_id: entry.feature_id });
+    },
+  });
 
   const harnessName = (slug: AgentSlug) =>
     harnesses.data?.find((harness) => harness.slug === slug)?.display_name ?? slug;
@@ -838,19 +857,44 @@ export default function App() {
   });
 
   const addSessionMutation = useMutation({
-    mutationFn: ({ target, kind, label, approved }: {
+    mutationFn: ({ target, choice, label, approved }: {
       target: FeatureTarget;
-      kind: NewSessionKind;
+      choice: SessionChoice;
       label: string | null;
       approved: boolean;
-    }) => addSession(target, kind, label, approved),
+    }) => createSession(target, choice, label, approved),
     onSettled: () => {
       addSessionInFlight.current = false;
     },
-    onSuccess: (response) => {
-      setNewSessionDialog(null);
+    onSuccess: (created, variables) => {
       setPendingAddSessionApproval(null);
-      openSession(response.target);
+      if (created.outcome === "pre_check_failed") {
+        const failure = { name: created.name, preCheck: created.preCheck, output: created.output };
+        // The dialog stays open on the failure; an approved retry has none.
+        if (newSessionDialog) setNewSessionDialog({ ...newSessionDialog, preCheckFailure: failure });
+        else pushToast({ tone: "error", title: `${created.name} was not created`, message: `Pre-check failed: ${created.output}` });
+        return;
+      }
+      setNewSessionDialog(null);
+      const featureId = variables.target.feature_id;
+      if (created.outcome === "vscode") {
+        pushToast({
+          tone: "info",
+          title: "VS Code",
+          message: created.response.started_feature
+            ? `${created.response.message}. The feature was started for it.`
+            : created.response.message,
+        });
+        setView({ kind: "feature", projectId: variables.target.project_id, featureId });
+        setTabByFeature((current) => ({ ...current, [featureId]: VSCODE_TAB }));
+      } else if (created.kind === "todos") {
+        setView({ kind: "feature", projectId: variables.target.project_id, featureId });
+        setTabByFeature((current) => ({ ...current, [featureId]: TODOS_TAB }));
+      } else if (created.focus) {
+        openSession(created.target);
+      } else {
+        pushToast({ tone: "info", title: "Session added", message: `Added '${created.label}'. Its tab is ready when you want it.` });
+      }
     },
     onError: (err, variables) => {
       const error = asGuiError(err);
@@ -858,7 +902,7 @@ export default function App() {
         setNewSessionDialog(null);
         setPendingAddSessionApproval({
           target: variables.target,
-          kind: variables.kind,
+          choice: variables.choice,
           label: variables.label,
           message: error.message,
         });
@@ -871,7 +915,7 @@ export default function App() {
 
   function requestAddSession(variables: {
     target: FeatureTarget;
-    kind: NewSessionKind;
+    choice: SessionChoice;
     label: string | null;
     approved: boolean;
   }) {
@@ -885,7 +929,7 @@ export default function App() {
     setNewSessionLoading(true);
     try {
       const options = await newSessionOptions(target);
-      setNewSessionDialog({ target, preferredKind: feature.agent, options });
+      setNewSessionDialog({ target, preferredKind: feature.agent, options, preCheckFailure: null });
     } catch (err) {
       reportError(err);
     } finally {
@@ -1057,6 +1101,7 @@ export default function App() {
         </div>
 
         <nav className="nav" aria-label="Workspace">
+          {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
@@ -1122,6 +1167,10 @@ export default function App() {
                 ...current, [target.feature_id]: kind === "todos" ? TODOS_TAB : target.session_id,
               }));
             }}
+            onSelectEditors={(projectId, featureId) => {
+              setView({ kind: "feature", projectId, featureId });
+              setTabByFeature((current) => ({ ...current, [featureId]: VSCODE_TAB }));
+            }}
             onToggleCollapsed={toggleCollapsed}
             onResumePlan={() => setPlanMinimized(false)}
             onCreateFeature={setCreateFeatureFor}
@@ -1146,7 +1195,18 @@ export default function App() {
       </aside>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
-        ref={supervisedPanel} target={supervisedTarget} onClose={() => setSupervisedTarget(null)} />}
+        ref={supervisedPanel} target={supervisedTarget} initialEditId={automaticEditId ?? undefined}
+        autoOpen={autoReviewEdits} onAutoOpenChange={(enabled) => {
+          setAutoReviewEdits(enabled);
+          try { localStorage.setItem("amf.autoReviewEdits", enabled ? "on" : "off"); } catch { /* Keep the preference for this window. */ }
+        }}
+        otherWaiting={Object.entries(pendingEdits).reduce((total, [featureId, count]) =>
+          total + (featureId === supervisedTarget.feature_id ? 0 : count), 0)}
+        onAnswered={(message, hasWaiting) => {
+          pushToast({ tone: "info", title: "Edit answered", message: `${message}. The agent continues once its hook reads the answer.` });
+          if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
+        }}
+        onClose={() => setSupervisedTarget(null)} />}
       {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
         onOpenFeature={(target) => {
           setShowDormancy(false);
@@ -1219,6 +1279,7 @@ export default function App() {
 
         {view?.kind === "feature" && selectedProject && selectedFeature && (
           <FeatureView
+            key={selectedFeature.id}
             project={selectedProject}
             feature={selectedFeature}
             harnessName={harnessName}
@@ -1238,10 +1299,32 @@ export default function App() {
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onScreenshots={(sessionId) => setScreenshotTarget({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
             onNewSession={() => void openNewSession(selectedProject, selectedFeature)}
             newSessionLoading={newSessionLoading}
+            editors={workspace.data?.sidebar?.features[selectedFeature.id]?.editors ?? []}
+            vscodePanel={
+              <VscodePanel
+                key={selectedFeature.id}
+                target={{ project_id: selectedProject.id, feature_id: selectedFeature.id }}
+                workdir={selectedFeature.workdir}
+                editors={workspace.data?.sidebar?.features[selectedFeature.id]?.editors ?? []}
+                opening={addSessionMutation.isPending}
+                onOpen={() => requestAddSession({
+                  target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
+                  choice: { type: "builtin", kind: "vscode" },
+                  label: null,
+                  approved: false,
+                })}
+                onClosed={(message) => {
+                  pushToast({ tone: "info", title: "VS Code", message });
+                  void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+                }}
+                onError={reportError}
+              />
+            }
             stoppedSessionIds={workspace.data?.stopped_session_ids ?? []}
             sessionLifecycle={sessionLifecycle(selectedProject.id, selectedFeature)}
             onCloseSession={(session) => setCloseSessionDialog({
@@ -1462,9 +1545,10 @@ export default function App() {
           options={newSessionDialog.options}
           preferredKind={newSessionDialog.preferredKind}
           busy={addSessionMutation.isPending}
-          onCreate={(kind, label) => requestAddSession({
+          preCheckFailure={newSessionDialog.preCheckFailure}
+          onCreate={(choice, label) => requestAddSession({
             target: newSessionDialog.target,
-            kind,
+            choice,
             label,
             approved: false,
           })}
@@ -1502,13 +1586,15 @@ export default function App() {
       {pendingAddSessionApproval && (
         <ApprovalDialog
           label="Approve new session"
-          title="Start another agent?"
+          title={pendingAddSessionApproval.choice.type === "builtin"
+            && ["claude", "codex", "opencode", "pi"].includes(pendingAddSessionApproval.choice.kind)
+            ? "Start another agent?" : "Start this feature?"}
           message={pendingAddSessionApproval.message}
           confirmLabel="Start anyway"
           busy={addSessionMutation.isPending}
           onConfirm={() => requestAddSession({
             target: pendingAddSessionApproval.target,
-            kind: pendingAddSessionApproval.kind,
+            choice: pendingAddSessionApproval.choice,
             label: pendingAddSessionApproval.label,
             approved: true,
           })}
@@ -1733,10 +1819,13 @@ function FeatureView({
   onSupervisedEdits,
   onPrTriage,
   onScreenshots,
+  onReusePrompt,
   onReview,
   reviewBusy,
   onNewSession,
   newSessionLoading,
+  editors,
+  vscodePanel,
   stoppedSessionIds,
   sessionLifecycle,
   onCloseSession,
@@ -1772,10 +1861,15 @@ function FeatureView({
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
   onScreenshots: (sessionId: string | null) => void;
+  /** The agent sidebar's prompt reuse: append to that session's draft. */
+  onReusePrompt: (target: SessionTarget, prompt: string) => void;
   onReview: () => void;
   reviewBusy: boolean;
   onNewSession: () => void;
   newSessionLoading: boolean;
+  /** VS Code windows AMF launched for this feature. */
+  editors: FeatureEditor[];
+  vscodePanel: ReactNode;
   stoppedSessionIds: string[];
   /** Start/stop for one session, leaving the rest of the feature alone. */
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
@@ -1793,7 +1887,7 @@ function FeatureView({
 }) {
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
   const known = (id: string | undefined) =>
-    id === TODOS_TAB || sessions.some((session) => session.id === id);
+    id === TODOS_TAB || id === VSCODE_TAB || sessions.some((session) => session.id === id);
   // A remembered tab whose session is gone falls back to the first one,
   // unless it is the session a launch just created and the snapshot hasn't
   // caught up yet -- keep that tab so the handoff lands somewhere.
@@ -1802,7 +1896,7 @@ function FeatureView({
     ? tab
     : sessions[0]?.id ?? TODOS_TAB;
   const isStopped = feature.status === "stopped";
-  const target: SessionTarget | null = activeTab === TODOS_TAB ? null : {
+  const target: SessionTarget | null = activeTab === TODOS_TAB || activeTab === VSCODE_TAB ? null : {
     project_id: project.id,
     feature_id: feature.id,
     session_id: activeTab,
@@ -1954,6 +2048,18 @@ function FeatureView({
           </button>
         )}
         <span className="tabs-spacer" />
+        {(editors.length > 0 || activeTab === VSCODE_TAB) && (
+          <button
+            role="tab"
+            aria-selected={activeTab === VSCODE_TAB}
+            className={activeTab === VSCODE_TAB ? "tab tab-active" : "tab"}
+            onClick={() => onTab(VSCODE_TAB)}
+            title="VS Code windows AMF opened for this feature"
+          >
+            <Icon name="file" size={14} /> VS Code
+            {editors.length > 0 && <span className="nav-count">{editors.length}</span>}
+          </button>
+        )}
         <button
           role="tab"
           aria-selected={activeTab === TODOS_TAB}
@@ -1968,47 +2074,68 @@ function FeatureView({
         {activeTab === TODOS_TAB && (
           <div className="page-narrow scroll">{todoPanel}</div>
         )}
-        {target && isStopped && (
-          <EmptyState
-            icon="terminal"
-            title="This feature is stopped"
-            action={
-              <button className="btn btn-primary"
-                onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
-                disabled={starting || activeLifecycle?.starting}>
-                {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
-                {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
-              </button>
-            }
-          >
-            Starting it from this tab offers to resume this session's saved conversation, if it has one.
-          </EmptyState>
+        {activeTab === VSCODE_TAB && (
+          <div className="page-narrow scroll">{vscodePanel}</div>
         )}
-        {target && !isStopped && activeSession && activeLifecycle && !activeSessionRunning && (
-          <EmptyState
-            icon="terminal"
-            title={`${activeSession.label} is stopped`}
-            action={
-              <SessionStartStopButton
-                label={activeSession.label}
-                running={false}
-                {...activeLifecycle}
+        {target && (
+          <div className="session-split">
+            <div className="session-split-main">
+              {isStopped && (
+                <EmptyState
+                  icon="terminal"
+                  title="This feature is stopped"
+                  action={
+                    <button className="btn btn-primary"
+                      onClick={activeLifecycle ? activeLifecycle.onStart : onStart}
+                      disabled={starting || activeLifecycle?.starting}>
+                      {starting || activeLifecycle?.starting ? <Spinner /> : <Icon name="play" size={12} />}
+                      {starting || activeLifecycle?.starting ? "Starting…" : "Start feature"}
+                    </button>
+                  }
+                >
+                  Starting it from this tab offers to resume this session's saved conversation, if it has one.
+                </EmptyState>
+              )}
+              {!isStopped && activeSession && activeLifecycle && !activeSessionRunning && (
+                <EmptyState
+                  icon="terminal"
+                  title={`${activeSession.label} is stopped`}
+                  action={
+                    <SessionStartStopButton
+                      label={activeSession.label}
+                      running={false}
+                      {...activeLifecycle}
+                    />
+                  }
+                >
+                  {activeSession.stopped
+                    ? "It stays stopped when the feature starts, until you start it here. "
+                    : "The rest of the feature is still running. "}
+                  Starting an agent session offers to resume its saved conversation when there is one.
+                </EmptyState>
+              )}
+              {isAgent && (isStopped || !activeSessionRunning) && (
+                <div className="stopped-composer">{composer}</div>
+              )}
+              {!isStopped && (activeSessionRunning || !activeSession) && (
+                <div className="session">
+                  <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
+                  {composer}
+                </div>
+              )}
+            </div>
+            {/* After the main column, so showing or hiding it never moves the
+                terminal in the tree (no reattach, scroll position kept). */}
+            {isAgent && (
+              <SessionSidebar
+                key={sessionKey(target)}
+                target={target}
+                onReusePrompt={(prompt) => onReusePrompt(target, prompt)}
+                onFreshSession={onReusePrompt}
+                onPrTriage={onPrTriage}
+                onSupervisedEdits={onSupervisedEdits}
               />
-            }
-          >
-            {activeSession.stopped
-              ? "It stays stopped when the feature starts, until you start it here. "
-              : "The rest of the feature is still running. "}
-            Starting an agent session offers to resume its saved conversation when there is one.
-          </EmptyState>
-        )}
-        {target && isAgent && (isStopped || !activeSessionRunning) && (
-          <div className="stopped-composer">{composer}</div>
-        )}
-        {target && !isStopped && (activeSessionRunning || !activeSession) && (
-          <div className="session">
-            <TerminalPane key={sessionKey(target)} target={target} onReadyChange={onTerminalReady} />
-            {composer}
+            )}
           </div>
         )}
       </div>

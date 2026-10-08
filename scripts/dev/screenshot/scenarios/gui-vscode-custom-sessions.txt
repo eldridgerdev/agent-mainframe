@@ -1,0 +1,10 @@
+# Native GUI proof for VS Code and configured custom sessions, with a private
+# database, config, Git repository/worktree and tmux server. The project's
+# amf.json defines two custom sessions (one with an icon, one whose pre_check
+# fails). `code`, `docker` and `npm` are stand-ins on a private PATH: the user's
+# real VS Code, Docker and editor windows are never run or touched, and no agent
+# is launched.
+note:The isolated TUI confirms the screenshot harness is ready before the native GUI capture starts.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-sessions.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-sessions-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

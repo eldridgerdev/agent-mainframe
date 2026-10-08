@@ -18,12 +18,18 @@ use agent_mainframe::automation::{
     AutomationHookPrompt, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
     CreateProjectResponse,
 };
+use agent_mainframe::gui_contract::fresh_context::{
+    FreshContextPreview, FreshContextRequest, FreshContextResponse,
+};
+use agent_mainframe::gui_contract::session_sidebar::{
+    CompleteSidebarTodo, SessionPlanView, SessionSidebarView,
+};
 use agent_mainframe::gui_contract::sidebar::{CollapseTarget, SidebarClock};
 use agent_mainframe::gui_contract::{
     AddSessionResponse, DeleteFeatureResponse, FeatureTarget, GuiError, GuiErrorKind, GuiHandle,
-    NewSessionOption, RemoveSessionResponse, SessionTarget, StartFeatureResponse,
-    StartSessionResponse, StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse,
-    TodoDeleteChoice, TodoHostChoice, WorkspaceSnapshot,
+    RemoveSessionResponse, SessionTarget, StartFeatureResponse, StartSessionResponse,
+    StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse, TodoDeleteChoice,
+    TodoHostChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
@@ -39,6 +45,10 @@ use agent_mainframe::gui_prompts::{self, LibraryScope, LibraryView, ResolvePromp
 use agent_mainframe::gui_review::{self, ReviewAction, ReviewView};
 use agent_mainframe::gui_screenshots::{
     self, EvidenceListing, EvidenceOwner, EvidenceSelection, ImageData,
+};
+use agent_mainframe::gui_sessions::{
+    self, AddCustomSessionRequest, AddCustomSessionResponse, CloseEditorsResponse,
+    NewSessionOptions, OpenVscodeResponse,
 };
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
@@ -432,15 +442,11 @@ fn start_feature(
 }
 
 #[tauri::command]
-fn new_session_options(
-    state: State<AppState>,
+async fn new_session_options(
+    state: State<'_, AppState>,
     target: FeatureTarget,
-) -> Result<Vec<NewSessionOption>, GuiError> {
-    state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .new_session_options(&target)
+) -> Result<NewSessionOptions, GuiError> {
+    gui_sessions::new_session_options(&state.0, &target)
 }
 
 #[tauri::command]
@@ -454,6 +460,54 @@ fn add_session(
 ) -> Result<AddSessionResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.add_session(target, kind, label, approved)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+/// Async (off the main thread): the custom session's `pre_check` and the
+/// `code` CLI can take a while.
+#[tauri::command]
+async fn add_custom_session(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: AddCustomSessionRequest,
+) -> Result<AddCustomSessionResponse, GuiError> {
+    let response = gui_sessions::add_custom_session(&state.0, request)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
+    Ok(response)
+}
+
+#[tauri::command]
+async fn open_vscode(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    approved: bool,
+) -> Result<OpenVscodeResponse, GuiError> {
+    let response = gui_sessions::open_vscode(&state.0, target, approved)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
+    Ok(response)
+}
+
+#[tauri::command]
+async fn close_editors(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    target: FeatureTarget,
+    seen: Vec<String>,
+) -> Result<CloseEditorsResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.close_editors(target, seen)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
 }
@@ -1270,6 +1324,66 @@ async fn screenshots_inline_image(
     result
 }
 
+/// The agent sidebar for one agent tab. Drives the same background sources
+/// the dashboard sidebar does, plus this feature's sidebar load and the
+/// usage windows, then answers from this process's caches.
+#[tauri::command]
+fn session_sidebar(
+    state: State<AppState>,
+    sources: State<SidebarSources>,
+    target: SessionTarget,
+) -> Result<SessionSidebarView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.drive_sidebar_sources(&mut sources.0.lock().expect("sidebar clock mutex poisoned"));
+    gui.refresh_session_sidebar_sources(&target)?;
+    gui.refresh_usage_windows();
+    gui.session_sidebar(&target)
+}
+
+#[tauri::command]
+fn fresh_context_preview(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<FreshContextPreview, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .fresh_context_preview(&target)
+}
+
+#[tauri::command]
+fn fresh_context_start(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: SessionTarget,
+    request: FreshContextRequest,
+) -> Result<FreshContextResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.fresh_context_start(&target, request)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
+fn session_sidebar_plan(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<SessionPlanView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.session_sidebar_plan(&target)
+}
+
+#[tauri::command]
+fn session_sidebar_complete_todo(
+    state: State<AppState>,
+    target: SessionTarget,
+    request: CompleteSidebarTodo,
+) -> Result<String, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.session_sidebar_complete_todo(&target, request)
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -1367,6 +1481,14 @@ fn main() {
             pr_triage_act,
             syntax_install_status,
             syntax_install,
+            session_sidebar,
+            session_sidebar_plan,
+            fresh_context_preview,
+            fresh_context_start,
+            session_sidebar_complete_todo,
+            add_custom_session,
+            open_vscode,
+            close_editors,
         ])
         .run(tauri::generate_context!())
         .expect("error while running amf-gui");

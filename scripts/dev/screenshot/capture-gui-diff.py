@@ -34,6 +34,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-diff-") as temporary:
     env.update(
         XDG_CONFIG_HOME=str(config),
         XDG_STATE_HOME=str(state),
+        AMF_TMUX_SOCKET=str(scratch / "gui-tmux.sock"),
         GDK_BACKEND="x11",
         WEBKIT_INSPECTOR_HTTP_SERVER=inspector_address,
     )

@@ -261,7 +261,9 @@ It does not capture or publish screenshot proof. On 2026-10-07 it passed:
 - Authenticated single-image Markdown rendering for public PR #654 returned a
   signed GitHub image URL; fetching it without a token returned PNG bytes. Unit
   fixtures cover the failed/HTML attachment fallback and fresh URL resolution on
-  retry. The reported coworker-image failure on macOS remains unverified.
+  retry. The user reports that the previously failing coworker images now work
+  after the signed-URL fallback and access diagnostics were pushed. A controlled
+  live private attachment/artifact fixture remains pending.
 - Live public Actions artifact download, redirect, archive validation and
   thumbnail transport (artifact 11515311988). This proves the public download
   path; PR/run association and default policy are covered by source fixtures.

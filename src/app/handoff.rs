@@ -56,22 +56,29 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        let workdir = feature.workdir.clone();
+        let prefill = self.fresh_context_seed(feature, &view.window);
+        self.open_fresh_context_prompt_from_view_with_prefill(prefill);
+    }
+
+    /// Shared continuation seed for both interfaces; no view or mode mutation.
+    pub(crate) fn fresh_context_seed(&self, feature: &Feature, window: &str) -> String {
+        let workdir = &feature.workdir;
         let relative_plan = plan::resolve_effective_plan(feature)
-            .map(|plan| relative_display_path(&workdir, plan.path()));
-        let changed_files = crate::diff::load_snapshot(&workdir, None, false)
+            .map(|plan| relative_display_path(workdir, plan.path()));
+        let changed_files = crate::diff::load_snapshot(workdir, None, false)
             .map(|snapshot| changed_file_paths(&snapshot))
             .unwrap_or_default();
-        let feature_summary = feature.summary.as_deref();
-        let latest_prompt = self.continuation_latest_prompt(feature, &view.window);
-        let prefill = build_fresh_context_prompt(
+        build_fresh_context_prompt(
             relative_plan.as_deref(),
             &changed_files,
-            feature_summary,
-            latest_prompt,
+            feature.summary.as_deref(),
+            self.continuation_latest_prompt(feature, window),
             FRESH_CONTEXT_CONTINUATION_INSTRUCTION,
-        );
-        self.open_fresh_context_prompt_from_view_with_prefill(prefill);
+        )
+    }
+
+    pub(crate) fn fresh_context_label(&self, feature: &Feature) -> String {
+        fresh_context_session_label(feature)
     }
 
     /// Latest known prompt to fold into a continuation seed for the session

@@ -154,8 +154,7 @@ pub struct SidebarContextMeter {
     pub band: SidebarContextBand,
     pub estimated: bool,
     pub stale: bool,
-    /// The TUI would offer its fresh-context prompt (`leader F`) here. The
-    /// GUI has no equivalent action yet, so it only says so.
+    /// Context pressure makes the fresh-context action especially relevant.
     pub fresh_context_hint: bool,
 }
 

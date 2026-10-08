@@ -85,12 +85,13 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function mount(handlers: Partial<Record<"onReusePrompt" | "onPrTriage" | "onSupervisedEdits", ReturnType<typeof vi.fn>>> = {}) {
+function mount(handlers: Partial<Record<"onReusePrompt" | "onPrTriage" | "onSupervisedEdits" | "onFreshSession", ReturnType<typeof vi.fn>>> = {}) {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     onReusePrompt: handlers.onReusePrompt ?? vi.fn(),
     onPrTriage: handlers.onPrTriage ?? vi.fn(),
     onSupervisedEdits: handlers.onSupervisedEdits ?? vi.fn(),
+    onFreshSession: handlers.onFreshSession ?? vi.fn(),
   };
   render(<QueryClientProvider client={client}><SessionSidebar target={target} {...props} /></QueryClientProvider>);
   return props;
@@ -102,6 +103,21 @@ const sectionTitles = () => within(sidebar()).queryAllByRole("region").map((node
 const sidebarCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "session_sidebar");
 
 describe("session sidebar", () => {
+  it("opens fresh context from the meter and hands the new session draft to navigation", async () => {
+    const previous = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "fresh_context_preview") return { revision: "fresh", prompt: "Continue", label: "Fresh Context" };
+      if (command === "fresh_context_start") return { target: { ...target, session_id: "fresh-session" }, draft_prompt: "Continue" };
+      return previous(command, args);
+    });
+    const { onFreshSession } = mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Fresh context" }));
+    await screen.findByRole("textbox", { name: "Continuation prompt" });
+    fireEvent.click(screen.getByRole("button", { name: "Start fresh context" }));
+    await waitFor(() => expect(onFreshSession).toHaveBeenCalledWith({ ...target, session_id: "fresh-session" }, "Continue"));
+    expect(screen.queryByRole("dialog", { name: "Fresh context" })).toBeNull();
+  });
+
   it("shows every section with content in the TUI's order under a per-harness title", async () => {
     mount();
     expect(await screen.findByRole("heading", { name: "Claude Sidebar" })).toBeTruthy();
@@ -146,7 +162,8 @@ describe("session sidebar", () => {
     expect(within(context).getByText("Ctx ~85% CRITICAL STALE · 170,000")).toBeTruthy();
     expect(within(context).getByText("estimated")).toBeTruthy();
     expect(within(context).getByText("stale")).toBeTruthy();
-    expect(within(context).getByText(/fresh context here \(leader F\)/)).toBeTruthy();
+    expect(within(context).getByRole("button", { name: "Fresh context" })).toBeTruthy();
+    expect(within(context).queryByText(/The TUI offers a fresh context/)).toBeNull();
   });
 
   it("renders the agent todo list with its progress bar and states", async () => {

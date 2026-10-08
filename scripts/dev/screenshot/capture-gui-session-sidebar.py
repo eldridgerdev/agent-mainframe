@@ -152,6 +152,23 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-sidebar-") as temporary:
         received_dir.mkdir()
         return shlex.join(["/usr/bin/python3", harness, "transcript", str(received_dir)])
 
+    if os.environ.get("AMF_GUI_FRESH_CONTEXT") == "1":
+        (config / "amf/config.json").write_text(json.dumps({
+            "low_memory_warn_mb": 0, "max_concurrent_agents": 100,
+        }))
+        received_dir = scratch / "fresh-context"
+        received_dir.mkdir()
+        fake_claude = fixture_bin / "claude"
+        fake_claude.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'Claude Code 2.0.0'; exit 0; fi\n" +
+            "exec " + shlex.join(["/usr/bin/python3", harness, "transcript", str(received_dir)]) + "\n")
+        fake_claude.chmod(0o755)
+        # The shared launcher prefers native versions and returns this absolute
+        # fixture path, independent of the tmux server's inherited PATH.
+        versions = home / ".local/share/claude/versions"
+        versions.mkdir(parents=True)
+        shutil.copyfile(fake_claude, versions / "offline-fixture")
+        (versions / "offline-fixture").chmod(0o755)
+
     # The hooks' thinking marker for round-totals, kept fresh the way a busy
     # agent's tool calls keep it fresh.
     marker = pathlib.Path("/tmp/amf-thinking") / tmux_name
@@ -274,6 +291,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-sidebar-") as temporary:
         assert all(not part.startswith("query=mutation") for call in calls for part in call), calls
         for window in ["claude", "codex"]:
             assert json.loads((scratch / window / "transcript-received.json").read_text()) == []
+        if os.environ.get("AMF_GUI_FRESH_CONTEXT") == "1":
+            assert json.loads((scratch / "fresh-context/transcript-received.json").read_text()) == []
         print(f"PASS: {len(calls)} offline read-only gh call(s); no input delivered to either harness fixture", flush=True)
     finally:
         stop_marker.set()

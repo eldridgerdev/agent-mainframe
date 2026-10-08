@@ -135,7 +135,7 @@ describe("agent tab layout", () => {
       <QueryClientProvider client={client}>
         <div className="session-split">
           <div className="session-split-main"><TerminalPane target={target} /></div>
-          <SessionSidebar target={target} onReusePrompt={vi.fn()} onPrTriage={vi.fn()} onSupervisedEdits={vi.fn()} />
+          <SessionSidebar target={target} onReusePrompt={vi.fn()} onPrTriage={vi.fn()} onSupervisedEdits={vi.fn()} onFreshSession={vi.fn()} />
         </div>
       </QueryClientProvider>,
     );

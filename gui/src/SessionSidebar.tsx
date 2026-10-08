@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { asGuiError, type SessionTarget } from "./api";
 import Markdown from "./Markdown";
+import FreshContextDialog from "./FreshContextDialog";
 import {
   sessionSidebar, sessionSidebarCompleteTodo, sessionSidebarPlan,
   type SessionPlanView, type SessionSidebarSection, type SidebarAction, type SidebarContextMeter,
@@ -35,12 +36,14 @@ export default function SessionSidebar({
   onReusePrompt,
   onPrTriage,
   onSupervisedEdits,
+  onFreshSession,
 }: {
   target: SessionTarget;
   /** Append a prompt to this session's composer draft. */
   onReusePrompt: (prompt: string) => void;
   onPrTriage: () => void;
   onSupervisedEdits: () => void;
+  onFreshSession: (target: SessionTarget, draft: string) => void;
 }) {
   const [collapsed, setCollapsed] = useSidebarCollapsed("sessionSidebar");
   const sidebar = useQuery({
@@ -51,6 +54,7 @@ export default function SessionSidebar({
   });
   const [plan, setPlan] = useState<{ loading: boolean; view?: SessionPlanView; error?: string } | null>(null);
   const planRequest = useRef(0);
+  const [freshContext, setFreshContext] = useState(false);
 
   if (collapsed) {
     return (
@@ -106,6 +110,7 @@ export default function SessionSidebar({
             target={target}
             section={section}
             onOpenPlan={openPlan}
+            onFreshContext={() => setFreshContext(true)}
             onReusePrompt={onReusePrompt}
             onPrTriage={onPrTriage}
             onSupervisedEdits={onSupervisedEdits}
@@ -113,6 +118,8 @@ export default function SessionSidebar({
         ))}
         {view?.notes.map((note) => <p key={note} className="agent-sidebar-note">{note}</p>)}
       </div>
+      {freshContext && <FreshContextDialog target={target} onClose={() => setFreshContext(false)}
+        onCreated={onFreshSession} />}
       {plan && (
         <Modal
           label="Current plan"
@@ -141,6 +148,7 @@ function Section({
   target,
   section,
   onOpenPlan,
+  onFreshContext,
   onReusePrompt,
   onPrTriage,
   onSupervisedEdits,
@@ -148,6 +156,7 @@ function Section({
   target: SessionTarget;
   section: SessionSidebarSection;
   onOpenPlan: () => void;
+  onFreshContext: () => void;
   onReusePrompt: (prompt: string) => void;
   onPrTriage: () => void;
   onSupervisedEdits: () => void;
@@ -211,7 +220,7 @@ function Section({
         <h3>{section.title}</h3>
         {section.actions.length > 0 && <div className="sb-actions">{section.actions.map(button)}</div>}
       </header>
-      {section.context && <ContextMeter meter={section.context} />}
+      {section.context && <ContextMeter meter={section.context} onFreshContext={onFreshContext} />}
       <div className="sb-lines">
         {section.lines.map((line, index) => <Line key={index} line={line} />)}
       </div>
@@ -238,7 +247,7 @@ function Section({
   );
 }
 
-function ContextMeter({ meter }: { meter: SidebarContextMeter }) {
+function ContextMeter({ meter, onFreshContext }: { meter: SidebarContextMeter; onFreshContext: () => void }) {
   const percent = Math.max(0, Math.min(100, meter.percent));
   return (
     <div className="sb-context-meter">
@@ -257,8 +266,9 @@ function ContextMeter({ meter }: { meter: SidebarContextMeter }) {
         {meter.estimated && <span className="sb-chip">estimated</span>}
         {meter.stale && <span className="sb-chip sb-chip-stale">stale</span>}
       </p>
+      <button className="sb-action" onClick={onFreshContext}>Fresh context</button>
       {meter.fresh_context_hint && (
-        <p className="sb-hint">Context is filling up. The TUI offers a fresh context here (leader F).</p>
+        <p className="sb-hint">Context is filling up.</p>
       )}
     </div>
   );

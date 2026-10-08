@@ -210,6 +210,16 @@ IPC-only review activity are not reported as current. The per-field source
 matrix is in `src/gui_contract/session_sidebar.rs`. Native offline proof:
 `scripts/dev/screenshot/scenarios/gui-session-sidebar.txt`.
 
+**Fresh context** in the Context section opens an editable continuation from
+that feature's plan, changed files, summary and known prompt, using the same
+builder as TUI leader F. **Start fresh context** uses the feature's configured
+harness and opens a new tab with the continuation as an unsent composer draft;
+your original session stays open. Resource warnings require **Start anyway**.
+If the source changes while editing, reload context and review the retained
+draft before retrying. Cancel creates no session and asks before discarding an
+edited continuation. Native offline proof:
+`scripts/dev/screenshot/scenarios/gui-fresh-context.txt`.
+
 The sidebar is the TUI dashboard tree. Each project shows its shortened path,
 an add-feature hint when it is empty, and any minimized creation-time plan.
 Each feature row shows the TUI's status glyph (worktree script, deletion in

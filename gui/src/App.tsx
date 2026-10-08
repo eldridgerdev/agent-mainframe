@@ -2111,6 +2111,7 @@ function FeatureView({
                 key={sessionKey(target)}
                 target={target}
                 onReusePrompt={(prompt) => onReusePrompt(target, prompt)}
+                onFreshSession={onReusePrompt}
                 onPrTriage={onPrTriage}
                 onSupervisedEdits={onSupervisedEdits}
               />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentSlug, FeatureTarget, asGuiError } from "./api";
 import Markdown from "./Markdown";
+import PrScreenshotsPanel from "./PrScreenshotsPanel";
 import {
   PrComment, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
@@ -38,6 +39,7 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
   const [numberDraft, setNumberDraft] = useState("");
   const [investigate, setInvestigate] = useState<{ commentId: number; harness: AgentSlug; text: string; followUp: boolean } | null>(null);
   const [reply, setReply] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [showScreenshots, setShowScreenshots] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const pending = useRef(false);
   // Bring a newly opened editor into the detail pane's view.
@@ -126,7 +128,8 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
   }
 
   return (
-    <Modal label="PR Triage" size="xl" dismissable={!busy} onClose={close}
+    <>
+    <Modal label="PR Triage" size="xl" dismissable={!busy && !showScreenshots} onClose={close}
       title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
       subtitle="Read review feedback, investigate it read-only, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <div className="callout callout-warning" role="alert">
@@ -198,6 +201,7 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
               {SORTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
             </select>
           </Field>
+          <button className="btn btn-secondary btn-sm" onClick={() => setShowScreenshots(true)}>Screenshots</button>
           <button className="btn btn-secondary btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "refresh" })}>Refresh comments</button>
           <button className="btn btn-ghost btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "back_to_list" })}>Pull requests</button>
         </div>
@@ -332,5 +336,7 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
         </div>
       </section>}
     </Modal>
+    {showScreenshots && review && view && <PrScreenshotsPanel key={`${view.workflow_id}:${review.number}:${review.head_sha}`} workflowId={view.workflow_id} prNumber={review.number} headSha={review.head_sha} onClose={() => setShowScreenshots(false)} />}
+    </>
   );
 }

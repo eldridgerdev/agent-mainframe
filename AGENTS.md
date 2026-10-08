@@ -117,3 +117,12 @@ environment or per-run approval: the Pages credentials never enter CI, and the
 capture-vs-deploy split keeps that safe. Do not claim publication succeeded
 until the command does. Raw ANSI/text captures and Actions artifact URLs are
 internal and must not be placed in the PR.
+<!-- AMF:plan-instructions:begin -->
+
+## Plan Mode
+
+This feature has a user-authored plan at `AMF_PLAN.md`.
+
+Before doing implementation work, read the plan. Treat its decisions as settled unless the user says otherwise, and keep its task checkboxes and notes current as work progresses.
+
+<!-- AMF:plan-instructions:end -->

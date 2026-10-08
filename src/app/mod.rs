@@ -50,6 +50,7 @@ pub(crate) mod review;
 pub(crate) mod review_destination;
 pub(crate) mod review_memory;
 pub(crate) mod review_questions;
+pub(crate) mod screenshots;
 mod search;
 mod session_config;
 pub(crate) mod session_ops;
@@ -1234,6 +1235,7 @@ pub struct App {
     /// Single inotify worker replacing periodic filesystem scans;
     /// None when the watcher could not start (timers remain fallbacks).
     pub fs_watcher: Option<crate::fswatch::FsWatcher>,
+    pub(crate) evidence_work: screenshots::EvidenceWork,
     /// Persistent tmux control-mode client observing session lifecycle;
     /// None in tests (status polling falls back to its interval).
     pub tmux_observer: Option<crate::tmux_observer::TmuxObserver>,
@@ -2664,6 +2666,7 @@ impl App {
             background_hooks: HashMap::new(),
             ipc: None,
             fs_watcher: None,
+            evidence_work: screenshots::EvidenceWork::default(),
             tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
@@ -2931,6 +2934,7 @@ impl App {
             background_hooks: HashMap::new(),
             ipc: None,
             fs_watcher: None,
+            evidence_work: screenshots::EvidenceWork::default(),
             tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),

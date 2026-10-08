@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "scope_id": "{{scope_id}}",
+  "image_id": "claude-review",
+  "file": "claude-review.png",
+  "sha256": "{{sha256}}",
+  "caption": "Claude: invoice review after an explicit visual request",
+  "captured_at": "2026-10-07T12:00:00Z"
+}

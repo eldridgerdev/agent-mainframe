@@ -242,6 +242,102 @@ fn ensure_user_config_notify_hook_for(config_path: &Path, hook_path: &Path) -> O
     Some(())
 }
 
+/// Append launch-specific evidence guidance without writing shared configuration.
+/// Codex's CLI developer_instructions override has precedence over file layers.
+pub(crate) fn with_screenshot_guidance(
+    workdir: &Path,
+    guidance: &str,
+    args: Vec<String>,
+) -> anyhow::Result<Vec<String>> {
+    let global = if cfg!(test) {
+        None
+    } else {
+        std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|p| p.join(".codex")))
+            .map(|p| p.join("config.toml"))
+    };
+    let mut paths: Vec<_> = global.into_iter().collect();
+    let mut ancestors: Vec<_> = workdir.ancestors().collect();
+    ancestors.reverse();
+    paths.extend(ancestors.into_iter().map(|p| p.join(".codex/config.toml")));
+    append_guidance_from_configs(&paths, guidance, args)
+}
+
+fn append_guidance_from_configs(
+    paths: &[std::path::PathBuf],
+    guidance: &str,
+    mut args: Vec<String>,
+) -> anyhow::Result<Vec<String>> {
+    fn merge(target: &mut toml::Value, source: toml::Value) {
+        if let (Some(dest), Some(layer)) = (target.as_table_mut(), source.as_table()) {
+            for (key, value) in layer {
+                if let Some(existing) = dest.get_mut(key) {
+                    merge(existing, value.clone());
+                } else {
+                    dest.insert(key.clone(), value.clone());
+                }
+            }
+        } else {
+            *target = source;
+        }
+    }
+    let mut config = toml::Value::Table(toml::map::Map::new());
+    for path in paths {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.into()),
+        };
+        merge(&mut config, toml::from_str(&content)?);
+    }
+    let mut profile = config
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    for (index, arg) in args.iter().enumerate() {
+        if matches!(arg.as_str(), "-p" | "--profile") {
+            profile = args.get(index + 1).cloned();
+        } else if let Some(value) = arg.strip_prefix("--profile=") {
+            profile = Some(value.into());
+        }
+    }
+    let mut effective = config
+        .get("developer_instructions")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    if let Some(profile) = profile
+        && let Some(instructions) = config
+            .get("profiles")
+            .and_then(|v| v.get(&profile))
+            .and_then(|v| v.get("developer_instructions"))
+            .and_then(|v| v.as_str())
+    {
+        effective = instructions.into();
+    }
+    for pair in args.windows(2) {
+        if matches!(pair[0].as_str(), "-c" | "--config")
+            && let Some(value) = pair[1].strip_prefix("developer_instructions=")
+        {
+            effective = toml::from_str::<toml::Value>(&format!("v={value}"))?
+                .get("v")
+                .and_then(|v| v.as_str())
+                .unwrap_or(value)
+                .into();
+        }
+    }
+    if !effective.is_empty() {
+        effective.push_str("\n\n");
+    }
+    effective.push_str(guidance);
+    args.extend([
+        "-c".into(),
+        format!("developer_instructions={}", toml::Value::String(effective)),
+    ]);
+    Ok(args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::launch_override_args_for;
@@ -369,5 +465,58 @@ mod tests {
             args.windows(2)
                 .any(|pair| pair == ["--ask-for-approval", "never"])
         );
+    }
+}
+
+#[cfg(test)]
+mod screenshot_tests {
+    use super::*;
+    #[test]
+    fn screenshot_guidance_preserves_profiles_across_file_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.toml");
+        let local = dir.path().join("local.toml");
+        std::fs::write(&global, "developer_instructions='Global'\n[profiles.review]\ndeveloper_instructions='Review conventions'\nmodel='my-model'\n").unwrap();
+        std::fs::write(
+            &local,
+            "profile='review'\n[profiles.review]\nmodel='local-model'\n",
+        )
+        .unwrap();
+        let paths = [global, local];
+        for args in [vec![], vec!["--profile".into(), "review".into()]] {
+            let result = append_guidance_from_configs(&paths, "Capture rule", args).unwrap();
+            assert!(result.last().unwrap().contains("Review conventions"));
+        }
+        assert!(
+            std::fs::read_to_string(&paths[1])
+                .unwrap()
+                .contains("local-model")
+        );
+    }
+    #[test]
+    fn evidence_guidance_preserves_config_and_cli_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "developer_instructions = 'Keep my conventions'\nmodel = 'test-model'\n";
+        std::fs::write(&path, original).unwrap();
+        let args = append_guidance_from_configs(
+            std::slice::from_ref(&path),
+            "Capture only when explicitly requested",
+            vec![],
+        )
+        .unwrap();
+        assert!(args[1].contains("Keep my conventions"));
+        assert!(args[1].contains("explicitly requested"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let args = append_guidance_from_configs(
+            &[path],
+            "Evidence",
+            vec![
+                "-c".into(),
+                "developer_instructions=\"CLI instructions\"".into(),
+            ],
+        )
+        .unwrap();
+        assert!(args.last().unwrap().contains("CLI instructions"));
     }
 }

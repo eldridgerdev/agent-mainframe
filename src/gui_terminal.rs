@@ -558,7 +558,28 @@ mod tests {
             let name = unique_session_name(label);
             TmuxManager::create_session_with_window(&name, "main", &PathBuf::from("/tmp"))
                 .expect("failed to create test tmux session");
-            Self { name }
+            let session = Self { name };
+            // User shell plugins can consume input queued during startup. These
+            // transport tests need a ready, predictable shell, even in the full
+            // parallel suite; they do not exercise shell configuration.
+            let output = TmuxManager::command()
+                .args([
+                    "respawn-pane",
+                    "-k",
+                    "-t",
+                    &format!("{}:main", session.name),
+                    "exec env PS1='__AMF_TEST_SHELL_READY__ ' /bin/sh -i",
+                ])
+                .output()
+                .expect("failed to start fixture shell");
+            assert!(output.status.success(), "{output:?}");
+            wait_for(Duration::from_secs(10), || {
+                TmuxManager::capture_pane(&session.name, "main")
+                    .ok()
+                    .filter(|content| content.contains("__AMF_TEST_SHELL_READY__"))
+            })
+            .expect("fixture shell did not become ready");
+            session
         }
     }
 

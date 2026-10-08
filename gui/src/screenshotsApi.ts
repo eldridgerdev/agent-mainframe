@@ -17,10 +17,6 @@ export const screenshotsChanged = () => invoke<boolean>("screenshots_changed");
 export const screenshotImage = (item: EvidenceItem, thumbnail: boolean) => invoke<ImageData>("screenshots_image", { scopeId: item.scope_id, imageId: item.image_id, hash: item.sha256, thumbnail });
 export const screenshotCleanupScopes = () => invoke<[EvidenceOwner, boolean][]>("screenshots_cleanup_scopes");
 export const screenshotCleanup = (scopeId: string) => invoke<void>("screenshots_cleanup", { scopeId });
-export interface RemoteItem { key: string; caption: string; provenance: string[] }
-export interface RunChoice { id: number; attempt: number; name: string; head_sha: string; status: string; conclusion: string; created_at: string }
-export interface RemoteListing { request_id: string; items: RemoteItem[]; galleries: { url: string; reason: string; provenance: string }[]; issues: { source: string; message: string }[]; runs: RunChoice[]; selected_run: number | null; run_page: number; more_runs: boolean }
-export const remoteScreenshots = (workflowId: string, selectedRun: number | null, runPage: number, requestId: string) => invoke<RemoteListing>("screenshots_remote_list", { workflowId, selectedRun, runPage, requestId });
-export const remoteScreenshotImage = (requestId: string, key: string, thumbnail: boolean) => invoke<ImageData>("screenshots_remote_image", { requestId, key, thumbnail });
-export const closeRemoteScreenshots = (requestId: string) => invoke<void>("screenshots_remote_close", { requestId });
 export const openScreenshotBrowser = (url: string) => invoke<void>("screenshots_open_browser", { url });
+export const prDescription = (workflowId: string) => invoke<string>("screenshots_pr_document", { workflowId });
+export const inlinePrImage = (workflowId: string, source: string) => invoke<ImageData>("screenshots_inline_image", { workflowId, source });

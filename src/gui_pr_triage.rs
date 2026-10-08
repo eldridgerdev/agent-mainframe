@@ -1863,6 +1863,35 @@ mod tests {
     }
 
     #[test]
+    fn inline_screenshot_reads_are_independent_and_reject_changed_pr_contexts() {
+        use crate::gui_screenshots;
+        let (_dir, mut gui, _github, view) = opened();
+        let description = gui_screenshots::plan_pr_document(&mut gui, &view.workflow_id).unwrap();
+        let first =
+            gui_screenshots::plan_inline_image(&mut gui, &view.workflow_id, "./first.png".into())
+                .unwrap();
+        let neighbor = gui_screenshots::plan_inline_image(
+            &mut gui,
+            &view.workflow_id,
+            "./neighbor.png".into(),
+        )
+        .unwrap();
+        gui_screenshots::finish_inline_image(&mut gui, &first).unwrap();
+        gui_screenshots::finish_inline_image(&mut gui, &neighbor).unwrap();
+        gui_screenshots::finish_pr_document(&mut gui, &description).unwrap();
+        super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            PrTriageAction::BackToList,
+        )
+        .unwrap();
+        assert!(gui_screenshots::finish_inline_image(&mut gui, &first).is_err());
+        assert!(gui_screenshots::finish_inline_image(&mut gui, &neighbor).is_err());
+        assert!(gui_screenshots::finish_pr_document(&mut gui, &description).is_err());
+    }
+
+    #[test]
     fn screenshot_bridge_rejects_closed_requests_switched_runs_and_prs() {
         use crate::gui_screenshots;
         let (_dir, mut gui, _github, view) = opened();

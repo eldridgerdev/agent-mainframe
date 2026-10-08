@@ -100,7 +100,19 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-screenshots-check-") as tempora
     browser.chmod(0o755)
     env["AMF_SCREENSHOT_BROWSER_LOG"] = str(scratch / "browser-url.txt")
     gh = fixture_bin / "gh"
-    fallback = workspace / "scripts/dev/screenshot/fixtures/gui-pr-triage-gh.py"
+    fallback = scratch / "pr-triage-gh.py"
+    fallback_source = (
+        workspace / "scripts/dev/screenshot/fixtures/gui-pr-triage-gh.py"
+    ).read_text()
+    fallback_source = fallback_source.replace(
+        "refunds may be off by a cent.",
+        "refunds may be off by a cent.\\n\\n![Comment screenshot](./ready.png)",
+    )
+    fallback_source = fallback_source.replace(
+        "Looking into it before changing anything.",
+        'Looking into it before changing anything.\\n\\n<img alt=\\"Reply screenshot\\" src=\\"./ready.png\\" />',
+    )
+    fallback.write_text(fallback_source)
     shutil.copyfile(workspace / "scripts/dev/fixtures/screenshot-gh.py", gh)
     env["AMF_SCREENSHOT_GH_FALLBACK"] = str(fallback)
     gh.chmod(0o755)
@@ -516,52 +528,17 @@ export function formatTotal(total: number): string {
         selected = evaluate(
             "document.querySelector('.pr-comment-selected')?.innerText || ''"
         )
-        click("Screenshots")
-        wait("document.querySelectorAll('.screenshot-card').length===1")
-        evaluate("document.querySelector('.screenshot-open').click()")
+        # Inline images load near the viewport; scroll the reply into view.
+        evaluate("document.querySelector('.pr-reply .pr-inline-image').scrollIntoView({block:'center'})")
+        wait("!!document.querySelector('.pr-description .pr-image-open img') && document.querySelectorAll('.pr-detail .pr-image-open img').length===2")
+        assert not evaluate("!!document.querySelector('.screenshot-grid')")
+        evaluate("document.querySelector('.pr-detail .pr-image-open').click()")
         wait("!!document.querySelector('.screenshot-canvas img')")
         escape()
-        wait(
-            "!!document.querySelector('.screenshot-grid') && !document.querySelector('.screenshot-canvas')"
-        )
-        escape()
-        wait(
-            "!document.querySelector('.screenshot-grid') && !!document.querySelector('.pr-detail')"
-        )
-        assert (
-            evaluate("document.querySelector('.pr-detail textarea').value")
-            == "Keep this unsent draft"
-        )
-        assert (
-            evaluate("document.querySelector('.pr-comment-selected')?.innerText || ''")
-            == selected
-        )
-        checks.append(
-            "PR repository image decoding uses authenticated gh raw IPC and closing preserves selection/draft"
-        )
-        (gh_state / "delay.txt").write_text("1")
-        click("Screenshots")
-        wait("document.body.innerText.includes('Reading PR images')")
-        escape()
-        wait("!document.querySelector('.screenshot-grid')")
-        time.sleep(1.2)
-        assert not evaluate("!!document.querySelector('.screenshot-grid')")
-        click("Screenshots")
-        wait("document.querySelectorAll('.screenshot-card').length===1")
-        evaluate(
-            "(()=>{const el=document.querySelector('.screenshot-toolbar select');el.value='70';el.dispatchEvent(new Event('change',{bubbles:true}));})()"
-        )
-        wait("document.body.innerText.includes('Reading PR images')")
-        evaluate(
-            "(()=>{const el=document.querySelector('.screenshot-toolbar select');el.value='';el.dispatchEvent(new Event('change',{bubbles:true}));})()"
-        )
-        wait("document.querySelectorAll('.screenshot-card').length===1")
-        escape()
-        wait("!document.querySelector('.screenshot-grid')")
-        # Actual IPC also refuses a read after the PR review is closed/reopened.
-        checks.append(
-            "Closing pending native source retrieval and changing runs rejects delayed selection results"
-        )
+        wait("!document.querySelector('.screenshot-canvas') && !!document.querySelector('.pr-detail')")
+        assert evaluate("document.querySelector('.pr-detail textarea').value") == "Keep this unsent draft"
+        assert evaluate("document.querySelector('.pr-comment-selected')?.innerText || ''") == selected
+        checks.append("PR description/comment/reply images render inline through real IPC; enlarging preserves comment selection and unsent draft")
         click("Discard reply")
         wait("!document.querySelector('.pr-detail textarea')")
         escape()
@@ -584,14 +561,12 @@ export function formatTotal(total: number): string {
                 break
             time.sleep(0.1)
         assert view["stage"] == "review"
+        (gh_state / "delay.txt").write_text("1")
         evaluate(
-            "window.previousPrResult=null;window.__TAURI_INTERNALS__.invoke('screenshots_remote_list',"
+            "window.previousPrResult=null;window.__TAURI_INTERNALS__.invoke('screenshots_pr_document',"
             + json.dumps(
                 dict(
                     workflowId=view["workflow_id"],
-                    selectedRun=None,
-                    runPage=1,
-                    requestId="native-previous-pr",
                 )
             )
             + ").then(value=>window.previousPrResult={ok:true,value}).catch(error=>window.previousPrResult={ok:false,error});"
@@ -656,29 +631,11 @@ export function formatTotal(total: number): string {
                 if view["stage"] == "review":
                     break
                 time.sleep(0.1)
-            sources = invoke(
-                "screenshots_remote_list",
-                dict(
-                    workflowId=view["workflow_id"],
-                    selectedRun=None,
-                    runPage=1,
-                    requestId="public-attachment-probe",
-                ),
-            )
-            image = next(
-                item
-                for item in sources["items"]
-                if any("GitHub attachment" in label for label in item["provenance"])
-            )
             decoded = invoke(
-                "screenshots_remote_image",
-                dict(requestId=sources["request_id"], key=image["key"], thumbnail=True),
+                "screenshots_inline_image",
+                dict(workflowId=view["workflow_id"], source=attachment),
             )
-            assert (
-                decoded["data_url"].startswith("data:image/png;base64,")
-                and decoded["width"] > 0
-            )
-            invoke("screenshots_remote_close", dict(requestId=sources["request_id"]))
+            assert decoded["data_url"].startswith("data:image/png;base64,") and decoded["width"] > 0
             invoke(
                 "pr_triage_act",
                 dict(

@@ -1200,6 +1200,52 @@ fn screenshots_open_browser(url: String) -> Result<(), GuiError> {
     gui_screenshots::open_gallery_browser(&url)
 }
 
+#[tauri::command]
+async fn screenshots_pr_document(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<String, GuiError> {
+    let read = gui_screenshots::plan_pr_document(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )?;
+    let (read, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = read.run();
+        (read, result)
+    })
+    .await
+    .map_err(|e| GuiError::from(anyhow::anyhow!("PR description read stopped: {e}")))?;
+    gui_screenshots::finish_pr_document(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &read,
+    )?;
+    result
+}
+
+#[tauri::command]
+async fn screenshots_inline_image(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    source: String,
+) -> Result<ImageData, GuiError> {
+    let read = gui_screenshots::plan_inline_image(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        source,
+    )?;
+    let (read, result) = tauri::async_runtime::spawn_blocking(move || {
+        let result = read.run();
+        (read, result)
+    })
+    .await
+    .map_err(|e| GuiError::from(anyhow::anyhow!("Inline image read stopped: {e}")))?;
+    gui_screenshots::finish_inline_image(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &read,
+    )?;
+    result
+}
+
 fn main() {
     if cfg!(target_os = "macos") {
         // SAFETY: first statement of `main`, before Tauri or anything else
@@ -1219,6 +1265,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            screenshots_pr_document,
+            screenshots_inline_image,
             screenshots_remote_list,
             screenshots_remote_image,
             screenshots_remote_close,

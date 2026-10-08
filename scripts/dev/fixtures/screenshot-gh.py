@@ -49,7 +49,7 @@ if "--method" not in args and not any("mutation" in a for a in args):
             log.write(json.dumps(args) + "\n")
         if endpoint.endswith(("/pulls/12", "/pulls/11")):
             time.sleep(float((state / "delay.txt").read_text()))
-            body = "![Invoice screenshot](./ready.png)"
+            body = '<img width="1200" alt="Invoice screenshot" src="./ready.png" />'
             if (state / "public-attachment.txt").exists():
                 body += (
                     "\n![Public attachment]("

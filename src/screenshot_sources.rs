@@ -267,6 +267,14 @@ fn redirect_destination(
     Ok((next, same_origin))
 }
 
+fn attachment_url(url: &Url) -> bool {
+    (url.host_str() == Some("github.com") && url.path().starts_with("/user-attachments/"))
+        || matches!(
+            url.host_str(),
+            Some("user-images.githubusercontent.com" | "private-user-images.githubusercontent.com")
+        )
+}
+
 impl EvidenceGithub for GithubEvidence {
     fn json(&self, workdir: &Path, endpoint: &str) -> Result<Value> {
         Ok(serde_json::from_slice(&gh(
@@ -741,15 +749,7 @@ fn extract_body(
                 continue;
             }
         };
-        let attachment = parsed.host_str() == Some("github.com")
-            && parsed.path().starts_with("/user-attachments/")
-            || matches!(
-                parsed.host_str(),
-                Some(
-                    "user-images.githubusercontent.com"
-                        | "private-user-images.githubusercontent.com"
-                )
-            );
+        let attachment = attachment_url(&parsed);
         if link.image || supported_file(parsed.path()) || attachment {
             add_resource(
                 result,
@@ -1229,14 +1229,16 @@ pub(crate) fn resource_image(
 ) -> Result<crate::screenshot_evidence::ImageData> {
     let bytes = match resource {
         Resource::Gallery { url, .. } => {
-            github
-                .http(&context.workdir, url, false, IMAGE_BYTES)?
-                .bytes
+            return decode_download(
+                github.http(&context.workdir, url, false, IMAGE_BYTES)?,
+                thumbnail,
+            );
         }
         Resource::Url(url, auth) => {
-            github
-                .http(&context.workdir, url, *auth, IMAGE_BYTES)?
-                .bytes
+            return decode_download(
+                github.http(&context.workdir, url, *auth, IMAGE_BYTES)?,
+                thumbnail,
+            );
         }
         Resource::Repository {
             owner,
@@ -1253,6 +1255,83 @@ pub(crate) fn resource_image(
         }
     };
     crate::screenshot_evidence::decode(&bytes, thumbnail)
+}
+
+fn decode_download(
+    download: Download,
+    thumbnail: bool,
+) -> Result<crate::screenshot_evidence::ImageData> {
+    // Some attachment failures return a successful HTML/login response. Do not
+    // describe that response as an unsupported image or expose its body.
+    if image::guess_format(&download.bytes).is_err() {
+        let prefix = String::from_utf8_lossy(&download.bytes[..download.bytes.len().min(256)])
+            .trim_start()
+            .to_ascii_lowercase();
+        let media = download.content_type.split(';').next().unwrap_or("").trim();
+        ensure!(
+            !matches!(media, "text/html" | "application/xhtml+xml")
+                && !prefix.starts_with("<!doctype html")
+                && !prefix.starts_with("<html"),
+            "Image source returned an HTML page instead of image bytes; check the attachment URL and gh authentication, then retry"
+        );
+        ensure!(
+            media != "application/json",
+            "Image source returned JSON instead of image bytes; check the attachment URL and retry"
+        );
+    }
+    crate::screenshot_evidence::decode(&download.bytes, thumbnail)
+}
+
+/// Read only the description, without discovering galleries or downloading artifacts.
+pub(crate) fn pr_document(context: &PrContext, github: &dyn EvidenceGithub) -> Result<Value> {
+    repo_slug(&context.owner)?;
+    repo_slug(&context.repo)?;
+    let pr = github.json(
+        &context.workdir,
+        &format!(
+            "repos/{}/{}/pulls/{}",
+            context.owner, context.repo, context.number
+        ),
+    )?;
+    ensure!(
+        pr["head"]["sha"].as_str() == Some(context.head_sha.as_str()),
+        "PR head changed; refresh PR Triage first"
+    );
+    Ok(pr)
+}
+
+/// Resolve one image where it occurs in PR Markdown. Each image has an independent
+/// read; changing comments must not cancel neighboring description/reply images.
+pub(crate) fn inline_image(
+    context: &PrContext,
+    source: &str,
+    github: &dyn EvidenceGithub,
+) -> Result<crate::screenshot_evidence::ImageData> {
+    ensure!(source.len() <= 8192, "Source URL exceeds processing limit");
+    let pr = if !source.contains("://") && !source.starts_with("//") {
+        Some(pr_document(context, github)?)
+    } else {
+        None
+    };
+    let resource = repository_resource(
+        context,
+        pr.as_ref()
+            .and_then(|p| p["head"]["repo"]["owner"]["login"].as_str())
+            .unwrap_or(""),
+        pr.as_ref()
+            .and_then(|p| p["head"]["repo"]["name"].as_str())
+            .unwrap_or(""),
+        source,
+        github,
+    )?;
+    let resource = match resource {
+        Some(resource) => resource,
+        None => {
+            let url = validated_url(source)?;
+            Resource::Url(url.to_string(), attachment_url(&url))
+        }
+    };
+    resource_image(context, &resource, false, github)
 }
 
 #[cfg(test)]
@@ -1334,6 +1413,76 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+    #[test]
+    fn inline_uploaded_images_decode_bytes_without_filename_extensions_or_description_reads() {
+        let url = "https://github.com/user-attachments/assets/123-upload";
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::Gif,
+            image::ImageFormat::WebP,
+        ] {
+            let mut bytes = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+                .write_to(&mut bytes, format)
+                .unwrap();
+            let mut github = fixture("");
+            github.downloads.insert(url.into(), bytes.into_inner());
+            let image = inline_image(&context(), url, &github).unwrap();
+            assert_eq!((image.width, image.height), (2, 2));
+            assert!(image.data_url.starts_with("data:image/png;base64,"));
+            assert_eq!(*github.calls.lock().unwrap(), [format!("http true {url}")]);
+        }
+    }
+    #[test]
+    fn inline_repository_image_is_pinned_and_never_downloads_artifacts() {
+        let github = fixture("Description");
+        inline_image(&context(), "./ready.png", &github).unwrap();
+        assert_eq!(
+            *github.calls.lock().unwrap(),
+            [
+                "repos/base/repo/pulls/1",
+                "repos/fork/source/contents/ready.png?ref=current"
+            ]
+        );
+    }
+    #[test]
+    fn inline_description_refuses_a_moved_pr_head() {
+        let mut github = fixture("Description");
+        github.responses.get_mut("repos/base/repo/pulls/1").unwrap()["head"]["sha"] =
+            json!("changed");
+        assert!(pr_document(&context(), &github).is_err());
+        assert!(inline_image(&context(), "./ready.png", &github).is_err());
+    }
+    #[test]
+    fn image_download_reports_html_or_json_and_still_accepts_mislabeled_image_bytes() {
+        for content_type in ["text/html", "application/xhtml+xml", "application/json"] {
+            let result = decode_download(
+                Download {
+                    bytes: b"<html>Login required</html>".to_vec(),
+                    final_url: "https://github.com/user-attachments/assets/test".into(),
+                    content_type: content_type.into(),
+                },
+                false,
+            );
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("instead of image bytes")
+            );
+            let image = decode_download(
+                Download {
+                    bytes: png(),
+                    final_url: "https://github.com/user-attachments/assets/test".into(),
+                    content_type: content_type.into(),
+                },
+                false,
+            )
+            .unwrap();
+            assert_eq!((image.width, image.height), (2, 2));
+        }
     }
     fn zip(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
         use std::io::Write;

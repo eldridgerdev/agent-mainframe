@@ -348,6 +348,67 @@ pub fn close_remote(gui: &mut GuiHandle, request_id: &str) {
         work.remote = None;
     }
 }
+
+/// Inline PR reads never replace the shared artifact/gallery selection.
+pub struct PrDocumentRead {
+    context: PrContext,
+}
+impl PrDocumentRead {
+    pub fn run(&self) -> GuiResult<String> {
+        let pr = crate::screenshot_sources::pr_document(&self.context, &GithubEvidence)
+            .map_err(GuiError::from)?;
+        Ok(pr["body"].as_str().unwrap_or("").to_owned())
+    }
+}
+pub fn plan_pr_document(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrDocumentRead> {
+    Ok(PrDocumentRead {
+        context: crate::gui_pr_triage::screenshot_context(gui, workflow_id)?,
+    })
+}
+pub fn finish_pr_document(gui: &mut GuiHandle, read: &PrDocumentRead) -> GuiResult<()> {
+    fresh_inline(gui, &read.context)
+}
+
+pub struct InlineImageRead {
+    context: PrContext,
+    source: String,
+}
+impl InlineImageRead {
+    pub fn run(&self) -> GuiResult<ImageData> {
+        let _permit = crate::screenshot_evidence::image_worker().map_err(GuiError::from)?;
+        crate::screenshot_sources::inline_image(&self.context, &self.source, &GithubEvidence)
+            .map_err(GuiError::from)
+    }
+}
+pub fn plan_inline_image(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+    source: String,
+) -> GuiResult<InlineImageRead> {
+    if source.len() > 8192 {
+        return Err(GuiError::conflict("Source URL exceeds processing limit"));
+    }
+    Ok(InlineImageRead {
+        context: crate::gui_pr_triage::screenshot_context(gui, workflow_id)?,
+        source,
+    })
+}
+pub fn finish_inline_image(gui: &mut GuiHandle, read: &InlineImageRead) -> GuiResult<()> {
+    fresh_inline(gui, &read.context)
+}
+fn fresh_inline(gui: &mut GuiHandle, context: &PrContext) -> GuiResult<()> {
+    let current = crate::gui_pr_triage::screenshot_context(gui, &context.workflow_id)?;
+    if current.number != context.number
+        || current.head_sha != context.head_sha
+        || current.feature_id != context.feature_id
+        || current.owner != context.owner
+        || current.repo != context.repo
+    {
+        return Err(GuiError::conflict("PR image context changed"));
+    }
+    Ok(())
+}
+
 pub fn open_gallery_browser(url: &str) -> GuiResult<()> {
     let parsed = crate::screenshot_sources::validated_url(url).map_err(GuiError::from)?;
     let command = if cfg!(target_os = "macos") {

@@ -19,8 +19,8 @@ export function ScreenshotImage({ identity, caption, load, onData }: { identity:
   return <img src={data.data_url} alt={caption} draggable={false} />;
 }
 
-export default function ScreenshotViewer({ identity, caption, provenance, index, total, load, onMove, onClose }: {
-  identity: string; caption: string; provenance: string[]; index: number; total: number; load: () => Promise<ImageData>; onMove: (offset: number) => void; onClose: () => void;
+export default function ScreenshotViewer({ identity, caption, provenance, index, total, load, onMove, onClose, backLabel = "Back to gallery" }: {
+  identity: string; caption: string; provenance: string[]; index: number; total: number; load: () => Promise<ImageData>; onMove: (offset: number) => void; onClose: () => void; backLabel?: string;
 }) {
   const [scale, setScale] = useState<number | null>(null);
   const [size, setSize] = useState<ImageData | null>(null);
@@ -34,9 +34,9 @@ export default function ScreenshotViewer({ identity, caption, provenance, index,
   const pan = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   return <section aria-label="Screenshot viewer">
     <div className="row screenshot-toolbar">
-      <button className="btn btn-secondary" onClick={onClose}>Back to gallery</button>
-      <button className="btn btn-secondary" disabled={index <= 0} onClick={() => onMove(-1)}>Previous</button><span>{index + 1} / {total}</span>
-      <button className="btn btn-secondary" disabled={index >= total - 1} onClick={() => onMove(1)}>Next</button>
+      <button className="btn btn-secondary" onClick={onClose}>{backLabel}</button>
+      {total > 1 && <><button className="btn btn-secondary" disabled={index <= 0} onClick={() => onMove(-1)}>Previous</button><span>{index + 1} / {total}</span>
+      <button className="btn btn-secondary" disabled={index >= total - 1} onClick={() => onMove(1)}>Next</button></>}
       <button className="btn btn-secondary" onClick={() => setScale(null)}>Fit</button><button className="btn btn-secondary" onClick={() => setScale(1)}>Original size</button>
       <button className="btn btn-secondary" onClick={() => setScale((v) => Math.max(.1, (v ?? 1) / 1.25))}>Zoom out</button><button className="btn btn-secondary" onClick={() => setScale((v) => Math.min(8, (v ?? 1) * 1.25))}>Zoom in</button>
     </div>

@@ -234,8 +234,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
         </section>}
 
         {view?.fix_draft && fixPrompt && <section className="review-editor" aria-label="Fix draft" ref={reveal}>
-          <p>Prepare an unsent fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
-            Review it in the agent composer, then send it when ready. Existing unsent text is kept. No agent starts and nothing posts to GitHub.</p>
+          <p>Prepare a fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
+            Open it in the agent composer to review and send it yourself (existing unsent text is kept), or preview and send it straight to the running agent. No agent starts and nothing posts to GitHub.</p>
           <Field label="Fix prompt"><textarea rows={8} value={fixPrompt.text} disabled={busy || !!view.fix_draft.submission_prompt}
             onChange={(event) => setFixPrompt({ ...fixPrompt, text: event.target.value })} /></Field>
           <button className="btn btn-primary" disabled={busy || !!view.fix_draft.submission_prompt || !fixPrompt.text.trim() || !onHandoff}

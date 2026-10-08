@@ -1208,23 +1208,41 @@ fn confirm_fix_submission(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> 
         .map(|p| serde_json::to_string(&p))
         .transpose()
         .map_err(|e| GuiError::from(anyhow::Error::from(e)))?;
-    app.db
+    let db = app
+        .db
         .as_ref()
-        .ok_or_else(|| GuiError::conflict("Reply-draft storage is unavailable"))?
-        .begin_pr_comment_reply_draft(
+        .ok_or_else(|| GuiError::conflict("Reply-draft storage is unavailable"))?;
+    let prior = db
+        .snapshot_pr_comment_reply_draft(number, request.comment_id)
+        .map_err(GuiError::from)?;
+    db.begin_pr_comment_reply_draft(
+        number,
+        request.comment_id,
+        &request.request_id,
+        &request.base_head_sha,
+        encoded.as_deref(),
+    )
+    .map_err(GuiError::from)?;
+    let delivered = app
+        .tmux
+        .send_key_name(&tmux_session, &tmux_window, "C-u")
+        .and_then(|()| app.tmux.paste_text(&tmux_session, &tmux_window, &prompt));
+    if let Err(e) = delivered {
+        // Nothing was submitted, so the reply draft an earlier fix returned
+        // for this comment must survive the failed attempt.
+        let restored = app.db.as_ref().unwrap().restore_pr_comment_reply_draft(
             number,
             request.comment_id,
             &request.request_id,
-            &request.base_head_sha,
-            encoded.as_deref(),
-        )
-        .map_err(GuiError::from)?;
-    app.tmux
-        .send_key_name(&tmux_session, &tmux_window, "C-u")
-        .map_err(GuiError::from)?;
-    app.tmux
-        .paste_text(&tmux_session, &tmux_window, &prompt)
-        .map_err(GuiError::from)?;
+            prior.as_ref(),
+        );
+        return Err(GuiError::from(match restored {
+            Ok(()) => e,
+            Err(r) => e.context(format!(
+                "Could not restore this comment's earlier reply draft ({r:#}); it was replaced"
+            )),
+        }));
+    }
     // Retire confirmation before Enter: a transport failure can be ambiguous.
     // Retrying must require preparing a new explicit submission.
     let pending = gui
@@ -1555,7 +1573,7 @@ fn apply(
                 .unwrap()
                 .fix
                 .as_mut()
-                .unwrap();
+                .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
             pending.submission = None;
             pending.view.submission_prompt = None;
             Ok(())
@@ -2478,6 +2496,79 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn cancel_fix_submission_without_an_open_fix_is_a_conflict() {
+        let (_dir, mut gui, _fake, view) = opened();
+        let error = super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            PrTriageAction::CancelFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("No fix draft is open"));
+        assert!(poll(&mut gui, &view.workflow_id).is_ok());
+    }
+
+    #[test]
+    fn failed_paste_restores_the_earlier_reply_draft() {
+        let (_dir, mut gui, _fake, view) = opened();
+        running_fix_agent(&mut gui);
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        db.begin_pr_comment_reply_draft(7, 101, "earlier", "head", Some("{}"))
+            .unwrap();
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 101, "earlier", "Earlier draft")
+                .unwrap()
+        );
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Err(anyhow::anyhow!("window vanished")));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(0);
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let preview = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::PrepareFixSubmission {
+                prompt: "Exact instruction".into(),
+            },
+        );
+        let error = super::act(
+            &mut gui,
+            &preview.workflow_id,
+            preview.revision,
+            PrTriageAction::ConfirmFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("window vanished"));
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        let row = db.load_pr_comment_reply_draft_row(7, 101).unwrap().unwrap();
+        assert_eq!(row.body, "Earlier draft");
+        assert_eq!(row.provenance.as_deref(), Some("{}"));
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 101, "earlier", "Late receipt")
+                .unwrap()
+        );
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        assert_eq!(comment_view(&fresh, 101).triage, "untriaged");
     }
 
     #[test]

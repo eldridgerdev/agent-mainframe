@@ -431,7 +431,7 @@ pub fn run() -> Result<()> {
             "draft_request_id": request_id,
             "body": body,
         });
-        if ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?).is_err() {
+        if let Err(ipc_err) = ipc::send(&ipc::socket_path(), &serde_json::to_string(&payload)?) {
             // A standalone GUI does not bind the TUI socket. The same SQLite
             // request-id guard accepts receipts without launching another AMF.
             capture_reply_draft_in_store(
@@ -440,7 +440,12 @@ pub fn run() -> Result<()> {
                 comment_id,
                 &request_id,
                 body,
-            )?;
+            )
+            .map_err(|e| {
+                e.context(format!(
+                    "AMF socket delivery failed first ({ipc_err:#}), then the reply-draft store fallback failed"
+                ))
+            })?;
         }
         return Ok(());
     }

@@ -30,9 +30,10 @@ it("keeps dark body text, status/context colours and chrome readable on real sur
       }
     }
   }
-  for (const colour of ["accent", "accent-hover", "green", "amber", "red"]) {
+  for (const colour of ["accent", "accent-hover", "green", "amber", "red", "border-strong"]) {
     check(`filled ${colour} control`, parse(token(dark, "accent-fg")).rgb, parse(token(dark, colour)).rgb);
   }
+  expect(dark).toContain(".switch::after { background: var(--accent-fg); }");
   expect(failures).toEqual([]);
 });
 

@@ -1390,6 +1390,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   .kind-codex, .kind-pi, .kind-nvim { color: var(--green); }
   .kind-opencode { color: var(--accent); }
   .kind-vscode { color: #9cd7ff; }
+  .switch::after { background: var(--accent-fg); }
   .ctx-stale { opacity: 1; }
   .btn-danger, .btn-warning, .todo-completed .todo-check { color: var(--accent-fg); }
   .tab-stopped { opacity: 1; }

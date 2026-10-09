@@ -92,6 +92,10 @@ are tagged.
 
 ### Fixed
 
+- **More reliable desktop terminal checks.** Parallel terminal tests now use
+  independent tmux servers, reducing intermittent failures that could block
+  contributions and releases. No migration is required.
+
 - **Literal terminal input.** Pasting text such as `$HOME` or `${name}` into
   desktop, TUI or remote sessions now preserves it for the receiving program
   instead of expanding it early. No migration is required.

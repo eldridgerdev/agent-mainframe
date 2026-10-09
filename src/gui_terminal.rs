@@ -463,99 +463,75 @@ fn run_worker(
     }
 }
 
-// These use a real tmux server rather than `MockTmuxOps`: a mock cannot
-// meaningfully stand in for a real PTY/control-mode client, and this
-// transport's entire job is the plumbing between them. Under `cfg(test)`
-// `TmuxManager::runtime()` resolves to a throwaway per-process socket
-// (`TmuxRuntime::isolated_for_tests`), never the user's live AMF server --
-// this suite's control-client churn has crashed tmux 3.2a, and on the shared
-// server that took every real session down with it. Tests within one binary
-// still share that server; a unique session name per test isolates them from
-// each other.
+// Live tests run in separate test processes: TmuxManager caches its runtime
+// process-wide, and concurrent control-client churn can crash older tmux.
+// Each child therefore gets its own cfg(test) socket, including its workers.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::{Mutex, Once};
+    use std::process::{Child, Command, Stdio};
+    use std::sync::Mutex;
 
-    /// `spawn_control_mode_view_client`'s `open_pty` reads terminal
-    /// attributes from *this process's own* `STDIN_FILENO` (to clone them
-    /// onto the new PTY), which fails with ENOTTY when the test binary's
-    /// stdin is a pipe rather than a real terminal -- true under this
-    /// harness's shell tool, and generally true under most CI runners. No
-    /// existing test in the codebase calls this function, so this constraint
-    /// was never hit before. Rather than changing production code to avoid
-    /// depending on the calling process's stdin, give this test binary a
-    /// real PTY on fd 0, once: opening one and cloning its own attributes
-    /// back onto itself cannot make anything stricter than "was not a tty,
-    /// now is one" for any other test that happens to touch stdin.
-    fn ensure_process_stdin_is_a_pty() {
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| unsafe {
-            let mut master: i32 = -1;
-            let mut slave: i32 = -1;
-            let ok = libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                // `null_mut` for both: macOS declares these `*mut`, Linux
-                // `*const`, and `*mut` coerces to `*const` but not back.
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
-            assert_eq!(ok, 0, "failed to open a pty for the test process's stdin");
-            assert_ne!(
-                libc::dup2(slave, libc::STDIN_FILENO),
-                -1,
-                "failed to dup2 the pty slave onto stdin"
-            );
-            libc::close(slave);
-            // `master` is deliberately leaked for the life of the test
-            // binary: closing it would hang up the pty stdin now points at.
-        });
-    }
+    /// Keep tests parallel while isolating their process-wide tmux runtime.
+    /// The parent owns cleanup even when the child panics or times out. Do not
+    /// retry assertions: only fixture-server startup below is retried.
+    fn in_isolated_process() -> bool {
+        const CHILD_TEST: &str = "AMF_GUI_TERMINAL_CHILD_TEST";
+        let thread = std::thread::current();
+        let name = thread.name().expect("test thread must have a name");
+        if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
+            return false;
+        }
 
-    /// `TmuxManager::runtime()` caches its socket/binary choice in a
-    /// process-wide `OnceLock` on first use, so every test in this binary
-    /// shares one (throwaway, per-process) tmux server. A unique session name
-    /// per test is what isolates these tests from each other on it.
-    fn unique_session_name(label: &str) -> String {
-        format!("{TEST_SESSION_PREFIX}{label}-{}", uuid::Uuid::new_v4())
-    }
-
-    const TEST_SESSION_PREFIX: &str = "amf-gui-terminal-test-";
-
-    /// Older than any run of these tests takes, so no live run owns it.
-    const LEAKED_TEST_SESSION_AGE_SECS: i64 = 15 * 60;
-
-    /// `TestSession::drop` never runs when the test binary is killed (an OOM
-    /// kill, Ctrl+C), and those sessions then outlive it on the user's real
-    /// AMF tmux server. Each binary sweeps them once, before its first
-    /// session, leaving any a concurrent run may still own.
-    fn sweep_leaked_test_sessions() {
-        static SWEEP: std::sync::Once = std::sync::Once::new();
-        SWEEP.call_once(|| {
-            let Ok(output) = TmuxManager::command()
-                .args(["list-sessions", "-F", "#{session_created} #{session_name}"])
-                .output()
-            else {
-                return;
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs() as i64);
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                let Some((created, name)) = line.split_once(' ') else {
-                    continue;
-                };
-                let stale = created
-                    .parse::<i64>()
-                    .is_ok_and(|created| now - created > LEAKED_TEST_SESSION_AGE_SECS);
-                if stale && name.starts_with(TEST_SESSION_PREFIX) {
-                    let _ = TmuxManager::kill_session(name);
+        struct TestProcess {
+            child: Child,
+        }
+        impl Drop for TestProcess {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                let socket = TmuxManager::isolated_test_socket(self.child.id());
+                let _ = Command::new(TmuxManager::command().get_program())
+                    .arg("-S")
+                    .arg(&socket)
+                    .arg("kill-server")
+                    .output();
+                if let Some(dir) = socket.parent() {
+                    let _ = std::fs::remove_dir_all(dir);
                 }
             }
+        }
+
+        // Files avoid pipe-buffer deadlocks if a failed child has large logs.
+        let log = tempfile::NamedTempFile::new().unwrap();
+        let mut process = TestProcess {
+            child: Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD_TEST, name)
+                .stdin(Stdio::null())
+                .stdout(log.as_file().try_clone().unwrap())
+                .stderr(log.as_file().try_clone().unwrap())
+                .spawn()
+                .expect("failed to spawn isolated terminal test"),
+        };
+        let status = wait_for(Duration::from_secs(90), || {
+            process.child.try_wait().expect("failed to poll child test")
         });
+        let output = std::fs::read_to_string(log.path()).unwrap();
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "isolated test {name} failed or timed out ({status:?}):\n{output}"
+        );
+        assert!(
+            output.contains("1 passed"),
+            "child did not run {name}: {output}"
+        );
+        true
+    }
+
+    fn unique_session_name(label: &str) -> String {
+        format!("amf-gui-terminal-test-{label}-{}", uuid::Uuid::new_v4())
     }
 
     struct TestSession {
@@ -564,8 +540,33 @@ mod tests {
 
     impl TestSession {
         fn spawn(label: &str) -> Self {
-            ensure_process_stdin_is_a_pty();
-            sweep_leaked_test_sessions();
+            assert_eq!(
+                std::env::var("AMF_GUI_TERMINAL_CHILD_TEST").ok().as_deref(),
+                std::thread::current().name(),
+                "live terminal fixtures must run in an isolated child"
+            );
+            // Pin the private server for the whole child lifetime. Otherwise
+            // configuring default-terminal creates and kills a bootstrap
+            // session, letting the server exit just before fixture creation.
+            // Retry only startup, before any transport assertions run.
+            let mut last_error = String::new();
+            wait_for(Duration::from_secs(10), || {
+                let output = TmuxManager::command()
+                    .args([
+                        "-f",
+                        "/dev/null",
+                        "new-session",
+                        "-d",
+                        "-s",
+                        "__amf-terminal-fixture-keeper",
+                        "exec sleep 120",
+                    ])
+                    .output()
+                    .expect("failed to launch fixture tmux server");
+                last_error = String::from_utf8_lossy(&output.stderr).into_owned();
+                output.status.success().then_some(())
+            })
+            .unwrap_or_else(|| panic!("fixture tmux server never became ready: {last_error}"));
             let name = unique_session_name(label);
             TmuxManager::create_session_with_window(&name, "main", &PathBuf::from("/tmp"))
                 .expect("failed to create test tmux session");
@@ -627,6 +628,9 @@ mod tests {
 
     #[test]
     fn attach_captures_the_pane_s_current_content() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("initial-content");
         TmuxManager::send_literal(&session.name, "main", "echo hello-amf-gui\r").unwrap();
         wait_for(Duration::from_secs(2), || {
@@ -662,6 +666,9 @@ mod tests {
 
     #[test]
     fn view_target_lookup_reports_missing_session_and_window() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("missing-target");
         let missing_session = unique_session_name("absent");
 
@@ -686,6 +693,9 @@ mod tests {
 
     #[test]
     fn view_target_lookup_selects_the_active_pane() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("active-pane");
         let target = format!("{}:main", session.name);
         let output = TmuxManager::command()
@@ -705,6 +715,9 @@ mod tests {
 
     #[test]
     fn live_output_after_a_change_is_delivered_and_reflects_current_state() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("live-output");
         let (on_output, received) = output_collector();
         let (handle, _initial) =
@@ -729,6 +742,9 @@ mod tests {
 
     #[test]
     fn send_input_forwards_raw_bytes_including_escape_sequences() {
+        if in_isolated_process() {
+            return;
+        }
         // A printf using octal escapes is typed back as literal characters
         // by the shell if arrow-key-style escape bytes were mangled in
         // transit; asserting on the pane's own content (not just "no
@@ -755,6 +771,9 @@ mod tests {
 
     #[test]
     fn resize_updates_the_pane_and_triggers_a_recapture() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("resize");
         let (on_output, received) = output_collector();
         let (handle, _initial) =
@@ -777,6 +796,9 @@ mod tests {
 
     #[test]
     fn high_output_volume_is_coalesced_not_lost_or_hung() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("high-volume");
         let (on_output, received) = output_collector();
         let (handle, _initial) =
@@ -810,6 +832,9 @@ mod tests {
 
     #[test]
     fn dropping_the_handle_detaches_without_killing_the_session() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("detach-cleanup");
         let (on_output, _received) = output_collector();
         let (handle, _initial) =
@@ -964,15 +989,14 @@ mod tests {
 
     #[test]
     fn history_reads_earlier_output_without_touching_the_pane() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("history");
         let (on_output, _received) = output_collector();
         let (handle, _initial) =
             TerminalHandle::attach(&session.name, "main", 80, 24, on_output).unwrap();
-        handle
-            // No `$`: the persistent input client's tmux command quoting
-            // expands `$name` (see the report on this increment).
-            .send_input("seq -f history-line-%g 1 200\r")
-            .unwrap();
+        handle.send_input("seq -f history-line-%g 1 200\r").unwrap();
         wait_for(Duration::from_secs(10), || {
             TmuxManager::capture_pane(&session.name, "main")
                 .ok()
@@ -1006,6 +1030,9 @@ mod tests {
 
     #[test]
     fn full_screen_programs_get_wheel_reports_only_when_they_ask() {
+        if in_isolated_process() {
+            return;
+        }
         let session = TestSession::spawn("full-screen");
         let received = tempfile::NamedTempFile::new().unwrap();
         let path = received.path().display().to_string();
@@ -1058,6 +1085,9 @@ mod tests {
     /// and still hands a full-screen program its keys (passthrough).
     #[test]
     fn tui_scroll_mode_reads_the_shared_history_snapshot() {
+        if in_isolated_process() {
+            return;
+        }
         use crate::app::{App, AppMode, ViewState};
         use crate::project::{ProjectStore, SessionKind, VibeMode};
         use crate::traits::{MockTmuxOps, MockWorktreeOps};

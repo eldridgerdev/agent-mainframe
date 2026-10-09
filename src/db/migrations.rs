@@ -264,6 +264,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Repair PR-comment triage tables that missed the PR# + comment re-key",
             MIGRATION_046,
         ),
+        (
+            "Retain screenshot ownership independently of live sessions",
+            MIGRATION_047,
+        ),
     ];
 
     check_for_migration_drift(conn, migrations)?;
@@ -1206,6 +1210,9 @@ CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
     ON pr_comment_triage(updated_at);
 ";
 
+/// Historical scope ownership survives replacement of the live workspace store.
+const MIGRATION_047: &str = "CREATE TABLE screenshot_scopes (scope_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, feature_id TEXT NOT NULL, session_id TEXT NOT NULL, workdir TEXT NOT NULL, owner_json TEXT NOT NULL, retired INTEGER NOT NULL DEFAULT 0); CREATE INDEX screenshot_scopes_session ON screenshot_scopes(project_id,feature_id,session_id,workdir,retired);";
+
 #[cfg(test)]
 mod tests {
     use rusqlite::{Connection, params};
@@ -1252,7 +1259,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 46);
+        assert_eq!(version, 47);
     }
 
     /// The tables a DB last touched around v018 actually has: 001's base schema,
@@ -1291,7 +1298,7 @@ mod tests {
             .unwrap();
         // `run` doesn't stop at 019 — it carries on through every later
         // migration, so the DB lands at the newest version, not at 19.
-        assert_eq!(version, 46);
+        assert_eq!(version, 47);
         for table in ["learning_sessions", "learning_qa"] {
             let found: i64 = conn
                 .query_row(
@@ -1386,7 +1393,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 46);
+        assert_eq!(version, 47);
     }
 
     #[test]
@@ -1725,7 +1732,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
         conn.execute_batch(
-            "ALTER TABLE feature_sessions DROP COLUMN stopped;
+            "DROP TABLE screenshot_scopes;
+             ALTER TABLE feature_sessions DROP COLUMN stopped;
              DELETE FROM schema_version WHERE version >= 45;
              INSERT INTO projects (id, name, repo, created_at)
              VALUES ('proj-1', 'project', '/tmp/project', datetime('now'));
@@ -1761,7 +1769,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
         conn.execute_batch(
-            "DROP TABLE pr_review_drafts;
+            "DROP TABLE screenshot_scopes;
+             DROP TABLE pr_review_drafts;
              DROP TABLE remote_push_subscriptions;
              DROP TABLE remote_push_vapid;
              DROP TABLE remote_devices;
@@ -1809,7 +1818,7 @@ mod tests {
         let version: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 46);
+        assert_eq!(version, 47);
     }
 
     /// Replaying `run` over an already-migrated DB is a no-op, so a rollback to
@@ -1822,7 +1831,7 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 46);
+        assert_eq!(rows, 47);
     }
 
     /// `amf.db` is shared by every checkout on the machine, keyed only by
@@ -1991,7 +2000,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(version, 46);
+        assert_eq!(version, 47);
     }
 
     /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
@@ -2108,7 +2117,8 @@ mod tests {
              INSERT INTO pr_comment_triage VALUES
                  (7, 1, 'old', 'fixing', NULL, '2026-01-01 00:00:00', 'b1', '$1'),
                  (7, 1, 'new', 'done', 'kept', '2026-02-01 00:00:00', 'b2', '$2');
-             DELETE FROM schema_version WHERE version = 46;",
+             DROP TABLE screenshot_scopes;
+             DELETE FROM schema_version WHERE version >= 46;",
         )
         .unwrap();
         let triage = crate::app::pr_review::TriageState::Skipped;

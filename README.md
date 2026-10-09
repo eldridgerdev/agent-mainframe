@@ -32,6 +32,9 @@ reviewed.
   workspace presets.
 - Supports ordinary directories as well as git repositories.
 
+The desktop GUI also [views PR and agent-validation screenshots](docs/gui-screenshots.md)
+with source and producing-session attribution.
+
 ## Requirements
 
 Install at least one supported agent CLI and sign in to it before using AMF:

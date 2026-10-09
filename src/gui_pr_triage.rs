@@ -2129,6 +2129,54 @@ fn confirm_write(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult
     }
 }
 
+/// The selected PR's immutable evidence context, independent of comment selection.
+pub(crate) fn screenshot_context(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+) -> GuiResult<crate::screenshot_sources::PrContext> {
+    gui.refresh_store()?;
+    let context = gui
+        .pr_triage_context
+        .as_ref()
+        .filter(|c| c.id == workflow_id)
+        .ok_or_else(|| GuiError::conflict("PR Triage changed or closed"))?;
+    let feature_id = context.target.feature_id.clone();
+    let project_id = context.target.project_id.clone();
+    let workdir = context.workdir.clone();
+    let app = gui.app_for_workflow();
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&project_id), &feature_id)
+        .ok_or_else(|| GuiError::not_found("PR feature was deleted"))?;
+    if app.store.projects[pi].features[fi].is_worktree && !workdir.exists() {
+        app.screenshot_worktree_deleted(&workdir)
+            .map_err(GuiError::from)?;
+        return Err(GuiError::not_found("PR worktree was deleted"));
+    }
+    let review = review_state(&app.mode)
+        .ok_or_else(|| GuiError::conflict("Open a pull request before viewing its screenshots"))?;
+    let pr = &review.review.pr;
+    if url::Url::parse(&pr.url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .as_deref()
+        != Some("github.com")
+    {
+        return Err(GuiError::conflict(
+            "Screenshot sources currently support github.com repositories",
+        ));
+    }
+    Ok(crate::screenshot_sources::PrContext {
+        workflow_id: workflow_id.into(),
+        feature_id,
+        workdir,
+        owner: pr.owner.clone(),
+        repo: pr.repo.clone(),
+        number: pr.number,
+        head_sha: pr.head_sha.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2222,6 +2270,113 @@ mod tests {
             repo: "repo".into(),
             head_ref: "feature".into(),
         }
+    }
+
+    #[test]
+    fn inline_screenshot_reads_are_independent_and_reject_changed_pr_contexts() {
+        use crate::gui_screenshots;
+        let (_dir, mut gui, _github, view) = opened();
+        let description = gui_screenshots::plan_pr_document(&mut gui, &view.workflow_id).unwrap();
+        let first =
+            gui_screenshots::plan_inline_image(&mut gui, &view.workflow_id, "./first.png".into())
+                .unwrap();
+        let neighbor = gui_screenshots::plan_inline_image(
+            &mut gui,
+            &view.workflow_id,
+            "./neighbor.png".into(),
+        )
+        .unwrap();
+        gui_screenshots::finish_inline_image(&mut gui, &first).unwrap();
+        gui_screenshots::finish_inline_image(&mut gui, &neighbor).unwrap();
+        gui_screenshots::finish_pr_document(&mut gui, &description).unwrap();
+        super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            PrTriageAction::BackToList,
+        )
+        .unwrap();
+        assert!(gui_screenshots::finish_inline_image(&mut gui, &first).is_err());
+        assert!(gui_screenshots::finish_inline_image(&mut gui, &neighbor).is_err());
+        assert!(gui_screenshots::finish_pr_document(&mut gui, &description).is_err());
+    }
+
+    #[test]
+    fn screenshot_bridge_rejects_closed_requests_switched_runs_and_prs() {
+        use crate::gui_screenshots;
+        let (_dir, mut gui, _github, view) = opened();
+        let first = gui_screenshots::plan_remote(
+            &mut gui,
+            &view.workflow_id,
+            None,
+            1,
+            "first-request".into(),
+        )
+        .unwrap();
+        gui_screenshots::close_remote(&mut gui, "first-request");
+        assert!(first.run().is_err());
+        assert!(
+            gui_screenshots::plan_remote(
+                &mut gui,
+                &view.workflow_id,
+                None,
+                1,
+                "first-request".into()
+            )
+            .is_err()
+        );
+        let _first = gui_screenshots::plan_remote(
+            &mut gui,
+            &view.workflow_id,
+            None,
+            1,
+            "other-request".into(),
+        )
+        .unwrap();
+        let _second = gui_screenshots::plan_remote(
+            &mut gui,
+            &view.workflow_id,
+            Some(10),
+            2,
+            "new-request".into(),
+        )
+        .unwrap();
+        assert!(
+            gui_screenshots::plan_remote_image(&mut gui, "other-request".into(), "image", true)
+                .is_err()
+        );
+        // A delayed closed request must not cancel the newer live selection.
+        assert!(
+            gui_screenshots::plan_remote(
+                &mut gui,
+                &view.workflow_id,
+                None,
+                1,
+                "first-request".into()
+            )
+            .is_err()
+        );
+        assert!(
+            !gui.app_for_workflow()
+                .evidence_work
+                .remote
+                .as_ref()
+                .unwrap()
+                .cancelled
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+
+        super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            PrTriageAction::BackToList,
+        )
+        .unwrap();
+        assert!(
+            gui_screenshots::plan_remote_image(&mut gui, "new-request".into(), "image", true)
+                .is_err()
+        );
     }
 
     fn fixture() -> (tempfile::TempDir, GuiHandle, FeatureTarget) {

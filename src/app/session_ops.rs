@@ -1462,6 +1462,13 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
+        feature.collapsed = false;
+        let si = feature.sessions.len() - 1;
+        let extra_args = if agent == AgentKind::Claude {
+            self.screenshot_launch_args(&session_id, true, extra_args)?
+        } else {
+            extra_args
+        };
         self.tmux.create_window(&tmux_session, &window, &workdir)?;
         match agent {
             AgentKind::Claude => {
@@ -1473,7 +1480,11 @@ impl App {
                     .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
-                let codex_args = crate::codex_config::launch_override_args(&workdir, &mode);
+                let codex_args = self.screenshot_launch_args(
+                    &session_id,
+                    false,
+                    crate::codex_config::launch_override_args(&workdir, &mode),
+                )?;
                 self.tmux
                     .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
@@ -1482,8 +1493,6 @@ impl App {
             }
         }
 
-        feature.collapsed = false;
-        let si = feature.sessions.len() - 1;
         self.selection = Selection::Session(pi, fi, si);
         let mut view = ViewState::new(
             project_name,
@@ -1706,8 +1715,13 @@ impl App {
         self.tmux.create_window(tmux_session, window, workdir)?;
         match agent {
             AgentKind::Claude => {
-                self.tmux
-                    .launch_claude(tmux_session, window, session_id, resume_id, extra_args)?;
+                self.tmux.launch_claude(
+                    tmux_session,
+                    window,
+                    session_id,
+                    resume_id,
+                    self.screenshot_launch_args(session_id, true, extra_args)?,
+                )?;
             }
             AgentKind::Opencode if resume_id.is_some() => {
                 self.tmux.launch_opencode_with_session(
@@ -1722,7 +1736,11 @@ impl App {
                     .launch_opencode(tmux_session, window, session_id)?;
             }
             AgentKind::Codex => {
-                let codex_args = crate::codex_config::launch_override_args(workdir, mode);
+                let codex_args = self.screenshot_launch_args(
+                    session_id,
+                    false,
+                    crate::codex_config::launch_override_args(workdir, mode),
+                )?;
                 self.tmux
                     .launch_codex(tmux_session, window, session_id, resume_id, codex_args)?;
             }

@@ -39,6 +39,8 @@ const review: PrTriageView = {
 type Handler = (action: PrTriageAction) => PrTriageView | null | Promise<PrTriageView | null>;
 function backend(begin: PrTriageView, onAct: Handler, snapshot: () => PrTriageView = () => begin) {
   vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "screenshots_pr_document") return "PR description text";
+    if (command === "screenshots_inline_image") return { data_url: "data:image/png;base64,AA==", width: 4, height: 3 };
     if (command === "pr_triage_begin") return begin;
     if (command === "pr_triage_snapshot") return snapshot();
     if (command === "pr_triage_act") return onAct((args as { action: PrTriageAction }).action);
@@ -331,4 +333,29 @@ it("cancels submission preview while retaining the edited fix prompt", async () 
   expect((prompt as HTMLTextAreaElement).value).toBe("Keep my edited instruction");
   expect((prompt as HTMLTextAreaElement).disabled).toBe(false);
   expect(actions().at(-1)?.action.kind).toBe("cancel_fix_submission");
+});
+
+it("shows uploaded images in the description, selected comment and replies without a gallery", async () => {
+  const uploaded = "https://github.com/user-attachments/assets/uploaded-image";
+  const state = { ...review, review: { ...review.review!, comments: [comment({
+    body: `Before ![Comment screenshot](${uploaded}) after`,
+    replies: [{ id: 3, author: "dev", body: `<img src="${uploaded}" alt="Reply screenshot" />`, via_amf: false }],
+  })] } };
+  backend(state, () => state);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "screenshots_pr_document"
+    ? Promise.resolve(`<img width="1200" height="800" alt="Description screenshot" src="${uploaded}" />`)
+    : original(command, args, options));
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  expect(await screen.findByRole("img", { name: "Description screenshot" })).toBeTruthy();
+  expect(await screen.findByRole("img", { name: "Comment screenshot" })).toBeTruthy();
+  expect(await screen.findByRole("img", { name: "Reply screenshot" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Screenshots" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "screenshots_remote_list")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Enlarge image: Comment screenshot" }));
+  expect(await screen.findByRole("dialog", { name: "PR image" })).toBeTruthy();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByRole("dialog", { name: "PR image" })).toBeNull();
+  expect(screen.getByRole("article", { name: "Selected comment" })).toBeTruthy();
+  expect(actions().some(({ action }) => action.kind === "close")).toBe(false);
 });

@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -74,7 +74,7 @@ import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverrides
 import DormancyPanel from "./DormancyPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
-import PrTriagePanel from "./PrTriagePanel";
+import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
@@ -110,6 +110,7 @@ import {
   Toasts,
 } from "./ui";
 
+const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
@@ -249,6 +250,7 @@ export default function App() {
     if (supervisedPanel.current) supervisedPanel.current.requestSwitch(proceed);
     else proceed();
   }
+  const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
   const [prTriageTarget, setPrTriageTarget] = useState<FeatureTarget | null>(null);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
@@ -322,6 +324,14 @@ export default function App() {
       setView({ kind: "project", projectId: view.projectId });
     }
   }, [workspace.data, view, selectedProject, selectedFeature, projects]);
+
+  useEffect(() => {
+    if (!workspace.data) return;
+    const exists = (target: FeatureTarget) => projects.some((project) =>
+      project.id === target.project_id && project.features.some((feature) => feature.id === target.feature_id));
+    if (screenshotTarget?.target && !exists(screenshotTarget.target)) setScreenshotTarget(null);
+    if (prTriageTarget && !exists(prTriageTarget)) setPrTriageTarget(null);
+  }, [workspace.data, projects, screenshotTarget, prTriageTarget]);
 
   // A launched session that has reached the snapshot no longer needs the
   // grace period: from here on it is shown only while the snapshot has it.
@@ -1108,6 +1118,8 @@ export default function App() {
             <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
           </button>
 
+          <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
+
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
           </button>
@@ -1200,7 +1212,10 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
-      {prTriageTarget && <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />}
+      {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
+      {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
+        <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
+      </Suspense>}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
@@ -1282,6 +1297,7 @@ export default function App() {
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onScreenshots={(sessionId) => setScreenshotTarget({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
@@ -1802,6 +1818,7 @@ function FeatureView({
   pendingEdits,
   onSupervisedEdits,
   onPrTriage,
+  onScreenshots,
   onReusePrompt,
   onReview,
   reviewBusy,
@@ -1843,6 +1860,7 @@ function FeatureView({
   pendingEdits: number;
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
+  onScreenshots: (sessionId: string | null) => void;
   /** The agent sidebar's prompt reuse: append to that session's draft. */
   onReusePrompt: (target: SessionTarget, prompt: string) => void;
   onReview: () => void;
@@ -1945,6 +1963,8 @@ function FeatureView({
             {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
               {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
             </button>}
+            <button className="btn btn-secondary" onClick={() => onScreenshots(null)}>Screenshots</button>
+            {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "scope_id": "{{scope_id}}",
+  "image_id": "codex-review",
+  "file": "codex-review.png",
+  "sha256": "{{sha256}}",
+  "caption": "Codex: refund review after an explicit visual request",
+  "captured_at": "2026-10-07T12:00:00Z"
+}

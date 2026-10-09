@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentSlug, FeatureTarget, asGuiError } from "./api";
 import Markdown from "./Markdown";
+import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
+import ScreenshotViewer from "./ScreenshotViewer";
+import type { ImageData } from "./screenshotsApi";
 import {
   PrComment, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
@@ -41,6 +44,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   const [fixSessionId, setFixSessionId] = useState("");
   const [fixPrompt, setFixPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
   const [confirmDiscardFix, setConfirmDiscardFix] = useState(false);
+  const [openImage, setOpenImage] = useState<{ image: ImageData; caption: string; identity: string } | null>(null);
+  const imageTrigger = useRef<HTMLElement | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
   const pending = useRef(false);
   // Bring a newly opened editor into the detail pane's view.
@@ -107,6 +112,16 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   }, [view, onClose, onHandoff]);
 
   const review = view?.review ?? null;
+  const imageIdentity = view && review ? `${view.workflow_id}:${review.number}:${review.head_sha}:${review.fetched_at}` : "";
+  const showImage = useCallback<OpenPrImage>((image, caption, trigger) => {
+    imageTrigger.current = trigger;
+    setOpenImage({ image, caption, identity: imageIdentity });
+  }, [imageIdentity]);
+  const closeImage = useCallback(() => {
+    setOpenImage(null);
+    window.requestAnimationFrame(() => imageTrigger.current?.focus());
+  }, []);
+  const currentImage = openImage?.identity === imageIdentity ? openImage : null;
   const comments = review?.comments ?? [];
   const selected = comments.find((c) => c.id === selectedId) ?? comments[0] ?? null;
 
@@ -139,7 +154,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   }
 
   return (
-    <Modal label="PR Triage" size="xl" dismissable={!busy} onClose={close}
+    <>
+    <Modal label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
       title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
       subtitle="Read review feedback, investigate it, prepare or send an agent fix, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <div className="callout callout-warning" role="alert">
@@ -214,6 +230,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
           <button className="btn btn-secondary btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "refresh" })}>Refresh comments</button>
           <button className="btn btn-ghost btn-sm" disabled={locked || reply !== null} onClick={() => void act({ kind: "back_to_list" })}>Pull requests</button>
         </div>
+        {view && <PrDescription key={imageIdentity} workflowId={view.workflow_id} identity={imageIdentity} onOpenImage={showImage} />}
         {review.branch_mismatch && <div className="callout callout-warning"><p>This checkout is on <span className="mono">{review.branch_mismatch}</span>, not the PR branch <span className="mono">{review.head_ref}</span>.</p></div>}
 
         {view?.precall && <section className="review-confirm" role="alertdialog" aria-label="Investigation AI call">
@@ -293,7 +310,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
             {selected.hunk && <pre className="pr-hunk" aria-label="Diff context">
               {selected.hunk.split("\n").map((line, i) => <code key={i} className={hunkClass(line)}>{line}{"\n"}</code>)}
             </pre>}
-            <div className="pr-body"><Markdown source={selected.body} /></div>
+            <div className="pr-body"><PrMarkdown source={selected.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} /></div>
             {selected.actionable && !selected.local_finding && onHandoff && <div className="pr-actions">
               {view!.fix_targets.length > 0 ? <>
                 <Field label="Fix agent">
@@ -365,7 +382,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
             {selected.replies.length > 0 && <section aria-label="Thread replies" className="pr-replies">
               {selected.replies.map((r) => <div key={r.id} className="pr-reply">
                 <strong className="small">{r.author}</strong>{r.via_amf && <span className="tag">via AMF</span>}
-                <Markdown source={r.body} />
+                <PrMarkdown source={r.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} />
               </div>)}
             </section>}
 
@@ -385,5 +402,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
         </div>
       </section>}
     </Modal>
+    {currentImage && <Modal label="PR image" title={currentImage.caption} size="xl" onClose={closeImage}>
+      <ScreenshotViewer identity={imageIdentity} caption={currentImage.caption} provenance={[]} index={0} total={1} backLabel="Close image"
+        load={() => Promise.resolve(currentImage.image)} onMove={() => {}} onClose={closeImage} />
+    </Modal>}
+    </>
   );
 }

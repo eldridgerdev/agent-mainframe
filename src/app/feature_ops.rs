@@ -1170,6 +1170,16 @@ impl App {
         self.ensure_agent_mode_supported(&agent, &mode)?;
         // Resolve before the mutable borrow of `feature` below.
         let rc_allowed = self.remote_control_allowed();
+        let mut screenshot_owners = std::collections::HashMap::new();
+        if !already_running {
+            for session in &self.store.projects[pi].features[fi].sessions {
+                if matches!(session.kind, SessionKind::Claude | SessionKind::Codex)
+                    && let Some(owner) = self.screenshot_owner(pi, fi, &session.id)?
+                {
+                    screenshot_owners.insert(session.id.clone(), owner);
+                }
+            }
+        }
         let feature = match self
             .store
             .projects
@@ -1324,7 +1334,11 @@ impl App {
                         {
                             let mut args = extra_args.clone();
                             args.extend(analyzer_args.clone());
-                            args
+                            if let Some(owner) = screenshot_owners.get(&session.id) {
+                                super::screenshots::launch_args(owner, true, args)?
+                            } else {
+                                args
+                            }
                         },
                     )?;
                 }
@@ -1378,7 +1392,11 @@ impl App {
                         &session.tmux_window,
                         &session.id,
                         resume_override.flatten(),
-                        codex_args,
+                        if let Some(owner) = screenshot_owners.get(&session.id) {
+                            super::screenshots::launch_args(owner, false, codex_args)?
+                        } else {
+                            codex_args
+                        },
                     )?;
                 }
                 SessionKind::Pi => {
@@ -1891,6 +1909,7 @@ impl App {
             tmux_session,
             repo,
             workdir,
+            is_worktree,
             feature_identity,
             had_error,
             error_msg,
@@ -1902,6 +1921,7 @@ impl App {
                     s.tmux_session.clone(),
                     s.repo.clone(),
                     s.workdir.clone(),
+                    s.is_worktree,
                     self.store
                         .find_project(&s.project_name)
                         .and_then(|project| {
@@ -1931,6 +1951,9 @@ impl App {
             return Ok(());
         }
 
+        if is_worktree {
+            self.screenshot_worktree_deleted(&workdir)?;
+        }
         let feature_id = feature_identity.as_ref().map(|(id, _)| id.clone());
         self.clear_sidebar_state_for_session(&tmux_session);
         if let Some(feature_id) = feature_id.as_deref() {
@@ -2098,6 +2121,9 @@ impl App {
                                 .find(|feature| feature.name == deletion.feature_name)
                                 .map(|feature| (feature.id.clone(), feature.branch.clone()))
                         });
+                    if deletion.is_worktree {
+                        self.screenshot_worktree_deleted(&deletion.workdir)?;
+                    }
                     let feature_id = feature_identity.as_ref().map(|(id, _)| id.clone());
                     if let Some((feature_id, branch)) = feature_identity.as_ref() {
                         self.clear_pr_association_for_deleted_feature(

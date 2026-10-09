@@ -68,6 +68,10 @@ are tagged.
 
 ### Fixed
 
+- **Less clutter in the desktop projects sidebar.** Collapsed feature rows
+  hide the mode badge; expand a row to see it, or hover its name to check the
+  mode. Other badges remain visible. No migration is required.
+
 - **Fresh desktop edit reviews.** Reopening supervised edits waits for the
   current request, preventing a previously answered edit and a notice for the
   wrong file from briefly appearing.

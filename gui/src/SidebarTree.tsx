@@ -15,8 +15,8 @@ import { sessionRunning, stoppedSessionCount } from "./SessionControls";
 import { Icon, Spinner, StatusDot } from "./ui";
 
 // The workspace tree: the TUI dashboard tree (`src/ui/list.rs::draw`) in the
-// sidebar. Every row shows what the TUI row shows; the compact line carries
-// glyphs and badges, the full text lives in tooltips, and an expanded
+// sidebar. The TUI row information stays reachable: the compact line carries
+// glyphs and badges (mode only when expanded), the full text lives in tooltips, and an expanded
 // feature adds a detail line (its workdir) above its session rows.
 
 /** The status glyph, in the TUI's precedence order. The TUI's hook-running
@@ -247,7 +247,7 @@ function FeatureNode({
   if (derived?.issue) chips.push({ key: "issue", text: derived.issue, className: "tree-chip-info", title: `Created from issue ${derived.issue}` });
   if (derived?.pr) chips.push({ key: "pr", text: prLabel(derived.pr), className: `tree-pr ${prTone(derived.pr)}` });
   if (derived?.usage) chips.push({ key: "usage", text: derived.usage, className: "tree-chip-detail", title: "Agent token usage" });
-  chips.push({
+  if (!collapsed) chips.push({
     key: "mode",
     text: MODE_LABEL[feature.mode] ?? feature.mode,
     className: `tree-chip-mode mode-${feature.mode}`,
@@ -277,6 +277,7 @@ function FeatureNode({
   const tooltip = [
     feature.nickname ? `${feature.nickname} (${feature.branch})` : feature.name,
     GLYPH_LABEL[glyph],
+    `Mode: ${feature.mode}`,
     derived?.workdir_display ?? feature.workdir,
     feature.summary ? `${feature.summary}${derived?.summary_age ? ` (${derived.summary_age})` : ""}` : null,
   ].filter(Boolean).join("\n");

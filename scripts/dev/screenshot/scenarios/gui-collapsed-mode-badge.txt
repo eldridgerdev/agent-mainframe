@@ -1,0 +1,6 @@
+# Collapsed/expanded mode badges, using the private composer Git/SQLite/tmux
+# fixture. HOME is preserved; offline stand-ins run and no prompt is sent.
+note:The isolated TUI confirms the screenshot harness is ready before the GUI proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-composer.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-mode-badge-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

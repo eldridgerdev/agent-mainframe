@@ -227,8 +227,10 @@ this window, waiting for input, agent working, ready, then running/idle/
 stopped), its nickname and branch, then badges: `repo`, issue source, PR state
 and open threads, token usage, mode, `review`, `plan`, `plan paused · Resume`,
 `remote`, age, session count, stopped sessions, the `?` request marker and the
-AI summary. The workdir and full text are in tooltips. Expanding a feature lists
-its sessions with kind icon, running state, the agent context indicator and
+AI summary. The mode badge appears only on expanded feature rows; the mode
+remains in the feature tooltip when collapsed. The workdir and full text are
+in tooltips. Expanding a feature lists its sessions with kind icon, running
+state, the agent context indicator and
 the status line; selecting a row opens that tab. Collapse state is the
 `collapsed` flag the TUI uses, so it round-trips between interfaces. The GUI
 derives context, usage, status text and open PRs with the TUI's own background

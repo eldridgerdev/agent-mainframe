@@ -70,7 +70,7 @@ it("labels PR badges like the TUI for open, unknown-thread, merged and closed PR
 
 it("shows every feature badge and keeps the name as the row's accessible name", () => {
   const nick = feature("round-totals", {
-    nickname: "Round totals", is_worktree: false, mode: "supervibe", review: true, plan_mode: true,
+    nickname: "Round totals", is_worktree: false, mode: "supervibe", collapsed: false, review: true, plan_mode: true,
     remote_control: true, pending_worktree_script: true, summary: "Rounds invoice totals to cents",
     sessions: [session("Claude 1", "claude"), session("Shell", "terminal", { stopped: true })],
   });
@@ -98,6 +98,25 @@ it("shows every feature badge and keeps the name as the row's accessible name", 
   expect(within(row).getByText("— Rounds invoice totals to cents")).toBeTruthy();
   expect(name.className).toContain("tree-name-deleting");
 });
+
+it.each(["vibeless", "vibe", "supervibe"] as const)(
+  "shows the %s mode badge only on expanded feature rows and retains its tooltip",
+  (mode) => {
+    for (const collapsed of [true, false, undefined]) {
+      renderTree([project([feature("f", { mode, collapsed, review: true, sessions: [session("Claude 1", "claude")] })])]);
+      const name = screen.getByRole("button", { name: "f", exact: true });
+      const row = name.closest(".tree-feature") as HTMLElement;
+      if (collapsed === false) {
+        expect(within(row).getByText(mode).className).toContain("tree-chip-mode");
+      } else {
+        expect(within(row).queryByText(mode)).toBeNull();
+      }
+      expect(name.getAttribute("title")).toContain(`Mode: ${mode}`);
+      expect(within(row).getByText("review")).toBeTruthy();
+      cleanup();
+    }
+  },
+);
 
 it("colours PR states and omits optional badges that do not apply", () => {
   renderTree([project([feature("a"), feature("b"), feature("c")])], {

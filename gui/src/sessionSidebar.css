@@ -42,12 +42,12 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --sb-harness-claude: #e08a66;
-    --sb-harness-codex: #3cc49c;
-    --sb-harness-opencode: #8f99ff;
-    --sb-accent-pr: #6cb6ff;
-    --sb-accent-summary: #6cb6ff;
-    --sb-accent-prompt: #c79bf5;
+    --sb-harness-claude: #ffb69b;
+    --sb-harness-codex: #88e0a8;
+    --sb-harness-opencode: #bec7ff;
+    --sb-accent-pr: #a6caff;
+    --sb-accent-summary: #a6caff;
+    --sb-accent-prompt: #d4b6ff;
   }
 }
 

@@ -74,6 +74,11 @@ are tagged.
 
 ### Changed
 
+- **Brighter desktop dark theme.** Panels, dialogs and terminals use lighter
+  backgrounds, clearer borders and more readable text, status badges and code
+  colors. Terminal colors follow system appearance changes without losing
+  history or unsent drafts. No migration is required.
+
 - **Model advice can recommend Claude Haiku 5.5.** When Claude Code reports
   Haiku 5.5 as available, the model and reasoning advice (`m`) can now
   suggest it for simple, scoped work at low or medium reasoning. Its

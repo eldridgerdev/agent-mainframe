@@ -158,6 +158,22 @@ Completed increments and remaining work, in priority order:
   shortcuts; visible dialogs still block both chords, including when another
   hidden dialog is mounted. Hidden/CSS-concealed ancestors have regression coverage.
 
+- [x] **Readable dark theme (2026-10-09).**
+  Raised dark surfaces, AA secondary text, stronger borders, brighter semantic
+  and syntax colors, and retuned PR/harness/rainbow badges. The terminal matches
+  the dark page and follows system appearance changes without reattachment or
+  history reset; light appearance keeps its existing palette. Automated checks
+  cover text/tints, chrome, syntax rows, ANSI colors, cursor and selection.
+  All 320 frontend tests and the production build pass; the full parallel Rust
+  workspace suite (3,450 library + seven GUI tests), formatting, strict Clippy
+  and whitespace checks pass. One existing live-GitHub test remains ignored.
+  Nine asserted native WSLg frames compare main's frontend with the new palette
+  across the workspace/terminal, New session dialog, Rust diff and Final Review,
+  plus a light-appearance control. Representative PNGs were visually inspected.
+  Reproduce with `gui-readable-dark-theme.txt`; both runs use the current Rust
+  backend with private Git/SQLite/tmux and offline ANSI fixtures, sending no
+  prompts. macOS runtime validation remains open. Custom themes follow.
+
 - [x] **GUI fresh context (2026-10-07).** The Context section opens an
   editable shared continuation seed, starts a new session with the feature's
   configured harness and selects its unsent composer draft. Original sessions

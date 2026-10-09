@@ -99,7 +99,7 @@ export function formatTotal(total: number): string {
     git("add", "receipt.bin")
     tmux_name = "amf-gui-composer-proof"
     tmux = ["tmux", "-S", env["AMF_TMUX_SOCKET"]]
-    harness = str(workspace / "scripts/dev/screenshot/fixtures/gui-composer-harness.py")
+    harness = os.environ.get("AMF_GUI_CAPTURE_HARNESS", str(workspace / "scripts/dev/screenshot/fixtures/gui-composer-harness.py"))
     import shlex
     def command(label, filename):
         return shlex.join(["/usr/bin/python3", harness, str(repo / filename), label])
@@ -117,7 +117,7 @@ export function formatTotal(total: number): string {
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
         ["npm", "run", "dev"],
-        cwd=workspace / "gui",
+        cwd=pathlib.Path(os.environ.get("AMF_GUI_CAPTURE_FRONTEND", str(workspace / "gui"))),
         stdout=vite_log,
         stderr=subprocess.STDOUT,
         start_new_session=True,

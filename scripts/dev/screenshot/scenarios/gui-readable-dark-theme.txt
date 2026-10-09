@@ -1,0 +1,6 @@
+# Matched native main/new dark views and a light-appearance control.
+# Private Git/SQLite/tmux, offline agents, HOME preserved, no prompts sent.
+note:The isolated TUI is ready before native dark-theme comparisons.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-dark-theme.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

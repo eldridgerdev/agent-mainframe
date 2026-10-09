@@ -1,6 +1,6 @@
 ---
 name: Explore
-description: Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn't review or audit it. Specify search breadth: "quick", "medium", or "very thorough".
+description: 'Read-only search agent for broad fan-out searches — when answering means sweeping many files, directories, or naming conventions and you only need the conclusion, not the file dumps. It reads excerpts rather than whole files, so it locates code; it doesn''t review or audit it. Specify search breadth: "quick", "medium", or "very thorough".'
 model: haiku
 disallowedTools: Agent, Edit, Write, NotebookEdit
 omitClaudeMd: true

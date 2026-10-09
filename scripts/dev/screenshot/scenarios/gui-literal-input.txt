@@ -1,0 +1,6 @@
+# Literal terminal input through the GUI and persistent tmux control parser.
+# Private Git/SQLite/tmux and offline raw receivers; no AI calls.
+note:The isolated AMF dashboard is ready before native terminal input validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-literal-input.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

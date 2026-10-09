@@ -16,6 +16,7 @@ import tempfile
 import time
 import urllib.request
 
+port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 workspace = pathlib.Path(__file__).resolve().parents[3]
@@ -103,20 +104,21 @@ export function formatTotal(total: number): string {
     import shlex
     def command(label, filename):
         return shlex.join(["/usr/bin/python3", harness, str(repo / filename), label])
-    # tauri.conf.json's devUrl pins the GUI to Vite on 1420 (strictPort). If
-    # something already serves it, the readiness probe below could succeed
+    # The port must match the compiled devUrl (default 1420; an alternate
+    # capture port needs a matching TAURI_CONFIG build override). If something
+    # already serves it, the readiness probe below could succeed
     # against that server before ours exits, capturing the wrong frontend.
     try:
-        with socket.create_connection(("localhost", 1420), timeout=1):
+        with socket.create_connection(("localhost", port), timeout=1):
             raise RuntimeError(
-                "Port 1420 is already in use; stop the other Vite/Tauri dev server first"
+                f"Port {port} is already in use; choose a separate capture port"
             )
     except OSError:
         pass
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
-        ["npm", "run", "dev"],
+        ["npm", "run", "dev", "--", "--port", str(port)],
         cwd=pathlib.Path(os.environ.get("AMF_GUI_CAPTURE_FRONTEND", str(workspace / "gui"))),
         stdout=vite_log,
         stderr=subprocess.STDOUT,
@@ -129,10 +131,10 @@ export function formatTotal(total: number): string {
         for _ in range(100):
             if vite.poll() is not None:
                 raise RuntimeError(
-                    "The isolated Vite server failed; ensure port 1420 is free"
+                    f"The isolated Vite server failed; ensure port {port} is free"
                 )
             try:
-                with urllib.request.urlopen("http://localhost:1420/", timeout=1):
+                with urllib.request.urlopen(f"http://localhost:{port}/", timeout=1):
                     break
             except OSError:
                 time.sleep(0.25)

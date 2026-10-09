@@ -92,6 +92,10 @@ are tagged.
 
 ### Fixed
 
+- **Literal terminal input.** Pasting text such as `$HOME` or `${name}` into
+  desktop, TUI or remote sessions now preserves it for the receiving program
+  instead of expanding it early. No migration is required.
+
 - **Less clutter in the desktop projects sidebar.** Collapsed feature rows
   hide the mode badge; expand a row to see it, or hover its name to check the
   mode. Other badges remain visible. No migration is required.

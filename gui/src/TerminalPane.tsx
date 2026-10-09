@@ -10,31 +10,7 @@ import {
   MAX_WHEEL_STEPS, SCROLLBACK_LINES, WheelAccumulator, scrollKeyAction,
   type TerminalFrame, type TerminalHistory,
 } from "./terminalScroll";
-
-// Matches the app's dark surface so the terminal reads as part of the window
-// in either colour scheme.
-const TERMINAL_THEME = {
-  background: "#0d1014",
-  foreground: "#d7dce2",
-  cursor: "#9aa7ff",
-  selectionBackground: "#2c3550",
-  black: "#1b1f25",
-  red: "#f47067",
-  green: "#57c27a",
-  yellow: "#d9b34c",
-  blue: "#6cb6ff",
-  magenta: "#c79bf5",
-  cyan: "#56c5d0",
-  white: "#c9d1d9",
-  brightBlack: "#636e7b",
-  brightRed: "#ff938a",
-  brightGreen: "#78d796",
-  brightYellow: "#e8c66b",
-  brightBlue: "#8ecbff",
-  brightMagenta: "#dcbdfb",
-  brightCyan: "#7fdbe3",
-  brightWhite: "#f0f3f6",
-};
+import { DARK_TERMINAL_THEME, LIGHT_TERMINAL_THEME } from "./terminalTheme";
 
 // Installed Nerd Fonts first, then common coding fonts. The bundled
 // "AMF Symbols" fonts (styles.css) supply Nerd Font icons, powerline and
@@ -127,6 +103,7 @@ export default function TerminalPane({ target, onReadyChange }: {
     // for a pane that starts busy could arrive and be missed in between.
     const key = `${target.feature_id}:${target.session_id}`;
 
+    const darkMode = window.matchMedia?.("(prefers-color-scheme: dark)");
     const term = new Terminal({
       convertEol: false,
       cursorBlink: true,
@@ -134,8 +111,15 @@ export default function TerminalPane({ target, onReadyChange }: {
       fontSize: 13,
       lineHeight: 1.15,
       scrollback: SCROLLBACK_LINES,
-      theme: TERMINAL_THEME,
+      theme: darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME,
+      minimumContrastRatio: darkMode?.matches ? 4.5 : 1,
     });
+    // Update colours in place: keep the attachment, buffer and scroll position.
+    const updateTheme = () => {
+      term.options.theme = darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
+      term.options.minimumContrastRatio = darkMode?.matches ? 4.5 : 1;
+    };
+    darkMode?.addEventListener("change", updateTheme);
     const fit = new FitAddon();
     term.loadAddon(fit);
     if (containerRef.current) {
@@ -406,6 +390,7 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     return () => {
       disposed = true;
+      darkMode?.removeEventListener("change", updateTheme);
       jumpToLatest.current = () => {};
       clearTimeout(noticeTimer);
       onReadyChange?.(false);

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
+import { blocks, token, parse, over, contrast, type Rgb } from "./contrast";
 
 // Every syntax role must stay readable (WCAG AA body text, 4.5:1) on the
 // backgrounds code is drawn on: the code surface, the added/removed row
@@ -8,46 +9,6 @@ import { expect, it } from "vitest";
 const read = (name: string) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
 const syntaxCss = read("syntax.css");
 const styles = read("styles.css");
-
-type Rgb = [number, number, number];
-
-function blocks(css: string): { light: string; dark: string } {
-  const dark = css.indexOf("@media (prefers-color-scheme: dark)");
-  expect(dark).toBeGreaterThan(0);
-  return { light: css.slice(0, dark), dark: css.slice(dark) };
-}
-
-function token(block: string, name: string): string {
-  const match = block.match(new RegExp(`--${name}:\\s*([^;]+);`));
-  expect(match, `--${name}`).toBeTruthy();
-  return match![1].trim();
-}
-
-function parse(color: string): { rgb: Rgb; alpha: number } {
-  const hex = color.match(/^#([0-9a-f]{6})$/i);
-  if (hex) return { rgb: [0, 2, 4].map((i) => parseInt(hex[1].slice(i, i + 2), 16)) as Rgb, alpha: 1 };
-  const rgba = color.match(/^rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)$/);
-  expect(rgba, color).toBeTruthy();
-  return { rgb: [Number(rgba![1]), Number(rgba![2]), Number(rgba![3])], alpha: Number(rgba![4]) };
-}
-
-function over(color: string, base: Rgb): Rgb {
-  const { rgb, alpha } = parse(color);
-  return rgb.map((channel, i) => channel * alpha + base[i] * (1 - alpha)) as Rgb;
-}
-
-function luminance(rgb: Rgb): number {
-  const [r, g, b] = rgb.map((value) => {
-    const channel = value / 255;
-    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function contrast(a: Rgb, b: Rgb): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
 
 function rowTint(kind: "added" | "removed"): string {
   const match = styles.match(new RegExp(`\\.diff-${kind}\\s*\\{\\s*background:\\s*([^;]+);`));

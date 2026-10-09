@@ -70,3 +70,7 @@
 .vscode-state-opening { color: var(--accent); }
 .vscode-state-not_owned { color: var(--amber); }
 .tree-chip-vscode { color: #23a9f2; font-family: var(--font), "AMF Symbols"; }
+
+@media (prefers-color-scheme: dark) {
+  .vscode-editor-glyph, .tree-chip-vscode { color: #9cd7ff; }
+}

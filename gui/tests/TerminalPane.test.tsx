@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import TerminalPane from "../src/TerminalPane";
 
 const term = vi.hoisted(() => ({
-  cols: 80, rows: 24,
+  cols: 80, rows: 24, options: { theme: {}, minimumContrastRatio: 1 },
   loadAddon: vi.fn(), open: vi.fn(), reset: vi.fn(),
   write: vi.fn((_data: string, callback?: () => void) => callback?.()), refresh: vi.fn(),
   onData: vi.fn(() => ({ dispose: vi.fn() })),
@@ -13,7 +13,7 @@ const term = vi.hoisted(() => ({
   onScroll: vi.fn(() => ({ dispose: vi.fn() })), attachCustomKeyEventHandler: vi.fn(),
   scrollToBottom: vi.fn(), buffer: { active: { viewportY: 0, baseY: 0 } },
 }));
-vi.mock("@xterm/xterm", () => ({ Terminal: class { constructor() { return term; } } }));
+vi.mock("@xterm/xterm", () => ({ Terminal: class { constructor(options: { theme: object; minimumContrastRatio: number }) { term.options = options; return term; } } }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit = vi.fn(); } }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
@@ -62,4 +62,30 @@ it("never enables a composer whose attachment finishes after leaving the tab", a
   expect(ready.mock.calls.every(([value]) => value === false)).toBe(true);
   expect(invoke).toHaveBeenCalledWith("detach_terminal", { key: "feature:agent", generation: 42 });
   expect(term.write).not.toHaveBeenCalled();
+});
+
+it("follows system dark mode in place without reattaching or resetting history", async () => {
+  const { DARK_TERMINAL_THEME, LIGHT_TERMINAL_THEME } = await import("../src/terminalTheme");
+  let changed!: () => void;
+  const media = { matches: true, addEventListener: vi.fn((_event, listener) => { changed = listener; }), removeEventListener: vi.fn() };
+  vi.stubGlobal("matchMedia", vi.fn(() => media));
+  vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "attach_terminal"
+    ? { key: "feature:agent", generation: 1, initial: frame("Existing history") } : undefined));
+  const view = render(<TerminalPane target={target} />);
+  await waitFor(() => expect(term.write).toHaveBeenCalled());
+  expect(term.options.theme).toEqual(DARK_TERMINAL_THEME);
+  expect(term.options.minimumContrastRatio).toBe(4.5);
+  const resets = term.reset.mock.calls.length;
+  const writes = term.write.mock.calls.length;
+  act(() => { media.matches = false; changed(); });
+  expect(term.options.theme).toEqual(LIGHT_TERMINAL_THEME);
+  expect(term.options.minimumContrastRatio).toBe(1);
+  act(() => { media.matches = true; changed(); });
+  expect(term.options.theme).toEqual(DARK_TERMINAL_THEME);
+  expect(term.options.minimumContrastRatio).toBe(4.5);
+  expect(term.reset).toHaveBeenCalledTimes(resets);
+  expect(term.write).toHaveBeenCalledTimes(writes);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
+  view.unmount();
+  expect(media.removeEventListener).toHaveBeenCalledWith("change", changed);
 });

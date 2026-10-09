@@ -528,6 +528,24 @@ the GUI does not take that socket over. Explaining an edit with AI also stays
 in the TUI. `gui-supervised-edits.txt` drives the real Claude hook script with
 offline input against an isolated database and checkout.
 
+### Appearance
+
+The desktop follows the system's light or dark appearance. Dark mode uses
+raised slate surfaces, stronger borders and brighter secondary text, status
+badges and syntax colors. The terminal shares the dark page background and
+updates its palette live when system appearance changes, keeping its attachment
+and history. ANSI black and bright black remain dark enough for backgrounds;
+xterm adjusts low-contrast foreground text per cell in dark mode. Light
+appearance retains its existing colors. Theme selection and
+custom theme files are planned separately.
+
+`tests/darkContrast.test.ts` checks body text and badge colors at 4.5:1, borders
+and the cursor at 3:1, plus the terminal ANSI palette, selection and rainbow mode
+badge. `tests/syntaxContrast.test.ts` checks syntax colors on code-row backgrounds.
+`gui-readable-dark-theme.txt` captures nine native before/after views of the
+workspace, terminal, dialog, diff and review, plus a light-appearance control,
+using private Git/SQLite/tmux fixtures and an offline terminal stand-in.
+
 ### Syntax highlighting
 
 Diffs, Final Review and the Learning reader colour source code with the TUI's

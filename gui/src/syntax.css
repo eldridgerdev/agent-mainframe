@@ -25,18 +25,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --syn-comment: #8b95b3;
-    --syn-keyword: #bb9af7;
-    --syn-function: #7aa2f7;
-    --syn-string: #9ece6a;
-    --syn-number: #ff9e64;
+    --syn-comment: #b9c5df;
+    --syn-keyword: #d4b6ff;
+    --syn-function: #a6c4ff;
+    --syn-string: #b5df8c;
+    --syn-number: #ffbc94;
     --syn-type: #e0af68;
-    --syn-property: #f7768e;
+    --syn-property: #ffadc0;
     --syn-tag: #7dcfff;
-    --syn-accent: #b38ef4;
-    --syn-builtin: #ff757f;
+    --syn-accent: #d4b6ff;
+    --syn-builtin: #ffadb3;
     --syn-parameter: #f2a670;
-    --syn-punctuation: #9aa8ce;
+    --syn-punctuation: #becbea;
   }
 }
 

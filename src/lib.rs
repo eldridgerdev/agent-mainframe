@@ -26,6 +26,7 @@ pub mod gui_sessions;
 pub mod gui_supervised_edits;
 pub mod gui_syntax;
 pub mod gui_terminal;
+pub mod gui_themes;
 pub mod gui_todos;
 pub mod project;
 

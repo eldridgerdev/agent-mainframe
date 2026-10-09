@@ -530,14 +530,69 @@ offline input against an isolated database and checkout.
 
 ### Appearance
 
-The desktop follows the system's light or dark appearance. Dark mode uses
+Open **Appearance** in the projects sidebar to select a theme. The desktop
+follows the TUI's configured theme by default, checking for changes every three
+seconds. The TUI's Default theme uses the GUI's system appearance. Choosing
+Light, Dark, Follow system, a TUI catalog theme (AMF, Dracula, Nord, Catppuccin
+and Gruvbox variants), or a custom theme creates an independent GUI preference.
+**Follow TUI theme** clears that override. GUI choices never write the TUI's
+`config.json`; they are saved in the desktop webview's local storage, shared
+between its windows and retained across restarts. If storage is unavailable,
+the choice lasts for the current window.
+
+Built-in dark mode uses
 raised slate surfaces, stronger borders and brighter secondary text, status
 badges and syntax colors. The terminal shares the dark page background and
 updates its palette live when system appearance changes, keeping its attachment
 and history. ANSI black and bright black remain dark enough for backgrounds;
 xterm adjusts low-contrast foreground text per cell in dark mode. Light
-appearance retains its existing colors. Theme selection and
-custom theme files are planned separately.
+appearance retains its existing colors. Catalog themes map the TUI palette
+onto desktop surfaces, syntax roles and terminal ANSI colors. Switching applies
+live without resetting terminal history, attachments or composer drafts.
+
+Custom themes are JSON files in `gui-themes/` inside AMF’s configuration
+directory, normally `~/.config/amf/gui-themes/` on Linux/WSL. Appearance displays
+the actual directory, including macOS and legacy-config resolution. Files reload
+within three seconds. Create the directory if needed and save, for example,
+`ocean.json`:
+
+```json
+{
+  "id": "ocean",
+  "name": "Ocean",
+  "mode": "dark",
+  "tokens": { "accent": "#90dce5", "bg-sidebar": "#202e38" },
+  "terminal": { "background": "#202e38", "cyan": "#90dce5" }
+}
+```
+
+`id`, `name` and `mode` are required; `mode` is `light`, `dark` or `system`.
+IDs use ASCII letters, digits, hyphens or underscores and appear internally as
+`custom:<id>`; duplicate custom IDs are reported. Omitted token and terminal
+properties fall back to the selected built-in light/dark palette (or system
+appearance), rather than a catalog theme. Colors accept `#RRGGBB` or
+`#RRGGBBAA`. Token names omit the leading `--`: supported colors are `bg`,
+`bg-sidebar`, `surface`, `surface-2`, `surface-3`, `border`, `border-strong`,
+`text`, `text-muted`, `text-faint`, `accent`, `accent-hover`, `accent-fg`,
+`accent-soft`, `green`, `amber`, `red`, their `*-soft` variants, `backdrop`,
+`terminal-bg`, and the `syn-*` and `sb-*` color roles declared in
+`src/syntax.css` and `src/sessionSidebar.css` (excluding widths and `sb-accent`,
+which belongs to each panel). Terminal keys are `background`, `foreground`,
+`cursor`, `cursorAccent`, `selectionBackground`, `selectionForeground`, the
+eight ANSI names (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
+`white`) and their `brightBlack` through `brightWhite` variants. A terminal
+`background` also colors its surrounding frame, taking precedence over
+`terminal-bg`.
+
+Unknown fields, keys and invalid colors are reported in Appearance; a broken
+file never prevents startup. A selected file that is removed or becomes invalid
+falls back to system appearance while retaining its preference, so fixing the
+file restores the theme automatically. Custom and catalog colors are not
+guaranteed to meet the built-in palette’s contrast checks. `gui-custom-themes.txt` captures five asserted native WSLg frames of Nord,
+Dracula, Catppuccin Latte and a custom Ocean palette. It checks live terminal/
+draft continuity, preference restoration after reload, override precedence and
+Follow TUI clearing, using isolated data and offline agents. macOS runtime
+validation remains pending.
 
 `tests/darkContrast.test.ts` checks body text and badge colors at 4.5:1, borders
 and the cursor at 3:1, plus the terminal ANSI palette, selection and rainbow mode

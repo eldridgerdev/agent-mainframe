@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
+import { applyTheme, resetThemesForTest } from "../src/themes";
 import TerminalPane from "../src/TerminalPane";
 
 const term = vi.hoisted(() => ({
@@ -19,9 +20,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
 
 beforeEach(() => {
+  resetThemesForTest();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); resetThemesForTest(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 const target = { project_id: "project", feature_id: "feature", session_id: "agent" };
 const frame = (replay: string) => ({ replay, alternate_screen: false, mouse_reporting: false });
@@ -88,4 +90,19 @@ it("follows system dark mode in place without reattaching or resetting history",
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
   view.unmount();
   expect(media.removeEventListener).toHaveBeenCalledWith("change", changed);
+});
+
+it("switches a named palette live without attaching again or touching terminal contents", async () => {
+  vi.mocked(invoke).mockImplementation((command) => Promise.resolve(command === "attach_terminal"
+    ? { key: "feature:agent", generation: 1, initial: frame("Existing history") } : undefined));
+  render(<TerminalPane target={target} />);
+  await waitFor(() => expect(term.write).toHaveBeenCalled());
+  const resets = term.reset.mock.calls.length;
+  const writes = term.write.mock.calls.length;
+  act(() => applyTheme({ id: "nord", name: "Nord", mode: "dark", tokens: {}, terminal: { background: "#2e3440", cyan: "#88c0d0" } }));
+  expect(term.options.theme).toMatchObject({ background: "#2e3440", cyan: "#88c0d0" });
+  expect(term.options.minimumContrastRatio).toBe(4.5);
+  expect(term.reset).toHaveBeenCalledTimes(resets);
+  expect(term.write).toHaveBeenCalledTimes(writes);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
 });

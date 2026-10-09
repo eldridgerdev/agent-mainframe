@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Desktop theme selection.** Appearance offers light, dark, system, the TUI
+  theme catalog and custom JSON palettes. The GUI follows the TUI theme until
+  you choose an independent override; switching colors preserves live terminals.
+  Invalid custom files show errors and fall back safely.
+
 - **Independent desktop sidebar controls.** Hide or restore the projects and
   agent sidebars separately to give the terminal more room. Each panel remembers
   its visibility without losing terminal history or unsent drafts. Alt+Shift+P

@@ -24,7 +24,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --syn-comment: #b9c5df;
     --syn-keyword: #d4b6ff;
     --syn-function: #a6c4ff;
@@ -60,3 +60,19 @@
 .syntax-install { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
 .syntax-install p { margin: 0; flex-basis: 100%; }
 .syntax-install-output { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; color: var(--text-faint); }
+
+/* Explicit GUI preference overrides the system colour scheme. */
+:root[data-theme="dark"] {
+  --syn-comment: #b9c5df;
+  --syn-keyword: #d4b6ff;
+  --syn-function: #a6c4ff;
+  --syn-string: #b5df8c;
+  --syn-number: #ffbc94;
+  --syn-type: #e0af68;
+  --syn-property: #ffadc0;
+  --syn-tag: #7dcfff;
+  --syn-accent: #d4b6ff;
+  --syn-builtin: #ffadb3;
+  --syn-parameter: #f2a670;
+  --syn-punctuation: #becbea;
+}

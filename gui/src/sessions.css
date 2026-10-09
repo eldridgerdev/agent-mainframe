@@ -72,5 +72,8 @@
 .tree-chip-vscode { color: #23a9f2; font-family: var(--font), "AMF Symbols"; }
 
 @media (prefers-color-scheme: dark) {
-  .vscode-editor-glyph, .tree-chip-vscode { color: #9cd7ff; }
+  :root:not([data-theme="light"]) .vscode-editor-glyph, :root:not([data-theme="light"]) .tree-chip-vscode { color: #9cd7ff; }
 }
+
+/* Explicit GUI preference overrides the system colour scheme. */
+:root[data-theme="dark"] .vscode-editor-glyph, :root[data-theme="dark"] .tree-chip-vscode { color: #9cd7ff; }

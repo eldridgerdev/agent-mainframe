@@ -62,6 +62,11 @@ use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
+#[tauri::command]
+fn theme_catalog() -> agent_mainframe::gui_themes::ThemeCatalog {
+    agent_mainframe::gui_themes::load()
+}
+
 struct AppState(Mutex<GuiHandle>);
 
 #[tauri::command]
@@ -1403,6 +1408,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            theme_catalog,
             screenshots_pr_document,
             screenshots_inline_image,
             screenshots_check_access,

@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { Modal } from "./ui";
-import { applyTheme, resolveTheme, setThemePreference, ThemeCatalog, useThemePreference } from "./themes";
+import { applyTheme, receiveThemePreference, resolveTheme, setThemePreference, ThemeCatalog, useThemePreference } from "./themes";
 
 export function useGuiTheme() {
   const choice = useThemePreference();
@@ -20,8 +20,8 @@ export function useGuiTheme() {
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key === "amf.gui.theme" || event.key === null) {
-        // Reuse the same notification path for other GUI windows.
-        setThemePreference(event.newValue || "follow-tui");
+        // Another GUI window already saved this; adopt it without writing back.
+        receiveThemePreference(event.newValue || "follow-tui");
       }
     };
     window.addEventListener("storage", onStorage);

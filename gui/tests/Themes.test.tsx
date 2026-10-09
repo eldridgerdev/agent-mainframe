@@ -91,8 +91,15 @@ it("recovers from catalog failure without blocking built-in choices", async () =
 });
 it("reflects preferences from another GUI window", async () => {
   mount(); await screen.findByRole("option", { name: "Nord" });
+  const setItem = vi.spyOn(Storage.prototype, "setItem");
+  const removeItem = vi.spyOn(Storage.prototype, "removeItem");
   act(() => window.dispatchEvent(new StorageEvent("storage", { key: "amf.gui.theme", newValue: "light" })));
   expect(document.documentElement.dataset.theme).toBe("light");
+  act(() => window.dispatchEvent(new StorageEvent("storage", { key: "amf.gui.theme", newValue: null })));
+  expect(readThemePreference()).toBe("follow-tui");
+  // Writing an external value back would bounce stale choices between windows.
+  expect(setItem).not.toHaveBeenCalled();
+  expect(removeItem).not.toHaveBeenCalled();
 });
 
 it("applies explicit dark chrome, syntax and sidebar tokens and restores light defaults", () => {

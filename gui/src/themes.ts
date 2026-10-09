@@ -25,11 +25,16 @@ export function readThemePreference(): string {
   return preference;
 }
 export function setThemePreference(value: string) {
-  preference = value;
   try {
     if (value === "follow-tui") window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);
   } catch { /* In-memory switching still works when storage is unavailable. */ }
+  receiveThemePreference(value);
+}
+/** Adopt a choice another window already saved. Never writes storage: echoing
+ * it back would bounce stale values between windows indefinitely. */
+export function receiveThemePreference(value: string) {
+  preference = value;
   listeners.forEach((listener) => listener());
 }
 export function useThemePreference() {

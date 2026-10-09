@@ -198,8 +198,75 @@ fn project(name: ThemeName) -> GuiTheme {
     }
 }
 
-const EXTRA_TOKENS: &str =
-    "terminal-bg accent-soft red-soft amber-soft green-soft backdrop syn-plain";
+/// Every colour token a custom file may set: the chrome palette plus each
+/// `syn-*` and `sb-*` colour role declared in `gui/src/syntax.css` and
+/// `gui/src/sessionSidebar.css` (not widths, nor the per-panel `sb-accent`).
+/// Catalog themes assign only a subset, so this cannot be derived from them.
+const CUSTOM_TOKENS: &[&str] = &[
+    "bg",
+    "bg-sidebar",
+    "surface",
+    "surface-2",
+    "surface-3",
+    "border",
+    "border-strong",
+    "text",
+    "text-muted",
+    "text-faint",
+    "accent",
+    "accent-hover",
+    "accent-fg",
+    "accent-soft",
+    "green",
+    "amber",
+    "red",
+    "green-soft",
+    "amber-soft",
+    "red-soft",
+    "backdrop",
+    "terminal-bg",
+    "syn-plain",
+    "syn-comment",
+    "syn-keyword",
+    "syn-function",
+    "syn-string",
+    "syn-number",
+    "syn-type",
+    "syn-property",
+    "syn-tag",
+    "syn-accent",
+    "syn-builtin",
+    "syn-parameter",
+    "syn-punctuation",
+    "sb-harness-claude",
+    "sb-harness-codex",
+    "sb-harness-opencode",
+    "sb-harness-pi",
+    "sb-accent-status",
+    "sb-accent-usage",
+    "sb-accent-plan",
+    "sb-accent-issue",
+    "sb-accent-pr",
+    "sb-accent-work",
+    "sb-accent-summary",
+    "sb-accent-prompt",
+    "sb-accent-todos",
+    "sb-tone-ready",
+    "sb-tone-waiting",
+    "sb-tone-busy",
+    "sb-tone-pr-working",
+    "sb-tone-muted",
+    "sb-tone-detail",
+    "sb-tone-todo",
+    "sb-tone-stopped",
+    "sb-usage-low",
+    "sb-usage-medium",
+    "sb-usage-high",
+    "sb-track",
+    "sb-ctx-normal",
+    "sb-ctx-warning",
+    "sb-ctx-critical",
+];
 fn valid_color(value: &str) -> bool {
     value.starts_with('#')
         && matches!(value.len(), 7 | 9)
@@ -220,7 +287,7 @@ fn parse_custom(contents: &str) -> Result<GuiTheme, String> {
     }
     let known = project(ThemeName::Dracula);
     for (key, value) in &theme.tokens {
-        if !known.tokens.contains_key(key) && !EXTRA_TOKENS.split_whitespace().any(|k| k == key) {
+        if !CUSTOM_TOKENS.contains(&key.as_str()) {
             return Err(format!("unknown token: {key}"));
         }
         if !valid_color(value) {
@@ -385,6 +452,33 @@ mod tests {
         assert_eq!(catalog.themes.len(), Theme::list().len() + 1);
         assert_eq!(catalog.errors.len(), 2);
         assert!(catalog.themes.last().unwrap().terminal.is_empty());
+    }
+    #[test]
+    fn every_declared_colour_role_is_a_supported_custom_token() {
+        for theme in Theme::list().into_iter().map(project) {
+            for key in theme.tokens.keys() {
+                assert!(CUSTOM_TOKENS.contains(&key.as_str()), "{key}");
+            }
+        }
+        // The first `:root` block of each file declares its colour roles.
+        let gui = Path::new(env!("CARGO_MANIFEST_DIR")).join("gui/src");
+        for file in ["syntax.css", "sessionSidebar.css"] {
+            let css = fs::read_to_string(gui.join(file)).unwrap();
+            let root = css.split(":root {").nth(1).unwrap();
+            let root = &root[..root.find('}').unwrap()];
+            for line in root.lines() {
+                let Some(name) = line.trim().strip_prefix("--") else {
+                    continue;
+                };
+                let name = &name[..name.find(':').unwrap()];
+                if !name.ends_with("width") {
+                    let json = format!(
+                        r##"{{"id":"x","name":"X","mode":"dark","tokens":{{"{name}":"#abcdef"}}}}"##
+                    );
+                    assert!(parse_custom(&json).is_ok(), "{file}: {name}");
+                }
+            }
+        }
     }
     #[test]
     fn invalid_keys_and_colours_are_rejected() {

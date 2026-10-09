@@ -463,9 +463,7 @@ impl TmuxRuntime {
     /// session is killed.
     #[cfg(test)]
     fn isolated_for_tests(self) -> Self {
-        let socket = std::env::temp_dir()
-            .join(format!("amf-test-tmux-{}", std::process::id()))
-            .join("tmux.sock");
+        let socket = TmuxManager::isolated_test_socket(std::process::id());
         Self {
             socket: Some(socket),
             manages_private_socket: true,
@@ -649,6 +647,13 @@ impl TmuxManager {
             let runtime = TmuxRuntime::detect().isolated_for_tests();
             runtime
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn isolated_test_socket(pid: u32) -> PathBuf {
+        std::env::temp_dir()
+            .join(format!("amf-test-tmux-{pid}"))
+            .join("tmux.sock")
     }
 
     pub(crate) fn command() -> Command {

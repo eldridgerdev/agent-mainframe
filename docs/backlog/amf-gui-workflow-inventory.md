@@ -65,6 +65,18 @@ refuses direct-input fallback. Reproduce with
 The capture uses offline raw receivers and starts no AI. Broader settings
 coverage remains open.
 
+Live-terminal test reliability (2026-10-09): all eleven real-tmux
+`gui_terminal` tests now run in separate child processes and private sockets,
+including the missing-target and raw-input regressions. A keeper session pins
+each fixture server, with bounded startup retries. Parent-owned cleanup handles
+success, panic and timeout. Tests stay parallel and transport assertions are not
+retried. The obsolete process-wide stdin PTY replacement and stale-session sweep
+are removed; attachment now runs with closed stdin as a desktop launch would.
+Validation passes on tmux 3.2a: all 14 focused tests, ten additional parallel
+suite runs (140 executions), the full parallel Rust workspace suite (3,457
+library and seven GUI tests; one pre-existing test ignored), formatting and
+strict workspace/all-target Clippy. Hosted CI and macOS remain unverified.
+
 Native GUI diff proof is reproducible with
 [`gui-standalone-diffs.txt`](../../scripts/dev/screenshot/scenarios/gui-standalone-diffs.txt).
 It uses an isolated Git checkout/database and starts no agent. The same scenario

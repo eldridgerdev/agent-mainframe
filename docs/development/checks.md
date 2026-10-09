@@ -30,6 +30,14 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+The live `gui_terminal` tests run concurrently in separate child test processes.
+Each child uses its own test-only tmux socket and a keeper session so fixture
+setup cannot race the server's last-session exit. Only server startup is retried;
+transport assertions run once. The parent enforces a 90-second timeout and kills
+the child's private server and removes its socket directory on success, failure
+or timeout. Child stdin is closed, exercising desktop-style terminal attachment
+without changing the test runner's stdin. No test uses the user's AMF tmux server.
+
 The WSL-only clipboard integration test accesses the real Windows clipboard.
 Run with functioning WSL interop. A restricted sandbox can prevent Unix socket
 binding or clipboard access; rerun in an environment providing those facilities

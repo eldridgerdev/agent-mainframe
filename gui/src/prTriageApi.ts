@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentSlug, FeatureTarget, PrecallView, SessionTarget } from "./api";
+import type { AgentSlug, PrecallView, SessionTarget } from "./api";
 
 // Mirrors `src/gui_pr_triage.rs`. Kept beside, not inside, api.ts so the PR
 // Triage contract can grow without touching the shared type module.
+
+export interface PrTriageTarget { project_id: string; feature_id?: string | null }
 
 export interface PrEntry {
   number: number;
@@ -87,7 +89,7 @@ export interface PrFixHandoff { target: SessionTarget; draft_prompt: string }
 export interface PrTriageView {
   workflow_id: string;
   revision: number;
-  target: FeatureTarget;
+  target: PrTriageTarget;
   feature_name: string;
   branch: string;
   stage: "pick" | "loading" | "review";
@@ -118,7 +120,7 @@ export type PrTriageAction =
   | { kind: "start_reply"; comment_id: number; reply: PrReplyKind }
   | { kind: "prepare_reply"; comment_id: number; body: string };
 
-export function prTriageBegin(target: FeatureTarget): Promise<PrTriageView> {
+export function prTriageBegin(target: PrTriageTarget): Promise<PrTriageView> {
   return invoke("pr_triage_begin", { target });
 }
 

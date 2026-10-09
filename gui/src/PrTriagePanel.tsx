@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AgentSlug, FeatureTarget, asGuiError } from "./api";
+import { AgentSlug, asGuiError } from "./api";
 import Markdown from "./Markdown";
 import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
 import ScreenshotViewer from "./ScreenshotViewer";
 import type { ImageData } from "./screenshotsApi";
 import {
-  PrComment, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
+  PrComment, PrTriageTarget, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
 import { Field, Modal, Spinner } from "./ui";
 
@@ -33,7 +33,7 @@ function hunkClass(line: string) {
 
 /** PR Triage: browse a pull request's review feedback and act on it. Every
  * GitHub write and AI call is shown first and needs an explicit confirmation. */
-export default function PrTriagePanel({ target, onClose, onHandoff }: { target: FeatureTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
+export default function PrTriagePanel({ target, onClose, onHandoff }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
   const [view, setView] = useState<PrTriageView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -166,7 +166,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
       {error && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
       {view?.error && view.error !== error && <div className="callout callout-danger" role="alert"><p>{view.error}</p></div>}
       {view?.notice && <p role="status" className="muted">{view.notice}</p>}
-      {!view && busy && <p className="row"><Spinner /> Finding this branch's pull request…</p>}
+      {!view && busy && <p className="row"><Spinner /> Loading pull requests…</p>}
 
       {view?.stage === "pick" && view.picker && <section aria-label="Choose a pull request" className="pr-picker">
         <div className="pr-toolbar">
@@ -311,7 +311,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
               {selected.hunk.split("\n").map((line, i) => <code key={i} className={hunkClass(line)}>{line}{"\n"}</code>)}
             </pre>}
             <div className="pr-body"><PrMarkdown source={selected.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} /></div>
-            {selected.actionable && !selected.local_finding && onHandoff && <div className="pr-actions">
+            {selected.actionable && !selected.local_finding && onHandoff && target.feature_id && <div className="pr-actions">
               {view!.fix_targets.length > 0 ? <>
                 <Field label="Fix agent">
                   <select value={view!.fix_targets.some((t) => t.target.session_id === fixSessionId) ? fixSessionId : view!.fix_targets[0].target.session_id}

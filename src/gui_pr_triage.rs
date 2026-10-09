@@ -35,9 +35,72 @@ use crate::project::AgentKind;
 /// The title the pre-call notice shows for a PR investigation.
 const INVESTIGATION_CALL_TITLE: &str = "PR Triage: read-only investigation";
 
+/// A repository-wide picker or a feature-scoped triage workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrTriageTarget {
+    pub project_id: String,
+    pub feature_id: Option<String>,
+}
+
+impl From<FeatureTarget> for PrTriageTarget {
+    fn from(target: FeatureTarget) -> Self {
+        Self {
+            project_id: target.project_id,
+            feature_id: Some(target.feature_id),
+        }
+    }
+}
+
+impl PrTriageTarget {
+    fn feature(&self) -> GuiResult<FeatureTarget> {
+        Ok(FeatureTarget {
+            project_id: self.project_id.clone(),
+            feature_id: self
+                .feature_id
+                .clone()
+                .ok_or_else(|| GuiError::conflict("Choose a feature to prepare an agent fix"))?,
+        })
+    }
+
+    fn locate<'a>(
+        &self,
+        app: &'a App,
+    ) -> GuiResult<(
+        &'a crate::project::Project,
+        Option<&'a crate::project::Feature>,
+    )> {
+        let project = app
+            .store
+            .projects
+            .iter()
+            .find(|p| p.id == self.project_id)
+            .ok_or_else(|| GuiError::not_found("The project was deleted"))?;
+        let feature = self
+            .feature_id
+            .as_ref()
+            .map(|id| {
+                project
+                    .features
+                    .iter()
+                    .find(|f| &f.id == id)
+                    .ok_or_else(|| GuiError::not_found("The feature was deleted"))
+            })
+            .transpose()?;
+        Ok((project, feature))
+    }
+
+    fn workdir(&self, app: &App) -> GuiResult<PathBuf> {
+        let (project, feature) = self.locate(app)?;
+        if !project.is_git {
+            return Err(GuiError::conflict("PR Triage requires a Git repository"));
+        }
+        Ok(feature.map_or_else(|| project.repo.clone(), |f| f.workdir.clone()))
+    }
+}
+
 pub(crate) struct PrTriageContext {
     id: String,
-    target: FeatureTarget,
+    target: PrTriageTarget,
     revision: u64,
     workdir: PathBuf,
     branch_pr: Option<u32>,
@@ -381,7 +444,7 @@ pub struct PrWriteConfirmView {
 pub struct PrTriageView {
     pub workflow_id: String,
     pub revision: u64,
-    pub target: FeatureTarget,
+    pub target: PrTriageTarget,
     pub feature_name: String,
     pub branch: String,
     /// `pick`, `loading` or `review`.
@@ -606,7 +669,7 @@ enum Opening {
     New(PathBuf),
 }
 
-fn opening(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Opening> {
+fn opening(gui: &mut GuiHandle, target: &PrTriageTarget) -> GuiResult<Opening> {
     gui.refresh_snapshot()?;
     let open_target = gui.pr_triage_context.as_ref().map(|c| c.target.clone());
     if let Some(open) = open_target {
@@ -626,33 +689,25 @@ fn opening(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Opening> {
             "Finish the current workflow before opening PR Triage",
         ));
     }
-    let (pi, fi) = app
-        .store
-        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
-        .ok_or_else(|| GuiError::not_found("Feature was deleted; refresh and retry"))?;
-    if !app.store.projects[pi].is_git {
-        return Err(GuiError::conflict("PR Triage requires a Git repository"));
-    }
-    Ok(Opening::New(
-        app.store.projects[pi].features[fi].workdir.clone(),
-    ))
+    Ok(Opening::New(target.workdir(app)?))
 }
 
 /// Open PR Triage for `target`, reading GitHub in place. The Tauri command
 /// uses [`plan_begin`] and [`begin_prefetched`] to read without the lock.
-pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<PrTriageView> {
+pub fn begin(gui: &mut GuiHandle, target: impl Into<PrTriageTarget>) -> GuiResult<PrTriageView> {
+    let target = target.into();
     let reads = plan_begin(gui, &target)?;
     begin_prefetched(gui, target, reads.run())
 }
 
-pub fn plan_begin(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<PrTriageReads> {
+pub fn plan_begin(gui: &mut GuiHandle, target: &PrTriageTarget) -> GuiResult<PrTriageReads> {
     Ok(match opening(gui, target)? {
         Opening::Existing => poll_reads(gui),
         Opening::New(workdir) => PrTriageReads::new(
             gui.app_for_workflow(),
             workdir,
             ReadPlan {
-                branch_pr: true,
+                branch_pr: target.feature_id.is_some(),
                 current_user: true,
                 list: Some(false),
                 ..ReadPlan::default()
@@ -663,7 +718,7 @@ pub fn plan_begin(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<PrTr
 
 pub fn begin_prefetched(
     gui: &mut GuiHandle,
-    target: FeatureTarget,
+    target: PrTriageTarget,
     mut reads: PrTriagePrefetch,
 ) -> GuiResult<PrTriageView> {
     reads.attach(gui);
@@ -671,10 +726,14 @@ pub fn begin_prefetched(
         Opening::Existing => return snapshot(gui, &mut reads),
         Opening::New(workdir) => workdir,
     };
-    let (branch_pr, resolve_error) = match reads.resolve_pr(&workdir) {
-        Ok(PrResolution::Found(pr)) => (Some(pr.number), None),
-        Ok(PrResolution::NoPrForBranch) => (None, None),
-        Err(e) => (None, Some(e.to_string())),
+    let (branch_pr, resolve_error) = if target.feature_id.is_none() {
+        (None, None)
+    } else {
+        match reads.resolve_pr(&workdir) {
+            Ok(PrResolution::Found(pr)) => (Some(pr.number), None),
+            Ok(PrResolution::NoPrForBranch) => (None, None),
+            Err(e) => (None, Some(e.to_string())),
+        }
     };
     let current_user = reads.current_user(&workdir).ok();
     let entries = reads.list_prs(&workdir, false);
@@ -765,18 +824,12 @@ fn check_target(gui: &mut GuiHandle) -> GuiResult<()> {
         gui.pr_triage_context = None;
         return Err(GuiError::conflict("PR Triage is no longer open"));
     }
-    let located = app
-        .store
-        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
-        .map(|(pi, fi)| app.store.projects[pi].features[fi].workdir.clone());
-    let problem = match located {
-        None => Some(GuiError::not_found(
-            "The feature was deleted; PR Triage closed",
-        )),
-        Some(current) if current != workdir => Some(GuiError::conflict(
-            "The feature's checkout changed; PR Triage closed",
-        )),
-        Some(_) => None,
+    let problem = match target.workdir(app) {
+        Err(error) => Some(error),
+        Ok(current) if current != workdir => {
+            Some(GuiError::conflict("The checkout changed; PR Triage closed"))
+        }
+        Ok(_) => None,
     };
     if let Some(problem) = problem {
         close(gui);
@@ -884,16 +937,15 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         ),
     });
     let app = gui.app_for_workflow();
-    let (pi, fi) = app
-        .store
-        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
-        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
-    let feature = &app.store.projects[pi].features[fi];
-    let (feature_name, branch) = (feature.name.clone(), feature.branch.clone());
+    let (project, feature) = target.locate(app)?;
+    let (feature_name, branch) = feature.map_or_else(
+        || (project.name.clone(), String::new()),
+        |f| (f.name.clone(), f.branch.clone()),
+    );
     let fix_targets = feature
-        .sessions
-        .iter()
-        .filter_map(|s| {
+        .into_iter()
+        .flat_map(|feature| feature.sessions.iter().map(move |s| (feature, s)))
+        .filter_map(|(feature, s)| {
             let harness = match s.kind {
                 crate::project::SessionKind::Claude => AgentKind::Claude,
                 crate::project::SessionKind::Codex => AgentKind::Codex,
@@ -904,7 +956,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
             Some(PrFixTargetView {
                 target: SessionTarget {
                     project_id: target.project_id.clone(),
-                    feature_id: target.feature_id.clone(),
+                    feature_id: feature.id.clone(),
                     session_id: s.id.clone(),
                 },
                 label: s.label.clone(),
@@ -913,7 +965,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
             })
         })
         .collect();
-    let preferred = app.store.projects[pi].preferred_agent.clone();
+    let preferred = project.preferred_agent.clone();
     let harnesses = harnesses(app, &workdir);
     let default_harness = harnesses
         .iter()
@@ -1011,7 +1063,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
 }
 
 fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> GuiResult<()> {
-    let target = gui.pr_triage_context.as_ref().unwrap().target.clone();
+    let target = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
     let app = gui.app_for_workflow();
     let comment = select(app, comment_id)?;
     let state = review_mut(app)?;
@@ -2140,15 +2192,15 @@ pub(crate) fn screenshot_context(
         .as_ref()
         .filter(|c| c.id == workflow_id)
         .ok_or_else(|| GuiError::conflict("PR Triage changed or closed"))?;
-    let feature_id = context.target.feature_id.clone();
-    let project_id = context.target.project_id.clone();
+    let target = context.target.clone();
     let workdir = context.workdir.clone();
     let app = gui.app_for_workflow();
-    let (pi, fi) = app
-        .store
-        .locate_feature_by_id(Some(&project_id), &feature_id)
-        .ok_or_else(|| GuiError::not_found("PR feature was deleted"))?;
-    if app.store.projects[pi].features[fi].is_worktree && !workdir.exists() {
+    let (_, feature) = target.locate(app)?;
+    let feature_id = target
+        .feature_id
+        .clone()
+        .unwrap_or_else(|| target.project_id.clone());
+    if feature.is_some_and(|f| f.is_worktree) && !workdir.exists() {
         app.screenshot_worktree_deleted(&workdir)
             .map_err(GuiError::from)?;
         return Err(GuiError::not_found("PR worktree was deleted"));
@@ -2387,6 +2439,38 @@ mod tests {
             .returning(|path| Ok(path.to_path_buf()));
         gui.app_for_workflow().worktree = Box::new(worktree);
         (dir, gui, target)
+    }
+
+    #[test]
+    fn project_picker_uses_repo_without_a_feature_or_branch_lookup() {
+        let (_dir, mut gui, feature_target) = fixture();
+        let fake = github();
+        let app = gui.app_for_workflow();
+        app.pr_review_work
+            .set_github_for_test(Arc::new(fake.clone()));
+        app.store.projects[0].features.clear();
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        let target = PrTriageTarget {
+            project_id: feature_target.project_id,
+            feature_id: None,
+        };
+        let reads = plan_begin(&mut gui, &target).unwrap();
+        assert!(!reads.plan.branch_pr);
+        let repo = gui.app_for_workflow().store.projects[0].repo.clone();
+        assert_eq!(reads.workdir, repo);
+        let view = begin_prefetched(&mut gui, target, reads.run()).unwrap();
+        assert_eq!(view.stage, "pick");
+        assert_eq!(view.picker.as_ref().unwrap().branch_pr, None);
+        assert!(!view.picker.as_ref().unwrap().entries.is_empty());
+        let loading = act(&mut gui, &view, PrTriageAction::Open { number: 7 });
+        let opened = settle(&mut gui, loading);
+        assert_eq!(opened.stage, "review");
+        assert!(opened.fix_targets.is_empty());
+        let app = gui.app_for_workflow();
+        app.store.projects.clear();
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        assert!(poll(&mut gui, &opened.workflow_id).is_err());
+        assert!(gui.pr_triage_context.is_none());
     }
 
     fn opened() -> (tempfile::TempDir, GuiHandle, FakeGithub, PrTriageView) {
@@ -3055,9 +3139,9 @@ mod tests {
         app.pr_review_work.set_investigation_runner_for_test(runner);
         // Every step reads first, then GitHub goes away: whatever it applies
         // under the lock must come from those reads, not a fresh `gh` call.
-        let reads = plan_begin(&mut gui, &target).unwrap().run();
+        let reads = plan_begin(&mut gui, &target.clone().into()).unwrap().run();
         fake.state().fail_reads = true;
-        let picked = begin_prefetched(&mut gui, target, reads).unwrap();
+        let picked = begin_prefetched(&mut gui, target.into(), reads).unwrap();
         let picker = picked.picker.as_ref().unwrap();
         assert_eq!(picker.branch_pr, Some(7));
         assert!(picker.error.is_none() && picker.entries[0].mine);
@@ -3437,7 +3521,7 @@ mod tests {
             feature_id: "other".into(),
         };
         assert!(begin(&mut gui, other).is_err());
-        assert!(crate::gui_learning::begin(&mut gui, view.target.clone()).is_err());
+        assert!(crate::gui_learning::begin(&mut gui, view.target.feature().unwrap()).is_err());
         let app = gui.app_for_workflow();
         app.store.projects[0].features.clear();
         if let Some(db) = &app.db {

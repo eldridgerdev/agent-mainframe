@@ -334,7 +334,7 @@ impl App {
     /// A comment whose anchor is currently lost has no valid index to capture
     /// from, so its previously-captured snippet is deliberately left intact —
     /// that snippet is exactly what a later refresh needs to re-find it.
-    pub(super) fn recapture_anchor_contexts(&mut self) {
+    pub(crate) fn recapture_anchor_contexts(&mut self) {
         let AppMode::DiffViewer(state) = &mut self.mode else {
             return;
         };

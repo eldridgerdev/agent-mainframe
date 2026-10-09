@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **PR Triage and PR Review from desktop projects.** Both buttons open the
+  repository's PR picker directly, even when the project has no features.
+  PR Review shows the selected PR's changes, saves file comments and a summary,
+  and previews a Comment, Approve or Request changes review before posting.
+  No migration is required.
+
 - **Desktop theme selection.** Appearance offers light, dark, system, the TUI
   theme catalog and custom JSON palettes. The GUI follows the TUI theme until
   you choose an independent override; switching colors preserves live terminals.

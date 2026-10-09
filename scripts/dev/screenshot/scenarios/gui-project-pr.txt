@@ -1,0 +1,5 @@
+# Native project PR buttons and both pickers, with no features or live GitHub calls.
+note:The isolated TUI starts with an empty scratch database before native GUI capture.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_PROJECT_PR_PROOF=1 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-pr-triage.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

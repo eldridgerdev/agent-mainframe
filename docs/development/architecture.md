@@ -98,6 +98,15 @@ when that socket is unavailable. The GUI's existing Done-reply engine reads the
 returned draft and its fixing-session attribution; no GUI IPC socket or schema
 is added.
 
+`gui_pr_review.rs` opens the project's repository directly on the shared Review
+PR list, without choosing a feature or resolving the checkout's branch PR.
+The GUI's PR Review panel reads the fetched PR revisions, saves file comments
+and a summary in the shared SQLite drafts, and previews the exact GitHub
+submission before confirming. List/open/post workers retain the TUI's request
+identity and head checks; workflow revisions and a saved-draft baseline reject
+stale edits and submissions. Project PR Triage uses the same repository scope
+and goes directly to its picker without a branch lookup.
+
 `app/review/checks.rs` owns the shared build/test runner: it drains both output
 streams while retaining bounded text and terminates/reaps owned processes on
 cancellation or close. `gui_review/checks.rs` previews the effective project

@@ -49,7 +49,15 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       if (next) setView(next); else onClose();
     } catch (err) {
       setError(asGuiError(err).message);
-      try { setView(await prReviewSnapshot(view.workflow_id)); } catch { /* retain editors */ }
+      try {
+        const next = await prReviewSnapshot(view.workflow_id);
+        // Failed draft writes can leave unpersisted text in the backend snapshot.
+        // Refresh the revision for retries, but retain the last saved baseline.
+        if (action.kind === "summary") next.summary = view.summary;
+        if (action.kind === "file_comment") next.files = next.files.map((f) =>
+          f.diff.path === action.path ? { ...f, comment: view.files.find((saved) => saved.diff.path === action.path)?.comment ?? "" } : f);
+        setView(next);
+      } catch { /* retain editors */ }
     } finally { pending.current = false; setBusy(false); }
   }
   function leave(kind: "back" | "close") {
@@ -102,7 +110,10 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
     {view?.submission && <section aria-label="Confirm PR review" className="callout">
       <h3>Post {view.submission.event.replaceAll("_", " ").toLowerCase()} review to PR #{view.number}</h3>
       <Markdown source={view.submission.body || "No summary."} />
-      {view.submission.comments.map((c, i) => <div key={i}><strong>{c.path}:{c.line}</strong><Markdown source={c.body} /></div>)}
+      {view.submission.comments.map((c, i) => <div key={i}>
+        <strong>{c.path}:{c.start_line != null ? `${c.start_line}–${c.line}` : c.line} ({c.side === "LEFT" ? "base" : "current"} · {c.side})</strong>
+        <Markdown source={c.body} />
+      </div>)}
       {view.submission.file_comments.map((c, i) => <div key={i}><strong>{c.path}</strong><Markdown source={c.body} /></div>)}
       {view.submission.error && <p role="alert">{view.submission.error}</p>}
       <button className="btn btn-secondary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "cancel_submit" })}>Keep editing</button>

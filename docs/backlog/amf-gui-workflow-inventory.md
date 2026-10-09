@@ -172,7 +172,12 @@ Completed increments and remaining work, in priority order:
   plus a light-appearance control. Representative PNGs were visually inspected.
   Reproduce with `gui-readable-dark-theme.txt`; both runs use the current Rust
   backend with private Git/SQLite/tmux and offline ANSI fixtures, sending no
-  prompts. macOS runtime validation remains open. Custom themes follow.
+  prompts. Review follow-up keeps ANSI black/bright-black dark for explicit
+  backgrounds and uses xterm's foreground contrast adjustment in dark mode.
+  Twelve contrast regressions cover explicit SGR foreground/background pairs,
+  including white on black/bright-black and black on white/colored backgrounds.
+  All 332 frontend tests and the production build pass after this correction.
+  macOS runtime validation remains open. Custom themes follow.
 
 - [x] **GUI fresh context (2026-10-07).** The Context section opens an
   editable shared continuation seed, starts a new session with the feature's

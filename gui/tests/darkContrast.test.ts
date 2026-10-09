@@ -53,14 +53,14 @@ it("checks merged PR, harness icons and every supervibe gradient stop", () => {
   expect(failures).toEqual([]);
 });
 
-it("keeps terminal ANSI, selection, cursor and dim text readable on the page background", () => {
+it("keeps terminal foreground colors, selection and cursor readable on the page background", () => {
   failures.length = 0;
   const theme = DARK_TERMINAL_THEME;
   expect(theme.background).toBe(token(dark, "bg"));
   expect(theme.background).toBe(token(dark, "terminal-bg"));
   const bg = parse(theme.background!).rgb;
   for (const [role, colour] of Object.entries(theme)) {
-    if (["background", "cursorAccent", "selectionBackground", "selectionForeground"].includes(role)) continue;
+    if (["black", "brightBlack", "background", "cursorAccent", "selectionBackground", "selectionForeground"].includes(role)) continue;
     check(`terminal ${role}`, parse(colour!).rgb, bg, role === "cursor" ? 3 : 4.5);
   }
   check("selection", parse(theme.selectionForeground!).rgb, parse(theme.selectionBackground!).rgb);
@@ -80,4 +80,27 @@ it("keeps independent agent-sidebar accents and VS Code glyphs readable", () => 
   }
   for (const [name, bg] of Object.entries(backgrounds)) check(`VS Code icon on ${name}`, parse(vscode).rgb, bg);
   expect(failures).toEqual([]);
+});
+
+// SGR 40/100 and 47/107 use the same palette entries as foreground SGR
+// 30/90 and 37/97. Testing only the default background misses regressions
+// such as pale ANSI black washing out explicit white-on-black output.
+const explicitBackgroundPairs = [
+  ["white", "black", "37;40"],
+  ["brightWhite", "black", "97;40"],
+  ["white", "brightBlack", "37;100"],
+  ["brightWhite", "brightBlack", "97;100"],
+  ["black", "white", "30;47"],
+  ["black", "brightWhite", "30;107"],
+  ["black", "red", "30;41"],
+  ["black", "green", "30;42"],
+  ["black", "yellow", "30;43"],
+  ["black", "blue", "30;44"],
+  ["black", "magenta", "30;45"],
+  ["black", "cyan", "30;46"],
+] as const;
+
+it.each(explicitBackgroundPairs)("keeps ANSI %s on %s readable (SGR %s)", (foreground, background) => {
+  const ratio = contrast(parse(DARK_TERMINAL_THEME[foreground]!).rgb, parse(DARK_TERMINAL_THEME[background]!).rgb);
+  expect(ratio).toBeGreaterThanOrEqual(4.5);
 });

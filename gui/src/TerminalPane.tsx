@@ -112,10 +112,12 @@ export default function TerminalPane({ target, onReadyChange }: {
       lineHeight: 1.15,
       scrollback: SCROLLBACK_LINES,
       theme: darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME,
+      minimumContrastRatio: darkMode?.matches ? 4.5 : 1,
     });
     // Update colours in place: keep the attachment, buffer and scroll position.
     const updateTheme = () => {
       term.options.theme = darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
+      term.options.minimumContrastRatio = darkMode?.matches ? 4.5 : 1;
     };
     darkMode?.addEventListener("change", updateTheme);
     const fit = new FitAddon();

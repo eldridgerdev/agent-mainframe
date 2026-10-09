@@ -534,7 +534,9 @@ The desktop follows the system's light or dark appearance. Dark mode uses
 raised slate surfaces, stronger borders and brighter secondary text, status
 badges and syntax colors. The terminal shares the dark page background and
 updates its palette live when system appearance changes, keeping its attachment
-and history. Light appearance retains its existing colors. Theme selection and
+and history. ANSI black and bright black remain dark enough for backgrounds;
+xterm adjusts low-contrast foreground text per cell in dark mode. Light
+appearance retains its existing colors. Theme selection and
 custom theme files are planned separately.
 
 `tests/darkContrast.test.ts` checks body text and badge colors at 4.5:1, borders

@@ -21,13 +21,14 @@ use serde::{Deserialize, Serialize};
 use crate::app::pr_review::github_access::TriageGithub;
 use crate::app::pr_review::{
     CommentKind, INVESTIGATION_CONTEXT_MAX_LEN, PrComment, PrFetchFailure, PrInvestigationStatus,
-    PrSortMode, ReplyKind, ReplyTarget, investigation_prompt_from_meta, strip_bot_boilerplate,
+    PrSortMode, ReplyDraftRequest, ReplyKind, ReplyTarget, TriageState,
+    investigation_prompt_from_meta, strip_bot_boilerplate, with_reply_draft_handoff,
 };
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
 use crate::editor::TextEditor;
 use crate::github::{PrListEntry, PrMeta, PrRef, PrResolution, ReviewThread};
-use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
+use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
 use crate::gui_plans::PrecallView;
 use crate::project::AgentKind;
 
@@ -50,6 +51,8 @@ pub(crate) struct PrTriageContext {
     notice: Option<String>,
     investigation: Option<PendingInvestigation>,
     write: Option<PendingWrite>,
+    fix: Option<PendingFixDraft>,
+    handoff: Option<PrFixHandoff>,
 }
 
 /// The GitHub reads one step needs, named under the GUI lock and performed by
@@ -213,6 +216,38 @@ struct PendingInvestigation {
     viewing: bool,
 }
 
+struct PendingFixDraft {
+    view: PrFixDraftView,
+    comment: PrComment,
+    head_sha: String,
+    tmux_session: String,
+    tmux_window: String,
+    session_kind: crate::project::SessionKind,
+    submission: Option<ReplyDraftRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrFixTargetView {
+    pub target: SessionTarget,
+    pub label: String,
+    pub harness: AgentKind,
+    pub stopped: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrFixDraftView {
+    pub comment_id: u64,
+    pub target: SessionTarget,
+    pub prompt: String,
+    pub submission_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrFixHandoff {
+    pub target: SessionTarget,
+    pub draft_prompt: String,
+}
+
 /// A GitHub write waiting for explicit confirmation.
 enum PendingWrite {
     Reply {
@@ -357,6 +392,10 @@ pub struct PrTriageView {
     pub precall: Option<PrecallView>,
     pub reply: Option<PrReplyDraftView>,
     pub write_confirm: Option<PrWriteConfirmView>,
+    pub fix_targets: Vec<PrFixTargetView>,
+    pub fix_draft: Option<PrFixDraftView>,
+    /// Taken once by the action response; subsequent polls cannot redeliver.
+    pub handoff: Option<PrFixHandoff>,
     pub harnesses: Vec<AgentKind>,
     pub default_harness: Option<AgentKind>,
     pub error: Option<String>,
@@ -366,6 +405,19 @@ pub struct PrTriageView {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PrTriageAction {
+    StartFixDraft {
+        comment_id: u64,
+        session_id: String,
+    },
+    CancelFixDraft,
+    PrepareFixSubmission {
+        prompt: String,
+    },
+    ConfirmFixSubmission,
+    CancelFixSubmission,
+    ConfirmFixDraft {
+        prompt: String,
+    },
     ToggleClosed,
     Open {
         number: u32,
@@ -639,6 +691,8 @@ pub fn begin_prefetched(
         notice: None,
         investigation: None,
         write: None,
+        fix: None,
+        handoff: None,
     });
     open_picker(gui, false, Some(entries), resolve_error)?;
     snapshot(gui, &mut reads)
@@ -814,6 +868,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         preview: p.prompt.clone(),
         viewing: p.viewing,
     });
+    let fix_draft = context.fix.as_ref().map(|f| f.view.clone());
     let pending_write = context.write.as_ref().map(|w| match w {
         PendingWrite::Reply {
             comment_id, posted, ..
@@ -835,6 +890,29 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
     let feature = &app.store.projects[pi].features[fi];
     let (feature_name, branch) = (feature.name.clone(), feature.branch.clone());
+    let fix_targets = feature
+        .sessions
+        .iter()
+        .filter_map(|s| {
+            let harness = match s.kind {
+                crate::project::SessionKind::Claude => AgentKind::Claude,
+                crate::project::SessionKind::Codex => AgentKind::Codex,
+                crate::project::SessionKind::Opencode => AgentKind::Opencode,
+                crate::project::SessionKind::Pi => AgentKind::Pi,
+                _ => return None,
+            };
+            Some(PrFixTargetView {
+                target: SessionTarget {
+                    project_id: target.project_id.clone(),
+                    feature_id: target.feature_id.clone(),
+                    session_id: s.id.clone(),
+                },
+                label: s.label.clone(),
+                harness,
+                stopped: s.stopped || feature.status == crate::project::ProjectStatus::Stopped,
+            })
+        })
+        .collect();
     let preferred = app.store.projects[pi].preferred_agent.clone();
     let harnesses = harnesses(app, &workdir);
     let default_harness = harnesses
@@ -908,6 +986,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
             body,
         }
     });
+    let handoff = gui.pr_triage_context.as_mut().unwrap().handoff.take();
     Ok(PrTriageView {
         workflow_id,
         revision,
@@ -921,11 +1000,283 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         precall,
         reply,
         write_confirm,
+        fix_targets,
+        fix_draft,
+        handoff,
         harnesses,
         default_harness,
         error,
         notice,
     })
+}
+
+fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> GuiResult<()> {
+    let target = gui.pr_triage_context.as_ref().unwrap().target.clone();
+    let app = gui.app_for_workflow();
+    let comment = select(app, comment_id)?;
+    let state = review_mut(app)?;
+    if !comment.is_actionable() {
+        return Err(GuiError::conflict(
+            "AMF follow-up replies are shown for context only",
+        ));
+    }
+    if state.reply.is_some() {
+        return Err(GuiError::conflict(
+            "Post or discard the open reply before preparing a fix",
+        ));
+    }
+    let prompt = state.fix_draft_prompt(&comment);
+    let head_sha = state.review.pr.head_sha.clone();
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    let session = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id && s.kind.is_agent_harness())
+        .ok_or_else(|| GuiError::not_found("Choose an existing agent session in this feature"))?;
+    let pending = PendingFixDraft {
+        view: PrFixDraftView {
+            comment_id,
+            target: SessionTarget {
+                project_id: target.project_id,
+                feature_id: target.feature_id,
+                session_id,
+            },
+            prompt,
+            submission_prompt: None,
+        },
+        comment,
+        head_sha,
+        tmux_session: feature.tmux_session.clone(),
+        tmux_window: session.tmux_window.clone(),
+        session_kind: session.kind.clone(),
+        submission: None,
+    };
+    gui.pr_triage_context.as_mut().unwrap().fix = Some(pending);
+    Ok(())
+}
+
+fn validate_fix_target(
+    gui: &mut GuiHandle,
+    reads: &mut PrTriagePrefetch,
+    prompt: String,
+) -> GuiResult<SessionTarget> {
+    if prompt.trim().is_empty() {
+        return Err(GuiError::conflict("The fix prompt is empty"));
+    }
+    let context = gui.pr_triage_context.as_ref().unwrap();
+    let pending = context
+        .fix
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+    let workdir = context.workdir.clone();
+    let target = pending.view.target.clone();
+    let (head, comment, tmux_session, tmux_window, session_kind) = (
+        pending.head_sha.clone(),
+        pending.comment.clone(),
+        pending.tmux_session.clone(),
+        pending.tmux_window.clone(),
+        pending.session_kind.clone(),
+    );
+    let app = gui.app_for_workflow();
+    let state = review_mut(app)?;
+    if state.review.pr.head_sha != head
+        || !state.review.comments.iter().any(|c| {
+            c.id == comment.id
+                && c.body == comment.body
+                && c.path == comment.path
+                && c.line == comment.line
+                && c.diff_hunk == comment.diff_hunk
+        })
+    {
+        return Err(GuiError::conflict(
+            "The comment changed; cancel and prepare the fix again",
+        ));
+    }
+    let current = reads
+        .fetch_pr_by_number(&workdir, state.review.pr.number)
+        .map_err(GuiError::from)?;
+    if current.head_sha != head {
+        return Err(GuiError::conflict(
+            "The PR has new commits; cancel the fix draft and refresh",
+        ));
+    }
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    if feature.tmux_session != tmux_session
+        || !feature.sessions.iter().any(|s| {
+            s.id == target.session_id && s.tmux_window == tmux_window && s.kind == session_kind
+        })
+    {
+        return Err(GuiError::conflict(
+            "The agent session changed; cancel and choose a target again",
+        ));
+    }
+    Ok(target)
+}
+
+fn confirm_fix_draft(
+    gui: &mut GuiHandle,
+    reads: &mut PrTriagePrefetch,
+    prompt: String,
+) -> GuiResult<()> {
+    let target = validate_fix_target(gui, reads, prompt.clone())?;
+    let context = gui.pr_triage_context.as_mut().unwrap();
+    context.fix = None;
+    context.handoff = Some(PrFixHandoff {
+        target,
+        draft_prompt: prompt,
+    });
+    context.notice = Some("Fix prompt prepared as an unsent composer draft".into());
+    Ok(())
+}
+
+fn prepare_fix_submission(gui: &mut GuiHandle, prompt: String) -> GuiResult<()> {
+    if prompt.trim().is_empty() {
+        return Err(GuiError::conflict("The fix prompt is empty"));
+    }
+    let pending = gui
+        .pr_triage_context
+        .as_ref()
+        .unwrap()
+        .fix
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+    let request = ReplyDraftRequest::new(pending.comment.id, &pending.head_sha);
+    let number = review_mut(gui.app_for_workflow())?.review.pr.number;
+    let exact = with_reply_draft_handoff(prompt, number, std::slice::from_ref(&request));
+    let pending = gui
+        .pr_triage_context
+        .as_mut()
+        .unwrap()
+        .fix
+        .as_mut()
+        .unwrap();
+    pending.view.submission_prompt = Some(exact);
+    pending.submission = Some(request);
+    Ok(())
+}
+
+fn confirm_fix_submission(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> GuiResult<()> {
+    let pending = gui
+        .pr_triage_context
+        .as_ref()
+        .unwrap()
+        .fix
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+    let prompt = pending
+        .view
+        .submission_prompt
+        .clone()
+        .ok_or_else(|| GuiError::conflict("Preview the fix submission first"))?;
+    let request = pending.submission.clone().unwrap();
+    let target = validate_fix_target(gui, reads, prompt.clone())?;
+    let app = gui.app_for_workflow();
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .unwrap();
+    let feature = &app.store.projects[pi].features[fi];
+    let si = feature
+        .sessions
+        .iter()
+        .position(|s| s.id == target.session_id)
+        .unwrap();
+    let session = &feature.sessions[si];
+    if session.stopped
+        || !app
+            .tmux
+            .window_exists(&feature.tmux_session, &session.tmux_window)
+    {
+        return Err(GuiError::conflict(
+            "The agent is stopped; start it from its session tab, then retry",
+        ));
+    }
+    let (tmux_session, tmux_window) = (feature.tmux_session.clone(), session.tmux_window.clone());
+    let number = review_mut(app)?.review.pr.number;
+    let provenance = app.reply_draft_provenance(pi, fi, si);
+    // Register before sending: a fast agent must be able to return its receipt.
+    // Refuse a missing DB or failed write before touching the terminal.
+    let encoded = provenance
+        .map(|p| serde_json::to_string(&p))
+        .transpose()
+        .map_err(|e| GuiError::from(anyhow::Error::from(e)))?;
+    let db = app
+        .db
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("Reply-draft storage is unavailable"))?;
+    let prior = db
+        .snapshot_pr_comment_reply_draft(number, request.comment_id)
+        .map_err(GuiError::from)?;
+    db.begin_pr_comment_reply_draft(
+        number,
+        request.comment_id,
+        &request.request_id,
+        &request.base_head_sha,
+        encoded.as_deref(),
+    )
+    .map_err(GuiError::from)?;
+    let delivered = app
+        .tmux
+        .send_key_name(&tmux_session, &tmux_window, "C-u")
+        .and_then(|()| app.tmux.paste_text(&tmux_session, &tmux_window, &prompt));
+    if let Err(e) = delivered {
+        // Nothing was submitted, so the reply draft an earlier fix returned
+        // for this comment must survive the failed attempt.
+        let restored = app.db.as_ref().unwrap().restore_pr_comment_reply_draft(
+            number,
+            request.comment_id,
+            &request.request_id,
+            prior.as_ref(),
+        );
+        return Err(GuiError::from(match restored {
+            Ok(()) => e,
+            Err(r) => e.context(format!(
+                "Could not restore this comment's earlier reply draft ({r:#}); it was replaced"
+            )),
+        }));
+    }
+    // Retire confirmation before Enter: a transport failure can be ambiguous.
+    // Retrying must require preparing a new explicit submission.
+    let pending = gui
+        .pr_triage_context
+        .as_mut()
+        .unwrap()
+        .fix
+        .as_mut()
+        .unwrap();
+    pending.submission = None;
+    pending.view.submission_prompt = None;
+    let app = gui.app_for_workflow();
+    app.tmux
+        .send_key_name(&tmux_session, &tmux_window, "Enter")
+        .map_err(|e| GuiError::from(e.context("Could not confirm terminal delivery. Inspect the agent before preparing another fix; it may have received this prompt")))?;
+    let state = review_mut(app)?;
+    state
+        .review
+        .comments
+        .iter_mut()
+        .find(|c| c.id == request.comment_id)
+        .unwrap()
+        .triage = TriageState::Fixing;
+    app.persist_triage(
+        number,
+        &request.base_head_sha,
+        request.comment_id,
+        TriageState::Fixing,
+        None,
+        None,
+    );
+    gui.pr_triage_context.as_mut().unwrap().fix = None;
+    gui.pr_triage_context.as_mut().unwrap().notice = Some("Fix sent to the agent. Its reply draft will be available under Reply: fixed; posting remains explicit.".into());
+    Ok(())
 }
 
 fn review_view(state: &PrReviewState, investigating: Option<(u64, AgentKind)>) -> PrReviewView {
@@ -1066,6 +1417,29 @@ fn gate<'a>(
             "Continue or cancel the pending AI call first",
         ));
     }
+    if context.fix.as_ref().is_some_and(|f| f.submission.is_some())
+        && !matches!(
+            action,
+            A::ConfirmFixSubmission | A::CancelFixSubmission | A::CancelFixDraft | A::Close
+        )
+    {
+        return Err(GuiError::conflict(
+            "Confirm or cancel the fix submission first",
+        ));
+    }
+    if context.fix.is_some()
+        && !matches!(
+            action,
+            A::ConfirmFixDraft { .. }
+                | A::CancelFixDraft
+                | A::PrepareFixSubmission { .. }
+                | A::ConfirmFixSubmission
+                | A::CancelFixSubmission
+                | A::Close
+        )
+    {
+        return Err(GuiError::conflict("Prepare or cancel the fix draft first"));
+    }
     if context.write.is_some() && !matches!(action, A::ConfirmWrite | A::CancelWrite | A::Close) {
         return Err(GuiError::conflict(
             "Confirm or cancel the pending GitHub write first",
@@ -1114,6 +1488,10 @@ pub fn plan_act(
             meta: number,
             ..ReadPlan::default()
         },
+        A::ConfirmFixDraft { .. } | A::ConfirmFixSubmission => ReadPlan {
+            pr: number,
+            ..ReadPlan::default()
+        },
         A::ConfirmWrite if replying => ReadPlan {
             pr: number,
             ..ReadPlan::default()
@@ -1151,7 +1529,11 @@ pub fn act_prefetched(
         context.error = None;
     }
     result?;
-    snapshot(gui, &mut reads).map(Some)
+    let view = snapshot(gui, &mut reads)?;
+    if view.handoff.is_some() {
+        close(gui);
+    }
+    Ok(Some(view))
 }
 
 fn apply(
@@ -1168,6 +1550,34 @@ fn apply(
     }
     match action {
         A::Close => unreachable!(),
+        A::StartFixDraft {
+            comment_id,
+            session_id,
+        } => start_fix_draft(gui, comment_id, session_id),
+        A::CancelFixDraft => {
+            gui.pr_triage_context
+                .as_mut()
+                .unwrap()
+                .fix
+                .take()
+                .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+            Ok(())
+        }
+        A::ConfirmFixDraft { prompt } => confirm_fix_draft(gui, reads, prompt),
+        A::PrepareFixSubmission { prompt } => prepare_fix_submission(gui, prompt),
+        A::ConfirmFixSubmission => confirm_fix_submission(gui, reads),
+        A::CancelFixSubmission => {
+            let pending = gui
+                .pr_triage_context
+                .as_mut()
+                .unwrap()
+                .fix
+                .as_mut()
+                .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+            pending.submission = None;
+            pending.view.submission_prompt = None;
+            Ok(())
+        }
         A::ToggleClosed => {
             let AppMode::PrPicker(state) = &gui.app_for_workflow().mode else {
                 return Err(GuiError::conflict("The pull request list is not open"));
@@ -2034,6 +2444,472 @@ mod tests {
             .iter()
             .find(|c| c.id == id)
             .unwrap()
+    }
+
+    fn with_fix_session(gui: &mut GuiHandle) {
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0]
+            .sessions
+            .push(crate::project::FeatureSession {
+                id: "fix-agent".into(),
+                kind: crate::project::SessionKind::Codex,
+                label: "Codex fixes".into(),
+                tmux_window: "codex".into(),
+                claude_session_id: None,
+                todo_reference: None,
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: chrono::Utc::now(),
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                stopped: true,
+                status_text: None,
+                token_usage: None,
+            });
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+    }
+
+    fn running_fix_agent(gui: &mut GuiHandle) {
+        with_fix_session(gui);
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].sessions[0].stopped = false;
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+    }
+
+    #[test]
+    fn fix_submission_previews_then_sends_once_and_accepts_only_correlated_receipts() {
+        let (_dir, mut gui, fake, view) = opened();
+        running_fix_agent(&mut gui);
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .withf(|_, _, text| {
+                text.starts_with("Edited instruction")
+                    && text.contains("amf reply-draft --pr-number 7 --comment-id 101")
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let preview = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::PrepareFixSubmission {
+                prompt: "Edited instruction".into(),
+            },
+        );
+        let request = gui
+            .pr_triage_context
+            .as_ref()
+            .unwrap()
+            .fix
+            .as_ref()
+            .unwrap()
+            .submission
+            .clone()
+            .unwrap();
+        assert!(
+            preview
+                .fix_draft
+                .as_ref()
+                .unwrap()
+                .submission_prompt
+                .as_ref()
+                .unwrap()
+                .contains(&request.request_id)
+        );
+        assert_eq!(comment_view(&preview, 101).triage, "untriaged");
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_comment_reply_draft_row(7, 101)
+                .unwrap()
+                .is_none()
+        );
+        let done = act(&mut gui, &preview, PrTriageAction::ConfirmFixSubmission);
+        assert_eq!(comment_view(&done, 101).triage, "fixing");
+        assert!(done.fix_draft.is_none() && done.handoff.is_none());
+        assert!(
+            super::act(
+                &mut gui,
+                &preview.workflow_id,
+                preview.revision,
+                PrTriageAction::ConfirmFixSubmission
+            )
+            .is_err()
+        );
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        assert!(
+            !db.capture_pr_comment_reply_draft(7, 101, "old-request", "Wrong")
+                .unwrap()
+        );
+        assert!(
+            db.capture_pr_comment_reply_draft(
+                7,
+                101,
+                &request.request_id,
+                "Fixed negative rounding with regression coverage."
+            )
+            .unwrap()
+        );
+        let reply = act(
+            &mut gui,
+            &done,
+            PrTriageAction::StartReply {
+                comment_id: 101,
+                reply: "done".into(),
+            },
+        );
+        assert!(reply.reply.as_ref().unwrap().agent_drafted);
+        assert!(
+            reply
+                .reply
+                .unwrap()
+                .seed
+                .contains("Fixed negative rounding")
+        );
+        assert!(fake.0.lock().unwrap().writes.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_send_failure_retires_confirmation_without_claiming_fixing() {
+        let (_dir, mut gui, _fake, view) = opened();
+        running_fix_agent(&mut gui);
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(1)
+            .returning(|_, _, _| Err(anyhow::anyhow!("transport disconnected")));
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let preview = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::PrepareFixSubmission {
+                prompt: "Exact instruction".into(),
+            },
+        );
+        let error = super::act(
+            &mut gui,
+            &preview.workflow_id,
+            preview.revision,
+            PrTriageAction::ConfirmFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("may have received"));
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        assert!(
+            fresh
+                .fix_draft
+                .as_ref()
+                .unwrap()
+                .submission_prompt
+                .is_none()
+        );
+        assert_eq!(comment_view(&fresh, 101).triage, "untriaged");
+        assert!(
+            super::act(
+                &mut gui,
+                &fresh.workflow_id,
+                fresh.revision,
+                PrTriageAction::ConfirmFixSubmission
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cancel_fix_submission_without_an_open_fix_is_a_conflict() {
+        let (_dir, mut gui, _fake, view) = opened();
+        let error = super::act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            PrTriageAction::CancelFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("No fix draft is open"));
+        assert!(poll(&mut gui, &view.workflow_id).is_ok());
+    }
+
+    #[test]
+    fn failed_paste_restores_the_earlier_reply_draft() {
+        let (_dir, mut gui, _fake, view) = opened();
+        running_fix_agent(&mut gui);
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        db.begin_pr_comment_reply_draft(7, 101, "earlier", "head", Some("{}"))
+            .unwrap();
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 101, "earlier", "Earlier draft")
+                .unwrap()
+        );
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Err(anyhow::anyhow!("window vanished")));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(0);
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let preview = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::PrepareFixSubmission {
+                prompt: "Exact instruction".into(),
+            },
+        );
+        let error = super::act(
+            &mut gui,
+            &preview.workflow_id,
+            preview.revision,
+            PrTriageAction::ConfirmFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("window vanished"));
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        let row = db.load_pr_comment_reply_draft_row(7, 101).unwrap().unwrap();
+        assert_eq!(row.body, "Earlier draft");
+        assert_eq!(row.provenance.as_deref(), Some("{}"));
+        assert!(
+            db.capture_pr_comment_reply_draft(7, 101, "earlier", "Late receipt")
+                .unwrap()
+        );
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        assert_eq!(comment_view(&fresh, 101).triage, "untriaged");
+    }
+
+    #[test]
+    fn fix_submission_refuses_stopped_targets_and_preserves_confirmation() {
+        let (_dir, mut gui, _fake, view) = opened();
+        with_fix_session(&mut gui);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let preview = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::PrepareFixSubmission {
+                prompt: "Retain my instruction".into(),
+            },
+        );
+        let error = super::act(
+            &mut gui,
+            &preview.workflow_id,
+            preview.revision,
+            PrTriageAction::ConfirmFixSubmission,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("agent is stopped"));
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        assert!(
+            fresh
+                .fix_draft
+                .as_ref()
+                .unwrap()
+                .submission_prompt
+                .as_ref()
+                .unwrap()
+                .starts_with("Retain my instruction")
+        );
+        assert_eq!(comment_view(&fresh, 101).triage, "untriaged");
+    }
+
+    #[test]
+    fn fix_drafts_are_editable_unsent_and_handed_off_once() {
+        let (_dir, mut gui, fake, view) = opened();
+        with_fix_session(&mut gui);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let draft = pending.fix_draft.as_ref().unwrap();
+        assert!(draft.prompt.contains("code.txt"));
+        assert!(pending.fix_targets[0].stopped);
+        assert_eq!(
+            serde_json::to_value(&pending.fix_targets[0].harness).unwrap(),
+            "codex"
+        );
+        assert!(pending.handoff.is_none());
+        assert!(try_act(&mut gui, &pending, PrTriageAction::Refresh).is_err());
+        let done = act(
+            &mut gui,
+            &pending,
+            PrTriageAction::ConfirmFixDraft {
+                prompt: "Edited fix instruction".into(),
+            },
+        );
+        let handoff = done.handoff.as_ref().unwrap();
+        assert_eq!(handoff.target.session_id, "fix-agent");
+        assert_eq!(handoff.draft_prompt, "Edited fix instruction");
+        assert!(done.fix_draft.is_none());
+        assert_eq!(comment_view(&done, 101).triage, "untriaged");
+        assert!(fake.state().writes.is_empty());
+        assert!(poll(&mut gui, &done.workflow_id).is_err());
+        assert!(gui.pr_triage_context.is_none());
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        assert!(
+            try_act(
+                &mut gui,
+                &done,
+                PrTriageAction::ConfirmFixDraft {
+                    prompt: "Duplicate".into()
+                }
+            )
+            .is_err()
+        );
+        assert!(begin(&mut gui, done.target.clone()).is_ok());
+    }
+
+    #[test]
+    fn fix_drafts_reuse_investigation_findings_and_reject_unknown_targets() {
+        let (_dir, mut gui, _fake, view) = opened();
+        assert!(
+            try_act(
+                &mut gui,
+                &view,
+                PrTriageAction::StartFixDraft {
+                    comment_id: 101,
+                    session_id: "missing".into(),
+                }
+            )
+            .is_err()
+        );
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::Investigate {
+                comment_id: 101,
+                harness: AgentKind::Claude,
+                note: None,
+                follow_up: None,
+            },
+        );
+        let running = act(&mut gui, &pending, PrTriageAction::PrecallConfirm);
+        let done = settle(&mut gui, running);
+        with_fix_session(&mut gui);
+        let pending = act(
+            &mut gui,
+            &done,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        let prompt = &pending.fix_draft.as_ref().unwrap().prompt;
+        assert!(prompt.contains("Initial answer from Claude"));
+        assert!(prompt.contains("verify them"));
+        assert!(pending.handoff.is_none());
+    }
+
+    #[test]
+    fn fix_drafts_refuse_new_pr_commits_and_replaced_agent_sessions() {
+        let (_dir, mut gui, fake, view) = opened();
+        with_fix_session(&mut gui);
+        let pending = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: "fix-agent".into(),
+            },
+        );
+        assert!(
+            try_act(
+                &mut gui,
+                &pending,
+                PrTriageAction::ConfirmFixDraft { prompt: " ".into() }
+            )
+            .is_err()
+        );
+        let pending = poll(&mut gui, &pending.workflow_id).unwrap();
+        fake.state().head_sha = "b".repeat(40);
+        let error = try_act(
+            &mut gui,
+            &pending,
+            PrTriageAction::ConfirmFixDraft {
+                prompt: "Fix it".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("new commits"));
+        fake.state().head_sha = HEAD.into();
+        let pending = poll(&mut gui, &pending.workflow_id).unwrap();
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].sessions[0].tmux_window = "replacement".into();
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        let error = try_act(
+            &mut gui,
+            &pending,
+            PrTriageAction::ConfirmFixDraft {
+                prompt: "Fix it".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("session changed"));
+        let pending = poll(&mut gui, &pending.workflow_id).unwrap();
+        assert!(pending.fix_draft.is_some() && pending.handoff.is_none());
+        let cancelled = act(&mut gui, &pending, PrTriageAction::CancelFixDraft);
+        assert!(cancelled.fix_draft.is_none());
+        assert_eq!(comment_view(&cancelled, 101).triage, "untriaged");
     }
 
     #[test]

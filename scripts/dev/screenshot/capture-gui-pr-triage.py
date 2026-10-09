@@ -26,6 +26,9 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     with socket.socket() as inspector_socket:
         inspector_socket.bind(("127.0.0.1", 0))
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
+    fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1"
+    fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
+    fix_draft_proof = fix_draft_proof or fix_submit_proof
     config = scratch / "config"
     state = scratch / "state"
     repo = scratch / "demo-api"
@@ -65,6 +68,10 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     env["AMF_GUI_AI_CALLS"] = str(scratch / "ai-calls.jsonl")
     pathlib.Path(env["AMF_GUI_AI_CALLS"]).write_text("")
     env["AMF_TMUX_SOCKET"] = str(scratch / "private-tmux.sock")
+    env["AMF_GUI_FIX_PROMPTS"] = str(out / "submitted-fix.txt")
+    env["AMF_GUI_REPLY_BIN"] = str(workspace / "target/debug/amf")
+    if fix_submit_proof:
+        pathlib.Path(env["AMF_GUI_FIX_PROMPTS"]).unlink(missing_ok=True)
     # Claude discovery prefers HOME's native versions over PATH. Mount an
     # empty directory over them only inside this GUI's namespace, preserving
     # HOME and leaving the installed binaries untouched.
@@ -207,11 +214,15 @@ export function formatTotal(total: number): string {
                     "round-invoice-totals",
                     str(repo),
                     "amf-gui-shot-unused",
-                    "stopped",
+                    "running" if fix_submit_proof else "stopped",
                     stamp,
                     stamp,
                 ),
             )
+            if fix_draft_proof:
+                for index, harness in enumerate(["claude", "codex"]):
+                    db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
+                               (f"shot-{harness}", "shot-feature", harness, f"{harness.title()} 1", f"{harness}-1", stamp, index))
             version = db.execute(
                 "SELECT value FROM store_meta WHERE key='store_version'"
             ).fetchone()
@@ -219,10 +230,13 @@ export function formatTotal(total: number): string {
                 "INSERT OR REPLACE INTO store_meta (key,value) VALUES ('store_version',?)",
                 ((int(version[0]) if version else 0) + 1,),
             )
+        if fix_submit_proof:
+            subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "new-session", "-d", "-s", "amf-gui-shot-unused", "-n", "codex-1", f"/usr/bin/python3 {workspace}/scripts/dev/screenshot/fixtures/gui-pr-fix-agent.py"], env=env, check=True)
+            time.sleep(0.4)
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot/capture-gui-pr-triage-frames.py"),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -236,15 +250,17 @@ export function formatTotal(total: number): string {
                 db.execute(
                     "SELECT status FROM features WHERE id='shot-feature'"
                 ).fetchone()[0]
-                == "stopped"
+                == ("running" if fix_submit_proof else "stopped")
             )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == 0
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")
         shutil.copyfile(gh_state / "calls.jsonl", out / "gh-calls.jsonl")
     finally:
+        if fix_submit_proof:
+            subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "kill-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:
             if child and child.poll() is None:
                 os.killpg(child.pid, signal.SIGTERM)

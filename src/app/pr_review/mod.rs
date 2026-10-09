@@ -23,7 +23,8 @@ pub(crate) mod state;
 
 #[cfg(test)]
 mod tests;
-use actions::{new_fix_confirm, with_reply_draft_handoff};
+use actions::new_fix_confirm;
+pub(crate) use actions::with_reply_draft_handoff;
 pub(crate) use domain::AI_ATTRIBUTION_FOOTER;
 pub(crate) use domain::AI_REVIEW_ATTRIBUTION_FOOTER;
 pub(crate) use domain::AMF_ATTRIBUTION_FOOTER;

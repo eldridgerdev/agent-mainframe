@@ -728,6 +728,8 @@ pub(crate) fn image_worker() -> Result<ImagePermit> {
 mod tests {
     use super::*;
     fn owner(dir: &Path) -> EvidenceOwner {
+        // Production stores a canonical workdir; temp dirs are not one on macOS
+        // (`/var` is a symlink to `/private/var`), which `safe_path` rejects.
         EvidenceOwner {
             version: 1,
             scope_id: "scope".into(),
@@ -737,7 +739,7 @@ mod tests {
             project_name: "Project".into(),
             feature_name: "Feature".into(),
             session_label: "Claude 1".into(),
-            workdir: dir.to_path_buf(),
+            workdir: dir.canonicalize().unwrap(),
             is_worktree: false,
             created_at: Utc::now(),
         }

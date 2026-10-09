@@ -1121,7 +1121,7 @@ pub struct ReplyDraftRequest {
 }
 
 impl ReplyDraftRequest {
-    pub(super) fn new(comment_id: u64, base_head_sha: &str) -> Self {
+    pub(crate) fn new(comment_id: u64, base_head_sha: &str) -> Self {
         Self {
             comment_id,
             request_id: uuid::Uuid::new_v4().to_string(),

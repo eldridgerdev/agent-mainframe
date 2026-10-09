@@ -73,7 +73,8 @@ mod tests {
             project_name: "Project".into(),
             feature_name: "Feature".into(),
             session_label: "Codex 1".into(),
-            workdir: temp.path().to_path_buf(),
+            // Canonical, as production stores it: macOS temp dirs sit behind a symlink.
+            workdir: temp.path().canonicalize().unwrap(),
             is_worktree: false,
             created_at: chrono::Utc::now(),
         };

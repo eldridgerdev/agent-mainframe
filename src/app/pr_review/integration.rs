@@ -125,22 +125,7 @@ impl App {
             return;
         }
         let request = ReplyDraftRequest::new(comment.id, &state.review.pr.head_sha);
-        let touched = file_already_touched(comment, &state.review.comments);
-        let mut base = comment.fix_prompt_with_note(touched);
-        // If a read-only investigation of this comment already finished, hand
-        // its findings to the fixing agent as a starting point.
-        if let Some(findings) = state
-            .investigations
-            .iter()
-            .find(|r| r.comment_id == comment.id)
-            .and_then(investigation_findings_for_prompt)
-        {
-            base.push_str(
-                "\n\n--- A read-only investigation of this comment already ran. Use its \
-                 findings as a starting point, but verify them: ---\n",
-            );
-            base.push_str(&findings);
-        }
+        let base = state.fix_draft_prompt(comment);
         let prompt =
             with_reply_draft_handoff(base, state.review.pr.number, std::slice::from_ref(&request));
         let vim = state.fix_vim_enabled;
@@ -1120,5 +1105,29 @@ impl App {
             || delta.reasoning_tokens > 0
             || delta.total_tokens > 0)
             .then_some(delta)
+    }
+}
+
+impl crate::app::PrReviewState {
+    /// The shared single-comment instruction, without a delivery receipt or
+    /// reply-draft request. GUI composer drafts have not reached an agent yet.
+    pub(crate) fn fix_draft_prompt(&self, comment: &PrComment) -> String {
+        let touched = file_already_touched(comment, &self.review.comments);
+        let mut base = comment.fix_prompt_with_note(touched);
+        // If a read-only investigation of this comment already finished, hand
+        // its findings to the fixing agent as a starting point.
+        if let Some(findings) = self
+            .investigations
+            .iter()
+            .find(|r| r.comment_id == comment.id)
+            .and_then(investigation_findings_for_prompt)
+        {
+            base.push_str(
+                "\n\n--- A read-only investigation of this comment already ran. Use its \
+                 findings as a starting point, but verify them: ---\n",
+            );
+            base.push_str(&findings);
+        }
+        base
     }
 }

@@ -7,7 +7,7 @@ use anyhow::Result;
 /// in the fix confirmation dialog. Every built-in harness can run the hidden
 /// `amf reply-draft` CLI; the body travels over stdin and the command turns it
 /// into structured IPC, avoiding brittle terminal-output scraping.
-pub(super) fn with_reply_draft_handoff(
+pub(crate) fn with_reply_draft_handoff(
     mut prompt: String,
     pr_number: u32,
     requests: &[ReplyDraftRequest],
@@ -72,7 +72,7 @@ pub(super) fn new_fix_confirm(
 impl App {
     /// Persist one comment's triage state (with an optional note) to SQLite. A
     /// write failure is non-fatal (logged, not surfaced).
-    pub(super) fn persist_triage(
+    pub(crate) fn persist_triage(
         &mut self,
         pr_number: u32,
         head_sha: &str,

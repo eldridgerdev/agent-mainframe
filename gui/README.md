@@ -574,10 +574,20 @@ the updated prompt is shown instead. **Reply: fixed**, **Reply: not needed** and
 (with AMF's attribution) and destination, and only **Post reply to GitHub** writes.
 **Resolve thread…**/**Reopen thread…** also ask first. Before writing, AMF re-reads
 the PR head and the thread on GitHub and refuses stale targets, keeping your
-draft. Fix-target picking and agent fix injection, batch fixes, review memory,
-AI Review and keep-as-TODO remain in the TUI. Command and component tests cover
+draft. **Fix agent** selects an existing agent session on this feature (including
+stopped sessions). **Prepare fix…** builds the TUI's comment fix prompt, including
+completed investigation findings, and opens an editable preview. **Open in agent
+composer** rechecks the PR head and session identity, closes triage and appends
+the edited prompt to that agent's existing unsent draft. No agent is started or
+sent a message, and preparing a draft does not mark the comment Fixing. Edited
+text is protected on cancel/close and retained after failures. Dedicated or
+companion fix sessions, batch fixes, integration, review memory, AI Review,
+keep-as-TODO and fixing-agent reply receipts remain in the TUI. Command and component tests cover
 these flows; seven asserted native WSLg frames from `gui-pr-triage.txt` use an
-offline `gh` that refuses every write and offline harness fixtures.
+offline `gh` that refuses every write and offline harness fixtures. The
+`gui-pr-fix-drafts.txt` native scenario also covers agent picking, the shared
+investigation seed, edited-draft protection, stale-head refusal and an unsent
+handoff preserving an existing composer draft.
 
 ## Checks
 

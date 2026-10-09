@@ -5,7 +5,7 @@ import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
 import ScreenshotViewer from "./ScreenshotViewer";
 import type { ImageData } from "./screenshotsApi";
 import {
-  PrComment, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
+  PrComment, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
 import { Field, Modal, Spinner } from "./ui";
 
@@ -33,7 +33,7 @@ function hunkClass(line: string) {
 
 /** PR Triage: browse a pull request's review feedback and act on it. Every
  * GitHub write and AI call is shown first and needs an explicit confirmation. */
-export default function PrTriagePanel({ target, onClose }: { target: FeatureTarget; onClose: () => void }) {
+export default function PrTriagePanel({ target, onClose, onHandoff }: { target: FeatureTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
   const [view, setView] = useState<PrTriageView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +41,9 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
   const [numberDraft, setNumberDraft] = useState("");
   const [investigate, setInvestigate] = useState<{ commentId: number; harness: AgentSlug; text: string; followUp: boolean } | null>(null);
   const [reply, setReply] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [fixSessionId, setFixSessionId] = useState("");
+  const [fixPrompt, setFixPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [confirmDiscardFix, setConfirmDiscardFix] = useState(false);
   const [openImage, setOpenImage] = useState<{ image: ImageData; caption: string; identity: string } | null>(null);
   const imageTrigger = useRef<HTMLElement | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -78,6 +81,13 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     setReply((current) => current?.key === key ? current : { key, text: open.seed, seed: open.seed });
   }, [view?.reply?.comment_id, view?.reply?.kind]);
 
+  useEffect(() => {
+    const open = view?.fix_draft;
+    if (!open) { setFixPrompt(null); return; }
+    const key = `${view.workflow_id}:${open.comment_id}:${open.target.session_id}`;
+    setFixPrompt((current) => current?.key === key ? current : { key, text: open.prompt, seed: open.prompt });
+  }, [view?.workflow_id, view?.fix_draft]);
+
   const act = useCallback(async (action: PrTriageAction): Promise<boolean> => {
     if (!view || pending.current) return false;
     pending.current = true;
@@ -85,7 +95,10 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     try {
       const next = await prTriageAct(view, action);
       setError(null);
-      if (next === null) onClose(); else setView(next);
+      if (next === null) onClose(); else if (next.handoff) {
+        onHandoff?.(next.handoff);
+        onClose();
+      } else setView(next);
       return true;
     } catch (err) {
       setError(asGuiError(err).message);
@@ -96,7 +109,7 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
       pending.current = false;
       setBusy(false);
     }
-  }, [view, onClose]);
+  }, [view, onClose, onHandoff]);
 
   const review = view?.review ?? null;
   const imageIdentity = view && review ? `${view.workflow_id}:${review.number}:${review.head_sha}:${review.fetched_at}` : "";
@@ -118,8 +131,8 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     setInvestigate((current) => current && current.commentId !== selected?.id && !current.text.trim() ? null : current);
   }, [selected?.id]);
   const replyDirty = reply !== null && reply.text !== reply.seed;
-  const dirty = replyDirty || !!investigate?.text.trim();
-  const locked = busy || !!view?.precall || !!view?.write_confirm || review?.investigating != null;
+  const dirty = !!fixPrompt && fixPrompt.text !== fixPrompt.seed || replyDirty || !!investigate?.text.trim();
+  const locked = busy || !!view?.precall || !!view?.write_confirm || !!view?.fix_draft || review?.investigating != null;
   const close = () => {
     if (dirty) setConfirmClose(true);
     else if (view) void act({ kind: "close" }); else onClose();
@@ -144,9 +157,9 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
     <>
     <Modal label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
       title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
-      subtitle="Read review feedback, investigate it read-only, and reply. GitHub writes and AI calls always ask first.">
+      subtitle="Read review feedback, investigate it, prepare or send an agent fix, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <div className="callout callout-warning" role="alert">
-        <p>Discard your unsent reply or investigation text and close PR Triage?</p>
+        <p>Discard your unsent fix, reply or investigation text and close PR Triage?</p>
         <button className="btn btn-secondary" onClick={() => setConfirmClose(false)}>Keep editing</button>
         <button className="btn btn-warning" disabled={busy} onClick={() => void act({ kind: "close" })}>Discard and close</button>
       </div>}
@@ -237,6 +250,32 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
           <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_write" })}>Cancel</button>
         </section>}
 
+        {view?.fix_draft && fixPrompt && <section className="review-editor" aria-label="Fix draft" ref={reveal}>
+          <p>Prepare a fix prompt for <strong>{view.fix_targets.find((t) => t.target.session_id === view.fix_draft!.target.session_id)?.label ?? "the selected agent"}</strong>.
+            Open it in the agent composer to review and send it yourself (existing unsent text is kept), or preview and send it straight to the running agent. No agent starts and nothing posts to GitHub.</p>
+          <Field label="Fix prompt"><textarea rows={8} value={fixPrompt.text} disabled={busy || !!view.fix_draft.submission_prompt}
+            onChange={(event) => setFixPrompt({ ...fixPrompt, text: event.target.value })} /></Field>
+          <button className="btn btn-primary" disabled={busy || !!view.fix_draft.submission_prompt || !fixPrompt.text.trim() || !onHandoff}
+            onClick={() => void act({ kind: "confirm_fix_draft", prompt: fixPrompt.text })}>Open in agent composer</button>
+          {!view.fix_draft.submission_prompt && <button className="btn btn-secondary" disabled={busy || !fixPrompt.text.trim()}
+            onClick={() => void act({ kind: "prepare_fix_submission", prompt: fixPrompt.text })}>Preview send to agent…</button>}
+          {view.fix_draft.submission_prompt && <div role="alertdialog" aria-label="Send fix to agent" className="review-confirm">
+            <p>Send this exact prompt to the selected running agent and mark the comment Fixing? This clears its terminal input line. It asks the agent to return a reply draft; nothing posts to GitHub.</p>
+            <pre className="doc pr-posted">{view.fix_draft.submission_prompt}</pre>
+            <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "confirm_fix_submission" })}>Send fix to agent</button>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_fix_submission" })}>Back to fix prompt</button>
+          </div>}
+          <button className="btn btn-secondary" disabled={busy} onClick={() => {
+            if (fixPrompt.text !== fixPrompt.seed) setConfirmDiscardFix(true);
+            else void act({ kind: "cancel_fix_draft" });
+          }}>Cancel fix draft</button>
+          {confirmDiscardFix && <div role="alertdialog" aria-label="Discard edited fix prompt" className="callout callout-warning">
+            <p>Discard your edited fix prompt?</p>
+            <button className="btn btn-secondary" onClick={() => setConfirmDiscardFix(false)}>Keep editing</button>
+            <button className="btn btn-warning" disabled={busy} onClick={() => { setConfirmDiscardFix(false); void act({ kind: "cancel_fix_draft" }); }}>Discard fix prompt</button>
+          </div>}
+        </section>}
+
         {review.investigating != null && <div className="callout callout-accent" role="status">
           <p className="row"><Spinner /> Investigating comment read-only with {review.investigating_harness}…</p>
           <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void act({ kind: "cancel_investigation" })}>Cancel investigation</button>
@@ -272,6 +311,20 @@ export default function PrTriagePanel({ target, onClose }: { target: FeatureTarg
               {selected.hunk.split("\n").map((line, i) => <code key={i} className={hunkClass(line)}>{line}{"\n"}</code>)}
             </pre>}
             <div className="pr-body"><PrMarkdown source={selected.body} workflowId={view!.workflow_id} identity={imageIdentity} onOpenImage={showImage} /></div>
+            {selected.actionable && !selected.local_finding && onHandoff && <div className="pr-actions">
+              {view!.fix_targets.length > 0 ? <>
+                <Field label="Fix agent">
+                  <select value={view!.fix_targets.some((t) => t.target.session_id === fixSessionId) ? fixSessionId : view!.fix_targets[0].target.session_id}
+                    disabled={locked || view?.reply != null || investigate !== null}
+                    onChange={(event) => setFixSessionId(event.target.value)}>
+                    {view!.fix_targets.map((t) => <option key={t.target.session_id} value={t.target.session_id}>{t.label}{t.stopped ? " (stopped)" : ""}</option>)}
+                  </select>
+                </Field>
+                <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null}
+                  onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id,
+                    session_id: view!.fix_targets.some((t) => t.target.session_id === fixSessionId) ? fixSessionId : view!.fix_targets[0].target.session_id })}>Prepare fix…</button>
+              </> : <p className="small muted">Add an agent session to this feature to prepare a fix draft.</p>}
+            </div>}
             {selected.actionable && !selected.local_finding && <div className="pr-actions">
               <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "toggle_done", comment_id: selected.id })}>
                 {selected.triage === "done" ? "Clear done" : "Mark done (local)"}</button>

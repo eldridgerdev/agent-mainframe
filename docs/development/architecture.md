@@ -87,6 +87,16 @@ two-step: the adapter records the exact prompt or posted body, and confirmation
 re-reads the PR (head, metadata or thread) before calling the shared engine.
 `try_pr_review_post_reply`/`try_pr_review_toggle_resolve` return failures instead
 of the TUI's dashboard reset, so the GUI keeps the pane and draft.
+Existing-agent fix submission uses the TUI's receipt-prompt builder and stored
+provenance, with an exact-prompt confirmation and fresh PR/session checks.
+`TmuxOps` delivers a bracketed paste only to an existing running window; sending
+never creates an agent. Successful Enter marks Fixing through the shared
+persistence path. A failed Enter retires the confirmation while keeping the fix
+editor because terminal delivery can be ambiguous. `amf reply-draft` first sends
+to the TUI socket, then falls back to the same SQLite request-id capture guard
+when that socket is unavailable. The GUI's existing Done-reply engine reads the
+returned draft and its fixing-session attribution; no GUI IPC socket or schema
+is added.
 
 `app/review/checks.rs` owns the shared build/test runner: it drains both output
 streams while retaining bounded text and terminates/reaps owned processes on

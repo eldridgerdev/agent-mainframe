@@ -211,6 +211,78 @@ pub fn begin_reply_draft(
     Ok(())
 }
 
+/// The whole reply-draft row as it stood before a [`begin_reply_draft`], so a
+/// request that never reaches the agent can put it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyDraftSnapshot {
+    request_id: String,
+    body: Option<String>,
+    updated_at: String,
+    base_head_sha: String,
+    provenance: Option<String>,
+}
+
+/// Snapshot the row for one comment, or `None` when it has no request yet.
+pub fn snapshot_reply_draft(
+    conn: &Connection,
+    pr_number: u32,
+    comment_id: u64,
+) -> Result<Option<ReplyDraftSnapshot>> {
+    Ok(conn
+        .query_row(
+            "SELECT request_id, body, updated_at, base_head_sha, provenance
+             FROM pr_comment_reply_drafts
+             WHERE pr_number = ?1 AND comment_id = ?2",
+            params![pr_number as i64, comment_id as i64],
+            |row| {
+                Ok(ReplyDraftSnapshot {
+                    request_id: row.get(0)?,
+                    body: row.get(1)?,
+                    updated_at: row.get(2)?,
+                    base_head_sha: row.get(3)?,
+                    provenance: row.get(4)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// Undo a [`begin_reply_draft`] whose prompt never reached the agent. Only
+/// touches the row while it still carries `request_id`, so a newer request is
+/// never rolled back.
+pub fn restore_reply_draft(
+    conn: &Connection,
+    pr_number: u32,
+    comment_id: u64,
+    request_id: &str,
+    prior: Option<&ReplyDraftSnapshot>,
+) -> Result<()> {
+    match prior {
+        None => conn.execute(
+            "DELETE FROM pr_comment_reply_drafts
+             WHERE pr_number = ?1 AND comment_id = ?2 AND request_id = ?3",
+            params![pr_number as i64, comment_id as i64, request_id],
+        )?,
+        Some(prior) => conn.execute(
+            "UPDATE pr_comment_reply_drafts
+             SET request_id = ?4, body = ?5, updated_at = ?6, base_head_sha = ?7,
+                 provenance = ?8
+             WHERE pr_number = ?1 AND comment_id = ?2 AND request_id = ?3",
+            params![
+                pr_number as i64,
+                comment_id as i64,
+                request_id,
+                prior.request_id,
+                prior.body,
+                prior.updated_at,
+                prior.base_head_sha,
+                prior.provenance
+            ],
+        )?,
+    };
+    Ok(())
+}
+
 /// Store the agent's reply only when it belongs to the comment's latest fix
 /// request. Returns `false` for an expired/unknown request id.
 pub fn capture_reply_draft(
@@ -430,6 +502,31 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn restoring_a_reply_draft_only_undoes_its_own_request() {
+        let (_tmp, db) = open_temp_db();
+        assert_eq!(db.snapshot_pr_comment_reply_draft(7, 11).unwrap(), None);
+        db.begin_pr_comment_reply_draft(7, 11, "a", "sha", None)
+            .unwrap();
+        db.restore_pr_comment_reply_draft(7, 11, "a", None).unwrap();
+        assert_eq!(db.snapshot_pr_comment_reply_draft(7, 11).unwrap(), None);
+
+        db.begin_pr_comment_reply_draft(7, 11, "a", "sha-a", Some("p"))
+            .unwrap();
+        db.capture_pr_comment_reply_draft(7, 11, "a", "Body A")
+            .unwrap();
+        let prior = db.snapshot_pr_comment_reply_draft(7, 11).unwrap();
+        db.begin_pr_comment_reply_draft(7, 11, "b", "sha-b", None)
+            .unwrap();
+        // A restore keyed to a request that is no longer current is a no-op.
+        db.restore_pr_comment_reply_draft(7, 11, "stale", prior.as_ref())
+            .unwrap();
+        assert_eq!(db.load_pr_comment_reply_draft(7, 11).unwrap(), None);
+        db.restore_pr_comment_reply_draft(7, 11, "b", prior.as_ref())
+            .unwrap();
+        assert_eq!(db.snapshot_pr_comment_reply_draft(7, 11).unwrap(), prior);
     }
 
     #[test]

@@ -12,6 +12,7 @@ const target = { project_id: "project", feature_id: "feature" };
 const base: PrTriageView = {
   workflow_id: "triage", revision: 1, target, feature_name: "Round totals", branch: "round-totals",
   stage: "pick", loading_pr: null, review: null, precall: null, reply: null, write_confirm: null,
+  fix_targets: [], fix_draft: null, handoff: null,
   harnesses: ["claude", "codex"], default_harness: "claude", error: null, notice: null,
   picker: { include_closed: false, error: null, branch_pr: 12, loading: false, entries: [
     { number: 12, title: "Round invoice totals", author: "dev", head_ref: "round-totals", updated_at: "", is_draft: false, state: "OPEN", mine: true },
@@ -178,7 +179,7 @@ it("keeps the reply draft local, shows the exact posted text and posts only on c
   fireEvent.change(editor, { target: { value: "Guarded upstream." } });
   // Closing with an unsent draft asks first.
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  expect(screen.getByText(/Discard your unsent reply/)).toBeTruthy();
+  expect(screen.getByText(/Discard your unsent fix, reply/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
   fireEvent.click(screen.getByRole("button", { name: "Review reply…" }));
   const confirm = await screen.findByRole("alertdialog", { name: "Confirm GitHub write" });
@@ -231,6 +232,107 @@ it("asks before resolving a thread and offers cancelling a running investigation
   expect(await screen.findByText(/Investigating comment read-only with claude/)).toBeTruthy();
   expect((screen.getByRole("button", { name: "Mark done (local)" }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByRole("button", { name: "Cancel investigation" })).toBeTruthy();
+});
+
+const fixTargets = [
+  { target: { ...target, session_id: "claude-1" }, label: "Claude 1", harness: "claude" as const, stopped: true },
+  { target: { ...target, session_id: "codex-1" }, label: "Codex 1", harness: "codex" as const, stopped: false },
+];
+const fixView: PrTriageView = { ...review, fix_targets: fixTargets };
+const fixDraft: PrTriageView = { ...fixView, revision: 4,
+  fix_draft: { comment_id: 1, target: fixTargets[1].target, prompt: "Fix the negative rounding concern. Verify the read-only findings." },
+};
+
+it("chooses an agent and confirms an edited fix as one unsent composer handoff", async () => {
+  const handoff = vi.fn(); const close = vi.fn();
+  backend(fixView, (action) => action.kind === "start_fix_draft" ? fixDraft : action.kind === "confirm_fix_draft"
+    ? { ...fixView, handoff: { target: fixTargets[1].target, draft_prompt: action.prompt } } : fixView);
+  render(<PrTriagePanel target={target} onClose={close} onHandoff={handoff} />);
+  fireEvent.change(await screen.findByRole("combobox", { name: "Fix agent" }), { target: { value: "codex-1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Prepare fix…" }));
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  expect(actions()[0].action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "codex-1" });
+  expect(handoff).not.toHaveBeenCalled();
+  fireEvent.change(prompt, { target: { value: "Edited fix instructions" } });
+  const confirm = screen.getByRole("button", { name: "Open in agent composer" });
+  fireEvent.click(confirm); fireEvent.click(confirm);
+  await waitFor(() => expect(handoff).toHaveBeenCalledExactlyOnceWith({ target: fixTargets[1].target, draft_prompt: "Edited fix instructions" }));
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(actions()[1]).toMatchObject({ revision: 4, action: { kind: "confirm_fix_draft", prompt: "Edited fix instructions" } });
+});
+
+it("keeps edited fix text after a stale-head refusal and guards cancellation", async () => {
+  backend(fixDraft, (action) => { if (action.kind === "confirm_fix_draft") throw { kind: "conflict", message: "PR has new commits; your draft is kept" }; return fixView; }, () => ({ ...fixDraft, revision: 5 }));
+  const handoff = vi.fn();
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={handoff} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  fireEvent.change(prompt, { target: { value: "My edited instructions" } });
+  fireEvent.click(screen.getByRole("button", { name: "Open in agent composer" }));
+  await screen.findByText("PR has new commits; your draft is kept");
+  expect((screen.getByRole("textbox", { name: "Fix prompt" }) as HTMLTextAreaElement).value).toBe("My edited instructions");
+  expect(handoff).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel fix draft" }));
+  const discard = screen.getByRole("alertdialog", { name: "Discard edited fix prompt" });
+  fireEvent.click(within(discard).getByRole("button", { name: "Keep editing" }));
+  expect(screen.queryByRole("alertdialog", { name: "Discard edited fix prompt" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel fix draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard fix prompt" }));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Fix prompt" })).toBeNull());
+  expect(actions().at(-1)?.action).toEqual({ kind: "cancel_fix_draft" });
+});
+
+it("blocks other triage actions during a fix draft and protects edited text on close", async () => {
+  backend(fixDraft, () => fixView);
+  const close = vi.fn();
+  render(<PrTriagePanel target={target} onClose={close} onHandoff={vi.fn()} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  expect((screen.getByRole("button", { name: "Refresh comments" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Investigate…" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(prompt, { target: { value: "Unsaved fix" } });
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(await screen.findByText(/Discard your unsent fix, reply or investigation text/)).toBeTruthy();
+  expect(close).not.toHaveBeenCalled();
+});
+
+it("explains how to get a fix target when a feature has no agent sessions", async () => {
+  backend(review, () => review);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  expect(await screen.findByText("Add an agent session to this feature to prepare a fix draft.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Prepare fix…" })).toBeNull();
+});
+
+it("previews the receipt-bearing prompt and requires explicit send without closing triage", async () => {
+  const close = vi.fn(); const handoff = vi.fn();
+  const preview = { ...fixDraft, revision: 5, fix_draft: { ...fixDraft.fix_draft!, submission_prompt: "Edited instruction\n\namf reply-draft --request-id current" } };
+  backend(fixDraft, action => action.kind === "prepare_fix_submission" ? preview : { ...fixView, revision: 6, notice: "Fix sent to the agent." });
+  render(<PrTriagePanel target={target} onClose={close} onHandoff={handoff} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  fireEvent.change(prompt, { target: { value: "Edited instruction" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Send fix to agent" });
+  expect(confirm.textContent).toContain("amf reply-draft --request-id current");
+  expect(actions()[0].action).toEqual({ kind: "prepare_fix_submission", prompt: "Edited instruction" });
+  expect((prompt as HTMLTextAreaElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Open in agent composer" }) as HTMLButtonElement).disabled).toBe(true);
+  const send = within(confirm).getByRole("button", { name: "Send fix to agent" });
+  fireEvent.click(send); fireEvent.click(send);
+  await screen.findByText("Fix sent to the agent.");
+  expect(actions().filter(a => a.action.kind === "confirm_fix_submission")).toHaveLength(1);
+  expect(close).not.toHaveBeenCalled(); expect(handoff).not.toHaveBeenCalled();
+});
+
+it("cancels submission preview while retaining the edited fix prompt", async () => {
+  const preview = { ...fixDraft, fix_draft: { ...fixDraft.fix_draft!, submission_prompt: "Exact prompt with receipt" } };
+  backend(fixDraft, action => action.kind === "prepare_fix_submission" ? preview : fixDraft);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
+  fireEvent.change(prompt, { target: { value: "Keep my edited instruction" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Back to fix prompt" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Send fix to agent" })).toBeNull());
+  expect((prompt as HTMLTextAreaElement).value).toBe("Keep my edited instruction");
+  expect((prompt as HTMLTextAreaElement).disabled).toBe(false);
+  expect(actions().at(-1)?.action.kind).toBe("cancel_fix_submission");
 });
 
 it("shows uploaded images in the description, selected comment and replies without a gallery", async () => {

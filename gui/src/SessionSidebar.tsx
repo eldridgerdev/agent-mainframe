@@ -8,7 +8,7 @@ import {
   type SessionPlanView, type SessionSidebarSection, type SidebarAction, type SidebarContextMeter,
   type SidebarLine,
 } from "./sessionSidebarApi";
-import { useSidebarCollapsed } from "./sidebarPrefs";
+import { useSidebarCollapsed, useSidebarShortcut } from "./sidebarPrefs";
 import { Icon, Modal, Spinner } from "./ui";
 import "./sessionSidebar.css";
 
@@ -46,6 +46,7 @@ export default function SessionSidebar({
   onFreshSession: (target: SessionTarget, draft: string) => void;
 }) {
   const [collapsed, setCollapsed] = useSidebarCollapsed("sessionSidebar");
+  useSidebarShortcut("sessionSidebar", () => setCollapsed(!collapsed));
   const sidebar = useQuery({
     queryKey: sessionSidebarKey(target),
     queryFn: () => sessionSidebar(target),
@@ -64,7 +65,7 @@ export default function SessionSidebar({
           className="agent-sidebar-rail"
           aria-label="Show agent sidebar"
           aria-expanded={false}
-          title="Show agent sidebar"
+          title="Show agent sidebar (Alt+Shift+A outside terminal and text inputs)"
           onClick={() => setCollapsed(false)}
         >
           <span className="agent-sidebar-flip"><Icon name="chevronRight" size={14} /></span>
@@ -95,7 +96,7 @@ export default function SessionSidebar({
           className="btn btn-ghost btn-icon btn-sm"
           aria-label="Hide agent sidebar"
           aria-expanded
-          title="Hide agent sidebar"
+          title="Hide agent sidebar (Alt+Shift+A outside terminal and text inputs)"
           onClick={() => setCollapsed(true)}
         >
           <Icon name="chevronRight" size={14} />

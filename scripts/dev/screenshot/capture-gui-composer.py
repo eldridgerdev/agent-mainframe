@@ -26,14 +26,20 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-composer-") as temporary:
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
     config = scratch / "config"
     state = scratch / "state"
+    data = scratch / "data"
+    cache = scratch / "cache"
     repo = scratch / "demo-api"
     (config / "amf").mkdir(parents=True)
     (state / "amf").mkdir(parents=True)
+    data.mkdir()
+    cache.mkdir()
     repo.mkdir()
     env = os.environ.copy()
     env.update(
         XDG_CONFIG_HOME=str(config),
         XDG_STATE_HOME=str(state),
+        XDG_DATA_HOME=str(data),
+        XDG_CACHE_HOME=str(cache),
         GDK_BACKEND="x11",
         WEBKIT_INSPECTOR_HTTP_SERVER=inspector_address,
         AMF_TMUX_SOCKET=str(scratch / "composer-tmux.sock"),

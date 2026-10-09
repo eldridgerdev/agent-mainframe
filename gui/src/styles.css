@@ -132,6 +132,13 @@ kbd {
   border-right: 1px solid var(--border);
 }
 
+.sidebar-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sidebar-content[hidden] { display: none; }
+.projects-sidebar-toggle { margin-left: auto; flex-shrink: 0; }
+.sidebar.sidebar-collapsed { width: 34px; }
+.sidebar-collapsed .brand { padding: 12px 2px; }
+.sidebar-collapsed .projects-sidebar-toggle { margin: 0; }
+
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 .brand {
@@ -1119,7 +1126,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .precall { display: flex; flex-direction: column; gap: 12px; }
 
 @media (max-width: 760px) {
-  .sidebar { width: 200px; }
+  .sidebar { width: min(200px, 40vw); }
   .page-header { padding: 16px 16px 12px; flex-wrap: wrap; }
   .page-body { padding: 0 16px 16px; }
   .session { padding: 10px 12px 12px; }

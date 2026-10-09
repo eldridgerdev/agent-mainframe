@@ -50,6 +50,21 @@ Keep them current as the staged GUI scope grows.
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
 
+Terminal input reliability (2026-10-09): the shared tmux command encoder
+preserves literal `$HOME`/`${name}` text in control-mode input. GUI terminals,
+TUI input batches, remote input and composer slash commands share this path;
+regular composer messages already use paste buffers. Real-tmux byte regressions
+exercise both direct arguments and the control command parser on private servers,
+including variables, quotes, backslashes, format-looking text, Unicode and control
+bytes. All 30 focused tmux tests, the full parallel Rust workspace suite
+(3,457 library and seven GUI-crate tests; one pre-existing test ignored),
+formatting and strict Clippy pass. Two asserted, visually inspected native
+frames show the expected text and the exact received bytes; a command audit
+refuses direct-input fallback. Reproduce with
+[`gui-literal-input.txt`](../../scripts/dev/screenshot/scenarios/gui-literal-input.txt).
+The capture uses offline raw receivers and starts no AI. Broader settings
+coverage remains open.
+
 Native GUI diff proof is reproducible with
 [`gui-standalone-diffs.txt`](../../scripts/dev/screenshot/scenarios/gui-standalone-diffs.txt).
 It uses an isolated Git checkout/database and starts no agent. The same scenario

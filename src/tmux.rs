@@ -1095,6 +1095,9 @@ impl TmuxManager {
         )
     }
 
+    // Control-mode commands go through tmux's parser, which expands variables
+    // inside double quotes. Escape dollars as well as quotes/backslashes so
+    // text and targets reach tmux literally; keep control bytes on one line.
     fn tmux_command_quote(value: &str) -> String {
         let mut quoted = String::with_capacity(value.len() + 2);
         quoted.push('"');
@@ -1102,6 +1105,7 @@ impl TmuxManager {
             match ch {
                 '\\' => quoted.push_str("\\\\"),
                 '"' => quoted.push_str("\\\""),
+                '$' => quoted.push_str("\\$"),
                 '\n' => quoted.push_str("\\n"),
                 '\r' => quoted.push_str("\\r"),
                 '\t' => quoted.push_str("\\t"),
@@ -2605,6 +2609,134 @@ mod tests {
             TmuxManager::refresh_client_pane_command("%12", "on"),
             "refresh-client -A \"%12:on\"\n"
         );
+    }
+
+    /// Use a private server and a raw byte sink: shell quoting or pane echo
+    /// could hide input corruption, and the process-wide transport selection
+    /// could silently choose direct input instead of the control parser.
+    #[cfg(unix)]
+    fn assert_literal_input_round_trip(control: bool) {
+        use std::io::Write;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        struct Server {
+            dir: TempDir,
+            client: Option<Child>,
+        }
+        impl Server {
+            fn command(&self) -> Command {
+                let mut command = Command::new(&TmuxManager::runtime().binary);
+                command.arg("-S").arg(self.dir.path().join("tmux.sock"));
+                command.env_remove("TMUX").env_remove("TMUX_PANE");
+                command
+            }
+        }
+        impl Drop for Server {
+            fn drop(&mut self) {
+                if let Some(client) = &mut self.client {
+                    let _ = client.kill();
+                    let _ = client.wait();
+                }
+                let _ = self.command().arg("kill-server").output();
+            }
+        }
+
+        let mut server = Server {
+            dir: tempfile::tempdir().unwrap(),
+            client: None,
+        };
+        let received = server.dir.path().join("received");
+        let ready = server.dir.path().join("ready");
+        let done = server.dir.path().join("done");
+        let text = "$HOME ${x} $UNSET_AMF_LITERAL_TEST \\ \" ' #{pane_id}\n\r\t\u{1b}[A 世界; display-message injected";
+        let fixture = format!(
+            "stty raw -echo; touch {}; dd bs=1 count={} of={} 2>/dev/null; touch {}; exec sleep 30",
+            TmuxManager::shell_quote(ready.to_str().unwrap()),
+            text.len(),
+            TmuxManager::shell_quote(received.to_str().unwrap()),
+            TmuxManager::shell_quote(done.to_str().unwrap()),
+        );
+        let output = server
+            .command()
+            .args([
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-s",
+                "literal",
+                "-n",
+                "main",
+                &fixture,
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "raw input sink did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        if control {
+            let client = server
+                .command()
+                .args(["-C", "attach-session", "-t", "literal"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            server.client = Some(client);
+            let command = format!(
+                "send-keys -t {} -l {}\n",
+                TmuxManager::tmux_command_quote("literal:main"),
+                TmuxManager::tmux_command_quote(text),
+            );
+            server
+                .client
+                .as_mut()
+                .unwrap()
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(command.as_bytes())
+                .unwrap();
+        } else {
+            let output = server
+                .command()
+                .args(["send-keys", "-t", "literal:main", "-l", text])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "literal input was truncated: {:?}",
+                fs::read(&received),
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(fs::read(&received).unwrap(), text.as_bytes());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn control_input_preserves_literal_variables_quotes_and_raw_bytes() {
+        assert_literal_input_round_trip(true);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn direct_input_preserves_literal_variables_quotes_and_raw_bytes() {
+        assert_literal_input_round_trip(false);
     }
 
     #[test]

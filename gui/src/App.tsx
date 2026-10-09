@@ -79,6 +79,7 @@ import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
+import type { PrTriageTarget } from "./prTriageApi";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
@@ -113,6 +114,7 @@ import {
   Toasts,
 } from "./ui";
 
+const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
@@ -257,7 +259,8 @@ export default function App() {
     else proceed();
   }
   const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
-  const [prTriageTarget, setPrTriageTarget] = useState<FeatureTarget | null>(null);
+  const [prReviewProject, setPrReviewProject] = useState<string | null>(null);
+  const [prTriageTarget, setPrTriageTarget] = useState<PrTriageTarget | null>(null);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -333,8 +336,9 @@ export default function App() {
 
   useEffect(() => {
     if (!workspace.data) return;
-    const exists = (target: FeatureTarget) => projects.some((project) =>
-      project.id === target.project_id && project.features.some((feature) => feature.id === target.feature_id));
+    const exists = (target: PrTriageTarget) => projects.some((project) =>
+      project.id === target.project_id &&
+      (target.feature_id == null || project.features.some((feature) => feature.id === target.feature_id)));
     if (screenshotTarget?.target && !exists(screenshotTarget.target)) setScreenshotTarget(null);
     if (prTriageTarget && !exists(prTriageTarget)) setPrTriageTarget(null);
   }, [workspace.data, projects, screenshotTarget, prTriageTarget]);
@@ -1221,6 +1225,9 @@ export default function App() {
         }} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
+      {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>
+        <PrReviewPanel key={prReviewProject} projectId={prReviewProject} onClose={() => setPrReviewProject(null)} />
+      </Suspense>}
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
@@ -1270,6 +1277,8 @@ export default function App() {
             onOpenFeature={(feature) =>
               setView({ kind: "feature", projectId: selectedProject.id, featureId: feature.id })}
             onNewFeature={() => setCreateFeatureFor(selectedProject.id)}
+            onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
+            onPrReview={() => setPrReviewProject(selectedProject.id)}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "project", project_id: selectedProject.id }}
@@ -1720,6 +1729,8 @@ function ProjectView({
   lifecycle,
   onOpenFeature,
   onNewFeature,
+  onPrTriage,
+  onPrReview,
   todoPanel,
 }: {
   project: Project;
@@ -1728,6 +1739,8 @@ function ProjectView({
   lifecycle: (feature: Feature) => Lifecycle;
   onOpenFeature: (feature: Feature) => void;
   onNewFeature: () => void;
+  onPrTriage: () => void;
+  onPrReview: () => void;
   todoPanel: ReactNode;
 }) {
   const running = project.features.filter((feature) => feature.status !== "stopped").length;
@@ -1743,9 +1756,17 @@ function ProjectView({
           </>
         }
         actions={
-          <button className="btn btn-primary" onClick={onNewFeature}>
-            <Icon name="plus" /> New feature
-          </button>
+          <>
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
+              <Icon name="inbox" size={12} /> PR Triage
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrReview}>
+              <Icon name="file" size={12} /> PR Review
+            </button>}
+            <button className="btn btn-primary" onClick={onNewFeature}>
+              <Icon name="plus" /> New feature
+            </button>
+          </>
         }
       />
       <div className="page-body project-grid">

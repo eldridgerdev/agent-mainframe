@@ -777,7 +777,8 @@ it("opens PR Triage from a Git feature without starting it and closes through it
     return original(command, args, options);
   });
   fireEvent.click(screen.getByRole("button", { name: "PR Triage", exact: true }));
-  await screen.findByText(/No open pull requests/);
+  // The PR reader loads its Markdown dependencies on first use.
+  await screen.findByText(/No open pull requests/, {}, { timeout: 5000 });
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_triage_begin", { target: { project_id: "project", feature_id: "feature" } });
   fireEvent.click(within(screen.getByRole("dialog", { name: "PR Triage" })).getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "PR Triage" })).toBeNull());
@@ -964,5 +965,40 @@ it("opens debug history from workspace navigation and preserves the session draf
   expect(screen.queryByRole("dialog", { name: "Debug log" })).toBeNull();
   expect(draftInput().value).toBe("Keep this unsent");
   expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a feature", async (label) => {
+  const client = await openFeature([], [], "stopped", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "pr_triage_begin") return Promise.resolve({
+      workflow_id: "triage-project", revision: 0, target: { project_id: "project", feature_id: null },
+      feature_name: "demo", stage: "pick", picker: { entries: [], loading: false, include_closed: false, error: null, branch_pr: null },
+      review: null, harnesses: [], fix_targets: [],
+    });
+    if (command === "pr_review_begin") return Promise.resolve({
+      workflow_id: "review-project", revision: 0, project_name: "demo", stage: "pick", entries: [], loading: false, files: [], summary: "", submission: null,
+    });
+    return original(command, args, options);
+  });
+  // A project with no features still offers both repository workflows.
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  await act(async () => { client.setQueryData(["workspace-snapshot"], { ...snapshot, projects: [{ ...snapshot.projects[0], features: [] }] }); });
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: label, exact: true }));
+  expect(await screen.findByRole("dialog", { name: label })).toBeTruthy();
+  expect(screen.getByRole("region", { name: "Choose a pull request" })).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith(label === "PR Triage" ? "pr_triage_begin" : "pr_review_begin",
+    label === "PR Triage" ? { target: { project_id: "project" } } : { projectId: "project" });
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "review_begin")).toBe(false);
+  client.clear();
+});
+
+it("hides project PR actions for ordinary directories", async () => {
+  const client = await openFeature([]);
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  expect(screen.queryByRole("button", { name: "PR Triage" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "PR Review" })).toBeNull();
   client.clear();
 });

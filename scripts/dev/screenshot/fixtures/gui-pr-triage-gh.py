@@ -80,6 +80,13 @@ PRS = [
      "headRefName": "initial-api", "updatedAt": "2026-09-30T12:00:00Z", "isDraft": False, "state": "MERGED"},
 ]
 
+# The manual-review picker also asks for pinned head/base metadata.
+for pr in PRS:
+    pr.update(baseRefName="main", headRefOid=HEAD, isCrossRepository=False,
+              headRepositoryOwner={"login": OWNER})
+if args[:2] == ["repo", "view"]:
+    print(f"https://github.com/{OWNER}/{REPO}")
+    raise SystemExit(0)
 if args == ["--version"]:
     print("gh version 2.62.0 (offline screenshot fixture)")
     raise SystemExit(0)

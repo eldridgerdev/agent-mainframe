@@ -26,6 +26,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     with socket.socket() as inspector_socket:
         inspector_socket.bind(("127.0.0.1", 0))
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
+    project_pr_proof = os.environ.get("AMF_GUI_PROJECT_PR_PROOF") == "1"
+    frontend_port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1"
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     fix_draft_proof = fix_draft_proof or fix_submit_proof
@@ -145,14 +147,14 @@ export function formatTotal(total: number): string {
     (repo / ".git/amf-gui-pr-triage-fixture").write_text("offline fixture")
     # Do not accidentally capture a different Vite server on the pinned port.
     try:
-        with socket.create_connection(("localhost", 1420), timeout=1):
-            raise RuntimeError("Port 1420 is already in use by another process")
+        with socket.create_connection(("localhost", frontend_port), timeout=1):
+            raise RuntimeError(f"Port {frontend_port} is already in use by another process")
     except OSError:
         pass
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
-        ["npm", "run", "dev"],
+        ["npm", "run", "dev", "--", "--port", str(frontend_port)],
         cwd=workspace / "gui",
         stdout=vite_log,
         stderr=subprocess.STDOUT,
@@ -166,7 +168,7 @@ export function formatTotal(total: number): string {
                     "The isolated Vite server failed; ensure port 1420 is free"
                 )
             try:
-                with urllib.request.urlopen("http://localhost:1420/", timeout=1):
+                with urllib.request.urlopen(f"http://localhost:{frontend_port}/", timeout=1):
                     break
             except OSError:
                 time.sleep(0.25)
@@ -205,20 +207,21 @@ export function formatTotal(total: number): string {
                 "INSERT INTO projects(id,name,repo,is_git,created_at) VALUES(?,?,?,?,?)",
                 ("shot-project", "Invoice API", str(repo), 1, stamp),
             )
-            db.execute(
-                "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed) VALUES(?,?,?,?,?,?,?,?,?)",
-                (
-                    "shot-feature",
-                    "shot-project",
-                    "Round invoice totals",
-                    "round-invoice-totals",
-                    str(repo),
-                    "amf-gui-shot-unused",
-                    "running" if fix_submit_proof else "stopped",
-                    stamp,
-                    stamp,
-                ),
-            )
+            if not project_pr_proof:
+                db.execute(
+                    "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        "shot-feature",
+                        "shot-project",
+                        "Round invoice totals",
+                        "round-invoice-totals",
+                        str(repo),
+                        "amf-gui-shot-unused",
+                        "running" if fix_submit_proof else "stopped",
+                        stamp,
+                        stamp,
+                    ),
+                )
             if fix_draft_proof:
                 for index, harness in enumerate(["claude", "codex"]):
                     db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
@@ -236,7 +239,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -246,12 +249,15 @@ export function formatTotal(total: number): string {
             check=True,
         )
         with sqlite3.connect(dbpath) as db:
-            assert (
-                db.execute(
-                    "SELECT status FROM features WHERE id='shot-feature'"
-                ).fetchone()[0]
-                == ("running" if fix_submit_proof else "stopped")
-            )
+            if project_pr_proof:
+                assert db.execute("SELECT count(*) FROM features").fetchone()[0] == 0
+            else:
+                assert (
+                    db.execute(
+                        "SELECT status FROM features WHERE id='shot-feature'"
+                    ).fetchone()[0]
+                    == ("running" if fix_submit_proof else "stopped")
+                )
             assert (
                 db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (2 if fix_draft_proof else 0)
             )

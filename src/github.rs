@@ -422,7 +422,7 @@ pub struct ReviewThread {
 /// `"RIGHT"` for the current file or `"LEFT"` for the base file. `start_line` /
 /// `start_side`, when set, make this a multi-line comment spanning
 /// `start_line`..`line`, matching the GitHub create-review API.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrReviewComment {
     pub path: String,
     pub line: u32,
@@ -438,7 +438,7 @@ pub struct PrReviewComment {
 /// A whole-file PR review comment (`subject_type: "file"`, see
 /// [`GhCli::create_file_comment`]) — no line to anchor to, so it attaches to
 /// the file itself rather than a diff row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PrFileComment {
     pub path: String,
     pub body: String,

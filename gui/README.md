@@ -673,6 +673,26 @@ offline `gh` that refuses every write and offline harness fixtures. The
 investigation seed, edited-draft protection, stale-head refusal and an unsent
 handoff preserving an existing composer draft.
 
+### Debug log
+
+Open **Debug log** in workspace navigation to read the latest 1,000 AMF log
+entries, oldest first. The viewer combines shared SQLite history (including
+TUI writes) with this GUI process's pending entries. **Refresh log** loads new
+entries without reopening; level and context/message filters apply within
+that recent window. Failed refreshes label any retained results as the previous
+load. Reading and filtering do not clear logs or change running sessions.
+When no database is available, the viewer states that it shows only local
+process history. File-only background-thread messages remain in
+`~/.local/state/amf/debug.log`; this viewer uses the same database reader as
+TUI startup rather than parsing that file. Broader settings remain pending.
+
+Native WSLg proof for this viewer is reproducible with
+[`gui-debug-log.txt`](../scripts/dev/screenshot/scenarios/gui-debug-log.txt).
+Its four asserted frames show recent entries, combined filters, refreshed
+shared history and a failed refresh with labeled previous results. It uses
+private fixtures and a separate development port, without calling AI agents.
+macOS runtime validation remains open.
+
 ## Checks
 
 ```sh
@@ -691,25 +711,3 @@ each version tag. If a GUI build fails, the `amf` release is still published.
 The macOS build is ad-hoc signed, not signed with a Developer ID or notarized.
 Developer ID signing, notarization, Intel Mac builds and in-app updates remain
 packaging work.
-
-
-### Debug log
-
-Open **Debug log** in workspace navigation to read the latest 1,000 AMF log
-entries, oldest first. The viewer combines shared SQLite history (including
-TUI writes) with this GUI process's pending entries. **Refresh log** loads new
-entries without reopening; level and context/message filters apply within
-that recent window. Failed refreshes label any retained results as the previous
-load. Reading and filtering do not clear logs or change running sessions.
-When no database is available, the viewer states that it shows only local
-process history. File-only background-thread messages remain in
-`~/.local/state/amf/debug.log`; this viewer uses the same database reader as
-TUI startup rather than parsing that file. Broader settings remain pending.
-
-
-Native WSLg proof for this viewer is reproducible with
-[`gui-debug-log.txt`](../scripts/dev/screenshot/scenarios/gui-debug-log.txt).
-Its four asserted frames show recent entries, combined filters, refreshed
-shared history and a failed refresh with labeled previous results. It uses
-private fixtures and a separate development port, without calling AI agents.
-macOS runtime validation remains open.

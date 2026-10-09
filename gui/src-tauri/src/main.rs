@@ -36,8 +36,9 @@ use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
+use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
-    self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageView,
+    self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
 use agent_mainframe::gui_prompt_overrides::{
     self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
@@ -1083,9 +1084,46 @@ async fn pr_triage_read(reads: PrTriageReads) -> Result<PrTriagePrefetch, GuiErr
 }
 
 #[tauri::command]
+async fn pr_review_begin(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<PrReviewView, GuiError> {
+    gui_pr_review::begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        project_id,
+    )
+}
+
+#[tauri::command]
+async fn pr_review_snapshot(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<PrReviewView, GuiError> {
+    gui_pr_review::poll(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+async fn pr_review_act(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision: u64,
+    action: PrReviewAction,
+) -> Result<Option<PrReviewView>, GuiError> {
+    gui_pr_review::act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        action,
+    )
+}
+
+#[tauri::command]
 async fn pr_triage_begin(
     state: State<'_, AppState>,
-    target: FeatureTarget,
+    target: PrTriageTarget,
 ) -> Result<PrTriageView, GuiError> {
     let reads = gui_pr_triage::plan_begin(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
@@ -1489,6 +1527,9 @@ fn main() {
             dormancy_load,
             debug_log_load,
             dormancy_stop,
+            pr_review_begin,
+            pr_review_snapshot,
+            pr_review_act,
             pr_triage_begin,
             pr_triage_snapshot,
             pr_triage_act,

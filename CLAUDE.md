@@ -10,6 +10,44 @@ Use them alongside the architecture guide; source is authoritative when a featur
 changes. Tests live in feature suites and beside small units, and all four agent
 harnesses (Claude Code, Codex, OpenCode, Pi) are supported.
 
+## Model selection (Claude Code working in this repo)
+
+Lineup checked 2026-10-09. Prices are per million input/output tokens, Anthropic API:
+
+| Alias | Model | Price | Use for |
+|---|---|---|---|
+| `fable` | Fable 5.1 | $10 / $50 | Hardest, longest-running work |
+| `opus` | Opus 5.5 | $4 / $20 | Default session model; design and judgment |
+| `sonnet` | Sonnet 5.5 | $2 / $10 | Well-specified implementation |
+| `haiku` | Haiku 5.5 | $0.10 / $0.50 | Search, lookups, summaries (price is 5× above 100K prompt tokens) |
+
+- **Keep the session on one model.** The prompt cache only works within a single
+  model. Switching a long session to a cheaper model re-reads the whole context
+  uncached, which costs more than staying put. Save money with subagents
+  instead: each one starts with a fresh context.
+- **Choosing a subagent model.** Pass `model` on each Agent call:
+  - `haiku`: locating code, grep sweeps, reading CI/test/debug-log output,
+    summarizing a file or diff.
+  - `sonnet`: implementing from a concrete plan, writing tests for a stated
+    behavior, doc updates, a focused review of a small diff.
+  - Inherit (omit `model`): design, debugging with an unknown cause, and any
+    change touching migrations, the shared `amf.db`, process/child lifetimes,
+    worker identity checks, or the invariants in the feature notes below.
+  - `fable`: only when the user asks for it.
+- **Suggest Fable, but don't switch to it yourself.** For a large refactor
+  across modules or a concurrency/lifetime bug that Opus has failed on twice,
+  tell the user `/model fable` may be worth the 2.5× cost. Don't switch
+  mid-task (see above).
+- **Lower effort before a smaller model.** For routine steps, lowering a
+  capable model's `effort` often holds quality better than dropping a tier.
+- **Wired in:** `.claude/agents/Explore.md` runs exploration on Haiku, and
+  `/amf:pr-status` forks onto Haiku. Session-scoped commands such as
+  `/build`, `/check`, `/lint`, `/amf:pr-create` and `/amf:pr-continue`
+  deliberately inherit the session model, because they depend on context
+  from the session.
+- This section covers Claude Code's own model use. AMF's product-side model
+  pickers and advice (`model_evidence.rs`, `model_analysis/`) are separate.
+
 **HeadlessRunner** (headless.rs):
 
 - Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi

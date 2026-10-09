@@ -630,7 +630,7 @@ impl App {
     /// Record which session AMF is about to ask for a reply draft, at the one
     /// moment the answer is unambiguous: the fix injection that resolved it.
     /// `None` for a non-agent window, which cannot produce a draft anyway.
-    pub(super) fn reply_draft_provenance(
+    pub(crate) fn reply_draft_provenance(
         &self,
         pi: usize,
         fi: usize,

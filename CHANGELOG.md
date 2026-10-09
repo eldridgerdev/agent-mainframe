@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **PR comment fix drafts in the desktop app.** Choose an existing feature
+  agent in PR Triage, edit a fix prompt seeded from the comment and its
+  investigation, then open it as an unsent composer draft. Existing drafts
+  stay intact; changed PR heads and destination sessions are refused. Starting
+  or sending to the agent remains explicit. No migration is required.
+
 - **Fresh context from desktop agent sidebars.** Edit a continuation seeded
   from the feature’s plan, changed files and saved context, then open a new
   agent tab with an unsent draft. Your original session stays open. Resource

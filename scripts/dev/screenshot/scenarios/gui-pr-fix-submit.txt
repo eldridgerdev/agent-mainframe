@@ -1,0 +1,5 @@
+# Native PR fix submission with private Git/SQLite, tmux and offline fixtures.
+note:The isolated TUI confirms the capture harness is ready before native proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_PR_FIX_SUBMIT_PROOF=1 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-pr-triage.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

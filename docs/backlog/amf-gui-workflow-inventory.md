@@ -47,7 +47,7 @@ Keep them current as the staged GUI scope grows.
 | Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
 | Limited | Closing only a dormant feature's editor and deleting from the dormant list remain TUI actions. Four asserted native WSLg frames verify the list, confirmation, a confirm-time refusal and editor ownership through real Rust IPC with stand-in editors; macOS validation is open. |
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
-| Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Projects-sidebar hide/restore and keyboard shortcuts belong to the separate show/hide-sidebars increment. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
+| Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Planned | Settings and the other workflows listed below, after code syntax highlighting. |
 
 Native GUI diff proof is reproducible with
@@ -140,8 +140,23 @@ Completed increments and remaining work, in priority order:
   scrollback and composer mounted and resizes its pane. Eight asserted offline
   native frames cover Claude, Codex and Pi; OpenCode ordering and all four
   contracts have automated coverage. Project-sidebar controls and keyboard
-  shortcuts, dark/custom themes, native OpenCode and macOS proof
-  remain open. This completes the agent-sidebar part of show/hide sidebars.
+  shortcuts are implemented (2026-10-09); both panels retain independent viewer
+  preferences and preserve the terminal and composer across all combinations.
+  Narrow-window resizing preserves explicit choices. Dark/custom themes, native
+  OpenCode and macOS proof remain open. This completes the agent-sidebar part
+  of show/hide sidebars.
+
+- [x] **Show/hide both GUI sidebars (2026-10-09).** Projects hide/restore now
+  leaves a narrow rail and saves its own viewer preference independently of the
+  agent panel. Alt+Shift+P/A toggle projects/agent sidebars outside terminals,
+  editable controls and dialogs. Narrow windows retain explicit choices.
+  Frontend interactions cover persistence, blocked storage, safe shortcuts and
+  all four combinations with tmux resize, retained scrollback and composer
+  drafts. Four asserted, inspected native frames cover all combinations via
+  `gui-sidebar-visibility.txt`, including both shortcuts and preference reload.
+  Review follow-up: minimized planning dialogs stay mounted without blocking
+  shortcuts; visible dialogs still block both chords, including when another
+  hidden dialog is mounted. Hidden/CSS-concealed ancestors have regression coverage.
 
 - [x] **GUI fresh context (2026-10-07).** The Context section opens an
   editable shared continuation seed, starts a new session with the feature's

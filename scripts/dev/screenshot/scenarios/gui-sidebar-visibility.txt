@@ -1,0 +1,6 @@
+# Native sidebar visibility proof using private SQLite/Git/tmux and offline agents.
+# HOME is preserved; the frame driver asserts each native state. No prompt is sent.
+note:The isolated TUI confirms the capture harness is ready before native GUI validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-composer.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-sidebar-visibility-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

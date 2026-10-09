@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Independent desktop sidebar controls.** Hide or restore the projects and
+  agent sidebars separately to give the terminal more room. Each panel remembers
+  its visibility without losing terminal history or unsent drafts. Alt+Shift+P
+  toggles projects and Alt+Shift+A toggles the agent panel outside terminals,
+  editable fields and dialogs. No migration is required.
+
 - **PR comment fix drafts in the desktop app.** Choose an existing feature
   agent in PR Triage, edit a fix prompt seeded from the comment and its
   investigation, then open it as an unsent composer draft. Existing drafts

@@ -68,6 +68,7 @@ import {
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
+import ProjectsSidebar from "./ProjectsSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
@@ -1094,11 +1095,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">A</span>
-          <span className="brand-name">Agent Mainframe</span>
-        </div>
+      <ProjectsSidebar>
 
         <nav className="nav" aria-label="Workspace">
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
@@ -1192,7 +1189,7 @@ export default function App() {
             <span className="plan-pill-open">Open</span>
           </button>
         )}
-      </aside>
+      </ProjectsSidebar>
 
       {supervisedTarget && <SupervisedEditsPanel key={`${supervisedTarget.project_id}:${supervisedTarget.feature_id}`}
         ref={supervisedPanel} target={supervisedTarget} initialEditId={automaticEditId ?? undefined}

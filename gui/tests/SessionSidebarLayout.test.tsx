@@ -197,6 +197,9 @@ describe("agent tab in the app", () => {
         case "plan_snapshot": return { active: null, precall: null };
         case "session_sidebar": return sidebarView();
         case "attach_terminal": return { key: "feature:claude", generation: 1, initial: { replay: "", alternate_screen: false, mouse_reporting: false } };
+        case "terminal_history": return {
+          replay: Array.from({ length: 80 }, (_, i) => `line-${i}`).join("\r\n"), earlier_lines: 56, alternate_screen: false,
+        };
         default: return undefined;
       }
     });
@@ -219,6 +222,28 @@ describe("agent tab in the app", () => {
     expect(calls("attach_terminal").length).toBe(attaches);
     expect(calls("detach_terminal")).toHaveLength(0);
 
+    // Read history before changing both sidebars; reflow must not jump to live output.
+    await act(async () => { fireEvent.wheel(document.querySelector(".term-surface")!, { deltaY: -48 }); });
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Viewing earlier output"));
+    // Both panels resize the existing terminal, independently, in every combination.
+    fireEvent.click(screen.getByRole("button", { name: "Hide projects sidebar" }));
+    relayout(140);
+    expect(screen.getByRole("button", { name: "Hide agent sidebar" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Hide agent sidebar" }));
+    relayout(172);
+    expect(screen.getByRole("button", { name: "Show projects sidebar" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show projects sidebar" }));
+    relayout(132);
+    expect(screen.getByRole("button", { name: "Show agent sidebar" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show agent sidebar" }));
+    relayout(100);
+    expect(calls("resize_terminal").slice(-4).map(([, args]) =>
+      (args as { size: { cols: number } }).size.cols)).toEqual([140, 172, 132, 100]);
+    expect((screen.getByRole("textbox", { name: "Draft prompt" }) as HTMLTextAreaElement).value).toBe(`keep me\n\n${PROMPT}`);
+    expect(calls("attach_terminal")).toHaveLength(attaches);
+    expect(calls("detach_terminal")).toHaveLength(0);
+
+    expect(screen.getByRole("status").textContent).toContain("Viewing earlier output");
     // A plain terminal tab has no agent sidebar.
     fireEvent.click(screen.getByRole("tab", { name: /Shell/ }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Claude Sidebar" })).toBeNull());

@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 // Per-viewer layout preferences for the GUI's sidebars. They belong to this
 // window's user, not to the workspace: nothing here reaches the shared
@@ -6,10 +6,9 @@ import { useCallback, useSyncExternalStore } from "react";
 // or refuse writes (private windows, cleared site data), so every access is
 // guarded and the in-memory value still works for the session.
 //
-// The "Show/hide sidebars" item adds the projects sidebar beside
-// `sessionSidebar` here, with the same hook.
+// Projects and agent panels have independent preferences.
 
-export type SidebarPref = "sessionSidebar";
+export type SidebarPref = "sessionSidebar" | "projectsSidebar";
 
 const STORAGE_PREFIX = "amf.gui.collapsed.";
 const memory = new Map<SidebarPref, boolean>();
@@ -53,4 +52,36 @@ export function useSidebarCollapsed(pref: SidebarPref): [boolean, (collapsed: bo
 /** Forget cached values (tests reset storage between cases). */
 export function resetSidebarPrefsForTest() {
   memory.clear();
+}
+
+function hasVisibleDialog(): boolean {
+  return Array.from(document.querySelectorAll("[role='dialog'], [role='alertdialog']")).some((dialog) => {
+    // Planning keeps its modal mounted under a hidden wrapper when minimized.
+    if (dialog.closest("[hidden]")) return false;
+    const visibility = window.getComputedStyle(dialog).visibility;
+    if (visibility === "hidden" || visibility === "collapse") return false;
+    for (let element: Element | null = dialog; element; element = element.parentElement) {
+      if (window.getComputedStyle(element).display === "none") return false;
+    }
+    return true;
+  });
+}
+
+/** Shortcuts apply only to workspace chrome, never to terminal or form input. */
+export function useSidebarShortcut(pref: SidebarPref, toggle: () => void) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = pref === "projectsSidebar" ? "p" : "a";
+      if (event.defaultPrevented || event.repeat || !event.altKey || !event.shiftKey
+          || event.ctrlKey || event.metaKey
+          || (event.code ? event.code !== `Key${key.toUpperCase()}` : event.key.toLowerCase() !== key)) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".term-frame, input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")
+          || hasVisibleDialog()) return;
+      event.preventDefault();
+      toggle();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [pref, toggle]);
 }

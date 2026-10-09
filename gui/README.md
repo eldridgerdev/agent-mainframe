@@ -198,8 +198,17 @@ open their existing workflows.
 The header's hide button leaves a **Sidebar** rail to restore the panel.
 This viewer's preference survives restarts, separately from shared TUI state.
 Toggling refits the terminal through its usual tmux resize path and preserves
-scrollback and drafts. Colours use overridable `--sb-*` CSS tokens. The projects
-sidebar toggle and keyboard shortcuts remain a separate planned increment.
+scrollback and drafts. Colours use overridable `--sb-*` CSS tokens.
+
+The projects sidebar has its own hide button and a narrow restore rail. Its
+preference is saved independently of the agent sidebar. In narrow windows the
+open projects sidebar uses at most 40% of the window; resizing never overrides
+your choice to show or hide it. Both toggles leave the active terminal mounted.
+Use **Alt+Shift+P** for projects or **Alt+Shift+A** for the agent sidebar while
+focus is on workspace controls. These shortcuts are disabled in terminals,
+text inputs, editable content and dialogs, leaving their input untouched.
+The agent shortcut applies only while an agent tab is displayed. Native offline
+proof: `scripts/dev/screenshot/scenarios/gui-sidebar-visibility.txt`.
 
 The GUI runs its own shared collectors: token/cost and context reads, account
 usage, transcript/storage prompt/model/todos, plan files, persisted summaries,

@@ -10,7 +10,7 @@ import {
   MAX_WHEEL_STEPS, SCROLLBACK_LINES, WheelAccumulator, scrollKeyAction,
   type TerminalFrame, type TerminalHistory,
 } from "./terminalScroll";
-import { DARK_TERMINAL_THEME, LIGHT_TERMINAL_THEME } from "./terminalTheme";
+import { terminalAppearance } from "./themes";
 
 // Installed Nerd Fonts first, then common coding fonts. The bundled
 // "AMF Symbols" fonts (styles.css) supply Nerd Font icons, powerline and
@@ -111,15 +111,16 @@ export default function TerminalPane({ target, onReadyChange }: {
       fontSize: 13,
       lineHeight: 1.15,
       scrollback: SCROLLBACK_LINES,
-      theme: darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME,
-      minimumContrastRatio: darkMode?.matches ? 4.5 : 1,
+      ...terminalAppearance(darkMode?.matches),
     });
     // Update colours in place: keep the attachment, buffer and scroll position.
     const updateTheme = () => {
-      term.options.theme = darkMode?.matches ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME;
-      term.options.minimumContrastRatio = darkMode?.matches ? 4.5 : 1;
+      const appearance = terminalAppearance(darkMode?.matches);
+      term.options.theme = appearance.theme;
+      term.options.minimumContrastRatio = appearance.minimumContrastRatio;
     };
     darkMode?.addEventListener("change", updateTheme);
+    window.addEventListener("amf-theme-change", updateTheme);
     const fit = new FitAddon();
     term.loadAddon(fit);
     if (containerRef.current) {
@@ -391,6 +392,7 @@ export default function TerminalPane({ target, onReadyChange }: {
     return () => {
       disposed = true;
       darkMode?.removeEventListener("change", updateTheme);
+      window.removeEventListener("amf-theme-change", updateTheme);
       jumpToLatest.current = () => {};
       clearTimeout(noticeTimer);
       onReadyChange?.(false);

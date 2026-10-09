@@ -65,6 +65,7 @@ import {
   todoLaunchAgent,
   todoLaunchNewFeature,
 } from "./api";
+import ThemePicker, { useGuiTheme } from "./ThemePicker";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
@@ -160,6 +161,8 @@ function pruneKeys<T>(current: Record<string, T>, live: Set<string>): Record<str
 /// the plan interview. Id resolution, idempotency, and terminal correctness
 /// have their own Rust-side coverage; this file is the UI wiring.
 export default function App() {
+  const appearance = useGuiTheme();
+  const [showAppearance, setShowAppearance] = useState(false);
   const queryClient = useQueryClient();
   const [view, setView] = useState<View | null>(null);
   const [showCreateProject, setShowCreateProject] = useState(false);
@@ -1098,6 +1101,7 @@ export default function App() {
       <ProjectsSidebar>
 
         <nav className="nav" aria-label="Workspace">
+          <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
@@ -1627,6 +1631,7 @@ export default function App() {
         />
       )}
 
+      {showAppearance && <ThemePicker appearance={appearance} onClose={() => setShowAppearance(false)} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
         onClose={() => setPromptLibrary(null)} onInsert={insertLibraryPrompt}

@@ -41,7 +41,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --sb-harness-claude: #ffb69b;
     --sb-harness-codex: #88e0a8;
     --sb-harness-opencode: #bec7ff;
@@ -251,4 +251,14 @@
 /* A narrow window gives the terminal priority; the rail stays reachable. */
 @media (max-width: 720px) {
   .agent-sidebar:not(.agent-sidebar-collapsed) { --sb-width: 240px; }
+}
+
+/* Explicit GUI preference overrides the system colour scheme. */
+:root[data-theme="dark"] {
+  --sb-harness-claude: #ffb69b;
+  --sb-harness-codex: #88e0a8;
+  --sb-harness-opencode: #bec7ff;
+  --sb-accent-pr: #a6caff;
+  --sb-accent-summary: #a6caff;
+  --sb-accent-prompt: #d4b6ff;
 }

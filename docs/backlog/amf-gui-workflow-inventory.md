@@ -177,7 +177,28 @@ Completed increments and remaining work, in priority order:
   Twelve contrast regressions cover explicit SGR foreground/background pairs,
   including white on black/bright-black and black on white/colored backgrounds.
   All 332 frontend tests and the production build pass after this correction.
-  macOS runtime validation remains open. Custom themes follow.
+  macOS runtime validation remains open. Custom theme implementation follows below.
+
+- [x] **Custom themes (2026-10-09).**
+  Appearance offers explicit light/dark/system choices, all 28 TUI catalog
+  entries, and partial JSON themes from AMF’s config-directory `gui-themes/`.
+  Default precedence follows the TUI config, polled every three seconds;
+  choosing in the GUI persists a webview-local override, and Follow TUI theme
+  clears it. The adapter only reads config.json and never migrates or writes it.
+  CSS/syntax/sidebar tokens and xterm options update live without reattachment.
+  File errors, unknown keys, duplicate IDs and missing choices report errors
+  with safe fallback; fixing a file restores a retained selection.
+  Four isolated Rust regressions and nine new frontend regressions cover
+  catalog projection, independent file errors, read-only TUI config, persistence,
+  precedence, system preference, partial fallback, retry, cross-window changes
+  and terminal continuity. All 341 frontend tests, production build, full parallel Rust workspace
+  tests, formatting and strict Clippy pass; one existing live-GitHub test is
+  ignored. Five asserted native WSLg frames show Nord following, Dracula, Catppuccin
+  Latte and custom Ocean; representative images were inspected. Runtime checks
+  cover terminal/draft continuity, persisted custom choice and Follow TUI
+  clearing without a TUI-config write. Reproduce with `gui-custom-themes.txt`;
+  capture uses private Git/SQLite/tmux and offline agents, sending no prompts.
+  macOS runtime validation remains open. The GUI guide documents format/keys.
 
 - [x] **GUI fresh context (2026-10-07).** The Context section opens an
   editable shared continuation seed, starts a new session with the feature's

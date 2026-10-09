@@ -54,6 +54,19 @@ export function resetSidebarPrefsForTest() {
   memory.clear();
 }
 
+function hasVisibleDialog(): boolean {
+  return Array.from(document.querySelectorAll("[role='dialog'], [role='alertdialog']")).some((dialog) => {
+    // Planning keeps its modal mounted under a hidden wrapper when minimized.
+    if (dialog.closest("[hidden]")) return false;
+    const visibility = window.getComputedStyle(dialog).visibility;
+    if (visibility === "hidden" || visibility === "collapse") return false;
+    for (let element: Element | null = dialog; element; element = element.parentElement) {
+      if (window.getComputedStyle(element).display === "none") return false;
+    }
+    return true;
+  });
+}
+
 /** Shortcuts apply only to workspace chrome, never to terminal or form input. */
 export function useSidebarShortcut(pref: SidebarPref, toggle: () => void) {
   useEffect(() => {
@@ -64,7 +77,7 @@ export function useSidebarShortcut(pref: SidebarPref, toggle: () => void) {
           || (event.code ? event.code !== `Key${key.toUpperCase()}` : event.key.toLowerCase() !== key)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest(".term-frame, input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")
-          || document.querySelector("[role='dialog'], [role='alertdialog']")) return;
+          || hasVisibleDialog()) return;
       event.preventDefault();
       toggle();
     };

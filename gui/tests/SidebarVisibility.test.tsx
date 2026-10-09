@@ -65,3 +65,46 @@ it("keeps a chosen state through narrow-window resizes and storage failure", () 
   render(<Layout />);
   expect(screen.getByRole("button", { name: "Hide projects sidebar" })).toBeTruthy();
 });
+
+
+it.each(["dialog", "alertdialog"])("blocks only visible %s instances, including a minimized planning wrapper", (role) => {
+  const frame = (hidden: boolean, otherDialog = false) => <>
+    <Layout />
+    <div hidden={hidden}><div role={role}>Plan interview</div></div>
+    {otherDialog && <div role="dialog">Visible confirmation</div>}
+  </>;
+  const view = render(frame(true));
+  // Minimized planning stays mounted but must leave workspace shortcuts available.
+  chord(window, "P"); chord(window, "A");
+  expect(screen.getByRole("button", { name: "Show projects sidebar" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show agent" })).toBeTruthy();
+
+  view.rerender(frame(false));
+  chord(window, "P"); chord(window, "A");
+  expect(screen.getByRole("button", { name: "Show projects sidebar" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show agent" })).toBeTruthy();
+
+  // A second visible dialog still blocks shortcuts when the first is hidden.
+  view.rerender(frame(true, true));
+  chord(window, "P"); chord(window, "A");
+  expect(screen.getByRole("button", { name: "Show projects sidebar" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show agent" })).toBeTruthy();
+
+  view.rerender(frame(true));
+  chord(window, "P"); chord(window, "A");
+  expect(screen.getByRole("button", { name: "Hide projects sidebar" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Hide agent" })).toBeTruthy();
+});
+
+it.each(["display: none", "visibility: hidden"])("ignores dialogs concealed by an ancestor with %s", (style) => {
+  render(<Layout />);
+  const wrapper = document.createElement("div");
+  wrapper.setAttribute("style", style);
+  wrapper.innerHTML = '<div role="dialog">Hidden dialog</div>';
+  document.body.appendChild(wrapper);
+  try {
+    chord(window, "P"); chord(window, "A");
+    expect(screen.getByRole("button", { name: "Show projects sidebar" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show agent" })).toBeTruthy();
+  } finally { wrapper.remove(); }
+});

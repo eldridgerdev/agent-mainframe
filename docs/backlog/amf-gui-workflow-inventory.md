@@ -154,6 +154,9 @@ Completed increments and remaining work, in priority order:
   all four combinations with tmux resize, retained scrollback and composer
   drafts. Four asserted, inspected native frames cover all combinations via
   `gui-sidebar-visibility.txt`, including both shortcuts and preference reload.
+  Review follow-up: minimized planning dialogs stay mounted without blocking
+  shortcuts; visible dialogs still block both chords, including when another
+  hidden dialog is mounted. Hidden/CSS-concealed ancestors have regression coverage.
 
 - [x] **GUI fresh context (2026-10-07).** The Context section opens an
   editable shared continuation seed, starts a new session with the feature's

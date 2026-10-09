@@ -65,10 +65,10 @@ mod tests {
             .unwrap();
         drop(db);
         let db = AmfDb::open(&path).unwrap();
-        assert_eq!(
-            db.load_model_research("project", &repo).unwrap(),
-            research_notes()
-        );
+        // Loading orders by evidence ID; the registry is in review order.
+        let mut expected = research_notes();
+        expected.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(db.load_model_research("project", &repo).unwrap(), expected);
         assert!(db.load_model_research("other", &repo).unwrap().is_empty());
         assert!(
             db.load_model_research("project", &dir.path().join("other"))

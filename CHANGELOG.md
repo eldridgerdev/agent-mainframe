@@ -66,6 +66,14 @@ are tagged.
   confirmation, as the TUI's syntax picker does. Colours work in light and dark
   mode.
 
+### Changed
+
+- **Model advice can recommend Claude Haiku 5.5.** When Claude Code reports
+  Haiku 5.5 as available, the model and reasoning advice (`m`) can now
+  suggest it for simple, scoped work at low or medium reasoning. Its
+  Anthropic guidance was re-checked on 2026-10-09 and is good until
+  2026-11-09. Haiku 4.5 is still never suggested. No migration is required.
+
 ### Fixed
 
 - **Less clutter in the desktop projects sidebar.** Collapsed feature rows

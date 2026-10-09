@@ -1,3 +1,8 @@
+---
+description: Check the status of the pull request for the current branch.
+model: haiku
+context: fork
+---
 Check the status of the pull request for the current branch.
 
 Run `scripts/dev/amf/pr-checks.sh` to gather PR info, CI check

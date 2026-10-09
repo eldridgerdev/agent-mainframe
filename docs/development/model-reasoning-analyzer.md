@@ -386,13 +386,18 @@ apply to a new version. Discovery already accepts exact new model IDs; research
 never establishes account access. The analyzer selects up to three settings,
 so a researched, available model is considered but need not appear in every result.
 New effort levels have unknown tradeoffs.
-Two Anthropic notes, checked 2026-09-30 and expiring 2026-10-30, use the official
+Anthropic notes use the official
 [effort guide](https://platform.claude.com/docs/en/build-with-claude/effort) and
 [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
 Effort guidance applies to documented exact Claude versions at verified
-low/medium/high settings. Model-role guidance covers Sonnet 5.5, Opus 5.5,
-Fable 5.1 and Fable 5. Haiku lacks a documented explicit effort control and
-therefore does not qualify for these model-and-effort recommendations.
+low/medium/high settings. The current pair, checked 2026-10-09 and expiring
+2026-11-09, covers Haiku 5.5, Sonnet 5.5, Opus 5.5, Fable 5.1 and Fable 5
+for model roles. Haiku 5.5 is the first Haiku with a documented effort control.
+Haiku 4.5 still has none, so it does not qualify. The superseded 2026-09-30
+pair, which omitted Haiku, stays registered until it expires on 2026-10-30.
+That keeps research persisted before the newer review loadable, because
+loading rejects any note ID the binary no longer knows. Add a new dated note
+rather than editing a reviewed one in place.
 Anthropic evidence cannot justify a Codex choice, or vice versa. The analyzer
 prompt lists applicable evidence IDs per option. Effort names describe
 qualitative priorities and do not establish an equal scale across models.

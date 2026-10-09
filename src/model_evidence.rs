@@ -51,6 +51,18 @@ pub(crate) fn research_notes() -> Vec<ResearchNote> {
         checked_at:"2026-09-30T00:00:00Z".parse().unwrap(),
         expires_at:"2026-10-30T00:00:00Z".parse().unwrap(),
         statement:"Anthropic positions Sonnet for daily coding, Opus for complex reasoning, and Fable for the hardest and longest-running tasks. These reviewed roles apply to Sonnet 5.5, Opus 5.5, Fable 5.1 and Fable 5 when live Claude Code discovery verifies the exact version and its effort settings. Task fit is a qualified judgment; actual task quality, time and tokens remain unknown. Equal effort names are not calibrated equally across models.".into(),
+    },ResearchNote {
+        id:"reviewed-anthropic-effort-2026-10-09".into(),
+        source:"https://platform.claude.com/docs/en/build-with-claude/effort".into(),
+        checked_at:"2026-10-09T00:00:00Z".parse().unwrap(),
+        expires_at:"2026-11-09T00:00:00Z".parse().unwrap(),
+        statement:"For the same supported Claude model, lower effort favors speed and token efficiency; higher effort favors thoroughness and deeper reasoning. Effort affects thinking, tool calls and response text, and is a behavioral signal rather than a strict token budget. Haiku 5.5 supports effort; Anthropic suggests low for short, simple tasks and notes that at low effort in long agent prompts it is more likely to skip a search, stop early or skip a check. This provider guidance does not measure this task's quality, elapsed time or token totals; those remain unknown.".into(),
+    },ResearchNote {
+        id:"reviewed-anthropic-model-selection-2026-10-09".into(),
+        source:"https://code.claude.com/docs/en/model-config".into(),
+        checked_at:"2026-10-09T00:00:00Z".parse().unwrap(),
+        expires_at:"2026-11-09T00:00:00Z".parse().unwrap(),
+        statement:"Anthropic positions Haiku as fast and efficient for simple tasks, Sonnet for daily coding, Opus for complex reasoning, and Fable for the hardest and longest-running tasks. These reviewed roles apply to Haiku 5.5, Sonnet 5.5, Opus 5.5, Fable 5.1 and Fable 5 when live Claude Code discovery verifies the exact version and its effort settings. Task fit is a qualified judgment; actual task quality, time and tokens remain unknown. Equal effort names are not calibrated equally across models.".into(),
     }]
 }
 
@@ -69,12 +81,15 @@ impl ResearchNote {
             "openai-reasoning-model-selection-2026-09-29"
                 | "openai-reasoning-model-selection-gpt-6.1-sol-2026-09-30"
                 | "reviewed-anthropic-model-selection-2026-09-30"
+                | "reviewed-anthropic-model-selection-2026-10-09"
         )
     }
     fn is_effort_guidance(&self) -> bool {
         matches!(
             self.id.as_str(),
-            "openai-reasoning-effort-2026-09-29" | "reviewed-anthropic-effort-2026-09-30"
+            "openai-reasoning-effort-2026-09-29"
+                | "reviewed-anthropic-effort-2026-09-30"
+                | "reviewed-anthropic-effort-2026-10-09"
         )
     }
     pub fn applies(&self, choice: &ModelChoice, now: DateTime<Utc>) -> bool {
@@ -88,6 +103,10 @@ impl ResearchNote {
                 "openai-reasoning-model-selection-gpt-6.1-sol-2026-09-30" => codex && choice.model() == "gpt-6.1-sol",
                 "reviewed-anthropic-effort-2026-09-30" => claude && matches!(choice.model(), "claude-sonnet-5-5" | "claude-sonnet-5" | "claude-sonnet-4-6" | "claude-opus-5-5" | "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" | "claude-fable-5-1" | "claude-fable-5"),
                 "reviewed-anthropic-model-selection-2026-09-30" => claude && matches!(choice.model(), "claude-sonnet-5-5" | "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5"),
+                // These supersede the 2026-09-30 pair, which stays registered
+                // so research persisted before this review still loads.
+                "reviewed-anthropic-effort-2026-10-09" => claude && matches!(choice.model(), "claude-haiku-5-5" | "claude-sonnet-5-5" | "claude-sonnet-5" | "claude-sonnet-4-6" | "claude-opus-5-5" | "claude-opus-5" | "claude-opus-4-8" | "claude-opus-4-7" | "claude-opus-4-6" | "claude-fable-5-1" | "claude-fable-5"),
+                "reviewed-anthropic-model-selection-2026-10-09" => claude && matches!(choice.model(), "claude-haiku-5-5" | "claude-sonnet-5-5" | "claude-opus-5-5" | "claude-fable-5-1" | "claude-fable-5"),
                 _ => false,
             }
             // Deliberately bounded to documented conventional effort levels.
@@ -632,6 +651,101 @@ mod tests {
         let mut altered = notes.clone();
         altered[3].statement = "Guaranteed faster".into();
         assert!(validate_response(&valid, &options, &altered, checked).is_err());
+    }
+    #[test]
+    fn haiku_qualifies_only_from_the_review_that_covers_it() {
+        let caps = [HarnessCapability {
+            harness: AgentKind::Claude,
+            availability: Availability::Available,
+            model_flag: true,
+            reasoning_flag: true,
+            models: ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-haiku-4-5"]
+                .into_iter()
+                .map(|model| ModelCapability {
+                    model: model.into(),
+                    availability: Availability::Available,
+                    reasoning_levels: Some(vec!["low".into(), "medium".into()]),
+                })
+                .collect(),
+        }];
+        let options = EligibleOptions::new(&[AgentKind::Claude], &caps, LaunchPath::Interactive);
+        let notes = research_notes();
+        let id = |id: &str| notes.iter().position(|n| n.id == id).unwrap();
+        let (old_effort, old_model) = (
+            id("reviewed-anthropic-effort-2026-09-30"),
+            id("reviewed-anthropic-model-selection-2026-09-30"),
+        );
+        let (effort, model) = (
+            id("reviewed-anthropic-effort-2026-10-09"),
+            id("reviewed-anthropic-model-selection-2026-10-09"),
+        );
+        let checked = "2026-10-09T12:00:00Z".parse().unwrap();
+        let proposal = |model: &str, level, priority, refs: &[usize]| {
+            let choice = options
+                .choices()
+                .iter()
+                .find(|c| c.model() == model && c.reasoning() == Some(level))
+                .unwrap();
+            serde_json::json!({"option_id":choice.id(),"priority":priority,"evidence_ids":refs.iter().map(|i| &notes[*i].id).collect::<Vec<_>>()})
+        };
+        let respond = |choices: Vec<serde_json::Value>| {
+            serde_json::json!({"status":"qualified","choices":choices}).to_string()
+        };
+
+        let valid = respond(vec![
+            proposal("claude-haiku-5-5", "low", "speed", &[effort, model]),
+            proposal(
+                "claude-sonnet-5-5",
+                "medium",
+                "balance",
+                &[old_effort, old_model],
+            ),
+        ]);
+        let recommendations = validate_response(&valid, &options, &notes, checked).unwrap();
+        assert_eq!(recommendations[0].choice.model(), "claude-haiku-5-5");
+
+        for refs in [
+            // The earlier review did not cover Haiku.
+            &[old_effort, old_model][..],
+            &[effort, old_model][..],
+            // Model guidance alone is not effort evidence.
+            &[model][..],
+        ] {
+            let raw = respond(vec![proposal("claude-haiku-5-5", "low", "speed", refs)]);
+            assert!(validate_response(&raw, &options, &notes, checked).is_err());
+        }
+        // Haiku 4.5 has no documented effort control.
+        let older = respond(vec![proposal(
+            "claude-haiku-4-5",
+            "low",
+            "speed",
+            &[effort, model],
+        )]);
+        assert!(validate_response(&older, &options, &notes, checked).is_err());
+        // The new review is not retroactive and expires like the others.
+        assert!(validate_response(&valid, &options, &notes, notes[old_effort].checked_at).is_err());
+        assert!(validate_response(&valid, &options, &notes, notes[effort].expires_at).is_err());
+
+        let ctx = prompt_context("reviewed task", &options, &notes, checked).unwrap();
+        let prompt_options: serde_json::Value =
+            serde_json::from_str(ctx.get("eligible_options").unwrap()).unwrap();
+        let haiku = prompt_options
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["model"] == "claude-haiku-5-5" && v["reasoning"] == "low")
+            .unwrap();
+        assert_eq!(
+            haiku["evidence_ids"],
+            serde_json::json!([notes[effort].id, notes[model].id])
+        );
+        assert!(
+            prompt_options
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v["model"] != "claude-haiku-4-5")
+        );
     }
     #[test]
     fn missing_context_and_unknown_override_placeholders_fail() {

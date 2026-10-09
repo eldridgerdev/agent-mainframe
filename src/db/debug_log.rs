@@ -43,7 +43,7 @@ pub fn load_recent(conn: &Connection, limit: usize) -> Result<Vec<LogEntry>> {
          LIMIT ?1",
     )?;
 
-    let mut entries: Vec<LogEntry> = stmt
+    let rows = stmt
         .query_map(params![limit as i64], |row| {
             let ts_str: String = row.get(0)?;
             let level_str: String = row.get(1)?;
@@ -51,7 +51,9 @@ pub fn load_recent(conn: &Connection, limit: usize) -> Result<Vec<LogEntry>> {
             let message: String = row.get(3)?;
             Ok((ts_str, level_str, context, message))
         })?
-        .filter_map(|r| r.ok())
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut entries: Vec<LogEntry> = rows
+        .into_iter()
         .filter_map(|(ts_str, level_str, context, message)| {
             let timestamp = ts_str.parse().ok()?;
             Some(LogEntry {

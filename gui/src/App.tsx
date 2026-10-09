@@ -74,6 +74,7 @@ import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
 import DormancyPanel from "./DormancyPanel";
+import DebugLogPanel from "./DebugLogPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ScreenshotsPanel from "./ScreenshotsPanel";
@@ -179,6 +180,7 @@ export default function App() {
     contextNote?: string | null;
   } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
+  const [showDebugLog, setShowDebugLog] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -1125,6 +1127,10 @@ export default function App() {
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
           </button>
 
+          <button className="nav-item" onClick={() => setShowDebugLog(true)}>
+            <Icon name="list" /><span className="nav-label">Debug log</span>
+          </button>
+
           <div className="nav-section">
             <span>Projects</span>
             <button
@@ -1213,6 +1219,7 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />

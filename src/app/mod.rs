@@ -3970,6 +3970,25 @@ impl App {
         self.save_config();
     }
 
+    /// Shared persisted history plus this process's not-yet-flushed entries.
+    /// Reading does not flush, clear or otherwise mutate either log.
+    pub(crate) fn recent_debug_log_entries(&self) -> anyhow::Result<Vec<LogEntry>> {
+        let limit = self.debug_log.max_entries();
+        let mut entries = if let Some(db) = &self.db {
+            let mut entries = db.load_recent_log(limit)?;
+            entries.extend(self.pending_debug_log_entries.iter().cloned());
+            entries
+        } else {
+            self.debug_log.entries().iter().cloned().collect()
+        };
+        // Pending entries can interleave with another process's DB writes.
+        entries.sort_by_key(|entry| entry.timestamp);
+        if entries.len() > limit {
+            entries.drain(..entries.len() - limit);
+        }
+        Ok(entries)
+    }
+
     pub fn log_debug(&mut self, context: &str, message: String) {
         let entry = self.debug_log.debug(context, message);
         if self.db.is_some() {

@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Desktop debug-log viewer.** Open recent AMF activity from workspace
+  navigation, filter by level or context/message, and refresh without reopening.
+  Load failures are shown alongside clearly labeled previous results.
+  No migration is required.
+
 - **Desktop theme selection.** Appearance offers light, dark, system, the TUI
   theme catalog and custom JSON palettes. The GUI follows the TUI theme until
   you choose an independent override; switching colors preserves live terminals.

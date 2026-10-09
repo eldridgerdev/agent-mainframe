@@ -1,0 +1,5 @@
+# Native GUI debug-log viewer proof with isolated SQLite and offline fixtures.
+note:The isolated TUI is ready before native debug-log validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_PORT=1437 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1437"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-debug-log.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

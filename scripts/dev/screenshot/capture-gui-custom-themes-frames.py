@@ -244,8 +244,9 @@ try:
     close_picker()
     continuity()
     capture("005-custom-ocean-workspace.png", "The custom Ocean theme colors the live workspace and terminal while retaining session identity, terminal contents and the unsent composer draft.", ["Round invoice totals", "Invoice checks", "Send prompt"], 'getComputedStyle(document.querySelector(".sidebar")).backgroundColor==="rgb(32, 56, 71)"')
-    evaluate('location.reload()')
-    wait('!!document.querySelector("nav[aria-label=Workspace]")')
+    # Wait for a new JS realm; old-page DOM can survive briefly after reload().
+    evaluate('window.__themeReloadPending=true;location.reload()')
+    wait('window.__themeReloadPending!==true && !!document.querySelector("nav[aria-label=Workspace]")')
     wait('getComputedStyle(document.documentElement).getPropertyValue("--accent").trim()==="#90dce5"')
     click("Appearance")
     wait('document.querySelector("select[aria-label=Theme]")?.value==="custom:ocean"')

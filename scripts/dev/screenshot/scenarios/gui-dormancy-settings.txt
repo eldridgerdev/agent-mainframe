@@ -1,0 +1,5 @@
+# Native settings proof with an isolated GUI config and private fixture processes.
+note:The isolated TUI is ready before native dormancy-settings validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_PORT=1438 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1438"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-dormancy-settings.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-dormancy-settings-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

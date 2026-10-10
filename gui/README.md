@@ -641,6 +641,20 @@ Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
 processes on a private tmux server.
 
+Dormant features → **Settings** edits the global idle-minute and unattended-hour
+thresholds. Both must be exceeded for a feature to appear; either value at zero
+turns detection off. Saving refreshes the list and clears its selection without
+stopping anything. Refresh and confirmed stops read the latest thresholds from
+`~/.config/amf/config.json`. Restart an already running TUI to apply changed
+thresholds there. The form preserves unrelated config keys, refuses malformed
+or changed files, retains failed-save drafts and asks before discarding edits.
+Reload after a conflict before saving again. Settings saves from desktop windows
+are serialized; legacy TUI config writers and manual editors do not share that
+lock, so avoid simultaneous config saves. Four asserted native WSLg frames
+cover loading, discard protection, stale-save refusal and disabling detection
+through real Rust IPC. Reproduce with
+[`gui-dormancy-settings.txt`](../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
+
 ### PR Triage
 
 **PR Triage** on a Git feature lists the repository's open pull requests (or all

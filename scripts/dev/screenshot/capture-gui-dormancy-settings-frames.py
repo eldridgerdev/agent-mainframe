@@ -73,10 +73,13 @@ def wait(expression):
         if evaluate(expression):
             return
         time.sleep(0.1)
-    raise AssertionError(expression)
+    raise AssertionError(f"Timed out: {expression}; body={evaluate('document.body.innerText')}")
 
 
 def click(text):
+    # Listing dormancy loads Rust state asynchronously. Its Settings button
+    # is present but disabled until that load completes on slower runners.
+    wait(f'Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==={json.dumps(text)} && !b.disabled)')
     evaluate(
         f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )

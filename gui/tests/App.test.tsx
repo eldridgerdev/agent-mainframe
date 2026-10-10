@@ -741,7 +741,7 @@ it("opens dormant features from navigation and hands Open to the feature page wi
       case "dormancy_load": return {
         enabled: true, idle_minutes: 60, unattended_hours: 4, kill_editor_on_stop: true,
         checked_at: "2026-10-05T10:00:00Z", features: [{
-          project_name: "demo", workdir: "/demo", is_worktree: false, editor_alive: false,
+          project_name: "demo", workdir: "/demo", is_worktree: false, editor_alive: false, editors: [],
           idle_secs: 7200, unattended_secs: 86_400, observation: {
             target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
             tmux_session: "amf-my-feat", last_activity: "2026-10-05T08:00:00Z", last_accessed: "2026-10-04T10:00:00Z",

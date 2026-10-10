@@ -48,6 +48,8 @@ pub struct DormantFeatureView {
     pub is_worktree: bool,
     /// A tracked editor of this feature is still running.
     pub editor_alive: bool,
+    /// Exact tracked windows shown before an editor-only close confirmation.
+    pub editors: Vec<crate::gui_sessions::FeatureEditor>,
     /// Seconds since the agent last produced output.
     pub idle_secs: u64,
     /// Seconds since the feature was last opened in AMF.
@@ -187,11 +189,18 @@ pub fn load(gui: &mut GuiHandle) -> GuiResult<DormancyView> {
             let Some(last_activity) = scan.activity.get(&feature.tmux_session) else {
                 continue;
             };
+            let rows = match &app.db {
+                Some(db) => db
+                    .launched_editors_for_feature(&feature.id)
+                    .map_err(crate::gui_contract::GuiError::from)?,
+                None => Vec::new(),
+            };
             features.push(DormantFeatureView {
                 project_name: dormant.project_name.clone(),
                 workdir: dormant.workdir.to_string_lossy().into_owned(),
                 is_worktree: dormant.is_worktree,
                 editor_alive: dormant.editor_alive,
+                editors: crate::gui_sessions::feature_editors(app, &rows),
                 idle_secs: dormant.idle.as_secs(),
                 unattended_secs: dormant.unattended.as_secs(),
                 observation: DormantObservation {
@@ -550,6 +559,51 @@ mod tests {
             DormancyStopOutcome::Refused { reason, .. } => Some(*reason),
             _ => None,
         }
+    }
+
+    #[test]
+    fn listed_editor_identities_are_feature_scoped_and_read_only() {
+        let mut f = fixture();
+        let _file = f.attach_db();
+        let app = f.gui().app_for_workflow();
+        app.config.kill_editor_on_stop = false;
+        let before = serde_json::to_value(&app.store).unwrap();
+        let record = |id: &str, pid: i64, dedicated: bool| {
+            app.db
+                .as_ref()
+                .unwrap()
+                .record_launched_editor(
+                    id,
+                    None,
+                    crate::db::editors::EditorKind::Vscode,
+                    pid,
+                    Path::new("/tmp/worktree"),
+                    dedicated,
+                    "code --new-window",
+                )
+                .unwrap()
+                .id
+        };
+        let owned = record("quiet", std::process::id() as i64, true);
+        let pending = record("quiet", 0, false);
+        record("quiet", 999_999_999, true);
+        let other = record("quieter", std::process::id() as i64, true);
+        let view = load(f.gui()).unwrap();
+        let quiet = view
+            .features
+            .iter()
+            .find(|row| row.observation.target.feature_id == "quiet")
+            .unwrap();
+        assert_eq!(quiet.editors.len(), 2);
+        assert!(quiet.editors.iter().any(|row| row.id == owned));
+        assert!(quiet.editors.iter().any(|row| row.id == pending));
+        assert!(!quiet.editors.iter().any(|row| row.id == other));
+        assert!(quiet.editors.iter().all(|row| !row.closes_with_feature));
+        assert_eq!(
+            serde_json::to_value(&f.gui().app_for_workflow().store).unwrap(),
+            before
+        );
+        assert!(f.killed().is_empty());
     }
 
     #[test]

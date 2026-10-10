@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Desktop session bookmarks.** Save, open and remove sessions from workspace
+  navigation using the same nine slots as the TUI. A tenth bookmark evicts the
+  oldest; stale targets are removed safely. Opening preserves composer drafts
+  and leaves stopped sessions stopped. No migration is required.
+
 - **Desktop dormancy settings.** Open Settings from Dormant features to
   change the idle-minute and unattended-hour thresholds; either value at zero
   turns detection off. Saves refresh the desktop list, protect unsaved edits

@@ -74,6 +74,7 @@ import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
 import DormancyPanel from "./DormancyPanel";
+import BookmarksPanel from "./BookmarksPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
@@ -182,6 +183,7 @@ export default function App() {
     contextNote?: string | null;
   } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
+  const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
@@ -1131,6 +1133,8 @@ export default function App() {
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
           </button>
 
+          <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
+
           <button className="nav-item" onClick={() => setShowDebugLog(true)}>
             <Icon name="list" /><span className="nav-label">Debug log</span>
           </button>
@@ -1223,6 +1227,12 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {showBookmarks && <BookmarksPanel projects={projects} onOpen={(target) => {
+        openSession(target);
+        const session = projects.find(project => project.id === target.project_id)?.features
+          .find(feature => feature.id === target.feature_id)?.sessions.find(session => session.id === target.session_id);
+        if (session?.kind === "todos") setTabByFeature(current => ({ ...current, [target.feature_id]: TODOS_TAB }));
+      }} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
       {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>

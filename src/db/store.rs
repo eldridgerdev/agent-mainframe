@@ -144,8 +144,9 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let mut bookmark_stmt =
-        conn.prepare("SELECT project_id, feature_id, session_id FROM session_bookmarks")?;
+    let mut bookmark_stmt = conn.prepare(
+        "SELECT project_id, feature_id, session_id FROM session_bookmarks ORDER BY rowid",
+    )?;
     let session_bookmarks: Vec<SessionBookmark> = bookmark_stmt
         .query_map([], |row| {
             Ok(SessionBookmark {

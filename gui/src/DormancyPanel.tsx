@@ -1,3 +1,4 @@
+import { closeEditors, CloseEditorsResponse } from "./sessionsApi";
 import DormancySettingsPanel from "./DormancySettingsPanel";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -52,9 +53,9 @@ export function EditorReport({ editors }: { editors: EditorCleanup | null }) {
   </ul>;
 }
 
-function Row({ row, selected, disabled, onToggle, onOpen }: {
-  row: DormantFeatureView; selected: boolean; disabled: boolean;
-  onToggle: () => void; onOpen: () => void;
+function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, editorsStale }: {
+  row: DormantFeatureView; selected: boolean; disabled: boolean; editorsStale: boolean;
+  onToggle: () => void; onOpen: () => void; onCloseEditors: () => void;
 }) {
   const { observation } = row;
   return <li className={selected ? "dormancy-row dormancy-row-selected" : "dormancy-row"}>
@@ -72,6 +73,9 @@ function Row({ row, selected, disabled, onToggle, onOpen }: {
         <span>Unattended <strong>{humanize(row.unattended_secs)}</strong> · last opened {when(observation.last_accessed)}</span>
       </div>
     </div>
+    {row.editors.length > 0 && <button className="btn btn-ghost btn-sm" disabled={disabled || editorsStale || row.editors.every((editor) => editor.state === "not_owned")} onClick={onCloseEditors}
+      title={editorsStale ? "Refresh the list before confirming editors again" : "Close windows AMF opened; keep feature sessions running"}
+      aria-label={`Close editors for ${observation.feature_name}`}>Close editors</button>}
     <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onOpen}
       title="Opening a session counts as attention, so the feature stops being dormant">Open</button>
   </li>;
@@ -91,6 +95,10 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
+  const [editorConfirm, setEditorConfirm] = useState<DormantFeatureView | null>(null);
+  const [editorResult, setEditorResult] = useState<{ name: string; response: CloseEditorsResponse } | null>(null);
+  const [editorsStale, setEditorsStale] = useState(false);
+  const [closingEditors, setClosingEditors] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [selected, setSelected] = useState<Record<string, DormantObservation>>({});
   // The latest rendered selection, for code resuming after an `await`.
@@ -121,6 +129,7 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     // selection against that would pass the old list off as current. The
     // query's own error callout says what went wrong.
     if (fresh.isError || !fresh.data) return;
+    setEditorsStale(false);
     // A refreshed row is a fresh observation; a row that left the list leaves
     // the selection, and the user is told rather than left guessing. Read from
     // the selection as it is now, not as it was at the click, so a checkbox
@@ -155,7 +164,33 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     }
   }
 
-  const footer = results
+  async function closeConfirmedEditors() {
+    if (inFlight.current || !editorConfirm) return;
+    inFlight.current = true;
+    setClosingEditors(true);
+    setError(null);
+    try {
+      const response = await closeEditors(editorConfirm.observation.target, editorConfirm.editors.map((editor) => editor.id));
+      setEditorResult({ name: editorConfirm.observation.feature_name, response });
+      setEditorConfirm(null);
+      void query.refetch();
+    } catch (err) {
+      setEditorsStale(true);
+      setError(`${asGuiError(err).message}. Go back and refresh the list before confirming again.`);
+    } finally {
+      inFlight.current = false;
+      setClosingEditors(false);
+    }
+  }
+
+  const footer = editorConfirm
+    ? <><button className="btn btn-ghost" disabled={closingEditors} onClick={() => { if (!inFlight.current) { setEditorConfirm(null); setError(null); } }}>Back</button>
+      <button className="btn btn-danger" disabled={closingEditors || error !== null} onClick={() => void closeConfirmedEditors()}>
+        {closingEditors && <Spinner />}Close windows
+      </button></>
+    : editorResult
+      ? <button className="btn btn-primary" onClick={() => setEditorResult(null)}>Back to dormant features</button>
+    : results
     ? <><button className="btn btn-secondary" onClick={() => { setResults(null); setNotice(null); }}>Back to dormant features</button>
       <button className="btn btn-primary" onClick={onClose}>Done</button></>
     : confirming
@@ -176,12 +211,12 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     void query.refetch();
   }} />;
 
-  return <Modal label="Dormant features" title="Dormant features" size="lg" onClose={onClose}
-    dismissable={!stopping}
+  return <Modal label="Dormant features" title="Dormant features" size="lg" onClose={() => { if (!inFlight.current) onClose(); }}
+    dismissable={!stopping && !closingEditors}
     subtitle={view?.enabled
       ? `Running, idle over ${view.idle_minutes}m and not opened for over ${view.unattended_hours}h: nobody is watching these and nothing is happening in them.`
       : undefined}
-    headerActions={!results && !confirming && <><button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
+    headerActions={!editorConfirm && !editorResult && !results && !confirming && <><button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
       onClick={() => setShowSettings(true)}>Settings</button><button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
       onClick={() => void refresh()}>{query.isFetching && <Spinner />}Refresh</button></>}
     footer={footer}>
@@ -191,7 +226,18 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
       <p>Could not check dormancy: {asGuiError(query.error).message}</p>
     </div>}
 
-    {results ? <section aria-label="Stop results" className="dormancy-results">
+    {editorConfirm ? <section role="alertdialog" aria-label="Confirm closing dormant editors">
+      <p>Close editor windows for <strong>{editorConfirm.observation.feature_name}</strong>?</p>
+      <p>The feature and its sessions keep running. Unsaved changes in closed windows are lost.</p>
+      <ul aria-label="Confirmed editor windows">{editorConfirm.editors.map((editor) => <li key={editor.id}>
+        {editor.name} · {editor.state === "not_owned" ? "Not AMF's — left running" : editor.state === "opening" ? "Still opening" : "AMF opened this window"} · launched {when(editor.started_at)}
+      </li>)}</ul>
+      <p>A window AMF did not open, one whose process now belongs to something else, or one sharing its VS Code instance with other windows is left running and reported. A newly opened window requires a fresh list and confirmation.</p>
+    </section> : editorResult ? <section aria-label="Editor close results">
+      <p><strong>{editorResult.name}</strong>: the feature and its sessions keep running.</p>
+      <p>{editorResult.response.message}</p>
+      <EditorReport editors={editorResult.response.editors} />
+    </section> : results ? <section aria-label="Stop results" className="dormancy-results">
       <p>Each feature was checked again just before stopping. Only AMF's own tmux session and editor windows were touched.</p>
       <ul>
         {results.map((result) => <li key={key(result)} className={`dormancy-result dormancy-result-${result.outcome}`}>
@@ -223,7 +269,8 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
           <p className="muted">Longest idle first. Checked {when(view.checked_at)}. Select features to stop them; nothing is stopped until you confirm.</p>
           <ul className="dormancy-list" aria-label="Dormant features">
             {view.features.map((row) => <Row key={key(row.observation)} row={row}
-              selected={!!selected[key(row.observation)]} disabled={stopping}
+              selected={!!selected[key(row.observation)]} disabled={stopping || query.isFetching} editorsStale={editorsStale}
+              onCloseEditors={() => { setError(null); setEditorConfirm(row); }}
               onToggle={() => toggle(row)} onOpen={() => onOpenFeature(row.observation.target)} />)}
           </ul>
         </>)}

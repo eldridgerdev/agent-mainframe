@@ -871,6 +871,7 @@ export interface DormantFeatureView {
   workdir: string;
   is_worktree: boolean;
   editor_alive: boolean;
+  editors: import("./sessionsApi").FeatureEditor[];
   idle_secs: number;
   unattended_secs: number;
   observation: DormantObservation;

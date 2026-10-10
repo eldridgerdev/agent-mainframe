@@ -610,6 +610,9 @@ fn closing_editors_closes_only_owned_windows_and_refuses_an_unseen_one() {
     let mut child = lookalike(bin.path(), &workdir);
     let pid = child.id() as i64;
     std::thread::sleep(std::time::Duration::from_millis(200));
+    gui.app_for_workflow().config.kill_editor_on_stop = false;
+    let before =
+        serde_json::to_value(&gui.app_for_workflow().store.projects[0].features[0]).unwrap();
     let owned = record(&mut gui, pid, true, &workdir);
     // A live instance AMF does not own: listed, never closed.
     let foreign = record(&mut gui, std::process::id() as i64, false, &workdir);
@@ -640,6 +643,11 @@ fn closing_editors_closes_only_owned_windows_and_refuses_an_unseen_one() {
         "the foreign window is reported as left running"
     );
     let _ = child.wait();
+    assert_eq!(
+        serde_json::to_value(&gui.app_for_workflow().store.projects[0].features[0]).unwrap(),
+        before,
+        "editor-only close preserves status, sessions and attention even with stop cleanup disabled"
+    );
     let rows = gui
         .db()
         .unwrap()
@@ -652,4 +660,37 @@ fn closing_editors_closes_only_owned_windows_and_refuses_an_unseen_one() {
 
     let again = gui.close_editors(target(), vec![owned]).unwrap();
     assert!(again.already_closed);
+}
+
+#[test]
+fn editor_only_close_refuses_unseen_pending_launch_before_claiming_it() {
+    use crate::app::editor_ops::{PendingEditorLaunch, PendingLaunchState};
+
+    let root = tempfile::tempdir().unwrap();
+    let _seams = Seams::new(None, None);
+    let mut gui = handle(root.path(), ProjectStatus::Idle, running_tmux());
+    let _file = attach_db(&mut gui);
+    gui.app_for_workflow().config.kill_editor_on_stop = false;
+    let record = record(&mut gui, 0, false, &root.path().join("worktree"));
+    let state = Arc::new(Mutex::new(PendingLaunchState::Resolving));
+    gui.app_for_workflow()
+        .pending_editor_launches
+        .push(PendingEditorLaunch {
+            feature_id: FEATURE_ID.into(),
+            record_id: record.clone(),
+            kind: EditorKind::Vscode,
+            state: state.clone(),
+        });
+    let before =
+        serde_json::to_value(&gui.app_for_workflow().store.projects[0].features[0]).unwrap();
+    let error = gui.close_editors(target(), vec![]).unwrap_err();
+    assert_eq!(error.kind, GuiErrorKind::Conflict);
+    assert_eq!(*state.lock().unwrap(), PendingLaunchState::Resolving);
+    let response = gui.close_editors(target(), vec![record]).unwrap();
+    assert_eq!(response.editors.pending, ["VS Code"]);
+    assert_eq!(*state.lock().unwrap(), PendingLaunchState::Reclaim);
+    assert_eq!(
+        serde_json::to_value(&gui.app_for_workflow().store.projects[0].features[0]).unwrap(),
+        before
+    );
 }

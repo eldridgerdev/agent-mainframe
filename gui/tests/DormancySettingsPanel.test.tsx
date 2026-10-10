@@ -67,3 +67,33 @@ it("blocks duplicate saves and close while saving", async () => {
   finish(initial);
   await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
 });
+it.each(["Cancel", "Reload settings"])("blocks discard confirmation actions during a save after %s", async (action) => {
+  let fail!: (reason: unknown) => void;
+  vi.mocked(invoke).mockResolvedValueOnce(initial)
+    .mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }))
+    .mockResolvedValueOnce(initial);
+  const { onClose, onSaved } = mount();
+  await screen.findByDisplayValue("60");
+  change("Idle minutes", "30"); click(action); click("Save settings");
+  for (const name of ["Keep editing", "Discard changes"]) {
+    expect(screen.getByRole("button", { name })).toHaveProperty("disabled", true);
+    click(name);
+  }
+  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(onSaved).not.toHaveBeenCalled();
+  fail({ kind: "conflict", message: "Global config changed" });
+  await screen.findByRole("alert");
+  expect(screen.getByLabelText("Idle minutes")).toHaveProperty("value", "30");
+  for (const name of ["Keep editing", "Discard changes"]) {
+    expect(screen.getByRole("button", { name })).toHaveProperty("disabled", false);
+  }
+  click("Discard changes");
+  if (action === "Cancel") expect(onClose).toHaveBeenCalledOnce();
+  else {
+    await screen.findByDisplayValue("60");
+    expect(invoke).toHaveBeenLastCalledWith("dormancy_settings_load");
+    expect(onClose).not.toHaveBeenCalled();
+  }
+});

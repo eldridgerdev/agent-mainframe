@@ -77,8 +77,12 @@ export default function DormancySettingsPanel({ onClose, onSaved }: {
     </div>}
     {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">
       <p>Discard unsaved settings and {discard === "close" ? "close" : "reload"}?</p>
-      <button className="btn btn-secondary" onClick={() => setDiscard(null)}>Keep editing</button>
-      <button className="btn btn-warning" onClick={() => {
+      <button className="btn btn-secondary" disabled={busy} onClick={() => {
+        if (inFlight.current) return;
+        setDiscard(null);
+      }}>Keep editing</button>
+      <button className="btn btn-warning" disabled={busy} onClick={() => {
+        if (inFlight.current) return;
         const action = discard; setDiscard(null);
         if (action === "close") onClose(); else void load();
       }}>Discard changes</button>

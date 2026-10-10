@@ -50,7 +50,8 @@ Keep them current as the staged GUI scope grows.
 | Limited | Closing only a dormant feature's editor and deleting from the dormant list remain TUI actions. Four asserted native WSLg frames verify the list, confirmation, a confirm-time refusal and editor ownership through real Rust IPC with stand-in editors; macOS validation is open. |
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
-| Planned | Settings and the other workflows listed below, after code syntax highlighting. |
+| Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
+| Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
 preserves literal `$HOME`/`${name}` text in control-mode input. GUI terminals,
@@ -465,6 +466,19 @@ Completed increments and remaining work, in priority order:
   native WSLg frames
   ([`gui-prompt-overrides.txt`](../../scripts/dev/screenshot/scenarios/gui-prompt-overrides.txt))
   cover this increment.
+- [x] **Desktop debug-log viewer (2026-10-09).** Workspace navigation opens
+  bounded shared database history plus this process's pending entries, oldest
+  first, with exact level and context/message filters and explicit refresh.
+  Reads do not flush or clear history. Failed loads expose errors; failed
+  refreshes label previous results, and a failed reopen hides cached results.
+  File-only background messages remain in debug.log. Backend regressions and
+  GUI interactions cover external writes, ordering, bounds, read failures,
+  filtering, refresh/retry and retained session drafts. Four asserted native
+  WSLg frames verify the populated log, filters, fresh database entries and
+  failed refresh retaining labeled previous results. Reproduce with
+  [`gui-debug-log.txt`](../../scripts/dev/screenshot/scenarios/gui-debug-log.txt);
+  capture uses private fixtures, no AI calls and a separate development port.
+  macOS runtime validation remains open.
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.
   - [x] **VS Code and custom sessions (2026-10-07).** The New session dialog

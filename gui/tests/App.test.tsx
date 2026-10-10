@@ -951,6 +951,23 @@ it("hands a PR fix to the chosen agent composer once while preserving both sessi
   client.clear();
 });
 
+it("opens debug history from workspace navigation and preserves the session draft on close", async () => {
+  const client = await openFeature([session("Agent", "codex")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "debug_log_load"
+    ? Promise.resolve({ entries: [], limit: 1000, shared_history: true })
+    : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent" } });
+  fireEvent.click(screen.getByRole("button", { name: "Debug log", exact: true }));
+  const dialog = await screen.findByRole("dialog", { name: "Debug log" });
+  expect(await within(dialog).findByText("No log entries yet.")).toBeTruthy();
+  fireEvent.click(within(dialog).getAllByRole("button", { name: "Close", exact: true })[0]);
+  expect(screen.queryByRole("dialog", { name: "Debug log" })).toBeNull();
+  expect(draftInput().value).toBe("Keep this unsent");
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
 it.each(["PR Triage", "PR Review"])("opens %s from a project without choosing a feature", async (label) => {
   const client = await openFeature([], [], "stopped", true);
   const original = vi.mocked(invoke).getMockImplementation()!;

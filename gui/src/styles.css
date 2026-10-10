@@ -1449,3 +1449,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 :root[data-theme="dark"] .term-scrollback-new { color: var(--amber); }
 :root[data-theme="dark"] .term-scrollback-keys { color: var(--text-muted); }
 :root[data-theme="dark"] .term-scrollback-keys kbd { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+
+.debug-log-toolbar { flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }
+.debug-log-entries { list-style: none; padding: 0; margin: 0; }
+.debug-log-entry { padding: .75rem; border-bottom: 1px solid var(--border); }
+.debug-log-entry time { color: var(--text-muted); font-size: .85rem; }
+.debug-log-entry pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: .4rem 0 0; }
+.debug-log-debug strong { color: var(--text-muted); }
+.debug-log-info strong { color: var(--green); }
+.debug-log-warn strong { color: var(--amber); }
+.debug-log-error strong { color: var(--red); }

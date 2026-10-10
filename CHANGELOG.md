@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Desktop debug-log viewer.** Open recent AMF activity from workspace
+  navigation, filter by level or context/message, and refresh without reopening.
+  Load failures are shown alongside clearly labeled previous results.
+  No migration is required.
+
 - **PR Triage and PR Review from desktop projects.** Both buttons open the
   repository's PR picker directly, even when the project has no features.
   PR Review shows the selected PR's changes, saves file comments and a summary,

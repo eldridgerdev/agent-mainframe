@@ -31,6 +31,7 @@ use agent_mainframe::gui_contract::{
     StopFeatureResponse, StopSessionResponse, TodoAgentLaunchResponse, TodoDeleteChoice,
     TodoHostChoice, WorkspaceSnapshot,
 };
+use agent_mainframe::gui_debug_log::{self, DebugLogView};
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
@@ -1044,6 +1045,11 @@ fn learning_launch_agent(
 }
 
 #[tauri::command]
+async fn debug_log_load(state: State<'_, AppState>) -> Result<DebugLogView, GuiError> {
+    gui_debug_log::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+
+#[tauri::command]
 async fn dormancy_load(state: State<'_, AppState>) -> Result<DormancyView, GuiError> {
     gui_dormancy::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
 }
@@ -1519,6 +1525,7 @@ fn main() {
             supervised_edit_counts,
             supervised_edit_respond,
             dormancy_load,
+            debug_log_load,
             dormancy_stop,
             pr_review_begin,
             pr_review_snapshot,

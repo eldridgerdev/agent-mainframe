@@ -145,6 +145,21 @@ the complete interface for workflows marked Planned.
 
 Completed increments and remaining work, in priority order:
 
+- [x] **Session bookmarks (2026-10-10).** Workspace navigation provides the
+  shared nine-slot picker, add/remove and stable-session navigation. Duplicate
+  additions preserve slots; a tenth evicts the oldest. Refresh and stale-target
+  pruning use the shared store with optimistic conflict protection. Navigation
+  preserves composer drafts and never starts stopped sessions. Automated tests
+  cover roundtrip ordering, duplicate/eviction behavior, external slot shifts,
+  stale sessions, failed writes and frontend load/action failures. Four asserted
+  native Linux frames verify add/open/remove and retained composer drafts using
+  real IPC with private SQLite/Git/tmux and zero submitted fixture messages.
+  Full parallel Rust, all 368 frontend tests, both builds, formatting and strict
+  Clippy pass; all baseline Rust test names remain. Native proof is reproducible
+  with `scripts/dev/screenshot/scenarios/gui-bookmarks.txt`; macOS runtime
+  validation remains open.
+
+
 - [x] **Agent prompt composer (user-requested priority, 2026-10-04).** All four
   agent tabs offer local drafting and explicit submission. Drafts belong to
   sessions and survive navigation and refresh while the GUI window stays open.

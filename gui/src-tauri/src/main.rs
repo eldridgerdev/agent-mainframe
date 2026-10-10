@@ -66,6 +66,43 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 
 #[tauri::command]
+fn bookmarks_load(
+    state: State<AppState>,
+) -> Result<Vec<agent_mainframe::gui_bookmarks::BookmarkRow>, GuiError> {
+    agent_mainframe::gui_bookmarks::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+#[tauri::command]
+fn bookmarks_add(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Vec<agent_mainframe::gui_bookmarks::BookmarkRow>, GuiError> {
+    agent_mainframe::gui_bookmarks::add(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &target,
+    )
+}
+#[tauri::command]
+fn bookmarks_remove(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<Vec<agent_mainframe::gui_bookmarks::BookmarkRow>, GuiError> {
+    agent_mainframe::gui_bookmarks::remove(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &target,
+    )
+}
+#[tauri::command]
+fn bookmarks_resolve(
+    state: State<AppState>,
+    target: SessionTarget,
+) -> Result<SessionTarget, GuiError> {
+    agent_mainframe::gui_bookmarks::resolve(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
 fn theme_catalog() -> agent_mainframe::gui_themes::ThemeCatalog {
     agent_mainframe::gui_themes::load()
 }
@@ -1471,6 +1508,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            bookmarks_load,
+            bookmarks_add,
+            bookmarks_remove,
+            bookmarks_resolve,
             theme_catalog,
             screenshots_pr_document,
             screenshots_inline_image,

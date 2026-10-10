@@ -13,6 +13,7 @@
 
 pub mod automation;
 pub mod cli;
+pub mod gui_bookmarks;
 pub mod gui_contract;
 pub mod gui_debug_log;
 pub mod gui_diff;

@@ -725,3 +725,17 @@ each version tag. If a GUI build fails, the `amf` release is still published.
 The macOS build is ad-hoc signed, not signed with a Developer ID or notarized.
 Developer ID signing, notarization, Intel Mac builds and in-app updates remain
 packaging work.
+
+### Session bookmarks
+
+Open **Session bookmarks** in workspace navigation to save an existing session,
+open a saved target or remove its bookmark. These are the TUI's shared nine
+slots, in insertion order; duplicate additions keep their slot and adding a
+tenth evicts the oldest. The picker refreshes shared changes every three seconds
+and before actions. Removal uses session identity even if another interface
+shifted the slots. Opening a stale target removes it and reports the problem.
+Opening keeps unsent composer drafts and never starts a stopped session.
+
+Native Linux proof uses private SQLite/Git/tmux fixtures and offline harnesses:
+`scripts/dev/screenshot/scenarios/gui-bookmarks.txt`. macOS runtime validation
+remains open.

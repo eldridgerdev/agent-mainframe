@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Desktop dormancy settings.** Open Settings from Dormant features to
+  change the idle-minute and unattended-hour thresholds; either value at zero
+  turns detection off. Saves refresh the desktop list, protect unsaved edits
+  and refuse conflicting config changes. Restart an already open TUI to apply
+  the new thresholds there. No migration is required.
+
 - **Desktop debug-log viewer.** Open recent AMF activity from workspace
   navigation, filter by level or context/message, and refresh without reopening.
   Load failures are shown alongside clearly labeled previous results.

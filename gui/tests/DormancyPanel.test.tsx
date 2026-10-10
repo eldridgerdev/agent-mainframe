@@ -180,3 +180,23 @@ it("humanizes ages the way the TUI list does", () => {
   expect(humanize(3600)).toBe("1h");
   expect(humanize(86_400 * 3 + 5)).toBe("3d");
 });
+
+it("opens settings, saves thresholds and refreshes without retaining the old selection", async () => {
+  let saved = false;
+  mock((command) => {
+    if (command === "dormancy_load") return saved ? view({ enabled: false, idle_minutes: 0, features: [] }) : view();
+    if (command === "dormancy_settings_load") return { revision: "current", settings: { idle_minutes: 60, unattended_hours: 4 } };
+    if (command === "dormancy_settings_save") { saved = true; return {}; }
+    throw new Error(command);
+  });
+  mount();
+  await screen.findByText("Retry webhooks");
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Retry webhooks" }));
+  fireEvent.click(button("Settings"));
+  await screen.findByDisplayValue("60");
+  fireEvent.change(screen.getByLabelText("Idle minutes"), { target: { value: "0" } });
+  fireEvent.click(button("Save settings"));
+  expect(await screen.findByText("Dormancy detection is off")).toBeTruthy();
+  expect(screen.queryByText("Retry webhooks")).toBeNull();
+  expect(stopCalls()).toHaveLength(0);
+});

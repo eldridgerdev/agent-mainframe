@@ -174,6 +174,7 @@ impl From<&EditorKillReport> for EditorCleanupView {
 /// or saves anything.
 pub fn load(gui: &mut GuiHandle) -> GuiResult<DormancyView> {
     gui.refresh_snapshot()?;
+    crate::gui_settings::refresh(gui)?;
     let app = gui.app_for_workflow();
     let scan = app.scan_dormant_features();
     let mut features = Vec::new();
@@ -267,7 +268,10 @@ fn refused(reason: DormancyRefusal, message: impl Into<String>) -> DormancyStopO
 fn stop_one(gui: &mut GuiHandle, observed: &DormantObservation) -> DormancyStopOutcome {
     // Adopt anything another AMF process committed (a TUI stop, delete or
     // open) before judging, so "already stopped" means what it says.
-    if let Err(error) = gui.refresh_snapshot() {
+    if let Err(error) = gui
+        .refresh_snapshot()
+        .and_then(|_| crate::gui_settings::refresh(gui))
+    {
         return DormancyStopOutcome::Failed {
             message: error.message,
         };

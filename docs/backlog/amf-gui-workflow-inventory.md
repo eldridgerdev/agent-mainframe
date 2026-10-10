@@ -479,6 +479,23 @@ Completed increments and remaining work, in priority order:
   [`gui-debug-log.txt`](../../scripts/dev/screenshot/scenarios/gui-debug-log.txt);
   capture uses private fixtures, no AI calls and a separate development port.
   macOS runtime validation remains open.
+- [x] **Desktop dormancy settings (2026-10-09).** Dormant features offers
+  Settings for the global idle-minute and unattended-hour thresholds; either
+  zero disables detection. Explicit saves preserve unrelated and unknown JSON
+  keys, reject malformed or externally changed files and apply immediately to
+  the desktop list. Refresh and stop reload thresholds. Failed saves retain
+  drafts; close/reload protect unsaved edits. Desktop writers serialize their
+  saves; legacy TUI/manual config writes do not participate in that lock.
+  An already running TUI needs a restart. Three backend regressions and five
+  component interactions pass; all 360 frontend tests, the production build,
+  full parallel Rust suite (3,469 library and seven GUI tests passed; one
+  pre-existing ignored), both native builds, formatting and strict Clippy
+  pass. All 3,467 baseline library test names remain. macOS runtime validation
+  remains open. Four asserted native WSLg frames now verify
+  loaded thresholds, discard protection, stale-save refusal with retained
+  draft and the successful zero-threshold save disabling detection through
+  real Rust IPC. The private config file is checked after save. Reproduce with
+  [`gui-dormancy-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.
   - [x] **VS Code and custom sessions (2026-10-07).** The New session dialog

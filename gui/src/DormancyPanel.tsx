@@ -1,3 +1,4 @@
+import DormancySettingsPanel from "./DormancySettingsPanel";
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -90,6 +91,7 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
+  const [showSettings, setShowSettings] = useState(false);
   const [selected, setSelected] = useState<Record<string, DormantObservation>>({});
   // The latest rendered selection, for code resuming after an `await`.
   const selectedNow = useRef(selected);
@@ -167,13 +169,21 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
           Stop selected ({chosen.length})
         </button>}</>;
 
+  if (showSettings) return <DormancySettingsPanel onClose={() => setShowSettings(false)} onSaved={() => {
+    setShowSettings(false);
+    setSelected({});
+    setNotice(null);
+    void query.refetch();
+  }} />;
+
   return <Modal label="Dormant features" title="Dormant features" size="lg" onClose={onClose}
     dismissable={!stopping}
     subtitle={view?.enabled
       ? `Running, idle over ${view.idle_minutes}m and not opened for over ${view.unattended_hours}h: nobody is watching these and nothing is happening in them.`
       : undefined}
-    headerActions={!results && !confirming && <button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
-      onClick={() => void refresh()}>{query.isFetching && <Spinner />}Refresh</button>}
+    headerActions={!results && !confirming && <><button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
+      onClick={() => setShowSettings(true)}>Settings</button><button className="btn btn-ghost btn-sm" disabled={query.isFetching || stopping}
+      onClick={() => void refresh()}>{query.isFetching && <Spinner />}Refresh</button></>}
     footer={footer}>
     {error && <div className="callout callout-danger" role="alert"><p>{error}</p></div>}
     {query.isLoading && <p className="muted"><Spinner /> Checking tmux activity…</p>}
@@ -202,7 +212,7 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
       <p className="muted">Each one is checked again first. A feature that was opened, produced output, was stopped or deleted, lost its tmux session, or otherwise stopped being dormant since this list loaded is skipped and reported.</p>
     </section> : view && (!view.enabled
       ? <EmptyState icon="alert" title="Dormancy detection is off">
-          Set dormant_idle_minutes and dormant_last_accessed_hours above 0 in AMF's config to list idle, unattended features.
+          Open Settings and set both thresholds above 0 to list idle, unattended features.
         </EmptyState>
       : view.features.length === 0
         ? <EmptyState icon="check" title="Nothing is dormant right now">

@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Close dormant editors from desktop.** Dormant features now offers a
+  confirmed editor-only close that keeps the feature and its sessions running.
+  It shows the tracked windows, leaves unowned/shared editor instances alone,
+  and refuses newly opened windows until you refresh and confirm again.
+  Explicit close works even when automatic editor cleanup on stop is disabled.
+
 - **Desktop dormancy settings.** Open Settings from Dormant features to
   change the idle-minute and unattended-hour thresholds; either value at zero
   turns detection off. Saves refresh the desktop list, protect unsaved edits

@@ -636,10 +636,19 @@ Setting either key to `0` switches detection off. Select features and confirm
 the result lists what happened to each one: which editor windows were closed,
 which were left running and why, and which features were skipped because they
 changed. Showing a session's terminal counts as opening the feature, as in the
-TUI. Closing only an editor and deleting from this list remain TUI actions.
+TUI. **Close editors** beside a feature confirms its tracked windows and closes
+only windows AMF opened, with the same process-identity and shared-instance
+safeguards as the TUI's `e`. Its feature and agent/shell sessions keep running,
+even with automatic `kill_editor_on_stop` cleanup off. Unsaved editor changes
+are lost. Newly opened windows refuse an older confirmation; go back, refresh
+and confirm the current list. The result reports closed, left-running and
+still-opening windows. Deleting from this list remains a TUI action.
 Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
-processes on a private tmux server.
+processes on a private tmux server. Six more frames from
+`gui-dormant-editor-close.txt` verify editor-only confirmation, new-window
+refusal, refreshed confirmation and ownership results while all feature
+sessions keep running and automatic cleanup-on-stop is disabled.
 
 Dormant features → **Settings** edits the global idle-minute and unattended-hour
 thresholds. Both must be exceeded for a feature to appear; either value at zero

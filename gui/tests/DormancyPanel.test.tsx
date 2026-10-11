@@ -12,7 +12,7 @@ afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear(
 
 function row(id: string, name: string, idle: number, unattended: number, extra: Partial<DormantFeatureView> = {}): DormantFeatureView {
   return {
-    project_name: "Billing", workdir: `/work/${id}`, is_worktree: true, editor_alive: false,
+    project_name: "Billing", workdir: `/work/${id}`, is_worktree: true, editor_alive: false, editors: [],
     idle_secs: idle, unattended_secs: unattended, ...extra,
     observation: {
       target: { project_id: "project", feature_id: id }, feature_name: name, tmux_session: `amf-${id}`,
@@ -199,4 +199,95 @@ it("opens settings, saves thresholds and refreshes without retaining the old sel
   expect(await screen.findByText("Dormancy detection is off")).toBeTruthy();
   expect(screen.queryByText("Retry webhooks")).toBeNull();
   expect(stopCalls()).toHaveLength(0);
+});
+
+const ownedWindow = { id: "owned", name: "VS Code", state: "open" as const, closes_with_feature: false, started_at: "2026-10-05T08:00:00Z" };
+const foreignWindow = { ...ownedWindow, id: "foreign", state: "not_owned" as const };
+const editorView = () => view({ kill_editor_on_stop: false, features: [{ ...retry, editors: [ownedWindow, foreignWindow] }, docs] });
+const editorCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "close_editors");
+
+it("confirms the listed editor identities while preserving feature sessions and selection", async () => {
+  let release: (result: unknown) => void = () => {};
+  let attemptedDismiss = false;
+  mock((command) => {
+    if (command === "dormancy_load") return editorView();
+    if (command === "close_editors") {
+      // The IPC dispatch can precede React rendering the disabled controls.
+      fireEvent.click(button("Back"));
+      fireEvent.keyDown(window, { key: "Escape" });
+      attemptedDismiss = true;
+      return new Promise((resolve) => { release = resolve; });
+    }
+    throw new Error(command);
+  });
+  const { onClose } = mount();
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Select Retry webhooks" }));
+  fireEvent.click(button("Close editors for Retry webhooks"));
+  expect(screen.getByRole("alertdialog", { name: "Confirm closing dormant editors" })).toBeTruthy();
+  expect(screen.getByText(/The feature and its sessions keep running/)).toBeTruthy();
+  expect(screen.getByText(/Unsaved changes in closed windows are lost/)).toBeTruthy();
+  expect(screen.getByText(/Not AMF's — left running/)).toBeTruthy();
+  expect(editorCalls()).toHaveLength(0);
+  fireEvent.click(button("Back"));
+  expect(screen.getByRole("checkbox", { name: "Select Retry webhooks" })).toHaveProperty("checked", true);
+  fireEvent.click(button("Close editors for Retry webhooks"));
+  fireEvent.click(button("Close windows"));
+  fireEvent.click(button("Close windows"));
+  expect(attemptedDismiss).toBe(true);
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByRole("alertdialog", { name: "Confirm closing dormant editors" })).toBeTruthy();
+  expect(editorCalls()).toHaveLength(1);
+  expect(editorCalls()[0][1]).toEqual({ target: retry.observation.target, seen: ["owned", "foreign"] });
+  expect(button("Close windows").disabled).toBe(true);
+  release({ already_closed: false, message: "Closed one window", editors: {
+    killed: [{ name: "VS Code", processes: 2 }],
+    skipped: [{ name: "VS Code", reason: "AMF did not open this window", deliberate: true }], pending: [], summary: null,
+  } });
+  expect(await screen.findByRole("region", { name: "Editor close results" })).toBeTruthy();
+  expect(screen.getByText("Closed VS Code (2 processes ended)")).toBeTruthy();
+  expect(screen.getByText("Left VS Code running: AMF did not open this window")).toBeTruthy();
+  fireEvent.click(button("Back to dormant features"));
+  expect(screen.getByRole("checkbox", { name: "Select Retry webhooks" })).toHaveProperty("checked", true);
+  expect(stopCalls()).toHaveLength(0);
+});
+
+it("retains an editor refusal until returning to refresh and confirm the new list", async () => {
+  const newer = { ...ownedWindow, id: "new-window" };
+  let loads = 0;
+  mock((command) => {
+    if (command === "dormancy_load") return ++loads === 1 ? editorView() : view({ features: [{ ...retry, editors: [ownedWindow, newer] }] });
+    if (command === "close_editors") throw { kind: "conflict", message: "Another VS Code window was opened; review it and retry" };
+    throw new Error(command);
+  });
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Close editors for Retry webhooks" }));
+  fireEvent.click(button("Close windows"));
+  expect((await screen.findByRole("alert")).textContent).toContain("Another VS Code window");
+  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  expect(button("Close windows").disabled).toBe(true);
+  fireEvent.click(button("Back"));
+  expect(button("Close editors for Retry webhooks").disabled).toBe(true);
+  fireEvent.click(button("Refresh"));
+  await waitFor(() => expect(button("Close editors for Retry webhooks").disabled).toBe(false));
+  expect(loads).toBe(2);
+  fireEvent.click(button("Close editors for Retry webhooks"));
+  fireEvent.click(button("Close windows"));
+  await waitFor(() => expect(editorCalls()).toHaveLength(2));
+  expect(editorCalls()[1][1]).toEqual({ target: retry.observation.target, seen: ["owned", "new-window"] });
+  expect(stopCalls()).toHaveLength(0);
+});
+
+it("cannot close unowned editors or act on an initial failed load", async () => {
+  mock((command) => {
+    if (command === "dormancy_load") return view({ features: [{ ...retry, editors: [foreignWindow] }] });
+    throw new Error(command);
+  });
+  mount();
+  expect((await screen.findByRole("button", { name: "Close editors for Retry webhooks" })).hasAttribute("disabled")).toBe(true);
+  cleanup();
+  mock(() => { throw { kind: "internal", message: "Could not read editor records" }; });
+  mount();
+  expect((await screen.findByRole("alert")).textContent).toContain("Could not read editor records");
+  expect(screen.queryByRole("button", { name: /Close editors for/ })).toBeNull();
+  expect(editorCalls()).toHaveLength(0);
 });

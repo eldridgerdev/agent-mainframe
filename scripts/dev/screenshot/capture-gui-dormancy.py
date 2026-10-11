@@ -25,6 +25,9 @@ import tempfile
 import time
 import urllib.request
 
+editor_only = os.environ.get("AMF_GUI_CAPTURE_EDITOR_ONLY") == "1"
+port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
+
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 workspace = pathlib.Path(__file__).resolve().parents[3]
@@ -42,6 +45,10 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-dormancy-") as temporary:
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
     config = scratch / "config"
     state = scratch / "state"
+    data = scratch / "data"
+    cache = scratch / "cache"
+    data.mkdir()
+    cache.mkdir()
     repo = scratch / "billing-api"
     (config / "amf").mkdir(parents=True)
     (state / "amf").mkdir(parents=True)
@@ -49,12 +56,14 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-dormancy-") as temporary:
     # The smallest thresholds the config allows: idle over one minute and
     # unopened over one hour.
     (config / "amf/config.json").write_text(
-        '{"dormant_idle_minutes": 1, "dormant_last_accessed_hours": 1, "kill_editor_on_stop": true}\n'
+        '{"dormant_idle_minutes": 1, "dormant_last_accessed_hours": 1, "kill_editor_on_stop": ' + ('false' if editor_only else 'true') + '}\n'
     )
     env = os.environ.copy()
     env.update(
         XDG_CONFIG_HOME=str(config),
         XDG_STATE_HOME=str(state),
+        XDG_DATA_HOME=str(data),
+        XDG_CACHE_HOME=str(cache),
         GDK_BACKEND="x11",
         WEBKIT_INSPECTOR_HTTP_SERVER=inspector_address,
         AMF_TMUX_SOCKET=str(scratch / "dormancy-tmux.sock"),
@@ -118,28 +127,28 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-dormancy-") as temporary:
             ["sleep", "600"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
         )
 
-        # tauri.conf.json pins the frontend to Vite on 1420 (strictPort).
+        # The default build uses 1420; another port needs matching TAURI_CONFIG.
         try:
-            with socket.create_connection(("localhost", 1420), timeout=1):
-                raise RuntimeError("Port 1420 is already in use; stop the other Vite/Tauri dev server first")
+            with socket.create_connection(("localhost", port), timeout=1):
+                raise RuntimeError(f"Port {port} is already in use; stop the other Vite/Tauri dev server first")
         except OSError:
             pass
         vite = subprocess.Popen(
-            ["npm", "run", "dev"], cwd=workspace / "gui", stdout=vite_log,
+            ["npm", "run", "dev", "--", "--port", str(port)], cwd=workspace / "gui", stdout=vite_log,
             stderr=subprocess.STDOUT, start_new_session=True,
         )
         for _ in range(100):
             if vite.poll() is not None:
-                raise RuntimeError("The isolated Vite server failed; ensure port 1420 is free")
+                raise RuntimeError(f"The isolated Vite server failed; ensure port {port} is free")
             try:
-                with urllib.request.urlopen("http://localhost:1420/", timeout=1):
+                with urllib.request.urlopen(f"http://localhost:{port}/", timeout=1):
                     break
             except OSError:
                 time.sleep(0.25)
         else:
             raise RuntimeError("The isolated frontend did not become ready")
         gui = subprocess.Popen(
-            [str(workspace / "target/debug/amf-gui")], cwd=scratch, env=env,
+            [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))], cwd=scratch, env=env,
             stdout=gui_log, stderr=subprocess.STDOUT, start_new_session=True,
         )
         dbpath = config / "amf/amf.db"
@@ -175,7 +184,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-dormancy-") as temporary:
                 )
             for record, fid, pid, dedicated, command in [
                 ("editor-owned", "billing-retry", owned_editor, 1, "code --new-window"),
-                ("editor-foreign", "docs-refresh", foreign_editor.pid, 0, "code"),
+                ("editor-foreign", "billing-retry" if editor_only else "docs-refresh", foreign_editor.pid, 0, "code"),
             ]:
                 db.execute(
                     "INSERT INTO launched_editors(id,feature_id,session_id,kind,pid,worktree_path,dedicated,command,proc_started_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -200,10 +209,13 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-dormancy-") as temporary:
         )
         with sqlite3.connect(dbpath) as db:
             statuses = dict(db.execute("SELECT id,status FROM features").fetchall())
-            assert statuses == {
+            assert statuses == ({
+                "billing-retry": "idle", "docs-refresh": "idle",
+                "search-index": "idle", "checkout-flow": "idle",
+            } if editor_only else {
                 "billing-retry": "stopped", "docs-refresh": "stopped",
                 "search-index": "idle", "checkout-flow": "idle",
-            }, statuses
+            }), statuses
             remaining_editors = [row[0] for row in db.execute("SELECT id FROM launched_editors")]
             # The closed window's record is forgotten; the foreign one is kept
             # so `amf doctor` can still point at it.

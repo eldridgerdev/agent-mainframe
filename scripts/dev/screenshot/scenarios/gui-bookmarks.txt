@@ -1,0 +1,5 @@
+# Native shared session bookmark proof with private SQLite/Git/tmux and offline harnesses.
+note:The isolated TUI is ready before native session-bookmark validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_PORT=1441 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1441"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-bookmarks.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-bookmarks-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

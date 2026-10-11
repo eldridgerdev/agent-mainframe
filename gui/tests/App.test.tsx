@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import App from "../src/App";
 import type { Feature, FeatureSession, WorkspaceSnapshot } from "../src/api";
@@ -19,6 +19,7 @@ vi.mock("../src/TerminalPane", async () => {
 vi.mock("../src/TodoPanel", () => ({ default: () => null }));
 
 afterEach(() => {
+  notifyManager.setScheduler(callback => setTimeout(callback, 0));
   cleanup();
   vi.clearAllMocks();
   terminal.ready = true;
@@ -1000,5 +1001,72 @@ it("hides project PR actions for ordinary directories", async () => {
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   expect(screen.queryByRole("button", { name: "PR Triage" })).toBeNull();
   expect(screen.queryByRole("button", { name: "PR Review" })).toBeNull();
+  client.clear();
+});
+
+it.each(["codex", "todos"])("refreshes a TUI-created bookmarked feature before navigating to its %s session", async (kind) => {
+  const client = await openFeature([session("Original", "claude")]);
+  fireEvent.change(draftInput(), { target: { value: "Keep original unsent draft" } });
+  const stale = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  const added = { ...stale.projects[0].features[0], id: "tui-feature", name: "Created in TUI", sessions: [session("New session", kind)] };
+  const fresh = { ...stale, projects: [{ ...stale.projects[0], features: [...stale.projects[0].features, added] }] };
+  const target = { project_id: "project", feature_id: added.id, session_id: "New session" };
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let finishRefresh!: (snapshot: WorkspaceSnapshot) => void;
+  const refresh = new Promise<WorkspaceSnapshot>(resolve => { finishRefresh = resolve; });
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "bookmarks_load") return Promise.resolve([{ slot: 1, target, label: "TUI bookmark", stale: false }]);
+    if (command === "bookmarks_resolve") return Promise.resolve(target);
+    if (command === "get_snapshot") return refresh;
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "1. TUI bookmark" }));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_snapshot"));
+  expect(screen.getByRole("dialog", { name: "Session bookmarks" })).toBeTruthy();
+  expect(draftInput().value).toBe("Keep original unsent draft");
+  expect(screen.queryByRole("heading", { name: "Created in TUI" })).toBeNull();
+  // Cache notification can arrive after the local navigation render.
+  notifyManager.setScheduler(callback => setTimeout(callback, 50));
+  await act(async () => finishRefresh(fresh));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Session bookmarks" })).toBeNull());
+  expect(await screen.findByRole("heading", { name: "Created in TUI" })).toBeTruthy();
+  const tab = screen.getByRole("tab", { name: kind === "todos" ? "TODOs" : /New session/ });
+  expect(tab.getAttribute("aria-selected")).toBe("true");
+  // Another snapshot render must not leave navigation at the project fallback.
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  expect(screen.getByRole("heading", { name: "Created in TUI" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "my-feat", exact: true }));
+  expect(draftInput().value).toBe("Keep original unsent draft");
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_feature" || command === "start_session")).toBe(false);
+  client.clear();
+});
+
+it("retains the bookmark picker and current draft when workspace refresh fails, then retries navigation", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  fireEvent.change(draftInput(), { target: { value: "Keep unsent" } });
+  const snapshot = client.getQueryData<WorkspaceSnapshot>(["workspace-snapshot"])!;
+  const target = { project_id: "project", feature_id: "feature", session_id: "Agent" };
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let refreshes = 0;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "bookmarks_load") return Promise.resolve([{ slot: 1, target, label: "Agent bookmark", stale: false }]);
+    if (command === "bookmarks_resolve") return Promise.resolve(target);
+    if (command === "get_snapshot") return ++refreshes === 1 ? Promise.reject(new Error("Workspace unavailable")) : Promise.resolve(snapshot);
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "1. Agent bookmark" }));
+  const dialog = screen.getByRole("dialog", { name: "Session bookmarks" });
+  expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Workspace unavailable"));
+  expect(draftInput().value).toBe("Keep unsent");
+  const retry = within(dialog).getByRole("button", { name: "1. Agent bookmark" });
+  await waitFor(() => expect(retry.hasAttribute("disabled")).toBe(false));
+  fireEvent.click(retry);
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Session bookmarks" })).toBeNull());
+  expect(draftInput().value).toBe("Keep unsent");
+  expect(refreshes).toBe(2);
+  expect(promptCalls()).toHaveLength(0);
   client.clear();
 });

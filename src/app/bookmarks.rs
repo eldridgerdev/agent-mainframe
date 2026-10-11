@@ -19,6 +19,15 @@ impl App {
             return Ok(());
         };
 
+        self.bookmark_session_indices(pi, fi, si)
+    }
+
+    pub(crate) fn bookmark_session_indices(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        si: usize,
+    ) -> Result<()> {
         let bookmark = self.make_bookmark_for_indices(pi, fi, si);
 
         if let Some(pos) = self.bookmark_position(&bookmark) {
@@ -203,7 +212,7 @@ impl App {
         })
     }
 
-    fn resolve_bookmark_indices(
+    pub(crate) fn resolve_bookmark_indices(
         &self,
         bookmark: &SessionBookmark,
     ) -> Option<(usize, usize, usize)> {

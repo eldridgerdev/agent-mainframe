@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Desktop session bookmarks.** Save, open and remove sessions from workspace
+  navigation using the same nine slots as the TUI. A tenth bookmark evicts the
+  oldest; stale targets are removed safely. Opening preserves composer drafts
+  and leaves stopped sessions stopped. No migration is required.
+
 - **Close dormant editors from desktop.** Dormant features now offers a
   confirmed editor-only close that keeps the feature and its sessions running.
   It shows the tracked windows, leaves unowned/shared editor instances alone,

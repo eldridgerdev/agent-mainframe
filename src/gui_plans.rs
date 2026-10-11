@@ -676,6 +676,20 @@ pub fn act(
         apply_input(app, input.as_ref())?;
     }
 
+    let precall_checkpoint = match &app.mode {
+        AppMode::PlanInterview(state)
+            if matches!(
+                state.phase,
+                PlanInterviewPhase::Brief
+                    | PlanInterviewPhase::StaticQuestions
+                    | PlanInterviewPhase::AiConsent
+            ) =>
+        {
+            Some(state.precall_checkpoint())
+        }
+        _ => None,
+    };
+
     match action {
         PlanAction::Resume => app.resume_plan_interview_draft().map_err(GuiError::from)?,
         PlanAction::DiscardDraft => app.discard_plan_interview_draft(),
@@ -960,6 +974,12 @@ pub fn act(
             unreachable!()
         }
     }
+    if let AppMode::PromptPrecall(pending) = &mut app.mode
+        && let AppMode::PlanInterview(state) = pending.prior_mode.as_mut()
+        && state.phase == PlanInterviewPhase::Done
+    {
+        state.precall_checkpoint = precall_checkpoint;
+    }
     Ok(status_of(app))
 }
 
@@ -1182,6 +1202,115 @@ mod tests {
         let cancelled = act(&mut gui, &brief.step_key, PlanAction::PrecallCancel, None).unwrap();
         assert!(cancelled.precall.is_none());
         assert_eq!(cancelled.active.unwrap().phase, "brief");
+    }
+
+    #[test]
+    fn cancelling_real_synthesis_notice_restores_input_and_no_ai_consent() {
+        for starting_phase in [PlanInterviewPhase::Brief, PlanInterviewPhase::AiConsent] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut gui, target) = fixture(dir.path());
+            let brief = begin(&mut gui, &target, false).unwrap().active.unwrap();
+            let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+                panic!("interview missing");
+            };
+            state.questions.clear();
+            state.answers.clear();
+            state.phase = starting_phase;
+            state.brief = "Preserve quota checks".into();
+            state.editor = TextEditor::new(state.brief.clone());
+            // Resolve to an offline-capable engine without spawning it: the
+            // real action must stop at its pre-call gate on every platform.
+            state.ai_harness = Some(Some(AgentKind::Codex));
+            let view = status_of(gui.app_for_workflow()).active.unwrap();
+            let notice = act(
+                &mut gui,
+                &view.step_key,
+                PlanAction::FinishEarly,
+                (starting_phase == PlanInterviewPhase::Brief).then(|| PlanInput {
+                    text: "Preserve quota checks".into(),
+                    selected_option: None,
+                }),
+            )
+            .unwrap();
+            assert!(notice.precall.is_some());
+            let cancelled = act(
+                &mut gui,
+                &notice.active.unwrap().step_key,
+                PlanAction::PrecallCancel,
+                None,
+            )
+            .unwrap();
+            let restored = cancelled.active.unwrap();
+            assert_eq!(restored.phase, phase_name(starting_phase));
+            assert_eq!(restored.editor_text, "Preserve quota checks");
+            let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+                panic!("interview missing");
+            };
+            assert!(!state.synthesis_requested);
+            assert!(!state.skip_ai_rounds);
+            assert!(!state.ai_followups_opted_in);
+            assert!(state.precall_checkpoint.is_none());
+
+            // Retrying still requires approval; cancelling a second time
+            // must not make the later zero-token completion synthesize.
+            let retry = act(&mut gui, &restored.step_key, PlanAction::FinishEarly, None).unwrap();
+            assert!(retry.precall.is_some());
+            let restored = act(
+                &mut gui,
+                &retry.active.unwrap().step_key,
+                PlanAction::PrecallCancel,
+                None,
+            )
+            .unwrap()
+            .active
+            .unwrap();
+            let consent = if starting_phase == PlanInterviewPhase::Brief {
+                next(&mut gui, restored, "Preserve quota checks")
+            } else {
+                restored
+            };
+            let review = next(&mut gui, consent, "");
+            assert_eq!(review.phase, "review");
+            assert!(poll(&mut gui).precall.is_none());
+            assert!(gui.app_for_workflow().plan_interview_synthesis_bg.is_none());
+            assert!(!dir.path().join("AMF_PLAN.md").exists());
+            assert_eq!(brief.interview_key, review.interview_key);
+        }
+    }
+
+    #[test]
+    fn cancelling_real_followup_notice_restores_the_consent_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, target) = fixture(dir.path());
+        let brief = begin(&mut gui, &target, false).unwrap().active.unwrap();
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.questions.clear();
+        state.answers.clear();
+        let consent = next(&mut gui, brief, "Keep quota checks");
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        let notice = act(&mut gui, &consent.step_key, PlanAction::OptInAi, None).unwrap();
+        assert!(notice.precall.is_some());
+        let restored = act(
+            &mut gui,
+            &notice.active.unwrap().step_key,
+            PlanAction::PrecallCancel,
+            None,
+        )
+        .unwrap()
+        .active
+        .unwrap();
+        assert_eq!(restored.phase, "ai_consent");
+        let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        assert!(!state.ai_followups_opted_in);
+        assert!(gui.app_for_workflow().plan_interview_ai_bg.is_none());
+        assert_eq!(next(&mut gui, restored, "").phase, "review");
     }
 
     #[test]

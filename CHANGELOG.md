@@ -120,6 +120,10 @@ are tagged.
 
 ### Fixed
 
+- Cancelling a desktop planning agent call returns to the editable interview
+  step instead of getting stuck on “Finishing up…”. Entered answers and the
+  previous AI consent choice are preserved for retrying or drafting without AI.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

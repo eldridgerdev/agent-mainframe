@@ -3089,6 +3089,14 @@ pub enum PriorAnswerState {
     Cleared,
 }
 
+/// Transient return step for a cancelled GUI headless-call notice.
+pub(crate) struct PlanPrecallCheckpoint {
+    phase: PlanInterviewPhase,
+    ai_followups_opted_in: bool,
+    skip_ai_rounds: bool,
+    synthesis_requested: bool,
+}
+
 /// In-memory state for one plan-mode discovery interview.
 ///
 /// `pending_launch` is optional so the same state can also support on-demand
@@ -3104,6 +3112,10 @@ pub struct PlanInterviewState {
     /// Full Plan-mode interview or Quick Plan. See [`PlanInterviewMode`].
     pub kind: PlanInterviewMode,
     pub phase: PlanInterviewPhase,
+    /// The editable step before a GUI action entered `Done` and opened a
+    /// headless-call notice. Continue retains the prepared call state;
+    /// cancellation restores this step and its previous token consent.
+    pub(crate) precall_checkpoint: Option<PlanPrecallCheckpoint>,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
     pub brief: String,
@@ -3276,6 +3288,24 @@ pub struct PlanInterviewState {
 }
 
 impl PlanInterviewState {
+    pub(crate) fn precall_checkpoint(&self) -> PlanPrecallCheckpoint {
+        PlanPrecallCheckpoint {
+            phase: self.phase,
+            ai_followups_opted_in: self.ai_followups_opted_in,
+            skip_ai_rounds: self.skip_ai_rounds,
+            synthesis_requested: self.synthesis_requested,
+        }
+    }
+
+    pub(crate) fn restore_precall_checkpoint(&mut self) {
+        if let Some(checkpoint) = self.precall_checkpoint.take() {
+            self.phase = checkpoint.phase;
+            self.ai_followups_opted_in = checkpoint.ai_followups_opted_in;
+            self.skip_ai_rounds = checkpoint.skip_ai_rounds;
+            self.synthesis_requested = checkpoint.synthesis_requested;
+        }
+    }
+
     pub fn for_feature_creation(
         pending_launch: PreparedFeatureLaunch,
         questions: Vec<PlanQuestion>,
@@ -3378,6 +3408,7 @@ impl PlanInterviewState {
             interview_key,
             kind: PlanInterviewMode::Full,
             phase: PlanInterviewPhase::Brief,
+            precall_checkpoint: None,
             questions,
             question_index: 0,
             brief: String::new(),

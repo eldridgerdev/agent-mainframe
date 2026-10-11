@@ -11,6 +11,16 @@ milestone.
 These labels describe the code in this branch, not a packaged GUI release.
 Keep them current as the staged GUI scope grows.
 
+Released Linux package validation (2026-10-11) is recorded separately from these
+source capabilities. The rootless v0.48.0/v0.49.0 Debian GUI and musl TUI pair
+passes independent upgrades in both orders, native GUI reattachment, real TUI
+dashboard startup, shared-record/schema preservation and unchanged live tmux
+process identities. The GNU v0.48.0 TUI fails on Ubuntu 22.04 because it requires
+GLIBC 2.39. System dependency resolution/installers, AppImage, other architectures
+and macOS remain open; the package task is not complete. Reproduce with the
+[package validation guide](../development/linux-package-validation.md) and
+[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt).
+
 | Status | GUI workflow |
 | --- | --- |
 | Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, the rest of the TUI `s` picker (VS Code, the per-feature TODOs session and the effective `amf.json` custom sessions with icon, description, command, working directory, pre-check, on-stop and autolaunch), stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |

@@ -21,6 +21,14 @@ Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
 be on `PATH`. For a Mac, follow [macOS](#macos) below; on Windows, follow
 [Windows (WSL2)](#windows-wsl2).
 
+The [Linux package validation guide](../docs/development/linux-package-validation.md)
+reproduces rootless installation, independent upgrades in both orders and live
+session continuity for the released v0.48.0/v0.49.0 Debian GUI and musl TUI pair.
+It uses private install roots and host runtime dependencies; system installer,
+AppImage and other platform checks remain open. The released v0.48.0 GNU TUI
+requires GLIBC 2.39 and did not launch on the Ubuntu 22.04 validation host; use
+the musl TUI there. These release checks do not establish current-source parity.
+
 ## macOS
 
 Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs

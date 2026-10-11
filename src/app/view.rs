@@ -1035,6 +1035,7 @@ impl App {
             scroll_offset: 0,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker,
             from_view: Some(view),
             current_plan,
@@ -1057,6 +1058,7 @@ impl App {
                     state.content = content;
                     state.rendered_width = 0;
                     state.rendered_lines.clear();
+                    state.diagrams.reset();
                 }
                 self.push_toast_success("Markdown refreshed");
             }
@@ -1089,6 +1091,32 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn poll_markdown_diagrams(&mut self) -> bool {
+        let (diagrams, lines) = match &mut self.mode {
+            AppMode::MarkdownViewer(state) => (&mut state.diagrams, &mut state.rendered_lines),
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review => {
+                (&mut state.review_diagrams, &mut state.review_rendered_lines)
+            }
+            _ => return false,
+        };
+        if diagrams.poll(&mut self.diagram_worker) {
+            lines.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn markdown_diagrams_pending(&self) -> bool {
+        match &self.mode {
+            AppMode::MarkdownViewer(state) => state.diagrams.is_pending(),
+            AppMode::PlanInterview(state) if state.phase == PlanInterviewPhase::Review => {
+                state.review_diagrams.is_pending()
+            }
+            _ => false,
+        }
     }
 
     pub fn activate_leader(&mut self) {

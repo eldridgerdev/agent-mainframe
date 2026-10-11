@@ -2343,6 +2343,7 @@ pub struct MarkdownViewerState {
     pub scroll_offset: usize,
     pub rendered_width: u16,
     pub rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub diagrams: crate::mermaid::DiagramDocument,
     pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
     pub current_plan: bool,
@@ -3183,6 +3184,7 @@ pub struct PlanInterviewState {
     pub review_scroll_offset: usize,
     pub review_rendered_width: u16,
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub review_diagrams: crate::mermaid::DiagramDocument,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
     /// Start time and prompt-size estimate for a directed revision. The
@@ -3405,6 +3407,7 @@ impl PlanInterviewState {
             review_scroll_offset: 0,
             review_rendered_width: 0,
             review_rendered_lines: Vec::new(),
+            review_diagrams: crate::mermaid::DiagramDocument::default(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
             directed_feedback_started_at: None,

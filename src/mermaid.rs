@@ -306,6 +306,7 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
     check_cancelled(control)?;
     let (text, labels) = match &diagram {
         Diagram::Flowchart(db) => {
+            use selkie::diagrams::flowchart::EdgeStroke;
             let data = db.get_data();
             if data.vertices.len() > 32
                 || data.edges.len() > 64
@@ -314,6 +315,17 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
             {
                 return Err(
                     "Diagram exceeds the model limit (32 nodes / 64 edges / 8 groups)".into(),
+                );
+            }
+            // The ASCII renderer always draws a normal line with one target
+            // arrow. Other heads, directions and strokes would change meaning.
+            if data.edges.iter().any(|edge| {
+                edge.edge_type.as_deref() != Some("arrow_point")
+                    || edge.stroke != EdgeStroke::Normal
+            }) {
+                return Err(
+                    "Unsupported flowchart arrow types or strokes need source view in this MVP"
+                        .into(),
                 );
             }
             if data.vertices.values().any(|vertex| {
@@ -359,6 +371,17 @@ fn render_text(spec: &DiagramSpec, control: &RenderControl) -> Result<String, St
             use selkie::diagrams::sequence::LineType;
             if db.get_actors().len() > 8 || db.get_messages().len() > 64 {
                 return Err("Sequence exceeds the model limit (8 participants / 64 events)".into());
+            }
+            // Lifetime events are stored separately from messages, but the
+            // ASCII renderer draws every participant with a complete lifeline.
+            if db
+                .get_actors()
+                .keys()
+                .any(|name| db.is_created(name) || db.is_destroyed(name))
+            {
+                return Err(
+                    "Participant creation or destruction needs source view in this MVP".into(),
+                );
             }
             // Upstream's text renderer omits these constructs. Preserve source
             // rather than presenting an incomplete explanation as a diagram.
@@ -538,6 +561,39 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_flowchart_edges_keep_source() {
+        for edge in [
+            "---", "<-->", "~~~", "--x", "--o", "x--x", "o--o", "-.->", "==>",
+        ] {
+            let source = format!("flowchart TD\n A {edge} B");
+            assert_fallback_preserves_source(
+                &source,
+                "Unsupported flowchart arrow types or strokes need source view in this MVP",
+            );
+        }
+    }
+
+    fn assert_fallback_preserves_source(source: &str, reason: &str) {
+        assert_eq!(
+            render_diagram(&spec(source, 120), &RenderControl::default()),
+            DiagramResult::Fallback(reason.into()),
+            "{source}"
+        );
+        let markdown = format!("```mermaid\n{source}\n```");
+        let output = prepare(
+            &markdown,
+            120,
+            &mut DiagramDocument::default(),
+            &mut DiagramWorker::default(),
+        );
+        assert!(output.contains("Mermaid:"), "{output}");
+        assert!(!output.contains("mermaid · diagram"), "{output}");
+        for line in source.lines() {
+            assert!(output.contains(line), "{output}");
+        }
+    }
+
+    #[test]
     fn long_decision_borders_do_not_overlap_adjacent_nodes() {
         let DiagramResult::Rendered(lines) = render_diagram(
             &spec(
@@ -611,6 +667,21 @@ mod tests {
         assert!(output.contains('>') && output.contains('<'), "{output}");
         assert!(output.find("Open plan").unwrap() < output.find("Diagram").unwrap());
         assert!(output.find("Diagram").unwrap() < output.find("Source").unwrap());
+    }
+
+    #[test]
+    fn sequence_participant_lifetime_events_keep_source() {
+        for source in [
+            "sequenceDiagram\n participant A\n create participant B\n A->>B: Hello",
+            "sequenceDiagram\n participant A\n create actor B as Worker\n A->>B: Hello",
+            "sequenceDiagram\n A->>B: Hello\n destroy B\n A->>B: Goodbye",
+            "sequenceDiagram\n participant A\n create participant B\n A->>B: Hello\n destroy B\n A->>B: Goodbye",
+        ] {
+            assert_fallback_preserves_source(
+                source,
+                "Participant creation or destruction needs source view in this MVP",
+            );
+        }
     }
 
     #[test]

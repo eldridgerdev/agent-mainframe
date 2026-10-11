@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
+  OpenCode and Pi agents from workspace navigation, using the TUI's settings.
+  Project overrides keep precedence and existing sessions keep running. Unsaved
+  drafts are protected and conflicting config edits require a reload. No
+  migration is required.
+
 - **Desktop session bookmarks.** Save, open and remove sessions from workspace
   navigation using the same nine slots as the TUI. A tenth bookmark evicts the
   oldest; stale targets are removed safely. Opening preserves composer drafts

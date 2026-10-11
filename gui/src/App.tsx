@@ -73,6 +73,7 @@ import ProjectsSidebar from "./ProjectsSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
+import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import DebugLogPanel from "./DebugLogPanel";
@@ -182,6 +183,7 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
+  const [showAgentAvailability, setShowAgentAvailability] = useState(false);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
@@ -1147,6 +1149,8 @@ export default function App() {
 
           <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
 
+          <button className="nav-item" onClick={() => setShowAgentAvailability(true)}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
+
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
           </button>
@@ -1240,6 +1244,7 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
+      {showAgentAvailability && <AgentAvailabilityPanel onClose={() => setShowAgentAvailability(false)} onSaved={() => setShowAgentAvailability(false)} />}
       {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
         onOpenFeature={(target) => {
           setShowDormancy(false);

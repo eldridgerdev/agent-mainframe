@@ -52,6 +52,7 @@ Keep them current as the staged GUI scope grows.
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
+| Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
@@ -512,6 +513,22 @@ Completed increments and remaining work, in priority order:
   draft and the successful zero-threshold save disabling detection through
   real Rust IPC. The private config file is checked after save. Reproduce with
   [`gui-dormancy-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
+- [x] **Desktop global agent availability (2026-10-11).** Four harness choices
+  share the TUI extension config and effective-agent resolver. The desktop
+  settings writers share a lock and whole-document revision, retain unknown
+  fields and file permissions, and reject malformed known settings. The modal
+  protects unsaved drafts and refuses empty selections, duplicate saves and
+  dismissal while saving. Project-scoped editing and harness setup remain open.
+  Four asserted native WSLg frames and real Rust IPC verify loaded choices,
+  discard protection, stale-save refusal, persisted Codex/Pi choices, effective
+  new-session options and preservation of unrelated config/existing sessions.
+  Four new Rust regressions and six frontend interactions pass; the normal
+  parallel workspace suite (3,480 library tests + seven GUI tests; one existing
+  ignored), all 380 frontend tests, both executable builds, production frontend
+  build, formatting and strict all-target Clippy pass. macOS interaction
+  validation remains open.
+  Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
+
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.
   - [x] **VS Code and custom sessions (2026-10-07).** The New session dialog

@@ -14,6 +14,8 @@ import sys
 import time
 import urllib.request
 
+from owned_process import stop_owned_process_group
+
 import gi
 import websocket
 from Xlib import display
@@ -195,17 +197,20 @@ try:
     fake_code = owned_command[0].decode()
     with sqlite3.connect(dbpath) as db:
         workdir = db.execute("SELECT workdir FROM features WHERE id='billing-retry'").fetchone()[0]
-    extra_editor = int(subprocess.check_output(
-        ["setsid", "sh", "-c", '\"$@\" >/dev/null 2>&1 </dev/null & echo $!', "sh",
-         fake_code, "-c", "sleep 600 & wait", "--new-window", workdir], text=True).strip())
+    # Retain ownership until cleanup/reaping; a detached numeric PID can be
+    # reused after AMF closes the stand-in.
+    extra_editor = subprocess.Popen(
+        [fake_code, "-c", "sleep 600 & wait", "--new-window", workdir],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
     with sqlite3.connect(dbpath) as db:
         db.execute("INSERT INTO launched_editors(id,feature_id,session_id,kind,pid,worktree_path,dedicated,command,proc_started_at,started_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            ("editor-new", "billing-retry", None, "vscode", extra_editor, workdir, 1, "code --new-window", "", "2026-10-01T12:00:00Z"))
+            ("editor-new", "billing-retry", None, "vscode", extra_editor.pid, workdir, 1, "code --new-window", "", "2026-10-01T12:00:00Z"))
     click("Close windows")
     wait("!!document.querySelector('[role=alert]')")
     body = evaluate("document.body.innerText")
     assert "Another VS Code window was opened" in body, body
-    assert pid_running(owned_pid) and pid_running(extra_editor) and pid_running(foreign_pid)
+    assert pid_running(owned_pid) and extra_editor.poll() is None and pid_running(foreign_pid)
     # The intentional refusal is the subject of this frame.
     capture("003-editor-refused.png",
         "A stand-in window opened after confirmation, so Rust refuses the older window list before signalling any process. All editors and feature sessions still run; returning and refreshing is required.",
@@ -222,10 +227,10 @@ try:
     click("Close windows")
     wait("!!document.querySelector('[aria-label=\"Editor close results\"]')")
     for _ in range(50):
-        if not pid_running(owned_pid) and not pid_running(extra_editor):
+        if not pid_running(owned_pid) and extra_editor.poll() is not None:
             break
         time.sleep(0.1)
-    assert not pid_running(owned_pid) and not pid_running(extra_editor)
+    assert not pid_running(owned_pid) and extra_editor.poll() is not None
     assert pid_running(foreign_pid)
     assert all(tmux_alive(f"amf-{name}") for name in ["billing-retry", "docs-refresh", "search-index", "checkout-flow"])
     with sqlite3.connect(dbpath) as db:
@@ -242,9 +247,6 @@ try:
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]}) + "\n" for n in notes))
     print("PASS: Editor-only close, stale confirmation refusal and running session preservation verified", flush=True)
 finally:
-    if extra_editor and pid_running(extra_editor):
-        subprocess.run(["pkill", "-TERM", "-P", str(extra_editor)], check=False)
-        import os, signal
-        os.kill(extra_editor, signal.SIGTERM)
+    stop_owned_process_group(extra_editor)
     ws.close()
     x.close()

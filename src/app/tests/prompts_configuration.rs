@@ -359,6 +359,99 @@ fn migrate_app_config_is_noop_when_current() {
 }
 
 #[test]
+fn startup_config_migration_preserves_unknown_fields_and_unrelated_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let original = serde_json::json!({
+        "tmux_control_mode": true,
+        "diff_review_popup_hold_secs": 3.0,
+        "max_concurrent_agents": 9,
+        "extension": {"allowed_agents": ["codex"], "future": {"enabled": true}},
+        "future": {"precise_limit": u64::MAX, "nested": ["untouched", null]}
+    });
+    std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
+    let config = crate::app::setup::load_config_at(&path);
+    assert_eq!(config.config_version, APP_CONFIG_VERSION);
+    assert!(!config.tmux_control_mode);
+    assert_eq!(config.diff_review_popup_hold_secs, 1.5);
+    assert_eq!(config.max_concurrent_agents, 9);
+    assert_eq!(
+        config.extension.allowed_agents,
+        Some(vec![AgentKind::Codex])
+    );
+    let mut expected = original;
+    expected["config_version"] = APP_CONFIG_VERSION.into();
+    expected["tmux_control_mode"] = false.into();
+    expected["diff_review_popup_hold_secs"] = 1.5.into();
+    let migrated = std::fs::read(&path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&migrated).unwrap(),
+        expected
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+    crate::app::setup::load_config_at(&path);
+    assert_eq!(std::fs::read(&path).unwrap(), migrated);
+}
+
+#[test]
+fn startup_config_migration_does_not_expand_defaults_or_rewrite_newer_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{"future":true}"#).unwrap();
+    crate::app::setup::load_config_at(&path);
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"future":true,"config_version":APP_CONFIG_VERSION})
+    );
+    for version in [APP_CONFIG_VERSION, APP_CONFIG_VERSION + 1] {
+        let text = format!(
+            "{{ \"config_version\": {version}, \"tmux_control_mode\": true, \"diff_review_popup_hold_secs\": 3.0, \"future\": [1, 2] }}"
+        );
+        std::fs::write(&path, &text).unwrap();
+        let config = crate::app::setup::load_config_at(&path);
+        assert_eq!(config.config_version, version);
+        assert!(config.tmux_control_mode);
+        assert_eq!(config.diff_review_popup_hold_secs, 3.0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[test]
+fn startup_config_migration_leaves_invalid_files_and_creates_missing_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested/config.json");
+    let created = crate::app::setup::load_config_at(&path);
+    assert_eq!(created.config_version, APP_CONFIG_VERSION);
+    let persisted: AppConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted.config_version, APP_CONFIG_VERSION);
+    for text in [
+        "{",
+        "[]",
+        "null",
+        r#"{"config_version":"broken","future":true}"#,
+        r#"{"extension":null}"#,
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let config = crate::app::setup::load_config_at(&path);
+        assert_eq!(config.config_version, APP_CONFIG_VERSION);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[test]
 fn app_config_missing_diff_review_viewer_uses_amf_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);

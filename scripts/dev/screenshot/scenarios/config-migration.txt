@@ -1,0 +1,17 @@
+# Start with --config scripts/dev/screenshot/scenarios/config-migration-config.json.
+# UI frames show retained settings; the exact JSON assertion proves hidden keys.
+run:python3 -c 'import json,os,pathlib; p=pathlib.Path(os.environ["XDG_CONFIG_HOME"])/"amf/config.json"; actual=json.loads(p.read_text()); expected={"tmux_control_mode":False,"diff_review_popup_hold_secs":1.5,"max_concurrent_agents":9,"context_window_override":60123,"context_warning_percent":61,"context_critical_percent":91,"extension":{"allowed_agents":["codex"],"future":{"enabled":True}},"future":{"precise_limit":18446744073709551615,"nested":["untouched",None]},"config_version":1}; assert actual==expected,(actual,expected)'
+note:The TUI opens after migrating a pre-versioned config. An exact JSON assertion confirms that only the existing migration values changed and unknown outer and nested settings, including a full-width integer, survived.
+expect:0 projects, 0 features
+shot:migrated-config-dashboard
+wait:600
+key:w
+wait:600
+note:The context settings dialog retains the configured 60123-token override and 61/91 percent thresholds after startup migration. This dialog is closed without saving, so the original document is not rewritten by an explicit settings save.
+expect:Context Window Settings
+expect:60123
+expect:61
+expect:91
+shot:retained-context-settings
+key:Escape
+wait:200

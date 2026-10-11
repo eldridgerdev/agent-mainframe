@@ -120,6 +120,10 @@ are tagged.
 
 ### Fixed
 
+- **Keep custom settings when upgrading.** Starting either interface with an
+  older global config now preserves unrecognized settings while applying the
+  existing one-time defaults migration. No migration is required.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

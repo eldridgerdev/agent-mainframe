@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::project::{AgentKind, Feature, ProjectStore, SessionKind, VibeMode};
@@ -777,40 +778,77 @@ pub(crate) fn migrate_app_config(config: &mut AppConfig) -> bool {
 /// must leave all of that alone, so it reads through here instead — migrations
 /// are applied in memory only.
 pub fn read_config() -> AppConfig {
-    let config_path = crate::project::amf_config_dir().join("config.json");
-    let mut config: AppConfig = std::fs::read_to_string(&config_path)
+    read_config_at(&crate::project::amf_config_dir().join("config.json"))
+}
+
+fn read_config_at(path: &Path) -> AppConfig {
+    let mut config: AppConfig = std::fs::read(path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     migrate_app_config(&mut config);
     config
 }
 
-pub fn load_config() -> AppConfig {
-    let config_path = crate::project::amf_config_dir().join("config.json");
+/// Startup writes only migrated keys into the original document. A newer
+/// interface or extension may own fields this binary does not understand.
+pub(crate) fn load_config_at(path: &Path) -> AppConfig {
+    try_load_config_at(path).unwrap_or_else(|_| read_config_at(path))
+}
 
-    let config = if config_path.exists() {
-        let mut config: AppConfig = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if migrate_app_config(&mut config) {
-            let _ = std::fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap_or_default(),
-            );
+fn try_load_config_at(path: &Path) -> anyhow::Result<AppConfig> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    // Share the desktop settings lock and read after acquiring it so startup
+    // cannot overwrite a settings save made while it was waiting.
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))?;
+    lock.lock()?;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let (config, value) = if let Some(bytes) = bytes {
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            value.is_object(),
+            "Global config must contain a JSON object"
+        );
+        let mut config: AppConfig = serde_json::from_value(value.clone())?;
+        let before = serde_json::to_value(&config)?;
+        if !migrate_app_config(&mut config) {
+            return Ok(config);
         }
-        config
+        let after = serde_json::to_value(&config)?;
+        for (key, migrated) in after.as_object().expect("AppConfig is an object") {
+            if before.get(key) != Some(migrated) {
+                value[key] = migrated.clone();
+            }
+        }
+        (config, value)
     } else {
         let config = AppConfig::default();
-        let dir = config_path.parent().unwrap();
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).unwrap_or_default(),
-        );
-        config
+        let value = serde_json::to_value(&config)?;
+        (config, value)
     };
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    if let Ok(metadata) = std::fs::metadata(path) {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    serde_json::to_writer_pretty(&mut temp, &value)?;
+    temp.flush()?;
+    temp.persist(path).map_err(|error| error.error)?;
+    Ok(config)
+}
+
+pub fn load_config() -> AppConfig {
+    let config = load_config_at(&crate::project::amf_config_dir().join("config.json"));
 
     if let Some(ref theme) = config.opencode_theme {
         let _ = update_opencode_theme(theme);

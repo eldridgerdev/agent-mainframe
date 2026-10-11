@@ -514,3 +514,24 @@ If double-width glyph fidelity or true video output ever becomes a hard
 requirement, revisit this path — but the lightweight ANSI-grid renderer
 covers AMF's actual dashboard UI (no wide glyphs in the chrome itself)
 today.
+
+### Native Learning proof
+
+`scenarios/gui-learning.txt` exercises the desktop reader and question engine
+through real Tauri IPC against private SQLite, Git worktrees and tmux. The
+offline Codex fixture refuses non-fixture checkouts and headless commands
+without a read-only sandbox. It records requests and receives terminal input
+locally; no paid harness runs.
+
+Eleven frames cover repository and diff reading, line/hunk selection, a starter
+question and unsent-close protection, a saved answer reloaded after reopening,
+a threaded follow-up, intent relabelling, editable keep-as-TODO cancellation and
+save, resource-warning cancellation/approval, and an editable unsent handoff.
+SQLite and receiver assertions verify the answer/TODO/session links, unchanged
+state on cancellation, linked-session reuse and zero submitted agent messages.
+The proof does not validate paid execution, other harnesses, deep dives, drift
+notices, stopped-session resume or macOS desktop interactions.
+
+Local direct runs can set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY`
+to reuse a matching desktop build; its compiled dev URL must use the same port.
+The isolated capture workflow builds the requested ref at the default port 1420.

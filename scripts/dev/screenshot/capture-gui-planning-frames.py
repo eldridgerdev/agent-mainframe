@@ -113,6 +113,10 @@ captured_frames = set()
 
 def capture(name, note, expects, expression=None, allow_error=False):
     wait('document.fonts.status==="loaded"')
+    for text in expects:
+        wait(f"document.body.innerText.includes({json.dumps(text)})")
+    if expression:
+        wait(expression)
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)

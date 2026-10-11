@@ -201,6 +201,20 @@ def render(grid, rows, cols, font_size, theme_name, out_path):
 
     font = load_font(FONT_CANDIDATES, font_size)
     bold_font = load_font(BOLD_FONT_CANDIDATES, font_size)
+    # DejaVu Sans Mono has no Braille glyphs. Terminal emulators fall back
+    # to another font for these Mermaid connectors; do the same per cell.
+    braille_font = next(
+        (
+            ImageFont.truetype(path, font_size)
+            for path in (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            )
+            if Path(path).exists()
+        ),
+        None,
+    )
     if font is None:
         print(
             "warning: DejaVuSansMono.ttf not found, falling back to Pillow default "
@@ -234,6 +248,8 @@ def render(grid, rows, cols, font_size, theme_name, out_path):
                 draw.rectangle([x0, y0, x0 + cell_w - 1, y0 + cell_h - 1], fill=bg)
             if char != " ":
                 use_font = bold_font if (state.bold and bold_font) else font
+                if "\u2800" <= char <= "\u28ff" and braille_font:
+                    use_font = braille_font
                 draw.text((x0 + 1, y0 + 1), char, font=use_font, fill=fg)
                 if state.bold and not bold_font:
                     draw.text((x0 + 2, y0 + 1), char, font=use_font, fill=fg)

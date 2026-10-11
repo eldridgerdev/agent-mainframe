@@ -26,6 +26,8 @@ reviewed.
   estimated cost.
 - Supports guided planning, supervised edits, final diff review, and GitHub PR
   review workflows.
+- Renders basic [Mermaid flowcharts and sequences](docs/mermaid-mvp.md) in the
+  terminal Markdown viewer and plan review, with a source toggle.
 - Explains code you didn't write: browse a repository read-only and ask an
   agent about any file, hunk, or line range, with the answers kept per project.
 - Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and

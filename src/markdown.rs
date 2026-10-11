@@ -9,6 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     highlight::{HighlightRequest, highlight_source, style_for_class},
+    mermaid::{DiagramDocument, DiagramResult, DiagramSpec, MAX_DIAGRAMS, MAX_SOURCE_BYTES},
     theme::Theme,
 };
 
@@ -33,6 +34,7 @@ pub enum MarkdownViewScope {
 #[derive(Clone)]
 pub struct RenderedMarkdown {
     pub lines: Vec<Line<'static>>,
+    pub(crate) diagram_requests: Vec<DiagramSpec>,
 }
 
 #[derive(Clone, Copy)]
@@ -418,6 +420,26 @@ pub fn render_markdown(
     width: usize,
     source_path: Option<&Path>,
 ) -> RenderedMarkdown {
+    render_markdown_inner(markdown, theme, width, source_path, None)
+}
+
+pub(crate) fn render_markdown_with_diagrams(
+    markdown: &str,
+    theme: &Theme,
+    width: usize,
+    source_path: Option<&Path>,
+    diagrams: &DiagramDocument,
+) -> RenderedMarkdown {
+    render_markdown_inner(markdown, theme, width, source_path, Some(diagrams))
+}
+
+fn render_markdown_inner(
+    markdown: &str,
+    theme: &Theme,
+    width: usize,
+    source_path: Option<&Path>,
+    diagrams: Option<&DiagramDocument>,
+) -> RenderedMarkdown {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -427,12 +449,12 @@ pub fn render_markdown(
 
     let parser = Parser::new_ext(markdown, options);
     let mut renderer = MarkdownRenderer::new(theme, width.max(24), source_path);
+    renderer.diagram_document = diagrams;
+    renderer.diagram_width = width;
     for event in parser {
         renderer.handle(event);
     }
-    RenderedMarkdown {
-        lines: renderer.finish(),
-    }
+    renderer.finish()
 }
 
 struct MarkdownRenderer<'a> {
@@ -451,6 +473,10 @@ struct MarkdownRenderer<'a> {
     current_footnote: Option<FootnoteState>,
     last_block_kind: Option<EmittedBlockKind>,
     in_table_head: bool,
+    diagram_document: Option<&'a DiagramDocument>,
+    diagram_width: usize,
+    diagram_requests: Vec<DiagramSpec>,
+    diagram_count: usize,
 }
 
 impl<'a> MarkdownRenderer<'a> {
@@ -470,6 +496,10 @@ impl<'a> MarkdownRenderer<'a> {
             current_footnote: None,
             last_block_kind: None,
             in_table_head: false,
+            diagram_document: None,
+            diagram_width: width,
+            diagram_requests: Vec::new(),
+            diagram_count: 0,
         }
     }
 
@@ -662,7 +692,7 @@ impl<'a> MarkdownRenderer<'a> {
         }
     }
 
-    fn finish(mut self) -> Vec<Line<'static>> {
+    fn finish(mut self) -> RenderedMarkdown {
         self.finish_text_block();
         self.finish_code_block();
         self.finish_table();
@@ -675,7 +705,10 @@ impl<'a> MarkdownRenderer<'a> {
                 Style::default().fg(self.theme.text_muted.to_color()),
             )));
         }
-        self.lines
+        RenderedMarkdown {
+            lines: self.lines,
+            diagram_requests: self.diagram_requests,
+        }
     }
 
     fn push_text(&mut self, text: &str) {
@@ -901,6 +934,92 @@ impl<'a> MarkdownRenderer<'a> {
         };
 
         self.begin_block(EmittedBlockKind::CodeBlock);
+
+        let is_mermaid = code
+            .language
+            .as_deref()
+            .and_then(|lang| lang.split_whitespace().next())
+            == Some("mermaid");
+        if is_mermaid && self.diagram_document.is_some_and(|doc| !doc.show_source) {
+            self.diagram_count += 1;
+            let width = self.diagram_width.saturating_sub(code.prefix.width + 2);
+            let fallback = if self.diagram_count > MAX_DIAGRAMS {
+                Some("Diagram limit reached (16 per document)".to_string())
+            } else if code.code.len() > MAX_SOURCE_BYTES {
+                Some("Diagram exceeds the 16 KiB source limit".to_string())
+            } else {
+                let spec = DiagramSpec {
+                    source: code.code.clone(),
+                    width,
+                };
+                if !self.diagram_requests.contains(&spec) {
+                    self.diagram_requests.push(spec);
+                }
+                match self
+                    .diagram_document
+                    .and_then(|doc| doc.result(&code.code, width))
+                {
+                    Some(DiagramResult::Rendered(lines)) => {
+                        let style = Style::default().fg(self.theme.text.to_color());
+                        let border = Style::default().fg(self.theme.border_focus.to_color());
+                        let available = self.diagram_width.saturating_sub(code.prefix.width);
+                        let label = if available >= 20 {
+                            "mermaid · diagram"
+                        } else if available >= 11 {
+                            "mermaid"
+                        } else {
+                            ""
+                        };
+                        self.lines.push(prefix_line(
+                            &code.prefix,
+                            vec![Span::styled(
+                                format_box_bar("╭─", label, available, '─'),
+                                border,
+                            )],
+                        ));
+                        for line in lines {
+                            // Connector rows are already laid out in display cells; never wrap them.
+                            self.lines.push(prefix_line(
+                                &code.prefix,
+                                vec![
+                                    Span::styled("│ ", border),
+                                    Span::styled(line.clone(), style),
+                                ],
+                            ));
+                        }
+                        self.lines.push(prefix_line(
+                            &code.prefix,
+                            vec![Span::styled(
+                                format_box_bar("╰─", "", available, '─'),
+                                border,
+                            )],
+                        ));
+                        return;
+                    }
+                    Some(DiagramResult::Fallback(reason)) => Some(reason.clone()),
+                    None => Some("Rendering diagram… (source below)".to_string()),
+                }
+            };
+            if let Some(reason) = fallback {
+                let prefix = combine_prefixes(
+                    &code.prefix,
+                    &styled_prefix(
+                        "Mermaid: ".to_string(),
+                        Style::default().fg(self.theme.warning.to_color()),
+                    ),
+                );
+                self.lines.extend(wrap_inline_nodes(
+                    &[InlineNode::Text {
+                        text: reason,
+                        style: Style::default().fg(self.theme.warning.to_color()),
+                        atomic: false,
+                    }],
+                    self.diagram_width.max(1),
+                    &prefix,
+                    &code.prefix,
+                ));
+            }
+        }
 
         let frame_style = Style::default().fg(self.theme.border_focus.to_color());
         let label_style = Style::default()

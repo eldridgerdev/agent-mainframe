@@ -6,7 +6,7 @@ import { Modal } from "./ui";
 
 export interface BookmarkRow { slot: number; target: SessionTarget; label: string; stale: boolean }
 export default function BookmarksPanel({ projects, onOpen, onClose }: {
-  projects: Project[]; onOpen: (target: SessionTarget) => void; onClose: () => void;
+  projects: Project[]; onOpen: (target: SessionTarget) => void | Promise<void>; onClose: () => void;
 }) {
   const query = useQuery({ queryKey: ["bookmarks"], queryFn: () => invoke<BookmarkRow[]>("bookmarks_load"),
     retry: false, staleTime: 0, refetchInterval: 3000 });
@@ -27,7 +27,7 @@ export default function BookmarksPanel({ projects, onOpen, onClose }: {
     try {
       if (command === "bookmarks_resolve") {
         const fresh = await invoke<SessionTarget>(command, { target });
-        onOpen(fresh); onClose();
+        await onOpen(fresh); onClose();
       } else {
         await invoke(command, { target });
       }

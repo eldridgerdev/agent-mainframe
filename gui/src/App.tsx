@@ -329,12 +329,15 @@ export default function App() {
   // project or feature disappears (deleted from the TUI, for instance).
   useEffect(() => {
     if (!workspace.data) return;
+    // Query notifications can lag behind a cache write and local navigation.
+    // Wait for this render to see the latest snapshot before deleting a view.
+    if (workspace.data !== queryClient.getQueryData(SNAPSHOT_KEY)) return;
     if (!view || (view.kind !== "todos" && !selectedProject)) {
       setView(projects[0] ? { kind: "project", projectId: projects[0].id } : null);
     } else if (view.kind === "feature" && !selectedFeature) {
       setView({ kind: "project", projectId: view.projectId });
     }
-  }, [workspace.data, view, selectedProject, selectedFeature, projects]);
+  }, [workspace.data, view, selectedProject, selectedFeature, projects, queryClient]);
 
   useEffect(() => {
     if (!workspace.data) return;
@@ -481,6 +484,21 @@ export default function App() {
       }));
       setComposerFocusKey(key);
     }
+  }
+
+  async function openBookmarkedSession(target: SessionTarget) {
+    // The bookmark resolver can see TUI writes before our workspace poll.
+    // Cancel an older poll, then publish a fresh authoritative snapshot before
+    // navigating or choosing the synthetic TODOs tab.
+    await queryClient.cancelQueries({ queryKey: SNAPSHOT_KEY });
+    const fresh = await queryClient.fetchQuery({
+      queryKey: SNAPSHOT_KEY, queryFn: getSnapshot, staleTime: 0, retry: false,
+    });
+    const session = fresh.projects.find(project => project.id === target.project_id)?.features
+      .find(feature => feature.id === target.feature_id)?.sessions.find(session => session.id === target.session_id);
+    if (!session) throw new Error("Bookmarked session no longer exists. Refresh bookmarks and try again.");
+    openSession(target);
+    if (session.kind === "todos") setTabByFeature(current => ({ ...current, [target.feature_id]: TODOS_TAB }));
   }
 
   function openPromptLibrary(target: SessionTarget | null = null) {
@@ -1227,12 +1245,7 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
-      {showBookmarks && <BookmarksPanel projects={projects} onOpen={(target) => {
-        openSession(target);
-        const session = projects.find(project => project.id === target.project_id)?.features
-          .find(feature => feature.id === target.feature_id)?.sessions.find(session => session.id === target.session_id);
-        if (session?.kind === "todos") setTabByFeature(current => ({ ...current, [target.feature_id]: TODOS_TAB }));
-      }} onClose={() => setShowBookmarks(false)} />}
+      {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
       {prReviewProject && <Suspense fallback={<Modal label="Loading PR Review" title="Loading PR Review" onClose={() => setPrReviewProject(null)}><Spinner /></Modal>}>

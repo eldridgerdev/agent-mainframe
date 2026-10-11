@@ -42,6 +42,8 @@ import {
   createFeature,
   createProject,
   deleteFeature,
+  dormancyDelete,
+  DormantDeleteRequest,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -274,6 +276,7 @@ export default function App() {
     isWorktree: boolean;
     unfinished: number | null;
     todoHost?: TodoHostPrompt;
+    dormant?: DormantDeleteRequest;
   } | null>(null);
   const deleteFeatureInFlight = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -1045,8 +1048,8 @@ export default function App() {
   }
 
   const deleteFeatureMutation = useMutation({
-    mutationFn: ({ target, todos, todoHost }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null }) =>
-      deleteFeature(target, todos, todoHost),
+    mutationFn: ({ target, todos, todoHost, dormant }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null; dormant?: DormantDeleteRequest }) =>
+      dormant ? dormancyDelete(dormant, todos, todoHost) : deleteFeature(target, todos, todoHost),
     onSettled: () => {
       deleteFeatureInFlight.current = false;
     },
@@ -1079,7 +1082,7 @@ export default function App() {
   function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
-    deleteFeatureMutation.mutate({ target, todos, todoHost });
+    deleteFeatureMutation.mutate({ target, todos, todoHost, dormant: deleteFeatureDialog?.dormant });
   }
 
   const stopFeatureMutation = useMutation({
@@ -1240,7 +1243,15 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
-      {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
+      {showDormancy && !deleteFeatureDialog && <DormancyPanel onClose={() => setShowDormancy(false)}
+        onDeleteFeature={(row) => setDeleteFeatureDialog({
+          target: row.observation.target,
+          projectName: row.project_name,
+          featureName: row.observation.feature_name,
+          isWorktree: row.is_worktree,
+          unfinished: null,
+          dormant: { observation: row.observation, workdir: row.workdir, is_worktree: row.is_worktree },
+        })}
         onOpenFeature={(target) => {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
@@ -1618,8 +1629,9 @@ export default function App() {
           unfinished={deleteFeatureDialog.unfinished}
           todoHost={deleteFeatureDialog.todoHost}
           busy={deleteFeatureMutation.isPending}
+          dormant={!!deleteFeatureDialog.dormant}
           onConfirm={(todos, todoHost) => requestDeleteFeature(deleteFeatureDialog.target, todos, todoHost)}
-          onClose={() => setDeleteFeatureDialog(null)}
+          onClose={() => { if (!deleteFeatureInFlight.current) setDeleteFeatureDialog(null); }}
         />
       )}
 

@@ -53,9 +53,9 @@ export function EditorReport({ editors }: { editors: EditorCleanup | null }) {
   </ul>;
 }
 
-function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, editorsStale }: {
+function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, onDelete, editorsStale }: {
   row: DormantFeatureView; selected: boolean; disabled: boolean; editorsStale: boolean;
-  onToggle: () => void; onOpen: () => void; onCloseEditors: () => void;
+  onToggle: () => void; onOpen: () => void; onCloseEditors: () => void; onDelete: () => void;
 }) {
   const { observation } = row;
   return <li className={selected ? "dormancy-row dormancy-row-selected" : "dormancy-row"}>
@@ -76,6 +76,8 @@ function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, editor
     {row.editors.length > 0 && <button className="btn btn-ghost btn-sm" disabled={disabled || editorsStale || row.editors.every((editor) => editor.state === "not_owned")} onClick={onCloseEditors}
       title={editorsStale ? "Refresh the list before confirming editors again" : "Close windows AMF opened; keep feature sessions running"}
       aria-label={`Close editors for ${observation.feature_name}`}>Close editors</button>}
+    <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onDelete}
+      aria-label={`Delete ${observation.feature_name}`}>Delete</button>
     <button className="btn btn-ghost btn-sm" disabled={disabled} onClick={onOpen}
       title="Opening a session counts as attention, so the feature stops being dormant">Open</button>
   </li>;
@@ -84,9 +86,10 @@ function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, editor
 /// Running features that are idle *and* unattended (the TUI's `z`), with an
 /// explicitly confirmed stop. The backend re-checks every selected feature
 /// before stopping it, so this list is a proposal, never the authority.
-export default function DormancyPanel({ onClose, onOpenFeature }: {
+export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature }: {
   onClose: () => void;
   onOpenFeature: (target: FeatureTarget) => void;
+  onDeleteFeature: (row: DormantFeatureView) => void;
 }) {
   const query = useQuery({
     queryKey: DORMANCY_KEY,
@@ -271,6 +274,7 @@ export default function DormancyPanel({ onClose, onOpenFeature }: {
             {view.features.map((row) => <Row key={key(row.observation)} row={row}
               selected={!!selected[key(row.observation)]} disabled={stopping || query.isFetching} editorsStale={editorsStale}
               onCloseEditors={() => { setError(null); setEditorConfirm(row); }}
+              onDelete={() => onDeleteFeature(row)}
               onToggle={() => toggle(row)} onOpen={() => onOpenFeature(row.observation.target)} />)}
           </ul>
         </>)}

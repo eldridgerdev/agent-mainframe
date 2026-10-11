@@ -1,5 +1,5 @@
 //! Desktop dormancy: which running features are idle *and* unattended, and an
-//! explicitly confirmed stop for the ones the user picks.
+//! explicitly confirmed stop or deletion for the ones the user picks.
 //!
 //! Detection is the TUI's own engine (`app::dormant`: tmux `window_activity`
 //! for idleness, `Feature::last_accessed` for attention, the configured
@@ -11,7 +11,7 @@
 //!
 //! What this module adds is what a *delayed* confirmation needs. A listed row
 //! carries the readings it was listed on ([`DormantObservation`]), and the
-//! stop re-checks each selected feature against current state immediately
+//! stop or deletion re-checks each selected feature against current state immediately
 //! before stopping it. A feature that was deleted, already stopped,
 //! restarted, opened, produced output, or simply is no longer dormant is
 //! refused with a stated reason rather than stopped on the strength of an old
@@ -24,7 +24,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::app::editor_ops::{EditorKillReport, SkipReason};
-use crate::gui_contract::{FeatureTarget, GuiHandle, GuiResult, SessionTarget};
+use crate::gui_contract::{
+    DeleteFeatureResponse, FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget,
+    TodoDeleteChoice, TodoHostChoice,
+};
 use crate::project::ProjectStatus;
 
 #[derive(Debug, Clone, Serialize)]
@@ -274,83 +277,135 @@ fn refused(reason: DormancyRefusal, message: impl Into<String>) -> DormancyStopO
     }
 }
 
-fn stop_one(gui: &mut GuiHandle, observed: &DormantObservation) -> DormancyStopOutcome {
+/// The exact row used to open Delete feature. Checkout and name checks keep
+/// the destructive confirmation tied to what the user saw.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DormantDeleteRequest {
+    pub observation: DormantObservation,
+    pub workdir: String,
+    pub is_worktree: bool,
+}
+
+/// Recheck dormancy at every deletion step, including TODO choices, before
+/// handing off to the existing shared deletion engine. Never touch attention:
+/// opening this confirmation is not opening the feature's terminal.
+pub fn delete(
+    gui: &mut GuiHandle,
+    request: DormantDeleteRequest,
+    todos: Option<TodoDeleteChoice>,
+    todo_host: Option<TodoHostChoice>,
+) -> GuiResult<DeleteFeatureResponse> {
+    let (pi, fi) =
+        validate_observation(gui, &request.observation).map_err(|outcome| match outcome {
+            DormancyStopOutcome::Refused { message, .. } => GuiError::conflict(format!(
+                "Not deleted: {message}. Refresh Dormant features and confirm again"
+            )),
+            DormancyStopOutcome::Failed { message } => GuiError::from(anyhow::anyhow!(message)),
+            DormancyStopOutcome::Stopped { .. } => unreachable!("validation never stops a feature"),
+        })?;
+    let feature = &gui.app_for_workflow().store.projects[pi].features[fi];
+    if feature.name != request.observation.feature_name
+        || feature.workdir.to_string_lossy() != request.workdir
+        || feature.is_worktree != request.is_worktree
+    {
+        return Err(GuiError::conflict(
+            "The feature name or checkout changed. Refresh Dormant features and confirm again",
+        ));
+    }
+    gui.delete_feature_from_current_store(request.observation.target, todos, todo_host)
+}
+
+fn validate_observation(
+    gui: &mut GuiHandle,
+    observed: &DormantObservation,
+) -> Result<(usize, usize), DormancyStopOutcome> {
     // Adopt anything another AMF process committed (a TUI stop, delete or
     // open) before judging, so "already stopped" means what it says.
     if let Err(error) = gui
         .refresh_snapshot()
         .and_then(|_| crate::gui_settings::refresh(gui))
     {
-        return DormancyStopOutcome::Failed {
+        return Err(DormancyStopOutcome::Failed {
             message: error.message,
-        };
+        });
     }
     let app = gui.app_for_workflow();
     let Some((pi, fi)) = app.store.locate_feature_by_id(
         Some(&observed.target.project_id),
         &observed.target.feature_id,
     ) else {
-        return refused(
+        return Err(refused(
             DormancyRefusal::Deleted,
             "It was deleted after the list was loaded",
-        );
+        ));
     };
     let feature = &app.store.projects[pi].features[fi];
     if feature.status == ProjectStatus::Stopped {
-        return refused(DormancyRefusal::AlreadyStopped, "It is already stopped");
+        return Err(refused(
+            DormancyRefusal::AlreadyStopped,
+            "It is already stopped",
+        ));
     }
     if !app.tmux.session_exists(&feature.tmux_session) {
-        return refused(
+        return Err(refused(
             DormancyRefusal::SessionGone,
             "Its tmux session is gone (it may have crashed, or the tmux server restarted), so there is nothing left to stop",
-        );
+        ));
     }
     if feature.tmux_session != observed.tmux_session {
-        return refused(
+        return Err(refused(
             DormancyRefusal::Restarted,
             "Its tmux session changed after the list was loaded",
-        );
+        ));
     }
     if app.feature_tmux_session_is_shared(pi, fi) {
-        return refused(
+        return Err(refused(
             DormancyRefusal::SharedSession,
             "Other features share its live tmux session, so stopping it would stop them too",
-        );
+        ));
     }
     if feature.last_accessed > observed.last_accessed {
-        return refused(
+        return Err(refused(
             DormancyRefusal::Opened,
             "It was opened in AMF after the list was loaded",
-        );
+        ));
     }
     let Some(scan) = app.scan_dormant_features() else {
-        return refused(
+        return Err(refused(
             DormancyRefusal::DormancyOff,
             "Dormancy detection is switched off in config",
-        );
+        ));
     };
     if scan
         .activity
         .get(&feature.tmux_session)
         .is_some_and(|at| *at > observed.last_activity)
     {
-        return refused(
+        return Err(refused(
             DormancyRefusal::Output,
             "Its agent produced output after the list was loaded",
-        );
+        ));
     }
     if !scan
         .features
         .iter()
         .any(|dormant| dormant.pi == pi && dormant.fi == fi)
     {
-        return refused(
+        return Err(refused(
             DormancyRefusal::NoLongerDormant,
             "It is no longer idle and unattended",
-        );
+        ));
     }
 
-    match app.stop_feature_reporting(pi, fi) {
+    Ok((pi, fi))
+}
+
+fn stop_one(gui: &mut GuiHandle, observed: &DormantObservation) -> DormancyStopOutcome {
+    let (pi, fi) = match validate_observation(gui, observed) {
+        Ok(indices) => indices,
+        Err(outcome) => return outcome,
+    };
+    match gui.app_for_workflow().stop_feature_reporting(pi, fi) {
         Ok(report) => DormancyStopOutcome::Stopped {
             editors: report.as_ref().map(EditorCleanupView::from),
         },
@@ -559,6 +614,255 @@ mod tests {
             DormancyStopOutcome::Refused { reason, .. } => Some(*reason),
             _ => None,
         }
+    }
+
+    fn delete_request(view: &DormancyView, id: &str) -> DormantDeleteRequest {
+        let row = view
+            .features
+            .iter()
+            .find(|row| row.observation.target.feature_id == id)
+            .unwrap();
+        DormantDeleteRequest {
+            observation: row.observation.clone(),
+            workdir: row.workdir.clone(),
+            is_worktree: row.is_worktree,
+        }
+    }
+
+    // Even a regression that accidentally reaches the concrete TUI deletion
+    // worker can only target this test's temporary directories and unique,
+    // nonexistent tmux names. No paid harness or user checkout is involved.
+    fn deletion_fixture(is_worktree: bool) -> (Fixture, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let prefix = format!(
+            "amf-delete-test-{}",
+            tmp.path().file_name().unwrap().to_string_lossy()
+        );
+        let mut f = fixture();
+        let mut live = HashSet::new();
+        {
+            let app = f.gui().app_for_workflow();
+            let project = &mut app.store.projects[0];
+            project.repo = tmp.path().join("repo");
+            std::fs::create_dir_all(&project.repo).unwrap();
+            for feature in &mut project.features {
+                feature.workdir = tmp.path().join(&feature.id);
+                std::fs::create_dir_all(&feature.workdir).unwrap();
+                feature.is_worktree = is_worktree;
+                feature.tmux_session = format!("{prefix}-{}", feature.id);
+                live.insert(feature.tmux_session.clone());
+            }
+        }
+        for (session, _, _) in f.activity.lock().unwrap().iter_mut() {
+            *session = session.replacen("amf", &prefix, 1);
+        }
+        let (tmux, killed) = tmux(f.activity.clone(), Arc::new(Mutex::new(live)));
+        f.gui().app_for_workflow().tmux = Box::new(tmux);
+        f.killed = killed;
+        (f, tmp)
+    }
+
+    #[test]
+    fn deletes_a_confirmed_dormant_feature_and_preserves_the_checkout() {
+        let (mut f, _tmp) = deletion_fixture(false);
+        let db_file = f.attach_db();
+        let view = load(f.gui()).unwrap();
+        let request = delete_request(&view, "quiet");
+        let checkout = std::path::PathBuf::from(&request.workdir);
+        std::fs::write(checkout.join("keep.txt"), "uncommitted work").unwrap();
+        let last_accessed = request.observation.last_accessed;
+        assert_eq!(
+            f.gui().app_for_workflow().store.projects[0].features[0].last_accessed,
+            last_accessed
+        );
+
+        let response = delete(f.gui(), request.clone(), None, None).unwrap();
+        assert!(matches!(response, DeleteFeatureResponse::Deleted { .. }));
+        let persisted = crate::db::AmfDb::open(db_file.path())
+            .unwrap()
+            .load_store()
+            .unwrap();
+        assert!(persisted.locate_feature_by_id(None, "quiet").is_none());
+        assert!(persisted.locate_feature_by_id(None, "quieter").is_some());
+        assert_eq!(
+            std::fs::read_to_string(checkout.join("keep.txt")).unwrap(),
+            "uncommitted work"
+        );
+        assert!(matches!(
+            f.gui().app_for_workflow().mode,
+            crate::app::AppMode::Normal
+        ));
+        assert_eq!(
+            delete(f.gui(), request, None, None).unwrap_err().kind,
+            GuiErrorKind::Conflict
+        );
+    }
+
+    #[test]
+    fn dormant_delete_rechecks_before_applying_todo_disposition_and_host_choices() {
+        use crate::db::todos::{TodoPriority, TodoScope};
+        let (mut f, _tmp) = deletion_fixture(true);
+        let _file = f.attach_db();
+        let view = load(f.gui()).unwrap();
+        let request = delete_request(&view, "quiet");
+        let (worktree_list, project_list) = {
+            let db = f.gui().app_for_workflow().db.as_ref().unwrap();
+            let worktree_list = db
+                .load_or_create_todo_list(
+                    &TodoScope::Worktree {
+                        project_id: PROJECT.into(),
+                        workdir: request.workdir.clone(),
+                    },
+                    Some("quiet"),
+                )
+                .unwrap();
+            db.add_todo(
+                &worktree_list.id,
+                "keep unfinished",
+                None,
+                TodoPriority::Med,
+            )
+            .unwrap();
+            let project_list = db
+                .load_or_create_todo_list(
+                    &TodoScope::Project {
+                        project_id: PROJECT.into(),
+                    },
+                    Some("quiet"),
+                )
+                .unwrap();
+            db.add_todo(&project_list.id, "project work", None, TodoPriority::Med)
+                .unwrap();
+            (worktree_list, project_list)
+        };
+        assert!(matches!(
+            delete(f.gui(), request.clone(), None, None).unwrap(),
+            DeleteFeatureResponse::NeedsTodoDisposition { unfinished: 1 }
+        ));
+        let response = delete(
+            f.gui(),
+            request.clone(),
+            Some(TodoDeleteChoice::MoveToProject),
+            None,
+        )
+        .unwrap();
+        let DeleteFeatureResponse::NeedsTodoHost { prompt } = response else {
+            panic!("expected host choice");
+        };
+        assert_eq!(prompt.list_id, project_list.id);
+        assert_eq!(prompt.todo_count, 2);
+        assert!(
+            prompt
+                .candidates
+                .iter()
+                .all(|row| row.feature_id != "quiet")
+        );
+        // Cancelling either prompt requires no command and has changed no data.
+        {
+            let app = f.gui().app_for_workflow();
+            let db = app.db.as_ref().unwrap();
+            assert_eq!(db.todos(&worktree_list.id).unwrap().len(), 1);
+            assert_eq!(db.todos(&project_list.id).unwrap().len(), 1);
+            assert_eq!(
+                app.store.projects[0].features[0].last_accessed,
+                request.observation.last_accessed
+            );
+        }
+        // Activity between TODO prompts refuses even an explicit delete choice.
+        f.activity.lock().unwrap()[0].2 = Utc::now().timestamp();
+        let err = delete(
+            f.gui(),
+            request,
+            Some(TodoDeleteChoice::Delete),
+            Some(TodoHostChoice {
+                list_id: prompt.list_id,
+                feature_id: Some("quieter".into()),
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind, GuiErrorKind::Conflict);
+        assert!(err.message.contains("produced output"));
+        let db = f.gui().app_for_workflow().db.as_ref().unwrap();
+        assert_eq!(db.todos(&worktree_list.id).unwrap().len(), 1);
+        assert_eq!(db.todos(&project_list.id).unwrap().len(), 1);
+        assert_eq!(f.status("quiet"), ProjectStatus::Idle);
+        assert!(f.killed().is_empty());
+    }
+
+    #[test]
+    fn dormant_delete_refuses_changed_observations_and_checkout_identity() {
+        for change in [
+            "opened",
+            "output",
+            "stopped",
+            "restarted",
+            "shared",
+            "off",
+            "threshold",
+            "name",
+            "workdir",
+            "worktree",
+            "deleted",
+        ] {
+            let (mut f, _tmp) = deletion_fixture(false);
+            let view = load(f.gui()).unwrap();
+            let request = delete_request(&view, "quiet");
+            match change {
+                "output" => f.activity.lock().unwrap()[0].2 = Utc::now().timestamp(),
+                _ => {
+                    let app = f.gui().app_for_workflow();
+                    let feature = &mut app.store.projects[0].features[0];
+                    match change {
+                        "opened" => feature.touch(),
+                        "stopped" => feature.status = ProjectStatus::Stopped,
+                        "restarted" => feature.tmux_session += "-restarted",
+                        "shared" => {
+                            app.store.projects[0].features[1].tmux_session =
+                                feature.tmux_session.clone()
+                        }
+                        "off" => app.config.dormant_idle_minutes = 0,
+                        "threshold" => app.config.dormant_last_accessed_hours = 100,
+                        "name" => feature.name += "-renamed",
+                        "workdir" => feature.workdir = feature.workdir.join("moved"),
+                        "worktree" => feature.is_worktree = true,
+                        "deleted" => {
+                            app.store.projects[0].features.remove(0);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            let before = serde_json::to_value(&f.gui().app_for_workflow().store).unwrap();
+            let err = delete(f.gui(), request, Some(TodoDeleteChoice::Delete), None).unwrap_err();
+            assert_eq!(
+                err.kind,
+                GuiErrorKind::Conflict,
+                "{change}: {}",
+                err.message
+            );
+            assert_eq!(
+                serde_json::to_value(&f.gui().app_for_workflow().store).unwrap(),
+                before,
+                "{change}"
+            );
+            assert!(f.killed().is_empty(), "{change}");
+        }
+    }
+
+    #[test]
+    fn dormant_delete_reads_external_store_changes_before_confirming() {
+        let (mut f, _tmp) = deletion_fixture(false);
+        let file = f.attach_db();
+        let view = load(f.gui()).unwrap();
+        let request = delete_request(&view, "quiet");
+        let external = crate::db::AmfDb::open(file.path()).unwrap();
+        let mut store = external.load_store().unwrap();
+        store.projects[0].features[0].touch();
+        external.save_store(&store).unwrap();
+        let err = delete(f.gui(), request, None, None).unwrap_err();
+        assert!(err.message.contains("opened in AMF"));
+        assert!(f.killed().is_empty());
+        assert_eq!(external.load_store().unwrap().projects[0].features.len(), 4);
     }
 
     #[test]

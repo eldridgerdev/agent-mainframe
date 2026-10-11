@@ -34,9 +34,9 @@ function mock(handler: Handler) {
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
-  const onClose = vi.fn(); const onOpenFeature = vi.fn();
-  render(<QueryClientProvider client={client}><DormancyPanel onClose={onClose} onOpenFeature={onOpenFeature} /></QueryClientProvider>);
-  return { onClose, onOpenFeature };
+  const onClose = vi.fn(); const onOpenFeature = vi.fn(); const onDeleteFeature = vi.fn();
+  render(<QueryClientProvider client={client}><DormancyPanel onClose={onClose} onOpenFeature={onOpenFeature} onDeleteFeature={onDeleteFeature} /></QueryClientProvider>);
+  return { onClose, onOpenFeature, onDeleteFeature };
 }
 const stopCalls = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_stop");
 const button = (name: string | RegExp) => screen.getByRole("button", { name }) as HTMLButtonElement;
@@ -290,4 +290,13 @@ it("cannot close unowned editors or act on an initial failed load", async () => 
   expect((await screen.findByRole("alert")).textContent).toContain("Could not read editor records");
   expect(screen.queryByRole("button", { name: /Close editors for/ })).toBeNull();
   expect(editorCalls()).toHaveLength(0);
+});
+
+it("hands the exact dormant row to deletion without opening or stopping it", async () => {
+  mock((command) => { if (command === "dormancy_load") return view(); throw new Error(command); });
+  const { onDeleteFeature, onOpenFeature } = mount();
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Retry webhooks" }));
+  expect(onDeleteFeature).toHaveBeenCalledWith(retry);
+  expect(onOpenFeature).not.toHaveBeenCalled();
+  expect(stopCalls()).toHaveLength(0);
 });

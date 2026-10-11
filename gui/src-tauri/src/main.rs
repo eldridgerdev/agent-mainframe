@@ -33,7 +33,9 @@ use agent_mainframe::gui_contract::{
 };
 use agent_mainframe::gui_debug_log::{self, DebugLogView};
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
-use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
+use agent_mainframe::gui_dormancy::{
+    self, DormancyStopResult, DormancyView, DormantDeleteRequest, DormantObservation,
+};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
@@ -1129,6 +1131,21 @@ async fn dormancy_stop(
     Ok(results)
 }
 
+/// Deletion can wait for worktree/editor cleanup; keep it off the UI thread.
+#[tauri::command]
+async fn dormancy_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: DormantDeleteRequest,
+    todos: Option<TodoDeleteChoice>,
+    todo_host: Option<TodoHostChoice>,
+) -> Result<DeleteFeatureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui_dormancy::delete(&mut gui, request, todos, todo_host)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
 // PR Triage reads GitHub through `gh`, which can be slow or hang (network,
 // auth prompt, rate limit). Each step names its reads under the handle lock,
 // performs them on a blocking thread without it, then applies the results
@@ -1589,6 +1606,7 @@ fn main() {
             dormancy_load,
             debug_log_load,
             dormancy_stop,
+            dormancy_delete,
             pr_review_begin,
             pr_review_snapshot,
             pr_review_act,

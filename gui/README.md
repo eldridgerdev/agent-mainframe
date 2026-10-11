@@ -283,9 +283,15 @@ it does not start an agent or send a message. Templates and target permissions
 are rechecked on insertion. The list refreshes while you browse, and a
 selected template edited or deleted elsewhere is deselected with a notice so
 you never fill an outdated copy. The preview renders as you type. Cancel
-leaves existing composer drafts intact. Create/edit/delete/export templates and
-editable prompt overrides have their own manager (below). Native desktop
-interaction and macOS runtime validation for this library increment remain open.
+leaves existing composer drafts intact. Create/edit/delete/export library
+templates in the TUI; editable prompt overrides have their own desktop manager
+(below). Six asserted native
+Linux frames now cover all four sources, tag search, required fields, multiline
+text and choices, cancellation, external template edits and appending to an
+existing unsent Codex draft. Reproduce with
+`scripts/dev/screenshot/scenarios/gui-prompt-library.txt`; both offline
+receivers are checked to remain empty. Paid-harness and macOS runtime
+validation remain open.
 
 Open **Prompt overrides** in workspace navigation to change the prompts AMF
 sends for headless AI calls (plan interviews, Final Review walkthroughs and

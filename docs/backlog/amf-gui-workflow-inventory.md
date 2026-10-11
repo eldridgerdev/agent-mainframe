@@ -52,6 +52,7 @@ Keep them current as the staged GUI scope grows.
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
+| Available | Global context settings: positive token-limit override or blank for harness defaults, ordered warning/critical percentages, unsaved-edit protection and stale-save refusal. Desktop indicators apply saved/external policy updates; old fallback-limit collections cannot publish fresh context after a policy change. |
 | Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
@@ -528,6 +529,23 @@ Completed increments and remaining work, in priority order:
   build, formatting and strict all-target Clippy pass. macOS interaction
   validation remains open.
   Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
+
+- [x] **Desktop context settings (2026-10-11, stacked on agent availability).**
+  Shared TUI/GUI parsing preserves optional positive u64 token limits and ordered
+  1–100 thresholds. Scoped saves/clears preserve other fields, refuse stale files
+  and apply runtime changes only after commit. Existing indicators reband;
+  changed limits mark samples stale and old in-flight collections cannot publish
+  fresh context. External config edits refresh before GUI context polling. The
+  dialog protects drafts and pending saves. Six asserted native WSLg frames
+  prove validation, draft protection, stale-save refusal, exact maximum-u64
+  persistence and restoration of harness defaults without changing unrelated
+  config or existing sessions. The normal parallel workspace suite passes
+  (3,484 library tests + seven GUI tests; one existing ignored), alongside all
+  388 frontend tests, both executable builds, production frontend build,
+  formatting and strict all-target Clippy. An isolated native TUI smoke checks
+  the existing `w` entry, rendering and Enter save. macOS validation remains
+  open. Native proof scenario:
+  [`gui-context-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-context-settings.txt).
 
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.

@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Desktop context settings.** Set a fallback context-window token limit and
+  warning/critical percentages from workspace navigation. A blank limit restores
+  harness defaults. Saves protect unsaved drafts, refuse conflicting config
+  edits and update desktop indicators; external settings edits refresh
+  automatically. Restart an already open TUI to use new values there. No
+  migration is required.
+
 - **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
   OpenCode and Pi agents from workspace navigation, using the TUI's settings.
   Project overrides keep precedence and existing sessions keep running. Unsaved

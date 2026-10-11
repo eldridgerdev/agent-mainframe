@@ -53,7 +53,8 @@ use agent_mainframe::gui_sessions::{
     NewSessionOptions, OpenVscodeResponse,
 };
 use agent_mainframe::gui_settings::{
-    self, AgentAvailability, AgentAvailabilityView, DormancySettings, DormancySettingsView,
+    self, AgentAvailability, AgentAvailabilityView, ContextSettingsInput, ContextSettingsView,
+    DormancySettings, DormancySettingsView,
 };
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
@@ -1090,6 +1091,24 @@ async fn debug_log_load(state: State<'_, AppState>) -> Result<DebugLogView, GuiE
 }
 
 #[tauri::command]
+async fn context_settings_load() -> Result<ContextSettingsView, GuiError> {
+    gui_settings::context_load()
+}
+
+#[tauri::command]
+async fn context_settings_save(
+    state: State<'_, AppState>,
+    revision: String,
+    settings: ContextSettingsInput,
+) -> Result<ContextSettingsView, GuiError> {
+    gui_settings::context_save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &revision,
+        settings,
+    )
+}
+
+#[tauri::command]
 async fn agent_availability_load() -> Result<AgentAvailabilityView, GuiError> {
     gui_settings::agents_load()
 }
@@ -1604,6 +1623,8 @@ fn main() {
             supervised_edits_load,
             supervised_edit_counts,
             supervised_edit_respond,
+            context_settings_load,
+            context_settings_save,
             agent_availability_load,
             agent_availability_save,
             dormancy_settings_load,

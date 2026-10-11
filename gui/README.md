@@ -650,6 +650,18 @@ processes on a private tmux server. Six more frames from
 refusal, refreshed confirmation and ownership results while all feature
 sessions keep running and automatic cleanup-on-stop is disabled.
 
+**Context settings** edits the global fallback context-window token limit and
+warning/critical percentages shared with the TUI. Leave the token limit blank to
+restore harness defaults; otherwise use a positive whole token count. Percentages
+must be 1–100, with critical greater than warning. Large token limits remain exact
+across saving and reopening. Harness telemetry with its own limit keeps precedence.
+Saved thresholds update desktop indicator bands immediately; a changed limit marks
+old samples stale until the next collection, and in-flight data using an older
+fallback limit cannot become fresh. External config edits refresh automatically.
+Restart an already open TUI to use new values there. Save/reload/cancel protect
+unsaved choices and refuse stale writes, preserving unrelated config and running
+sessions. No migration is required.
+
 **Agent availability** in workspace navigation edits the global allowed-agent
 choices shared with the TUI config wizard. Select at least one of Claude Code,
 Codex, OpenCode or Pi, then **Save settings**. Project `amf.json` allowed-agent

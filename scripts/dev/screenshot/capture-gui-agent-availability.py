@@ -32,7 +32,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-agent-availability-") as tempor
     repo = scratch / "demo-api"
     (config / "amf").mkdir(parents=True)
     config_path = config / "amf/config.json"
-    config_path.write_text('{"config_version":1,"extension":{"allowed_agents":["claude","codex"],"future_nested":{"keep":true}},"dormant_idle_minutes":15,"future_setting":42}\n')
+    fixture_config = os.environ.get("AMF_GUI_CAPTURE_CONFIG")
+    config_path.write_text(pathlib.Path(fixture_config).read_text() if fixture_config else '{"config_version":1,"extension":{"allowed_agents":["claude","codex"],"future_nested":{"keep":true}},"dormant_idle_minutes":15,"future_setting":42}\n')
     (state / "amf").mkdir(parents=True)
     data.mkdir()
     cache.mkdir()

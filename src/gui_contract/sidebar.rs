@@ -164,6 +164,7 @@ pub struct CollapseTarget {
 pub struct SidebarClock {
     last_session_status: Option<Instant>,
     last_pr_sweep: Option<Instant>,
+    context_settings_error: Option<String>,
 }
 
 /// Build the sidebar projection for `projects` (the snapshot's own,
@@ -445,10 +446,22 @@ pub(crate) fn carry_runtime_session_fields(previous: &ProjectStore, next: &mut P
 }
 
 impl GuiHandle {
-    /// Apply finished background collections and start the next ones when
-    /// due. Never blocks on I/O: collection and the `gh` sweep run on their
-    /// own threads, exactly as in the TUI's event loop.
+    /// Refresh global context settings, apply finished background collections
+    /// and start the next ones when due. Collection and the `gh` sweep run on
+    /// their own threads, exactly as in the TUI's event loop.
     pub fn drive_sidebar_sources(&mut self, clock: &mut SidebarClock) {
+        match crate::gui_settings::context_refresh(self) {
+            Ok(()) => clock.context_settings_error = None,
+            Err(error) => {
+                if clock.context_settings_error.as_ref() != Some(&error.message) {
+                    self.app.log_warn(
+                        "settings",
+                        format!("Context settings refresh failed: {}", error.message),
+                    );
+                    clock.context_settings_error = Some(error.message);
+                }
+            }
+        }
         let app = &mut self.app;
         app.poll_session_status_bg();
         app.poll_active_pr_bg();

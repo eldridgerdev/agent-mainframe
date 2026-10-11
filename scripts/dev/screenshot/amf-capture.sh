@@ -20,8 +20,8 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [options]
 
-Launches an isolated, throwaway AMF instance in its own tmux session
-(own XDG_CONFIG_HOME / XDG_STATE_HOME, real HOME preserved), waits for
+Launches an isolated, throwaway AMF instance on its own tmux server
+(own socket, XDG_CONFIG_HOME / XDG_STATE_HOME, real HOME preserved), waits for
 the dashboard to come up, sends a few keys, and dumps raw ANSI
 capture-pane output for later rendering. Never touches the real
 ~/.config/amf or a real amf tmux session.
@@ -250,30 +250,33 @@ if [[ ! -x "$AMF_BIN" ]]; then
     exit 1
 fi
 
-# Snapshot tmux sessions that exist *before* we touch anything, so cleanup
-# can find whatever AMF itself spawns beyond $SESSION -- see the note by
-# `cleanup()` below.
-BASELINE_SESSIONS="$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)"
+# Capture owns this server outright. Neither session names nor a before/after
+# snapshot can establish ownership of sessions on an operator's shared server:
+# another process can create unrelated sessions while the capture is running.
+# A parent capture exports tmux() for scenario helpers. Resolve the external
+# binary rather than capturing that function name and recursively calling it.
+CAPTURE_TMUX_BIN="$(type -P tmux)"
+CAPTURE_TMUX_SOCKET="$SHOT_ROOT/tmux.sock"
+readonly CAPTURE_TMUX_BIN CAPTURE_TMUX_SOCKET
+export CAPTURE_TMUX_BIN CAPTURE_TMUX_SOCKET
+export AMF_TMUX_BIN="$CAPTURE_TMUX_BIN"
+export AMF_TMUX_SOCKET="$CAPTURE_TMUX_SOCKET"
+export AMF_TMUX_DEDICATED_SOCKET=1
+
+# All driver commands and run: steps use the owned socket. Export the function
+# for Bash scenario helpers; AMF/automation processes use the environment above.
+# Explicit -S options supplied by native fixtures still take precedence.
+tmux() {
+    "$CAPTURE_TMUX_BIN" -f /dev/null -S "$CAPTURE_TMUX_SOCKET" "$@"
+}
+export -f tmux
 
 cleanup() {
     tmux kill-session -t "$SESSION" >/dev/null 2>&1 || true
     if [[ "$KEEP" -ne 1 ]]; then
-        # AMF starting a real feature (via --seed or a scenario driving the
-        # creation wizard) spawns its own top-level tmux session
-        # (amf-<project>-<feature>), launching a real `claude`/`codex`/etc.
-        # process. That session lives on the shared tmux server, not nested
-        # under $SESSION, so killing $SESSION above doesn't reach it and it
-        # would otherwise run forever after this "throwaway" script exits.
-        # Diff against the pre-run snapshot (rather than pattern-matching
-        # names) so this works regardless of what the feature/project was
-        # named.
-        while IFS= read -r s; do
-            [[ -z "$s" || "$s" == "$SESSION" ]] && continue
-            if ! grep -qxF "$s" <<<"$BASELINE_SESSIONS"; then
-                tmux kill-session -t "$s" >/dev/null 2>&1 || true
-                echo "cleaned up spawned session: $s" >&2
-            fi
-        done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+        # This server belongs only to this run, including sessions created by
+        # automation or scenario steps. Never enumerate the ambient server.
+        tmux kill-server >/dev/null 2>&1 || true
         rm -rf "$SHOT_ROOT"
     fi
 }
@@ -336,26 +339,26 @@ export XDG_STATE_HOME="$STATE_DIR"
 # keep working inside the scratch instance.
 
 echo "scratch root: $SHOT_ROOT" >&2
+echo "tmux socket: $CAPTURE_TMUX_SOCKET" >&2
 echo "tmux session: $SESSION ($GEOMETRY)" >&2
 
 # tmux runs the pane command through the user's shell, whose startup files may
 # rebuild PATH after the session environment is applied. Pin the isolated PATH
 # on the final exec so pre-launch scenario shims remain first in command lookup.
-printf -v AMF_LAUNCH_COMMAND 'exec env PATH=%q AMF_SCREENSHOT_REAL_GH=%q %q' \
-    "$SCREENSHOT_PATH" "$REAL_GH_BIN" "$AMF_BIN"
+printf -v AMF_LAUNCH_COMMAND 'exec env PATH=%q AMF_SCREENSHOT_REAL_GH=%q AMF_TMUX_BIN=%q AMF_TMUX_SOCKET=%q AMF_TMUX_DEDICATED_SOCKET=1 %q' \
+    "$SCREENSHOT_PATH" "$REAL_GH_BIN" "$CAPTURE_TMUX_BIN" "$CAPTURE_TMUX_SOCKET" "$AMF_BIN"
 
-# `-e` is required, not just `export`: when a tmux server is already
-# running (e.g. the user's own amf-* sessions), `new-session` attaches
-# to that existing server, and the new session's process environment is
-# NOT refreshed from this shell's just-exported vars -- it falls back to
-# whatever environment the server itself was started with. Without `-e`
-# here, amf silently launches against the real ~/.config/amf instead of
-# the scratch one.
+# Pin the scratch environment on the pane as well as the final exec. An
+# ambient TMUX/AMF_TMUX_SOCKET or shell startup file must never route the
+# application or its later automation/session commands to the operator's server.
 tmux new-session -d -s "$SESSION" -x "$COLS" -y "$ROWS" -c "$SHOT_ROOT" \
     -e "XDG_CONFIG_HOME=$CONFIG_DIR" \
     -e "XDG_STATE_HOME=$STATE_DIR" \
     -e "GH_CONFIG_DIR=$REAL_GH_CONFIG_DIR" \
     -e "AMF_SCREENSHOT_REAL_GH=$REAL_GH_BIN" \
+    -e "AMF_TMUX_BIN=$CAPTURE_TMUX_BIN" \
+    -e "AMF_TMUX_SOCKET=$CAPTURE_TMUX_SOCKET" \
+    -e "AMF_TMUX_DEDICATED_SOCKET=1" \
     -e "PATH=$SCREENSHOT_PATH" \
     "$AMF_LAUNCH_COMMAND"
 

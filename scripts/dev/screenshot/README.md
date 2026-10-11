@@ -34,8 +34,11 @@ shot: /tmp/amf-shots/20260719-121610-294766/shots/002-after-j.ansi
 shots written to: /tmp/amf-shots/20260719-121610-294766/shots
 ```
 
-On exit, the scratch root is deleted and the scratch tmux session is
-killed — nothing is left behind unless `--keep` is passed.
+On exit, the owned tmux server and scratch root are removed, including any
+feature sessions the scenario started. Existing or concurrently created
+sessions on another server are untouched. `--keep` closes only the capture
+pane and retains the scratch files and any spawned sessions on the private
+socket printed at startup.
 
 Each flag:
 
@@ -80,8 +83,9 @@ Each flag:
   ```
 
 - `--keep` — keep the scratch root (`config/`, `state/`, `shots/`) on
-  exit instead of deleting it. The scratch tmux session is still killed
-  either way; only the on-disk scratch root is affected.
+  exit instead of deleting it. The capture pane is still closed; any spawned
+  sessions remain on the private socket for debugging. Stop that server with
+  `tmux -S <printed-socket> kill-server` when finished.
 
 - `--geometry <WxH>` — tmux session geometry, must match `^[0-9]+x[0-9]+$`.
   Default `120x40`. Fixed geometry keeps screenshots reproducible.
@@ -415,18 +419,16 @@ never touches the paths or process your real `amf` uses:
   overridden; `HOME` itself is left alone, so `claude` auth and git
   identity still work inside the scratch instance if a scenario actually
   launches an agent session.
-- **Dedicated tmux session.** The scratch `amf` runs in its own session
-  named `amf-shot-<timestamp>-<pid>`, distinct from any real `amf-*`
-  session, and is killed on exit regardless of `--keep`.
-- **`-e` on `tmux new-session` is load-bearing, not decorative.** If a
-  tmux server is already running (e.g. because you have your own
-  `amf-*` sessions open), `new-session` attaches to that *existing*
-  server, and the new session's process environment is **not**
-  refreshed from the driver's just-exported vars — it inherits whatever
-  environment the server was originally started with. Without passing
-  `-e XDG_CONFIG_HOME=... -e XDG_STATE_HOME=...` explicitly on the
-  `tmux new-session` command, the scratch `amf` would silently launch
-  against your real `~/.config/amf` instead of the scratch one.
+- **Dedicated tmux server.** Every run creates a private socket under its
+  scratch root and starts tmux without the operator's tmux configuration.
+  Driver commands and Bash `run:` helpers target that socket. The spawned
+  TUI and automation inherit the same explicit `AMF_TMUX_BIN`,
+  `AMF_TMUX_SOCKET` and `AMF_TMUX_DEDICATED_SOCKET` values, overriding an
+  ambient tmux identity. Native fixtures that explicitly choose another
+  private `-S` socket retain that override. No shared server is enumerated.
+- **Explicit pane environment.** `-e` on `tmux new-session` and the final
+  `exec env` pin the scratch paths and tmux identity even if the pane shell's
+  startup files rebuild its environment.
 - **The XDG amf subdir must exist before `amf` starts.** The driver runs
   `mkdir -p "$CONFIG_DIR/amf" "$STATE_DIR/amf"` before launching, not
   just the scratch root. AMF's `amf_config_dir_with()` falls back to the
@@ -434,9 +436,21 @@ never touches the paths or process your real `amf` uses:
   *and* the XDG-resolved dir doesn't exist yet — and since this harness
   deliberately keeps the real `HOME`, skipping this pre-create would mean
   the scratch instance silently opens the user's real database.
-- **Teardown.** On exit (`trap cleanup EXIT`), the scratch tmux session
-  is always killed; the scratch root directory is deleted unless
-  `--keep` was passed.
+- **Teardown.** On exit (`trap cleanup EXIT`), the capture pane is always
+  closed. Unless `--keep` was passed, only the run-owned server is killed and
+  its scratch directory removed. Session names or a before/after snapshot
+  never determine ownership on a shared server.
+
+The real-tmux regression suite runs against test-owned private servers and a
+controlled default-command shim, never the operator's default server:
+
+```bash
+python3 -m unittest discover -s scripts/dev/screenshot -p 'test_capture_isolation.py' -v
+```
+
+It checks success, failed screenshot assertions, `--keep`, inherited Bash
+functions, explicit native socket overrides, application/automation identity,
+and survival of both existing and concurrently created unrelated sessions.
 
 One caveat worth knowing: a truly fresh scratch config shows AMF's
 one-time "Configure Agent Harnesses" onboarding dialog before the

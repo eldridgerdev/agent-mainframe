@@ -120,6 +120,10 @@ are tagged.
 
 ### Fixed
 
+- Screenshot capture now owns a private tmux server and cleans up only that
+  server. Existing sessions and sessions started elsewhere during a capture
+  remain running, including when a screenshot assertion fails.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

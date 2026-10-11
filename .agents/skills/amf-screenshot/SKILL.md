@@ -9,7 +9,7 @@ Use the repository's screenshot harness to exercise the changed UI without touch
 
 ## Preserve isolation
 
-Run `scripts/dev/screenshot/amf-capture.sh`. It creates private `XDG_CONFIG_HOME` and `XDG_STATE_HOME` directories under `${AMF_SHOT_DIR:-/tmp/amf-shots}`, launches a dedicated fixed-size tmux session, and removes the scratch instance afterward. It also detects and removes any tmux sessions spawned by the scenario.
+Run `scripts/dev/screenshot/amf-capture.sh`. It creates private `XDG_CONFIG_HOME` and `XDG_STATE_HOME` directories under `${AMF_SHOT_DIR:-/tmp/amf-shots}`, launches a dedicated fixed-size tmux session on a run-owned socket, and removes that private server and scratch instance afterward. Scenario-created sessions use the same private server; cleanup never scans the operator's shared server.
 
 Keep these constraints:
 

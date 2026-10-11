@@ -78,9 +78,9 @@ def wait(expression):
 
 
 def click(text):
-    evaluate(
-        f'Array.from(document.querySelectorAll("button")).find(b=>b.offsetParent!==null && (b.textContent.trim()==={json.dumps(text)} || b.querySelector(".nav-label")?.textContent.trim()==={json.dumps(text)})).click()'
-    )
+    button = f'Array.from(document.querySelectorAll("button")).find(b=>b.offsetParent!==null && (b.textContent.trim()==={json.dumps(text)} || b.querySelector(".nav-label")?.textContent.trim()==={json.dumps(text)}))'
+    wait(f'!!({button}) && !({button}).disabled')
+    evaluate(f'({button}).click()')
 
 
 x = display.Display()

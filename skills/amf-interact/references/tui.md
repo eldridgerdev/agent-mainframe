@@ -79,6 +79,7 @@ command. Use the latter only for requested changes to the running dashboard.
 For its current request fields, run `amf automation <action> --help`.
 
 `stop` shuts down only the driver's private tmux server. Logs and its database
-remain under the returned session directory for diagnosis. Default harness
+remain under the returned session directory for diagnosis. If AMF exits on its
+own, later commands say why and its final screen is in `last-pane.txt` there. Default harness
 executables are failing stubs; put deterministic fixtures in that session's
 `bin/` directory to exercise agent-related workflows without paid calls.

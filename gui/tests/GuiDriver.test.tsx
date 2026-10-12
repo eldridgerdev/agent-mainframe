@@ -55,6 +55,37 @@ it("keeps references stable across snapshots and refuses detached or hidden targ
   expect(run({ op: "snapshot" }).controls[0].ref).not.toBe(original);
 });
 
+it("matches waited text across inline elements and treats an unrendered scope as not yet", () => {
+  const has = (action: Omit<Action, "op">) => run({ op: "has_text", ...action }) as unknown as boolean;
+  document.body.innerHTML = `<p>Created <b>Fixture project</b></p><p>Fix<mark>ture</mark> list</p>
+    <div><span>Save</span><span hidden>secret</span></div><div>Cancel</div>`;
+  expect(has({ text: "Created Fixture project" })).toBe(true);
+  expect(has({ text: "Fixture  list" })).toBe(true);
+  expect(has({ text: "Save Cancel" })).toBe(true);
+  expect(has({ text: "secret" })).toBe(false);
+  expect(has({ text: "Created", scope: "[role=dialog]" })).toBe(false);
+  document.body.insertAdjacentHTML("beforeend", '<div role="dialog">Created</div>');
+  expect(has({ text: "Created", scope: "[role=dialog]" })).toBe(true);
+  expect(has({ text: "Fixture", scope: "[role=dialog]" })).toBe(false);
+  expect(() => has({ text: "Created", scope: "p" })).toThrow("Scope matched 2 elements");
+});
+
+it("marks references issued after a re-injection so they cannot collide with earlier ones", () => {
+  document.body.innerHTML = "<button>First</button>";
+  const original = run({ op: "snapshot" }).controls[0].ref;
+  const page = window as unknown as { __amfGuiDriverEpoch?: number };
+  page.__amfGuiDriverEpoch = 1;
+  try {
+    new Function("window", "document", script)(window, document);
+    const reissued = run({ op: "snapshot" }).controls[0].ref;
+    expect(original).toBe("e1");
+    expect(reissued).toBe("e1-1");
+    expect(() => run({ op: "click", ref: original })).toThrow("Stale reference");
+  } finally {
+    delete page.__amfGuiDriverEpoch;
+  }
+});
+
 it("updates React controlled inputs, textareas and selects through application events", () => {
   function Form() {
     const [input, setInput] = useState("");

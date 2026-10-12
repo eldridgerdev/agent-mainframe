@@ -69,8 +69,11 @@ JSON
 
 `--timeout 30` gives the whole request/batch one deadline (default 15, maximum
 120 seconds). `--max-output 4000` bounds serialized result characters; overflow
-is a marked preview. `wait --text` polls visible text locally; `wait --expression`
-accepts a precise boolean JavaScript condition. `eval` is synchronous and does
+is a marked preview. `wait --text` polls visible text locally, ignoring
+whitespace differences, and treats a `--scope` that has not rendered yet as "not
+yet". `wait --expression`
+accepts a precise boolean JavaScript condition. After a full page reload, take
+another snapshot: earlier references are stale. `eval` is synchronous and does
 not await promises. On a batch error, inspect before continuing: earlier actions
 remain applied and are never retried automatically.
 

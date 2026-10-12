@@ -114,6 +114,41 @@ class DriverTests(unittest.TestCase):
             self.assertEqual(server.accept.call_count, 2)
             runtime.close.assert_called_once()
 
+    def test_generated_session_falls_back_to_tmp_when_platform_temp_dir_is_too_long(self):
+        macos = "/var/folders/zz/" + "y" * 30 + "/T"
+        for base, expected in ((macos, "/tmp"), ("/tmp", None)):
+            with patch.object(ai_driver.tempfile, "gettempdir", return_value=base), \
+                    patch.object(ai_driver.tempfile, "mkdtemp", return_value="/tmp/amf-tui-abcdefgh") as create:
+                self.assertEqual(ai_driver.new_session_dir("amf-tui-"), Path("/tmp/amf-tui-abcdefgh"))
+            self.assertEqual(create.call_args.kwargs, {"prefix": "amf-tui-", "dir": expected})
+        self.assertFalse(ai_driver.session_path_fits(Path(macos) / "amf-tui-abcdefgh"))
+        self.assertTrue(ai_driver.session_path_fits(Path("/tmp/amf-tui-abcdefgh")))
+
+    def test_exited_application_keeps_its_final_screen_and_later_calls_say_why(self):
+        # A short root: the socket path must fit whatever TMPDIR is in use.
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            session = Path(temporary)
+            runtime = Mock()
+            runtime.start.return_value = ObservationDriver()
+            runtime.alive.return_value = False
+            runtime.postmortem.return_value = "last-pane.txt"
+            server = MagicMock()
+            server.__enter__.return_value = server
+            with patch.object(ai_driver.socket, "socket", return_value=server), patch.object(ai_driver.signal, "signal"):
+                ai_driver.serve(session, Path("/fixture/amf"), lambda _: runtime)
+            # The screen is saved while the application's tmux server exists.
+            names = [call[0] for call in runtime.mock_calls]
+            self.assertLess(names.index("postmortem"), names.index("close"))
+            self.assertIn("final screen saved to last-pane.txt", (session / "error").read_text())
+            for request in (lambda: ai_driver.call(session, {"op": "snapshot"}), lambda: ai_driver.stop_session(session)):
+                with self.assertRaisesRegex(RuntimeError, "Session ended: An owned application process exited.*last-pane.txt"):
+                    request()
+            (session / "error").unlink()
+            with self.assertRaisesRegex(RuntimeError, "already stopped"):
+                ai_driver.call(session, {"op": "snapshot"})
+            with self.assertRaisesRegex(RuntimeError, "No session directory"):
+                ai_driver.call(session / "missing", {"op": "snapshot"})
+
 
 if __name__ == "__main__":
     unittest.main()

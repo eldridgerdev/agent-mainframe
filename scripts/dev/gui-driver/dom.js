@@ -1,6 +1,9 @@
 // Injected only by the development driver; never bundled with the application.
 (() => {
   let sequence = 0;
+  // Set by the driver when it re-injects this file after a page reload, so a
+  // reference from before the reload can never name a new element.
+  const epoch = window.__amfGuiDriverEpoch ? `${window.__amfGuiDriverEpoch}-` : '';
   const refs = new Map();
   const ids = new WeakMap();
   const controls = 'button,input,textarea,select,a[href],[role="button"],[role="tab"],[role="menuitem"],[role="switch"],[role="checkbox"]';
@@ -26,7 +29,7 @@
     element.getAttribute('title')
   );
   const ref = element => {
-    if (!ids.has(element)) ids.set(element, `e${++sequence}`);
+    if (!ids.has(element)) ids.set(element, `e${epoch}${++sequence}`);
     const id = ids.get(element);
     refs.set(id, element);
     return id;
@@ -58,17 +61,24 @@
     if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true') throw new Error('Target is disabled');
     return element;
   };
-  const text = scope => {
+  const textNodes = scope => {
     const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
     const parts = [];
     while (walker.nextNode()) {
       const parent = walker.currentNode.parentElement;
-      if (parent && !parent.closest('script,style,template') && visible(parent)) {
-        const value = normalize(walker.currentNode.textContent);
-        if (value) parts.push(value);
-      }
+      if (parent && !parent.closest('script,style,template') && visible(parent)) parts.push(walker.currentNode.textContent);
     }
-    return parts.join('\n');
+    return parts;
+  };
+  const text = scope => textNodes(scope).map(normalize).filter(Boolean).join('\n');
+  const hasText = (scope, wanted) => {
+    // A snapshot prints one text node per line, but a phrase on screen can
+    // span inline elements (`Created <b>Fixture project</b>`). Compare with
+    // whitespace collapsed, both as the nodes run together and as the lines a
+    // snapshot shows, so either way of reading the phrase matches.
+    const nodes = textNodes(scope);
+    const phrase = normalize(wanted);
+    return normalize(nodes.join('')).includes(phrase) || normalize(nodes.join(' ')).includes(phrase);
   };
   window.__amfGuiDriver = action => {
     if (action.op === 'snapshot') {
@@ -95,7 +105,12 @@
         controls_truncated: elements.length > maxControls,
       };
     }
-    if (action.op === 'has_text') return text(root(action.scope)).includes(action.text);
+    if (action.op === 'has_text') {
+      // Polled by `wait`: a scope that has not rendered yet is "not yet". An
+      // ambiguous or malformed one is still a mistake, and still throws.
+      if (action.scope && document.querySelectorAll(action.scope).length === 0) return false;
+      return hasText(root(action.scope), action.text);
+    }
     const element = resolve(action);
     if (action.op === 'click') {
       element.click();

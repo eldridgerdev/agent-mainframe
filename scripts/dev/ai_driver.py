@@ -137,6 +137,10 @@ class ProcessRuntime:
     def alive(self):
         return all(child.poll() is None for child in self.children)
 
+    def postmortem(self):
+        """Save evidence close() would destroy; return its file name, if any."""
+        return None
+
     def close(self):
         for child in reversed(self.children):
             # npm's parent can exit before Vite; its process group is still
@@ -208,7 +212,14 @@ def serve(session, binary, runtime_factory):
     except KeyboardInterrupt:
         pass
     except Exception as error:
-        (session / "error").write_text(str(error))
+        message = str(error)
+        saved = None
+        if runtime is not None:
+            with contextlib.suppress(Exception):
+                saved = runtime.postmortem()
+        if isinstance(saved, str):
+            message += f"; final screen saved to {saved}"
+        (session / "error").write_text(message)
     finally:
         cleanup_errors = []
         for resource in (driver, runtime):
@@ -224,26 +235,57 @@ def serve(session, binary, runtime_factory):
         (session / "stopped").touch()
 
 
+def ended(session):
+    """Explain a session whose daemon is gone, from the files serve() leaves."""
+    if (session / "error").exists():
+        return f"Session ended: {(session / 'error').read_text().strip()}; logs: {session}"
+    if (session / "stopped").exists():
+        return f"Session is already stopped; start a new one (logs: {session})"
+    if not session.is_dir():
+        return f"No session directory at {session}"
+    return f"Session is not running; logs: {session}"
+
+
 def call(session, request):
     payload = (encode(request) + "\n").encode()
     if len(payload) > MAX_REQUEST:
         raise ValueError("Request exceeds 1 MiB")
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(float(request.get("timeout", 15)) + 5)
-        connection.connect(str(session / "driver.sock"))
+        try:
+            connection.connect(str(session / "driver.sock"))
+        except (FileNotFoundError, ConnectionRefusedError) as error:
+            raise RuntimeError(ended(session)) from error
         connection.sendall(payload)
         with connection.makefile("rb") as reader:
-            return json.loads(reader.readline())
+            line = reader.readline()
+    if not line:
+        # The daemon went away mid-request.
+        raise RuntimeError(ended(session))
+    return json.loads(line)
+
+
+def session_path_fits(session):
+    # AMF's reply sockets live beneath the session; keep them inside the
+    # platform's Unix socket path limit.
+    return len(os.fsencode(str(session / "state/amf/reply/"))) <= 75
+
+
+def new_session_dir(prefix):
+    # macOS's per-user temporary directory (/var/folders/…/T) alone exhausts
+    # the socket path budget, so a bare `start` falls back to /tmp there.
+    candidate = Path(tempfile.gettempdir()) / (prefix + "x" * 8)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=None if session_path_fits(candidate) else "/tmp"))
 
 
 def start_session(script, binary, session=None, prefix="amf-gui-", extra_args=()):
-    session = session.resolve() if session else Path(tempfile.mkdtemp(prefix=prefix))
+    session = session.resolve() if session else new_session_dir(prefix)
     if not session.exists():
         session.mkdir(mode=0o700, parents=True)
     elif any(session.iterdir()):
         raise ValueError("Session directory must be new or empty")
     session.chmod(0o700)
-    if len(os.fsencode(str(session / "state/amf/reply/"))) > 75:
+    if not session_path_fits(session):
         raise ValueError("Session path is too long; use a short path under /tmp")
     with (session / "driver.log").open("w") as log:
         process = subprocess.Popen([sys.executable, str(script), "_serve", str(session), str(binary), *extra_args],

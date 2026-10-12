@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 spec = importlib.util.spec_from_file_location("gui_driver", Path(__file__).with_name("amf-gui-driver.py"))
 driver = importlib.util.module_from_spec(spec)
@@ -117,6 +117,73 @@ class DriverTests(unittest.TestCase):
                     self.assertTrue(stub.stat().st_mode & 0o100)
                     self.assertIn("exit 127", stub.read_text())
 
+    def test_reload_reinjects_helper_once_and_marks_later_references(self):
+        inspector = Mock()
+        gui = driver.Driver(inspector, helper="HELPER")
+        inspector.evaluate.return_value = None
+        gui.inject(time.monotonic() + 1)
+        self.assertEqual(inspector.evaluate.call_args.args[0], "HELPER")
+        inspector.evaluate.side_effect = [gui.MISSING, None, {"ok": True}, {"ok": True}]
+        self.assertEqual(gui.run({"op": "click", "name": "Save"}), {"ok": True})
+        expressions = [call.args[0] for call in inspector.evaluate.call_args_list]
+        self.assertEqual(expressions[2], "window.__amfGuiDriverEpoch = 1;\nHELPER")
+        self.assertEqual(expressions[1], expressions[3])
+        self.assertIn("typeof window.__amfGuiDriver === 'function'", expressions[1])
+        # A helper that is present is not injected again.
+        self.assertEqual(gui.run({"op": "click", "name": "Save"}), {"ok": True})
+        self.assertEqual(inspector.evaluate.call_count, 5)
+
+    def test_replaced_page_target_receives_the_undelivered_message(self):
+        def dispatched(identifier, value):
+            return json.dumps({"method": "Target.dispatchMessageFromTarget", "params": {"message": json.dumps({"id": identifier, "result": {"result": {"value": value}}})}})
+
+        inspector = driver.Inspector.__new__(driver.Inspector)
+        inspector.ws = Mock()
+        inspector.sequence = 0
+        inspector.target = "page-1"
+        inspector.ws.recv.side_effect = [
+            json.dumps({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "page-2", "type": "page", "isProvisional": True}}}),
+            json.dumps({"method": "Target.didCommitProvisionalTarget", "params": {"oldTargetId": "page-1", "newTargetId": "page-2"}}),
+            json.dumps({"method": "Target.targetDestroyed", "params": {"targetId": "page-1"}}),
+            json.dumps({"id": 1000001, "error": {"message": "Missing target for given targetId"}}),
+            dispatched(2, 7),
+        ]
+        self.assertEqual(inspector.evaluate("1 + 6", time.monotonic() + 1), 7)
+        targets = [json.loads(call.args[0])["params"]["targetId"] for call in inspector.ws.send.call_args_list]
+        self.assertEqual(targets, ["page-1", "page-2"])
+        # A destroyed page with no successor yet is waited for, not addressed.
+        inspector.ws.recv.side_effect = [
+            json.dumps({"method": "Target.targetDestroyed", "params": {"targetId": "page-2"}}),
+            json.dumps({"id": 1000003, "error": {"message": "Missing target for given targetId"}}),
+            json.dumps({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "worker-1", "type": "worker"}}}),
+            json.dumps({"method": "Target.targetCreated", "params": {"targetInfo": {"targetId": "page-3", "type": "page"}}}),
+            dispatched(4, "again"),
+        ]
+        self.assertEqual(inspector.evaluate("'again'", time.monotonic() + 1), "again")
+        self.assertEqual(json.loads(inspector.ws.send.call_args.args[0])["params"]["targetId"], "page-3")
+        # The same refusal for an unchanged target is a real error.
+        inspector.ws.recv.side_effect = [json.dumps({"id": 1000005, "error": {"message": "refused"}})]
+        with self.assertRaisesRegex(RuntimeError, "refused"):
+            inspector.evaluate("1", time.monotonic() + 1)
+
+    def test_frontend_on_ipv6_loopback_alone_counts_as_occupied(self):
+        def listening_on(family_in_use):
+            def create(family=driver.socket.AF_INET, *_):
+                probe = MagicMock()
+                probe.__enter__.return_value.connect_ex.return_value = 0 if family == family_in_use else 111
+                return probe
+            return create
+
+        resolved = [(driver.socket.AF_INET6, driver.socket.SOCK_STREAM, 6, "", ("::1", 1420, 0, 0))]
+        with patch.object(driver.socket, "getaddrinfo", return_value=resolved):
+            with patch.object(driver.socket, "socket", side_effect=listening_on(driver.socket.AF_INET6)):
+                self.assertTrue(driver.frontend_port_occupied())
+            with patch.object(driver.socket, "socket", side_effect=listening_on(None)):
+                self.assertFalse(driver.frontend_port_occupied())
+        # No IPv6 at all: the address cannot be occupied, and that is not an error.
+        with patch.object(driver.socket, "getaddrinfo", side_effect=OSError("no resolver")), \
+                patch.object(driver.socket, "socket", side_effect=OSError("address family not supported")):
+            self.assertFalse(driver.frontend_port_occupied())
 
 if __name__ == "__main__":
     unittest.main()

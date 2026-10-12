@@ -1019,6 +1019,17 @@ pub(super) fn refresh_feature_skills(feature: &Feature) {
             agents.push(agent);
         }
     }
+    // Pi used to fall through to Claude's setup, which handed it hooks and
+    // skills it never read. Take them back on this upgrade pass, unless a
+    // Claude session in the same checkout is what they are there for.
+    if agents.contains(&AgentKind::Pi) && !agents.contains(&AgentKind::Claude) {
+        let claude_dir = feature.workdir.join(".claude");
+        cleanup_claude_settings_file(
+            &claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON),
+            Some(&claude_dir.join(CLAUDE_STATE_JSON)),
+        );
+        cleanup_amf_skills(&feature.workdir, &AgentKind::Claude);
+    }
     for agent in agents {
         ensure_amf_skills(&feature.workdir, &agent);
     }
@@ -1044,11 +1055,31 @@ fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
                 }
                 write_if_changed(&path, asset);
             }
-            if let Some(parent) = skills_dir.parent() {
-                ensure_gitignore_entry(&parent.join(".gitignore"), "skills/amf-interact/");
-            }
         }
     }
+    ensure_amf_skills_ignored(workdir, agent, &skills_dir);
+}
+
+/// Keep every injected `amf-*` skill out of `git status`. Claude's are covered
+/// by the `.claude/.gitignore` AMF already maintains. The other harness
+/// directories get one pattern in `.git/info/exclude` rather than a
+/// `.gitignore` of their own, which would itself be an untracked file for
+/// `git add -A` to commit and would outlive the skills it ignores.
+fn ensure_amf_skills_ignored(workdir: &Path, agent: &AgentKind, skills_dir: &Path) {
+    if matches!(agent, AgentKind::Claude) {
+        return;
+    }
+    let Ok(relative) = skills_dir.strip_prefix(workdir) else {
+        return;
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    // `**/` rather than an anchored pattern: a workdir may be a subdirectory of
+    // its repository, and one entry then serves every worktree.
+    crate::worktree::WorktreeManager::exclude_locally(
+        workdir,
+        &format!("{relative}/amf-interact/"),
+        &format!("**/{relative}/amf-*/"),
+    );
 }
 
 fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
@@ -1173,6 +1204,10 @@ pub fn ensure_notification_hooks(
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Pi) {
+        // Pi reads no Claude settings, so it gets no hooks. AMF still writes
+        // its own review feedback and notification files under `.claude/`
+        // whatever the harness, and a Pi feature has always had them ignored.
+        ensure_claude_runtime_ignores(workdir);
         ensure_amf_skills(workdir, agent);
         return;
     }
@@ -1305,7 +1340,14 @@ pub fn ensure_notification_hooks(
     write_json_object(&settings_path, &settings);
     cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
-    // Ensure notifications/ is gitignored within .claude/
+    ensure_claude_runtime_ignores(workdir);
+    ensure_amf_skills(workdir, agent);
+}
+
+/// Gitignore, within `.claude/`, the files AMF itself writes there.
+fn ensure_claude_runtime_ignores(workdir: &Path) {
+    let claude_dir = workdir.join(".claude");
+    let _ = std::fs::create_dir_all(&claude_dir);
     let claude_gitignore = claude_dir.join(".gitignore");
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
@@ -1314,8 +1356,6 @@ pub fn ensure_notification_hooks(
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
     ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
-
-    ensure_amf_skills(workdir, agent);
 }
 
 const PLAN_BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";

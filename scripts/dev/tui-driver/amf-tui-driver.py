@@ -63,7 +63,7 @@ class Driver(RequestDriver):
             raise RuntimeError("Incomplete tmux pane metadata")
         meta = dict(zip(fields, (int(value or 0) for value in values)))
         if meta["pane_dead"]:
-            raise RuntimeError("AMF exited; inspect the last pane with tmux or the session logs")
+            raise RuntimeError("AMF exited; its final screen is saved to last-pane.txt in the session directory")
         if meta["pane_in_mode"]:
             raise RuntimeError("Pane is in tmux copy-mode; exit it before driving AMF")
         raw = self.runtime.tmux("capture-pane", "-p", "-t", self.runtime.target, deadline=deadline)
@@ -114,7 +114,12 @@ class Driver(RequestDriver):
             if not isinstance(action.get("text"), str) or not action["text"]:
                 raise ValueError("wait requires nonempty literal text")
             while time.monotonic() < deadline:
-                _, lines = self.frame(deadline)
+                try:
+                    _, lines = self.frame(deadline)
+                except TimeoutError:
+                    # tmux used up what was left of the deadline: the
+                    # condition did not hold in time, which is what to report.
+                    break
                 found = action["text"] in "\n".join(lines)
                 if found != bool(action.get("absent", False)):
                     return {"ok": True}
@@ -129,9 +134,12 @@ class Driver(RequestDriver):
             command = action.get("action")
             if command not in {"create-project", "create-feature", "create-batch-features"}:
                 raise ValueError("Unsupported automation action")
-            response = subprocess.run([str(self.binary), "automation", command], input=encode(action["request"]),
-                                      env=self.runtime.env, cwd=self.runtime.session, capture_output=True,
-                                      text=True, timeout=max(0.01, deadline - time.monotonic()))
+            try:
+                response = subprocess.run([str(self.binary), "automation", command], input=encode(action["request"]),
+                                          env=self.runtime.env, cwd=self.runtime.session, capture_output=True,
+                                          text=True, timeout=max(0.01, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise TimeoutError(f"amf automation {command} did not finish before the deadline") from None
             if response.returncode:
                 raise RuntimeError((response.stderr or response.stdout)[-1500:])
             value = json.loads(response.stdout)
@@ -181,9 +189,15 @@ class Runtime(ProcessRuntime):
         self.started = False
 
     def tmux(self, *args, deadline, input=None, check=True):
-        result = subprocess.run([self.tmux_binary, "-S", str(self.session / "tmux.sock"), "-f", "/dev/null", *args],
-                                env=self.env, cwd=self.session, input=input, capture_output=True,
-                                text=True, timeout=max(0.01, deadline - time.monotonic()))
+        try:
+            result = subprocess.run([self.tmux_binary, "-S", str(self.session / "tmux.sock"), "-f", "/dev/null", *args],
+                                    env=self.env, cwd=self.session, input=input, capture_output=True,
+                                    text=True, timeout=max(0.01, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            # One deadline covers a whole request, so a tmux call near its end
+            # can get a few milliseconds. That is the request timing out, and
+            # callers that retry or poll handle exactly TimeoutError.
+            raise TimeoutError(f"tmux {args[0]} did not finish before the deadline") from None
         if check and result.returncode:
             raise RuntimeError(result.stderr.strip()[:1500] or "Private tmux command failed")
         return result.stdout
@@ -231,8 +245,20 @@ class Runtime(ProcessRuntime):
         try:
             return self.tmux("display-message", "-p", "-t", self.target, "#{pane_dead}",
                              deadline=time.monotonic() + 1).strip() == "0"
-        except (RuntimeError, subprocess.TimeoutExpired):
+        except (RuntimeError, TimeoutError):
             return False
+
+    def postmortem(self):
+        # close() kills the private tmux server, and with it the remain-on-exit
+        # pane that holds a panic message. Keep that screen and its scrollback.
+        if not self.started:
+            return None
+        try:
+            screen = self.tmux("capture-pane", "-p", "-S", "-", "-t", self.target, deadline=time.monotonic() + 2)
+        except (RuntimeError, OSError):
+            return None
+        (self.session / "last-pane.txt").write_text(screen)
+        return "last-pane.txt"
 
 
 def parser():

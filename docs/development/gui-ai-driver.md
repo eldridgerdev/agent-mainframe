@@ -44,7 +44,8 @@ cargo build -p amf-gui --locked
 `start --binary /path/to/debug/amf-gui` supports a separate Cargo target directory.
 The default honors `CARGO_TARGET_DIR`. Use a debug build from this checkout:
 the driver uses WebKit's debug inspector and starts this checkout's Vite server
-on Tauri's fixed port 1420. It refuses an occupied port. Only one development
+on Tauri's fixed port 1420. It refuses a port occupied on any loopback address
+(`127.0.0.1`, `::1` or whatever `localhost` resolves to). Only one development
 frontend can run at a time. It does not rebuild or install dependencies for you.
 
 Use the returned directory as `--session`, before the command. For example:
@@ -90,10 +91,17 @@ its processes and reports the log directory.
   labels and associated form labels. Ambiguous targets, disabled controls and
   detached references fail. Refresh the snapshot after replacing a dialog.
   This is a compact DOM summary, not a complete accessibility-tree implementation.
+- A full page reload (Vite does one for edits it cannot hot-swap) keeps the
+  session usable: the driver re-injects its helper on the next command. Every
+  earlier reference is stale, and new ones read `e1-1`, `e1-2`, … so an old
+  reference cannot name a new element. Take another snapshot.
 - `fill` updates React controlled inputs/textareas through their native value
   setter and bubbling events. `select` accepts an option's **value**. Click a
   checkbox or switch to change it.
-- `wait --text 'Ready'` tests visible text. `wait --expression 'boolean JS'`
+- `wait --text 'Ready'` tests visible text, ignoring differences in whitespace,
+  so a phrase may span inline elements or the line breaks a snapshot shows. With
+  `--scope`, a scope that has not rendered yet counts as "not yet"; one that
+  matches several elements is an error. `wait --expression 'boolean JS'`
   tests more precise conditions. `eval 'synchronous JS'` is an escape hatch for
   targeted assertions and reads; it does not await returned promises.
 - `--timeout 30` sets a shared deadline for an entire request or batch (default

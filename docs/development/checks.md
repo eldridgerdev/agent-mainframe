@@ -8,7 +8,8 @@ compiler version is not separately tested; CI uses stable.
 
 The full suite runs on Unix and uses temporary Git repositories, shell/process
 fixtures, Unix sockets and FIFOs. Install `git`, `tmux`, `sh`, `bash`, `ps`, `sleep`,
-`mkfifo` and a C toolchain. On Ubuntu, CI installs `build-essential pkg-config git
+`mkfifo`, `python3` and a C toolchain (without `python3`, the one test that imports
+the injected interaction drivers skips that step and says so). On Ubuntu, CI installs `build-essential pkg-config git
 tmux bash coreutils procps`; on macOS it uses the runner's Xcode/Unix tools and
 installs tmux with Homebrew. No authenticated GitHub account or paid agent harness
 is required for tests. Running AMF itself requires whichever of Claude Code,

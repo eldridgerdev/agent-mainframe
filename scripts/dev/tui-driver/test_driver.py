@@ -104,6 +104,31 @@ class DriverTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.driver.action({"op": "keys", "keys": ["Enter"]}, self.deadline)
 
+    def test_slow_tmux_is_a_timeout_that_retries_and_waits_can_handle(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(driver.shutil, "which", return_value="/usr/bin/tmux"):
+            runtime = driver.Runtime(Path(temporary))
+            expired = driver.subprocess.TimeoutExpired(["tmux"], 0.01)
+            with patch.object(driver.subprocess, "run", side_effect=expired):
+                with self.assertRaisesRegex(TimeoutError, "tmux display-message did not finish"):
+                    runtime.tmux("display-message", deadline=self.deadline)
+                runtime.started = True
+                self.assertFalse(runtime.alive())
+        # A wait whose last poll ran out of time reports the wait, not tmux.
+        self.driver.frame = Mock(side_effect=TimeoutError("tmux display-message did not finish before the deadline"))
+        with self.assertRaisesRegex(TimeoutError, "Wait condition did not become true"):
+            self.driver.action({"op": "wait", "text": "Keybindings"}, self.deadline)
+
+    def test_postmortem_saves_the_final_screen_and_scrollback(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.object(driver.shutil, "which", return_value="/usr/bin/tmux"):
+            runtime = driver.Runtime(Path(temporary))
+            self.assertIsNone(runtime.postmortem())
+            runtime.started = True
+            with patch.object(runtime, "tmux", return_value="thread 'main' panicked\nPane is dead\n") as tmux:
+                self.assertEqual(runtime.postmortem(), "last-pane.txt")
+            self.assertEqual(tmux.call_args.args[:4], ("capture-pane", "-p", "-S", "-"))
+            self.assertIn("panicked", (Path(temporary) / "last-pane.txt").read_text())
+            with patch.object(runtime, "tmux", side_effect=RuntimeError("no server running")):
+                self.assertIsNone(runtime.postmortem())
 
 if __name__ == "__main__":
     unittest.main()

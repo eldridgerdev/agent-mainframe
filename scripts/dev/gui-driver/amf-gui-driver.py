@@ -26,12 +26,39 @@ def port():
         return handle.getsockname()[1]
 
 
+def frontend_port_occupied(number=1420):
+    # Tauri's devUrl is http://localhost:1420 and a default `npm run dev` binds
+    # whatever `localhost` resolves to, which is ::1 on many hosts. A server
+    # there would sit beside this driver's 127.0.0.1 one and could be the one
+    # WebKit loads, so every loopback address has to be free.
+    addresses = {(socket.AF_INET, ("127.0.0.1", number)), (socket.AF_INET6, ("::1", number, 0, 0))}
+    try:
+        for family, _, _, _, address in socket.getaddrinfo("localhost", number, type=socket.SOCK_STREAM):
+            addresses.add((family, address))
+    except OSError:
+        pass
+    for family, address in sorted(addresses):
+        try:
+            with socket.socket(family) as probe:
+                probe.settimeout(1)
+                if probe.connect_ex(address) == 0:
+                    return True
+        except OSError:
+            continue  # e.g. IPv6 is unavailable: nothing can be listening there
+    return False
+
+
+class Undelivered(RuntimeError):
+    """WebKit refused to route a message to the page target it named."""
+
+
 class Inspector:
     def __init__(self, address, deadline):
         import websocket
 
         self.sequence = 0
         self.ws = None
+        self.target = None
         while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(f"http://{address}/", timeout=1) as response:
@@ -48,13 +75,7 @@ class Inspector:
         if self.ws is None:
             raise RuntimeError("WebKit inspector not ready (Linux debug GUI required); see gui.log")
         try:
-            while time.monotonic() < deadline:
-                self.ws.settimeout(max(0.01, deadline - time.monotonic()))
-                event = json.loads(self.ws.recv())
-                if event.get("method") == "Target.targetCreated":
-                    self.target = event["params"]["targetInfo"]["targetId"]
-                    return
-            raise TimeoutError("WebKit did not announce its page target")
+            self.await_target(deadline)
         except BaseException:
             self.close()
             raise
@@ -63,7 +84,44 @@ class Inspector:
         if self.ws:
             self.ws.close()
 
+    def receive(self, deadline):
+        self.ws.settimeout(max(0.01, deadline - time.monotonic()))
+        event = json.loads(self.ws.recv())
+        # The page target is not fixed for the session: a navigation that
+        # swaps web processes replaces it, and these events arrive whenever
+        # the socket is next read.
+        method, params = event.get("method"), event.get("params") or {}
+        if method == "Target.targetCreated":
+            info = params["targetInfo"]
+            if info.get("type", "page") == "page" and not info.get("isProvisional"):
+                self.target = info["targetId"]
+        elif method == "Target.didCommitProvisionalTarget":
+            if self.target in (None, params.get("oldTargetId")):
+                self.target = params["newTargetId"]
+        elif method == "Target.targetDestroyed" and params.get("targetId") == self.target:
+            self.target = None
+        return event
+
+    def await_target(self, deadline):
+        while self.target is None:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("WebKit did not announce its page target")
+            self.receive(deadline)
+
     def evaluate(self, expression, deadline):
+        while True:
+            self.await_target(deadline)
+            sent_to = self.target
+            try:
+                return self.evaluate_in(sent_to, expression, deadline)
+            except Undelivered:
+                # Target events queued since the last command are read only
+                # now. If they replaced the page, the message never ran and is
+                # safe to send to its successor; otherwise the refusal is real.
+                if self.target == sent_to or time.monotonic() >= deadline:
+                    raise
+
+    def evaluate_in(self, target, expression, deadline):
         self.sequence += 1
         request = {"id": self.sequence, "method": "Runtime.evaluate", "params": {
             "expression": expression, "returnByValue": True,
@@ -71,13 +129,12 @@ class Inspector:
         outer_id = self.sequence + 1000000
         self.ws.settimeout(max(0.01, deadline - time.monotonic()))
         self.ws.send(encode({"id": outer_id, "method": "Target.sendMessageToTarget", "params": {
-            "targetId": self.target, "message": encode(request),
+            "targetId": target, "message": encode(request),
         }}))
         while time.monotonic() < deadline:
-            self.ws.settimeout(max(0.01, deadline - time.monotonic()))
-            event = json.loads(self.ws.recv())
+            event = self.receive(deadline)
             if event.get("id") == outer_id and event.get("error"):
-                raise RuntimeError(encode(event["error"]))
+                raise Undelivered(encode(event["error"]))
             if event.get("method") != "Target.dispatchMessageFromTarget":
                 continue
             message = json.loads(event["params"]["message"])
@@ -93,8 +150,32 @@ class Inspector:
 
 
 class Driver(RequestDriver):
-    def __init__(self, inspector):
+    MISSING = "__amf_gui_driver_missing__"
+
+    def __init__(self, inspector, helper=None):
         self.inspector = inspector
+        self.helper = DOM.read_text() if helper is None else helper
+        self.injections = 0
+
+    def inject(self, deadline):
+        # Later copies mark their element references, which restart with the
+        # page: a reference from before a reload must not name a new element.
+        epoch = f"window.__amfGuiDriverEpoch = {self.injections};\n" if self.injections else ""
+        self.inspector.evaluate(epoch + self.helper, deadline)
+        self.injections += 1
+
+    def call(self, action):
+        # A full page reload (Vite does one for any edit it cannot hot-swap)
+        # discards the injected helper, so every call reports its absence
+        # instead of failing with "not a function".
+        return f"typeof window.__amfGuiDriver === 'function' ? window.__amfGuiDriver({encode(action)}) : {encode(self.MISSING)}"
+
+    def evaluate_helper(self, expression, deadline):
+        result = self.inspector.evaluate(expression, deadline)
+        if result == self.MISSING:
+            self.inject(deadline)
+            result = self.inspector.evaluate(expression, deadline)
+        return result
 
     def action(self, action, deadline):
         op = action.get("op")
@@ -102,18 +183,20 @@ class Driver(RequestDriver):
             return self.inspector.evaluate(action["expression"], deadline)
         if op == "wait":
             expression = action.get("expression")
+            evaluate = self.inspector.evaluate
             if expression is None:
                 if not isinstance(action.get("text"), str):
                     raise ValueError("wait needs text or expression")
-                expression = f"window.__amfGuiDriver({encode(action | {'op': 'has_text'})})"
+                expression = self.call({**action, "op": "has_text"})
+                evaluate = self.evaluate_helper
             while time.monotonic() < deadline:
-                if self.inspector.evaluate(expression, deadline):
+                if evaluate(expression, deadline):
                     return {"ok": True}
                 time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             raise TimeoutError("Wait condition did not become true")
         if op not in {"snapshot", "click", "fill", "select"}:
             raise ValueError(f"Unknown operation: {op}")
-        return self.inspector.evaluate(f"window.__amfGuiDriver({encode(action)})", deadline)
+        return self.evaluate_helper(self.call(action), deadline)
 
     def close(self):
         self.inspector.close()
@@ -131,9 +214,8 @@ class Runtime(ProcessRuntime):
             raise RuntimeError("An X11 display is required; run under xvfb-run -a on headless Linux")
         # The debug binary embeds this fixed dev URL. Refuse to inspect another
         # checkout's frontend, rather than silently connecting to its server.
-        with socket.socket() as probe:
-            if probe.connect_ex(("127.0.0.1", 1420)) == 0:
-                raise RuntimeError("Port 1420 is occupied; stop the existing Vite server first")
+        if frontend_port_occupied():
+            raise RuntimeError("Port 1420 is occupied; stop the existing Vite server first")
         vite = self.launch("vite", ["npm", "run", "dev", "--", "--host", "127.0.0.1"], self.source / "gui", os.environ.copy())
         while time.monotonic() < deadline:
             if vite.poll() is not None:
@@ -150,7 +232,7 @@ class Runtime(ProcessRuntime):
         try:
             driver = Driver(inspector)
             driver.run({"op": "wait", "expression": "typeof window.__TAURI_INTERNALS__?.invoke === 'function' && !!document.querySelector('nav[aria-label=Workspace]')", "timeout": max(0.01, deadline - time.monotonic())})
-            inspector.evaluate(DOM.read_text(), deadline)
+            driver.inject(deadline)
             return driver
         except BaseException:
             inspector.close()

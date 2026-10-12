@@ -30,7 +30,9 @@ cargo build --locked --bin amf
 the development binary is absent. `--geometry 120x40` sets the initial columns and rows;
 `--config /path/to/config.json` supplies a private AMF configuration. Geometry
 accepts 60–400 columns and 20–200 rows. A session directory supplied with
-`--session` must be new or empty, and short enough for Unix sockets.
+`--session` must be new or empty, and short enough for Unix sockets. Without
+`--session`, the directory is created under the platform's temporary directory,
+or under `/tmp` where that path is itself too long (macOS).
 
 Use the returned directory for subsequent calls. Global options go before the
 command:
@@ -127,6 +129,11 @@ one deadline for the entire request or batch (default 15 seconds, maximum 120).
 A failure reports its one-based action index and stops immediately. Earlier
 mutations remain; nothing is rolled back or retried. Input is refused if the
 owned pane is dead or in tmux copy-mode.
+
+If AMF exits, the session ends. Its final screen and scrollback (a panic
+message, for instance) are saved to `last-pane.txt` in the session directory
+before the private tmux server is shut down, and every later command reports
+why the session ended instead of a socket error.
 
 ## xterm compatibility
 

@@ -51,7 +51,7 @@ jobs:
       - name: Verify test prerequisites
         shell: bash
         run: |
-          for tool in git tmux sh bash ps sleep mkfifo cc; do
+          for tool in git tmux sh bash ps sleep mkfifo cc python3; do
             command -v "$tool"
           done
           rustc --version

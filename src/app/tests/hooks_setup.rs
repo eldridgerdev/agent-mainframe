@@ -1538,6 +1538,92 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
 }
 
 #[test]
+fn interaction_skill_bundles_work_outside_amf_checkout_for_every_harness() {
+    for (agent, root) in [
+        (AgentKind::Claude, ".claude"),
+        (AgentKind::Codex, ".agents"),
+        (AgentKind::Opencode, ".opencode"),
+        (AgentKind::Pi, ".pi"),
+    ] {
+        let project = TempDir::new().unwrap();
+        let cwd = TempDir::new().unwrap();
+        call_ensure_hooks_for(&project, VibeMode::Vibe, agent.clone(), true);
+        let skill = project.path().join(root).join("skills/amf-interact");
+        for relative in [
+            "SKILL.md",
+            "scripts/ai_driver.py",
+            "scripts/gui-driver/dom.js",
+            "references/gui.md",
+            "references/tui.md",
+        ] {
+            assert!(
+                skill.join(relative).is_file(),
+                "{agent:?}: missing {relative}"
+            );
+        }
+        for driver in ["tui", "gui"] {
+            let output = std::process::Command::new("python3")
+                .arg(skill.join(format!("scripts/{driver}-driver/amf-{driver}-driver.py")))
+                .arg("--help")
+                .current_dir(cwd.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{agent:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let ignore = std::fs::read_to_string(project.path().join(root).join(".gitignore")).unwrap();
+        assert!(ignore.lines().any(|line| line == "skills/amf-interact/"));
+
+        // An unchanged skill entrypoint must not prevent updating its assets.
+        let helper = skill.join("scripts/ai_driver.py");
+        std::fs::write(&helper, "stale helper").unwrap();
+        call_ensure_hooks_for(&project, VibeMode::Vibe, agent.clone(), true);
+        assert_eq!(
+            std::fs::read_to_string(helper).unwrap(),
+            include_str!("../../../scripts/dev/ai_driver.py")
+        );
+
+        let user_skill = project.path().join(root).join("skills/user-owned/SKILL.md");
+        std::fs::create_dir_all(user_skill.parent().unwrap()).unwrap();
+        std::fs::write(&user_skill, "user instructions").unwrap();
+        cleanup_agent_injected_files(project.path(), &agent);
+        assert!(!skill.exists());
+        assert_eq!(
+            std::fs::read_to_string(user_skill).unwrap(),
+            "user instructions"
+        );
+    }
+}
+
+#[test]
+fn interaction_skill_refresh_covers_mixed_harness_sessions_without_recreating_feature() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Stopped);
+    let feature = &mut store.projects[0].features[0];
+    feature.agent = AgentKind::Codex;
+    let mut session = make_session("Pi", None);
+    session.kind = SessionKind::Pi;
+    feature.sessions = vec![session];
+    crate::app::setup::refresh_feature_skills(feature);
+    for root in [".agents", ".pi"] {
+        assert!(
+            workdir
+                .path()
+                .join(root)
+                .join("skills/amf-interact/SKILL.md")
+                .is_file()
+        );
+    }
+    assert!(!workdir.path().join(".pi/skills/amf-configure").exists());
+    feature.workdir = workdir.path().join("removed-worktree");
+    crate::app::setup::refresh_feature_skills(feature);
+    assert!(!feature.workdir.exists());
+}
+
+#[test]
 fn screenshot_skill_is_not_injected_into_managed_workspaces() {
     for (agent, skills_root) in [
         (AgentKind::Claude, ".claude"),

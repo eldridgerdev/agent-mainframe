@@ -150,6 +150,26 @@ the complete interface for workflows marked Planned.
 
 Completed increments and remaining work, in priority order:
 
+- [x] **AI GUI/TUI interaction tooling (2026-10-12).** Persistent private
+  instances support compact observations, batched actions and local waits.
+  The GUI driver targets exact/scoped native controls and React form values;
+  the TUI driver reads tmux's rendered grid and supports changed rows,
+  terminal-mode-aware keys/paste and private automation. The injected
+  `amf-interact` skill includes helpers and on-demand guides for agents working
+  on other projects, with installed-AMF fallback for TUI use and explicit
+  source/debug prerequisites for GUI use. Upgrade refresh and cleanup cover
+  Claude, Codex, OpenCode and Pi, including mixed-harness features.
+  Validation: 21 Python checks, four frontend driver regressions, the full
+  parallel Rust workspace suite (3,513 library + seven GUI tests; one existing
+  ignored), formatting, strict Clippy and both native builds. Both native
+  workflows pass using copied injected bundles from an unrelated project
+  directory; the TUI probe verifies exact Unicode, application-cursor and
+  bracketed-paste bytes. No screenshot artifact was generated. Text checks do
+  not validate xterm rendering or browser event routing; macOS GUI interaction
+  remains unsupported by this driver. See the
+  [GUI](../development/gui-ai-driver.md) and
+  [TUI](../development/tui-ai-driver.md) operating guides.
+
 - [x] **Session bookmarks (2026-10-10).** Workspace navigation provides the
   shared nine-slot picker, add/remove and stable-session navigation. Duplicate
   additions preserve slots; a tenth evicts the oldest. Refresh and stale-target

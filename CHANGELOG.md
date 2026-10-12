@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **AI interaction helpers for AMF.** Agents can reuse private GUI or TUI
+  instances, read compact observations, and batch actions with local waits.
+  The injected `amf-interact` skill explains which tools to use and includes
+  the helpers for projects managed outside AMF's source checkout. TUI use needs
+  Python, tmux and installed AMF; GUI use also needs matching frontend source,
+  a Linux/WSLg debug GUI and its prerequisites. Existing agents may need a skill
+  reload or restart after upgrading. No configuration migration is required.
+
 - **Project agent choices in desktop.** Open Agent availability on a project
   page to choose its allowed agents or clear the override and inherit global
   choices. New features and sessions use those choices; existing sessions keep

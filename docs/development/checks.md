@@ -30,6 +30,28 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+For AI interaction tooling, run the Python checks and native TUI smoke check:
+
+```sh
+python3 scripts/dev/test_ai_driver.py
+python3 scripts/dev/gui-driver/test_driver.py
+python3 scripts/dev/tui-driver/test_driver.py
+cargo build --locked --bin amf
+python3 scripts/dev/tui-driver/smoke.py
+```
+
+The smoke check needs tmux and no display/browser or paid harness. It uses a
+private server/database and covers real TUI input, persistence and terminal
+modes. See [the TUI driver guide](tui-ai-driver.md) for compact observations and
+[the GUI driver guide](gui-ai-driver.md) for native desktop interaction.
+
+The Rust `app::tests::hooks_setup` suite checks injected `amf-interact` bundles
+for all four harnesses, including imports from another working directory,
+asset refresh and cleanup. `cargo package --locked --allow-dirty --list` must
+include `skills/amf-interact/` and the embedded driver sources. Both native smoke
+commands accept `--driver` to exercise an injected copy; the GUI smoke also
+accepts `--source` for the matching AMF checkout.
+
 The live `gui_terminal` tests run concurrently in separate child test processes.
 Each child uses its own test-only tmux socket and a keeper session so fixture
 setup cannot race the server's last-session exit. Only server startup is retried;

@@ -191,19 +191,53 @@ pub fn agents_load() -> GuiResult<AgentAvailabilityView> {
     agents_read(&crate::project::amf_config_dir().join("config.json"))
 }
 
+/// Only this process's copy is updated. An already open TUI keeps the list it
+/// started with and writes its whole config back on its next settings save,
+/// which is why the panel tells the user to restart it.
 pub fn agents_save(
     gui: &mut GuiHandle,
     revision: &str,
     settings: AgentAvailability,
 ) -> GuiResult<AgentAvailabilityView> {
-    let view = agents_save_at(
+    agents_save_and_apply(
+        gui,
         &crate::project::amf_config_dir().join("config.json"),
         revision,
         settings,
-    )?;
+    )
+}
+
+fn agents_save_and_apply(
+    gui: &mut GuiHandle,
+    path: &Path,
+    revision: &str,
+    settings: AgentAvailability,
+) -> GuiResult<AgentAvailabilityView> {
+    let view = agents_save_at(path, revision, settings)?;
     gui.app_for_workflow().config.extension.allowed_agents =
         Some(view.settings.allowed_agents.clone());
     Ok(view)
+}
+
+/// The harnesses a creation form may offer: what creating a feature in this
+/// project will accept (global choices, the project's own override, installed
+/// harnesses), or the global choices alone when no project exists yet.
+pub fn allowed_harnesses(
+    gui: &mut GuiHandle,
+    project_id: Option<&str>,
+) -> GuiResult<Vec<AgentKind>> {
+    gui.refresh_store()?;
+    let app = gui.app_for_workflow();
+    let Some(project_id) = project_id else {
+        return Ok(app.globally_allowed_agents());
+    };
+    let project = app
+        .store
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| GuiError::not_found(format!("Project '{project_id}' was not found")))?;
+    Ok(app.allowed_agents_for_repo(&project.repo))
 }
 
 fn agents_save_at(
@@ -220,6 +254,10 @@ fn agents_save_at(
     {
         return Err(anyhow::anyhow!("Select at least one agent, without duplicate choices").into());
     }
+    // The order a later load reports, whatever order the request used.
+    let settings = AgentAvailability {
+        allowed_agents: AgentKind::allowed_list(Some(&settings.allowed_agents)),
+    };
     let revision = update_document(path, revision, |value| {
         if value.get("extension").is_none() {
             value["extension"] = serde_json::json!({});
@@ -372,6 +410,9 @@ mod tests {
         tmux.expect_session_exists().return_const(true);
         let app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
         let gui = Mutex::new(GuiHandle::from_app(app));
+        // Test threads are reused: start from a known global config rather
+        // than whatever an earlier test left in the seam.
+        set_test_global_extension_config(Some(crate::extension::ExtensionConfig::default()));
         let before = crate::gui_sessions::new_session_options(&gui, &target).unwrap();
         assert!(
             before
@@ -379,8 +420,13 @@ mod tests {
                 .iter()
                 .any(|option| option.kind == SessionKind::Claude)
         );
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), None).unwrap(),
+            AgentKind::ALL
+        );
         let initial = agents_read(&path).unwrap();
-        agents_save_at(
+        agents_save_and_apply(
+            &mut gui.lock().unwrap(),
             &path,
             &initial.revision,
             AgentAvailability {
@@ -390,6 +436,14 @@ mod tests {
         .unwrap();
         // The test seam supplies the committed global file without changing process-wide XDG paths.
         set_test_global_extension_config(Some(read_document(&path).unwrap().1.extension));
+        // Creation forms are offered exactly what creation accepts.
+        for project_id in [None, Some(target.project_id.as_str())] {
+            assert_eq!(
+                allowed_harnesses(&mut gui.lock().unwrap(), project_id).unwrap(),
+                vec![AgentKind::Codex, AgentKind::Pi]
+            );
+        }
+        assert!(allowed_harnesses(&mut gui.lock().unwrap(), Some("missing")).is_err());
         let after = crate::gui_sessions::new_session_options(&gui, &target).unwrap();
         let agents = after
             .builtin
@@ -429,6 +483,66 @@ mod tests {
                 .builtin
                 .iter()
                 .any(|option| option.kind == SessionKind::Codex)
+        );
+        // The project's override reaches its own forms, not a new project's.
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), Some(&target.project_id)).unwrap(),
+            vec![AgentKind::Claude]
+        );
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), None).unwrap(),
+            vec![AgentKind::Codex, AgentKind::Pi]
+        );
+    }
+
+    #[test]
+    fn agent_save_applies_only_after_commit_and_reports_the_reloaded_order() {
+        use crate::app::App;
+        use crate::project::ProjectStore;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        let app = App::new_for_test(
+            ProjectStore::empty(),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut gui = GuiHandle::from_app(app);
+        gui.app_for_workflow().config.max_concurrent_agents = 11;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let initial = agents_read(&path).unwrap();
+        // The desktop form's order, which is not `AgentKind::ALL`'s.
+        let requested = AgentAvailability {
+            allowed_agents: vec![AgentKind::Codex, AgentKind::Opencode, AgentKind::Pi],
+        };
+        let saved =
+            agents_save_and_apply(&mut gui, &path, &initial.revision, requested.clone()).unwrap();
+        let reloaded = vec![AgentKind::Opencode, AgentKind::Codex, AgentKind::Pi];
+        assert_eq!(saved.settings.allowed_agents, reloaded);
+        assert_eq!(agents_read(&path).unwrap().settings, saved.settings);
+        assert_eq!(agents_read(&path).unwrap().revision, saved.revision);
+        let config = &gui.app_for_workflow().config;
+        assert_eq!(config.extension.allowed_agents, Some(reloaded.clone()));
+        assert_eq!(config.max_concurrent_agents, 11);
+        // A stale revision, an invalid choice and an unreadable destination
+        // all leave the live choices untouched.
+        let claude = AgentAvailability {
+            allowed_agents: vec![AgentKind::Claude],
+        };
+        assert!(agents_save_and_apply(&mut gui, &path, &initial.revision, claude.clone()).is_err());
+        let empty = AgentAvailability {
+            allowed_agents: vec![],
+        };
+        assert!(agents_save_and_apply(&mut gui, &path, &saved.revision, empty).is_err());
+        let unreadable = dir.path().join("a-directory.json");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(agents_save_and_apply(&mut gui, &unreadable, "missing", claude).is_err());
+        assert_eq!(
+            gui.app_for_workflow().config.extension.allowed_agents,
+            Some(reloaded.clone())
+        );
+        assert_eq!(
+            agents_read(&path).unwrap().settings.allowed_agents,
+            reloaded
         );
     }
 

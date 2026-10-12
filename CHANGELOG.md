@@ -14,9 +14,11 @@ are tagged.
 
 - **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
   OpenCode and Pi agents from workspace navigation, using the TUI's settings.
-  Project overrides keep precedence and existing sessions keep running. Unsaved
-  drafts are protected and conflicting config edits require a reload. No
-  migration is required.
+  Project overrides keep precedence and existing sessions keep running. The
+  desktop creation forms offer only the allowed agents. Unsaved drafts are
+  protected and conflicting config edits require a reload. Restart an already
+  open TUI after saving, or its next settings save restores the old choices.
+  No migration is required.
 
 - **Desktop session bookmarks.** Save, open and remove sessions from workspace
   navigation using the same nine slots as the TUI. A tenth bookmark evicts the

@@ -59,6 +59,7 @@ import {
   startSession,
   stopFeature,
   stopSession,
+  allowedHarnesses,
   supportedHarnesses,
   supportedModes,
   terminalSubmitPrompt,
@@ -1244,7 +1245,10 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
-      {showAgentAvailability && <AgentAvailabilityPanel onClose={() => setShowAgentAvailability(false)} onSaved={() => setShowAgentAvailability(false)} />}
+      {showAgentAvailability && <AgentAvailabilityPanel onClose={() => setShowAgentAvailability(false)} onSaved={() => {
+        setShowAgentAvailability(false);
+        void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
+      }} />}
       {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
         onOpenFeature={(target) => {
           setShowDormancy(false);
@@ -2201,6 +2205,21 @@ function FeatureView({
   );
 }
 
+const ALLOWED_HARNESSES_KEY = "allowed-harnesses";
+
+/** The harnesses a creation form offers: the ones creation will accept for
+ * this project, or the global choices before a project exists. Every
+ * supported harness stands in until that answer arrives or if it cannot be
+ * read; the backend still refuses a disallowed one. */
+function useOfferedAgents(projectId: string | null, supported: HarnessInfo[]): HarnessInfo[] {
+  const allowed = useQuery({
+    queryKey: [ALLOWED_HARNESSES_KEY, projectId],
+    queryFn: () => allowedHarnesses(projectId),
+    retry: false,
+  });
+  return allowed.data ?? supported;
+}
+
 function CreateProjectForm({
   agents,
   pending,
@@ -2221,6 +2240,8 @@ function CreateProjectForm({
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [agent, setAgent] = useState<AgentSlug | "">("");
+  const offered = useOfferedAgents(null, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent) ? agent : "";
 
   return (
     <Modal
@@ -2231,7 +2252,7 @@ function CreateProjectForm({
       onSubmit={() => onSubmit({
         path: path.trim(),
         project_name: name.trim(),
-        preferred_agent: agent || null,
+        preferred_agent: selectedAgent || null,
         dry_run: false,
       })}
       footer={
@@ -2271,9 +2292,9 @@ function CreateProjectForm({
           />
         </Field>
         <Field label="Preferred harness">
-          <select value={agent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
+          <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
             <option value="">Default</option>
-            {agents.map((a) => (
+            {offered.map((a) => (
               <option key={a.slug} value={a.slug}>{a.display_name}</option>
             ))}
           </select>
@@ -2312,6 +2333,9 @@ export function CreateFeatureForm({
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
+  const offered = useOfferedAgents(projectId, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
+    ? agent : (offered[0]?.slug ?? agent);
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
@@ -2325,7 +2349,7 @@ export function CreateFeatureForm({
         if (pending || !hook.ready || !branch.trim()) return;
         onSubmit({
           branch: branch.trim(),
-          agent,
+          agent: selectedAgent,
           mode,
           review: false,
           plan_mode: planKind !== "none",
@@ -2359,8 +2383,8 @@ export function CreateFeatureForm({
         </Field>
         <div className="form-row">
           <Field label="Harness">
-            <select value={agent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {agents.map((a) => (
+            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
+              {offered.map((a) => (
                 <option key={a.slug} value={a.slug}>{a.display_name}</option>
               ))}
             </select>
@@ -2435,8 +2459,10 @@ export function TodoNewFeatureForm({
   const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
   const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
   const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-  const selectedAgent = agents.some((candidate) => candidate.slug === agent)
-    ? agent : (agents[0]?.slug ?? agent);
+  // Each project can narrow the list, so it follows the chosen project.
+  const offered = useOfferedAgents(project?.id ?? null, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
+    ? agent : (offered[0]?.slug ?? agent);
   const selectedMode = modes.some((candidate) => candidate.slug === mode)
     ? mode : (modes[0]?.slug ?? mode);
   const hook = useWorktreeHookChoice(project?.id, !!project);
@@ -2495,7 +2521,7 @@ export function TodoNewFeatureForm({
         <div className="form-row">
           <Field label="Harness">
             <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {agents.map((candidate) => (
+              {offered.map((candidate) => (
                 <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
               ))}
             </select>

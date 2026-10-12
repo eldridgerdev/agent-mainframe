@@ -373,17 +373,35 @@ struct HarnessInfo {
     display_name: String,
 }
 
+impl From<&AgentKind> for HarnessInfo {
+    fn from(kind: &AgentKind) -> Self {
+        Self {
+            slug: kind.slug().to_string(),
+            display_name: kind.display_name().to_string(),
+        }
+    }
+}
+
 /// Returns the harnesses AMF supports, straight from the same [`AgentKind`]
 /// the TUI and the automation JSON API already use.
 #[tauri::command]
 fn supported_harnesses() -> Vec<HarnessInfo> {
-    AgentKind::ALL
-        .iter()
-        .map(|kind| HarnessInfo {
-            slug: kind.slug().to_string(),
-            display_name: kind.display_name().to_string(),
-        })
-        .collect()
+    AgentKind::ALL.iter().map(HarnessInfo::from).collect()
+}
+
+/// The harnesses a creation form may offer for `project_id`, or for a project
+/// that does not exist yet: the ones creation will accept, not every
+/// supported one.
+#[tauri::command]
+fn allowed_harnesses(
+    state: State<AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<HarnessInfo>, GuiError> {
+    let allowed = gui_settings::allowed_harnesses(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        project_id.as_deref(),
+    )?;
+    Ok(allowed.iter().map(HarnessInfo::from).collect())
 }
 
 #[derive(Serialize)]
@@ -1557,6 +1575,7 @@ fn main() {
             review_take_completion,
             load_diff,
             supported_harnesses,
+            allowed_harnesses,
             supported_modes,
             get_snapshot,
             set_collapsed,

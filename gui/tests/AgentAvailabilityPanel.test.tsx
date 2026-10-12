@@ -18,6 +18,8 @@ it("loads without writing and saves only explicit agent choices with revision", 
   const { onSaved } = mount();
   await screen.findByLabelText("Codex");
   expect(vi.mocked(invoke).mock.calls).toEqual([["agent_availability_load"]]);
+  // An open TUI holds its own copy; the panel must not claim otherwise.
+  expect(screen.getByText(/Restart an already open TUI/)).toBeTruthy();
   toggle("Claude Code"); toggle("OpenCode"); toggle("Pi"); click("Save settings");
   await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
   expect(invoke).toHaveBeenLastCalledWith("agent_availability_save", {

@@ -117,6 +117,17 @@ export function formatTotal(total: number): string {
             )
     except OSError:
         pass
+    fresh_python = os.environ.get("AMF_GUI_CAPTURE_FRESH_SERVER_PYTHON") == "1"
+    gui_env = env.copy()
+    if fresh_python:
+        image = scratch / "AppDir"
+        host_modules = scratch / "host-python"
+        host_modules.mkdir()
+        (host_modules / "amf_host_python_probe.py").write_text('value = "host-module-imported"\n')
+        original_harness = pathlib.Path(harness).read_text()
+        harness = str(scratch / "python-receiver.py")
+        pathlib.Path(harness).write_text('import amf_host_python_probe; assert amf_host_python_probe.value == "host-module-imported"\n' + original_harness)
+        gui_env.update(APPDIR=str(image), PYTHONHOME=str(image / "usr") + "/", PYTHONPATH=str(image / "usr/share/pyshared") + "/:" + str(host_modules))
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
@@ -128,8 +139,6 @@ export function formatTotal(total: number): string {
     )
     gui = None
     try:
-        subprocess.run(tmux + ["new-session", "-d", "-s", tmux_name, "-n", "claude", "-x", "120", "-y", "30", command("Claude tab", "claude-received.json")], check=True)
-        subprocess.run(tmux + ["new-window", "-d", "-t", tmux_name, "-n", "codex", command("Codex tab", "codex-received.json")], check=True)
         for _ in range(100):
             if vite.poll() is not None:
                 raise RuntimeError(
@@ -142,14 +151,49 @@ export function formatTotal(total: number): string {
                 time.sleep(0.25)
         else:
             raise RuntimeError("The isolated frontend did not become ready")
-        gui = subprocess.Popen(
-            [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
-            cwd=scratch,
-            env=env,
-            stdout=gui_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        if fresh_python:
+            gui = subprocess.Popen(
+                [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
+                cwd=scratch,
+                env=gui_env,
+                stdout=gui_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            for _ in range(120):
+                if gui.poll() is not None:
+                    raise RuntimeError("Fresh-server GUI exited before tmux startup")
+                result = subprocess.run(tmux + ["show-environment", "-g", "AMF_TMUX_SOCKET"], text=True, capture_output=True)
+                if result.returncode == 0:
+                    break
+                time.sleep(0.25)
+            else:
+                raise RuntimeError("GUI did not start its private tmux server")
+            home = subprocess.run(tmux + ["show-environment", "-g", "PYTHONHOME"], text=True, capture_output=True)
+            assert home.returncode != 0 or home.stdout == "-PYTHONHOME\n", "Bundle Python home reached tmux server"
+            path = subprocess.check_output(tmux + ["show-environment", "-g", "PYTHONPATH"], text=True).strip()
+            assert path == "PYTHONPATH=" + str(host_modules), "Host Python search path not preserved"
+            (out / "python-environment-proof.json").write_text(json.dumps({"launch": "current-source GUI with released AppRun Python redirects", "server_started_by": "GUI before receivers", "bundle_home_removed": True, "host_python_path_preserved": True}) + "\n")
+        subprocess.run(tmux + ["new-session", "-d", "-s", tmux_name, "-n", "claude", "-x", "120", "-y", "30", command("Host module imported - Claude tab" if fresh_python else "Claude tab", "claude-received.json")], check=True)
+        subprocess.run(tmux + ["new-window", "-d", "-t", tmux_name, "-n", "codex", command("Host module imported - Codex tab" if fresh_python else "Codex tab", "codex-received.json")], check=True)
+        if fresh_python:
+            for filename in ["claude-received.json", "codex-received.json"]:
+                for _ in range(120):
+                    if (repo / filename).is_file():
+                        assert json.loads((repo / filename).read_text()) == []
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError("Host Python receiver failed to import under GUI-started server")
+        if gui is None:
+            gui = subprocess.Popen(
+                [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
+                cwd=scratch,
+                env=gui_env,
+                stdout=gui_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
         dbpath = config / "amf/amf.db"
         for _ in range(60):
             if gui.poll() is not None:

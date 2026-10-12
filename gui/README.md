@@ -21,6 +21,16 @@ Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
 be on `PATH`. For a Mac, follow [macOS](#macos) below; on Windows, follow
 [Windows (WSL2)](#windows-wsl2).
 
+AppImage's launcher supplies Python paths inside the image even though AMF
+ships no Python installation. Current source removes those bundle-owned Python
+redirects when starting tmux, preserving host Python search paths. This affects
+new servers; reopening the GUI does not rewrite an existing server's environment.
+The regression scenario [`gui-appimage-python.txt`](../scripts/dev/screenshot/scenarios/gui-appimage-python.txt)
+starts the source-built GUI with the released launcher's Python redirects before
+creating two Python panes, and checks standard-library and host-module imports.
+Its native screenshots prove that environment boundary, rather than a rebuilt
+release artifact or FUSE installation.
+
 ## macOS
 
 Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs

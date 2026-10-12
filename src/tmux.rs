@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
+#[cfg(any(target_os = "linux", test))]
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
@@ -118,6 +120,34 @@ impl PaneTerminalModes {
 }
 
 pub struct TmuxManager;
+
+/// AppRun redirects Python into its image even though AMF does not bundle a
+/// Python installation. Do not let a newly started tmux server retain those
+/// redirects for every shell and harness it launches. Keep host Python paths
+/// and leave the GUI's own GTK/WebKit environment untouched.
+#[cfg(any(target_os = "linux", test))]
+fn configure_tmux_python_environment(
+    command: &mut Command,
+    app_dir: Option<&OsStr>,
+    python_home: Option<&OsStr>,
+    python_path: Option<&OsStr>,
+) {
+    let Some(app_dir) = app_dir.filter(|dir| Path::new(dir).is_absolute()) else {
+        return;
+    };
+    let app_dir = Path::new(app_dir);
+    if python_home.is_some_and(|home| Path::new(home) == app_dir.join("usr")) {
+        command.env_remove("PYTHONHOME");
+    }
+    if let Some(python_path) = python_path {
+        let mut paths = std::env::split_paths(python_path);
+        if paths.next().as_deref() == Some(app_dir.join("usr/share/pyshared").as_path())
+            && let Ok(host_paths) = std::env::join_paths(paths)
+        {
+            command.env("PYTHONPATH", host_paths);
+        }
+    }
+}
 
 static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -659,6 +689,13 @@ impl TmuxManager {
     pub(crate) fn command() -> Command {
         let runtime = Self::runtime();
         let mut command = Command::new(&runtime.binary);
+        #[cfg(target_os = "linux")]
+        configure_tmux_python_environment(
+            &mut command,
+            std::env::var_os("APPDIR").as_deref(),
+            std::env::var_os("PYTHONHOME").as_deref(),
+            std::env::var_os("PYTHONPATH").as_deref(),
+        );
         if let Some(socket) = &runtime.socket {
             if let Some(parent) = socket.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -2595,7 +2632,9 @@ impl TmuxOps for TmuxManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{TmuxInputTransportMode, TmuxManager, TmuxRuntime};
+    use super::{
+        TmuxInputTransportMode, TmuxManager, TmuxRuntime, configure_tmux_python_environment,
+    };
     use std::ffi::OsString;
     use std::fs;
     use std::process::{ExitStatus, Output};
@@ -2606,6 +2645,133 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     use tempfile::TempDir;
+
+    fn python_environment(
+        app_dir: Option<&str>,
+        home: Option<&str>,
+        path: Option<&str>,
+    ) -> Vec<(OsString, Option<OsString>)> {
+        let mut command = std::process::Command::new("tmux");
+        configure_tmux_python_environment(
+            &mut command,
+            app_dir.map(std::ffi::OsStr::new),
+            home.map(std::ffi::OsStr::new),
+            path.map(std::ffi::OsStr::new),
+        );
+        command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+            .collect()
+    }
+
+    #[test]
+    fn appimage_python_redirects_are_removed_but_host_search_paths_survive() {
+        assert_eq!(
+            python_environment(
+                Some("/tmp/image"),
+                Some("/tmp/image/usr/"),
+                Some("/tmp/image/usr/share/pyshared/:/opt/python modules::/host/lib:"),
+            ),
+            vec![
+                ("PYTHONHOME".into(), None),
+                (
+                    "PYTHONPATH".into(),
+                    Some("/opt/python modules::/host/lib:".into())
+                ),
+            ]
+        );
+        assert_eq!(
+            python_environment(
+                Some("/tmp/image"),
+                None,
+                Some("/tmp/image/usr/share/pyshared/:")
+            ),
+            vec![("PYTHONPATH".into(), Some("".into()))]
+        );
+    }
+
+    #[test]
+    fn normal_and_custom_python_environments_are_preserved() {
+        for app_dir in [None, Some("relative"), Some("/tmp/image")] {
+            assert!(
+                python_environment(app_dir, Some("/opt/python"), Some("/host/modules:")).is_empty()
+            );
+        }
+        assert!(
+            python_environment(
+                None,
+                Some("/tmp/image/usr"),
+                Some("/tmp/image/usr/share/pyshared/:")
+            )
+            .is_empty()
+        );
+        assert!(
+            python_environment(
+                Some("/tmp/image"),
+                Some("/tmp/image/usr-other"),
+                Some("/tmp/image/usr/share/pyshared-other/:/host/modules"),
+            )
+            .is_empty()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_tmux_server_does_not_export_appimage_python_redirects() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("tmux.sock");
+        let app_dir = dir.path().join("image");
+        let home = app_dir.join("usr");
+        let path =
+            std::env::join_paths([app_dir.join("usr/share/pyshared"), "/host/modules".into()])
+                .unwrap();
+        let mut start = Command::new(&TmuxManager::runtime().binary);
+        start.args(["-f", "/dev/null", "-S"]).arg(&socket);
+        start.env_remove("TMUX").env_remove("TMUX_PANE");
+        start.env("PYTHONHOME", &home).env("PYTHONPATH", &path);
+        configure_tmux_python_environment(
+            &mut start,
+            Some(app_dir.as_os_str()),
+            Some(home.as_os_str()),
+            Some(&path),
+        );
+        struct Server<'a>(&'a std::path::Path);
+        impl Drop for Server<'_> {
+            fn drop(&mut self) {
+                let _ = Command::new(&TmuxManager::runtime().binary)
+                    .arg("-S")
+                    .arg(self.0)
+                    .arg("kill-server")
+                    .output();
+            }
+        }
+        let _server = Server(&socket);
+        let output = start
+            .args(["new-session", "-d", "-s", "python-environment", "sleep 30"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(&TmuxManager::runtime().binary)
+            .arg("-S")
+            .arg(&socket)
+            .args(["show-environment", "-g", "PYTHONHOME"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success() || output.stdout == b"-PYTHONHOME\n");
+        let output = Command::new(&TmuxManager::runtime().binary)
+            .arg("-S")
+            .arg(&socket)
+            .args(["show-environment", "-g", "PYTHONPATH"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"PYTHONPATH=/host/modules\n");
+    }
 
     #[test]
     fn refresh_client_pane_command_quotes_the_percent_pane_id() {

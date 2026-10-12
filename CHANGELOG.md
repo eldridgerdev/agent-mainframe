@@ -120,6 +120,12 @@ are tagged.
 
 ### Fixed
 
+- **Python in AppImage sessions.** New tmux servers started by the Linux
+  desktop app no longer inherit AppImage's bundled Python home and search-path
+  prefix, which could make host Python fail to import even its standard
+  library. Host search paths remain available. Existing server environments
+  are not rewritten.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

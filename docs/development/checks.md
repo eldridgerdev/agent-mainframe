@@ -105,6 +105,16 @@ which needs `python3` but no AMF build). `Lint` runs once on Linux. Existing
 check names and triggers remain; the workflow does not change branch protection.
 Maintainers can require the new macOS/audit checks after verifying their runs.
 
+Dependency builds are cached by `Swatinem/rust-cache`, which keys each cache by
+job and platform. `Test` and `Lint` must not share one: `cargo test` needs
+codegen artifacts and Clippy only check metadata, so a shared key leaves
+whichever job saves second compiling every dependency on every run. Only pushes
+to main write a cache; pull requests read it, so a PR that changes `Cargo.lock`
+rebuilds the changed dependencies until it merges. Workspace crates are never
+cached (a fresh checkout rebuilds them regardless), which is why CI turns off
+incremental compilation and builds with `line-tables-only` debuginfo. A newer
+push to a pull request cancels the run for the older one.
+
 `Dependency audit` runs on those PRs/pushes and Mondays at 07:17 UTC. Only the audit
 job runs on the schedule. Workflow permissions are `contents: read`; the audit
 job does not create issues, submit check annotations through a write token, or
@@ -125,7 +135,9 @@ Audit reads the existing lockfile and fetches the current RustSec database; it
 has no `--locked` option. Known vulnerabilities fail the job. Advisory warnings
 (including unmaintained, unsound and yanked dependencies) remain visible in the log even when
 they are not fatal. The audit build uses a C toolchain, pkg-config and OpenSSL
-headers. No advisory exceptions are configured by this change. The local scan and
+headers. CI keeps the built binary in a cache keyed by the pinned version, so
+the build and its prerequisites run only when that version changes or the cache
+has expired. No advisory exceptions are configured by this change. The local scan and
 remaining warning follow-ups are recorded in [advisories.md](advisories.md).
 
 The repository maintainer owns advisory triage: identify the affected dependency

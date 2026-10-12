@@ -119,7 +119,7 @@ pub(crate) struct EditReviewReply<'a> {
 /// Held across validation and delivery. Keep the lock file in place: unlinking
 /// it would let another process lock a different inode for the same request.
 pub(crate) struct EditReviewClaim {
-    _lock: std::fs::File,
+    lock: std::fs::File,
     response_file: std::path::PathBuf,
 }
 
@@ -136,9 +136,18 @@ impl EditReviewClaim {
             anyhow::anyhow!("Another reviewer is answering this edit; refresh and retry")
         })?;
         Ok(Self {
-            _lock: lock,
+            lock,
             response_file: response_file.to_path_buf(),
         })
+    }
+}
+
+impl Drop for EditReviewClaim {
+    fn drop(&mut self) {
+        // A concurrently spawned child can inherit this open file description
+        // until exec closes it. Closing only our handle would leave its lock
+        // held during that window and incorrectly refuse an immediate retry.
+        let _ = self.lock.unlock();
     }
 }
 
@@ -283,6 +292,26 @@ mod tests {
             Box::new(crate::traits::MockTmuxOps::new()),
             Box::new(crate::traits::MockWorktreeOps::new()),
         )
+    }
+
+    #[test]
+    fn dropped_claim_unlocks_with_an_inherited_file_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let response_file = dir.path().join("response.json");
+        let claim = EditReviewClaim::acquire(&response_file).unwrap();
+        // try_clone shares the open file description, just as a forked child's
+        // inherited handle does, without depending on spawn timing.
+        let inherited = claim.lock.try_clone().unwrap();
+        assert!(EditReviewClaim::acquire(&response_file).is_err());
+
+        drop(claim);
+        let replacement = EditReviewClaim::acquire(&response_file).unwrap();
+        assert!(response_file.with_extension("answer-lock").exists());
+        drop(inherited);
+        assert!(EditReviewClaim::acquire(&response_file).is_err());
+
+        drop(replacement);
+        assert!(EditReviewClaim::acquire(&response_file).is_ok());
     }
 
     #[test]

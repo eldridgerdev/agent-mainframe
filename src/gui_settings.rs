@@ -44,7 +44,7 @@ pub(crate) fn read_json_document(path: &Path) -> GuiResult<(serde_json::Value, S
     Ok((value, revision))
 }
 
-fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
+pub(crate) fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
     let (value, revision) = read_json_document(path)?;
     // Validate the whole known schema instead of overwriting a broken config.
     let config: AppConfig = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;

@@ -17,7 +17,7 @@ const projects: Project[] = ["one", "two"].map((id) => ({
 }));
 const clients: QueryClient[] = [];
 
-beforeEach(() => { vi.mocked(invoke).mockResolvedValue(prompt); });
+beforeEach(() => { vi.mocked(invoke).mockImplementation(async (command) => command === "feature_presets_choices" ? [] : prompt); });
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.resetAllMocks(); });
 
 function mount(element: React.ReactElement) {
@@ -102,5 +102,5 @@ it("does not request or send a worktree hook for the repository checkout", () =>
   fireEvent.change(screen.getByLabelText("Branch / feature name"), { target: { value: "new-work" } });
   fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ use_worktree: false, hook_choice: null }), "none");
-  expect(invoke).not.toHaveBeenCalled();
+  expect(invoke).not.toHaveBeenCalledWith("worktree_hook_prompt", expect.anything());
 });

@@ -902,3 +902,21 @@ export type DormancyStopResult = { target: FeatureTarget; feature_name: string }
 export const dormancyLoad = (): Promise<DormancyView> => invoke("dormancy_load");
 export const dormancyStop = (selection: DormantObservation[]): Promise<DormancyStopResult[]> =>
   invoke("dormancy_stop", { selection });
+
+
+export interface FeaturePreset {
+  name: string;
+  branch_prefix: string | null;
+  agent: AgentSlug;
+  mode: ModeSlug;
+  review: boolean;
+  plan_mode: boolean;
+  quick_plan: boolean;
+  enable_chrome: boolean;
+  remote_control: boolean;
+}
+export interface PresetRow { original_index: number | null; preset: FeaturePreset }
+export interface PresetsView { rows: PresetRow[]; revision: string }
+export function featurePresetsChoices(projectId: string): Promise<FeaturePreset[]> {
+  return invoke("feature_presets_choices", { projectId });
+}

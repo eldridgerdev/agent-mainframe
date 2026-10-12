@@ -1,7 +1,9 @@
 # Dev scripts
 
-Tooling for developing and releasing AMF itself — not shipped to end
-users, not embedded in the binary.
+Tooling for developing and releasing AMF itself. The AI interaction drivers and
+their shared helper are also embedded in AMF and injected with the
+[`amf-interact` skill](../../skills/amf-interact/SKILL.md) into managed projects.
+Other scripts here are development tooling.
 
 - `release.sh` — bump the version, validate `CHANGELOG.md`, tag, and
   push a release
@@ -16,6 +18,14 @@ users, not embedded in the binary.
   tmux session to test dashboard detection without a real agent
 - `amf/pr-checks.sh`, `amf/pr-info.sh` — PR context helpers used by
   the `amf:pr-*` Claude Code skills
+- `gui-driver/amf-gui-driver.py` — persistent, isolated native GUI interaction
+  with compact JSON snapshots, batched actions and local waits; see the
+  [AI GUI driver guide](../../docs/development/gui-ai-driver.md)
+- `tui-driver/amf-tui-driver.py` — persistent, isolated tmux TUI interaction,
+  changed-row observations, batched keys/paste, local waits and scoped automation;
+  see the [AI TUI driver guide](../../docs/development/tui-ai-driver.md)
+- `ai_driver.py` — shared JSON protocol, output budgets, isolation and cleanup
+  used by both drivers
 
 For focused and full tests, runner prerequisites, dependency audits and debug
 logging, see [development checks](../../docs/development/checks.md).

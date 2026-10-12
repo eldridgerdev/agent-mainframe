@@ -5,6 +5,9 @@ remains available and uses the same project database and tmux sessions.
 See [choosing an interface and upgrading](../docs/interfaces.md) for shared
 state, concurrent use, staged coverage and independent updates.
 
+For AI-driven native GUI interaction with compact JSON observations and an
+isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
+
 ## Install a release build
 
 Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux,

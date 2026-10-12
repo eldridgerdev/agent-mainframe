@@ -51,7 +51,7 @@ jobs:
       - name: Verify test prerequisites
         shell: bash
         run: |
-          for tool in git tmux sh bash ps sleep mkfifo cc; do
+          for tool in git tmux sh bash ps sleep mkfifo cc python3; do
             command -v "$tool"
           done
           rustc --version
@@ -75,6 +75,12 @@ jobs:
       - name: Screenshot capture isolation tests
         if: ${{ !cancelled() }}
         run: python3 -m unittest discover -s scripts/dev/screenshot -p 'test_capture_isolation.py' -v
+
+      - name: Native TUI driver smoke
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --bin amf
+          python3 scripts/dev/tui-driver/smoke.py
 
   lint:
     name: Lint
@@ -133,6 +139,12 @@ jobs:
 
       - name: Frontend interaction tests
         run: npm test
+
+      - name: AI driver protocol and lifecycle tests
+        run: |
+          python3 ../scripts/dev/test_ai_driver.py
+          python3 ../scripts/dev/gui-driver/test_driver.py
+          python3 ../scripts/dev/tui-driver/test_driver.py
 
       - name: Typecheck and build
         run: npm run build

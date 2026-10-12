@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **AI interaction helpers for AMF.** Agents can reuse private GUI or TUI
+  instances, read compact observations, and batch actions with local waits.
+  The injected `amf-interact` skill explains which tools to use and includes
+  the helpers for projects managed outside AMF's source checkout. TUI use needs
+  Python, tmux and installed AMF; GUI use also needs matching frontend source,
+  a Linux/WSLg debug GUI and its prerequisites. Existing agents may need a skill
+  reload or restart after upgrading. No configuration migration is required.
+  Injected `amf-*` skills for Codex, OpenCode and Pi are now kept out of
+  `git status` through the repository's `.git/info/exclude`.
+
 - **Change a feature's vibe mode.** Choose a different mode from the desktop
   feature's More actions menu or the TUI's AMF commands (`a` on a feature).
   Restart agent sessions to apply the saved mode: until then the session
@@ -147,6 +157,13 @@ are tagged.
   suggest it for simple, scoped work at low or medium reasoning. Its
   Anthropic guidance was re-checked on 2026-10-09 and is good until
   2026-11-09. Haiku 4.5 is still never suggested. No migration is required.
+
+- **Pi features no longer receive Claude Code hooks.** Starting a Pi feature
+  used to write Claude's notification hooks and `amf-*` skills into
+  `.claude/`, which Pi never read. New Pi features get neither, and upgrading
+  removes them from existing Pi workdirs unless a Claude session shares the
+  checkout. `.claude/.gitignore` is kept, so AMF's review feedback files stay
+  ignored. No migration is required.
 
 ### Fixed
 

@@ -18,10 +18,14 @@ see the [macOS instructions](../gui/README.md#macos) for current limitations.
 ## Shared projects and sessions
 
 For the same operating-system user and AMF configuration location, both
-interfaces use the same SQLite store, normally `~/.config/amf/amf.db`, and the
-same tmux sessions. You do not import or convert a workspace when switching
-interfaces. A GUI running inside WSL shares with the TUI inside that Linux
-distribution, rather than a separate user or remote machine.
+interfaces use the same SQLite store, `amf.db` in the AMF config directory, and
+the same tmux sessions. That directory is normally `~/.config/amf` on Linux and
+WSL (`$XDG_CONFIG_HOME/amf` when that variable is set) and
+`~/Library/Application Support/amf` on a fresh macOS install. An earlier macOS
+install that already has data in `~/.config/amf` keeps using it. You do not
+import or convert a workspace when switching interfaces. A GUI running inside
+WSL shares with the TUI inside that Linux distribution, rather than a separate
+user or remote machine.
 
 The GUI checks the database for external workspace and TODO changes every two
 seconds. Viewing a session in either interface attaches another view of the
@@ -46,15 +50,19 @@ the TUI theme until a GUI override is selected.
 
 The [GUI guide](../gui/README.md#current-coverage) explains the available flows;
 the [workflow inventory](backlog/amf-gui-workflow-inventory.md) records their
-limits and validation evidence. Source capabilities can be newer than the
+limits and validation evidence. The [release-readiness evidence report](development/gui-release-readiness.md)
+separates the audited main baseline, unmerged review queue and remaining
+platform/release gates. Source capabilities can be newer than the
 last published release, so check the release's notes and tagged documentation
 when installing a bundle.
 
 Current source coverage includes project and feature lifecycle actions,
 agent and other session types, live terminals and prompt composition, scoped
-TODOs, Full and Quick Plan, Learning, diffs, manual Final Review, supervised
-edit approval, PR Triage and project PR Review, prompt browsing and overrides,
-themes, dormancy and session bookmarks.
+TODOs, Full and Quick Plan, Learning, diffs, Final Review (comments and
+suggestions plus AI walkthroughs, the changeset overview, co-review drafts and
+repository-aware questions), supervised edit approval, PR Triage and project
+PR Review, prompt browsing and overrides, themes, dormancy and session
+bookmarks.
 
 Deferred GUI capabilities include broader configuration and harness setup,
 prompt-template authoring/export, advanced PR Review authoring, and additional
@@ -82,6 +90,8 @@ running. Avoid a feature Stop or Delete if the intention is only to update the
 viewer. No GUI in-app updater is currently provided.
 
 Installing or updating one interface does not require uninstalling the other.
-The [development checks](development/checks.md) and
-[packaging workflow](../.github/workflows/release.yml) describe the separate
-build and validation paths.
+The [development checks](development/checks.md) cover the Rust workspace
+suite, and the [GUI checks](../gui/README.md#checks) add the frontend test and
+build steps and the release-packaging notes. The
+[packaging workflow](../.github/workflows/release.yml) builds both sets of
+release bundles.

@@ -1847,3 +1847,38 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         "changing project preference should not create or mutate features"
     );
 }
+
+/// Hooks are generated per harness. A start used to refresh only the
+/// feature's primary agent, leaving a secondary session's harness on whatever
+/// mode its hooks were last written for.
+#[test]
+fn starting_a_feature_refreshes_hooks_for_every_session_harness() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_worktree_agent(
+        workdir.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Idle,
+        Vec::new(),
+    );
+    let feature = &mut store.projects[0].features[0];
+    feature.mode = crate::project::VibeMode::Vibeless;
+    App::initialize_feature_sessions(feature, false, None);
+    feature.add_session(SessionKind::Opencode);
+    // Already running: the start refreshes generated files and launches nothing.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    app.ensure_feature_running(0, 0, StartIntent::Approved)
+        .unwrap();
+
+    assert!(workdir.path().join(".claude/settings.local.json").exists());
+    assert!(
+        workdir
+            .path()
+            .join(".opencode/plugins/change-tracker.js")
+            .exists(),
+        "the Opencode session's Vibeless plugin was not refreshed"
+    );
+}

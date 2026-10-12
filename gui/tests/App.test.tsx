@@ -1301,3 +1301,53 @@ it("loads inherited project choices before feature creation, retries errors and 
   expect(within(harness).getAllByRole("option").map(option => option.textContent)).toEqual(["Claude"]);
   client.clear();
 });
+
+it("takes vibe mode availability from the backend and shows a change on a running feature as waiting on a restart", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let mode = "vibeless";
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    // An availability no frontend rule would guess, so only the backend's list can produce it.
+    if (command === "supported_modes") return [
+      { slug: "vibeless", display_name: "Vibeless", description: "", unsupported_agents: [] },
+      { slug: "vibe", display_name: "Vibe", description: "", unsupported_agents: [] },
+      { slug: "supervibe", display_name: "SuperVibe", description: "", unsupported_agents: ["claude"] },
+    ];
+    if (command === "set_feature_vibe_mode") {
+      mode = (args as { mode: string }).mode;
+      return null;
+    }
+    const result = await original(command, args, options);
+    if (command !== "get_snapshot") return result;
+    const snapshot = result as WorkspaceSnapshot;
+    return { ...snapshot, projects: snapshot.projects.map(project => ({
+      ...project, features: project.features.map(feature => ({ ...feature, mode })),
+    })) };
+  });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["supported-modes"] }); });
+
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  const item = (name: RegExp) => screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+  await screen.findByRole("menuitem", { name: /Vibe mode: SuperVibe/ });
+  expect(item(/Vibe mode: Vibeless/).disabled).toBe(true);
+  expect(item(/Vibe mode: Vibeless/).textContent).toContain("Current");
+  expect(item(/Vibe mode: SuperVibe/).disabled).toBe(true);
+  expect(item(/Vibe mode: SuperVibe/).textContent).toContain("Unavailable with Claude");
+  expect(item(/Vibe mode: Vibe$/).disabled).toBe(false);
+
+  fireEvent.click(item(/Vibe mode: Vibe$/));
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_feature_vibe_mode", {
+    target: { project_id: "project", feature_id: "feature" }, mode: "vibe",
+  }));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  // The agent is still running under Vibeless; the saved mode is not what is live.
+  expect(await screen.findByText("Vibeless → Vibe on restart")).toBeTruthy();
+
+  // Changing back to what the agents were launched with leaves nothing pending.
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(item(/Vibe mode: Vibeless/));
+  await waitFor(() => expect(mode).toBe("vibeless"));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  await waitFor(() => expect(screen.queryByText(/on restart/)).toBeNull());
+  client.clear();
+});

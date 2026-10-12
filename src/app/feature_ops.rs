@@ -13,7 +13,83 @@ use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
+/// Every harness the feature can launch, once each: its primary agent, then
+/// the agent sessions added beside it. Generated hooks are per harness, so a
+/// mode change or a start has to refresh all of them, not just the primary.
+pub(crate) fn feature_harnesses(feature: &Feature) -> Vec<AgentKind> {
+    let mut harnesses = vec![feature.agent.clone()];
+    for session in &feature.sessions {
+        if let Some(agent) = super::session_ops::agent_for_session_kind(&session.kind)
+            && !harnesses.contains(&agent)
+        {
+            harnesses.push(agent);
+        }
+    }
+    harnesses
+}
+
 impl App {
+    pub(crate) fn change_feature_vibe_mode(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        mode: crate::project::VibeMode,
+    ) -> Result<()> {
+        let (repo, workdir, harnesses, is_worktree, feature_id, previous_mode) = {
+            let feature = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .ok_or_else(|| anyhow::anyhow!("Feature no longer exists"))?;
+            self.ensure_agent_mode_supported(&feature.agent, &mode)?;
+            if feature.mode == mode {
+                return Ok(());
+            }
+            (
+                self.store.projects[pi].repo.clone(),
+                feature.workdir.clone(),
+                feature_harnesses(feature),
+                feature.is_worktree,
+                feature.id.clone(),
+                feature.mode.clone(),
+            )
+        };
+        self.store.projects[pi].features[fi].mode = mode.clone();
+        match self.save_reporting_conflict() {
+            Ok(true) => {}
+            Ok(false) => anyhow::bail!(SAVE_CONFLICT_MESSAGE),
+            Err(error) => {
+                if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id) {
+                    self.store.projects[pi].features[fi].mode = previous_mode;
+                }
+                return Err(error);
+            }
+        }
+        for agent in &harnesses {
+            ensure_notification_hooks(&workdir, &repo, &mode, agent, is_worktree);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn change_selected_feature_vibe_mode(
+        &mut self,
+        mode: crate::project::VibeMode,
+        from_view: Option<&ViewState>,
+    ) -> Result<()> {
+        let (pi, fi) = if let Some(view) = from_view {
+            self.feature_for_view(view)
+                .and_then(|feature| self.store.locate_feature_by_id(None, &feature.id))
+                .ok_or_else(|| anyhow::anyhow!("Feature no longer exists"))?
+        } else {
+            match self.selection {
+                Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
+                Selection::Project(_) => anyhow::bail!("Select a feature first"),
+            }
+        };
+        self.change_feature_vibe_mode(pi, fi, mode)
+    }
+
     pub(crate) fn feature_tmux_session_is_shared(&self, pi: usize, fi: usize) -> bool {
         let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
             return false;
@@ -1190,13 +1266,15 @@ impl App {
             None => return Ok(Started::Yes),
         };
 
-        ensure_notification_hooks(
-            &feature.workdir,
-            &repo,
-            &feature.mode,
-            &feature.agent,
-            feature.is_worktree,
-        );
+        for agent in &feature_harnesses(feature) {
+            ensure_notification_hooks(
+                &feature.workdir,
+                &repo,
+                &feature.mode,
+                agent,
+                feature.is_worktree,
+            );
+        }
         ensure_review_claude_md(&feature.workdir, feature.review);
         ensure_plan_mode_instructions(&feature.workdir, &feature.agent, feature.plan_mode);
 

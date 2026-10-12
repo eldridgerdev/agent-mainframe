@@ -6,6 +6,7 @@ Only the window belonging to the supplied isolated GUI PID is inspected.
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -157,13 +158,22 @@ def capture(name, note, expects, expression=None, allow_alert=False):
 
 
 try:
+    if os.environ.get("AMF_GUI_CAPTURE_SOURCE_APPIMAGE") == "1":
+        wait('document.body.innerText.includes("Round invoice totals")')
+        location = evaluate("({href:location.href, origin:location.origin, protocol:location.protocol, hostname:location.hostname})")
+        assert ((location["protocol"] == "tauri:" and location["hostname"] == "localhost") or
+                (location["protocol"] in ["http:", "https:"] and location["hostname"] == "tauri.localhost")), location
+        (out / "appimage-frontend-origin.json").write_text(json.dumps({**location,"embedded_assets":True}) + "\n")
     window.configure(x=0, y=0, width=1280, height=850)
     x.sync()
     wait('document.body.innerText.includes("Round invoice totals")')
     click("Round invoice totals")
     wait('!!document.querySelector(".composer textarea") && !!document.querySelector(".xterm-screen")')
     wait('document.body.innerText.includes("Host module imported - Claude tab")')
-    capture("001-fresh-server-python.png", "The current-source GUI starts tmux with released AppRun Python redirects. A fresh host Python receiver imports json and a module from the preserved host PYTHONPATH, then appears in its live terminal. This is an injected-environment regression proof, not a newly built AppImage.", ["Round invoice totals", "Claude", "Host module imported - Claude tab"])
+    first_note = ("An actual source-built debug AppImage starts a fresh private tmux server. Host Python imports json and the preserved host-path module in its live terminal; embedded production assets run without Vite, injected AppRun variables or payload patches. This is a debug build, not a release artifact."
+      if os.environ.get("AMF_GUI_CAPTURE_SOURCE_APPIMAGE") == "1" else
+      "The current-source GUI starts tmux with released AppRun Python redirects. A fresh host Python receiver imports json and a module from the preserved host PYTHONPATH, then appears in its live terminal. This is an injected-environment regression proof, not a newly built AppImage.")
+    capture("001-fresh-server-python.png", first_note, ["Round invoice totals", "Claude", "Host module imported - Claude tab"])
     evaluate('Array.from(document.querySelectorAll("[role=tab]")).find(b=>b.textContent.trim()==="Codex").click()')
     wait('!!document.querySelector(".composer textarea") && !!document.querySelector(".xterm-screen")')
     wait('document.body.innerText.includes("Host module imported - Codex tab")')

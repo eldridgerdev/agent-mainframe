@@ -673,3 +673,9 @@ Python variables and receiver readiness before capturing live terminal views.
 The unchanged main binary fails the same scenario at the bundle-home assertion.
 This is separate from released-package upgrade continuity and does not establish
 FUSE installation or a newly bundled AppImage's runtime behavior.
+
+A separate [source-built debug AppImage probe](../development/source-appimage-validation.md)
+now validates the actual AppRun path, embedded production assets, fresh private
+server and two host Python imports without injecting AppRun variables or patching
+the payload. The recorded source and artifact hash passed locally; this remains
+debug extract-and-run proof, with release/FUSE/desktop installation gates open.

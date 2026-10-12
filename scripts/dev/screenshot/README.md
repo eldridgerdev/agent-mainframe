@@ -485,6 +485,13 @@ append_images=...` — no ffmpeg dependency. Frame duration is fixed at
 `assemble_gif.py`'s default (800ms/frame) when invoked this way; run
 `assemble_gif.py` directly with `--duration-ms` for a different pace.
 
+## Actual debug AppImage probe
+
+See [source-built AppImage validation](../../../docs/development/source-appimage-validation.md)
+for the exclusive-target build helper and direct native probe. It runs the actual
+AppRun payload with embedded assets, private configuration and a fresh private
+tmux server; it is separate from the hosted injected-environment scenario.
+
 ## Future: high-fidelity via `vhs`
 
 Not built — documented here as a future option per the design doc's

@@ -514,3 +514,26 @@ If double-width glyph fidelity or true video output ever becomes a hard
 requirement, revisit this path — but the lightweight ANSI-grid renderer
 covers AMF's actual dashboard UI (no wide glyphs in the chrome itself)
 today.
+
+### Native OpenCode supervised-edit proof
+
+`scenarios/gui-opencode-edit.txt` drives native review through real Tauri IPC
+and invokes the shipped `.opencode/plugins/change-tracker.js` against offline
+OpenCode tool input. A temporary module copy changes exactly three asserted
+path declarations: notifications, debug log and request-review directories.
+`HOME` and the shipped plugin remain unchanged; its actual reason generation,
+request-specific waiter heartbeat, reply consumption and history logic run
+without a paid harness or OpenCode client. A local executor performs the private
+file edit only after the awaited hook permits it.
+
+Nine asserted frames cover automatic arrival and the generated reason, explicit
+approval and recorded reason, rejection with its no-feedback-forwarding warning,
+cancellation as OpenCode skip with a null reason, changed-proposal refusal and
+abandoned-owner refusal. Filesystem/history assertions distinguish blocking an
+edit from allowing it, and confirm that stale or abandoned requests receive no
+proceed signal. The proof leaves live OpenCode/client integration, AI edit
+explanations, requests delivered to a running TUI and macOS validation open.
+
+Local direct runs can set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY`
+for a desktop build compiled with the same dev URL. The isolated capture workflow
+builds the requested ref at the default port 1420.

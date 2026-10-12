@@ -3,26 +3,29 @@ import { invoke } from "@tauri-apps/api/core";
 import { asGuiError } from "./api";
 import { Modal, Spinner } from "./ui";
 
-/** One scoped slice of the global config, with the file revision it was read
- * at. The backend refuses a save made against an older revision. */
-interface RevisionedView<S> {
+/** One scoped slice of a config file, with the revision it was read at. The
+ * backend refuses a save made against an older revision. */
+export interface RevisionedView<S> {
   settings: S;
   revision: string;
 }
 
-/** The modal around a revisioned global-settings form: load on open, save
- * against the loaded revision, reload, and ask before discarding a dirty
- * draft. One request runs at a time, and nothing can be dismissed, discarded
- * or re-sent while it does. A panel supplies only its fields. */
-export default function RevisionedSettingsModal<S>({
-  label, subtitle, loadCommand, saveCommand, onLoaded, draft, isDirty, onClose, onSaved, children,
+/** The modal around a revisioned settings form: load on open, save against
+ * the loaded revision, reload, and ask before discarding a dirty draft. One
+ * request runs at a time, and nothing can be dismissed, discarded or re-sent
+ * while it does. A panel supplies only its fields. */
+export default function RevisionedSettingsModal<S, V extends RevisionedView<S> = RevisionedView<S>>({
+  label, subtitle, loadCommand, saveCommand, args, onLoaded, draft, isDirty, onClose, onSaved, children,
 }: {
   label: string;
-  subtitle: string;
+  /** May depend on what was loaded; `null` until then. */
+  subtitle: string | ((view: V | null) => string);
   loadCommand: string;
   saveCommand: string;
-  /** Reset the panel's fields from freshly loaded settings. */
-  onLoaded: (settings: S) => void;
+  /** What scopes both commands, such as a project id. */
+  args?: Record<string, unknown>;
+  /** Reset the panel's fields from a freshly loaded view. */
+  onLoaded: (view: V) => void;
   /** What Save would send, or `null` while the fields are invalid. */
   draft: S | null;
   /** Whether the fields differ from the loaded settings. */
@@ -30,9 +33,9 @@ export default function RevisionedSettingsModal<S>({
   onClose: () => void;
   onSaved: () => void;
   /** The fields, shown once settings have loaded. */
-  children: (busy: boolean) => ReactNode;
+  children: (busy: boolean, view: V) => ReactNode;
 }) {
-  const [view, setView] = useState<RevisionedView<S> | null>(null);
+  const [view, setView] = useState<V | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discard, setDiscard] = useState<"close" | "reload" | null>(null);
@@ -44,9 +47,9 @@ export default function RevisionedSettingsModal<S>({
     inFlight.current = true;
     setBusy(true); setError(null);
     try {
-      const fresh = await invoke<RevisionedView<S>>(loadCommand);
+      const fresh = await (args ? invoke<V>(loadCommand, args) : invoke<V>(loadCommand));
       setView(fresh);
-      onLoaded(fresh.settings);
+      onLoaded(fresh);
     } catch (err) { setError(asGuiError(err).message); }
     finally { inFlight.current = false; setBusy(false); }
   }
@@ -63,14 +66,14 @@ export default function RevisionedSettingsModal<S>({
     inFlight.current = true;
     setBusy(true); setError(null);
     try {
-      await invoke<RevisionedView<S>>(saveCommand, { revision: view.revision, settings: draft });
+      await invoke<V>(saveCommand, { ...args, revision: view.revision, settings: draft });
       onSaved();
     } catch (err) { setError(asGuiError(err).message); }
     finally { inFlight.current = false; setBusy(false); }
   }
 
   return <Modal label={label} title={label} onClose={() => request("close")}
-    dismissable={!busy} subtitle={subtitle}
+    dismissable={!busy} subtitle={typeof subtitle === "function" ? subtitle(view) : subtitle}
     footer={<>
       <button className="btn btn-ghost" disabled={busy} onClick={() => request("close")}>Cancel</button>
       <button className="btn btn-secondary" disabled={busy} onClick={() => request("reload")}>Reload settings</button>
@@ -78,7 +81,7 @@ export default function RevisionedSettingsModal<S>({
     </>}>
     {busy && <p role="status"><Spinner /> Loading or saving settings…</p>}
     {error && <p className="callout callout-danger" role="alert">{error}</p>}
-    {view && <div className="form-stack">{children(busy)}</div>}
+    {view && <div className="form-stack">{children(busy, view)}</div>}
     {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">
       <p>Discard unsaved settings and {discard === "close" ? "close" : "reload"}?</p>
       <button className="btn btn-secondary" disabled={busy} onClick={() => {

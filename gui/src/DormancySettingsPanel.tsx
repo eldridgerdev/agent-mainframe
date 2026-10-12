@@ -14,7 +14,7 @@ export default function DormancySettingsPanel({ onClose, onSaved }: {
   return <RevisionedSettingsModal<Settings> label="Dormancy settings"
     subtitle="Global settings shared with the TUI. Nothing is stopped by saving settings."
     loadCommand="dormancy_settings_load" saveCommand="dormancy_settings_save"
-    onLoaded={(settings) => {
+    onLoaded={({ settings }) => {
       setIdle(String(settings.idle_minutes));
       setUnattended(String(settings.unattended_hours));
     }}

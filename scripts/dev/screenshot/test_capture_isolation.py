@@ -139,10 +139,18 @@ expect:''' + ('deliberately missing text' if fail else '0 projects, 0 features')
                 self.assertEqual([record['bin_dir'] for record in records], [['tmux']] * len(records))
 
                 self.assertLessEqual(len(os.fsencode(private)), SOCKET_PATH_MAX_BYTES)
+                # Whether the socket fits beside the scratch files depends on the
+                # temp root, which on macOS is long enough to need the fallback
+                # by itself; the long root must need it everywhere.
+                scratch_root = pathlib.Path(re.search(r'^scratch root: (.+)$', stderr, flags=re.MULTILINE).group(1))
+                in_scratch = scratch_root / 'tmux.sock'
+                fits = len(os.fsencode(in_scratch)) <= SOCKET_PATH_MAX_BYTES
                 if long_root:
-                    self.assertNotIn(shots, private.parents)
+                    self.assertFalse(fits, in_scratch)
+                if fits:
+                    self.assertEqual(private, in_scratch)
                 else:
-                    self.assertEqual(private.parent.parent, shots)
+                    self.assertNotIn(shots, private.parents)
 
                 self.assertEqual(sessions(ambient_server), {'pre-existing', 'unrelated-created'}, stderr)
                 # An explicit -L is the caller's own server, like an explicit -S:

@@ -6,6 +6,6 @@ shot:isolated-dashboard
 run:python3 -m unittest discover -s "$SCRIPT_DIR" -p 'test_capture_isolation.py' -v
 key:?
 wait:300
-note:The real AMF help overlay still responds after four real-tmux regressions verify unrelated-session survival on success and failure, private-session cleanup, inherited Bash function handling and keep behavior. The tests use only their own servers and offline stand-ins.
+note:The real AMF help overlay still responds after the real-tmux regressions verify unrelated-session survival on success and failure, private-session cleanup, inherited Bash function handling, keep behavior, explicit -S and -L servers, and plain tmux from sh and Python helpers. The tests use only their own servers and offline stand-ins.
 expect:Keybindings
 shot:isolated-help-after-regressions

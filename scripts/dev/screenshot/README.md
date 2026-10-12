@@ -27,6 +27,7 @@ Output looks like:
 
 ```
 scratch root: /tmp/amf-shots/20260719-121610-294766
+tmux socket: /tmp/amf-shots/20260719-121610-294766/tmux.sock
 tmux session: amf-shot-20260719-121610-294766 (120x40)
 dashboard ready
 shot: /tmp/amf-shots/20260719-121610-294766/shots/001-dashboard-ready.ansi
@@ -421,11 +422,24 @@ never touches the paths or process your real `amf` uses:
   launches an agent session.
 - **Dedicated tmux server.** Every run creates a private socket under its
   scratch root and starts tmux without the operator's tmux configuration.
-  Driver commands and Bash `run:` helpers target that socket. The spawned
-  TUI and automation inherit the same explicit `AMF_TMUX_BIN`,
-  `AMF_TMUX_SOCKET` and `AMF_TMUX_DEDICATED_SOCKET` values, overriding an
-  ambient tmux identity. Native fixtures that explicitly choose another
-  private `-S` socket retain that override. No shared server is enumerated.
+  Unix socket paths are short (about 104 bytes on macOS, 108 on Linux), so
+  when `AMF_SHOT_DIR` makes `<scratch-root>/tmux.sock` too long the socket
+  alone moves to a private `/tmp/amf-shot-tmux.*` directory, removed with the
+  server. The `tmux socket:` line printed at startup is always the real one.
+- **One `tmux` for everything the run starts.** The driver writes a wrapper
+  to `<scratch-root>/tmux-bin/tmux` that adds the owned socket, puts it first
+  on `PATH` for `run:` steps, and clears any inherited `TMUX`. Plain `tmux`
+  therefore reaches the owned server from Bash, `sh` and Python
+  `subprocess` helpers alike. The spawned TUI and automation get the same
+  wrapper as `AMF_TMUX_BIN`, with `AMF_TMUX_SOCKET` and
+  `AMF_TMUX_DEDICATED_SOCKET` set, overriding an ambient tmux identity. The
+  wrapper sits in a directory of its own because AMF prepends that
+  directory to each agent window's `PATH`; the real tmux's directory there
+  would let a real `codex`/`gh`/`git` beat a `shim:` stand-in.
+- **Explicit servers stay explicit.** A helper that passes `-S <path>` or
+  `-L <name>` gets exactly that server, and owns its cleanup: the driver
+  neither redirects it to the owned server nor stops it. Native fixtures use
+  this for their own private sockets. No shared server is enumerated.
 - **Explicit pane environment.** `-e` on `tmux new-session` and the final
   `exec env` pin the scratch paths and tmux identity even if the pane shell's
   startup files rebuild its environment.
@@ -449,8 +463,11 @@ python3 -m unittest discover -s scripts/dev/screenshot -p 'test_capture_isolatio
 ```
 
 It checks success, failed screenshot assertions, `--keep`, inherited Bash
-functions, explicit native socket overrides, application/automation identity,
-and survival of both existing and concurrently created unrelated sessions.
+functions, explicit `-S` and `-L` overrides, plain `tmux` from Bash, `sh` and
+Python helpers, a scratch root too long for a socket path, the
+application/automation identity surviving a shell startup file that re-exports
+the ambient one, and survival of both existing and concurrently created
+unrelated sessions. CI runs it on Linux and macOS after `cargo test`.
 
 One caveat worth knowing: a truly fresh scratch config shows AMF's
 one-time "Configure Agent Harnesses" onboarding dialog before the

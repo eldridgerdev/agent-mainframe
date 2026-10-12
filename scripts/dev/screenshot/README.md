@@ -5,11 +5,14 @@ GIF) out of a throwaway `amf` instance, without touching a real
 `~/.config/amf/amf.db` or any real `amf-*` tmux session. Background and
 design rationale: `docs/backlog/screenshot-review-plan.md`.
 
-Three scripts:
+The scripts:
 
 - `amf-capture.sh` — the driver. Launches an isolated `amf`, drives it
   through a scenario, dumps raw ANSI captures.
-- `render_ansi.py` — turns one `tmux capture-pane -e -p` dump into a PNG.
+- `render-captures.sh` — turns `tmux capture-pane -e -p` dumps into PNGs.
+  It uses `render_xterm.cjs` (xterm.js in headless Chromium) and falls back
+  to `render_ansi.py` (Pillow) where Node or a browser is missing. See
+  "Rendering".
 - `assemble_gif.py` — stitches PNG frames into an animated GIF (used
   internally by `amf-capture.sh --gif`; can also be run standalone).
 
@@ -185,21 +188,21 @@ contracts:
   same-named `.txt` file from `capture-pane -p`; the text twin is escape-free
   and is intended for cheap content assertions. The default smoke test writes
   two shots, while a scenario writes one shot for each `shot:` step.
-- Ordinary capture runs do **not** render PNGs. To render one capture, invoke
-  `render_ansi.py` separately and choose the output path:
+- Ordinary capture runs do **not** render PNGs. To render captures, run
+  `render-captures.sh` on them; each PNG is written beside its `.ansi`:
 
   ```bash
-  python3 scripts/dev/screenshot/render_ansi.py \
-      /tmp/amf-shots/<run>/shots/001-dashboard-ready.ansi \
-      --out /tmp/amf-shots/<run>/dashboard-ready.png \
-      --cols 120 --rows 40
+  scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 \
+      /tmp/amf-shots/<run>/shots/*.ansi
   ```
 
 - `amf-capture.sh --gif [path]` is the convenience path: after all shots are
-  captured, it renders every numbered `.ansi` file to a same-directory `.png`
+  captured, it runs `render-captures.sh` over every numbered `.ansi` file
   using the requested `--geometry`, then calls `assemble_gif.py` to produce
   `capture.gif` (or the optional path). Thus `--gif` produces both the PNG
   frames and the GIF; it is the only driver flag that performs PNG rendering.
+  Those frames are rendered at `--gif-scale` (default `1`), not at
+  `render-captures.sh`'s default of `2`.
 - `assemble_gif.py` is also usable directly, but expects one or more existing
   PNG paths in display order. It writes a looping GIF with Pillow's native
   `save_all=True`/`append_images=...` behavior and defaults to 800 ms per frame;
@@ -478,70 +481,115 @@ first-run onboarding themselves.
 
 ## Rendering
 
-`render_ansi.py` turns a single `tmux capture-pane -e -p` dump into a
-PNG. It's a small SGR state machine, not a full terminal emulator —
 `capture-pane` already emits a laid-out grid with no cursor-movement
-escapes, so the renderer just walks the text tracking current SGR state
-(16/256/truecolor fg+bg, bold, reverse, underline) per cell and
-rasterizes onto a monospace canvas (`DejaVuSansMono.ttf`).
+escapes, so rendering is only a matter of drawing that grid well.
+`render-captures.sh` does it with one of two renderers and writes
+`<capture>.png` beside each `<capture>.ansi`:
+
+```bash
+scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 <dir>/*.ansi
+```
+
+- `--cols` / `--rows` — the grid size; match the `--geometry` used to
+  capture (default `120x40`). Every frame of a run is then the same size,
+  which a GIF requires.
+- `--scale <n>` — pixel density (default `2`, sharp on a HiDPI display;
+  `1` gives the smallest files).
+- `--renderer auto|xterm|pillow` — `auto` (the default) uses xterm.js and
+  falls back to Pillow with a warning; `xterm` fails instead of falling
+  back; `pillow` skips xterm.js. One renderer always draws the whole set,
+  so a run never mixes the two. In a GitHub Actions run the fallback is
+  also raised as a `::warning::` annotation, since nothing in the frames or
+  the gallery says which renderer drew them.
+
+### xterm.js (default)
+
+`render_xterm.cjs` writes each dump into a real terminal emulator — the
+`@xterm/xterm` the desktop app uses — running in headless Chromium, and
+screenshots the result. What an emulator handles is therefore handled:
+double-width characters, dim, italic and struck-through text, styled
+underlines, colon-form colour sequences, and box and block characters
+drawn as geometry so borders are continuous lines. (An emoji still needs an
+emoji font on the machine; CI installs only DejaVu.)
+
+- **Setup.** `node scripts/dev/screenshot/render_xterm.cjs --install`
+  fetches the pinned `playwright-core`, `@xterm/xterm` and
+  `@xterm/addon-webgl` into `${XDG_CACHE_HOME:-~/.cache}/amf/screenshot-xterm`
+  and downloads a headless Chromium. Nothing is downloaded by `auto`: until
+  `--install` has run it falls back to Pillow straight away. `--renderer
+  xterm`, or running `render_xterm.cjs` directly without `--no-install`,
+  fetches missing packages on first use but never the browser.
+  `AMF_PWA_BROWSER=<path>` uses an installed Chromium instead.
+- **Palette.** The 16 ANSI colours come from `DARK_TERMINAL_THEME` in
+  `gui/src/terminalTheme.ts`, read at render time, with the same
+  `minimumContrastRatio` the desktop app applies. A screenshot therefore
+  matches the app's own terminal pane, and dim text is lifted to a readable
+  contrast exactly as it is there.
+- **Font.** DejaVu Sans Mono, the one font CI and a workstation share.
+  Where it is not installed the browser substitutes its default monospace
+  font; `render_xterm.cjs` warns, because the frames then differ in cell
+  size and pixel dimensions from CI's, but still renders (Pillow without
+  DejaVu would draw a bitmap font, which is worse).
+- **WebGL is required.** xterm's default DOM renderer takes box characters
+  from the font and leaves seams between cells; the WebGL renderer draws
+  them. `render_xterm.cjs` fails rather than degrade to the DOM renderer,
+  and also fails, without writing the frame, if the WebGL context is lost
+  part-way through a run.
+- **Density comes from the font size.** At a device scale factor of 2 the
+  WebGL canvas drew a zoomed quarter of the screen in the headless shell, so
+  `--scale` multiplies the font size at a device scale of 1 instead.
+
+Run directly, it takes the same `--cols`/`--rows`/`--scale` plus
+`--out-dir <dir>` to write the PNGs somewhere other than beside the inputs,
+and `--no-install` to fail instead of fetching missing packages.
+
+### Pillow (fallback)
+
+`render_ansi.py` needs only Pillow and `DejaVuSansMono.ttf`. It is a small
+SGR state machine, not a terminal emulator: it walks the dump tracking
+16/256/truecolor fg+bg, bold, reverse and underline per cell and rasterizes
+the grid. Box-drawing and block-element characters are drawn as geometry
+(as terminal emulators do), because a font's glyph is sized to its own
+fractional advance and stops short of the next cell once that is rounded to
+whole pixels.
 
 ```bash
 python3 scripts/dev/screenshot/render_ansi.py \
     scripts/dev/screenshot/sample-dump.ansi --out /tmp/dashboard.png
 ```
 
-Flags:
+It renders one dump per call and takes `--out <path>`, `--cols`/`--rows`
+(inferred from that frame's content when omitted, which varies frame to
+frame), `--font-size <n>` (default 14), `--scale <n>` (default 2) and
+`--theme dark|light`.
 
-- `--out <path>` — output PNG path (default `screenshot.png`).
-- `--cols` / `--rows` — override the inferred grid size. Without these,
-  the renderer infers grid dimensions from the highest row/column seen in
-  that specific frame, which can vary frame-to-frame (e.g. a dialog with
-  fewer visible rows) and produce mismatched canvas sizes — pass both
-  explicitly (matching the `--geometry` used to capture) whenever you
-  need same-size frames, as `--gif` below does.
-- `--font-size <n>` — font size in points (default 14).
-- `--theme dark|light` — background/default-foreground theme (default
-  `dark`).
+What it does not do, and xterm.js does: double-width CJK/emoji cells are
+drawn single-width, dim and italic are ignored, and its palette is the
+classic VGA one rather than the desktop app's.
 
-Known v1 limitation, documented in the file itself: double-width
-CJK/emoji cells are drawn single-width (one codepoint per cell), so wide
-glyphs will visually overlap or clip.
+`python3 scripts/dev/screenshot/test_render_ansi.py` checks that borders
+render as unbroken lines and that every box character reaches the cell
+edges it should.
 
-`amf-capture.sh --gif` automates render+assemble for an entire scenario
-run: every `NNN-<label>.ansi` capture in the output dir is rendered to a
-same-size PNG (explicit `--cols`/`--rows` taken from `--geometry`, for
-exactly the mismatched-size reason above), then `assemble_gif.py` stitches
-them into one animated GIF via Pillow's native `save_all=True,
-append_images=...` — no ffmpeg dependency. Frame duration is fixed at
+### GIFs
+
+`amf-capture.sh --gif` runs `render-captures.sh` over every
+`NNN-<label>.ansi` in the output dir, then `assemble_gif.py` stitches the
+PNGs into one animated GIF via Pillow's native `save_all=True,
+append_images=...` — no ffmpeg dependency. The frames are rendered at
+`--scale 1` (960x640 at 120x40 with xterm.js, a quarter of the pixels
+of the default `2`) to keep the GIF small; `--gif-scale
+<n>` raises that, and the PNG frames left beside the GIF are the same
+size. Frame duration is fixed at
 `assemble_gif.py`'s default (800ms/frame) when invoked this way; run
 `assemble_gif.py` directly with `--duration-ms` for a different pace.
 
-## Future: high-fidelity via `vhs`
+### Why not `vhs` or a native terminal
 
-Not built — documented here as a future option per the design doc's
-scope decision to ship the lightweight Pillow renderer now and defer a
-high-fidelity path.
-
-[`vhs`](https://github.com/charmbracelet/vhs) is a tool that drives a
-real terminal (via `ttyd`) inside a headless browser and records actual
-video frames, rather than reconstructing a grid from `capture-pane`
-text. The tradeoff versus the current renderer: real terminal
-rendering (accurate double-width glyphs, ligatures, true cursor
-blink/animation) at the cost of a much heavier dependency chain and
-slower capture.
-
-A `vhs` path would use a `.tape` script (vhs's own DSL: `Type`, `Enter`,
-`Sleep`, `Screenshot`, etc.) instead of this harness's scenario grammar,
-and would need, none of which are installed in this environment:
-
-- `ttyd` — serves a terminal over a local HTTP/WebSocket connection for
-  `vhs` to drive.
-- `ffmpeg` — `vhs` uses it to encode captured frames into GIF/MP4/WebM.
-- A headless browser (`vhs` bundles a Chromium via `go-rod`/
-  `chromedp`-style automation) to actually render the served terminal
-  and screenshot it.
-
-If double-width glyph fidelity or true video output ever becomes a hard
-requirement, revisit this path — but the lightweight ANSI-grid renderer
-covers AMF's actual dashboard UI (no wide glyphs in the chrome itself)
-today.
+[`vhs`](https://github.com/charmbracelet/vhs) is xterm.js in a headless
+browser too, behind `ttyd`, `ffmpeg` and its own `.tape` DSL. Rendering the
+`capture-pane` dump with xterm.js directly gives the same picture while
+keeping this harness's scenario grammar and its `expect:` assertions.
+Screenshotting a native terminal (kitty, wezterm) would need a virtual
+display and software GL on every runner for no gain in fidelity. Revisit
+only if true video — cursor blink, animation between frames — is needed.

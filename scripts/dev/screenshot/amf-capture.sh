@@ -14,6 +14,7 @@ SEED_FEATURE=""
 CONFIG_FILE=""
 GIF=0
 GIF_PATH=""
+GIF_SCALE=1
 READY_TIMEOUT_SECS=15
 
 usage() {
@@ -107,6 +108,10 @@ Options:
                         .ansi capture to a PNG and assemble them into
                         an animated GIF. Path defaults to
                         <out-dir>/capture.gif. Off by default.
+  --gif-scale <n>       Pixel density of the frames --gif renders
+                        (default: 1). render-captures.sh defaults to 2
+                        for stills; at that density a GIF carries about
+                        three times the pixels in every frame.
   --keep                Keep the scratch root (config/state/shots) on
                         exit instead of deleting it.
   -h, --help            Show this help.
@@ -156,6 +161,10 @@ while [[ $# -gt 0 ]]; do
                 shift
             fi
             ;;
+        --gif-scale)
+            GIF_SCALE="$2"
+            shift 2
+            ;;
         --keep)
             KEEP=1
             shift
@@ -183,6 +192,11 @@ if [[ ! "$GEOMETRY" =~ ^[0-9]+x[0-9]+$ ]]; then
 fi
 COLS="${GEOMETRY%x*}"
 ROWS="${GEOMETRY#*x}"
+
+if [[ ! "$GIF_SCALE" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: --gif-scale must be a positive integer (got '$GIF_SCALE')" >&2
+    exit 1
+fi
 
 if [[ -n "$SCENARIO" && ! -f "$SCENARIO" ]]; then
     echo "error: scenario file not found: $SCENARIO" >&2
@@ -758,16 +772,11 @@ if [[ "$GIF" -eq 1 ]]; then
     if [[ ${#ansi_files[@]} -eq 0 ]]; then
         echo "warning: no .ansi captures found in $OUT_DIR, skipping --gif" >&2
     else
-        png_files=()
-        for f in "${ansi_files[@]}"; do
-            png="${f%.ansi}.png"
-            # Explicit --cols/--rows: without them render_ansi.py infers
-            # grid size from each frame's own content, which can vary
-            # frame to frame and produce mismatched-size PNGs that Pillow
-            # can't assemble into one GIF.
-            python3 "$SCRIPT_DIR/render_ansi.py" "$f" --out "$png" --cols "$COLS" --rows "$ROWS" >/dev/null
-            png_files+=("$png")
-        done
+        # Explicit --cols/--rows, and one renderer for the whole set: frames
+        # of differing sizes can't be assembled into one GIF.
+        "$SCRIPT_DIR/render-captures.sh" --cols "$COLS" --rows "$ROWS" \
+            --scale "$GIF_SCALE" "${ansi_files[@]}" >/dev/null
+        png_files=("${ansi_files[@]/%.ansi/.png}")
         mkdir -p "$(dirname "$GIF_PATH")"
         python3 "$SCRIPT_DIR/assemble_gif.py" --out "$GIF_PATH" "${png_files[@]}"
         echo "gif written to: $GIF_PATH" >&2

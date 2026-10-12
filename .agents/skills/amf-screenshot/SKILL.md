@@ -78,14 +78,16 @@ scripts/dev/screenshot/amf-capture.sh \
   --out-dir <output-directory>
 ```
 
-For normal screenshot requests, render each captured ANSI file:
+For normal screenshot requests, render the captured ANSI files in one call; each PNG is written beside its `.ansi`:
 
 ```bash
-python3 scripts/dev/screenshot/render_ansi.py <capture>.ansi \
-  --out <capture>.png --cols 120 --rows 40
+scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 \
+  <output-directory>/*.ansi
 ```
 
 Match `--cols` and `--rows` to the capture geometry. Pass `--gif` to the driver only when the user asks for a GIF or animation; the driver then renders the frames and assembles the GIF itself.
+
+The frames are drawn by xterm.js in headless Chromium, the same terminal emulator and palette as the desktop app. If the command warns that the xterm.js renderer could not run, it has fallen back to the Pillow renderer (`render_ansi.py`): the PNGs are still usable, but say so when reporting them, since colours and dim text differ. `node scripts/dev/screenshot/render_xterm.cjs --install` sets the xterm.js renderer up; it downloads a browser, so ask before running it.
 
 ## Publish and deliver
 

@@ -684,16 +684,10 @@ if [[ "$GIF" -eq 1 ]]; then
     if [[ ${#ansi_files[@]} -eq 0 ]]; then
         echo "warning: no .ansi captures found in $OUT_DIR, skipping --gif" >&2
     else
-        png_files=()
-        for f in "${ansi_files[@]}"; do
-            png="${f%.ansi}.png"
-            # Explicit --cols/--rows: without them render_ansi.py infers
-            # grid size from each frame's own content, which can vary
-            # frame to frame and produce mismatched-size PNGs that Pillow
-            # can't assemble into one GIF.
-            python3 "$SCRIPT_DIR/render_ansi.py" "$f" --out "$png" --cols "$COLS" --rows "$ROWS" >/dev/null
-            png_files+=("$png")
-        done
+        # Explicit --cols/--rows, and one renderer for the whole set: frames
+        # of differing sizes can't be assembled into one GIF.
+        "$SCRIPT_DIR/render-captures.sh" --cols "$COLS" --rows "$ROWS" "${ansi_files[@]}" >/dev/null
+        png_files=("${ansi_files[@]/%.ansi/.png}")
         mkdir -p "$(dirname "$GIF_PATH")"
         python3 "$SCRIPT_DIR/assemble_gif.py" --out "$GIF_PATH" "${png_files[@]}"
         echo "gif written to: $GIF_PATH" >&2

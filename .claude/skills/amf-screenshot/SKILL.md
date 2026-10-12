@@ -143,17 +143,25 @@ plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
 ## Step 3: render PNGs
 
 **`amf-capture.sh` does not render PNGs unless `--gif` is passed** —
-without `--gif` you get raw `.ansi` dumps only, and must render each
-one yourself:
+without `--gif` you get raw `.ansi` dumps only, and must render them
+yourself, all in one call:
 
 ```bash
-python3 scripts/dev/screenshot/render_ansi.py <dump>.ansi --out <dump>.png --cols 120 --rows 40
+scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 <dir>/*.ansi
 ```
 
-Pass `--cols`/`--rows` matching the `--geometry` used for the capture
-(120x40 by default) so every frame renders at the same size. Repeat
-per `.ansi` file. If `--gif` was passed instead, the driver already
-renders and assembles the GIF — nothing further to do.
+Each PNG is written beside its `.ansi`. Pass `--cols`/`--rows` matching
+the `--geometry` used for the capture (120x40 by default) so every frame
+renders at the same size. If `--gif` was passed instead, the driver
+already renders and assembles the GIF — nothing further to do.
+
+The frames are drawn by xterm.js in headless Chromium, the same terminal
+emulator and palette as the desktop app. If the command warns that the
+xterm.js renderer could not run, it has fallen back to the Pillow renderer
+(`render_ansi.py`): the PNGs are still usable, but say so when you report
+them, since colours and dim text differ. `node
+scripts/dev/screenshot/render_xterm.cjs --install` sets the xterm.js
+renderer up; it downloads a browser, so ask before running it.
 
 ## Step 4: verify cheaply, then return the result
 

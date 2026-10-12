@@ -53,6 +53,7 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
         &mut state.rendered_width,
         &mut state.rendered_lines,
         theme,
+        Some(&mut state.diagrams),
     );
 
     let hints = Paragraph::new(vec![
@@ -68,6 +69,10 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
             } else {
                 "j/k:scroll  Ctrl+j/k:fast  PgUp/PgDn:page  g/G:top/bottom  /:files  Esc:close"
             },
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(Span::styled(
+            if state.diagrams.show_source { "d:show diagrams  r:refresh" } else { "d:show diagram source  r:refresh" },
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -89,17 +94,30 @@ pub(crate) fn draw_markdown_document(
     rendered_width: &mut u16,
     rendered_lines: &mut Vec<ratatui::text::Line<'static>>,
     theme: &Theme,
+    diagrams: Option<&mut crate::mermaid::DiagramDocument>,
 ) {
     let visible_lines = area.height as usize;
     let render_width = area.width.saturating_sub(1).max(1);
     if *rendered_width != render_width || rendered_lines.is_empty() {
-        *rendered_lines = crate::markdown::render_markdown(
-            content,
-            theme,
-            render_width as usize,
-            Some(source_path),
-        )
-        .lines;
+        let rendered = match diagrams.as_deref() {
+            Some(diagrams) => crate::markdown::render_markdown_with_diagrams(
+                content,
+                theme,
+                render_width as usize,
+                Some(source_path),
+                diagrams,
+            ),
+            None => crate::markdown::render_markdown(
+                content,
+                theme,
+                render_width as usize,
+                Some(source_path),
+            ),
+        };
+        if let Some(diagrams) = diagrams {
+            diagrams.set_requests(rendered.diagram_requests);
+        }
+        *rendered_lines = rendered.lines;
         *rendered_width = render_width;
     }
     let total_visual_lines = rendered_lines.len();

@@ -1447,6 +1447,7 @@ fn run_loop<B: Backend + io::Write>(
         if app.poll_review_questions() {
             force_redraw = true;
         }
+        force_redraw |= app.poll_markdown_diagrams();
 
         if app.poll_remote_server_bg() {
             force_redraw = true;
@@ -1537,6 +1538,9 @@ fn run_loop<B: Backend + io::Write>(
             }
             if app.review_question_work.job.is_some() {
                 deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
+            }
+            if app.markdown_diagrams_pending() {
+                deadlines.register_after(now, Duration::from_millis(50));
             }
             if app.leader_active
                 && let Some(activated_at) = app.leader_activated_at

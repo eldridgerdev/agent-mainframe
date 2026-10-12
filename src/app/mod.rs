@@ -966,6 +966,7 @@ pub struct App {
     pub theme: crate::theme::Theme,
     pub selection: Selection,
     pub mode: AppMode,
+    pub(crate) diagram_worker: crate::mermaid::DiagramWorker,
     /// A plan interview temporarily parked while the user inspects the
     /// dashboard or one of its sessions. Unlike a persisted draft this keeps
     /// the live editor cursor and uncommitted answer text intact.
@@ -2563,6 +2564,7 @@ impl App {
             theme,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            diagram_worker: crate::mermaid::DiagramWorker::default(),
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
             pending_todo_spawn_prompt: None,
@@ -2831,6 +2833,7 @@ impl App {
             theme: crate::theme::Theme::default(),
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            diagram_worker: crate::mermaid::DiagramWorker::default(),
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
             pending_todo_spawn_prompt: None,

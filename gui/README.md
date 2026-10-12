@@ -642,7 +642,24 @@ safeguards as the TUI's `e`. Its feature and agent/shell sessions keep running,
 even with automatic `kill_editor_on_stop` cleanup off. Unsaved editor changes
 are lost. Newly opened windows refuse an older confirmation; go back, refresh
 and confirm the current list. The result reports closed, left-running and
-still-opening windows. Deleting from this list remains a TUI action.
+still-opening windows.
+
+**Delete** beside a dormant feature opens the same confirmation as its feature
+page, without counting as opening the feature. It stops the sessions, removes
+an associated worktree (discarding uncommitted changes but keeping the branch)
+and deletes the feature record; an ordinary repository checkout is kept.
+Unfinished worktree TODOs and a hosted project TODO list get the same choices
+as deletion from a feature page. Every confirmation step rechecks dormancy,
+current thresholds, session identity, feature name and checkout. Changed,
+opened, active, stopped or deleted features are refused before deletion starts.
+Cancel applies no TODO choice and returns to a refreshed dormant list; success
+and refusal also return there. A selection ticked for a batch stop is kept
+across the dialog. Seven asserted native WSLg frames from
+`gui-dormant-delete.txt` verify cancellation through both TODO choices, an
+external-open refusal, TODO preservation, worktree deletion and ordinary
+checkout preservation using private SQLite, Git and tmux fixtures. macOS
+validation remains open.
+
 Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
 processes on a private tmux server. Six more frames from
@@ -667,8 +684,8 @@ back over the desktop change. No database migration is required.
 Dormant features → **Settings** edits the global idle-minute and unattended-hour
 thresholds. Both must be exceeded for a feature to appear; either value at zero
 turns detection off. Saving refreshes the list and clears its selection without
-stopping anything. Refresh and confirmed stops read the latest thresholds from
-`~/.config/amf/config.json`. Restart an already running TUI to apply changed
+stopping anything. Refresh, confirmed stops and deletion confirmations read
+the latest thresholds from `~/.config/amf/config.json`. Restart an already running TUI to apply changed
 thresholds there. The form preserves unrelated config keys, refuses malformed
 or changed files, retains failed-save drafts and asks before discarding edits.
 Reload after a conflict before saving again. Settings saves from desktop windows

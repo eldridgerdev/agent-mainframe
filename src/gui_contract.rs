@@ -1741,6 +1741,17 @@ impl GuiHandle {
         todo_host: Option<TodoHostChoice>,
     ) -> GuiResult<DeleteFeatureResponse> {
         self.refresh_store()?;
+        self.delete_feature_from_current_store(target, todos, todo_host)
+    }
+
+    /// Used after a caller has refreshed and validated additional workflow
+    /// observations. Keep that validation and deletion on the same snapshot.
+    pub(crate) fn delete_feature_from_current_store(
+        &mut self,
+        target: FeatureTarget,
+        todos: Option<TodoDeleteChoice>,
+        todo_host: Option<TodoHostChoice>,
+    ) -> GuiResult<DeleteFeatureResponse> {
         let (pi, fi) = self.locate(&target)?;
         self.reject_ambiguous_live_session(pi, fi)?;
         // The deletion is driven through `app.mode`, which is also where an

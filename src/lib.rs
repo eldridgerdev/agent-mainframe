@@ -58,6 +58,7 @@ mod hook_payload;
 mod http_client;
 mod ipc;
 mod markdown;
+mod mermaid;
 mod model_evidence;
 mod model_options;
 mod perf;

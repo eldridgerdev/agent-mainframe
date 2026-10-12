@@ -56,6 +56,7 @@ import {
   savedAgentSessions,
   sessionRecoveryOption,
   setCollapsed,
+  setFeatureVibeMode,
   startFeature,
   removeSession,
   startSession,
@@ -1091,6 +1092,36 @@ export default function App() {
     },
   });
 
+  // The mode a running feature's agents were launched with, kept from the
+  // first change until the feature stops: a live agent holds its launch flags,
+  // so the saved mode alone would misreport what is running. Window-local.
+  const [launchedModes, setLaunchedModes] = useState<Record<string, ModeSlug>>({});
+  const setFeatureVibeModeMutation = useMutation({
+    mutationFn: ({ target, mode }: { target: FeatureTarget; mode: ModeSlug; launched: ModeSlug | null }) =>
+      setFeatureVibeMode(target, mode),
+    onSuccess: (_, { target, mode, launched }) => {
+      if (launched) {
+        setLaunchedModes((previous) => {
+          const next = { ...previous };
+          const first = previous[target.feature_id] ?? launched;
+          if (first === mode) delete next[target.feature_id];
+          else next[target.feature_id] = first;
+          return next;
+        });
+      }
+      pushToast({ tone: "info", title: "Vibe mode updated", message: "Restart agent sessions to apply the change." });
+    },
+    onError: reportError,
+  });
+  useEffect(() => {
+    const running = new Set((workspace.data?.projects ?? []).flatMap((project) =>
+      project.features.filter((feature) => feature.status !== "stopped").map((feature) => feature.id)));
+    setLaunchedModes((previous) =>
+      Object.keys(previous).every((id) => running.has(id))
+        ? previous
+        : Object.fromEntries(Object.entries(previous).filter(([id]) => running.has(id))));
+  }, [workspace.data]);
+
   function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
@@ -1418,6 +1449,14 @@ export default function App() {
               isWorktree: selectedFeature.is_worktree,
               unfinished: null,
             })}
+            onVibeMode={(mode) => setFeatureVibeModeMutation.mutate({
+              target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
+              mode,
+              launched: selectedFeature.status === "stopped" ? null : selectedFeature.mode,
+            })}
+            vibeModeBusy={setFeatureVibeModeMutation.isPending}
+            vibeModes={modes.data ?? []}
+            launchedMode={selectedFeature.status === "stopped" ? undefined : launchedModes[selectedFeature.id]}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
             drafts={drafts}
@@ -1932,6 +1971,10 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onVibeMode,
+  vibeModeBusy,
+  vibeModes,
+  launchedMode,
   starting,
   stopping,
   onStart,
@@ -1977,6 +2020,11 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onVibeMode: (mode: ModeSlug) => void;
+  vibeModeBusy: boolean;
+  vibeModes: ModeInfo[];
+  /** Set while the running agents still hold a mode other than the saved one. */
+  launchedMode?: ModeSlug;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
@@ -2038,7 +2086,13 @@ function FeatureView({
             <span className="dot-sep" />
             {harnessName(feature.agent)}
             <span className="dot-sep" />
-            {modeName(feature.mode)}
+            {launchedMode && launchedMode !== feature.mode
+              ? (
+                <span title="Running agents keep the mode they were launched with until they restart">
+                  {modeName(launchedMode)} → {modeName(feature.mode)} on restart
+                </span>
+              )
+              : modeName(feature.mode)}
             {feature.is_worktree && (
               <>
                 <span className="dot-sep" />
@@ -2099,6 +2153,18 @@ function FeatureView({
               icon="more"
               className="btn btn-secondary btn-icon"
               items={[
+                ...vibeModes.map((mode) => {
+                  const unsupported = mode.unsupported_agents?.includes(feature.agent) ?? false;
+                  return {
+                    label: `Vibe mode: ${mode.display_name}`,
+                    icon: "sparkles" as const,
+                    hint: feature.mode === mode.slug
+                      ? "Current"
+                      : unsupported ? `Unavailable with ${harnessName(feature.agent)}` : undefined,
+                    disabled: vibeModeBusy || feature.mode === mode.slug || unsupported,
+                    onSelect: () => onVibeMode(mode.slug),
+                  };
+                }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}

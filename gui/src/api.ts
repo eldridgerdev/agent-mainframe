@@ -19,6 +19,8 @@ export interface ModeInfo {
   slug: ModeSlug;
   display_name: string;
   description: string;
+  /** Primary agents that cannot run in this mode; the backend owns the rule. */
+  unsupported_agents?: AgentSlug[];
 }
 
 export interface FeatureSession {
@@ -330,6 +332,10 @@ export function deleteFeature(
   todoHost: TodoHostChoice | null,
 ): Promise<DeleteFeatureResponse> {
   return invoke("delete_feature", { target, todos, todoHost });
+}
+
+export function setFeatureVibeMode(target: FeatureTarget, mode: ModeSlug): Promise<void> {
+  return invoke("set_feature_vibe_mode", { target, mode });
 }
 
 export interface SessionRecoveryOption {

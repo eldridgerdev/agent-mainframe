@@ -22,7 +22,9 @@ pub struct DormancySettingsView {
     pub revision: String,
 }
 
-fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
+/// Read the original JSON object and raw-byte revision, without choosing a schema.
+/// Missing files are empty objects with the distinct `missing` revision.
+pub(crate) fn read_json_document(path: &Path) -> GuiResult<(serde_json::Value, String)> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -33,18 +35,23 @@ fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String
         None => serde_json::json!({}),
     };
     if !value.is_object() {
-        return Err(anyhow::anyhow!("Global config must contain a JSON object").into());
+        return Err(anyhow::anyhow!("Config must contain a JSON object").into());
     }
+    let revision = bytes.map_or_else(
+        || "missing".to_string(),
+        |bytes| format!("{:x}", Sha256::digest(bytes)),
+    );
+    Ok((value, revision))
+}
+
+fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
+    let (value, revision) = read_json_document(path)?;
     // Validate the whole known schema instead of overwriting a broken config.
     let config: AppConfig = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;
     validate(&DormancySettings {
         idle_minutes: config.dormant_idle_minutes,
         unattended_hours: config.dormant_last_accessed_hours,
     })?;
-    let revision = bytes.map_or_else(
-        || "missing".to_string(),
-        |bytes| format!("{:x}", Sha256::digest(bytes)),
-    );
     Ok((value, config, revision))
 }
 
@@ -131,19 +138,7 @@ fn update_document(
     revision: &str,
     update: impl FnOnce(&mut serde_json::Value),
 ) -> GuiResult<String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
-    std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
-    // Serialize desktop writers across processes. Other config writers do not
-    // participate; the revision also catches their edits made before this read.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("json.lock"))
-        .map_err(anyhow::Error::from)?;
-    lock.lock().map_err(anyhow::Error::from)?;
+    let _lock = lock_document(path)?;
     let (mut value, _, current_revision) = read_document(path)?;
     if current_revision != revision {
         return Err(GuiError::conflict(
@@ -151,17 +146,43 @@ fn update_document(
         ));
     }
     update(&mut value);
+    commit_document(path, &value)
+}
+
+/// Hold this guard through the freshness check and atomic commit. Other config
+/// writers do not participate; callers must also compare original revisions.
+pub(crate) fn lock_document(path: &Path) -> GuiResult<std::fs::File> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
+    std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))
+        .map_err(anyhow::Error::from)?;
+    lock.lock().map_err(anyhow::Error::from)?;
+    Ok(lock)
+}
+
+/// Atomically replace a scoped JSON document, preserving existing permissions.
+/// The caller owns the writer lock, schema validation and revision comparison.
+pub(crate) fn commit_document(path: &Path, value: &serde_json::Value) -> GuiResult<String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(anyhow::Error::from)?;
     if let Ok(metadata) = std::fs::metadata(path) {
         temp.as_file()
             .set_permissions(metadata.permissions())
             .map_err(anyhow::Error::from)?;
     }
-    serde_json::to_writer_pretty(&mut temp, &value).map_err(anyhow::Error::from)?;
+    serde_json::to_writer_pretty(&mut temp, value).map_err(anyhow::Error::from)?;
     temp.flush().map_err(anyhow::Error::from)?;
     temp.persist(path)
         .map_err(|error| anyhow::Error::new(error.error))?;
-    let bytes = serde_json::to_vec_pretty(&value).map_err(anyhow::Error::from)?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(anyhow::Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 

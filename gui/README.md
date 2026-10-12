@@ -2,6 +2,8 @@
 
 This is the Tauri desktop interface for AMF. The `amf` terminal interface
 remains available and uses the same project database and tmux sessions.
+See [choosing an interface and upgrading](../docs/interfaces.md) for shared
+state, concurrent use, staged coverage and independent updates.
 
 ## Install a release build
 

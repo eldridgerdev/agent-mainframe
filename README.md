@@ -14,6 +14,12 @@ and feature, creates isolated git worktrees when needed, and shows which
 agents are asking a question and which have finished work waiting to be
 reviewed.
 
+AMF also has a separately usable desktop interface, `amf-gui`. Both interfaces
+share projects, features and tmux sessions. Use `amf` in a terminal or over SSH;
+use the GUI for desktop navigation and the workflows it currently supports.
+See [choosing an interface and upgrading](docs/interfaces.md) and the
+[GUI installation guide](gui/README.md).
+
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 

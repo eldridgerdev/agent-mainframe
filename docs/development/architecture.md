@@ -1,7 +1,9 @@
 # Architecture
 
-AMF is a single Rust executable. It retains the existing event loop and persistence
-formats; feature extraction does not introduce a new framework or library.
+AMF is a Cargo workspace with separate `amf` terminal and `amf-gui` Tauri
+executables. They share the `agent-mainframe` library, persistence and tmux
+integration. The TUI retains its event loop and presentation modules; GUI
+adapters expose shared operations through semantic commands and snapshots.
 See [checks.md](checks.md) for setup, focused suites, CI and contribution guidance.
 The [baseline inventory](baseline/README.md) records the pre-refactor ownership map
 and complete test preservation evidence.

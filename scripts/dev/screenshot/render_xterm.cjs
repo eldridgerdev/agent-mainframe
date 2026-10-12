@@ -10,12 +10,14 @@ const path = require("node:path");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 
-const USAGE = `Usage: render_xterm.cjs [--cols N] [--rows N] [--scale N] [--out-dir DIR] <capture.ansi>...
+const USAGE = `Usage: render_xterm.cjs [--cols N] [--rows N] [--scale N] [--out-dir DIR] [--no-install] <capture.ansi>...
        render_xterm.cjs --install
 
 Writes <capture>.png beside each input, or into --out-dir. --cols/--rows
 default to the capture harness's 120x40; --scale is the pixel density
-(default 2). --install fetches the pinned packages and a headless Chromium.`;
+(default 2). --install fetches the pinned packages and a headless Chromium.
+A render fetches missing packages itself unless --no-install is given, which
+makes it fail instead.`;
 
 // Keep playwright-core in step with capture-remote-dashboard.cjs so both
 // share one downloaded browser. addon-webgl 0.19 is the release for xterm 6.0.
@@ -26,15 +28,21 @@ const toolsDir = path.join(
   process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "amf", "screenshot-xterm");
 const modules = path.join(toolsDir, "node_modules");
 const BASE_FONT_SIZE = 14;
+// The one font CI and a workstation both have.
+const FONT = "DejaVu Sans Mono";
 
-function installPackages() {
-  const missing = Object.entries(PACKAGES).filter(([name, version]) => {
+function missingPackages() {
+  return Object.entries(PACKAGES).filter(([name, version]) => {
     try {
       return JSON.parse(fs.readFileSync(path.join(modules, name, "package.json"), "utf8")).version !== version;
     } catch {
       return true;
     }
   });
+}
+
+function installPackages() {
+  const missing = missingPackages();
   if (missing.length) {
     // npm's progress goes to stderr: stdout carries only the "wrote" lines.
     execFileSync("npm", ["install", "--prefix", toolsDir, "--no-audit", "--no-fund",
@@ -57,8 +65,13 @@ function guiTerminalTheme() {
   return theme;
 }
 
-async function render(inputs, { cols, rows, scale, outDir }) {
-  installPackages();
+async function render(inputs, { cols, rows, scale, outDir, install }) {
+  if (install) {
+    installPackages();
+  } else {
+    assert(!missingPackages().length,
+      `the xterm.js packages are not installed in ${toolsDir}; run render_xterm.cjs --install`);
+  }
   const { chromium } = require(path.join(modules, "playwright-core"));
   const theme = guiTerminalTheme();
   const browser = await chromium.launch({
@@ -80,11 +93,10 @@ async function render(inputs, { cols, rows, scale, outDir }) {
     await page.addScriptTag({ path: path.join(modules, "@xterm/xterm/lib/xterm.js") });
     await page.addScriptTag({ path: path.join(modules, "@xterm/addon-webgl/lib/addon-webgl.js") });
 
-    const size = await page.evaluate(({ cols, rows, fontSize, theme }) => {
+    const { fontFound, ...size } = await page.evaluate(({ cols, rows, fontSize, font, theme }) => {
       const term = new Terminal({
         cols, rows, fontSize, theme,
-        // DejaVu Sans Mono is the one font CI and a workstation both have.
-        fontFamily: '"DejaVu Sans Mono", monospace',
+        fontFamily: `"${font}", monospace`,
         // capture-pane ends each row with a bare line feed.
         convertEol: true,
         cursorBlink: false,
@@ -98,10 +110,31 @@ async function render(inputs, { cols, rows, scale, outDir }) {
       // seams between cells. This throws where WebGL is unavailable, which is
       // the caller's cue to use render_ansi.py instead.
       term.loadAddon(new WebglAddon.WebglAddon());
+      // A context can also be lost later, and a frame drawn after that is
+      // blank or stale. The addon's own onContextLoss is no use here: it
+      // waits three seconds for the context to come back before firing.
+      document.addEventListener("webglcontextlost", () => { window.webglContextLost = true; }, true);
       window.term = term;
+      // A font that is not installed falls through to the generic family
+      // without any error. Two different generics measure the same only if
+      // neither was used.
+      const width = generic => {
+        const context = document.createElement("canvas").getContext("2d");
+        context.font = `${fontSize}px "${font}", ${generic}`;
+        return context.measureText("mmmmmmmmmmlli").width;
+      };
       const box = document.querySelector(".xterm-screen").getBoundingClientRect();
-      return { width: Math.ceil(box.width), height: Math.ceil(box.height) };
-    }, { cols, rows, fontSize: BASE_FONT_SIZE * scale, theme });
+      return {
+        width: Math.ceil(box.width), height: Math.ceil(box.height),
+        fontFound: width("monospace") === width("serif"),
+      };
+    }, { cols, rows, fontSize: BASE_FONT_SIZE * scale, font: FONT, theme });
+    if (!fontFound) {
+      // Not an error: the Pillow fallback needs the same font, and without it
+      // draws a bitmap one, which is worse than any monospace font here.
+      console.error(`render_xterm: warning: ${FONT} is not installed, so these frames use the browser's `
+        + "default monospace font; their cell size and pixel dimensions will not match CI's.");
+    }
     await page.setViewportSize(size);
 
     for (const input of inputs) {
@@ -116,7 +149,13 @@ async function render(inputs, { cols, rows, scale, outDir }) {
       }, ansi);
       assert.deepEqual(errors, [], `xterm.js reported an error while rendering ${input}`);
       const output = path.join(outDir || path.dirname(input), `${path.basename(input, ".ansi")}.png`);
-      await page.locator(".xterm-screen").screenshot({ path: output });
+      const png = await page.locator(".xterm-screen").screenshot();
+      // Checked after the screenshot, and before anything is written, so a
+      // context lost while it was being taken counts too.
+      assert(!(await page.evaluate(() => window.webglContextLost)),
+        `the WebGL context was lost while rendering ${input}`);
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      fs.writeFileSync(output, png);
       console.log(`wrote ${output} (${cols}x${rows} cells)`);
     }
   } finally {
@@ -125,13 +164,15 @@ async function render(inputs, { cols, rows, scale, outDir }) {
 }
 
 function parseArgs(argv) {
-  const options = { cols: 120, rows: 40, scale: 2, outDir: null };
+  const options = { cols: 120, rows: 40, scale: 2, outDir: null, install: true };
   const inputs = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--out-dir") {
       options.outDir = argv[++i];
       assert(options.outDir, "--out-dir requires a directory");
+    } else if (arg === "--no-install") {
+      options.install = false;
     } else if (["--cols", "--rows", "--scale"].includes(arg)) {
       const value = Number(argv[++i]);
       assert(Number.isInteger(value) && value > 0, `${arg} requires a positive integer`);

@@ -89,13 +89,16 @@ jobs:
 
       # Frames are rendered by xterm.js in headless Chromium. Pillow above
       # still assembles GIFs, and is the renderer render-captures.sh falls
-      # back to if this step's browser cannot start. This file always runs
+      # back to if this step fails or its browser cannot start; either way
+      # the run is annotated, here or by render-captures.sh, so a Pillow
+      # gallery is never mistaken for an xterm.js one. This file always runs
       # from main while the scripts come from the requested ref, so a ref
       # that predates the xterm.js renderer has neither script.
       - name: Install xterm.js renderer
         run: |
           if [[ -f scripts/dev/screenshot/render_xterm.cjs ]]; then
-            node scripts/dev/screenshot/render_xterm.cjs --install
+            node scripts/dev/screenshot/render_xterm.cjs --install ||
+              echo "::warning title=xterm.js renderer not installed::render_xterm.cjs --install failed; frames will be drawn by the Pillow fallback."
           fi
 
       - name: Build AMF

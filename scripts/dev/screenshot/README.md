@@ -196,6 +196,8 @@ contracts:
   using the requested `--geometry`, then calls `assemble_gif.py` to produce
   `capture.gif` (or the optional path). Thus `--gif` produces both the PNG
   frames and the GIF; it is the only driver flag that performs PNG rendering.
+  Those frames are rendered at `--gif-scale` (default `1`), not at
+  `render-captures.sh`'s default of `2`.
 - `assemble_gif.py` is also usable directly, but expects one or more existing
   PNG paths in display order. It writes a looping GIF with Pillow's native
   `save_all=True`/`append_images=...` behavior and defaults to 800 ms per frame;
@@ -465,7 +467,9 @@ scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 <dir>/*.ansi
 - `--renderer auto|xterm|pillow` — `auto` (the default) uses xterm.js and
   falls back to Pillow with a warning; `xterm` fails instead of falling
   back; `pillow` skips xterm.js. One renderer always draws the whole set,
-  so a run never mixes the two.
+  so a run never mixes the two. In a GitHub Actions run the fallback is
+  also raised as a `::warning::` annotation, since nothing in the frames or
+  the gallery says which renderer drew them.
 
 ### xterm.js (default)
 
@@ -480,9 +484,10 @@ emoji font on the machine; CI installs only DejaVu.)
 - **Setup.** `node scripts/dev/screenshot/render_xterm.cjs --install`
   fetches the pinned `playwright-core`, `@xterm/xterm` and
   `@xterm/addon-webgl` into `${XDG_CACHE_HOME:-~/.cache}/amf/screenshot-xterm`
-  and downloads a headless Chromium. The packages are also fetched on first
-  use; the browser is not, so without `--install` (or a Chromium that
-  Playwright already downloaded) `auto` falls back to Pillow.
+  and downloads a headless Chromium. Nothing is downloaded by `auto`: until
+  `--install` has run it falls back to Pillow straight away. `--renderer
+  xterm`, or running `render_xterm.cjs` directly without `--no-install`,
+  fetches missing packages on first use but never the browser.
   `AMF_PWA_BROWSER=<path>` uses an installed Chromium instead.
 - **Palette.** The 16 ANSI colours come from `DARK_TERMINAL_THEME` in
   `gui/src/terminalTheme.ts`, read at render time, with the same
@@ -490,15 +495,22 @@ emoji font on the machine; CI installs only DejaVu.)
   matches the app's own terminal pane, and dim text is lifted to a readable
   contrast exactly as it is there.
 - **Font.** DejaVu Sans Mono, the one font CI and a workstation share.
+  Where it is not installed the browser substitutes its default monospace
+  font; `render_xterm.cjs` warns, because the frames then differ in cell
+  size and pixel dimensions from CI's, but still renders (Pillow without
+  DejaVu would draw a bitmap font, which is worse).
 - **WebGL is required.** xterm's default DOM renderer takes box characters
   from the font and leaves seams between cells; the WebGL renderer draws
-  them. `render_xterm.cjs` fails rather than degrade to the DOM renderer.
+  them. `render_xterm.cjs` fails rather than degrade to the DOM renderer,
+  and also fails, without writing the frame, if the WebGL context is lost
+  part-way through a run.
 - **Density comes from the font size.** At a device scale factor of 2 the
   WebGL canvas drew a zoomed quarter of the screen in the headless shell, so
   `--scale` multiplies the font size at a device scale of 1 instead.
 
 Run directly, it takes the same `--cols`/`--rows`/`--scale` plus
-`--out-dir <dir>` to write the PNGs somewhere other than beside the inputs.
+`--out-dir <dir>` to write the PNGs somewhere other than beside the inputs,
+and `--no-install` to fail instead of fetching missing packages.
 
 ### Pillow (fallback)
 
@@ -533,7 +545,11 @@ edges it should.
 `amf-capture.sh --gif` runs `render-captures.sh` over every
 `NNN-<label>.ansi` in the output dir, then `assemble_gif.py` stitches the
 PNGs into one animated GIF via Pillow's native `save_all=True,
-append_images=...` — no ffmpeg dependency. Frame duration is fixed at
+append_images=...` — no ffmpeg dependency. The frames are rendered at
+`--scale 1` (960x640 at 120x40 with xterm.js, a quarter of the pixels
+of the default `2`) to keep the GIF small; `--gif-scale
+<n>` raises that, and the PNG frames left beside the GIF are the same
+size. Frame duration is fixed at
 `assemble_gif.py`'s default (800ms/frame) when invoked this way; run
 `assemble_gif.py` directly with `--duration-ms` for a different pace.
 

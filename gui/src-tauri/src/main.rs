@@ -1141,9 +1141,11 @@ async fn dormancy_delete(
     todo_host: Option<TodoHostChoice>,
 ) -> Result<DeleteFeatureResponse, GuiError> {
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
-    let response = gui_dormancy::delete(&mut gui, request, todos, todo_host)?;
+    let response = gui_dormancy::delete(&mut gui, request, todos, todo_host);
+    // On an error too: validation may have adopted another process's store
+    // changes, and deletion can fail after the feature is already gone.
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
-    Ok(response)
+    response
 }
 
 // PR Triage reads GitHub through `gh`, which can be slow or hang (network,

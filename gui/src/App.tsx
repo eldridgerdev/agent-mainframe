@@ -1243,7 +1243,7 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
-      {showDormancy && !deleteFeatureDialog && <DormancyPanel onClose={() => setShowDormancy(false)}
+      {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
         onDeleteFeature={(row) => setDeleteFeatureDialog({
           target: row.observation.target,
           projectName: row.project_name,

@@ -653,7 +653,8 @@ as deletion from a feature page. Every confirmation step rechecks dormancy,
 current thresholds, session identity, feature name and checkout. Changed,
 opened, active, stopped or deleted features are refused before deletion starts.
 Cancel applies no TODO choice and returns to a refreshed dormant list; success
-and refusal also return there. Seven asserted native WSLg frames from
+and refusal also return there. A selection ticked for a batch stop is kept
+across the dialog. Seven asserted native WSLg frames from
 `gui-dormant-delete.txt` verify cancellation through both TODO choices, an
 external-open refusal, TODO preservation, worktree deletion and ordinary
 checkout preservation using private SQLite, Git and tmux fixtures. macOS

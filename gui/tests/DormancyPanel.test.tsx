@@ -119,6 +119,46 @@ it("says when editor cleanup is off, both in the confirmation and the result", a
   expect(await screen.findByText("Editor cleanup is off; no editor was examined.")).toBeTruthy();
 });
 
+it("keeps the batch selection hidden behind Delete feature and re-observes it on return", async () => {
+  const later = { ...docs, observation: { ...docs.observation, last_activity: "2026-10-05T09:00:00Z" } };
+  let loads = 0;
+  mock((command) => {
+    // The deleted row is gone from the second list.
+    if (command === "dormancy_load") return ++loads === 1 ? view() : view({ features: [later] });
+    if (command === "dormancy_stop") return [];
+    throw new Error(command);
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  clients.push(client);
+  const onClose = vi.fn(); const onDeleteFeature = vi.fn();
+  const panel = (suspended: boolean) => <QueryClientProvider client={client}>
+    <DormancyPanel suspended={suspended} onClose={onClose} onOpenFeature={vi.fn()} onDeleteFeature={onDeleteFeature} />
+  </QueryClientProvider>;
+  const { rerender } = render(panel(false));
+  fireEvent.click(await screen.findByRole("checkbox", { name: "Select Retry webhooks" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select Docs refresh" }));
+  fireEvent.click(button("Delete Retry webhooks"));
+  expect(onDeleteFeature).toHaveBeenCalledWith(retry);
+
+  rerender(panel(true));
+  expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull();
+  // Escape belongs to the dialog in front.
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(onClose).not.toHaveBeenCalled();
+  expect(loads).toBe(1);
+
+  rerender(panel(false));
+  await waitFor(() => expect(button("Stop selected (1)")).toBeTruthy());
+  expect(loads).toBe(2);
+  expect((screen.getByRole("checkbox", { name: "Select Docs refresh" }) as HTMLInputElement).checked).toBe(true);
+  // The deletion's own toast reports the row that was sent; no second notice.
+  expect(screen.queryByText(/were deselected/)).toBeNull();
+  fireEvent.click(button("Stop selected (1)"));
+  fireEvent.click(button("Stop 1 feature"));
+  await waitFor(() => expect(stopCalls()).toHaveLength(1));
+  expect(stopCalls()[0][1]).toEqual({ selection: [later.observation] });
+});
+
 it("deselects features a refresh no longer lists and re-observes the rest", async () => {
   const later = { ...retry, observation: { ...retry.observation, last_activity: "2026-10-05T09:00:00Z" } };
   let loads = 0;

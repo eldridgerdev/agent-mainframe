@@ -1082,7 +1082,7 @@ function dormantDeleteRow(isWorktree = false) {
   };
 }
 
-async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktree = false) {
+async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktree = false, select = false) {
   // The row deliberately isn't in the workspace cache. Deletion must use its
   // listed identity, never the selected feature or a stale workspace lookup.
   const client = await openFeature([session("Shell")], [], "stopped");
@@ -1099,6 +1099,7 @@ async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktr
     return original(command, args, options);
   });
   fireEvent.click(screen.getByRole("button", { name: "Dormant features" }));
+  if (select) fireEvent.click(await screen.findByRole("checkbox", { name: "Select Quiet feature" }));
   fireEvent.click(await screen.findByRole("button", { name: "Delete Quiet feature" }));
   expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
   expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull();
@@ -1107,11 +1108,15 @@ async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktr
 }
 
 it("cancels dormant deletion and refreshes the list without opening or deleting the feature", async () => {
-  const { client, loads } = await openDormantDeletion(() => { throw new Error("must not delete"); });
+  const { client, loads } = await openDormantDeletion(() => { throw new Error("must not delete"); }, false, true);
   expect(screen.getByText(/repository checkout itself is left alone/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
   await waitFor(() => expect(loads()).toBe(2));
+  // The panel was hidden, not unmounted: the batch selection is still there.
+  expect((screen.getByRole("checkbox", { name: "Select Quiet feature" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole("button", { name: "Stop selected (1)" })).toBeTruthy();
+  expect(screen.queryByText(/were deselected/)).toBeNull();
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_delete" || command === "delete_feature" || command === "dormancy_stop")).toHaveLength(0);
   client.clear();
 });
@@ -1156,7 +1161,7 @@ it("carries a dormant observation through TODO choices and blocks duplicate dele
 
 it("returns to a fresh dormant list after refusal without retrying a stale deletion", async () => {
   const { client, loads } = await openDormantDeletion(() => {
-    throw { kind: "conflict", message: "Not deleted: It was opened in AMF. Refresh Dormant features and confirm again" };
+    throw { kind: "conflict", message: "Not deleted: It was opened in AMF after the list was loaded. Refresh Dormant features to see what is still listed" };
   });
   fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
   expect(await screen.findByText(/Not deleted: It was opened in AMF/)).toBeTruthy();

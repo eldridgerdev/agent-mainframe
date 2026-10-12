@@ -1,6 +1,6 @@
 import { closeEditors, CloseEditorsResponse } from "./sessionsApi";
 import DormancySettingsPanel from "./DormancySettingsPanel";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DormancyStopResult,
@@ -86,10 +86,13 @@ function Row({ row, selected, disabled, onToggle, onOpen, onCloseEditors, onDele
 /// Running features that are idle *and* unattended (the TUI's `z`), with an
 /// explicitly confirmed stop. The backend re-checks every selected feature
 /// before stopping it, so this list is a proposal, never the authority.
-export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature }: {
+export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature, suspended = false }: {
   onClose: () => void;
   onOpenFeature: (target: FeatureTarget) => void;
   onDeleteFeature: (row: DormantFeatureView) => void;
+  /** Delete feature is open over a row. The panel stays mounted but hidden,
+   * so a selection made for a batch stop is still there on return. */
+  suspended?: boolean;
 }) {
   const query = useQuery({
     queryKey: DORMANCY_KEY,
@@ -125,7 +128,9 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature 
     });
   }
 
-  async function refresh() {
+  // `reported` is a row whose own action already told the user what became
+  // of it, so its leaving the list is not announced a second time.
+  async function refresh(reported?: string) {
     setError(null);
     const fresh = await query.refetch();
     // A failed refetch still returns the previous data; re-observing the
@@ -142,11 +147,24 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature 
     let dropped = 0;
     for (const id of Object.keys(selectedNow.current)) {
       const observation = listed.get(id);
-      if (observation) kept[id] = observation; else dropped++;
+      if (observation) kept[id] = observation; else if (id !== reported) dropped++;
     }
     setSelected(kept);
     setNotice(dropped > 0 ? `${dropped} selected feature(s) are no longer dormant and were deselected.` : null);
   }
+
+  // Coming back from Delete feature: the row may be gone, or have been
+  // refused because it changed, so the list and selection are re-observed.
+  // The deletion's own toast covers the row that was sent.
+  const deleting = useRef<string | null>(null);
+  const wasSuspended = useRef(false);
+  useEffect(() => {
+    if (wasSuspended.current && !suspended) {
+      void refresh(deleting.current ?? undefined);
+      deleting.current = null;
+    }
+    wasSuspended.current = suspended;
+  }, [suspended]);
 
   async function stop() {
     if (inFlight.current || chosen.length === 0) return;
@@ -215,7 +233,7 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature 
   }} />;
 
   return <Modal label="Dormant features" title="Dormant features" size="lg" onClose={() => { if (!inFlight.current) onClose(); }}
-    dismissable={!stopping && !closingEditors}
+    dismissable={!stopping && !closingEditors} hidden={suspended}
     subtitle={view?.enabled
       ? `Running, idle over ${view.idle_minutes}m and not opened for over ${view.unattended_hours}h: nobody is watching these and nothing is happening in them.`
       : undefined}
@@ -274,7 +292,7 @@ export default function DormancyPanel({ onClose, onOpenFeature, onDeleteFeature 
             {view.features.map((row) => <Row key={key(row.observation)} row={row}
               selected={!!selected[key(row.observation)]} disabled={stopping || query.isFetching} editorsStale={editorsStale}
               onCloseEditors={() => { setError(null); setEditorConfirm(row); }}
-              onDelete={() => onDeleteFeature(row)}
+              onDelete={() => { deleting.current = key(row.observation); onDeleteFeature(row); }}
               onToggle={() => toggle(row)} onOpen={() => onOpenFeature(row.observation.target)} />)}
           </ul>
         </>)}

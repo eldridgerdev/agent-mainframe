@@ -61,11 +61,14 @@ pub struct DormantFeatureView {
 }
 
 /// The readings a row was listed on. The frontend sends these back verbatim
-/// to stop the selection, and each is compared with the current state first.
+/// to stop or delete the selection, and each is compared with the current
+/// state first.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DormantObservation {
     pub target: FeatureTarget,
-    /// Display only; never used to find the feature.
+    /// Never used to find the feature, but not display-only either: [`delete`]
+    /// refuses unless this still equals the stored `Feature::name`. Keep it
+    /// the exact stored name; format a label in the frontend instead.
     pub feature_name: String,
     pub tmux_session: String,
     pub last_activity: DateTime<Utc>,
@@ -105,11 +108,11 @@ pub enum DormancyRefusal {
     Deleted,
     AlreadyStopped,
     /// AMF still records it as running but its tmux session no longer exists
-    /// (a crash or a tmux server restart), so there is nothing left to stop.
+    /// (a crash or a tmux server restart), so it is not running at all.
     SessionGone,
     /// Its tmux session is not the one that was listed.
     Restarted,
-    /// Several features share the live tmux session; stopping it would stop
+    /// Several features share the live tmux session; ending it would end
     /// features the user did not select.
     SharedSession,
     /// Dormancy was switched off in config.
@@ -297,8 +300,10 @@ pub fn delete(
 ) -> GuiResult<DeleteFeatureResponse> {
     let (pi, fi) =
         validate_observation(gui, &request.observation).map_err(|outcome| match outcome {
+            // Most refusals mean the row is off the refreshed list, so the
+            // suffix does not promise there will be anything to confirm.
             DormancyStopOutcome::Refused { message, .. } => GuiError::conflict(format!(
-                "Not deleted: {message}. Refresh Dormant features and confirm again"
+                "Not deleted: {message}. Refresh Dormant features to see what is still listed"
             )),
             DormancyStopOutcome::Failed { message } => GuiError::from(anyhow::anyhow!(message)),
             DormancyStopOutcome::Stopped { .. } => unreachable!("validation never stops a feature"),
@@ -315,6 +320,8 @@ pub fn delete(
     gui.delete_feature_from_current_store(request.observation.target, todos, todo_host)
 }
 
+/// Shared by stop and delete, so every refusal message describes the
+/// feature's state rather than the action that was refused.
 fn validate_observation(
     gui: &mut GuiHandle,
     observed: &DormantObservation,
@@ -349,7 +356,7 @@ fn validate_observation(
     if !app.tmux.session_exists(&feature.tmux_session) {
         return Err(refused(
             DormancyRefusal::SessionGone,
-            "Its tmux session is gone (it may have crashed, or the tmux server restarted), so there is nothing left to stop",
+            "Its tmux session is gone (it may have crashed, or the tmux server restarted), so it is no longer running",
         ));
     }
     if feature.tmux_session != observed.tmux_session {
@@ -361,7 +368,7 @@ fn validate_observation(
     if app.feature_tmux_session_is_shared(pi, fi) {
         return Err(refused(
             DormancyRefusal::SharedSession,
-            "Other features share its live tmux session, so stopping it would stop them too",
+            "Other features share its live tmux session, so ending that session would end theirs too",
         ));
     }
     if feature.last_accessed > observed.last_accessed {
@@ -662,6 +669,55 @@ mod tests {
         (f, tmp)
     }
 
+    /// One unfinished TODO on `quiet`'s worktree list and one on the project
+    /// list `quiet` hosts, so deleting it raises both prompts. Returns the
+    /// `(worktree, project)` list ids.
+    fn seed_todo_lists(f: &mut Fixture, workdir: &str) -> (String, String) {
+        use crate::db::todos::{TodoPriority, TodoScope};
+        let db = f.gui().app_for_workflow().db.as_ref().unwrap();
+        let worktree_list = db
+            .load_or_create_todo_list(
+                &TodoScope::Worktree {
+                    project_id: PROJECT.into(),
+                    workdir: workdir.to_string(),
+                },
+                Some("quiet"),
+            )
+            .unwrap();
+        db.add_todo(
+            &worktree_list.id,
+            "keep unfinished",
+            None,
+            TodoPriority::Med,
+        )
+        .unwrap();
+        let project_list = db
+            .load_or_create_todo_list(
+                &TodoScope::Project {
+                    project_id: PROJECT.into(),
+                },
+                Some("quiet"),
+            )
+            .unwrap();
+        db.add_todo(&project_list.id, "project work", None, TodoPriority::Med)
+            .unwrap();
+        (worktree_list.id, project_list.id)
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn deletes_a_confirmed_dormant_feature_and_preserves_the_checkout() {
         let (mut f, _tmp) = deletion_fixture(false);
@@ -700,41 +756,11 @@ mod tests {
 
     #[test]
     fn dormant_delete_rechecks_before_applying_todo_disposition_and_host_choices() {
-        use crate::db::todos::{TodoPriority, TodoScope};
         let (mut f, _tmp) = deletion_fixture(true);
         let _file = f.attach_db();
         let view = load(f.gui()).unwrap();
         let request = delete_request(&view, "quiet");
-        let (worktree_list, project_list) = {
-            let db = f.gui().app_for_workflow().db.as_ref().unwrap();
-            let worktree_list = db
-                .load_or_create_todo_list(
-                    &TodoScope::Worktree {
-                        project_id: PROJECT.into(),
-                        workdir: request.workdir.clone(),
-                    },
-                    Some("quiet"),
-                )
-                .unwrap();
-            db.add_todo(
-                &worktree_list.id,
-                "keep unfinished",
-                None,
-                TodoPriority::Med,
-            )
-            .unwrap();
-            let project_list = db
-                .load_or_create_todo_list(
-                    &TodoScope::Project {
-                        project_id: PROJECT.into(),
-                    },
-                    Some("quiet"),
-                )
-                .unwrap();
-            db.add_todo(&project_list.id, "project work", None, TodoPriority::Med)
-                .unwrap();
-            (worktree_list, project_list)
-        };
+        let (worktree_list, project_list) = seed_todo_lists(&mut f, &request.workdir);
         assert!(matches!(
             delete(f.gui(), request.clone(), None, None).unwrap(),
             DeleteFeatureResponse::NeedsTodoDisposition { unfinished: 1 }
@@ -749,7 +775,7 @@ mod tests {
         let DeleteFeatureResponse::NeedsTodoHost { prompt } = response else {
             panic!("expected host choice");
         };
-        assert_eq!(prompt.list_id, project_list.id);
+        assert_eq!(prompt.list_id, project_list);
         assert_eq!(prompt.todo_count, 2);
         assert!(
             prompt
@@ -761,8 +787,8 @@ mod tests {
         {
             let app = f.gui().app_for_workflow();
             let db = app.db.as_ref().unwrap();
-            assert_eq!(db.todos(&worktree_list.id).unwrap().len(), 1);
-            assert_eq!(db.todos(&project_list.id).unwrap().len(), 1);
+            assert_eq!(db.todos(&worktree_list).unwrap().len(), 1);
+            assert_eq!(db.todos(&project_list).unwrap().len(), 1);
             assert_eq!(
                 app.store.projects[0].features[0].last_accessed,
                 request.observation.last_accessed
@@ -783,10 +809,103 @@ mod tests {
         assert_eq!(err.kind, GuiErrorKind::Conflict);
         assert!(err.message.contains("produced output"));
         let db = f.gui().app_for_workflow().db.as_ref().unwrap();
-        assert_eq!(db.todos(&worktree_list.id).unwrap().len(), 1);
-        assert_eq!(db.todos(&project_list.id).unwrap().len(), 1);
+        assert_eq!(db.todos(&worktree_list).unwrap().len(), 1);
+        assert_eq!(db.todos(&project_list).unwrap().len(), 1);
         assert_eq!(f.status("quiet"), ProjectStatus::Idle);
         assert!(f.killed().is_empty());
+    }
+
+    #[test]
+    fn dormant_delete_refiles_todos_rehomes_the_list_and_removes_the_worktree() {
+        use crate::db::todos::TodoScope;
+        let (mut f, tmp) = deletion_fixture(true);
+        // Deleting a worktree runs `git worktree remove`, so `quiet` has to
+        // be a real one.
+        let repo = tmp.path().join("repo");
+        let checkout = tmp.path().join("quiet");
+        std::fs::remove_dir(&checkout).unwrap();
+        git(&repo, &["init", "--initial-branch=main"]);
+        git(&repo, &["config", "user.name", "AMF Test"]);
+        git(&repo, &["config", "user.email", "amf@example.com"]);
+        git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "quiet",
+                &checkout.to_string_lossy(),
+            ],
+        );
+        std::fs::write(checkout.join("scratch.txt"), "uncommitted").unwrap();
+        let db_file = f.attach_db();
+        let view = load(f.gui()).unwrap();
+        let request = delete_request(&view, "quiet");
+        assert!(request.is_worktree);
+        let (worktree_list, project_list) = seed_todo_lists(&mut f, &request.workdir);
+
+        assert!(matches!(
+            delete(f.gui(), request.clone(), None, None).unwrap(),
+            DeleteFeatureResponse::NeedsTodoDisposition { unfinished: 1 }
+        ));
+        let response = delete(
+            f.gui(),
+            request.clone(),
+            Some(TodoDeleteChoice::MoveToProject),
+            None,
+        )
+        .unwrap();
+        let DeleteFeatureResponse::NeedsTodoHost { prompt } = response else {
+            panic!("expected host choice");
+        };
+        let response = delete(
+            f.gui(),
+            request,
+            Some(TodoDeleteChoice::MoveToProject),
+            Some(TodoHostChoice {
+                list_id: prompt.list_id,
+                feature_id: Some("quieter".into()),
+            }),
+        )
+        .unwrap();
+        let DeleteFeatureResponse::Deleted { feature_id, .. } = response else {
+            panic!("expected deletion");
+        };
+        assert_eq!(feature_id, "quiet");
+
+        let app = f.gui().app_for_workflow();
+        assert!(matches!(app.mode, crate::app::AppMode::Normal));
+        let db = app.db.as_ref().unwrap();
+        // The worktree's unfinished TODO joined the project list, and that
+        // list moved to the chosen surviving feature.
+        let list = db
+            .todo_list(&TodoScope::Project {
+                project_id: PROJECT.into(),
+            })
+            .unwrap()
+            .expect("the project list is kept");
+        assert_eq!(list.id, project_list);
+        assert_eq!(list.feature_id.as_deref(), Some("quieter"));
+        let mut titles: Vec<String> = db
+            .todos(&project_list)
+            .unwrap()
+            .into_iter()
+            .map(|todo| todo.title)
+            .collect();
+        titles.sort();
+        assert_eq!(titles, ["keep unfinished", "project work"]);
+        assert!(db.todos(&worktree_list).unwrap().is_empty());
+
+        let persisted = crate::db::AmfDb::open(db_file.path())
+            .unwrap()
+            .load_store()
+            .unwrap();
+        assert!(persisted.locate_feature_by_id(None, "quiet").is_none());
+        assert!(persisted.locate_feature_by_id(None, "quieter").is_some());
+        // The worktree goes with its uncommitted file; the branch is kept.
+        assert!(!checkout.exists());
+        git(&repo, &["rev-parse", "--verify", "refs/heads/quiet"]);
     }
 
     #[test]
@@ -846,6 +965,20 @@ mod tests {
                 "{change}"
             );
             assert!(f.killed().is_empty(), "{change}");
+            // The checks are shared with stop, but the wording must not be:
+            // nothing here was asked to stop, and only a name or checkout
+            // change leaves a row to confirm again.
+            assert!(
+                !err.message.contains("stopping") && !err.message.contains("to stop"),
+                "{change}: {}",
+                err.message
+            );
+            assert_eq!(
+                err.message.contains("confirm again"),
+                matches!(change, "name" | "workdir" | "worktree"),
+                "{change}: {}",
+                err.message
+            );
         }
     }
 

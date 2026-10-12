@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Desktop context settings.** Set a fallback context-window token limit and
+  warning/critical percentages from workspace navigation. A blank limit restores
+  harness defaults. Saves protect unsaved drafts, refuse conflicting config
+  edits and update desktop indicators; external settings edits refresh
+  automatically. Invalid hand-edited values open in the dialog for correction.
+  Restart an already open TUI after saving: until then it keeps its old values
+  and writes them back the next time it saves any setting. No migration is
+  required.
+
 - **AI interaction helpers for AMF.** Agents can reuse private GUI or TUI
   instances, read compact observations, and batch actions with local waits.
   The injected `amf-interact` skill explains which tools to use and includes

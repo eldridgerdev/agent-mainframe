@@ -1351,3 +1351,21 @@ it("takes vibe mode availability from the backend and shows a change on a runnin
   await waitFor(() => expect(screen.queryByText(/on restart/)).toBeNull());
   client.clear();
 });
+
+
+it("opens Context settings beside an agent, saves and retains its unsent composer draft", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "context_settings_load" || command === "context_settings_save") return Promise.resolve({ revision: "context-rev", settings: { window_limit: "", warning_percent: "70", critical_percent: "85" } });
+    return original(command, args, options);
+  });
+  fireEvent.change(draftInput(), { target: { value: "Unsent context draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Context settings", exact: true }));
+  await screen.findByRole("dialog", { name: "Context settings" });
+  fireEvent.change(await screen.findByLabelText("Warning percent"), { target: { value: "60" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context settings" })).toBeNull());
+  expect(draftInput().value).toBe("Unsent context draft");
+  expect(promptCalls()).toHaveLength(0); client.clear();
+});

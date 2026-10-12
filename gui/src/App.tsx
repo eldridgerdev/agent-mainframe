@@ -78,6 +78,7 @@ import ProjectsSidebar from "./ProjectsSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
+import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
@@ -188,6 +189,7 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
+  const [showContextSettings, setShowContextSettings] = useState(false);
   const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
@@ -1193,6 +1195,7 @@ export default function App() {
 
           <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
 
+          <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
           <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
 
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
@@ -1288,6 +1291,7 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
+      {showContextSettings && <ContextSettingsPanel onClose={() => setShowContextSettings(false)} onSaved={() => { setShowContextSettings(false); void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY }); }} />}
       {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
         projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
           setAgentAvailabilityScope(null);

@@ -177,6 +177,61 @@ impl Default for ContextThresholds {
     }
 }
 
+/// Validated global context display policy, shared by the TUI and desktop editors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextSettings {
+    pub window_override: Option<u64>,
+    pub warning_percent: u8,
+    pub critical_percent: u8,
+}
+
+pub(crate) fn parse_context_settings(
+    window: &str,
+    warning: &str,
+    critical: &str,
+) -> Result<ContextSettings, String> {
+    let window_override = if window.trim().is_empty() {
+        None
+    } else {
+        match window.trim().parse::<u64>() {
+            Ok(value) if value > 0 => Some(value),
+            _ => {
+                return Err(
+                    "Context window must be a positive number of tokens (or blank to clear)".into(),
+                );
+            }
+        }
+    };
+    let warning_percent = match warning.trim().parse::<u8>() {
+        Ok(value) if (1..=100).contains(&value) => value,
+        _ => return Err("Warning % must be a whole number between 1 and 100".into()),
+    };
+    let critical_percent = match critical.trim().parse::<u8>() {
+        Ok(value) if (1..=100).contains(&value) => value,
+        _ => return Err("Critical % must be a whole number between 1 and 100".into()),
+    };
+    if critical_percent <= warning_percent {
+        return Err("Critical % must be greater than Warning %".into());
+    }
+    Ok(ContextSettings {
+        window_override,
+        warning_percent,
+        critical_percent,
+    })
+}
+
+impl ContextThresholds {
+    pub(crate) fn band_for(self, percentage: ContextPercentage) -> ContextBand {
+        if percentage.get() >= self.critical_percent {
+            ContextBand::Critical
+        } else if percentage.get() >= self.warning_percent {
+            ContextBand::Warning
+        } else {
+            ContextBand::Normal
+        }
+    }
+}
+
 /// Normalize one collector sample using the feature's shared display policy.
 ///
 /// Percentages use integer floor division, so the warning and critical bands
@@ -194,13 +249,7 @@ pub fn calculate_context_snapshot(
         NonZeroU64::new(limit).ok_or(ContextCalculationError::InvalidContextLimit)?;
     let raw_percentage = (u128::from(sample.used_tokens) * 100 / u128::from(limit)).min(100) as i64;
     let percentage = ContextPercentage::clamped(raw_percentage);
-    let band = if percentage.get() >= thresholds.critical_percent {
-        ContextBand::Critical
-    } else if percentage.get() >= thresholds.warning_percent {
-        ContextBand::Warning
-    } else {
-        ContextBand::Normal
-    };
+    let band = thresholds.band_for(percentage);
 
     Ok(SessionContextSnapshot {
         used_tokens: sample.used_tokens,

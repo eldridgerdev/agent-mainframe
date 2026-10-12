@@ -2,6 +2,7 @@
 //! JSON document and refuse edits based on an older file.
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -303,9 +304,515 @@ pub(crate) fn validate_agents(agents: &[AgentKind]) -> GuiResult<()> {
     Ok(())
 }
 
+/// Strings retain the full u64 window limit across JavaScript IPC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextSettingsInput {
+    pub window_limit: String,
+    pub warning_percent: String,
+    pub critical_percent: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContextSettingsView {
+    pub settings: ContextSettingsInput,
+    pub revision: String,
+}
+
+fn context_values(config: &AppConfig) -> ContextSettingsInput {
+    ContextSettingsInput {
+        window_limit: config
+            .context_window_override
+            .map(|value| value.to_string())
+            .unwrap_or_default(),
+        warning_percent: config.context_warning_percent.to_string(),
+        critical_percent: config.context_critical_percent.to_string(),
+    }
+}
+
+fn context_parse(
+    input: &ContextSettingsInput,
+) -> GuiResult<crate::context_tracking::ContextSettings> {
+    crate::context_tracking::parse_context_settings(
+        &input.window_limit,
+        &input.warning_percent,
+        &input.critical_percent,
+    )
+    .map_err(|error| anyhow::anyhow!(error).into())
+}
+
+/// The stored values as they are, valid or not: the dialog has to open on a
+/// hand-edited `warning=90, critical=80` to be able to repair it. Save and
+/// refresh validate through [`context_parse`].
+fn context_read(path: &Path) -> GuiResult<ContextSettingsView> {
+    let (_, config, revision) = read_document(path)?;
+    Ok(ContextSettingsView {
+        settings: context_values(&config),
+        revision,
+    })
+}
+
+pub fn context_load() -> GuiResult<ContextSettingsView> {
+    context_read(&crate::project::amf_config_dir().join("config.json"))
+}
+
+fn context_apply(gui: &mut GuiHandle, settings: crate::context_tracking::ContextSettings) {
+    gui.app_for_workflow().apply_context_settings(settings);
+}
+
+/// What `stat` reported for the global config when context settings were last
+/// read from it. The sidebar polls several times a second; this lets a poll
+/// skip a file that has not changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConfigStamp {
+    Missing,
+    File { modified: SystemTime, len: u64 },
+}
+
+/// A stamp is trusted only once the file has been quiet this long. On a
+/// filesystem with coarse timestamps, a same-length write in the tick of the
+/// previous read would otherwise leave the stamp unchanged and go unseen.
+const CONFIG_STAMP_SETTLE: Duration = Duration::from_secs(2);
+
+/// `None` when the file cannot vouch for itself yet (just written, or not
+/// stat-able), which makes the caller read it.
+fn config_stamp(path: &Path) -> Option<ConfigStamp> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let modified = metadata.modified().ok()?;
+            modified
+                .elapsed()
+                .is_ok_and(|age| age >= CONFIG_STAMP_SETTLE)
+                .then_some(ConfigStamp::File {
+                    modified,
+                    len: metadata.len(),
+                })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(ConfigStamp::Missing),
+        Err(_) => None,
+    }
+}
+
+/// Refresh context policy before the GUI polls its own context collectors.
+///
+/// `seen` is the caller's record of the file as last read. Returns `false`
+/// when the file is unchanged since then and was not read, so the outcome of
+/// that earlier read (success or failure) still stands.
+pub(crate) fn context_refresh(
+    gui: &mut GuiHandle,
+    seen: &mut Option<ConfigStamp>,
+) -> GuiResult<bool> {
+    // Test Apps deliberately have no global config or filesystem side effects.
+    if gui.app_for_workflow().store_path.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    context_refresh_at(
+        gui,
+        &crate::project::amf_config_dir().join("config.json"),
+        seen,
+    )
+}
+
+fn context_refresh_at(
+    gui: &mut GuiHandle,
+    path: &Path,
+    seen: &mut Option<ConfigStamp>,
+) -> GuiResult<bool> {
+    // Stamp before reading, so a write landing in between changes the next one.
+    let stamp = config_stamp(path);
+    if stamp.is_some() && stamp == *seen {
+        return Ok(false);
+    }
+    *seen = stamp;
+    let settings = context_parse(&context_read(path)?.settings)?;
+    let config = &gui.app_for_workflow().config;
+    let current = crate::context_tracking::ContextSettings {
+        window_override: config.context_window_override,
+        warning_percent: config.context_warning_percent,
+        critical_percent: config.context_critical_percent,
+    };
+    // This desktop's own save lands here too, already applied.
+    if settings != current {
+        context_apply(gui, settings);
+    }
+    Ok(true)
+}
+
+pub fn context_save(
+    gui: &mut GuiHandle,
+    revision: &str,
+    settings: ContextSettingsInput,
+) -> GuiResult<ContextSettingsView> {
+    context_save_at(
+        gui,
+        &crate::project::amf_config_dir().join("config.json"),
+        revision,
+        settings,
+    )
+}
+
+fn context_save_at(
+    gui: &mut GuiHandle,
+    path: &Path,
+    revision: &str,
+    settings: ContextSettingsInput,
+) -> GuiResult<ContextSettingsView> {
+    let parsed = context_parse(&settings)?;
+    let revision = update_document(path, revision, |value| {
+        if let Some(limit) = parsed.window_override {
+            value["context_window_override"] = limit.into();
+        } else {
+            value
+                .as_object_mut()
+                .expect("validated object")
+                .remove("context_window_override");
+        }
+        value["context_warning_percent"] = parsed.warning_percent.into();
+        value["context_critical_percent"] = parsed.critical_percent.into();
+    })?;
+    context_apply(gui, parsed);
+    Ok(ContextSettingsView {
+        settings: context_values(&gui.app_for_workflow().config),
+        revision,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn context_gui() -> GuiHandle {
+        use crate::{
+            app::App,
+            project::ProjectStore,
+            traits::{MockTmuxOps, MockWorktreeOps},
+        };
+        GuiHandle::from_app(App::new_for_test(
+            ProjectStore::empty(),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        ))
+    }
+
+    fn context_input(window: &str, warning: &str, critical: &str) -> ContextSettingsInput {
+        ContextSettingsInput {
+            window_limit: window.into(),
+            warning_percent: warning.into(),
+            critical_percent: critical.into(),
+        }
+    }
+
+    #[test]
+    fn context_settings_save_u64_exactly_clear_override_and_preserve_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"future":{"keep":true},"extension":{"allowed_agents":["pi"]},"dormant_idle_minutes":17}"#).unwrap();
+        let initial = context_read(&path).unwrap();
+        assert_eq!(initial.settings, context_input("", "70", "85"));
+        let mut gui = context_gui();
+        gui.app_for_workflow().config.max_concurrent_agents = 11;
+        let saved = context_save_at(
+            &mut gui,
+            &path,
+            &initial.revision,
+            context_input("18446744073709551615", "1", "100"),
+        )
+        .unwrap();
+        assert_eq!(context_read(&path).unwrap().settings, saved.settings);
+        assert_eq!(
+            gui.app_for_workflow().config.context_window_override,
+            Some(u64::MAX)
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(value["context_window_override"].as_u64(), Some(u64::MAX));
+        assert_eq!(value["future"]["keep"], true);
+        assert_eq!(value["extension"]["allowed_agents"][0], "pi");
+        assert_eq!(value["dormant_idle_minutes"], 17);
+        assert_eq!(gui.app_for_workflow().config.max_concurrent_agents, 11);
+        let cleared = context_save_at(
+            &mut gui,
+            &path,
+            &saved.revision,
+            context_input("", "60", "90"),
+        )
+        .unwrap();
+        assert_eq!(cleared.settings.window_limit, "");
+        assert_eq!(gui.app_for_workflow().config.context_window_override, None);
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(value.get("context_window_override").is_none());
+        assert!(
+            context_save_at(
+                &mut gui,
+                &path,
+                &saved.revision,
+                context_input("200000", "50", "80")
+            )
+            .is_err()
+        );
+        assert_eq!(gui.app_for_workflow().config.context_window_override, None);
+        assert_eq!(context_read(&path).unwrap().revision, cleared.revision);
+    }
+
+    #[test]
+    fn context_settings_reject_invalid_input_or_files_without_changing_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gui = context_gui();
+        let initial = context_read(&path).unwrap();
+        for input in [
+            context_input("0", "70", "85"),
+            context_input("18446744073709551616", "70", "85"),
+            context_input("", "0", "85"),
+            context_input("", "70", "101"),
+            context_input("", "85", "85"),
+            context_input("", "90", "80"),
+        ] {
+            assert!(context_save_at(&mut gui, &path, &initial.revision, input).is_err());
+            assert!(!path.exists());
+            assert_eq!(gui.app_for_workflow().config.context_warning_percent, 70);
+        }
+        for text in [
+            "{",
+            "[]",
+            r#"{"context_warning_percent":"bad"}"#,
+            r#"{"extension":null}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(context_read(&path).is_err());
+            assert!(
+                context_save_at(
+                    &mut gui,
+                    &path,
+                    &initial.revision,
+                    context_input("", "60", "90")
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            assert_eq!(gui.app_for_workflow().config.context_warning_percent, 70);
+        }
+    }
+
+    #[test]
+    fn invalid_stored_context_values_load_for_repair_but_never_reach_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gui = context_gui();
+        for (text, stored) in [
+            (
+                r#"{"context_window_override":0,"future":1}"#,
+                context_input("0", "70", "85"),
+            ),
+            (
+                r#"{"context_warning_percent":90,"context_critical_percent":80,"future":1}"#,
+                context_input("", "90", "80"),
+            ),
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let loaded = context_read(&path).unwrap();
+            assert_eq!(loaded.settings, stored);
+            assert!(context_refresh_at(&mut gui, &path, &mut None).is_err());
+            assert_eq!(gui.app_for_workflow().config.context_warning_percent, 70);
+            assert_eq!(gui.app_for_workflow().config.context_window_override, None);
+            // Saving the stored values back unchanged is still refused.
+            assert!(context_save_at(&mut gui, &path, &loaded.revision, stored).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            // The revision from that load is what repairs the file.
+            context_save_at(
+                &mut gui,
+                &path,
+                &loaded.revision,
+                context_input("", "60", "90"),
+            )
+            .unwrap();
+            assert_eq!(
+                context_read(&path).unwrap().settings,
+                context_input("", "60", "90")
+            );
+            assert!(context_refresh_at(&mut gui, &path, &mut None).unwrap());
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(value["future"], 1);
+            context_apply(
+                &mut gui,
+                context_parse(&context_input("", "70", "85")).unwrap(),
+            );
+        }
+    }
+
+    /// Backdate `path` so its stamp counts as settled.
+    fn settle(path: &Path, seconds_ago: u64) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(seconds_ago))
+            .unwrap();
+    }
+
+    #[test]
+    fn context_refresh_reads_the_config_only_when_the_file_changed() {
+        use crate::context_tracking::{
+            ContextBand, ContextProvenance, ContextResetMetadata, ContextThresholds,
+            ContextUsageSample, SessionContextState,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gui = context_gui();
+        let mut seen = None;
+
+        // A missing file is defaults, read once.
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(seen, Some(ConfigStamp::Missing));
+        assert!(!context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+
+        // A file written moments ago is read every time until it settles.
+        std::fs::write(&path, r#"{"context_warning_percent":60}"#).unwrap();
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(seen, None);
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(gui.app_for_workflow().config.context_warning_percent, 60);
+        settle(&path, 60);
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert!(!context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+
+        // An unchanged file is not read: nothing notices the runtime moving.
+        gui.app_for_workflow().config.context_warning_percent = 65;
+        assert!(!context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(gui.app_for_workflow().config.context_warning_percent, 65);
+
+        // Same length, different time: read and applied.
+        std::fs::write(&path, r#"{"context_warning_percent":50}"#).unwrap();
+        settle(&path, 30);
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(gui.app_for_workflow().config.context_warning_percent, 50);
+
+        // A read that finds the settings already in force leaves snapshots alone.
+        let mut state = SessionContextState::default();
+        state
+            .accept_sample(
+                ContextUsageSample {
+                    used_tokens: 10,
+                    context_limit: Some(1000),
+                    provenance: ContextProvenance::Estimated,
+                    sampled_at: chrono::Utc::now(),
+                    checked_at: chrono::Utc::now(),
+                    reset: ContextResetMetadata::default(),
+                },
+                ContextThresholds::default(),
+            )
+            .unwrap();
+        state.snapshot.as_mut().unwrap().band = ContextBand::Critical;
+        gui.app_for_workflow()
+            .context_states
+            .insert("session".into(), state);
+        settle(&path, 20);
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(
+            gui.app_for_workflow().context_states["session"]
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .band,
+            ContextBand::Critical
+        );
+
+        // A broken file fails once, then is not re-read until it changes.
+        std::fs::write(&path, "broken").unwrap();
+        settle(&path, 10);
+        assert!(context_refresh_at(&mut gui, &path, &mut seen).is_err());
+        assert!(!context_refresh_at(&mut gui, &path, &mut seen).unwrap());
+        assert_eq!(gui.app_for_workflow().config.context_warning_percent, 50);
+    }
+
+    #[test]
+    fn context_settings_apply_bands_mark_changed_limits_stale_and_refresh_external_edits() {
+        use crate::context_tracking::{
+            ContextBand, ContextFreshness, ContextProvenance, ContextResetMetadata,
+            ContextThresholds, ContextUsageSample, SessionContextState,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let mut gui = context_gui();
+        for (id, provenance) in [
+            ("session", ContextProvenance::Estimated),
+            ("direct", ContextProvenance::Direct),
+        ] {
+            let mut state = SessionContextState::default();
+            state
+                .accept_sample(
+                    ContextUsageSample {
+                        used_tokens: 800,
+                        context_limit: Some(1000),
+                        provenance,
+                        sampled_at: chrono::Utc::now(),
+                        checked_at: chrono::Utc::now(),
+                        reset: ContextResetMetadata::default(),
+                    },
+                    ContextThresholds::default(),
+                )
+                .unwrap();
+            gui.app_for_workflow()
+                .context_states
+                .insert(id.into(), state);
+        }
+        let initial = context_read(&path).unwrap();
+        let saved = context_save_at(
+            &mut gui,
+            &path,
+            &initial.revision,
+            context_input("", "50", "75"),
+        )
+        .unwrap();
+        let snapshot = gui.app_for_workflow().context_states["session"]
+            .snapshot
+            .as_ref()
+            .unwrap();
+        assert_eq!(snapshot.band, ContextBand::Critical);
+        assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+        context_save_at(
+            &mut gui,
+            &path,
+            &saved.revision,
+            context_input("2000", "70", "90"),
+        )
+        .unwrap();
+        let snapshot = gui.app_for_workflow().context_states["session"]
+            .snapshot
+            .as_ref()
+            .unwrap();
+        assert_eq!(snapshot.band, ContextBand::Warning);
+        assert_eq!(snapshot.freshness, ContextFreshness::Stale);
+        assert_eq!(snapshot.context_limit.get(), 1000);
+        // Telemetry with its own limit is rebanded but stays fresh.
+        let direct = gui.app_for_workflow().context_states["direct"]
+            .snapshot
+            .as_ref()
+            .unwrap();
+        assert_eq!(direct.band, ContextBand::Warning);
+        assert_eq!(direct.freshness, ContextFreshness::Fresh);
+        std::fs::write(&path, r#"{"context_window_override":3000,"context_warning_percent":85,"context_critical_percent":95}"#).unwrap();
+        context_refresh_at(&mut gui, &path, &mut None).unwrap();
+        assert_eq!(
+            gui.app_for_workflow().config.context_window_override,
+            Some(3000)
+        );
+        assert_eq!(
+            gui.app_for_workflow().context_states["session"]
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .band,
+            ContextBand::Normal
+        );
+        std::fs::write(&path, "broken").unwrap();
+        assert!(context_refresh_at(&mut gui, &path, &mut None).is_err());
+        assert_eq!(
+            gui.app_for_workflow().config.context_window_override,
+            Some(3000)
+        );
+    }
 
     #[test]
     fn agent_settings_preserve_nested_config_and_share_freshness_with_dormancy() {

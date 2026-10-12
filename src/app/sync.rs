@@ -3,7 +3,7 @@ use super::*;
 use crate::context_collectors::{
     ContextCollectionResult, ContextCollectionTarget, ContextCollector, SessionContextCollector,
 };
-use crate::context_tracking::{ContextThresholds, SessionContextState};
+use crate::context_tracking::{ContextProvenance, ContextThresholds, SessionContextState};
 use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -520,7 +520,16 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                     }
                     session.status_text = update.status_text;
                     session.token_usage = update.token_usage;
-                    if current_context_policy {
+                    // Only an estimate was computed against the fallback
+                    // limit this collection started with. A direct sample
+                    // carries the harness's own, and the rest carry none.
+                    let outdated_estimate = !current_context_policy
+                        && matches!(
+                            &update.context_result,
+                            Some(ContextCollectionResult::Collected(sample))
+                                if sample.provenance != ContextProvenance::Direct
+                        );
+                    if !outdated_estimate {
                         apply_context_result(
                             &mut app.context_states,
                             &session.id,
@@ -1773,7 +1782,7 @@ mod context_policy_tests {
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
 
     #[test]
-    fn changed_window_policy_skips_old_context_results_but_drains_worker_and_retains_status() {
+    fn changed_window_policy_skips_only_outdated_estimates_and_still_drains_the_worker() {
         let root = tempfile::tempdir().unwrap();
         let mut project = Project::new("demo".into(), root.path().into(), true, AgentKind::Claude);
         let mut feature = Feature::new_for_project(
@@ -1802,21 +1811,30 @@ mod context_policy_tests {
         app.config.context_window_override = Some(100);
         app.config.context_warning_percent = 80;
         app.config.context_critical_percent = 90;
-        let sample = |limit| ContextUsageSample {
+        let sample = |limit, provenance| ContextUsageSample {
             used_tokens: 85,
             context_limit: Some(limit),
-            provenance: ContextProvenance::Direct,
+            provenance,
             sampled_at: Utc::now(),
             checked_at: Utc::now(),
             reset: ContextResetMetadata::default(),
         };
         let mut prior = SessionContextState::default();
         prior
-            .accept_sample(sample(1000), ContextThresholds::default())
+            .accept_sample(
+                sample(1000, ContextProvenance::Estimated),
+                ContextThresholds::default(),
+            )
             .unwrap();
         prior.snapshot.as_mut().unwrap().freshness = ContextFreshness::Stale;
         app.context_states.insert(id.clone(), prior.clone());
-        for (policy, limit) in [(Some(1000), 1000), (Some(100), 100)] {
+        // Collections started under an older override (1000), then one under
+        // the current one (100).
+        for (policy, limit, provenance) in [
+            (Some(1000), 1000, ContextProvenance::Estimated),
+            (Some(1000), 500, ContextProvenance::Direct),
+            (Some(100), 100, ContextProvenance::Estimated),
+        ] {
             let (tx, rx) = std::sync::mpsc::channel();
             app.session_status_bg = Some(rx);
             tx.send(SessionStatusBgResult {
@@ -1827,7 +1845,9 @@ mod context_policy_tests {
                     source_action: SourceAction::NoChange,
                     status_text: Some("new status".into()),
                     token_usage: None,
-                    context_result: Some(ContextCollectionResult::Collected(sample(limit))),
+                    context_result: Some(ContextCollectionResult::Collected(sample(
+                        limit, provenance,
+                    ))),
                     context_checked_at: Utc::now(),
                 }],
                 sources_discovered: false,
@@ -1843,13 +1863,24 @@ mod context_policy_tests {
                     .as_deref(),
                 Some("new status")
             );
-            if policy == Some(1000) {
-                assert_eq!(app.context_states[&id], prior);
-            } else {
-                let snapshot = app.context_states[&id].snapshot.as_ref().unwrap();
-                assert_eq!(snapshot.context_limit.get(), 100);
-                assert_eq!(snapshot.band, ContextBand::Warning);
-                assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+            let snapshot = app.context_states[&id].snapshot.as_ref().unwrap();
+            match (policy, provenance) {
+                // An estimate against the old fallback limit is dropped.
+                (Some(1000), ContextProvenance::Estimated) => {
+                    assert_eq!(app.context_states[&id], prior);
+                }
+                // Telemetry with its own limit never depended on the override.
+                (Some(1000), ContextProvenance::Direct) => {
+                    assert_eq!(snapshot.context_limit.get(), 500);
+                    assert_eq!(snapshot.provenance, ContextProvenance::Direct);
+                    assert_eq!(snapshot.band, ContextBand::Normal);
+                    assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+                }
+                _ => {
+                    assert_eq!(snapshot.context_limit.get(), 100);
+                    assert_eq!(snapshot.band, ContextBand::Warning);
+                    assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+                }
             }
         }
     }

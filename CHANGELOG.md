@@ -16,8 +16,10 @@ are tagged.
   warning/critical percentages from workspace navigation. A blank limit restores
   harness defaults. Saves protect unsaved drafts, refuse conflicting config
   edits and update desktop indicators; external settings edits refresh
-  automatically. Restart an already open TUI to use new values there. No
-  migration is required.
+  automatically. Invalid hand-edited values open in the dialog for correction.
+  Restart an already open TUI after saving: until then it keeps its old values
+  and writes them back the next time it saves any setting. No migration is
+  required.
 
 - **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
   OpenCode and Pi agents from workspace navigation, using the TUI's settings.

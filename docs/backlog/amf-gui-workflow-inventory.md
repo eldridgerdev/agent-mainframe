@@ -534,8 +534,12 @@ Completed increments and remaining work, in priority order:
   Shared TUI/GUI parsing preserves optional positive u64 token limits and ordered
   1–100 thresholds. Scoped saves/clears preserve other fields, refuse stale files
   and apply runtime changes only after commit. Existing indicators reband;
-  changed limits mark samples stale and old in-flight collections cannot publish
-  fresh context. External config edits refresh before GUI context polling. The
+  changed limits mark estimated samples stale and old in-flight estimates cannot
+  publish fresh context, while samples with a telemetry limit stay fresh.
+  External config edits refresh before GUI context polling, read only when the
+  file's modification time or size changes. Invalid stored values load for repair
+  and are refused at save and refresh. A running TUI still overwrites the file
+  from its own copy on its next config save (open: re-read before TUI saves). The
   dialog protects drafts and pending saves. Six asserted native WSLg frames
   prove validation, draft protection, stale-save refusal, exact maximum-u64
   persistence and restoration of harness defaults without changing unrelated

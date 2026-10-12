@@ -92,7 +92,7 @@ impl App {
         &mut self,
         settings: crate::context_tracking::ContextSettings,
     ) {
-        use crate::context_tracking::{ContextFreshness, ContextThresholds};
+        use crate::context_tracking::{ContextFreshness, ContextProvenance, ContextThresholds};
         let limit_changed = self.config.context_window_override != settings.window_override;
         self.config.context_window_override = settings.window_override;
         self.config.context_warning_percent = settings.warning_percent;
@@ -104,7 +104,9 @@ impl App {
         for state in self.context_states.values_mut() {
             if let Some(snapshot) = &mut state.snapshot {
                 snapshot.band = thresholds.band_for(snapshot.percentage);
-                if limit_changed {
+                // A direct sample carries the harness's own limit, which the
+                // override never replaces.
+                if limit_changed && snapshot.provenance != ContextProvenance::Direct {
                     snapshot.freshness = ContextFreshness::Stale;
                 }
             }

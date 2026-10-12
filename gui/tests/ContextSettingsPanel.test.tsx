@@ -61,6 +61,16 @@ it("reports load failures and can retry", async () => {
   mount(); expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Invalid config");
   click("Reload settings"); await screen.findByDisplayValue("500000");
 });
+it("opens on invalid stored values so they can be repaired", async () => {
+  const stored = { revision: "rev1", settings: { window_limit: "0", warning_percent: "90", critical_percent: "80" } };
+  vi.mocked(invoke).mockResolvedValue(stored);
+  const { onSaved } = mount(); await screen.findByDisplayValue("90");
+  expect(screen.getByRole("alert").textContent).toContain("critical greater than warning");
+  expect(screen.getByRole("button", { name: "Save settings" })).toHaveProperty("disabled", true);
+  change("Context window (tokens)", ""); change("Critical percent", "95"); click("Save settings");
+  await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
+  expect(invoke).toHaveBeenLastCalledWith("context_settings_save", { revision: "rev1", settings: { window_limit: "", warning_percent: "90", critical_percent: "95" } });
+});
 it.each(["Cancel", "Reload settings"])("blocks duplicate writes and discard actions during a pending save after %s", async (action) => {
   let fail!: (reason: unknown) => void;
   vi.mocked(invoke).mockResolvedValueOnce(initial).mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));

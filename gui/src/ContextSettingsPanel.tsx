@@ -83,8 +83,9 @@ export default function ContextSettingsPanel({ onClose, onSaved }: {
         <input type="number" min="2" max="100" step="1" value={critical} disabled={busy}
           onChange={(event) => setCritical(event.target.value)} />
       </Field>
-      <p className="muted">Threshold changes update the desktop indicators immediately. A changed window limit marks old samples stale
-        until the next context update. External settings edits refresh automatically. Restart an already open TUI to use new values there.</p>
+      <p className="muted">Threshold changes update the desktop indicators immediately. A changed window limit marks estimated samples stale
+        until the next context update. External settings edits refresh automatically. Restart an already open TUI after saving: until then
+        it keeps its old values and writes them back when it next saves a setting.</p>
       {!valid && <p role="alert">Use a positive whole token limit or leave it blank. Percentages must be 1–100, with critical greater than warning.</p>}
     </div>}
     {discard && <div role="alertdialog" aria-label="Discard unsaved settings" className="callout callout-warning">

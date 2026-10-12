@@ -170,7 +170,9 @@ export function formatTotal(total: number): string {
             raise RuntimeError(
                 "GUI database never initialized:\n" + (out / "gui.log").read_text()
             )
-        with sqlite3.connect(dbpath) as db:
+        with sqlite3.connect(dbpath, timeout=30) as db:
+            # Seed atomically after startup writers release the scratch DB.
+            db.execute("BEGIN IMMEDIATE")
             stamp = "2026-10-02T18:00:00Z"
             db.execute(
                 "INSERT INTO projects(id,name,repo,is_git,created_at) VALUES(?,?,?,?,?)",

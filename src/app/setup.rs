@@ -47,11 +47,43 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         "release-notes",
         include_str!("../../skills/amf-release-notes/SKILL.md"),
     ),
+    (
+        "interact",
+        include_str!("../../skills/amf-interact/SKILL.md"),
+    ),
+];
+// Embed the actual helpers rather than source-checkout paths: managed projects
+// may have only an installed AMF binary and its injected assistance files.
+const AMF_INTERACTION_ASSETS: &[(&str, &str)] = &[
+    (
+        "scripts/ai_driver.py",
+        include_str!("../../scripts/dev/ai_driver.py"),
+    ),
+    (
+        "scripts/tui-driver/amf-tui-driver.py",
+        include_str!("../../scripts/dev/tui-driver/amf-tui-driver.py"),
+    ),
+    (
+        "scripts/gui-driver/amf-gui-driver.py",
+        include_str!("../../scripts/dev/gui-driver/amf-gui-driver.py"),
+    ),
+    (
+        "scripts/gui-driver/dom.js",
+        include_str!("../../scripts/dev/gui-driver/dom.js"),
+    ),
+    (
+        "references/tui.md",
+        include_str!("../../skills/amf-interact/references/tui.md"),
+    ),
+    (
+        "references/gui.md",
+        include_str!("../../skills/amf-interact/references/gui.md"),
+    ),
 ];
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":jqless-hooks-v9");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v10");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -646,9 +678,8 @@ fn mark_hooks_current() {
     let _ = std::fs::write(hook_refresh_stamp_path(), HOOK_REFRESH_STAMP);
 }
 
-/// Refresh opencode plugin files in all known opencode feature
-/// workdirs, so existing sessions/worktrees pick up plugin fixes
-/// without requiring feature recreation.
+/// Refresh opencode plugins and injected skills in all known feature workdirs,
+/// so existing sessions/worktrees pick up fixes without feature recreation.
 ///
 /// Writes the version stamp after running so that subsequent startups
 /// on the same binary version skip both this pass and the Claude hooks
@@ -660,6 +691,7 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
+            refresh_feature_skills(feature);
             if !matches!(feature.agent, AgentKind::Opencode) {
                 continue;
             }
@@ -960,35 +992,102 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     }
 }
 
-fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> Option<PathBuf> {
+fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> PathBuf {
     match agent {
-        AgentKind::Claude => Some(workdir.join(".claude").join("skills")),
-        AgentKind::Opencode => Some(workdir.join(".opencode").join("skills")),
-        AgentKind::Codex => Some(workdir.join(".agents").join("skills")),
-        AgentKind::Pi => None,
+        AgentKind::Claude => workdir.join(".claude").join("skills"),
+        AgentKind::Opencode => workdir.join(".opencode").join("skills"),
+        AgentKind::Codex => workdir.join(".agents").join("skills"),
+        AgentKind::Pi => workdir.join(".pi").join("skills"),
+    }
+}
+
+pub(super) fn refresh_feature_skills(feature: &Feature) {
+    // A removed worktree must not be recreated just to refresh assistance.
+    if !feature.workdir.is_dir() {
+        return;
+    }
+    let mut agents = vec![feature.agent.clone()];
+    for session in &feature.sessions {
+        let agent = match session.kind {
+            SessionKind::Claude => AgentKind::Claude,
+            SessionKind::Codex => AgentKind::Codex,
+            SessionKind::Opencode => AgentKind::Opencode,
+            SessionKind::Pi => AgentKind::Pi,
+            _ => continue,
+        };
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
+    }
+    // Pi used to fall through to Claude's setup, which handed it hooks and
+    // skills it never read. Take them back on this upgrade pass, unless a
+    // Claude session in the same checkout is what they are there for.
+    if agents.contains(&AgentKind::Pi) && !agents.contains(&AgentKind::Claude) {
+        let claude_dir = feature.workdir.join(".claude");
+        cleanup_claude_settings_file(
+            &claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON),
+            Some(&claude_dir.join(CLAUDE_STATE_JSON)),
+        );
+        cleanup_amf_skills(&feature.workdir, &AgentKind::Claude);
+    }
+    for agent in agents {
+        ensure_amf_skills(&feature.workdir, &agent);
     }
 }
 
 fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
-    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
-        return;
-    };
+    let skills_dir = agent_skills_dir(workdir, agent);
     for (name, content) in AMF_SKILLS {
-        let skill_dir = skills_dir.join(format!("amf-{name}"));
-        let skill_path = skill_dir.join("SKILL.md");
-        if std::fs::read_to_string(&skill_path).ok().as_deref() == Some(content) {
+        // Pi has no legacy AMF configuration skills. Add only the portable
+        // interaction skill, without changing those existing skill contracts.
+        if matches!(agent, AgentKind::Pi) && *name != "interact" {
             continue;
         }
+        let skill_dir = skills_dir.join(format!("amf-{name}"));
+        let skill_path = skill_dir.join("SKILL.md");
         let _ = std::fs::create_dir_all(&skill_dir);
-        let _ = std::fs::write(&skill_path, content);
+        write_if_changed(&skill_path, content);
+        if *name == "interact" {
+            for (relative, asset) in AMF_INTERACTION_ASSETS {
+                let path = skill_dir.join(relative);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                write_if_changed(&path, asset);
+            }
+        }
     }
+    ensure_amf_skills_ignored(workdir, agent, &skills_dir);
+}
+
+/// Keep every injected `amf-*` skill out of `git status`. Claude's are covered
+/// by the `.claude/.gitignore` AMF already maintains. The other harness
+/// directories get one pattern in `.git/info/exclude` rather than a
+/// `.gitignore` of their own, which would itself be an untracked file for
+/// `git add -A` to commit and would outlive the skills it ignores.
+fn ensure_amf_skills_ignored(workdir: &Path, agent: &AgentKind, skills_dir: &Path) {
+    if matches!(agent, AgentKind::Claude) {
+        return;
+    }
+    let Ok(relative) = skills_dir.strip_prefix(workdir) else {
+        return;
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    // `**/` rather than an anchored pattern: a workdir may be a subdirectory of
+    // its repository, and one entry then serves every worktree.
+    crate::worktree::WorktreeManager::exclude_locally(
+        workdir,
+        &format!("{relative}/amf-interact/"),
+        &format!("**/{relative}/amf-*/"),
+    );
 }
 
 fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
-    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
-        return;
-    };
+    let skills_dir = agent_skills_dir(workdir, agent);
     for (name, _) in AMF_SKILLS {
+        if matches!(agent, AgentKind::Pi) && *name != "interact" {
+            continue;
+        }
         let _ = std::fs::remove_dir_all(skills_dir.join(format!("amf-{name}")));
     }
 }
@@ -1065,7 +1164,7 @@ pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
         AgentKind::Claude => cleanup_claude_notification_hooks(workdir),
         AgentKind::Opencode => cleanup_opencode_plugins(workdir),
         AgentKind::Codex => cleanup_codex_notify_hook(workdir),
-        AgentKind::Pi => {}
+        AgentKind::Pi => cleanup_amf_skills(workdir, agent),
     }
 }
 
@@ -1104,6 +1203,14 @@ pub fn ensure_notification_hooks(
     ensure_notify_scripts();
     remove_old_diff_review_plugin(repo);
 
+    if matches!(agent, AgentKind::Pi) {
+        // Pi reads no Claude settings, so it gets no hooks. AMF still writes
+        // its own review feedback and notification files under `.claude/`
+        // whatever the harness, and a Pi feature has always had them ignored.
+        ensure_claude_runtime_ignores(workdir);
+        ensure_amf_skills(workdir, agent);
+        return;
+    }
     if matches!(agent, AgentKind::Opencode) {
         ensure_opencode_plugins(workdir, mode);
         ensure_amf_skills(workdir, agent);
@@ -1233,7 +1340,14 @@ pub fn ensure_notification_hooks(
     write_json_object(&settings_path, &settings);
     cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
-    // Ensure notifications/ is gitignored within .claude/
+    ensure_claude_runtime_ignores(workdir);
+    ensure_amf_skills(workdir, agent);
+}
+
+/// Gitignore, within `.claude/`, the files AMF itself writes there.
+fn ensure_claude_runtime_ignores(workdir: &Path) {
+    let claude_dir = workdir.join(".claude");
+    let _ = std::fs::create_dir_all(&claude_dir);
     let claude_gitignore = claude_dir.join(".gitignore");
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
@@ -1242,8 +1356,6 @@ pub fn ensure_notification_hooks(
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
     ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
-
-    ensure_amf_skills(workdir, agent);
 }
 
 const PLAN_BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";

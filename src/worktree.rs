@@ -383,6 +383,62 @@ impl WorktreeManager {
             Ok(Some(branch))
         }
     }
+
+    /// Best-effort: make `workdir`'s repository ignore `probe` by adding
+    /// `pattern` to `.git/info/exclude` (per-repo, untracked, shared by every
+    /// worktree) rather than to a `.gitignore`, which is either tracked or one
+    /// more untracked file for `git add -A` to pick up. Nothing happens when
+    /// `probe` is already ignored or `workdir` is not a Git work tree.
+    pub fn exclude_locally(workdir: &Path, probe: &str, pattern: &str) {
+        let already_ignored = Command::new("git")
+            .arg("-C")
+            .arg(workdir)
+            .args(["check-ignore", "-q", probe])
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if already_ignored {
+            return;
+        }
+
+        let Ok(output) = Command::new("git")
+            .arg("-C")
+            .arg(workdir)
+            .args(["rev-parse", "--git-path", "info/exclude"])
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return;
+        };
+        if !output.status.success() {
+            return;
+        }
+        let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if rel.is_empty() {
+            return;
+        }
+        // `--git-path` prints relative to `-C`'s directory; a rare absolute result
+        // replaces the join entirely, which is also correct.
+        let exclude_path = workdir.join(rel);
+        let mut contents = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+        let wanted = pattern.trim_end_matches('/');
+        if contents
+            .lines()
+            .any(|line| line.trim().trim_end_matches('/') == wanted)
+        {
+            return;
+        }
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(pattern);
+        contents.push('\n');
+        if let Some(parent) = exclude_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&exclude_path, contents);
+    }
 }
 
 #[allow(dead_code)] // exercised only by unit tests

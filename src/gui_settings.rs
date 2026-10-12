@@ -23,7 +23,9 @@ pub struct DormancySettingsView {
     pub revision: String,
 }
 
-fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
+/// Read the original JSON object and raw-byte revision, without choosing a schema.
+/// Missing files are empty objects with the distinct `missing` revision.
+pub(crate) fn read_json_document(path: &Path) -> GuiResult<(serde_json::Value, String)> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -34,18 +36,23 @@ fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String
         None => serde_json::json!({}),
     };
     if !value.is_object() {
-        return Err(anyhow::anyhow!("Global config must contain a JSON object").into());
+        return Err(anyhow::anyhow!("Config must contain a JSON object").into());
     }
+    let revision = bytes.map_or_else(
+        || "missing".to_string(),
+        |bytes| format!("{:x}", Sha256::digest(bytes)),
+    );
+    Ok((value, revision))
+}
+
+fn read_document(path: &Path) -> GuiResult<(serde_json::Value, AppConfig, String)> {
+    let (value, revision) = read_json_document(path)?;
     // Validate the whole known schema instead of overwriting a broken config.
     let config: AppConfig = serde_json::from_value(value.clone()).map_err(anyhow::Error::from)?;
     validate(&DormancySettings {
         idle_minutes: config.dormant_idle_minutes,
         unattended_hours: config.dormant_last_accessed_hours,
     })?;
-    let revision = bytes.map_or_else(
-        || "missing".to_string(),
-        |bytes| format!("{:x}", Sha256::digest(bytes)),
-    );
     Ok((value, config, revision))
 }
 
@@ -132,19 +139,7 @@ fn update_document(
     revision: &str,
     update: impl FnOnce(&mut serde_json::Value),
 ) -> GuiResult<String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
-    std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
-    // Serialize desktop writers across processes. Other config writers do not
-    // participate; the revision also catches their edits made before this read.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("json.lock"))
-        .map_err(anyhow::Error::from)?;
-    lock.lock().map_err(anyhow::Error::from)?;
+    let _lock = lock_document(path)?;
     let (mut value, _, current_revision) = read_document(path)?;
     if current_revision != revision {
         return Err(GuiError::conflict(
@@ -152,17 +147,53 @@ fn update_document(
         ));
     }
     update(&mut value);
+    commit_document(path, &value)
+}
+
+/// Hold this guard through the freshness check and atomic commit. Other config
+/// writers do not participate; callers must also compare original revisions.
+pub(crate) fn lock_document(path: &Path) -> GuiResult<std::fs::File> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
+    std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))
+        .map_err(anyhow::Error::from)?;
+    lock.lock().map_err(anyhow::Error::from)?;
+    Ok(lock)
+}
+
+/// Atomically replace a scoped JSON document, preserving existing permissions.
+/// The caller owns the writer lock, schema validation and revision comparison.
+pub(crate) fn commit_document(path: &Path, value: &serde_json::Value) -> GuiResult<String> {
+    commit_document_preserving(path, value, path)
+}
+
+/// Preserve permissions from an effective legacy document when creating the
+/// canonical file. The source is read for metadata only and is never modified.
+pub(crate) fn commit_document_preserving(
+    path: &Path,
+    value: &serde_json::Value,
+    permissions_from: &Path,
+) -> GuiResult<String> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(anyhow::Error::from)?;
-    if let Ok(metadata) = std::fs::metadata(path) {
+    if let Ok(metadata) = std::fs::metadata(permissions_from) {
         temp.as_file()
             .set_permissions(metadata.permissions())
             .map_err(anyhow::Error::from)?;
     }
-    serde_json::to_writer_pretty(&mut temp, &value).map_err(anyhow::Error::from)?;
+    serde_json::to_writer_pretty(&mut temp, value).map_err(anyhow::Error::from)?;
     temp.flush().map_err(anyhow::Error::from)?;
     temp.persist(path)
         .map_err(|error| anyhow::Error::new(error.error))?;
-    let bytes = serde_json::to_vec_pretty(&value).map_err(anyhow::Error::from)?;
+    let bytes = serde_json::to_vec_pretty(value).map_err(anyhow::Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
@@ -192,19 +223,53 @@ pub fn agents_load() -> GuiResult<AgentAvailabilityView> {
     agents_read(&crate::project::amf_config_dir().join("config.json"))
 }
 
+/// Only this process's copy is updated. An already open TUI keeps the list it
+/// started with and writes its whole config back on its next settings save,
+/// which is why the panel tells the user to restart it.
 pub fn agents_save(
     gui: &mut GuiHandle,
     revision: &str,
     settings: AgentAvailability,
 ) -> GuiResult<AgentAvailabilityView> {
-    let view = agents_save_at(
+    agents_save_and_apply(
+        gui,
         &crate::project::amf_config_dir().join("config.json"),
         revision,
         settings,
-    )?;
+    )
+}
+
+fn agents_save_and_apply(
+    gui: &mut GuiHandle,
+    path: &Path,
+    revision: &str,
+    settings: AgentAvailability,
+) -> GuiResult<AgentAvailabilityView> {
+    let view = agents_save_at(path, revision, settings)?;
     gui.app_for_workflow().config.extension.allowed_agents =
         Some(view.settings.allowed_agents.clone());
     Ok(view)
+}
+
+/// The harnesses a creation form may offer: what creating a feature in this
+/// project will accept (global choices, the project's own override, installed
+/// harnesses), or the global choices alone when no project exists yet.
+pub fn allowed_harnesses(
+    gui: &mut GuiHandle,
+    project_id: Option<&str>,
+) -> GuiResult<Vec<AgentKind>> {
+    gui.refresh_store()?;
+    let app = gui.app_for_workflow();
+    let Some(project_id) = project_id else {
+        return Ok(app.globally_allowed_agents());
+    };
+    let project = app
+        .store
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| GuiError::not_found(format!("Project '{project_id}' was not found")))?;
+    Ok(app.allowed_agents_for_repo(&project.repo))
 }
 
 fn agents_save_at(
@@ -212,15 +277,11 @@ fn agents_save_at(
     revision: &str,
     settings: AgentAvailability,
 ) -> GuiResult<AgentAvailabilityView> {
-    if settings.allowed_agents.is_empty()
-        || AgentKind::ALL
-            .iter()
-            .filter(|agent| settings.allowed_agents.contains(agent))
-            .count()
-            != settings.allowed_agents.len()
-    {
-        return Err(anyhow::anyhow!("Select at least one agent, without duplicate choices").into());
-    }
+    validate_agents(&settings.allowed_agents)?;
+    // The order a later load reports, whatever order the request used.
+    let settings = AgentAvailability {
+        allowed_agents: AgentKind::allowed_list(Some(&settings.allowed_agents)),
+    };
     let revision = update_document(path, revision, |value| {
         if value.get("extension").is_none() {
             value["extension"] = serde_json::json!({});
@@ -228,6 +289,19 @@ fn agents_save_at(
         value["extension"]["allowed_agents"] = serde_json::json!(settings.allowed_agents);
     })?;
     Ok(AgentAvailabilityView { settings, revision })
+}
+
+pub(crate) fn validate_agents(agents: &[AgentKind]) -> GuiResult<()> {
+    if agents.is_empty()
+        || AgentKind::ALL
+            .iter()
+            .filter(|agent| agents.contains(agent))
+            .count()
+            != agents.len()
+    {
+        return Err(anyhow::anyhow!("Select at least one agent, without duplicate choices").into());
+    }
+    Ok(())
 }
 
 /// Strings retain the full u64 window limit across JavaScript IPC.
@@ -879,6 +953,9 @@ mod tests {
         tmux.expect_session_exists().return_const(true);
         let app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
         let gui = Mutex::new(GuiHandle::from_app(app));
+        // Test threads are reused: start from a known global config rather
+        // than whatever an earlier test left in the seam.
+        set_test_global_extension_config(Some(crate::extension::ExtensionConfig::default()));
         let before = crate::gui_sessions::new_session_options(&gui, &target).unwrap();
         assert!(
             before
@@ -886,8 +963,13 @@ mod tests {
                 .iter()
                 .any(|option| option.kind == SessionKind::Claude)
         );
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), None).unwrap(),
+            AgentKind::ALL
+        );
         let initial = agents_read(&path).unwrap();
-        agents_save_at(
+        agents_save_and_apply(
+            &mut gui.lock().unwrap(),
             &path,
             &initial.revision,
             AgentAvailability {
@@ -897,6 +979,14 @@ mod tests {
         .unwrap();
         // The test seam supplies the committed global file without changing process-wide XDG paths.
         set_test_global_extension_config(Some(read_document(&path).unwrap().1.extension));
+        // Creation forms are offered exactly what creation accepts.
+        for project_id in [None, Some(target.project_id.as_str())] {
+            assert_eq!(
+                allowed_harnesses(&mut gui.lock().unwrap(), project_id).unwrap(),
+                vec![AgentKind::Codex, AgentKind::Pi]
+            );
+        }
+        assert!(allowed_harnesses(&mut gui.lock().unwrap(), Some("missing")).is_err());
         let after = crate::gui_sessions::new_session_options(&gui, &target).unwrap();
         let agents = after
             .builtin
@@ -936,6 +1026,66 @@ mod tests {
                 .builtin
                 .iter()
                 .any(|option| option.kind == SessionKind::Codex)
+        );
+        // The project's override reaches its own forms, not a new project's.
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), Some(&target.project_id)).unwrap(),
+            vec![AgentKind::Claude]
+        );
+        assert_eq!(
+            allowed_harnesses(&mut gui.lock().unwrap(), None).unwrap(),
+            vec![AgentKind::Codex, AgentKind::Pi]
+        );
+    }
+
+    #[test]
+    fn agent_save_applies_only_after_commit_and_reports_the_reloaded_order() {
+        use crate::app::App;
+        use crate::project::ProjectStore;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        let app = App::new_for_test(
+            ProjectStore::empty(),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut gui = GuiHandle::from_app(app);
+        gui.app_for_workflow().config.max_concurrent_agents = 11;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let initial = agents_read(&path).unwrap();
+        // The desktop form's order, which is not `AgentKind::ALL`'s.
+        let requested = AgentAvailability {
+            allowed_agents: vec![AgentKind::Codex, AgentKind::Opencode, AgentKind::Pi],
+        };
+        let saved =
+            agents_save_and_apply(&mut gui, &path, &initial.revision, requested.clone()).unwrap();
+        let reloaded = vec![AgentKind::Opencode, AgentKind::Codex, AgentKind::Pi];
+        assert_eq!(saved.settings.allowed_agents, reloaded);
+        assert_eq!(agents_read(&path).unwrap().settings, saved.settings);
+        assert_eq!(agents_read(&path).unwrap().revision, saved.revision);
+        let config = &gui.app_for_workflow().config;
+        assert_eq!(config.extension.allowed_agents, Some(reloaded.clone()));
+        assert_eq!(config.max_concurrent_agents, 11);
+        // A stale revision, an invalid choice and an unreadable destination
+        // all leave the live choices untouched.
+        let claude = AgentAvailability {
+            allowed_agents: vec![AgentKind::Claude],
+        };
+        assert!(agents_save_and_apply(&mut gui, &path, &initial.revision, claude.clone()).is_err());
+        let empty = AgentAvailability {
+            allowed_agents: vec![],
+        };
+        assert!(agents_save_and_apply(&mut gui, &path, &saved.revision, empty).is_err());
+        let unreadable = dir.path().join("a-directory.json");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(agents_save_and_apply(&mut gui, &unreadable, "missing", claude).is_err());
+        assert_eq!(
+            gui.app_for_workflow().config.extension.allowed_agents,
+            Some(reloaded.clone())
+        );
+        assert_eq!(
+            agents_read(&path).unwrap().settings.allowed_agents,
+            reloaded
         );
     }
 

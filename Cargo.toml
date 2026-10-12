@@ -79,6 +79,8 @@ tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tree-sitter-highlight = "0.26"
 pulldown-cmark = "0.13"
+# Terminal Mermaid MVP: native text rendering without Node or a browser runtime.
+selkie-rs = { version = "=0.3.0", default-features = false }
 tempfile = "3"
 libc = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }

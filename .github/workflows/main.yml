@@ -71,6 +71,11 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --locked --verbose
 
+      # Real tmux on test-owned sockets, against a stand-in amf: no build needed.
+      - name: Screenshot capture isolation tests
+        if: ${{ !cancelled() }}
+        run: python3 -m unittest discover -s scripts/dev/screenshot -p 'test_capture_isolation.py' -v
+
   lint:
     name: Lint
     if: github.event_name != 'schedule'

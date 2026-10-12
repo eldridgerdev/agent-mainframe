@@ -76,7 +76,9 @@ Dashboard `D` opens the log; the file is `~/.local/state/amf/debug.log`.
 [main.yml](../../.github/workflows/main.yml) runs on PRs targeting main/master and
 pushes to main/master/testing. Linux retains the required-check name `Test`;
 macOS adds `Test (macOS)`. Both execute the full locked parallel suite with
-explicit prerequisite installation/checks. `Lint` runs once on Linux. Existing
+explicit prerequisite installation/checks, then the screenshot driver's
+real-tmux isolation suite (`scripts/dev/screenshot/test_capture_isolation.py`,
+which needs `python3` but no AMF build). `Lint` runs once on Linux. Existing
 check names and triggers remain; the workflow does not change branch protection.
 Maintainers can require the new macOS/audit checks after verifying their runs.
 

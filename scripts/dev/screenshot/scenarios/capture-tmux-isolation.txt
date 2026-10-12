@@ -1,0 +1,11 @@
+# The driver itself owns a private tmux server. The regression suite gives
+# itself a controlled default tmux socket; it never uses the operator's server.
+note:The real AMF dashboard runs against a fresh database and a run-owned tmux socket. The harness has not opened any project or launched an agent.
+expect:0 projects, 0 features
+shot:isolated-dashboard
+run:python3 -m unittest discover -s "$SCRIPT_DIR" -p 'test_capture_isolation.py' -v
+key:?
+wait:300
+note:The real AMF help overlay still responds after the real-tmux regressions verify unrelated-session survival on success and failure, private-session cleanup, inherited Bash function handling, keep behavior, explicit -S and -L servers, and plain tmux from sh and Python helpers. The tests use only their own servers and offline stand-ins.
+expect:Keybindings
+shot:isolated-help-after-regressions

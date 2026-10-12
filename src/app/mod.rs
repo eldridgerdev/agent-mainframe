@@ -3551,11 +3551,20 @@ impl App {
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
-        let ext_allowed = self.extension_for_repo(repo).allowed_agents();
+        self.installed_agents(self.extension_for_repo(repo).allowed_agents())
+    }
+
+    /// The global choices alone, for a project that does not exist yet and so
+    /// has no `amf.json` to override them.
+    pub(crate) fn globally_allowed_agents(&self) -> Vec<AgentKind> {
+        self.installed_agents(load_global_extension_config().allowed_agents())
+    }
+
+    fn installed_agents(&self, allowed: Vec<AgentKind>) -> Vec<AgentKind> {
         if self.store.available_harnesses.is_empty() {
-            ext_allowed
+            allowed
         } else {
-            ext_allowed
+            allowed
                 .into_iter()
                 .filter(|a| self.store.available_harnesses.contains(a))
                 .collect()

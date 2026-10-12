@@ -1071,6 +1071,41 @@ it("retains the bookmark picker and current draft when workspace refresh fails, 
   client.clear();
 });
 
+it("opens global agent availability from navigation and preserves the active composer draft through save", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let allowed = ["claude", "codex", "opencode", "pi"];
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "agent_availability_load") return Promise.resolve({ revision: "settings-rev", settings: { allowed_agents: allowed } });
+    if (command === "agent_availability_save") {
+      allowed = (args as { settings: { allowed_agents: string[] } }).settings.allowed_agents;
+      return Promise.resolve({ revision: "saved-rev", settings: { allowed_agents: allowed } });
+    }
+    if (command === "allowed_harnesses") return Promise.resolve(allowed.map((slug) => ({ slug, display_name: slug })));
+    return original(command, args, options);
+  });
+  const preferred = () => Array.from((screen.getByLabelText("Preferred harness") as HTMLSelectElement).options).map((option) => option.text);
+  fireEvent.click(screen.getByRole("button", { name: "New project" }));
+  await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode", "pi"]));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.change(draftInput(), { target: { value: "Keep my unsent draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  await screen.findByRole("dialog", { name: "Agent availability" });
+  fireEvent.click(await screen.findByLabelText("Pi"));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Agent availability" })).toBeNull());
+  expect(draftInput().value).toBe("Keep my unsent draft");
+  expect(promptCalls()).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  expect(await screen.findByLabelText("Pi")).toHaveProperty("checked", false);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  // The saved choice reaches the creation forms, not only the session picker.
+  fireEvent.click(screen.getByRole("button", { name: "New project" }));
+  await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode"]));
+  expect(invoke).toHaveBeenCalledWith("allowed_harnesses", { projectId: null });
+  client.clear();
+});
+
 function dormantDeleteRow(isWorktree = false) {
   return {
     project_name: "demo", workdir: "/private/quiet", is_worktree: isWorktree, editor_alive: false, editors: [],

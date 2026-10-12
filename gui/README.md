@@ -667,6 +667,20 @@ processes on a private tmux server. Six more frames from
 refusal, refreshed confirmation and ownership results while all feature
 sessions keep running and automatic cleanup-on-stop is disabled.
 
+**Agent availability** in workspace navigation edits the global allowed-agent
+choices shared with the TUI config wizard. Select at least one of Claude Code,
+Codex, OpenCode or Pi, then **Save settings**. Project `amf.json` allowed-agent
+settings take precedence, and installed harness availability still applies.
+Existing sessions keep running; this does not install or authenticate a harness.
+Cancel and reload ask before discarding unsaved choices. Saves preserve unrelated
+JSON settings and refuse external config edits until reloaded, sharing the same
+revision and writer lock as dormancy settings. New actions in the desktop app
+read the saved choices directly, and the New project, New feature and
+TODO-to-feature forms offer only the harnesses the chosen project allows.
+Restart an already open TUI after saving: it keeps the choices it started with,
+and saving settings from it (the config wizard, or a theme change) writes them
+back over the desktop change. No database migration is required.
+
 Dormant features → **Settings** edits the global idle-minute and unattended-hour
 thresholds. Both must be exceeded for a feature to appear; either value at zero
 turns detection off. Saving refreshes the list and clears its selection without

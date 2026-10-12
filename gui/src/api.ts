@@ -158,6 +158,12 @@ export function supportedHarnesses(): Promise<HarnessInfo[]> {
   return invoke("supported_harnesses");
 }
 
+/** The harnesses creation accepts for a project: the global choices, its own
+ * override and what is installed. `null` is a project that does not exist yet. */
+export function allowedHarnesses(projectId: string | null): Promise<HarnessInfo[]> {
+  return invoke("allowed_harnesses", { projectId });
+}
+
 export function supportedModes(): Promise<ModeInfo[]> {
   return invoke("supported_modes");
 }

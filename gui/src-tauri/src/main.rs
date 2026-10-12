@@ -54,7 +54,9 @@ use agent_mainframe::gui_sessions::{
     self, AddCustomSessionRequest, AddCustomSessionResponse, CloseEditorsResponse,
     NewSessionOptions, OpenVscodeResponse,
 };
-use agent_mainframe::gui_settings::{self, DormancySettings, DormancySettingsView};
+use agent_mainframe::gui_settings::{
+    self, AgentAvailability, AgentAvailabilityView, DormancySettings, DormancySettingsView,
+};
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
@@ -373,17 +375,35 @@ struct HarnessInfo {
     display_name: String,
 }
 
+impl From<&AgentKind> for HarnessInfo {
+    fn from(kind: &AgentKind) -> Self {
+        Self {
+            slug: kind.slug().to_string(),
+            display_name: kind.display_name().to_string(),
+        }
+    }
+}
+
 /// Returns the harnesses AMF supports, straight from the same [`AgentKind`]
 /// the TUI and the automation JSON API already use.
 #[tauri::command]
 fn supported_harnesses() -> Vec<HarnessInfo> {
-    AgentKind::ALL
-        .iter()
-        .map(|kind| HarnessInfo {
-            slug: kind.slug().to_string(),
-            display_name: kind.display_name().to_string(),
-        })
-        .collect()
+    AgentKind::ALL.iter().map(HarnessInfo::from).collect()
+}
+
+/// The harnesses a creation form may offer for `project_id`, or for a project
+/// that does not exist yet: the ones creation will accept, not every
+/// supported one.
+#[tauri::command]
+fn allowed_harnesses(
+    state: State<AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<HarnessInfo>, GuiError> {
+    let allowed = gui_settings::allowed_harnesses(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        project_id.as_deref(),
+    )?;
+    Ok(allowed.iter().map(HarnessInfo::from).collect())
 }
 
 #[derive(Serialize)]
@@ -1090,6 +1110,24 @@ async fn debug_log_load(state: State<'_, AppState>) -> Result<DebugLogView, GuiE
 }
 
 #[tauri::command]
+async fn agent_availability_load() -> Result<AgentAvailabilityView, GuiError> {
+    gui_settings::agents_load()
+}
+
+#[tauri::command]
+async fn agent_availability_save(
+    state: State<'_, AppState>,
+    revision: String,
+    settings: AgentAvailability,
+) -> Result<AgentAvailabilityView, GuiError> {
+    gui_settings::agents_save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &revision,
+        settings,
+    )
+}
+
+#[tauri::command]
 async fn dormancy_settings_load() -> Result<DormancySettingsView, GuiError> {
     gui_settings::load()
 }
@@ -1556,6 +1594,7 @@ fn main() {
             review_take_completion,
             load_diff,
             supported_harnesses,
+            allowed_harnesses,
             supported_modes,
             get_snapshot,
             set_collapsed,
@@ -1603,6 +1642,8 @@ fn main() {
             supervised_edits_load,
             supervised_edit_counts,
             supervised_edit_respond,
+            agent_availability_load,
+            agent_availability_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,

@@ -42,6 +42,9 @@ use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
+use agent_mainframe::gui_project_settings::{
+    self, ProjectAgentAvailability, ProjectAgentAvailabilityView,
+};
 use agent_mainframe::gui_prompt_overrides::{
     self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
 };
@@ -1128,6 +1131,32 @@ async fn agent_availability_save(
 }
 
 #[tauri::command]
+async fn project_agent_availability_load(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<ProjectAgentAvailabilityView, GuiError> {
+    gui_project_settings::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
+    )
+}
+
+#[tauri::command]
+async fn project_agent_availability_save(
+    state: State<'_, AppState>,
+    project_id: String,
+    revision: String,
+    settings: ProjectAgentAvailability,
+) -> Result<ProjectAgentAvailabilityView, GuiError> {
+    gui_project_settings::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
+        &revision,
+        settings,
+    )
+}
+
+#[tauri::command]
 async fn dormancy_settings_load() -> Result<DormancySettingsView, GuiError> {
     gui_settings::load()
 }
@@ -1644,6 +1673,8 @@ fn main() {
             supervised_edit_respond,
             agent_availability_load,
             agent_availability_save,
+            project_agent_availability_load,
+            project_agent_availability_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,

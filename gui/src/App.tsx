@@ -63,6 +63,7 @@ import {
   stopSession,
   allowedHarnesses,
   supportedHarnesses,
+  projectAgentChoices,
   supportedModes,
   terminalSubmitPrompt,
   todoLaunchAgent,
@@ -186,7 +187,7 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
-  const [showAgentAvailability, setShowAgentAvailability] = useState(false);
+  const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
@@ -299,6 +300,14 @@ export default function App() {
     queryFn: supportedHarnesses,
   });
   const modes = useQuery({ queryKey: ["supported-modes"], queryFn: supportedModes });
+  const featureAgents = useQuery({
+    queryKey: ["project-feature-agents", createFeatureFor],
+    queryFn: () => projectAgentChoices(createFeatureFor!),
+    enabled: createFeatureFor !== null,
+    retry: false,
+    // Reopening reads external edits; focus changes must not discard form drafts.
+    staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  });
   const workspace = useQuery({
     queryKey: SNAPSHOT_KEY,
     queryFn: getSnapshot,
@@ -1153,7 +1162,7 @@ export default function App() {
 
           <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
 
-          <button className="nav-item" onClick={() => setShowAgentAvailability(true)}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
+          <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
 
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
@@ -1248,10 +1257,11 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
-      {showAgentAvailability && <AgentAvailabilityPanel onClose={() => setShowAgentAvailability(false)} onSaved={() => {
-        setShowAgentAvailability(false);
-        void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
-      }} />}
+      {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
+        projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
+          setAgentAvailabilityScope(null);
+          void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
+        }} />}
       {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
         onDeleteFeature={(row) => setDeleteFeatureDialog({
           target: row.observation.target,
@@ -1322,6 +1332,7 @@ export default function App() {
             onNewFeature={() => setCreateFeatureFor(selectedProject.id)}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
             onPrReview={() => setPrReviewProject(selectedProject.id)}
+            onAgentAvailability={() => setAgentAvailabilityScope({ projectId: selectedProject.id })}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "project", project_id: selectedProject.id }}
@@ -1459,11 +1470,23 @@ export default function App() {
         />
       )}
 
-      {createFeatureProject && (
+      {createFeatureProject && (featureAgents.isPending || featureAgents.isFetching || featureAgents.isError ||
+        !featureAgents.data?.length || harnesses.isPending || harnesses.isError ?
+        <Modal label="New feature" title="New feature" subtitle={`in ${createFeatureProject.name}`}
+          onClose={() => setCreateFeatureFor(null)} footer={<>
+            <button className="btn btn-ghost" onClick={() => setCreateFeatureFor(null)}>Cancel</button>
+            <button className="btn btn-secondary" disabled={featureAgents.isFetching || harnesses.isFetching}
+              onClick={() => { void featureAgents.refetch(); void harnesses.refetch(); }}>Reload agent choices</button>
+          </>}>
+          {featureAgents.isPending || featureAgents.isFetching || harnesses.isPending
+            ? <p role="status"><Spinner /> Loading project agent choices…</p>
+            : <p role="alert">{featureAgents.isError ? asGuiError(featureAgents.error).message
+              : harnesses.isError ? asGuiError(harnesses.error).message : "No allowed agent is available for this project. Check installed agents and Agent availability."}</p>}
+        </Modal> :
         <CreateFeatureForm
           projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
-          agents={harnesses.data ?? []}
+          agents={(harnesses.data ?? []).filter(agent => featureAgents.data?.includes(agent.slug))}
           modes={modes.data ?? []}
           isGit={createFeatureProject.is_git}
           defaultUseWorktree={createFeatureProject.is_git && createFeatureProject.features.length > 0}
@@ -1775,6 +1798,7 @@ function ProjectView({
   onNewFeature,
   onPrTriage,
   onPrReview,
+  onAgentAvailability,
   todoPanel,
 }: {
   project: Project;
@@ -1785,6 +1809,7 @@ function ProjectView({
   onNewFeature: () => void;
   onPrTriage: () => void;
   onPrReview: () => void;
+  onAgentAvailability: () => void;
   todoPanel: ReactNode;
 }) {
   const running = project.features.filter((feature) => feature.status !== "stopped").length;
@@ -1801,6 +1826,9 @@ function ProjectView({
         }
         actions={
           <>
+            <button className="btn btn-secondary" aria-label="Project agent availability" onClick={onAgentAvailability}>
+              <Icon name="list" size={12} /> Agent availability
+            </button>
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}

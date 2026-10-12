@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Project agent choices in desktop.** Open Agent availability on a project
+  page to choose its allowed agents or clear the override and inherit global
+  choices. New features and sessions use those choices; existing sessions keep
+  running. Unsaved edits and external config changes are protected. Saving a
+  legacy project config copies it to `amf.json` and retains the original file.
+
 - **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
   OpenCode and Pi agents from workspace navigation, using the TUI's settings.
   Project overrides keep precedence and existing sessions keep running. The

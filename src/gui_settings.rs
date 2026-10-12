@@ -169,11 +169,21 @@ pub(crate) fn lock_document(path: &Path) -> GuiResult<std::fs::File> {
 /// Atomically replace a scoped JSON document, preserving existing permissions.
 /// The caller owns the writer lock, schema validation and revision comparison.
 pub(crate) fn commit_document(path: &Path, value: &serde_json::Value) -> GuiResult<String> {
+    commit_document_preserving(path, value, path)
+}
+
+/// Preserve permissions from an effective legacy document when creating the
+/// canonical file. The source is read for metadata only and is never modified.
+pub(crate) fn commit_document_preserving(
+    path: &Path,
+    value: &serde_json::Value,
+    permissions_from: &Path,
+) -> GuiResult<String> {
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(anyhow::Error::from)?;
-    if let Ok(metadata) = std::fs::metadata(path) {
+    if let Ok(metadata) = std::fs::metadata(permissions_from) {
         temp.as_file()
             .set_permissions(metadata.permissions())
             .map_err(anyhow::Error::from)?;
@@ -266,15 +276,7 @@ fn agents_save_at(
     revision: &str,
     settings: AgentAvailability,
 ) -> GuiResult<AgentAvailabilityView> {
-    if settings.allowed_agents.is_empty()
-        || AgentKind::ALL
-            .iter()
-            .filter(|agent| settings.allowed_agents.contains(agent))
-            .count()
-            != settings.allowed_agents.len()
-    {
-        return Err(anyhow::anyhow!("Select at least one agent, without duplicate choices").into());
-    }
+    validate_agents(&settings.allowed_agents)?;
     // The order a later load reports, whatever order the request used.
     let settings = AgentAvailability {
         allowed_agents: AgentKind::allowed_list(Some(&settings.allowed_agents)),
@@ -286,6 +288,19 @@ fn agents_save_at(
         value["extension"]["allowed_agents"] = serde_json::json!(settings.allowed_agents);
     })?;
     Ok(AgentAvailabilityView { settings, revision })
+}
+
+pub(crate) fn validate_agents(agents: &[AgentKind]) -> GuiResult<()> {
+    if agents.is_empty()
+        || AgentKind::ALL
+            .iter()
+            .filter(|agent| agents.contains(agent))
+            .count()
+            != agents.len()
+    {
+        return Err(anyhow::anyhow!("Select at least one agent, without duplicate choices").into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

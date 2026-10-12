@@ -55,6 +55,7 @@ Keep them current as the staged GUI scope grows.
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
 | Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. The new-session picker and the New project, New feature and TODO-to-feature forms offer only the allowed harnesses. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Limited | An already open TUI keeps the allowed-agent choices it started with, and its next settings save writes them back; restart it after a desktop change. |
+| Available | Project Agent availability from the project page: explicit global inheritance or an allowed-agent override, save/reload/cancel with unsaved protection, strict project config validation and stale-file/project/repository refusal. Saves preserve unrelated JSON and legacy config while updating tracked `amf.json`; effective future feature/session choices use the shared resolver. Existing sessions keep running. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
@@ -533,7 +534,7 @@ Completed increments and remaining work, in priority order:
   settings writers share a lock and whole-document revision, retain unknown
   fields and file permissions, and reject malformed known settings. The modal
   protects unsaved drafts and refuses empty selections, duplicate saves and
-  dismissal while saving. Project-scoped editing and harness setup remain open.
+  dismissal while saving. Broader harness setup remains open; project editing is recorded below.
   Four asserted native WSLg frames and real Rust IPC verify loaded choices,
   discard protection, stale-save refusal, persisted Codex/Pi choices, effective
   new-session options and preservation of unrelated config/existing sessions.
@@ -548,6 +549,24 @@ Completed increments and remaining work, in priority order:
   two settings panels share one revisioned modal. The native frames were not
   re-captured.
   Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
+
+- [x] **Desktop project agent availability (2026-10-11).** Project-page entry
+  offers explicit inheritance and project override choices, with guarded
+  save/reload/cancel and no harness setup side effects. The shared JSON writer
+  preserves unknown fields and existing permissions; strict whole-project
+  schema validation refuses malformed active config. Revisions bind project ID,
+  raw/resolved repository identity, both config files and inherited global
+  choices. Canonical saves copy effective legacy contents without rewriting or
+  deleting legacy config. Existing sessions and composer drafts remain intact;
+  later feature/session forms read the shared resolver fresh, including installed
+  harness filtering before the New feature form opens. Eight asserted native
+  frames cover loaded override, unsaved guard, stale refusal, saved choices,
+  New feature/session forms, explicit inheritance and existing composer/pane
+  preservation. All 3,488 library and 7 GUI Rust tests pass (one existing GitHub
+  acceptance test ignored), plus 385 frontend tests/build, both native builds,
+  formatting and strict all-target Clippy. Broader harness setup and macOS
+  interaction validation remain open. Native scenario:
+  [`gui-project-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-project-agent-availability.txt).
 
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.

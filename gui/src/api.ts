@@ -164,6 +164,13 @@ export function allowedHarnesses(projectId: string | null): Promise<HarnessInfo[
   return invoke("allowed_harnesses", { projectId });
 }
 
+/** Resolve effective creation choices with the shared installed-agent filter. */
+export async function projectAgentChoices(projectId: string): Promise<AgentSlug[]> {
+  const view = await invoke<{ effective_agents: AgentSlug[] }>(
+    "project_agent_availability_load", { projectId });
+  return view.effective_agents;
+}
+
 export function supportedModes(): Promise<ModeInfo[]> {
   return invoke("supported_modes");
 }

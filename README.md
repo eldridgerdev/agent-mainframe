@@ -671,6 +671,15 @@ AMF creates its global configuration at `~/.config/amf/config.json`. A project
 can add `amf.json` at its repository root; project settings override
 matching global settings.
 
+In the desktop, **Agent availability** in workspace navigation changes global
+agent choices. On a project's page, **Agent availability** edits that project's
+choices, or clears its override with **Use global setting** and **Save settings**.
+Both interfaces share the saved choices for future features and sessions;
+existing sessions keep running. Installed harness availability still applies.
+Project saves preserve unrelated config and refuse stale edits until you reload.
+If only legacy `.amf/config.json` exists, saving copies its effective contents to
+tracked `amf.json` and keeps the legacy file unchanged.
+
 From an embedded session, press `Ctrl+Space`, then `c` to open the configuration
 wizard. It covers the common customizations, including:
 

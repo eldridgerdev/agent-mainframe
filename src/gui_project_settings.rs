@@ -414,7 +414,11 @@ mod tests {
     #[test]
     fn legacy_effective_object_is_copied_to_canonical_without_touching_legacy() {
         let fx = fixture();
-        let legacy = extension::legacy_project_config_path(&fx.repo());
+        // Config paths are reported under the resolved repository, which is
+        // not the temp dir's own spelling where that sits behind a symlink
+        // (macOS: `/var` -> `/private/var`).
+        let repo = fx.repo().canonicalize().unwrap();
+        let legacy = extension::legacy_project_config_path(&repo);
         std::fs::create_dir(legacy.parent().unwrap()).unwrap();
         let original = r#"{"allowed_agents":[],"future":{"keep":true},"keybindings":{}}"#;
         std::fs::write(&legacy, original).unwrap();
@@ -429,12 +433,9 @@ mod tests {
         let saved = fx
             .save(&view.revision, Some(vec![AgentKind::Codex]))
             .unwrap();
-        assert_eq!(
-            saved.source_path.as_deref(),
-            fx.repo().join("amf.json").to_str()
-        );
+        let canonical = repo.join("amf.json");
+        assert_eq!(saved.source_path.as_deref(), canonical.to_str());
         assert_eq!(std::fs::read_to_string(&legacy).unwrap(), original);
-        let canonical = fx.repo().join("amf.json");
         let raw: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&canonical).unwrap()).unwrap();
         assert_eq!(

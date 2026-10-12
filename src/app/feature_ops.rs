@@ -13,44 +13,43 @@ use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
-impl App {
-    pub(crate) fn ensure_feature_vibe_mode_supported(
-        &self,
-        feature: &Feature,
-        mode: &VibeMode,
-    ) -> Result<()> {
-        self.ensure_agent_mode_supported(&feature.agent, mode)?;
-        if feature
-            .sessions
-            .iter()
-            .any(|session| session.kind == SessionKind::Codex)
+/// Every harness the feature can launch, once each: its primary agent, then
+/// the agent sessions added beside it. Generated hooks are per harness, so a
+/// mode change or a start has to refresh all of them, not just the primary.
+pub(crate) fn feature_harnesses(feature: &Feature) -> Vec<AgentKind> {
+    let mut harnesses = vec![feature.agent.clone()];
+    for session in &feature.sessions {
+        if let Some(agent) = super::session_ops::agent_for_session_kind(&session.kind)
+            && !harnesses.contains(&agent)
         {
-            self.ensure_agent_mode_supported(&AgentKind::Codex, mode)?;
+            harnesses.push(agent);
         }
-        Ok(())
     }
+    harnesses
+}
 
+impl App {
     pub(crate) fn change_feature_vibe_mode(
         &mut self,
         pi: usize,
         fi: usize,
         mode: crate::project::VibeMode,
     ) -> Result<()> {
-        let (repo, workdir, agent, is_worktree, feature_id, previous_mode) = {
+        let (repo, workdir, harnesses, is_worktree, feature_id, previous_mode) = {
             let feature = self
                 .store
                 .projects
                 .get(pi)
                 .and_then(|p| p.features.get(fi))
                 .ok_or_else(|| anyhow::anyhow!("Feature no longer exists"))?;
-            self.ensure_feature_vibe_mode_supported(feature, &mode)?;
+            self.ensure_agent_mode_supported(&feature.agent, &mode)?;
             if feature.mode == mode {
                 return Ok(());
             }
             (
                 self.store.projects[pi].repo.clone(),
                 feature.workdir.clone(),
-                feature.agent.clone(),
+                feature_harnesses(feature),
                 feature.is_worktree,
                 feature.id.clone(),
                 feature.mode.clone(),
@@ -67,7 +66,9 @@ impl App {
                 return Err(error);
             }
         }
-        ensure_notification_hooks(&workdir, &repo, &mode, &agent, is_worktree);
+        for agent in &harnesses {
+            ensure_notification_hooks(&workdir, &repo, &mode, agent, is_worktree);
+        }
         Ok(())
     }
 
@@ -1265,13 +1266,15 @@ impl App {
             None => return Ok(Started::Yes),
         };
 
-        ensure_notification_hooks(
-            &feature.workdir,
-            &repo,
-            &feature.mode,
-            &feature.agent,
-            feature.is_worktree,
-        );
+        for agent in &feature_harnesses(feature) {
+            ensure_notification_hooks(
+                &feature.workdir,
+                &repo,
+                &feature.mode,
+                agent,
+                feature.is_worktree,
+            );
+        }
         ensure_review_claude_md(&feature.workdir, feature.review);
         ensure_plan_mode_instructions(&feature.workdir, &feature.agent, feature.plan_mode);
 

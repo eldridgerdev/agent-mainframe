@@ -19,6 +19,8 @@ export interface ModeInfo {
   slug: ModeSlug;
   display_name: string;
   description: string;
+  /** Primary agents that cannot run in this mode; the backend owns the rule. */
+  unsupported_agents?: AgentSlug[];
 }
 
 export interface FeatureSession {

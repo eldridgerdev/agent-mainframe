@@ -414,6 +414,9 @@ struct ModeInfo {
     slug: String,
     display_name: String,
     description: String,
+    /// Slugs of the primary agents that cannot run in this mode, from
+    /// `VibeMode::supports_agent`, so the frontend never restates the rule.
+    unsupported_agents: Vec<String>,
 }
 
 /// Returns the vibe modes AMF supports. `slug` is derived from `VibeMode`'s
@@ -431,6 +434,11 @@ fn supported_modes() -> Vec<ModeInfo> {
                 .unwrap_or_default(),
             display_name: mode.display_name().to_string(),
             description: mode.description().to_string(),
+            unsupported_agents: AgentKind::ALL
+                .iter()
+                .filter(|agent| !mode.supports_agent(agent))
+                .map(|agent| agent.slug().to_string())
+                .collect(),
         })
         .collect()
 }

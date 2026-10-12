@@ -2205,14 +2205,13 @@ mod tests {
     }
 
     #[test]
-    fn changing_vibe_mode_rejects_vibeless_with_a_secondary_codex_session() {
+    fn changing_vibe_mode_rejects_vibeless_for_a_codex_feature() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = store_with_one_feature(ProjectStatus::Stopped);
         let feature = &mut store.projects[0].features[0];
         feature.workdir = tmp.path().to_path_buf();
         feature.mode = VibeMode::Vibe;
-        App::initialize_feature_sessions(feature, false, None);
-        feature.sessions[0].kind = SessionKind::Codex;
+        feature.agent = AgentKind::Codex;
         let mut gui = handle(store, MockTmuxOps::new());
 
         let error = gui
@@ -2221,7 +2220,67 @@ mod tests {
 
         assert!(error.message.contains("Codex does not support Vibeless"));
         assert_eq!(gui.app.store.projects[0].features[0].mode, VibeMode::Vibe);
-        assert!(!tmp.path().join(".claude").exists());
+        assert!(!tmp.path().join(".codex").exists());
+    }
+
+    /// The rule is about the primary agent, as it is everywhere a session is
+    /// added: a Vibeless feature may hold a Codex session, so a feature that
+    /// holds one may become Vibeless.
+    #[test]
+    fn changing_vibe_mode_allows_vibeless_beside_a_secondary_codex_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].repo = tmp.path().to_path_buf();
+        let feature = &mut store.projects[0].features[0];
+        feature.workdir = tmp.path().to_path_buf();
+        feature.mode = VibeMode::Vibe;
+        App::initialize_feature_sessions(feature, false, None);
+        feature.add_session(SessionKind::Codex);
+        let mut gui = handle(store, MockTmuxOps::new());
+
+        gui.set_feature_vibe_mode(target(), VibeMode::Vibeless)
+            .unwrap();
+
+        assert_eq!(
+            gui.app.store.projects[0].features[0].mode,
+            VibeMode::Vibeless
+        );
+    }
+
+    /// Hooks are generated per harness, so a mode change has to reach the
+    /// harness of every agent session, not only the feature's primary agent.
+    #[test]
+    fn changing_vibe_mode_refreshes_hooks_for_every_session_harness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut store = store_with_one_feature(ProjectStatus::Stopped);
+        store.projects[0].repo = tmp.path().to_path_buf();
+        let feature = &mut store.projects[0].features[0];
+        feature.workdir = tmp.path().to_path_buf();
+        feature.mode = VibeMode::Vibe;
+        feature.agent = AgentKind::Claude;
+        App::initialize_feature_sessions(feature, false, None);
+        feature.add_session(SessionKind::Opencode);
+        // A second session of a harness already covered must not matter.
+        feature.add_session(SessionKind::Opencode);
+        let mut gui = handle(store, MockTmuxOps::new());
+        let claude_settings = tmp.path().join(".claude/settings.local.json");
+        let change_tracker = tmp.path().join(".opencode/plugins/change-tracker.js");
+
+        gui.set_feature_vibe_mode(target(), VibeMode::Vibeless)
+            .unwrap();
+        assert!(claude_settings.exists());
+        assert!(
+            change_tracker.exists(),
+            "the Opencode session's Vibeless plugin was not installed"
+        );
+
+        gui.set_feature_vibe_mode(target(), VibeMode::SuperVibe)
+            .unwrap();
+        assert!(claude_settings.exists());
+        assert!(
+            !change_tracker.exists(),
+            "the Opencode session kept its Vibeless plugin after leaving Vibeless"
+        );
     }
 
     #[test]

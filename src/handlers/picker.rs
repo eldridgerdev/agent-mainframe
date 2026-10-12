@@ -117,15 +117,16 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 // deliberately does not return to `from_view`.
                                 app.start_plan_interview_for_selected_feature();
                             }
-                            crate::app::LocalCommand::ChangeVibeMode(index) => {
-                                if let Some(mode) = crate::project::VibeMode::ALL.get(index) {
-                                    match app.change_selected_feature_vibe_mode(mode.clone(), return_view.as_ref()) {
-                                        Ok(()) => app.push_toast_success(format!(
-                                            "Vibe mode changed to {}; restart agent sessions to apply",
-                                            mode.display_name()
-                                        )),
-                                        Err(err) => app.push_toast_error(err.to_string()),
-                                    }
+                            crate::app::LocalCommand::ChangeVibeMode(mode) => {
+                                match app.change_selected_feature_vibe_mode(
+                                    mode.clone(),
+                                    return_view.as_ref(),
+                                ) {
+                                    Ok(()) => app.push_toast_success(format!(
+                                        "Vibe mode changed to {}; restart agent sessions to apply",
+                                        mode.display_name()
+                                    )),
+                                    Err(err) => app.push_toast_error(err.to_string()),
                                 }
                             }
                         },
@@ -182,7 +183,7 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                     && matches!(app.mode, AppMode::Normal)
                 {
                     if let Some(feature) = app.feature_for_view(&view) {
-                        view.vibe_mode = feature.mode.clone();
+                        view.note_saved_vibe_mode(&feature.mode);
                     }
                     app.mode = AppMode::Viewing(view);
                 }
@@ -1518,6 +1519,122 @@ mod tests {
             .unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    /// `picker_app` with the Vibeless Claude feature `picker_view` points at.
+    fn claude_feature_picker_app(workdir: &std::path::Path) -> App {
+        let mut app = picker_app();
+        app.store.projects[0].repo = workdir.to_path_buf();
+        app.store.projects[0]
+            .features
+            .push(Feature::new_for_project(
+                "demo",
+                "feature".into(),
+                "feature".into(),
+                workdir.to_path_buf(),
+                false,
+                VibeMode::Vibeless,
+                false,
+                false,
+                AgentKind::Claude,
+                false,
+                false,
+            ));
+        app.selection = Selection::Feature(0, 0);
+        app
+    }
+
+    fn vibe_mode_command_names(app: &App) -> Vec<String> {
+        let AppMode::CommandPicker(state) = &app.mode else {
+            panic!("expected command picker");
+        };
+        state
+            .commands
+            .iter()
+            .filter(|command| command.name.starts_with("change-vibe-mode-"))
+            .map(|command| command.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn command_picker_offers_only_the_vibe_modes_that_would_change_something() {
+        let workdir = tempfile::tempdir().unwrap();
+        let mut app = claude_feature_picker_app(workdir.path());
+
+        app.open_command_picker(None);
+        assert_eq!(
+            vibe_mode_command_names(&app),
+            ["change-vibe-mode-vibe", "change-vibe-mode-supervibe"],
+            "the current mode is not a change"
+        );
+
+        // A Codex feature already in Vibe: Vibe is current, Vibeless is not
+        // something Codex can run.
+        let mut app = codex_picker_app();
+        app.store.projects[0].features[0].mode = VibeMode::Vibe;
+        app.selection = Selection::Feature(0, 0);
+
+        app.open_command_picker(None);
+        assert_eq!(
+            vibe_mode_command_names(&app),
+            ["change-vibe-mode-supervibe"]
+        );
+    }
+
+    #[test]
+    fn changing_vibe_mode_from_a_live_agent_view_keeps_its_badge_and_marks_the_restart() {
+        let workdir = tempfile::tempdir().unwrap();
+        let mut app = claude_feature_picker_app(workdir.path());
+        app.open_command_picker(Some(picker_view()));
+        let AppMode::CommandPicker(state) = &mut app.mode else {
+            panic!("expected command picker");
+        };
+        state.selected = state
+            .commands
+            .iter()
+            .position(|command| command.name == "change-vibe-mode-supervibe")
+            .expect("SuperVibe is offered");
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.store.projects[0].features[0].mode,
+            VibeMode::SuperVibe,
+            "the change is saved"
+        );
+        let AppMode::Viewing(view) = &app.mode else {
+            panic!("expected to return to the view");
+        };
+        assert_eq!(
+            view.vibe_mode,
+            VibeMode::Vibeless,
+            "the live agent still runs under the mode it was launched with"
+        );
+        assert_eq!(view.pending_vibe_mode, Some(VibeMode::SuperVibe));
+        assert_eq!(
+            view.pending_vibe_mode_badge().as_deref(),
+            Some("\u{2192} supervibe on restart ")
+        );
+    }
+
+    #[test]
+    fn a_saved_vibe_mode_is_pending_only_while_it_differs_from_the_launched_one() {
+        let mut view = picker_view();
+
+        view.note_saved_vibe_mode(&VibeMode::Vibe);
+        assert_eq!(view.pending_vibe_mode, Some(VibeMode::Vibe));
+
+        // Changing back to what the agent is running leaves nothing pending.
+        view.note_saved_vibe_mode(&VibeMode::Vibeless);
+        assert_eq!(view.vibe_mode, VibeMode::Vibeless);
+        assert_eq!(view.pending_vibe_mode, None);
+
+        // A terminal has no launch flags to go stale: it just takes the mode.
+        let mut terminal = picker_view();
+        terminal.session_kind = crate::project::SessionKind::Terminal;
+        terminal.note_saved_vibe_mode(&VibeMode::SuperVibe);
+        assert_eq!(terminal.vibe_mode, VibeMode::SuperVibe);
+        assert_eq!(terminal.pending_vibe_mode, None);
     }
 
     #[test]

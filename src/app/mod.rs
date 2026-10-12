@@ -344,16 +344,16 @@ pub enum CodexDebugCommand {
     ClearInputDemo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
     PlanInterview,
-    ChangeVibeMode(usize),
+    ChangeVibeMode(VibeMode),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     SlashCommand,
     Local { command: LocalCommand },
@@ -1528,6 +1528,10 @@ impl App {
             view.session_label.hash(&mut hasher);
             std::mem::discriminant(&view.session_kind).hash(&mut hasher);
             std::mem::discriminant(&view.vibe_mode).hash(&mut hasher);
+            view.pending_vibe_mode
+                .as_ref()
+                .map(std::mem::discriminant)
+                .hash(&mut hasher);
             view.review.hash(&mut hasher);
             view.scroll_offset.hash(&mut hasher);
             view.scroll_mode.hash(&mut hasher);
@@ -3734,7 +3738,7 @@ impl App {
         agent: &AgentKind,
         mode: &VibeMode,
     ) -> Result<()> {
-        if matches!(agent, AgentKind::Codex) && matches!(mode, VibeMode::Vibeless) {
+        if !mode.supports_agent(agent) {
             anyhow::bail!(
                 "Codex does not support Vibeless diff review. Use Claude/Opencode, or switch to Vibe or SuperVibe."
             );

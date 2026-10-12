@@ -279,6 +279,12 @@ pub(crate) fn draw_with_lines(
                 header_spans.push(Span::raw("] "));
             }
         };
+        if let Some(pending) = view.pending_vibe_mode_badge() {
+            header_spans.push(Span::styled(
+                pending,
+                Style::default().fg(theme.warning.to_color()),
+            ));
+        }
         if view.review {
             header_spans.push(Span::styled(
                 "[review] ",

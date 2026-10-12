@@ -58,26 +58,24 @@ impl App {
                     command: LocalCommand::PlanInterview,
                 },
             });
-            let supported_modes = self
+            // Only the modes that would change something: the current one is
+            // left out, as is one the feature's agent cannot run in.
+            let other_modes = self
                 .feature_for_command_picker(from_view.as_ref())
                 .map(|feature| {
                     crate::project::VibeMode::ALL
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, mode)| {
-                            self.ensure_feature_vibe_mode_supported(feature, mode)
-                                .is_ok()
-                        })
+                        .into_iter()
+                        .filter(|mode| *mode != feature.mode && mode.supports_agent(&feature.agent))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            for (index, mode) in supported_modes {
+            for mode in other_modes {
                 commands.push(CommandEntry {
                     name: format!("change-vibe-mode-{}", mode.display_name().to_lowercase()),
                     source: "AMF".to_string(),
                     path: None,
                     action: CommandAction::Local {
-                        command: LocalCommand::ChangeVibeMode(index),
+                        command: LocalCommand::ChangeVibeMode(mode),
                     },
                 });
             }

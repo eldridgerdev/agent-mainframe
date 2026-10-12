@@ -48,7 +48,8 @@ Keep them current as the staged GUI scope grows.
 | Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
 | Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
 | Available | Dormant-list **Close editors** confirms the listed tracked window identities and uses the shared TUI editor cleanup without stopping, opening or deleting the feature. Automatic cleanup-on-stop may be off. A newly opened window refuses the stale confirmation and requires returning to refresh; unowned windows, recycled PIDs and shared instances retain the existing safeguards. Six asserted native WSLg frames (`gui-dormant-editor-close.txt`) prove listing, confirmation, a newly opened window refusal, refreshed confirmation, ownership cleanup and the feature still dormant afterwards, with automatic stop cleanup disabled. |
-| Limited | Deleting from the dormant list remains a TUI action. Four asserted native WSLg frames verify the list, confirmation, a confirm-time refusal and editor ownership through real Rust IPC with stand-in editors; macOS validation is open. |
+| Available | Dormant-list **Delete** opens the shared feature-deletion confirmation without marking the feature opened. Each step rechecks the listed dormancy readings, current thresholds, session identity, name and checkout before shared TODO disposition/host choices or deletion. Worktrees are removed with the branch kept; ordinary checkouts remain. Cancel, success and refusal return to a refreshed dormant list. Command/component regressions cover cancellation, stale/external changes, TODO preservation, duplicate clicks and dismissal during deletion. Seven asserted native WSLg frames (`gui-dormant-delete.txt`) verify cancellation through both TODO prompts, external-open refusal, TODO destination/host preservation, worktree removal with the branch kept and ordinary checkout preservation. |
+| Limited | Dormant-list deletion macOS validation remains open. Four asserted native WSLg frames verify the original list, stop confirmation, confirm-time refusal and editor ownership through real Rust IPC with stand-in editors. |
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
@@ -512,6 +513,20 @@ Completed increments and remaining work, in priority order:
   draft and the successful zero-threshold save disabling detection through
   real Rust IPC. The private config file is checked after save. Reproduce with
   [`gui-dormancy-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
+- [x] **Dormant-list deletion (2026-10-10).** Per-row Delete uses the existing
+  feature confirmation and TUI deletion/TODO engines, with fresh dormancy and
+  checkout checks at every step. It never opens the feature, and returns to a
+  refreshed list on cancel, completion or refusal. Four Rust regressions and
+  four frontend interactions cover the command and frontend. Full parallel
+  workspace tests pass (3,480 library and seven GUI tests; one pre-existing
+  ignored), along with all 378 frontend tests, production build, formatting,
+  strict workspace/all-target Clippy and both native executable builds. All
+  3,484 baseline test names remain, with four additions. Seven asserted native
+  WSLg frames verify cancellation through both TODO prompts, external-open
+  refusal, TODO disposition/host preservation, worktree deletion and ordinary
+  checkout preservation using private SQLite, Git and tmux fixtures. Reproduce
+  with `gui-dormant-delete.txt`; macOS validation remains open.
+
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.
   - [x] **VS Code and custom sessions (2026-10-07).** The New session dialog

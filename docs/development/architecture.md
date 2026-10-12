@@ -156,7 +156,11 @@ editors and custom sessions alike.
 each row was decided on. Its confirmed stop re-checks every selected feature
 against those readings and the current scan, then calls the TUI's stop
 (`App::stop_feature_reporting`), whose editor cleanup keeps its ownership
-rules; the module signals no process itself. Terminal attachment records
+rules; the module signals no process itself. Dormant-list deletion shares
+the same observation validation before every TODO-disposition/host choice or
+deletion. It also checks the confirmed name
+and checkout, then calls the existing GUI/TUI deletion engine on that refreshed
+store. The confirmation does not touch attention. Terminal attachment records
 `last_accessed`, as TUI view entry does.
 
 ## Feature modules

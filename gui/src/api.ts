@@ -902,3 +902,13 @@ export type DormancyStopResult = { target: FeatureTarget; feature_name: string }
 export const dormancyLoad = (): Promise<DormancyView> => invoke("dormancy_load");
 export const dormancyStop = (selection: DormantObservation[]): Promise<DormancyStopResult[]> =>
   invoke("dormancy_stop", { selection });
+
+/** Checkout and observation shown before a dormant feature deletion. */
+export type DormantDeleteRequest = Pick<DormantFeatureView, "observation" | "workdir" | "is_worktree">;
+export function dormancyDelete(
+  request: DormantDeleteRequest,
+  todos: TodoDeleteChoice | null,
+  todoHost: TodoHostChoice | null,
+): Promise<DeleteFeatureResponse> {
+  return invoke("dormancy_delete", { request, todos, todoHost });
+}

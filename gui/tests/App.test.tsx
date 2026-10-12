@@ -1070,3 +1070,104 @@ it("retains the bookmark picker and current draft when workspace refresh fails, 
   expect(promptCalls()).toHaveLength(0);
   client.clear();
 });
+
+function dormantDeleteRow(isWorktree = false) {
+  return {
+    project_name: "demo", workdir: "/private/quiet", is_worktree: isWorktree, editor_alive: false, editors: [],
+    idle_secs: 7200, unattended_secs: 86400,
+    observation: {
+      target: { project_id: "project", feature_id: "quiet" }, feature_name: "Quiet feature",
+      tmux_session: "amf-quiet", last_activity: "2026-10-05T08:00:00Z", last_accessed: "2026-10-04T10:00:00Z",
+    },
+  };
+}
+
+async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktree = false, select = false) {
+  // The row deliberately isn't in the workspace cache. Deletion must use its
+  // listed identity, never the selected feature or a stale workspace lookup.
+  const client = await openFeature([session("Shell")], [], "stopped");
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const row = dormantDeleteRow(isWorktree);
+  let loads = 0;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "dormancy_load") {
+      loads++;
+      return { enabled: true, idle_minutes: 60, unattended_hours: 4, kill_editor_on_stop: true,
+        checked_at: "2026-10-05T10:00:00Z", features: [row] };
+    }
+    if (command === "dormancy_delete") return handler(args);
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Dormant features" }));
+  if (select) fireEvent.click(await screen.findByRole("checkbox", { name: "Select Quiet feature" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Quiet feature" }));
+  expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull();
+  expect(screen.getByText(/Each confirmation checks dormancy again/)).toBeTruthy();
+  return { client, row, loads: () => loads };
+}
+
+it("cancels dormant deletion and refreshes the list without opening or deleting the feature", async () => {
+  const { client, loads } = await openDormantDeletion(() => { throw new Error("must not delete"); }, false, true);
+  expect(screen.getByText(/repository checkout itself is left alone/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  // The panel was hidden, not unmounted: the batch selection is still there.
+  expect((screen.getByRole("checkbox", { name: "Select Quiet feature" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole("button", { name: "Stop selected (1)" })).toBeTruthy();
+  expect(screen.queryByText(/were deselected/)).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_delete" || command === "delete_feature" || command === "dormancy_stop")).toHaveLength(0);
+  client.clear();
+});
+
+it("carries a dormant observation through TODO choices and blocks duplicate deletion and dismissal", async () => {
+  let calls = 0;
+  let finish!: (value: unknown) => void;
+  const { client, row, loads } = await openDormantDeletion(() => {
+    calls++;
+    if (calls === 1) return { status: "needs_todo_disposition", unfinished: 2 };
+    if (calls === 2) return { status: "needs_todo_host", prompt: {
+      list_id: "project-list", todo_count: 3, candidates: [{ feature_id: "survivor", name: "Survivor" }],
+    } };
+    // Trigger dismissal before React has rendered busy=true.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    return new Promise((resolve) => { finish = resolve; });
+  }, true);
+  expect(screen.getByText(/Uncommitted changes in it are discarded/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  fireEvent.click(await screen.findByRole("radio", { name: "Move them to the global list" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  await screen.findByRole("radio", { name: "Keep on Survivor" });
+  const confirm = screen.getByRole("button", { name: "Delete feature", exact: true });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+  await waitFor(() => expect(calls).toBe(3));
+  expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
+  expect(confirm.hasAttribute("disabled")).toBe(true);
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("dormancy_delete", {
+    request: { observation: row.observation, workdir: row.workdir, is_worktree: true },
+    todos: "move_to_global", todoHost: { list_id: "project-list", feature_id: "survivor" },
+  });
+  await act(async () => { finish({ status: "deleted", feature_id: "quiet", message: "Quiet feature deleted" }); });
+  expect(await screen.findByText("Quiet feature deleted")).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "delete_feature" || command === "dormancy_stop")).toHaveLength(0);
+  client.clear();
+});
+
+it("returns to a fresh dormant list after refusal without retrying a stale deletion", async () => {
+  const { client, loads } = await openDormantDeletion(() => {
+    throw { kind: "conflict", message: "Not deleted: It was opened in AMF after the list was loaded. Refresh Dormant features to see what is still listed" };
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  expect(await screen.findByText(/Not deleted: It was opened in AMF/)).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_delete")).toHaveLength(1);
+  client.clear();
+});

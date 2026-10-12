@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Delete dormant features from desktop.** Delete directly from Dormant
+  features with the same confirmation and TODO choices as the feature page.
+  Each step checks that the feature is still dormant and unchanged; Cancel
+  returns to the refreshed list without deleting anything, with your stop
+  selection kept.
+  No migration is required.
+
 - **Desktop session bookmarks.** Save, open and remove sessions from workspace
   navigation using the same nine slots as the TUI. A tenth bookmark evicts the
   oldest; stale targets are removed safely. Opening preserves composer drafts

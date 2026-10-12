@@ -56,6 +56,7 @@ import {
   savedAgentSessions,
   sessionRecoveryOption,
   setCollapsed,
+  setFeatureVibeMode,
   startFeature,
   removeSession,
   startSession,
@@ -1091,6 +1092,12 @@ export default function App() {
     },
   });
 
+  const setFeatureVibeModeMutation = useMutation({
+    mutationFn: ({ target, mode }: { target: FeatureTarget; mode: ModeSlug }) => setFeatureVibeMode(target, mode),
+    onSuccess: () => pushToast({ tone: "info", title: "Vibe mode updated", message: "Restart agent sessions to apply the change." }),
+    onError: reportError,
+  });
+
   function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
@@ -1418,6 +1425,11 @@ export default function App() {
               isWorktree: selectedFeature.is_worktree,
               unfinished: null,
             })}
+            onVibeMode={(mode) => setFeatureVibeModeMutation.mutate({
+              target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
+              mode,
+            })}
+            vibeModeBusy={setFeatureVibeModeMutation.isPending}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
             drafts={drafts}
@@ -1932,6 +1944,8 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onVibeMode,
+  vibeModeBusy,
   starting,
   stopping,
   onStart,
@@ -1977,6 +1991,8 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onVibeMode: (mode: ModeSlug) => void;
+  vibeModeBusy: boolean;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
@@ -1988,6 +2004,8 @@ function FeatureView({
   todoPanel: ReactNode;
 }) {
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
+  const vibelessUnavailable = feature.agent === "codex"
+    || feature.sessions.some((session) => session.kind === "codex");
   const known = (id: string | undefined) =>
     id === TODOS_TAB || id === VSCODE_TAB || sessions.some((session) => session.id === id);
   // A remembered tab whose session is gone falls back to the first one,
@@ -2099,6 +2117,13 @@ function FeatureView({
               icon="more"
               className="btn btn-secondary btn-icon"
               items={[
+                ...(["vibeless", "vibe", "supervibe"] as ModeSlug[]).map((mode) => ({
+                  label: `Vibe mode: ${modeName(mode)}`,
+                  icon: "sparkles" as const,
+                  hint: feature.mode === mode ? "Current" : mode === "vibeless" && vibelessUnavailable ? "Unavailable with Codex" : undefined,
+                  disabled: vibeModeBusy || feature.mode === mode || (mode === "vibeless" && vibelessUnavailable),
+                  onSelect: () => onVibeMode(mode),
+                })),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}

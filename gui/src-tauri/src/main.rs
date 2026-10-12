@@ -684,6 +684,19 @@ fn delete_feature(
     Ok(response)
 }
 
+#[tauri::command]
+fn set_feature_vibe_mode(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    mode: VibeMode,
+) -> Result<(), GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.set_feature_vibe_mode(target, mode)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct AttachTerminalResponse {
     key: String,
@@ -1637,6 +1650,7 @@ fn main() {
             stop_session,
             remove_session,
             delete_feature,
+            set_feature_vibe_mode,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,

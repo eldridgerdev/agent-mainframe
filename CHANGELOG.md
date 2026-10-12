@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Change a feature's vibe mode.** Choose a different mode from the desktop
+  feature's More actions menu or the TUI's AMF commands (`a` on a feature).
+  Restart agent sessions to apply the saved mode. Vibeless is unavailable for
+  features with Codex sessions. No migration is required.
+
 - **Project agent choices in desktop.** Open Agent availability on a project
   page to choose its allowed agents or clear the override and inherit global
   choices. New features and sessions use those choices; existing sessions keep

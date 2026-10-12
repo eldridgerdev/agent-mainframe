@@ -14,6 +14,81 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep, PendingStart};
 
 impl App {
+    pub(crate) fn ensure_feature_vibe_mode_supported(
+        &self,
+        feature: &Feature,
+        mode: &VibeMode,
+    ) -> Result<()> {
+        self.ensure_agent_mode_supported(&feature.agent, mode)?;
+        if feature
+            .sessions
+            .iter()
+            .any(|session| session.kind == SessionKind::Codex)
+        {
+            self.ensure_agent_mode_supported(&AgentKind::Codex, mode)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn change_feature_vibe_mode(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        mode: crate::project::VibeMode,
+    ) -> Result<()> {
+        let (repo, workdir, agent, is_worktree, feature_id, previous_mode) = {
+            let feature = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .ok_or_else(|| anyhow::anyhow!("Feature no longer exists"))?;
+            self.ensure_feature_vibe_mode_supported(feature, &mode)?;
+            if feature.mode == mode {
+                return Ok(());
+            }
+            (
+                self.store.projects[pi].repo.clone(),
+                feature.workdir.clone(),
+                feature.agent.clone(),
+                feature.is_worktree,
+                feature.id.clone(),
+                feature.mode.clone(),
+            )
+        };
+        self.store.projects[pi].features[fi].mode = mode.clone();
+        match self.save_reporting_conflict() {
+            Ok(true) => {}
+            Ok(false) => anyhow::bail!(SAVE_CONFLICT_MESSAGE),
+            Err(error) => {
+                if let Some((pi, fi)) = self.store.locate_feature_by_id(None, &feature_id) {
+                    self.store.projects[pi].features[fi].mode = previous_mode;
+                }
+                return Err(error);
+            }
+        }
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent, is_worktree);
+        Ok(())
+    }
+
+    pub(crate) fn change_selected_feature_vibe_mode(
+        &mut self,
+        mode: crate::project::VibeMode,
+        from_view: Option<&ViewState>,
+    ) -> Result<()> {
+        let (pi, fi) = if let Some(view) = from_view {
+            self.feature_for_view(view)
+                .and_then(|feature| self.store.locate_feature_by_id(None, &feature.id))
+                .ok_or_else(|| anyhow::anyhow!("Feature no longer exists"))?
+        } else {
+            match self.selection {
+                Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
+                Selection::Project(_) => anyhow::bail!("Select a feature first"),
+            }
+        };
+        self.change_feature_vibe_mode(pi, fi, mode)
+    }
+
     pub(crate) fn feature_tmux_session_is_shared(&self, pi: usize, fi: usize) -> bool {
         let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
             return false;

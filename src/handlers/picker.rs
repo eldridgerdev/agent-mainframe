@@ -117,6 +117,17 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 // deliberately does not return to `from_view`.
                                 app.start_plan_interview_for_selected_feature();
                             }
+                            crate::app::LocalCommand::ChangeVibeMode(index) => {
+                                if let Some(mode) = crate::project::VibeMode::ALL.get(index) {
+                                    match app.change_selected_feature_vibe_mode(mode.clone(), return_view.as_ref()) {
+                                        Ok(()) => app.push_toast_success(format!(
+                                            "Vibe mode changed to {}; restart agent sessions to apply",
+                                            mode.display_name()
+                                        )),
+                                        Err(err) => app.push_toast_error(err.to_string()),
+                                    }
+                                }
+                            }
                         },
                         CommandAction::CodexLiveDemo(debug_command) => {
                             if let Some(session_id) =
@@ -167,9 +178,12 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                 }
 
-                if let Some(view) = return_view
+                if let Some(mut view) = return_view
                     && matches!(app.mode, AppMode::Normal)
                 {
+                    if let Some(feature) = app.feature_for_view(&view) {
+                        view.vibe_mode = feature.mode.clone();
+                    }
                     app.mode = AppMode::Viewing(view);
                 }
             }

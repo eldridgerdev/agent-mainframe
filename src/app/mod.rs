@@ -350,6 +350,7 @@ pub enum LocalCommand {
     RefreshNotifications,
     CheckPendingDiffReview,
     PlanInterview,
+    ChangeVibeMode(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

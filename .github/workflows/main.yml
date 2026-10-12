@@ -14,9 +14,11 @@ permissions:
   contents: read
 
 # A newer push to a pull request supersedes the run for the older one. Pushes
-# and the scheduled audit key on their own commit, so they never cancel.
+# and the scheduled audit key on their own run, so they never cancel: a commit
+# id would be shared by one commit reaching two refs (main fast-forwarded to
+# testing), and the main run is the one that saves the caches.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 env:
@@ -172,9 +174,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       # Building the pinned tool from source takes minutes; keep the binary.
+      # Restore and save are separate steps because the combined action only
+      # saves when the job succeeds, and this job fails on any open advisory.
       - name: Restore pinned cargo-audit
         id: cargo-audit
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
@@ -188,6 +192,13 @@ jobs:
       - name: Install pinned cargo-audit
         if: steps.cargo-audit.outputs.cache-hit != 'true'
         run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: Save pinned cargo-audit
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ steps.cargo-audit.outputs.cache-primary-key }}
 
       - name: Audit locked dependencies against RustSec
         run: cargo audit --file Cargo.lock

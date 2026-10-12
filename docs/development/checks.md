@@ -113,7 +113,16 @@ to main write a cache; pull requests read it, so a PR that changes `Cargo.lock`
 rebuilds the changed dependencies until it merges. Workspace crates are never
 cached (a fresh checkout rebuilds them regardless), which is why CI turns off
 incremental compilation and builds with `line-tables-only` debuginfo. A newer
-push to a pull request cancels the run for the older one.
+push to a pull request cancels the run for the older one; push and scheduled
+runs are never cancelled.
+
+[release.yml](../../.github/workflows/release.yml)'s `test` job restores the
+cache that main.yml's `test` job saves on main, and never saves one itself (a
+cache written on a tag ref is invisible to every other tag). The match depends
+on the two jobs sharing a job id and the same `CARGO_*` environment, both of
+which `rust-cache` puts in its key: rename the job or change one workflow's
+`CARGO_*` variables without the other and every release tests from a cold
+build.
 
 `Dependency audit` runs on those PRs/pushes and Mondays at 07:17 UTC. Only the audit
 job runs on the schedule. Workflow permissions are `contents: read`; the audit

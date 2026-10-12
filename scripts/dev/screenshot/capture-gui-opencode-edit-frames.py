@@ -243,7 +243,7 @@ try:
     assert not approve_file.exists() and not pathlib.Path(approve_request['response_file']).parent.exists()
     capture('003-approved-hook-continues.png',
             'The actual hook consumes the approval, records its reason and permits the offline tool executor to write. Its notification and request-specific reply directory are removed, and the native queue is empty.',
-            ['Approved the edit to approve.py', 'No edits are waiting for review'])
+            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
 
     reject,reject_file,reject_request,reject_result=start_hook('reject')
     edit_ready('reject')
@@ -261,7 +261,7 @@ try:
     assert 'strict quota boundary' not in rejected['error']
     capture('005-rejected-tool-blocked.png',
             'The shipped hook rejects the offline tool execution with its generic rejection error. The private source and change history remain unchanged; no rejection feedback reaches the executor.',
-            ['Rejected the edit to reject.py', 'No edits are waiting for review'])
+            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
 
     cancel,cancel_file,cancel_request,cancel_result=start_hook('cancel')
     edit_ready('cancel')
@@ -277,7 +277,7 @@ try:
     assert len(cancelled['history'])==2 and cancelled['history'][-1]['reason'] is None
     capture('007-skipped-reason-hook-continues.png',
             'The real hook consumes cancellation as skip, permits the offline tool write and records a null reason. The request leaves the native queue without changing the earlier approved history.',
-            ['Cancelled the edit to cancel.py', 'No edits are waiting for review'])
+            ['No edits are waiting for review', 'Edits a Vibeless agent asks to write appear here.'])
 
     stale,stale_file,stale_request,stale_result=start_hook('stale')
     edit_ready('stale')

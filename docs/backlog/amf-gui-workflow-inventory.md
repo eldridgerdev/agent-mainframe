@@ -12,14 +12,19 @@ These labels describe the code in this branch, not a packaged GUI release.
 Keep them current as the staged GUI scope grows.
 
 Released Linux package validation (2026-10-11) is recorded separately from these
-source capabilities. The rootless v0.48.0/v0.49.0 Debian GUI and musl TUI pair
+source capabilities. The rootless v0.48.0/v0.49.0 Debian GUI or AppImage
+extract-and-run paired with the musl TUI
 passes independent upgrades in both orders, native GUI reattachment, real TUI
 dashboard startup, shared-record/schema preservation and unchanged live tmux
 process identities. The GNU v0.48.0 TUI fails on Ubuntu 22.04 because it requires
-GLIBC 2.39. System dependency resolution/installers, AppImage, other architectures
-and macOS remain open; the package task is not complete. Reproduce with the
+GLIBC 2.39. System dependency resolution/installers, AppImage FUSE/desktop integration, other architectures
+and macOS remain open; the package task is not complete. A separate fresh-server
+probe also found AppImage-created tmux servers inheriting invalid `PYTHONHOME` /
+`PYTHONPATH`: a new host Python import fails on both releases. Existing-session
+continuity passes; new Python startup needs a runtime fix. Reproduce with the
 [package validation guide](../development/linux-package-validation.md) and
-[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt).
+[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt)
+or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-appimage-pair.txt).
 
 | Status | GUI workflow |
 | --- | --- |

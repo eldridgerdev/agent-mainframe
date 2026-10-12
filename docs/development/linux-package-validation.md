@@ -2,7 +2,7 @@
 
 The reproducible runner exercises **released [v0.48.0](https://github.com/eldridgerdev/agent-mainframe/releases/tag/v0.48.0)
 and [v0.49.0](https://github.com/eldridgerdev/agent-mainframe/releases/tag/v0.49.0) payloads**,
-not binaries built from the current PR. The GUI uses the x86_64 GNU `.deb`;
+not binaries built from the current PR. The default GUI uses the x86_64 GNU `.deb`;
 the default TUI uses the x86_64 musl tarball, including its bundled tmux.
 Release asset SHA-256 values are pinned from GitHub's release asset metadata.
 Downloads come from `eldridgerdev/agent-mainframe` and fail if their digest
@@ -30,16 +30,28 @@ AMF_PACKAGE_ASSETS_DIR=/tmp/release-assets \
 python3 scripts/dev/screenshot/validate-linux-package-pair.py \
   /tmp/package-pair-gnu --tui-target gnu
 
+# AppImage extract-and-run: no FUSE mount or system installation.
+AMF_GUI_PACKAGE=appimage AMF_PACKAGE_ASSETS_DIR=/tmp/release-assets \
+  bash scripts/dev/screenshot/validate-linux-package-pair.sh /tmp/appimage-pair-proof
+
 python3 scripts/dev/screenshot/test_linux_package_pair.py
 ```
 
-Each upgrade order owns a temporary installation root, dpkg database, XDG
+Each upgrade order owns a temporary installation root, private dpkg database when
+using Debian packages, XDG
 configuration/state/data/cache and private tmux socket. `HOME` stays unchanged.
 The `.deb` is installed/configured with `fakeroot dpkg --root=...`; all dpkg logs
 also go to the output directory. The TUI archive goes into that root's private
 `opt/amf`, with directory replacement preserving the old mapped tmux binary.
 The runner checks GUI package name/version/architecture/dependencies and the
 installed dpkg status, and runs the TUI's real `--version` and dashboard.
+
+With `--gui-package appimage`, it instead verifies the official AppImage digest,
+atomically replaces an executable in the private root, and launches the actual
+AppImage runtime with `--appimage-extract-and-run`. Extraction uses a private
+`TMPDIR` and does not require FUSE. Screenshots accept only windows in the live,
+unreaped AppImage launcher's private process group, covering its child GUI;
+foreign groups and stale launcher identities are rejected.
 
 Five checkpoints cover the original pair, a GUI-only upgrade, the completed
 pair, a TUI-only upgrade in a separate fixture, and completion in the opposite
@@ -54,24 +66,41 @@ order. At each checkpoint:
   schema 43 to 45, and the older released interface can reopen that fixture
   after the newer interface migrates it.
 
-`package-validation.json` records versions, binary hashes, schema versions,
+The unpaid receiver starts and reports ready before either GUI opens, creating
+its tmux server independently of AppImage's environment. Every identity requires
+nonempty numeric session, pane and process IDs: `tmux display-message` succeeding
+with empty target fields does not count as a live session.
+
+`package-validation.json` records versions, package kind, binary hashes, schema versions,
 tmux version, process identities and received input. With `--capture`, five
 native PNGs and `capture-notes.jsonl` accompany it. Windows are selected by the
 owned GUI PID; cleanup stops only owned child groups and the private tmux server.
 All temporary installation roots are removed, including on assertion failure.
 The screenshot scenario is
-[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt).
+[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt),
+or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-appimage-pair.txt).
 
 Local validation on Ubuntu 22.04/WSLg passed both upgrade orders with the musl
-TUI and Debian GUI packages. The official v0.48.0 GNU TUI **failed to start**
+TUI and Debian GUI packages, and separately with the released AppImages using
+extract-and-run in both upgrade orders. The official v0.48.0 GNU TUI **failed to start**
 there because it requires `GLIBC_2.39`; the runner does not inject a loader or
 silently fall back to a different asset. Use the musl TUI on that host, or test
 the GNU artifact on a compatible host. The GUI `.deb` itself launched there.
 
+A separate fresh-server probe found a released AppImage packaging failure on
+Ubuntu 22.04: when the GUI starts the private tmux server first, that server
+inherits AppRun's `PYTHONHOME` and `PYTHONPATH` pointing into the extracted image.
+`/usr/bin/python3 --version` succeeds, but a new Python process importing `json`
+exits with `ModuleNotFoundError: No module named 'encodings'`. This reproduces
+with both v0.48.0 and v0.49.0. The existing-session proof creates its receiver
+before the GUI opens and **does not validate new Python process startup under
+an AppImage-created server**. No AppRun environment or released payload is
+modified to conceal that failure; fixing the runtime boundary is separate work.
+
 This is a **rootless payload and compatibility test**, not an apt installation:
 `--force-depends` is deliberate because the private dpkg database does not own
 the host GTK/WebKit libraries. Dependency resolution, desktop-menu integration,
-system uninstall/upgrade, AppImage/FUSE, other architectures, and macOS/Finder,
+system uninstall/upgrade, AppImage FUSE mounts/desktop integration, other architectures, and macOS/Finder,
 signing and notarization remain unvalidated. Compatibility here covers these
 two released versions and this additive schema fixture, not arbitrary version
 mixes, downgrades or concurrent mutation of the same feature. No current-source

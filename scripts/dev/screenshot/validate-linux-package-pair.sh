@@ -11,7 +11,8 @@ if [[ "${CI:-}" == "true" ]]; then
     dbus-x11 bubblewrap
 fi
 /usr/bin/python3 "$SCRIPT_DIR/test_linux_package_pair.py"
-args=("$OUT_DIR" --capture --tui-target "${AMF_PACKAGE_TUI_TARGET:-musl}")
+args=("$OUT_DIR" --capture --tui-target "${AMF_PACKAGE_TUI_TARGET:-musl}" \
+  --gui-package "${AMF_GUI_PACKAGE:-deb}")
 [[ -z "${AMF_PACKAGE_ASSETS_DIR:-}" ]] || args+=(--assets-dir "$AMF_PACKAGE_ASSETS_DIR")
 
 if [[ "${CI:-}" == "true" || -z "${DISPLAY:-}" ]]; then

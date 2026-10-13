@@ -176,6 +176,16 @@ are tagged.
 
 ### Fixed
 
+- Cancelling a desktop planning agent call returns to the editable interview
+  step instead of getting stuck on “Finishing up…”. Entered answers and the
+  previous AI consent choice are preserved for retrying or drafting without AI.
+  A call offered on its own — after a follow-up round, a Quick Plan
+  escalation, or resuming a draft — returns to the follow-ups choice.
+
+- A Quick Plan that escalates to a full Plan interview now writes a
+  synthesized plan after its follow-up rounds. It previously stopped at the
+  raw questions and answers.
+
 - **Keep custom settings when upgrading.** Starting either interface with an
   older global config now preserves unrecognized settings while applying the
   existing one-time defaults migration, and saving a setting from the terminal

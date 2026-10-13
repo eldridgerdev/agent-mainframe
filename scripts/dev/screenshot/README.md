@@ -593,3 +593,21 @@ keeping this harness's scenario grammar and its `expect:` assertions.
 Screenshotting a native terminal (kitty, wezterm) would need a virtual
 display and software GL on every runner for no gain in fidelity. Revisit
 only if true video — cursor blink, animation between frames — is needed.
+
+### Native TODO and planning proof
+
+`scenarios/gui-planning.txt` exercises the desktop through real Tauri IPC with
+private Git worktrees, SQLite and tmux. Its terminal and synthesis CLIs are
+local offline stand-ins that refuse checkouts without the fixture marker; it
+never invokes a paid harness. The scenario asserts scoped TODO reorder/move/copy,
+ordinary and TODO hook choices, form and resource-warning cancellation, an unsent
+composer handoff, and full/quick/TODO planning cancellation. It verifies that
+cancelled interviews save no plan, create no feature or agent and do not claim
+the TODO, while preserving their already-prepared checkouts. It also checks
+synthesis pre-call cancellation/retry and unsaved markdown surviving minimize.
+
+The native frames are paired with SQLite, filesystem and receiver assertions;
+the latter distinguish an editable draft from a message sent to a harness.
+Local runs may set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY` to reuse a
+matching desktop build. The binary's compiled dev URL must use the same port.
+The ordinary capture workflow builds the requested ref and defaults to port 1420.

@@ -1,0 +1,6 @@
+# Local use: call validate-linux-package-pair.sh directly, which owns a private socket.
+# Hosted CI's outer screenshot wrapper runs on an isolated runner.
+note:The isolated source-built TUI is setup only; package proof runs pinned released binaries.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:bash "$SCRIPT_DIR/validate-linux-package-pair.sh" "$OUT_DIR"

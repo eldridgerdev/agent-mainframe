@@ -11,6 +11,16 @@ milestone.
 These labels describe the code in this branch, not a packaged GUI release.
 Keep them current as the staged GUI scope grows.
 
+Released Linux package validation (2026-10-11) is recorded separately from these
+source capabilities. The rootless v0.48.0/v0.49.0 Debian GUI and musl TUI pair
+passes independent upgrades in both orders, native GUI reattachment, real TUI
+dashboard startup, shared-record/schema preservation and unchanged live tmux
+process identities. The GNU v0.48.0 TUI fails on Ubuntu 22.04 because it requires
+GLIBC 2.39. System dependency resolution/installers, AppImage, other architectures
+and macOS remain open; the package task is not complete. Reproduce with the
+[package validation guide](../development/linux-package-validation.md) and
+[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt).
+
 | Status | GUI workflow |
 | --- | --- |
 | Available | Change an existing feature's vibe mode from **More feature actions** in desktop or the TUI's AMF commands (`a` on a feature). Both interfaces save through the same operation and refresh the generated hooks of every harness the feature has a session for (a feature start does the same); restart agent sessions to apply the saved mode. Vibeless is unavailable when the feature's primary agent is Codex, the same rule every other launch path applies; a Codex session beside another primary agent is allowed in any mode. Desktop takes each mode's unavailable agents from `supported_modes` rather than restating the rule. While a changed feature keeps running, the TUI session header and the desktop feature subtitle show the launched mode followed by the saved one (`Vibeless → Vibe on restart`). That marker is local to the view or window that made the change: a view re-entered later, the other interface and a restarted AMF show only the saved mode, because the mode a session was launched with is not persisted. Regression tests cover persistence after another process reorders projects, a Codex primary agent, a secondary Codex session, per-harness hook refresh on change and on start, the picker omitting the current mode, the restart marker and rollback after a failed save. Native visual validation remains open. |

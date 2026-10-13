@@ -76,5 +76,18 @@ class BundleFilterTests(unittest.TestCase):
                 package_pair.bundle_filter(tarfile.TarInfo("redirect/outside"), str(destination))
 
 
+class AssetDigestTests(unittest.TestCase):
+    def test_mismatched_asset_is_refused_by_an_exception_not_an_assert(self):
+        # AssertionError would mean the gate disappears under `python -O`.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            asset = root / "assets/v0.49.0/amf-gui-x86_64-unknown-linux-gnu.deb"
+            asset.parent.mkdir(parents=True)
+            asset.write_bytes(b"not the released package")
+            proof = package_pair.PairProof(root / "scratch", root / "out", root / "assets", False, "musl")
+            with self.assertRaises(RuntimeError):
+                proof.asset("0.49.0", "deb")
+
+
 if __name__ == "__main__":
     unittest.main()

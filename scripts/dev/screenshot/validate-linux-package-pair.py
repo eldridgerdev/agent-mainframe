@@ -79,6 +79,10 @@ def wait(check, label):
     raise AssertionError(f"Timed out: {label}")
 
 
+class CommandRejected(AssertionError):
+    """The app answered a command with an error instead of running it."""
+
+
 class Inspector:
     def __init__(self, address):
         def target():
@@ -109,7 +113,8 @@ class Inspector:
     def invoke(self, name, args=None):
         self.evaluate(f"window.__packageResult=null;window.__TAURI_INTERNALS__.invoke({json.dumps(name)},{json.dumps(args or {})}).then(value=>window.__packageResult={{ok:true,value}},error=>window.__packageResult={{ok:false,error}})")
         result = wait(lambda: self.evaluate("window.__packageResult"), name)
-        assert result["ok"], result
+        if not result["ok"]:
+            raise CommandRejected(f"{name}: {result.get('error')}")
         return result.get("value")
 
     def close(self):
@@ -146,7 +151,9 @@ class PairProof:
         if not path.exists():
             directory.mkdir(parents=True, exist_ok=True)
             subprocess.run(["gh", "release", "download", "v" + version, "--repo", "eldridgerdev/agent-mainframe", "--pattern", name, "--dir", str(directory)], check=True)
-        assert sha256(path) == ASSETS[version][kind], f"Release asset digest mismatch: {path}"
+        # Not an assert: this gates executing a download, and -O strips asserts.
+        if sha256(path) != ASSETS[version][kind]:
+            raise RuntimeError(f"Release asset digest mismatch: {path}")
         return path
 
     def install_gui(self, version):
@@ -254,11 +261,16 @@ class PairProof:
         wait(lambda: self.inspector.evaluate("!!document.querySelector('.xterm')"), "reattached live terminal")
         marker = f"{name}: GUI {self.versions['gui']} / TUI {self.versions['tui']} ({self.tui_target}) — same live pane"
         # The app's real terminal_input command writes to its attached tmux pane.
-        for _ in range(50):
+        # Only a rejection (terminal not attached yet) is retried: it wrote
+        # nothing. A timed-out call may have been delivered, so it propagates
+        # rather than sending the marker a second time.
+        for attempt in range(50):
             try:
                 self.inspector.invoke("terminal_input", {"key": "package-feature:package-session", "text": marker + "\r"})
                 break
-            except AssertionError:
+            except CommandRejected:
+                if attempt == 49:
+                    raise
                 time.sleep(.1)
         wait(lambda: self.received.exists() and marker in json.loads(self.received.read_text()), "input reached unchanged fixture process")
         assert self.identity() == self.pane_identity
@@ -268,11 +280,14 @@ class PairProof:
             assert db.execute("SELECT id FROM projects").fetchall() == [("package-project",)]
             assert db.execute("SELECT id FROM features").fetchall() == [("package-feature",)]
             assert db.execute("SELECT id FROM feature_sessions").fetchall() == [("package-session",)]
-        record = {"phase": name, "versions": dict(self.versions), "pane_identity": self.pane_identity, "schema": schema, "initial_schema": self.initial_schema, "gui_sha256": sha256(self.root / "usr/bin/amf-gui"), "tui_sha256": sha256(self.root / "opt/amf/amf"), "tmux_version": subprocess.check_output(self.tmux[:1] + ["-V"], text=True).strip(), "terminal_input": marker}
+        record = {"phase": name, "versions": dict(self.versions), "pane_identity": self.pane_identity, "schema": schema, "initial_schema": self.initial_schema, "gui_sha256": sha256(self.root / "usr/bin/amf-gui"), "tui_sha256": sha256(self.root / "opt/amf/amf"), "tmux_server_version": subprocess.check_output(self.tmux + ["display-message", "-p", "-t", "amf-package-proof:codex", "#{version}"], text=True).strip(), "tmux_client_version": subprocess.check_output(self.tmux[:1] + ["-V"], text=True).strip(), "terminal_input": marker}
         self.report.append(record)
         if self.capture:
             self.screenshot(name, marker)
         self.close_gui()
+        # The opening smoke ran before this GUI touched the database. Reopen it
+        # in the TUI so an older TUI is also proven against a newer GUI's schema.
+        self.tui_smoke()
         print("PASS:", marker, flush=True)
 
     def screenshot(self, name, marker):
@@ -349,12 +364,17 @@ def main():
                         proof.install_gui("0.49.0")
                         proof.checkpoint("005-reverse-order-complete")
                     assert proof.report[-1]["schema"] == 45 and proof.initial_schema == 43
+                    # The mixed-version checkpoint must already be migrated, or the
+                    # older interface was never shown the newer schema.
+                    assert proof.report[-2]["schema"] == 45, proof.report[-2]
                     reports.append({"ordering": ordering, "checkpoints": proof.report})
                     notes.extend(proof.notes)
                 finally:
                     proof.cleanup()
     (out / "package-validation.json").write_text(json.dumps({"release_digest_pins": ASSETS, "tui_target": args.tui_target, "host": os.uname().sysname + " " + os.uname().machine, "host_glibc": os.confstr("CS_GNU_LIBC_VERSION"), "rootless_dependencies": "host GTK/WebKit; TUI bundled tmux; no apt resolution or system installation", "sequences": reports}, indent=2) + "\n")
-    (out / "capture-notes.jsonl").write_text("".join(json.dumps(note) + "\n" for note in notes))
+    if args.capture:
+        # build_static_gallery.py looks each PNG's note up under its .ansi name.
+        (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]}) + "\n" for n in notes))
 
 
 if __name__ == "__main__":

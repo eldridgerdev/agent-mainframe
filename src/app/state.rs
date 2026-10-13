@@ -3185,6 +3185,8 @@ pub struct PlanInterviewState {
     /// True once plan synthesis has been started or deliberately bypassed
     /// because no headless engine is available. Prevents a failed plan-file
     /// write from spending tokens again when the user retries completion.
+    /// Cleared when a Quick Plan escalates: that pass was triage and left no
+    /// plan, so the full interview's synthesis has not been attempted yet.
     pub synthesis_attempted: bool,
     /// The plan currently displayed at the review gate. App-level completion
     /// fills this with either valid synthesized markdown or the raw-Q&A

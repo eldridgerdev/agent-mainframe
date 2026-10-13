@@ -126,6 +126,10 @@ are tagged.
   A call offered on its own — after a follow-up round, a Quick Plan
   escalation, or resuming a draft — returns to the follow-ups choice.
 
+- A Quick Plan that escalates to a full Plan interview now writes a
+  synthesized plan after its follow-up rounds. It previously stopped at the
+  raw questions and answers.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

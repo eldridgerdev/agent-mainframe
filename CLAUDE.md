@@ -497,7 +497,9 @@ show a short plan, or escalate into the full interview.
 - **`escalate` outcome:** `App::escalate_quick_plan_to_full` flips a live
   interview's `kind` to `Full` **in place** — nothing is reset, so the brief
   and every answer already given carry forward into the full round exactly as
-  the interview decision requires — sets `ai_followups_opted_in`, and
+  the interview decision requires — sets `ai_followups_opted_in`, clears
+  `synthesis_attempted` (the Quick pass was triage and left no plan; left
+  set, the full rounds would end at the raw Q&A review), and
   re-enters `continue_plan_interview_after_done()` so the ordinary full-mode
   round/synthesis branching takes over from there with the full `PromptId`s.
   The user sees an explicit toast ("Quick Plan → full Plan interview: …")

@@ -1976,9 +1976,10 @@ fn requested_synthesis_without_a_harness_explains_the_raw_fallback() {
     );
 }
 
-/// No current transition re-enters `Done` after synthesis has been attempted,
-/// but if one is ever added it must re-open the plan already paid for instead
-/// of starting a second headless pass.
+/// No current transition re-enters `Done` with synthesis still marked
+/// attempted (a Quick Plan escalation clears the mark), but if one is ever
+/// added it must re-open the plan already paid for instead of starting a
+/// second headless pass.
 #[test]
 fn done_after_synthesis_reopens_the_existing_plan_without_spending_tokens() {
     let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
@@ -2004,6 +2005,73 @@ fn done_after_synthesis_reopens_the_existing_plan_without_spending_tokens() {
                 && state.synthesized_plan.as_deref()
                     == Some(synthesized_plan_response().as_str())
     ));
+}
+
+/// A Quick Plan escalation re-enters `Done` after a synthesis pass, but that
+/// pass was Quick Plan's triage and produced no plan. The full interview it
+/// hands off to must still synthesize once its rounds are spent, rather than
+/// take the "already paid for" arm and show the raw answers.
+#[test]
+fn escalated_quick_plan_still_synthesizes_after_its_full_rounds() {
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    state.kind = PlanInterviewMode::Quick;
+    state.questions.clear();
+    state.answers.clear();
+    state.brief = "Rework quota billing".into();
+    // Pin an engine so each call stops at its pre-call notice unspawned.
+    state.ai_harness = Some(Some(AgentKind::Codex));
+    state.ai_followups_opted_in = true;
+    state.ai_rounds_completed = crate::plan_interview::MAX_QUICK_AI_ROUNDS;
+    state.begin_synthesis(0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_synthesis_bg = Some(rx);
+    tx.send(Ok(
+        "```json\n{\"outcome\":\"escalate\",\"reason\":\"Touches billing\"}\n```".to_string(),
+    ))
+    .unwrap();
+    assert!(app.poll_plan_interview_synthesis_bg());
+
+    // The escalation offers the full interview's next round.
+    let AppMode::PromptPrecall(pending) = std::mem::replace(&mut app.mode, AppMode::Normal) else {
+        panic!("expected the round notice");
+    };
+    assert_eq!(
+        pending.action,
+        crate::app::precall::PrecallAction::PlanRound
+    );
+    app.mode = *pending.prior_mode;
+
+    // That round runs and returns nothing usable, spending the last one.
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!("expected plan interview mode");
+    };
+    assert_eq!(state.kind, PlanInterviewMode::Full);
+    state.begin_ai_round(0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.plan_interview_ai_bg = Some(rx);
+    tx.send((
+        crate::plan_interview::MAX_AI_ROUNDS,
+        Ok("```json\n{\"questions\":[]}\n```".to_string()),
+    ))
+    .unwrap();
+    assert!(app.poll_plan_interview_ai_bg());
+
+    let AppMode::PromptPrecall(pending) = &app.mode else {
+        panic!("expected the full synthesis notice, not a raw Q&A review");
+    };
+    assert_eq!(
+        pending.action,
+        crate::app::precall::PrecallAction::PlanSynthesis
+    );
+    assert_eq!(
+        pending.prompt_id,
+        crate::prompts::PromptId::PlanInterviewSynthesis
+    );
+    assert!(app.plan_interview_synthesis_bg.is_none());
 }
 
 /// Task 11: the plan-interview AI round is a *user-initiated* headless call,

@@ -111,7 +111,7 @@ notes = []
 captured_frames = set()
 
 
-def capture(name, note, expects, expression=None, allow_error=False):
+def capture(name, note, expects, expression=None):
     wait('document.fonts.status==="loaded"')
     for text in expects:
         wait(f"document.body.innerText.includes({json.dumps(text)})")
@@ -120,8 +120,7 @@ def capture(name, note, expects, expression=None, allow_error=False):
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
-    if not allow_error:
-        assert not evaluate('!!document.querySelector("[role=alert]")'), body
+    assert not evaluate('!!document.querySelector("[role=alert]")'), body
     if expression:
         assert evaluate(expression), expression
     time.sleep(0.25)
@@ -465,6 +464,11 @@ try:
 
 finally:
     (out / 'capture-notes.jsonl').write_text(''.join(json.dumps(note) + '\n' for note in notes))
-    (out / 'last-state.txt').write_text(evaluate('document.body.innerText'))
+    # Best effort: a dead or timed-out inspector socket must not bury the
+    # failure that got here, nor skip the closes below.
+    try:
+        (out / 'last-state.txt').write_text(evaluate('document.body.innerText'))
+    except Exception as error:
+        print(f'Could not record the final page state: {error!r}', file=sys.stderr)
     ws.close()
     x.close()

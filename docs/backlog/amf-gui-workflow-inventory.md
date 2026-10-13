@@ -44,7 +44,7 @@ Keep them current as the staged GUI scope grows.
 | Available | Code syntax highlighting in unified/side-by-side diffs, Final Review, supervised edits and the Learning reader, using the TUI's tree-sitter service: the same language detection, parsers and token classes, with whole-file context for multi-line strings and comments. File headers name the language or explain plain text (unknown language, parser missing or broken, too large, binary), and a missing or broken parser can be installed after explicit confirmation with the TUI picker's installer. Colours come from `--syn-*` tokens for light and dark. |
 | Limited | The GUI installs only the shown file's parser; uninstalling and the full language list stay in the TUI's syntax picker. Twelve asserted native WSLg frames cover the install, five languages, a review line comment and the Learning reader in light and dark; macOS validation remains open. |
 | Available | Prompt library browsing from workspace navigation or an agent composer, with shared user/global/project/worktree sources, fuzzy name/body and `#tag` search, original/resolved previews, required text/multiline fields and configured/inline choices. Add to draft targets an allowed Claude, Codex, OpenCode or Pi session, appends existing text and leaves sending explicit. Stopped agent drafts are editable before start. Template/checkout changes and stale/deleted/disallowed targets are rechecked before insertion. |
-| Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
+| Limited | Six asserted native Linux frames cover all four source scopes, tag search, required/multiline/choice fields, cancellation, external template edits and append-only unsent Codex handoff through real Rust IPC. Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`; paid-harness and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
 | Available | Headless prompt override manager from workspace navigation, with every registry prompt, its effective layer (and per-harness winner), placeholders, effective and built-in templates. Save feature, project (`amf.json`) or global overrides, shared or per harness. Clear one stored override with confirmation. Unsaved-edit protection is included. Stale saves after TUI, other-window or hand edits of `amf.json` are refused until reloaded, and malformed `amf.json` is reported without being overwritten. Pending Final Review and planning AI calls link to the manager through **Edit prompt**. |
 | Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
 | Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
@@ -376,8 +376,14 @@ Completed increments and remaining work, in priority order:
   suite passes (3,235 library tests and seven GUI-crate tests; one pre-existing
   live-GitHub acceptance test ignored). All 136 frontend tests, production frontend
   build, both executable builds, formatting and strict workspace/all-target Clippy
-  pass. The library inventory retains all 3,229 baseline test names and adds seven. Native desktop and macOS
-  interaction validation remain open; authoring/export and overrides are later work.
+  pass. The library inventory retains all 3,229 baseline test names and adds seven.
+  Six asserted native Linux frames now verify four-source browsing, tag search,
+  required/multiline/choice fields, cancellation, external-edit retirement and
+  an append-only unsent Codex handoff using private SQLite/Git/worktree/tmux.
+  Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`.
+  Paid-harness and macOS interaction validation remain open; library
+  authoring/export remain in the TUI. Prompt overrides have since shipped
+  separately, as recorded below.
 
 - [ ] **Remaining diff and review parity.** Complete diff-related workflows,
   including finish-time batch suggestion application, finish checks and feedback

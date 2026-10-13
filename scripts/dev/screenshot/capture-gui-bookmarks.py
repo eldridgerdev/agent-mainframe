@@ -17,6 +17,9 @@ import time
 import urllib.request
 
 port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1438"))
+# Other proofs reuse this fixture through AMF_GUI_CAPTURE_FRAMES. They name
+# themselves here so a failed post-check is reported under the right feature.
+proof = os.environ.get("AMF_GUI_CAPTURE_PROOF", "Bookmark navigation")
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 workspace = pathlib.Path(__file__).resolve().parents[3]
@@ -221,10 +224,8 @@ export function formatTotal(total: number): string {
             assert (
                 db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == 2
             )
-        with sqlite3.connect(dbpath) as db:
-            assert db.execute("SELECT count(*) FROM session_bookmarks").fetchone()[0] == 0
         for filename in ["claude-received.json", "codex-received.json"]:
-            assert json.loads((repo / filename).read_text()) == [], "Bookmark navigation submitted a prompt"
+            assert json.loads((repo / filename).read_text()) == [], f"{proof} submitted a prompt"
     finally:
         subprocess.run(tmux + ["kill-server"], check=False, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:

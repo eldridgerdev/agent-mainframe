@@ -1,6 +1,5 @@
 //! Scoped desktop edits of global settings. Preserve the rest of the
 //! JSON document and refuse edits based on an older file.
-use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
@@ -154,21 +153,17 @@ fn update_document(
     commit_document(path, &value)
 }
 
-/// Hold this guard through the freshness check and atomic commit. Other config
-/// writers do not participate; callers must also compare original revisions.
+/// Hold this guard through the freshness check and atomic commit. Startup
+/// migration and TUI settings saves take the same lock for `config.json`, but
+/// a hand edit takes none, so callers must also compare original revisions.
+/// Gives up after about a second: a stuck holder fails the save with a reason
+/// instead of hanging it.
 pub(crate) fn lock_document(path: &Path) -> GuiResult<std::fs::File> {
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
     std::fs::create_dir_all(dir).map_err(anyhow::Error::from)?;
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path.with_extension("json.lock"))
-        .map_err(anyhow::Error::from)?;
-    lock.lock().map_err(anyhow::Error::from)?;
-    Ok(lock)
+    Ok(crate::app::setup::lock_config(path)?)
 }
 
 /// Atomically replace a scoped JSON document, preserving existing permissions.
@@ -179,24 +174,13 @@ pub(crate) fn commit_document(path: &Path, value: &serde_json::Value) -> GuiResu
 
 /// Preserve permissions from an effective legacy document when creating the
 /// canonical file. The source is read for metadata only and is never modified.
+/// A symlinked document is written through, leaving the link in place.
 pub(crate) fn commit_document_preserving(
     path: &Path,
     value: &serde_json::Value,
     permissions_from: &Path,
 ) -> GuiResult<String> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("Config directory is missing"))?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(anyhow::Error::from)?;
-    if let Ok(metadata) = std::fs::metadata(permissions_from) {
-        temp.as_file()
-            .set_permissions(metadata.permissions())
-            .map_err(anyhow::Error::from)?;
-    }
-    serde_json::to_writer_pretty(&mut temp, value).map_err(anyhow::Error::from)?;
-    temp.flush().map_err(anyhow::Error::from)?;
-    temp.persist(path)
-        .map_err(|error| anyhow::Error::new(error.error))?;
+    crate::app::setup::write_json_document(path, value, permissions_from)?;
     let bytes = serde_json::to_vec_pretty(value).map_err(anyhow::Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
@@ -1132,6 +1116,66 @@ mod tests {
             merge_project_extension_config(&config.extension, dir.path()).allowed_agents(),
             vec![AgentKind::Pi]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_config_is_written_through_and_stays_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let dotfiles = dir.path().join("dotfiles");
+        let home = dir.path().join("amf");
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let target = dotfiles.join("amf-config.json");
+        let path = home.join("config.json");
+        std::fs::write(&target, r#"{"future":true}"#).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/amf-config.json", &path).unwrap();
+        let initial = read(&path).unwrap().1;
+        let saved = save_at(
+            &path,
+            &initial.revision,
+            DormancySettings {
+                idle_minutes: 15,
+                unattended_hours: 0,
+            },
+        )
+        .unwrap();
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&target).unwrap()).unwrap();
+        assert_eq!(written["dormant_idle_minutes"], 15);
+        assert_eq!(written["future"], true);
+        // The revision describes the file a reload will find behind the link.
+        assert_eq!(read(&path).unwrap().1.revision, saved.revision);
+    }
+
+    #[test]
+    fn a_held_lock_fails_the_save_instead_of_hanging_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"future":true}"#).unwrap();
+        let initial = read(&path).unwrap().1;
+        let holder = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("json.lock"))
+            .unwrap();
+        holder.lock().unwrap();
+        let settings = DormancySettings {
+            idle_minutes: 15,
+            unattended_hours: 0,
+        };
+        let started = std::time::Instant::now();
+        let error = save_at(&path, &initial.revision, settings.clone()).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(error.message.contains("config.json.lock"), "{error:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"future":true}"#
+        );
+        drop(holder);
+        save_at(&path, &initial.revision, settings).unwrap();
     }
 
     #[test]

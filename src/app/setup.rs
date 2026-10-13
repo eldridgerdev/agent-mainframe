@@ -925,11 +925,12 @@ fn read_config_document(path: &Path) -> anyhow::Result<Option<(serde_json::Value
 const CONFIG_LOCK_ATTEMPTS: u32 = 20;
 const CONFIG_LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// Take the lock every `config.json` writer shares, giving up after about a
-/// second. A healthy holder is done in milliseconds; waiting indefinitely on a
-/// stuck one would hang startup, or the UI thread on a settings save, with
-/// nothing on screen to say why.
-fn lock_config(path: &Path) -> anyhow::Result<std::fs::File> {
+/// Take the lock every writer of this JSON config shares (`config.json`, or a
+/// project's `amf.json` for the desktop), giving up after about a second. A
+/// healthy holder is done in milliseconds; waiting indefinitely on a stuck one
+/// would hang startup, or the UI thread on a settings save, with nothing on
+/// screen to say why.
+pub(crate) fn lock_config(path: &Path) -> anyhow::Result<std::fs::File> {
     let lock_path = path.with_extension("json.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -986,9 +987,9 @@ fn merge_config_changes(
     }
 }
 
-/// The file a config write has to replace. `config.json` is often a symlink
-/// into a dotfiles checkout, and renaming over the link itself would swap it
-/// for a regular file and leave the checkout stale.
+/// The file a config write has to replace. A config is often a symlink into a
+/// dotfiles checkout, and renaming over the link itself would swap it for a
+/// regular file and leave the checkout stale.
 fn config_write_target(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
         // A link whose target does not exist yet: create the target, as a
@@ -1001,12 +1002,23 @@ fn config_write_target(path: &Path) -> PathBuf {
 /// Replace the global config with `value` in one rename, keeping the mode of
 /// the file it replaces.
 fn write_config_document(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    write_json_document(path, value, path)
+}
+
+/// Replace a JSON config with `value` in one rename, through a symlink if
+/// `path` is one. The new file takes its mode from `permissions_from`: `path`
+/// itself, or the legacy file a first canonical copy is made from.
+pub(crate) fn write_json_document(
+    path: &Path,
+    value: &serde_json::Value,
+    permissions_from: &Path,
+) -> anyhow::Result<()> {
     let target = config_write_target(path);
     let dir = target
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
     std::fs::create_dir_all(dir)?;
-    let existing = std::fs::metadata(&target).ok();
+    let existing = std::fs::metadata(permissions_from).ok();
     let mut builder = tempfile::Builder::new();
     // A temp file is private (0600) by default. A config created here gets the
     // umask-default mode a plain create would have given it.

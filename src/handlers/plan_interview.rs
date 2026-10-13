@@ -393,6 +393,13 @@ const REVIEW_FAST_SCROLL_STEP: usize = 8;
 
 fn handle_plan_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
+        KeyCode::Char('d') if key.modifiers.is_empty() => {
+            if let AppMode::PlanInterview(state) = &mut app.mode {
+                state.review_diagrams.toggle_source();
+                state.review_rendered_lines.clear();
+                state.review_scroll_offset = 0;
+            }
+        }
         KeyCode::Esc => {
             if let AppMode::PlanInterview(state) = &mut app.mode {
                 state.abort_confirmation = true;

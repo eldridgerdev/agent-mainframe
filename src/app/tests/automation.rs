@@ -231,7 +231,10 @@ fn create_feature_automation_creates_and_starts_feature() {
                 && name == "automation-project-feature-1"
                 && branch == "feature-1"
         })
-        .returning(move |_, _, _| Ok(worktree_clone.clone()));
+        .returning(move |_, _, _| {
+            std::fs::create_dir_all(&worktree_clone).unwrap();
+            Ok(worktree_clone.clone())
+        });
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(1).returning(|_| false);
@@ -416,7 +419,10 @@ fn batch_feature_automation_creates_project_and_starts_features() {
                 && name == "plan-batch-plan-1"
                 && branch == "plan-1"
         })
-        .returning(move |_, _, _| Ok(worktree_one_clone.clone()));
+        .returning(move |_, _, _| {
+            std::fs::create_dir_all(&worktree_one_clone).unwrap();
+            Ok(worktree_one_clone.clone())
+        });
     let repo_for_second = repo.clone();
     let worktree_two_clone = worktree_two.clone();
     worktree
@@ -427,7 +433,10 @@ fn batch_feature_automation_creates_project_and_starts_features() {
                 && name == "plan-batch-plan-2"
                 && branch == "plan-2"
         })
-        .returning(move |_, _, _| Ok(worktree_two_clone.clone()));
+        .returning(move |_, _, _| {
+            std::fs::create_dir_all(&worktree_two_clone).unwrap();
+            Ok(worktree_two_clone.clone())
+        });
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(2).returning(|_| false);

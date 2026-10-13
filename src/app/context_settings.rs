@@ -69,56 +69,49 @@ impl App {
             return false;
         };
 
-        let window_override = if state.window_limit_input.trim().is_empty() {
-            None
-        } else {
-            match state.window_limit_input.trim().parse::<u64>() {
-                Ok(0) | Err(_) => {
-                    self.context_settings_set_error(
-                        "Context window must be a positive number of tokens (or blank to clear)"
-                            .to_string(),
-                    );
-                    return false;
-                }
-                Ok(limit) => Some(limit),
-            }
-        };
-
-        let warning_percent = match state.warning_input.trim().parse::<u8>() {
-            Ok(value) if (1..=100).contains(&value) => value,
-            _ => {
-                self.context_settings_set_error(
-                    "Warning % must be a whole number between 1 and 100".to_string(),
-                );
+        let settings = match crate::context_tracking::parse_context_settings(
+            &state.window_limit_input,
+            &state.warning_input,
+            &state.critical_input,
+        ) {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.context_settings_set_error(error);
                 return false;
             }
         };
-
-        let critical_percent = match state.critical_input.trim().parse::<u8>() {
-            Ok(value) if (1..=100).contains(&value) => value,
-            _ => {
-                self.context_settings_set_error(
-                    "Critical % must be a whole number between 1 and 100".to_string(),
-                );
-                return false;
-            }
-        };
-
-        if critical_percent <= warning_percent {
-            self.context_settings_set_error(
-                "Critical % must be greater than Warning %".to_string(),
-            );
-            return false;
-        }
-
-        self.config.context_window_override = window_override;
-        self.config.context_warning_percent = warning_percent;
-        self.config.context_critical_percent = critical_percent;
+        self.apply_context_settings(settings);
         self.save_config();
 
         self.mode = AppMode::Normal;
         self.message = Some("Saved context settings".into());
         true
+    }
+
+    pub(crate) fn apply_context_settings(
+        &mut self,
+        settings: crate::context_tracking::ContextSettings,
+    ) {
+        use crate::context_tracking::{ContextFreshness, ContextProvenance, ContextThresholds};
+        let limit_changed = self.config.context_window_override != settings.window_override;
+        self.config.context_window_override = settings.window_override;
+        self.config.context_warning_percent = settings.warning_percent;
+        self.config.context_critical_percent = settings.critical_percent;
+        let thresholds = ContextThresholds {
+            warning_percent: settings.warning_percent,
+            critical_percent: settings.critical_percent,
+        };
+        for state in self.context_states.values_mut() {
+            if let Some(snapshot) = &mut state.snapshot {
+                snapshot.band = thresholds.band_for(snapshot.percentage);
+                // A direct sample carries the harness's own limit, which the
+                // override never replaces.
+                if limit_changed && snapshot.provenance != ContextProvenance::Direct {
+                    snapshot.freshness = ContextFreshness::Stale;
+                }
+            }
+        }
+        self.context_hint_states.sync_all(&self.context_states);
     }
 
     fn context_settings_set_error(&mut self, error: String) {

@@ -8,7 +8,8 @@ compiler version is not separately tested; CI uses stable.
 
 The full suite runs on Unix and uses temporary Git repositories, shell/process
 fixtures, Unix sockets and FIFOs. Install `git`, `tmux`, `sh`, `bash`, `ps`, `sleep`,
-`mkfifo` and a C toolchain. On Ubuntu, CI installs `build-essential pkg-config git
+`mkfifo`, `python3` and a C toolchain (without `python3`, the one test that imports
+the injected interaction drivers skips that step and says so). On Ubuntu, CI installs `build-essential pkg-config git
 tmux bash coreutils procps`; on macOS it uses the runner's Xcode/Unix tools and
 installs tmux with Homebrew. No authenticated GitHub account or paid agent harness
 is required for tests. Running AMF itself requires whichever of Claude Code,
@@ -29,6 +30,28 @@ cargo test --workspace --locked
 cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+For AI interaction tooling, run the Python checks and native TUI smoke check:
+
+```sh
+python3 scripts/dev/test_ai_driver.py
+python3 scripts/dev/gui-driver/test_driver.py
+python3 scripts/dev/tui-driver/test_driver.py
+cargo build --locked --bin amf
+python3 scripts/dev/tui-driver/smoke.py
+```
+
+The smoke check needs tmux and no display/browser or paid harness. It uses a
+private server/database and covers real TUI input, persistence and terminal
+modes. See [the TUI driver guide](tui-ai-driver.md) for compact observations and
+[the GUI driver guide](gui-ai-driver.md) for native desktop interaction.
+
+The Rust `app::tests::hooks_setup` suite checks injected `amf-interact` bundles
+for all four harnesses, including imports from another working directory,
+asset refresh and cleanup. `cargo package --locked --allow-dirty --list` must
+include `skills/amf-interact/` and the embedded driver sources. Both native smoke
+commands accept `--driver` to exercise an injected copy; the GUI smoke also
+accepts `--source` for the matching AMF checkout.
 
 The live `gui_terminal` tests run concurrently in separate child test processes.
 Each child uses its own test-only tmux socket and a keeper session so fixture
@@ -76,9 +99,30 @@ Dashboard `D` opens the log; the file is `~/.local/state/amf/debug.log`.
 [main.yml](../../.github/workflows/main.yml) runs on PRs targeting main/master and
 pushes to main/master/testing. Linux retains the required-check name `Test`;
 macOS adds `Test (macOS)`. Both execute the full locked parallel suite with
-explicit prerequisite installation/checks. `Lint` runs once on Linux. Existing
+explicit prerequisite installation/checks, then the screenshot driver's
+real-tmux isolation suite (`scripts/dev/screenshot/test_capture_isolation.py`,
+which needs `python3` but no AMF build). `Lint` runs once on Linux. Existing
 check names and triggers remain; the workflow does not change branch protection.
 Maintainers can require the new macOS/audit checks after verifying their runs.
+
+Dependency builds are cached by `Swatinem/rust-cache`, which keys each cache by
+job and platform. `Test` and `Lint` must not share one: `cargo test` needs
+codegen artifacts and Clippy only check metadata, so a shared key leaves
+whichever job saves second compiling every dependency on every run. Only pushes
+to main write a cache; pull requests read it, so a PR that changes `Cargo.lock`
+rebuilds the changed dependencies until it merges. Workspace crates are never
+cached (a fresh checkout rebuilds them regardless), which is why CI turns off
+incremental compilation and builds with `line-tables-only` debuginfo. A newer
+push to a pull request cancels the run for the older one; push and scheduled
+runs are never cancelled.
+
+[release.yml](../../.github/workflows/release.yml)'s `test` job restores the
+cache that main.yml's `test` job saves on main, and never saves one itself (a
+cache written on a tag ref is invisible to every other tag). The match depends
+on the two jobs sharing a job id and the same `CARGO_*` environment, both of
+which `rust-cache` puts in its key: rename the job or change one workflow's
+`CARGO_*` variables without the other and every release tests from a cold
+build.
 
 `Dependency audit` runs on those PRs/pushes and Mondays at 07:17 UTC. Only the audit
 job runs on the schedule. Workflow permissions are `contents: read`; the audit
@@ -100,7 +144,9 @@ Audit reads the existing lockfile and fetches the current RustSec database; it
 has no `--locked` option. Known vulnerabilities fail the job. Advisory warnings
 (including unmaintained, unsound and yanked dependencies) remain visible in the log even when
 they are not fatal. The audit build uses a C toolchain, pkg-config and OpenSSL
-headers. No advisory exceptions are configured by this change. The local scan and
+headers. CI keeps the built binary in a cache keyed by the pinned version, so
+the build and its prerequisites run only when that version changes or the cache
+has expired. No advisory exceptions are configured by this change. The local scan and
 remaining warning follow-ups are recorded in [advisories.md](advisories.md).
 
 The repository maintainer owns advisory triage: identify the affected dependency

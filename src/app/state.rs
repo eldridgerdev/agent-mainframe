@@ -86,6 +86,10 @@ pub struct ViewState {
     pub session_label: String,
     pub session_kind: SessionKind,
     pub vibe_mode: VibeMode,
+    /// The feature's saved mode when it differs from the one this view's
+    /// agent was launched with. `vibe_mode` stays on the launched mode -- the
+    /// flags the live agent is really running under -- until a restart.
+    pub pending_vibe_mode: Option<VibeMode>,
     pub review: bool,
     pub scroll_offset: usize,
     pub scroll_content: String,
@@ -119,6 +123,7 @@ impl ViewState {
             session_label,
             session_kind,
             vibe_mode,
+            pending_vibe_mode: None,
             review,
             scroll_offset: 0,
             scroll_content: String::new(),
@@ -130,6 +135,29 @@ impl ViewState {
             todos_expanded: false,
             startup_mask_started_at: None,
         }
+    }
+
+    /// Record a mode saved for the feature while this view is open. A live
+    /// agent keeps its launch flags, so its badge stays put and the saved mode
+    /// is shown as pending; any other session has no flags to go stale and
+    /// simply takes the saved mode.
+    pub fn note_saved_vibe_mode(&mut self, saved: &VibeMode) {
+        if !self.session_kind.is_agent_harness() {
+            self.vibe_mode = saved.clone();
+            return;
+        }
+        self.pending_vibe_mode = (*saved != self.vibe_mode).then(|| saved.clone());
+    }
+
+    /// The header's "saved mode is waiting on a restart" marker, shared by the
+    /// renderer and the mouse hit-test so their widths cannot disagree.
+    pub fn pending_vibe_mode_badge(&self) -> Option<String> {
+        self.pending_vibe_mode.as_ref().map(|mode| {
+            format!(
+                "\u{2192} {} on restart ",
+                mode.display_name().to_lowercase()
+            )
+        })
     }
 
     pub fn show_startup_mask(&mut self) {
@@ -2343,6 +2371,7 @@ pub struct MarkdownViewerState {
     pub scroll_offset: usize,
     pub rendered_width: u16,
     pub rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub diagrams: crate::mermaid::DiagramDocument,
     pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
     pub current_plan: bool,
@@ -3183,6 +3212,7 @@ pub struct PlanInterviewState {
     pub review_scroll_offset: usize,
     pub review_rendered_width: u16,
     pub review_rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub review_diagrams: crate::mermaid::DiagramDocument,
     pub edit_scroll_offset: usize,
     pub edit_sync_to_cursor: bool,
     /// Start time and prompt-size estimate for a directed revision. The
@@ -3405,6 +3435,7 @@ impl PlanInterviewState {
             review_scroll_offset: 0,
             review_rendered_width: 0,
             review_rendered_lines: Vec::new(),
+            review_diagrams: crate::mermaid::DiagramDocument::default(),
             edit_scroll_offset: 0,
             edit_sync_to_cursor: false,
             directed_feedback_started_at: None,

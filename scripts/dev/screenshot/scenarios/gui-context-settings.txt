@@ -1,0 +1,5 @@
+# Hosted CI uses the ordinary wrapper; local capture must run the private native runner directly.
+note:The isolated TUI is ready before native context-settings validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_PORT=1440 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1440"}}' AMF_GUI_CAPTURE_CONFIG="$SCRIPT_DIR/scenarios/gui-context-settings-config.json" AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-agent-availability.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-context-settings-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

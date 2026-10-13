@@ -344,15 +344,16 @@ pub enum CodexDebugCommand {
     ClearInputDemo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
     PlanInterview,
+    ChangeVibeMode(VibeMode),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     SlashCommand,
     Local { command: LocalCommand },
@@ -970,6 +971,7 @@ pub struct App {
     pub theme: crate::theme::Theme,
     pub selection: Selection,
     pub mode: AppMode,
+    pub(crate) diagram_worker: crate::mermaid::DiagramWorker,
     /// A plan interview temporarily parked while the user inspects the
     /// dashboard or one of its sessions. Unlike a persisted draft this keeps
     /// the live editor cursor and uncommitted answer text intact.
@@ -1530,6 +1532,10 @@ impl App {
             view.session_label.hash(&mut hasher);
             std::mem::discriminant(&view.session_kind).hash(&mut hasher);
             std::mem::discriminant(&view.vibe_mode).hash(&mut hasher);
+            view.pending_vibe_mode
+                .as_ref()
+                .map(std::mem::discriminant)
+                .hash(&mut hasher);
             view.review.hash(&mut hasher);
             view.scroll_offset.hash(&mut hasher);
             view.scroll_mode.hash(&mut hasher);
@@ -2568,6 +2574,7 @@ impl App {
             theme,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            diagram_worker: crate::mermaid::DiagramWorker::default(),
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
             pending_todo_spawn_prompt: None,
@@ -2837,6 +2844,7 @@ impl App {
             theme: crate::theme::Theme::default(),
             selection: Selection::Project(0),
             mode: AppMode::Normal,
+            diagram_worker: crate::mermaid::DiagramWorker::default(),
             paused_plan_interview: None,
             pending_todo_plan_brief: None,
             pending_todo_spawn_prompt: None,
@@ -3554,11 +3562,20 @@ impl App {
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
-        let ext_allowed = self.extension_for_repo(repo).allowed_agents();
+        self.installed_agents(self.extension_for_repo(repo).allowed_agents())
+    }
+
+    /// The global choices alone, for a project that does not exist yet and so
+    /// has no `amf.json` to override them.
+    pub(crate) fn globally_allowed_agents(&self) -> Vec<AgentKind> {
+        self.installed_agents(load_global_extension_config().allowed_agents())
+    }
+
+    fn installed_agents(&self, allowed: Vec<AgentKind>) -> Vec<AgentKind> {
         if self.store.available_harnesses.is_empty() {
-            ext_allowed
+            allowed
         } else {
-            ext_allowed
+            allowed
                 .into_iter()
                 .filter(|a| self.store.available_harnesses.contains(a))
                 .collect()
@@ -3727,7 +3744,7 @@ impl App {
         agent: &AgentKind,
         mode: &VibeMode,
     ) -> Result<()> {
-        if matches!(agent, AgentKind::Codex) && matches!(mode, VibeMode::Vibeless) {
+        if !mode.supports_agent(agent) {
             anyhow::bail!(
                 "Codex does not support Vibeless diff review. Use Claude/Opencode, or switch to Vibe or SuperVibe."
             );

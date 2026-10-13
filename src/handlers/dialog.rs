@@ -275,6 +275,13 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => {
             app.refresh_markdown_viewer()?;
         }
+        KeyCode::Char('d') if key.modifiers.is_empty() => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.diagrams.toggle_source();
+                state.rendered_lines.clear();
+                state.scroll_offset = 0;
+            }
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::MarkdownViewer(state) => state.from_view,
@@ -1047,6 +1054,7 @@ mod tests {
             scroll_offset: 0,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: Some(picker),
             from_view: Some(view),
             current_plan: false,
@@ -1068,6 +1076,73 @@ mod tests {
     }
 
     #[test]
+    fn markdown_viewer_mermaid_completion_replaces_pending_lines_and_source_toggle_preserves_content()
+     {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = markdown_app();
+        let content = "# Design\n\n```mermaid\nflowchart TD\n A[Start] --> B[Finish]\n```\n";
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "plan.md".into(),
+            source_path: PathBuf::from("plan.md"),
+            content: content.into(),
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
+            return_to_picker: None,
+            from_view: None,
+            current_plan: false,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, app: &mut App| {
+            terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+        };
+        draw(&mut terminal, &mut app);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if app.poll_markdown_diagrams() {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let AppMode::MarkdownViewer(state) = &app.mode else {
+            panic!()
+        };
+        assert!(
+            state.rendered_lines.is_empty(),
+            "completion must invalidate the line cache"
+        );
+        draw(&mut terminal, &mut app);
+        let AppMode::MarkdownViewer(state) = &app.mode else {
+            panic!()
+        };
+        assert!(
+            state
+                .rendered_lines
+                .iter()
+                .any(|line| line.to_string().contains("mermaid · diagram"))
+        );
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        draw(&mut terminal, &mut app);
+        let AppMode::MarkdownViewer(state) = &app.mode else {
+            panic!()
+        };
+        assert_eq!(state.content, content);
+        assert!(
+            state
+                .rendered_lines
+                .iter()
+                .any(|line| line.to_string().contains("flowchart TD"))
+        );
+        assert!(!app.markdown_diagrams_pending());
+    }
+
+    #[test]
     fn markdown_viewer_b_is_noop_without_picker_context() {
         let mut app = markdown_app();
         let view = markdown_view();
@@ -1078,6 +1153,7 @@ mod tests {
             scroll_offset: 0,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(view),
             current_plan: false,
@@ -1108,6 +1184,7 @@ mod tests {
             scroll_offset: 0,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(view),
             current_plan: false,
@@ -1143,6 +1220,7 @@ mod tests {
             scroll_offset: 3,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(view),
             current_plan: false,
@@ -1173,6 +1251,7 @@ mod tests {
             scroll_offset: 12,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(view),
             current_plan: false,
@@ -1202,6 +1281,7 @@ mod tests {
             scroll_offset: 0,
             rendered_width: 80,
             rendered_lines: vec![ratatui::text::Line::from("stale")],
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(markdown_view()),
             current_plan: true,
@@ -1238,6 +1318,7 @@ mod tests {
             scroll_offset: 0,
             rendered_width: 0,
             rendered_lines: Vec::new(),
+            diagrams: crate::mermaid::DiagramDocument::default(),
             return_to_picker: None,
             from_view: Some(markdown_view()),
             current_plan: true,

@@ -28,6 +28,28 @@ pub(crate) fn feature_harnesses(feature: &Feature) -> Vec<AgentKind> {
     harnesses
 }
 
+/// Refuse to start a feature whose checkout is gone, and say where it was.
+///
+/// Called by every launch primitive before any setup: the first thing to
+/// touch the directory would otherwise fail with a bare "No such file or
+/// directory", and the generated-file writers would recreate the path as an
+/// empty, non-git folder that then looks like a checkout.
+pub(crate) fn ensure_workdir_present(feature: &Feature) -> Result<()> {
+    if feature.workdir.is_dir() {
+        return Ok(());
+    }
+    let what = if feature.is_worktree {
+        "worktree"
+    } else {
+        "working directory"
+    };
+    anyhow::bail!(
+        "the {what} for '{}' is missing: {}. Recreate the checkout at that path, or delete the feature",
+        feature.name,
+        feature.workdir.display()
+    )
+}
+
 impl App {
     pub(crate) fn change_feature_vibe_mode(
         &mut self,
@@ -1233,6 +1255,12 @@ impl App {
         let already_running = existing_session
             .as_deref()
             .is_some_and(|session| self.tmux.session_exists(session));
+        // Before the gate: a start that cannot succeed must not ask first.
+        if !already_running
+            && let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi))
+        {
+            ensure_workdir_present(feature)?;
+        }
         if !already_running && self.gate_launch(intent) == Started::Parked {
             return Ok(Started::Parked);
         }

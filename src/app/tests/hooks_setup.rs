@@ -2115,3 +2115,35 @@ fn starting_a_feature_refreshes_hooks_for_every_session_harness() {
         "the Opencode session's Vibeless plugin was not refreshed"
     );
 }
+
+/// A wiped checkout (a worktree under `/tmp` after a reboot) used to fail
+/// with a bare OS error, or be recreated as an empty folder by the hook
+/// writers. The start names the path and leaves the filesystem alone.
+#[test]
+fn starting_a_feature_whose_workdir_is_gone_names_the_missing_path() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join("gone");
+    let store = store_with_worktree_agent(
+        repo.path(),
+        &workdir,
+        AgentKind::Claude,
+        ProjectStatus::Stopped,
+        Vec::new(),
+    );
+    // No session is created: the mock has no expectation for it.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let error = app
+        .ensure_feature_running(0, 0, StartIntent::Approved)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("worktree for 'my-feat' is missing"),
+        "{error}"
+    );
+    assert!(error.contains(&workdir.display().to_string()), "{error}");
+    assert!(!workdir.exists(), "the missing checkout was recreated");
+}

@@ -3419,7 +3419,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
-        workdir: PathBuf::from("/tmp/test-workdir"),
+        workdir: test_workdir(),
         is_worktree: false,
         tmux_session: "amf-my-feat".to_string(),
         sessions: vec![session],

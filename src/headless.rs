@@ -1955,12 +1955,13 @@ mod tests {
 
     #[test]
     fn review_question_commands_keep_each_harness_read_only_and_pipe_the_prompt() {
-        use std::os::unix::fs::PermissionsExt;
         let _guard = lock_lease_tests();
         let dir = tempfile::TempDir::new().unwrap();
         let executable = dir.path().join("mock-harness");
-        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$OPENCODE_PERMISSION\" > permission\ncat > prompt\nprintf 'mock answer'\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::resources::test_support::write_executable_script(
+            &executable,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args\nprintf '%s' \"$OPENCODE_PERMISSION\" > permission\ncat > prompt\nprintf 'mock answer'\n",
+        );
         for harness in [
             AgentKind::Claude,
             AgentKind::Codex,

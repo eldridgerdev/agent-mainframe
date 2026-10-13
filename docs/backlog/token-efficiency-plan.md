@@ -50,8 +50,8 @@ the decisions that prevent avoidable usage:
 - Cost calculation uses one global pricing table whose defaults are
   Claude Sonnet prices. A mixed-model or mixed-provider workspace can
   therefore show a plausible-looking but incorrect dollar total.
-- AMF injects persistent instructions and six AMF skills into each
-  supported worktree. Even small always-visible descriptions and
+- AMF injects persistent instructions and AMF skills into supported
+  worktrees. Even small always-visible descriptions and
   instructions compound when they are included in every turn.
 
 The goal of this plan is to move AMF from **usage accounting** to
@@ -356,6 +356,22 @@ through profiles where available. Add optional local output reducers for
 common test/log commands only where the harness can safely support them;
 always preserve a path to the full raw output for debugging.
 
+Implemented increment (2026-10-12): persistent GUI/TUI interaction drivers now
+return bounded compact JSON, poll waits locally and return only the final batch
+result. GUI observations can be scoped to a panel/dialog; TUI observations can
+return changed rows, preserving the last delivered baseline after hidden,
+truncated or failed observations. The portable `amf-interact` skill routes
+configuration, live automation and private UI tests, loading only the relevant
+operating guide. AMF embeds and injects its helpers for Claude, Codex, OpenCode
+and Pi, including other managed projects; upgrades refresh existing workdirs.
+The TUI helper works with installed AMF and covers xterm-compatible input. The
+GUI helper requires matching Linux/WSLg source/debug prerequisites. Native smoke
+checks measure observation characters and timings; model-token/cost savings
+have not been measured. This completes the interaction-output reduction slice,
+not the broader instruction audit, size budgets or provider-output settings.
+See the [GUI](../development/gui-ai-driver.md) and
+[TUI](../development/tui-ai-driver.md) guides.
+
 ### 9. Local efficiency analytics
 
 Once the decision-facing snapshot is correct, persist sparse local
@@ -619,6 +635,8 @@ Acceptance criteria:
 
 ### P5 — Prompt, instruction, and output hygiene
 
+- [x] Provide reusable GUI/TUI interaction with bounded observations, local
+  waits, batched actions and on-demand operating guidance in injected assistance.
 - [ ] Add local prompt-size estimates and large-paste/repeated-context
       warnings to the steering analyzer.
 - [ ] Integrate warnings with composer and AMF-generated prompt entry

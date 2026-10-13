@@ -17,6 +17,7 @@ export default function DeleteFeatureDialog({
   unfinished,
   todoHost = null,
   busy,
+  dormant = false,
   onConfirm,
   onClose,
 }: {
@@ -26,6 +27,7 @@ export default function DeleteFeatureDialog({
   unfinished: number | null;
   todoHost?: TodoHostPrompt | null;
   busy: boolean;
+  dormant?: boolean;
   onConfirm: (todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) => void;
   onClose: () => void;
 }) {
@@ -66,6 +68,7 @@ export default function DeleteFeatureDialog({
             : ". The repository checkout itself is left alone."}
         </p>
       </div>
+      {dormant && <p className="muted">Each confirmation checks dormancy again. A feature that was opened, produced output, stopped or changed since the list loaded is refused. Cancel returns to Dormant features without deleting anything.</p>}
       {asking && (
         <fieldset className="new-session-options delete-feature-todos" disabled={busy}>
           <legend>

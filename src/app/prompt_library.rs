@@ -76,6 +76,7 @@ impl App {
         // config file, so fall back to the in-memory value that the test seeds.
         let global_templates = if !self.store_path.as_os_str().is_empty() {
             let fresh = crate::extension::load_global_extension_config().prompt_templates;
+            self.saved_config.extension.prompt_templates = fresh.clone();
             self.config.extension.prompt_templates = fresh.clone();
             fresh
         } else {

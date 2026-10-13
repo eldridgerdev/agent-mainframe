@@ -651,54 +651,7 @@ pub fn clear_staged_interview_docs(workdir: &Path) {
 /// `.gitignore`, and nothing happens when the directory is already ignored or
 /// `workdir` is not a Git work tree.
 fn ensure_amf_ignored(workdir: &Path) {
-    use std::process::{Command, Stdio};
-
-    let already_ignored = Command::new("git")
-        .arg("-C")
-        .arg(workdir)
-        .args(["check-ignore", "-q", ".amf/"])
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false);
-    if already_ignored {
-        return;
-    }
-
-    let Ok(output) = Command::new("git")
-        .arg("-C")
-        .arg(workdir)
-        .args(["rev-parse", "--git-path", "info/exclude"])
-        .stderr(Stdio::null())
-        .output()
-    else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if rel.is_empty() {
-        return;
-    }
-    // `--git-path` prints relative to `-C`'s directory; a rare absolute result
-    // replaces the join entirely, which is also correct.
-    let exclude_path = workdir.join(rel);
-    let mut contents = fs::read_to_string(&exclude_path).unwrap_or_default();
-    if contents
-        .lines()
-        .any(|line| matches!(line.trim(), ".amf" | ".amf/"))
-    {
-        return;
-    }
-    if !contents.is_empty() && !contents.ends_with('\n') {
-        contents.push('\n');
-    }
-    contents.push_str(".amf/\n");
-    if let Some(parent) = exclude_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let _ = fs::write(&exclude_path, contents);
+    crate::worktree::WorktreeManager::exclude_locally(workdir, ".amf/", ".amf/");
 }
 
 /// One reference document as it appears in the interview input JSON: the path

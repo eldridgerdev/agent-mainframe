@@ -1,0 +1,1 @@
+{"config_version":1,"context_window_override":500000,"context_warning_percent":70,"context_critical_percent":85,"extension":{"allowed_agents":["claude","codex"],"future_nested":{"keep":true}},"dormant_idle_minutes":15,"future_setting":42}

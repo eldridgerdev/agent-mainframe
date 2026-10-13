@@ -48,6 +48,23 @@ Lineup checked 2026-10-09. Prices are per million input/output tokens, Anthropic
 - This section covers Claude Code's own model use. AMF's product-side model
   pickers and advice (`model_evidence.rs`, `model_analysis/`) are separate.
 
+### AI interaction tooling
+
+Read [`skills/amf-interact/SKILL.md`](skills/amf-interact/SKILL.md) when choosing
+how to operate AMF. Use the [GUI driver](docs/development/gui-ai-driver.md) for
+native desktop controls/backend behavior and the
+[TUI driver](docs/development/tui-ai-driver.md) for rendered terminal text and
+xterm-compatible keys/paste. Reuse isolated sessions, scope snapshots, and batch
+actions with local waits. Capture screenshots only when explicitly requested.
+
+AMF embeds and injects the skill, drivers and references into managed projects,
+including projects outside the AMF checkout. The TUI driver works with installed
+`amf`; the GUI driver needs matching frontend source and a Linux debug GUI.
+Driver sessions are private fixtures. For requested changes to the live TUI use
+`amf automation`; for workspace configuration use AMF's config skills/`amf.json`.
+Prefer focused component/core tests when a native interface round trip adds no
+useful coverage.
+
 **HeadlessRunner** (headless.rs):
 
 - Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi
@@ -497,7 +514,9 @@ show a short plan, or escalate into the full interview.
 - **`escalate` outcome:** `App::escalate_quick_plan_to_full` flips a live
   interview's `kind` to `Full` **in place** — nothing is reset, so the brief
   and every answer already given carry forward into the full round exactly as
-  the interview decision requires — sets `ai_followups_opted_in`, and
+  the interview decision requires — sets `ai_followups_opted_in`, clears
+  `synthesis_attempted` (the Quick pass was triage and left no plan; left
+  set, the full rounds would end at the raw Q&A review), and
   re-enters `continue_plan_interview_after_done()` so the ordinary full-mode
   round/synthesis branching takes over from there with the full `PromptId`s.
   The user sees an explicit toast ("Quick Plan → full Plan interview: …")

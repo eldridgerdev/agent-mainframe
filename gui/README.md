@@ -2,6 +2,11 @@
 
 This is the Tauri desktop interface for AMF. The `amf` terminal interface
 remains available and uses the same project database and tmux sessions.
+See [choosing an interface and upgrading](../docs/interfaces.md) for shared
+state, concurrent use, staged coverage and independent updates.
+
+For AI-driven native GUI interaction with compact JSON observations and an
+isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
 
 ## Install a release build
 
@@ -20,6 +25,14 @@ for Intel and AMD, `aarch64-unknown-linux-gnu` for ARM64.
 Either way, the harness CLIs you use (`claude`, `codex`, `opencode`, `pi`) must
 be on `PATH`. For a Mac, follow [macOS](#macos) below; on Windows, follow
 [Windows (WSL2)](#windows-wsl2).
+
+The [Linux package validation guide](../docs/development/linux-package-validation.md)
+reproduces rootless installation, independent upgrades in both orders and live
+session continuity for the released v0.48.0/v0.49.0 Debian GUI and musl TUI pair.
+It uses private install roots and host runtime dependencies; system installer,
+AppImage and other platform checks remain open. The released v0.48.0 GNU TUI
+requires GLIBC 2.39 and did not launch on the Ubuntu 22.04 validation host; use
+the musl TUI there. These release checks do not establish current-source parity.
 
 ## macOS
 
@@ -283,9 +296,15 @@ it does not start an agent or send a message. Templates and target permissions
 are rechecked on insertion. The list refreshes while you browse, and a
 selected template edited or deleted elsewhere is deselected with a notice so
 you never fill an outdated copy. The preview renders as you type. Cancel
-leaves existing composer drafts intact. Create/edit/delete/export templates and
-editable prompt overrides have their own manager (below). Native desktop
-interaction and macOS runtime validation for this library increment remain open.
+leaves existing composer drafts intact. Create/edit/delete/export library
+templates in the TUI; editable prompt overrides have their own desktop manager
+(below). Six asserted native
+Linux frames now cover all four sources, tag search, required fields, multiline
+text and choices, cancellation, external template edits and appending to an
+existing unsent Codex draft. Reproduce with
+`scripts/dev/screenshot/scenarios/gui-prompt-library.txt`; both offline
+receivers are checked to remain empty. Paid-harness and macOS runtime
+validation remain open.
 
 Open **Prompt overrides** in workspace navigation to change the prompts AMF
 sends for headless AI calls (plan interviews, Final Review walkthroughs and
@@ -456,8 +475,9 @@ skipped), any saved apply-on-finish batch, the configured check and PR posting.
 Completing works like the TUI finish. It applies that batch, reruns the
 configured check (earlier results in the summary are not reused) and records
 the round in `.claude/final-review-feedback.md`. It then clears saved progress
-and closes the review. While the check runs you can **Cancel completion**, and
-nothing is written. Choose **Complete and hand off to …** to give an actionable
+and closes the review. While the check runs you can **Cancel completion**;
+no feedback round is recorded, and any suggestions already applied remain in
+source files. Choose **Complete and hand off to …** to give an actionable
 round's "address the feedback" prompt to the feature's first agent session. It
 is submitted when the TUI's `final_review_submit_prompt` setting is on and the
 session is running. Otherwise it is added to that session's composer as an
@@ -468,8 +488,14 @@ before anything is written. The completion is delivered once. Choosing another
 destination (a dedicated session, another feature or a companion feature)
 remains in the TUI.
 
-The summary, batch and completion controls have automated command/component
-coverage; native desktop and macOS interaction validation remain open.
+The summary and batch controls have automated command/component coverage and
+an eight-frame native Linux scenario at
+`scripts/dev/screenshot/scenarios/gui-review-batch.txt`. It checks filtered-file
+summary rows, confirmation/cancellation, whole-batch refusal after an external
+edit, bottom-up same-file replacements, a read-only partial failure, approval
+invalidation, pause/reopen and retry of only the remaining replacement. Source,
+progress and offline-receiver assertions confirm that preparation leaves the
+review open and sends no feedback. macOS runtime remains unvalidated.
 
 Question-to-comment drafting has command/component coverage and eight asserted
 native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,
@@ -642,7 +668,24 @@ safeguards as the TUI's `e`. Its feature and agent/shell sessions keep running,
 even with automatic `kill_editor_on_stop` cleanup off. Unsaved editor changes
 are lost. Newly opened windows refuse an older confirmation; go back, refresh
 and confirm the current list. The result reports closed, left-running and
-still-opening windows. Deleting from this list remains a TUI action.
+still-opening windows.
+
+**Delete** beside a dormant feature opens the same confirmation as its feature
+page, without counting as opening the feature. It stops the sessions, removes
+an associated worktree (discarding uncommitted changes but keeping the branch)
+and deletes the feature record; an ordinary repository checkout is kept.
+Unfinished worktree TODOs and a hosted project TODO list get the same choices
+as deletion from a feature page. Every confirmation step rechecks dormancy,
+current thresholds, session identity, feature name and checkout. Changed,
+opened, active, stopped or deleted features are refused before deletion starts.
+Cancel applies no TODO choice and returns to a refreshed dormant list; success
+and refusal also return there. A selection ticked for a batch stop is kept
+across the dialog. Seven asserted native WSLg frames from
+`gui-dormant-delete.txt` verify cancellation through both TODO choices, an
+external-open refusal, TODO preservation, worktree deletion and ordinary
+checkout preservation using private SQLite, Git and tmux fixtures. macOS
+validation remains open.
+
 Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
 processes on a private tmux server. Six more frames from
@@ -650,11 +693,45 @@ processes on a private tmux server. Six more frames from
 refusal, refreshed confirmation and ownership results while all feature
 sessions keep running and automatic cleanup-on-stop is disabled.
 
+**Context settings** edits the global fallback context-window token limit and
+warning/critical percentages shared with the TUI. Leave the token limit blank to
+restore harness defaults; otherwise use a positive whole token count. Percentages
+must be 1–100, with critical greater than warning. Large token limits remain exact
+across saving and reopening. Harness telemetry with its own limit keeps precedence.
+Saved thresholds update desktop indicator bands immediately; a changed limit marks
+estimated samples stale until the next collection, and in-flight estimates using an
+older fallback limit cannot become fresh. Samples whose limit came from telemetry
+stay fresh. If the stored values are invalid (a hand-edited critical below warning,
+or a zero limit), the dialog opens on them so they can be corrected; they are not
+applied until they are. External config edits are picked up automatically within a
+few seconds. Save/reload/cancel protect unsaved choices and refuse stale writes,
+preserving unrelated config and running sessions. No migration is required.
+
+An already open TUI does not see these edits, and it rewrites the whole config
+file from its own copy whenever it saves any setting (theme, config wizard and so
+on). That puts its older context, agent-availability and dormancy values back on
+disk, and the desktop then adopts the reverted context settings. Restart an open
+TUI after saving here, before changing settings in it.
+
+**Agent availability** in workspace navigation edits the global allowed-agent
+choices shared with the TUI config wizard. Select at least one of Claude Code,
+Codex, OpenCode or Pi, then **Save settings**. Project `amf.json` allowed-agent
+settings take precedence, and installed harness availability still applies.
+Existing sessions keep running; this does not install or authenticate a harness.
+Cancel and reload ask before discarding unsaved choices. Saves preserve unrelated
+JSON settings and refuse external config edits until reloaded, sharing the same
+revision and writer lock as dormancy settings. New actions in the desktop app
+read the saved choices directly, and the New project, New feature and
+TODO-to-feature forms offer only the harnesses the chosen project allows.
+Restart an already open TUI after saving: it keeps the choices it started with,
+and saving settings from it (the config wizard, or a theme change) writes them
+back over the desktop change. No database migration is required.
+
 Dormant features → **Settings** edits the global idle-minute and unattended-hour
 thresholds. Both must be exceeded for a feature to appear; either value at zero
 turns detection off. Saving refreshes the list and clears its selection without
-stopping anything. Refresh and confirmed stops read the latest thresholds from
-`~/.config/amf/config.json`. Restart an already running TUI to apply changed
+stopping anything. Refresh, confirmed stops and deletion confirmations read
+the latest thresholds from `~/.config/amf/config.json`. Restart an already running TUI to apply changed
 thresholds there. The form preserves unrelated config keys, refuses malformed
 or changed files, retains failed-save drafts and asks before discarding edits.
 Reload after a conflict before saving again. Settings saves from desktop windows

@@ -3114,7 +3114,9 @@ pub struct PlanInterviewState {
     pub phase: PlanInterviewPhase,
     /// The editable step before a GUI action entered `Done` and opened a
     /// headless-call notice. Continue retains the prepared call state;
-    /// cancellation restores this step and its previous token consent.
+    /// cancellation restores this step and its previous token consent. `None`
+    /// for a notice no action opened (a poll, or resuming a draft), which
+    /// cancels through [`Self::return_to_ai_consent`] instead.
     pub(crate) precall_checkpoint: Option<PlanPrecallCheckpoint>,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
@@ -3304,6 +3306,27 @@ impl PlanInterviewState {
             self.skip_ai_rounds = checkpoint.skip_ai_rounds;
             self.synthesis_requested = checkpoint.synthesis_requested;
         }
+    }
+
+    /// Leave `Done` for the AI consent step with no token consent held.
+    ///
+    /// The GUI's fallback for a cancelled headless-call notice that no action
+    /// checkpointed: one opened by a poll (a round with no usable follow-ups,
+    /// a Quick Plan escalation) or by resuming a fully answered draft. There
+    /// is no editable step to return to, so this lands on the choice that
+    /// follows the answers — the same sibling of `Done` that
+    /// [`Self::resume_from_draft`] picks — and withdraws the consent the
+    /// cancelled call was acting on, so `Next` there is a real zero-token
+    /// path. Spent rounds stay counted. Returns `false` outside `Done`.
+    pub(crate) fn return_to_ai_consent(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Done {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::AiConsent;
+        self.ai_followups_opted_in = false;
+        self.skip_ai_rounds = false;
+        self.synthesis_requested = false;
+        true
     }
 
     pub fn for_feature_creation(

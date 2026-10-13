@@ -123,6 +123,8 @@ are tagged.
 - Cancelling a desktop planning agent call returns to the editable interview
   step instead of getting stuck on “Finishing up…”. Entered answers and the
   previous AI consent choice are preserved for retrying or drafting without AI.
+  A call offered on its own — after a follow-up round, a Quick Plan
+  escalation, or resuming a draft — returns to the follow-ups choice.
 
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block

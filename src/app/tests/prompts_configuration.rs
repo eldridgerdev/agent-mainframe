@@ -359,6 +359,251 @@ fn migrate_app_config_is_noop_when_current() {
 }
 
 #[test]
+fn startup_config_migration_preserves_unknown_fields_and_unrelated_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let original = serde_json::json!({
+        "tmux_control_mode": true,
+        "diff_review_popup_hold_secs": 3.0,
+        "max_concurrent_agents": 9,
+        "extension": {"allowed_agents": ["codex"], "future": {"enabled": true}},
+        "future": {"precise_limit": u64::MAX, "nested": ["untouched", null]}
+    });
+    std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    }
+    let config = crate::app::setup::load_config_at(&path);
+    assert_eq!(config.config_version, APP_CONFIG_VERSION);
+    assert!(!config.tmux_control_mode);
+    assert_eq!(config.diff_review_popup_hold_secs, 1.5);
+    assert_eq!(config.max_concurrent_agents, 9);
+    assert_eq!(
+        config.extension.allowed_agents,
+        Some(vec![AgentKind::Codex])
+    );
+    let mut expected = original;
+    expected["config_version"] = APP_CONFIG_VERSION.into();
+    expected["tmux_control_mode"] = false.into();
+    expected["diff_review_popup_hold_secs"] = 1.5.into();
+    let migrated = std::fs::read(&path).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&migrated).unwrap(),
+        expected
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+    crate::app::setup::load_config_at(&path);
+    assert_eq!(std::fs::read(&path).unwrap(), migrated);
+}
+
+#[test]
+fn startup_config_migration_does_not_expand_defaults_or_rewrite_newer_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{"future":true}"#).unwrap();
+    crate::app::setup::load_config_at(&path);
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"future":true,"config_version":APP_CONFIG_VERSION})
+    );
+    for version in [APP_CONFIG_VERSION, APP_CONFIG_VERSION + 1] {
+        let text = format!(
+            "{{ \"config_version\": {version}, \"tmux_control_mode\": true, \"diff_review_popup_hold_secs\": 3.0, \"future\": [1, 2] }}"
+        );
+        std::fs::write(&path, &text).unwrap();
+        let config = crate::app::setup::load_config_at(&path);
+        assert_eq!(config.config_version, version);
+        assert!(config.tmux_control_mode);
+        assert_eq!(config.diff_review_popup_hold_secs, 3.0);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[test]
+fn startup_config_migration_leaves_invalid_files_and_creates_missing_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nested/config.json");
+    let created = crate::app::setup::load_config_at(&path);
+    assert_eq!(created.config_version, APP_CONFIG_VERSION);
+    let persisted: AppConfig = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(persisted.config_version, APP_CONFIG_VERSION);
+    for text in [
+        "{",
+        "[]",
+        "null",
+        r#"{"config_version":"broken","future":true}"#,
+        r#"{"extension":null}"#,
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let config = crate::app::setup::load_config_at(&path);
+        assert_eq!(config.config_version, APP_CONFIG_VERSION);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn config_writes_go_through_a_symlink_and_new_files_get_the_default_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let dotfiles = dir.path().join("dotfiles");
+    let home = dir.path().join("amf");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    let target = dotfiles.join("amf-config.json");
+    let path = home.join("config.json");
+    std::fs::write(&target, r#"{"tmux_control_mode":true,"future":true}"#).unwrap();
+    std::os::unix::fs::symlink("../dotfiles/amf-config.json", &path).unwrap();
+    let is_link = || std::fs::symlink_metadata(&path).unwrap().is_symlink();
+    let on_disk =
+        || serde_json::from_slice::<serde_json::Value>(&std::fs::read(&target).unwrap()).unwrap();
+
+    let loaded = crate::app::setup::load_config_at(&path);
+    assert!(is_link());
+    assert_eq!(
+        on_disk(),
+        serde_json::json!({
+            "tmux_control_mode": false,
+            "future": true,
+            "config_version": APP_CONFIG_VERSION
+        })
+    );
+    let mut changed = loaded.clone();
+    changed.max_concurrent_agents = 3;
+    crate::app::setup::save_config_at(&path, &loaded, &changed).unwrap();
+    assert!(is_link());
+    assert_eq!(on_disk()["max_concurrent_agents"], 3);
+
+    // A link to a file that does not exist yet creates that file.
+    std::fs::remove_file(&target).unwrap();
+    crate::app::setup::load_config_at(&path);
+    assert!(is_link());
+    assert_eq!(on_disk()["config_version"], APP_CONFIG_VERSION);
+
+    // With no umask to read safely from a test, a plain create beside it is
+    // the yardstick for "the default mode".
+    let plain = home.join("plain.json");
+    std::fs::write(&plain, "{}").unwrap();
+    let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode();
+    assert_eq!(mode(&target) & 0o777, mode(&plain) & 0o777);
+}
+
+#[test]
+fn settings_save_merges_only_its_own_changes_into_the_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let on_disk =
+        || serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap();
+    let original = serde_json::json!({
+        "config_version": APP_CONFIG_VERSION,
+        "max_concurrent_agents": 9,
+        "context_window_override": 60123,
+        "dormant_idle_minutes": 15,
+        "extension": {"allowed_agents": ["codex"], "future": {"enabled": true}},
+        "future": {"precise_limit": u64::MAX, "nested": ["untouched", null]}
+    });
+    std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    let loaded = crate::app::setup::load_config_at(&path);
+
+    // Saving with nothing changed does not touch the file.
+    let untouched = std::fs::read(&path).unwrap();
+    crate::app::setup::save_config_at(&path, &loaded, &loaded).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), untouched);
+
+    // Another writer changes a setting while this process is running.
+    let mut external = original.clone();
+    external["dormant_idle_minutes"] = 45.into();
+    std::fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+
+    // One plain change, one cleared `skip_serializing_if` field, and one
+    // change inside a nested object that also holds an unknown key.
+    let mut changed = loaded.clone();
+    changed.max_concurrent_agents = 3;
+    changed.context_window_override = None;
+    changed.extension.allowed_agents = Some(vec![AgentKind::Claude]);
+    crate::app::setup::save_config_at(&path, &loaded, &changed).unwrap();
+    assert_eq!(
+        on_disk(),
+        serde_json::json!({
+            "config_version": APP_CONFIG_VERSION,
+            "max_concurrent_agents": 3,
+            "dormant_idle_minutes": 45,
+            "extension": {"allowed_agents": ["claude"], "future": {"enabled": true}},
+            "future": {"precise_limit": u64::MAX, "nested": ["untouched", null]}
+        })
+    );
+
+    // A document this binary cannot load is reported, not patched.
+    for text in ["{", "[]", r#"{"config_version":"broken"}"#] {
+        std::fs::write(&path, text).unwrap();
+        assert!(crate::app::setup::save_config_at(&path, &loaded, &changed).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    // With no file at all there is nothing to merge into.
+    std::fs::remove_file(&path).unwrap();
+    crate::app::setup::save_config_at(&path, &loaded, &changed).unwrap();
+    let written: AppConfig = serde_json::from_value(on_disk()).unwrap();
+    assert_eq!(written.max_concurrent_agents, 3);
+    assert_eq!(
+        on_disk()["theme"],
+        serde_json::to_value(changed.theme).unwrap()
+    );
+}
+
+#[test]
+fn a_held_config_lock_delays_neither_startup_nor_a_settings_save_for_long() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let holder = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))
+        .unwrap();
+    holder.lock().unwrap();
+
+    // Nothing to migrate: the lock is never asked for.
+    let current = format!(r#"{{"config_version":{APP_CONFIG_VERSION},"future":true}}"#);
+    std::fs::write(&path, &current).unwrap();
+    let started = std::time::Instant::now();
+    let loaded = crate::app::setup::load_config_at(&path);
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    assert_eq!(loaded.config_version, APP_CONFIG_VERSION);
+
+    // A save gives up with an error instead of blocking the UI thread.
+    let mut changed = loaded.clone();
+    changed.max_concurrent_agents = 3;
+    let error = crate::app::setup::save_config_at(&path, &loaded, &changed).unwrap_err();
+    assert!(error.to_string().contains("config.json.lock"), "{error}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+
+    // A pending migration is applied in memory and left for the next start.
+    let old = r#"{"tmux_control_mode":true,"future":true}"#;
+    std::fs::write(&path, old).unwrap();
+    let started = std::time::Instant::now();
+    let migrated = crate::app::setup::load_config_at(&path);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!migrated.tmux_control_mode);
+    assert_eq!(migrated.config_version, APP_CONFIG_VERSION);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+
+    drop(holder);
+    crate::app::setup::load_config_at(&path);
+    assert_ne!(std::fs::read_to_string(&path).unwrap(), old);
+}
+
+#[test]
 fn app_config_missing_diff_review_viewer_uses_amf_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);

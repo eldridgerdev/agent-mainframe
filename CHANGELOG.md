@@ -176,6 +176,13 @@ are tagged.
 
 ### Fixed
 
+- **Keep custom settings when upgrading.** Starting either interface with an
+  older global config now preserves unrecognized settings while applying the
+  existing one-time defaults migration, and saving a setting from the terminal
+  interface changes only that setting instead of rewriting the whole file. A
+  symlinked `config.json` stays a symlink, and a stuck lock no longer holds up
+  startup. No migration is required.
+
 - Screenshot capture now owns a private tmux server and cleans up only that
   server. Existing sessions and sessions started elsewhere during a capture
   remain running, including when a screenshot assertion fails.

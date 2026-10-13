@@ -74,9 +74,13 @@ fn validate(settings: &DormancySettings) -> GuiResult<()> {
 }
 
 fn apply(gui: &mut GuiHandle, settings: &DormancySettings) {
-    let config = &mut gui.app_for_workflow().config;
-    config.dormant_idle_minutes = settings.idle_minutes;
-    config.dormant_last_accessed_hours = settings.unattended_hours;
+    let app = gui.app_for_workflow();
+    // These are the file's values, so the saved copy takes them too: a later
+    // settings save must not mistake them for its own unsaved change.
+    for config in [&mut app.config, &mut app.saved_config] {
+        config.dormant_idle_minutes = settings.idle_minutes;
+        config.dormant_last_accessed_hours = settings.unattended_hours;
+    }
 }
 
 pub fn load() -> GuiResult<DormancySettingsView> {
@@ -246,8 +250,11 @@ fn agents_save_and_apply(
     settings: AgentAvailability,
 ) -> GuiResult<AgentAvailabilityView> {
     let view = agents_save_at(path, revision, settings)?;
-    gui.app_for_workflow().config.extension.allowed_agents =
-        Some(view.settings.allowed_agents.clone());
+    let app = gui.app_for_workflow();
+    // Written by this save, so not a pending change for a later one.
+    for config in [&mut app.config, &mut app.saved_config] {
+        config.extension.allowed_agents = Some(view.settings.allowed_agents.clone());
+    }
     Ok(view)
 }
 
@@ -356,7 +363,12 @@ pub fn context_load() -> GuiResult<ContextSettingsView> {
 }
 
 fn context_apply(gui: &mut GuiHandle, settings: crate::context_tracking::ContextSettings) {
-    gui.app_for_workflow().apply_context_settings(settings);
+    let app = gui.app_for_workflow();
+    // Every caller passes what the file holds, so the saved copy follows.
+    app.saved_config.context_window_override = settings.window_override;
+    app.saved_config.context_warning_percent = settings.warning_percent;
+    app.saved_config.context_critical_percent = settings.critical_percent;
+    app.apply_context_settings(settings);
 }
 
 /// What `stat` reported for the global config when context settings were last

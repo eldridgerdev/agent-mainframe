@@ -1538,6 +1538,239 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
 }
 
 #[test]
+fn interaction_skill_bundles_work_outside_amf_checkout_for_every_harness() {
+    // The drivers are Python; without an interpreter the bundle's contents are
+    // still checked, and only the import round trip is skipped (and said so).
+    let python = std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success());
+    if !python {
+        eprintln!("python3 not found on PATH: skipping the injected driver --help checks");
+    }
+    for (agent, root) in [
+        (AgentKind::Claude, ".claude"),
+        (AgentKind::Codex, ".agents"),
+        (AgentKind::Opencode, ".opencode"),
+        (AgentKind::Pi, ".pi"),
+    ] {
+        let project = TempDir::new().unwrap();
+        let cwd = TempDir::new().unwrap();
+        call_ensure_hooks_for(&project, VibeMode::Vibe, agent.clone(), true);
+        let skill = project.path().join(root).join("skills/amf-interact");
+        for relative in [
+            "SKILL.md",
+            "scripts/ai_driver.py",
+            "scripts/gui-driver/dom.js",
+            "references/gui.md",
+            "references/tui.md",
+        ] {
+            assert!(
+                skill.join(relative).is_file(),
+                "{agent:?}: missing {relative}"
+            );
+        }
+        for driver in ["tui", "gui"].into_iter().filter(|_| python) {
+            let output = std::process::Command::new("python3")
+                .arg(skill.join(format!("scripts/{driver}-driver/amf-{driver}-driver.py")))
+                .arg("--help")
+                .current_dir(cwd.path())
+                .output()
+                .expect("python3 ran a moment ago");
+            assert!(
+                output.status.success(),
+                "{agent:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        // Only `.claude/` carries an AMF-written `.gitignore`; the others are
+        // ignored through `.git/info/exclude` and gain no file of their own.
+        assert_eq!(
+            project.path().join(root).join(".gitignore").exists(),
+            agent == AgentKind::Claude,
+            "{agent:?}"
+        );
+
+        // An unchanged skill entrypoint must not prevent updating its assets.
+        let helper = skill.join("scripts/ai_driver.py");
+        std::fs::write(&helper, "stale helper").unwrap();
+        call_ensure_hooks_for(&project, VibeMode::Vibe, agent.clone(), true);
+        assert_eq!(
+            std::fs::read_to_string(helper).unwrap(),
+            include_str!("../../../scripts/dev/ai_driver.py")
+        );
+
+        let user_skill = project.path().join(root).join("skills/user-owned/SKILL.md");
+        std::fs::create_dir_all(user_skill.parent().unwrap()).unwrap();
+        std::fs::write(&user_skill, "user instructions").unwrap();
+        cleanup_agent_injected_files(project.path(), &agent);
+        assert!(!skill.exists());
+        assert_eq!(
+            std::fs::read_to_string(user_skill).unwrap(),
+            "user instructions"
+        );
+    }
+}
+
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn injected_skills_stay_out_of_git_status_without_adding_a_gitignore() {
+    for (agent, root) in [
+        (AgentKind::Codex, ".agents"),
+        (AgentKind::Opencode, ".opencode"),
+        (AgentKind::Pi, ".pi"),
+    ] {
+        let repo = TempDir::new().unwrap();
+        git_in(repo.path(), &["init", "--quiet"]);
+        // A workdir need not be the repository root.
+        let nested = repo.path().join("packages/app");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        for workdir in [repo.path(), nested.as_path()] {
+            for _ in 0..2 {
+                ensure_notification_hooks(workdir, repo.path(), &VibeMode::Vibe, &agent, true);
+            }
+            assert!(
+                workdir
+                    .join(root)
+                    .join("skills/amf-interact/SKILL.md")
+                    .is_file()
+            );
+            assert!(!workdir.join(root).join(".gitignore").exists(), "{agent:?}");
+        }
+
+        // Every sibling `amf-*` skill is covered, not only `amf-interact`.
+        let status = git_in(
+            repo.path(),
+            &["status", "--porcelain", "--untracked-files=all"],
+        );
+        assert!(
+            !status.contains("/skills/amf-"),
+            "{agent:?} skills are untracked:\n{status}"
+        );
+        let exclude = std::fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
+        let pattern = format!("**/{root}/skills/amf-*/");
+        assert_eq!(
+            exclude.lines().filter(|line| *line == pattern).count(),
+            1,
+            "{agent:?}: {exclude:?}"
+        );
+
+        // A skill the user wrote beside them is still theirs to commit.
+        let user_skill = repo.path().join(root).join("skills/user-owned/SKILL.md");
+        std::fs::create_dir_all(user_skill.parent().unwrap()).unwrap();
+        std::fs::write(&user_skill, "user instructions").unwrap();
+        let status = git_in(
+            repo.path(),
+            &["status", "--porcelain", "--untracked-files=all"],
+        );
+        assert!(status.contains("skills/user-owned/SKILL.md"), "{status}");
+    }
+}
+
+#[test]
+fn pi_keeps_claude_runtime_ignores_without_claude_hooks() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Pi, true);
+
+    // AMF writes final-review feedback under `.claude/` for every harness.
+    let ignore = std::fs::read_to_string(workdir.path().join(".claude/.gitignore")).unwrap();
+    for entry in [
+        "notifications/",
+        "review-notes.md",
+        "final-review-feedback.md",
+        "final-review-feedback-archive.md",
+        "latest-prompt.txt",
+    ] {
+        assert!(ignore.lines().any(|line| line == entry), "missing {entry}");
+    }
+    assert!(
+        !workdir.path().join(".claude/settings.local.json").exists(),
+        "Pi reads no Claude settings and should get no Claude hooks"
+    );
+    assert!(!workdir.path().join(".claude/skills").exists());
+}
+
+#[test]
+fn refresh_takes_back_claude_files_once_injected_into_pi_only_features() {
+    for claude_session in [false, true] {
+        let workdir = TempDir::new().unwrap();
+        // What a Pi feature received while it fell through to Claude's setup.
+        call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Claude, true);
+        let settings_path = workdir.path().join(".claude/settings.local.json");
+        let mut settings: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        settings["env"] = serde_json::json!({ "USER_OWNED": "1" });
+        std::fs::write(&settings_path, settings.to_string()).unwrap();
+
+        let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Stopped);
+        let feature = &mut store.projects[0].features[0];
+        feature.agent = AgentKind::Pi;
+        feature.sessions = Vec::new();
+        if claude_session {
+            let mut session = make_session("Claude", None);
+            session.kind = SessionKind::Claude;
+            feature.sessions.push(session);
+        }
+        crate::app::setup::refresh_feature_skills(feature);
+
+        let settings = read_settings(&workdir);
+        let claude_skill = workdir.path().join(".claude/skills/amf-configure");
+        if claude_session {
+            // A Claude session in the same checkout still needs them.
+            assert!(!hook_commands_for(&settings, "Stop").is_empty());
+            assert!(claude_skill.exists());
+        } else {
+            assert!(settings.get("hooks").is_none(), "{settings}");
+            assert_eq!(settings["env"]["USER_OWNED"], "1");
+            assert!(!claude_skill.exists());
+        }
+        assert!(workdir.path().join(".claude/.gitignore").is_file());
+        assert!(
+            workdir
+                .path()
+                .join(".pi/skills/amf-interact/SKILL.md")
+                .is_file()
+        );
+    }
+}
+
+#[test]
+fn interaction_skill_refresh_covers_mixed_harness_sessions_without_recreating_feature() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_repo(workdir.path().to_path_buf(), ProjectStatus::Stopped);
+    let feature = &mut store.projects[0].features[0];
+    feature.agent = AgentKind::Codex;
+    let mut session = make_session("Pi", None);
+    session.kind = SessionKind::Pi;
+    feature.sessions = vec![session];
+    crate::app::setup::refresh_feature_skills(feature);
+    for root in [".agents", ".pi"] {
+        assert!(
+            workdir
+                .path()
+                .join(root)
+                .join("skills/amf-interact/SKILL.md")
+                .is_file()
+        );
+    }
+    assert!(!workdir.path().join(".pi/skills/amf-configure").exists());
+    feature.workdir = workdir.path().join("removed-worktree");
+    crate::app::setup::refresh_feature_skills(feature);
+    assert!(!feature.workdir.exists());
+}
+
+#[test]
 fn screenshot_skill_is_not_injected_into_managed_workspaces() {
     for (agent, skills_root) in [
         (AgentKind::Claude, ".claude"),
@@ -1846,4 +2079,71 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         app.store.projects[0].features.is_empty(),
         "changing project preference should not create or mutate features"
     );
+}
+
+/// Hooks are generated per harness. A start used to refresh only the
+/// feature's primary agent, leaving a secondary session's harness on whatever
+/// mode its hooks were last written for.
+#[test]
+fn starting_a_feature_refreshes_hooks_for_every_session_harness() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_worktree_agent(
+        workdir.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Idle,
+        Vec::new(),
+    );
+    let feature = &mut store.projects[0].features[0];
+    feature.mode = crate::project::VibeMode::Vibeless;
+    App::initialize_feature_sessions(feature, false, None);
+    feature.add_session(SessionKind::Opencode);
+    // Already running: the start refreshes generated files and launches nothing.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    app.ensure_feature_running(0, 0, StartIntent::Approved)
+        .unwrap();
+
+    assert!(workdir.path().join(".claude/settings.local.json").exists());
+    assert!(
+        workdir
+            .path()
+            .join(".opencode/plugins/change-tracker.js")
+            .exists(),
+        "the Opencode session's Vibeless plugin was not refreshed"
+    );
+}
+
+/// A wiped checkout (a worktree under `/tmp` after a reboot) used to fail
+/// with a bare OS error, or be recreated as an empty folder by the hook
+/// writers. The start names the path and leaves the filesystem alone.
+#[test]
+fn starting_a_feature_whose_workdir_is_gone_names_the_missing_path() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join("gone");
+    let store = store_with_worktree_agent(
+        repo.path(),
+        &workdir,
+        AgentKind::Claude,
+        ProjectStatus::Stopped,
+        Vec::new(),
+    );
+    // No session is created: the mock has no expectation for it.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    let error = app
+        .ensure_feature_running(0, 0, StartIntent::Approved)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("worktree for 'my-feat' is missing"),
+        "{error}"
+    );
+    assert!(error.contains(&workdir.display().to_string()), "{error}");
+    assert!(!workdir.exists(), "the missing checkout was recreated");
 }

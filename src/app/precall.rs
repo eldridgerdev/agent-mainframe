@@ -196,6 +196,9 @@ impl App {
         };
         let harness = pending.harness.clone();
         self.mode = *pending.prior_mode;
+        if let AppMode::PlanInterview(state) = &mut self.mode {
+            state.precall_checkpoint = None;
+        }
         self.precall_cleared = Some(pending.action);
         let result = self.dispatch_precall(pending.action, harness);
         // The re-dispatched method's gate runs synchronously inside
@@ -211,6 +214,12 @@ impl App {
     pub(crate) fn precall_cancel(&mut self) {
         if let Some(pending) = self.take_pending_precall() {
             self.mode = *pending.prior_mode;
+            if let AppMode::PlanInterview(state) = &mut self.mode
+                && state.precall_checkpoint.is_some()
+            {
+                state.restore_precall_checkpoint();
+                self.persist_plan_interview_draft();
+            }
             self.push_toast_info("Headless AI call cancelled");
         }
     }

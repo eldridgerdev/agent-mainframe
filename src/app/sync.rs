@@ -3,7 +3,7 @@ use super::*;
 use crate::context_collectors::{
     ContextCollectionResult, ContextCollectionTarget, ContextCollector, SessionContextCollector,
 };
-use crate::context_tracking::{ContextThresholds, SessionContextState};
+use crate::context_tracking::{ContextProvenance, ContextThresholds, SessionContextState};
 use crate::github::{GhCli, GhGraphqlError};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
@@ -210,6 +210,7 @@ pub(crate) struct SessionStatusBgResult {
     context_collector: SessionContextCollector,
     updates: Vec<SessionStatusUpdate>,
     sources_discovered: bool,
+    context_limit_override: Option<u64>,
 }
 
 fn collect_jobs(
@@ -446,6 +447,7 @@ fn run_jobs(
         context_collector,
         updates,
         sources_discovered,
+        context_limit_override,
     }
 }
 
@@ -497,6 +499,8 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         critical_percent: app.config.context_critical_percent,
     };
 
+    let current_context_policy =
+        result.context_limit_override == app.config.context_window_override;
     for update in result.updates {
         'outer: for project in &mut app.store.projects {
             for feature in &mut project.features {
@@ -516,13 +520,24 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                     }
                     session.status_text = update.status_text;
                     session.token_usage = update.token_usage;
-                    apply_context_result(
-                        &mut app.context_states,
-                        &session.id,
-                        update.context_result,
-                        update.context_checked_at,
-                        thresholds,
-                    );
+                    // Only an estimate was computed against the fallback
+                    // limit this collection started with. A direct sample
+                    // carries the harness's own, and the rest carry none.
+                    let outdated_estimate = !current_context_policy
+                        && matches!(
+                            &update.context_result,
+                            Some(ContextCollectionResult::Collected(sample))
+                                if sample.provenance != ContextProvenance::Direct
+                        );
+                    if !outdated_estimate {
+                        apply_context_result(
+                            &mut app.context_states,
+                            &session.id,
+                            update.context_result,
+                            update.context_checked_at,
+                            thresholds,
+                        );
+                    }
                     break 'outer;
                 }
             }
@@ -1754,5 +1769,119 @@ impl App {
             .iter()
             .find(|s| s.kind == target_kind)
             .map(|s| s.tmux_window.clone())
+    }
+}
+
+#[cfg(test)]
+mod context_policy_tests {
+    use super::*;
+    use crate::context_tracking::{
+        ContextBand, ContextFreshness, ContextProvenance, ContextResetMetadata, ContextUsageSample,
+    };
+    use crate::project::{Feature, Project, ProjectStore, VibeMode};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    #[test]
+    fn changed_window_policy_skips_only_outdated_estimates_and_still_drains_the_worker() {
+        let root = tempfile::tempdir().unwrap();
+        let mut project = Project::new("demo".into(), root.path().into(), true, AgentKind::Claude);
+        let mut feature = Feature::new_for_project(
+            "demo",
+            "feat".into(),
+            "feat".into(),
+            root.path().into(),
+            false,
+            VibeMode::default(),
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.add_session(SessionKind::Claude);
+        let id = feature.sessions[0].id.clone();
+        project.features.push(feature);
+        let mut store = ProjectStore::empty();
+        store.projects.push(project);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.config.context_window_override = Some(100);
+        app.config.context_warning_percent = 80;
+        app.config.context_critical_percent = 90;
+        let sample = |limit, provenance| ContextUsageSample {
+            used_tokens: 85,
+            context_limit: Some(limit),
+            provenance,
+            sampled_at: Utc::now(),
+            checked_at: Utc::now(),
+            reset: ContextResetMetadata::default(),
+        };
+        let mut prior = SessionContextState::default();
+        prior
+            .accept_sample(
+                sample(1000, ContextProvenance::Estimated),
+                ContextThresholds::default(),
+            )
+            .unwrap();
+        prior.snapshot.as_mut().unwrap().freshness = ContextFreshness::Stale;
+        app.context_states.insert(id.clone(), prior.clone());
+        // Collections started under an older override (1000), then one under
+        // the current one (100).
+        for (policy, limit, provenance) in [
+            (Some(1000), 1000, ContextProvenance::Estimated),
+            (Some(1000), 500, ContextProvenance::Direct),
+            (Some(100), 100, ContextProvenance::Estimated),
+        ] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.session_status_bg = Some(rx);
+            tx.send(SessionStatusBgResult {
+                tracker: SessionTokenTracker::default(),
+                context_collector: SessionContextCollector::default(),
+                updates: vec![SessionStatusUpdate {
+                    session_id: id.clone(),
+                    source_action: SourceAction::NoChange,
+                    status_text: Some("new status".into()),
+                    token_usage: None,
+                    context_result: Some(ContextCollectionResult::Collected(sample(
+                        limit, provenance,
+                    ))),
+                    context_checked_at: Utc::now(),
+                }],
+                sources_discovered: false,
+                context_limit_override: policy,
+            })
+            .ok()
+            .unwrap();
+            assert!(app.poll_session_status_bg());
+            assert!(app.session_status_bg.is_none());
+            assert_eq!(
+                app.store.projects[0].features[0].sessions[0]
+                    .status_text
+                    .as_deref(),
+                Some("new status")
+            );
+            let snapshot = app.context_states[&id].snapshot.as_ref().unwrap();
+            match (policy, provenance) {
+                // An estimate against the old fallback limit is dropped.
+                (Some(1000), ContextProvenance::Estimated) => {
+                    assert_eq!(app.context_states[&id], prior);
+                }
+                // Telemetry with its own limit never depended on the override.
+                (Some(1000), ContextProvenance::Direct) => {
+                    assert_eq!(snapshot.context_limit.get(), 500);
+                    assert_eq!(snapshot.provenance, ContextProvenance::Direct);
+                    assert_eq!(snapshot.band, ContextBand::Normal);
+                    assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+                }
+                _ => {
+                    assert_eq!(snapshot.context_limit.get(), 100);
+                    assert_eq!(snapshot.band, ContextBand::Warning);
+                    assert_eq!(snapshot.freshness, ContextFreshness::Fresh);
+                }
+            }
+        }
     }
 }

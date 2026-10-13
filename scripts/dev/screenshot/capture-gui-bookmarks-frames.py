@@ -183,6 +183,8 @@ try:
     wait('!!document.querySelector(\'[aria-label="Remove bookmark 1"]\')')
     evaluate('document.querySelector(\'[aria-label="Remove bookmark 1"]\').click()')
     wait('document.body.innerText.includes("No bookmarked sessions yet.")')
+    with sqlite3.connect(pathlib.Path(sys.argv[4]).parent / "amf.db") as db:
+        assert db.execute("SELECT count(*) FROM session_bookmarks").fetchone()[0] == 0
     capture("004-bookmark-removed.png", "Removing the stable bookmark clears its shared slot without closing the session.", ["No bookmarked sessions yet.", "Bookmark session"])
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"], "note": n["note"]}) + "\n" for n in notes))
     print("PASS: bookmark add, navigation, unsent draft retention and removal verified", flush=True)

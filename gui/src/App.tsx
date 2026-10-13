@@ -42,6 +42,8 @@ import {
   createFeature,
   createProject,
   deleteFeature,
+  dormancyDelete,
+  DormantDeleteRequest,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -54,12 +56,15 @@ import {
   savedAgentSessions,
   sessionRecoveryOption,
   setCollapsed,
+  setFeatureVibeMode,
   startFeature,
   removeSession,
   startSession,
   stopFeature,
   stopSession,
+  allowedHarnesses,
   supportedHarnesses,
+  projectAgentChoices,
   supportedModes,
   terminalSubmitPrompt,
   todoLaunchAgent,
@@ -73,6 +78,8 @@ import ProjectsSidebar from "./ProjectsSidebar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
+import ContextSettingsPanel from "./ContextSettingsPanel";
+import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import DebugLogPanel from "./DebugLogPanel";
@@ -182,6 +189,8 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
+  const [showContextSettings, setShowContextSettings] = useState(false);
+  const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
@@ -274,6 +283,7 @@ export default function App() {
     isWorktree: boolean;
     unfinished: number | null;
     todoHost?: TodoHostPrompt;
+    dormant?: DormantDeleteRequest;
   } | null>(null);
   const deleteFeatureInFlight = useRef(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -293,6 +303,14 @@ export default function App() {
     queryFn: supportedHarnesses,
   });
   const modes = useQuery({ queryKey: ["supported-modes"], queryFn: supportedModes });
+  const featureAgents = useQuery({
+    queryKey: ["project-feature-agents", createFeatureFor],
+    queryFn: () => projectAgentChoices(createFeatureFor!),
+    enabled: createFeatureFor !== null,
+    retry: false,
+    // Reopening reads external edits; focus changes must not discard form drafts.
+    staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  });
   const workspace = useQuery({
     queryKey: SNAPSHOT_KEY,
     queryFn: getSnapshot,
@@ -1045,8 +1063,8 @@ export default function App() {
   }
 
   const deleteFeatureMutation = useMutation({
-    mutationFn: ({ target, todos, todoHost }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null }) =>
-      deleteFeature(target, todos, todoHost),
+    mutationFn: ({ target, todos, todoHost, dormant }: { target: FeatureTarget; todos: TodoDeleteChoice | null; todoHost: TodoHostChoice | null; dormant?: DormantDeleteRequest }) =>
+      dormant ? dormancyDelete(dormant, todos, todoHost) : deleteFeature(target, todos, todoHost),
     onSettled: () => {
       deleteFeatureInFlight.current = false;
     },
@@ -1076,10 +1094,40 @@ export default function App() {
     },
   });
 
+  // The mode a running feature's agents were launched with, kept from the
+  // first change until the feature stops: a live agent holds its launch flags,
+  // so the saved mode alone would misreport what is running. Window-local.
+  const [launchedModes, setLaunchedModes] = useState<Record<string, ModeSlug>>({});
+  const setFeatureVibeModeMutation = useMutation({
+    mutationFn: ({ target, mode }: { target: FeatureTarget; mode: ModeSlug; launched: ModeSlug | null }) =>
+      setFeatureVibeMode(target, mode),
+    onSuccess: (_, { target, mode, launched }) => {
+      if (launched) {
+        setLaunchedModes((previous) => {
+          const next = { ...previous };
+          const first = previous[target.feature_id] ?? launched;
+          if (first === mode) delete next[target.feature_id];
+          else next[target.feature_id] = first;
+          return next;
+        });
+      }
+      pushToast({ tone: "info", title: "Vibe mode updated", message: "Restart agent sessions to apply the change." });
+    },
+    onError: reportError,
+  });
+  useEffect(() => {
+    const running = new Set((workspace.data?.projects ?? []).flatMap((project) =>
+      project.features.filter((feature) => feature.status !== "stopped").map((feature) => feature.id)));
+    setLaunchedModes((previous) =>
+      Object.keys(previous).every((id) => running.has(id))
+        ? previous
+        : Object.fromEntries(Object.entries(previous).filter(([id]) => running.has(id))));
+  }, [workspace.data]);
+
   function requestDeleteFeature(target: FeatureTarget, todos: TodoDeleteChoice | null, todoHost: TodoHostChoice | null) {
     if (deleteFeatureInFlight.current) return;
     deleteFeatureInFlight.current = true;
-    deleteFeatureMutation.mutate({ target, todos, todoHost });
+    deleteFeatureMutation.mutate({ target, todos, todoHost, dormant: deleteFeatureDialog?.dormant });
   }
 
   const stopFeatureMutation = useMutation({
@@ -1146,6 +1194,9 @@ export default function App() {
           </button>
 
           <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
+
+          <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
+          <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
 
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
             <Icon name="zap" /><span className="nav-label">Dormant features</span>
@@ -1240,7 +1291,21 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
-      {showDormancy && <DormancyPanel onClose={() => setShowDormancy(false)}
+      {showContextSettings && <ContextSettingsPanel onClose={() => setShowContextSettings(false)} onSaved={() => { setShowContextSettings(false); void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY }); }} />}
+      {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
+        projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
+          setAgentAvailabilityScope(null);
+          void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
+        }} />}
+      {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
+        onDeleteFeature={(row) => setDeleteFeatureDialog({
+          target: row.observation.target,
+          projectName: row.project_name,
+          featureName: row.observation.feature_name,
+          isWorktree: row.is_worktree,
+          unfinished: null,
+          dormant: { observation: row.observation, workdir: row.workdir, is_worktree: row.is_worktree },
+        })}
         onOpenFeature={(target) => {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
@@ -1302,6 +1367,7 @@ export default function App() {
             onNewFeature={() => setCreateFeatureFor(selectedProject.id)}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
             onPrReview={() => setPrReviewProject(selectedProject.id)}
+            onAgentAvailability={() => setAgentAvailabilityScope({ projectId: selectedProject.id })}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "project", project_id: selectedProject.id }}
@@ -1387,6 +1453,14 @@ export default function App() {
               isWorktree: selectedFeature.is_worktree,
               unfinished: null,
             })}
+            onVibeMode={(mode) => setFeatureVibeModeMutation.mutate({
+              target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
+              mode,
+              launched: selectedFeature.status === "stopped" ? null : selectedFeature.mode,
+            })}
+            vibeModeBusy={setFeatureVibeModeMutation.isPending}
+            vibeModes={modes.data ?? []}
+            launchedMode={selectedFeature.status === "stopped" ? undefined : launchedModes[selectedFeature.id]}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
             drafts={drafts}
@@ -1439,11 +1513,23 @@ export default function App() {
         />
       )}
 
-      {createFeatureProject && (
+      {createFeatureProject && (featureAgents.isPending || featureAgents.isFetching || featureAgents.isError ||
+        !featureAgents.data?.length || harnesses.isPending || harnesses.isError ?
+        <Modal label="New feature" title="New feature" subtitle={`in ${createFeatureProject.name}`}
+          onClose={() => setCreateFeatureFor(null)} footer={<>
+            <button className="btn btn-ghost" onClick={() => setCreateFeatureFor(null)}>Cancel</button>
+            <button className="btn btn-secondary" disabled={featureAgents.isFetching || harnesses.isFetching}
+              onClick={() => { void featureAgents.refetch(); void harnesses.refetch(); }}>Reload agent choices</button>
+          </>}>
+          {featureAgents.isPending || featureAgents.isFetching || harnesses.isPending
+            ? <p role="status"><Spinner /> Loading project agent choices…</p>
+            : <p role="alert">{featureAgents.isError ? asGuiError(featureAgents.error).message
+              : harnesses.isError ? asGuiError(harnesses.error).message : "No allowed agent is available for this project. Check installed agents and Agent availability."}</p>}
+        </Modal> :
         <CreateFeatureForm
           projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
-          agents={harnesses.data ?? []}
+          agents={(harnesses.data ?? []).filter(agent => featureAgents.data?.includes(agent.slug))}
           modes={modes.data ?? []}
           isGit={createFeatureProject.is_git}
           defaultUseWorktree={createFeatureProject.is_git && createFeatureProject.features.length > 0}
@@ -1618,8 +1704,9 @@ export default function App() {
           unfinished={deleteFeatureDialog.unfinished}
           todoHost={deleteFeatureDialog.todoHost}
           busy={deleteFeatureMutation.isPending}
+          dormant={!!deleteFeatureDialog.dormant}
           onConfirm={(todos, todoHost) => requestDeleteFeature(deleteFeatureDialog.target, todos, todoHost)}
-          onClose={() => setDeleteFeatureDialog(null)}
+          onClose={() => { if (!deleteFeatureInFlight.current) setDeleteFeatureDialog(null); }}
         />
       )}
 
@@ -1754,6 +1841,7 @@ function ProjectView({
   onNewFeature,
   onPrTriage,
   onPrReview,
+  onAgentAvailability,
   todoPanel,
 }: {
   project: Project;
@@ -1764,6 +1852,7 @@ function ProjectView({
   onNewFeature: () => void;
   onPrTriage: () => void;
   onPrReview: () => void;
+  onAgentAvailability: () => void;
   todoPanel: ReactNode;
 }) {
   const running = project.features.filter((feature) => feature.status !== "stopped").length;
@@ -1780,6 +1869,9 @@ function ProjectView({
         }
         actions={
           <>
+            <button className="btn btn-secondary" aria-label="Project agent availability" onClick={onAgentAvailability}>
+              <Icon name="list" size={12} /> Agent availability
+            </button>
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}
@@ -1883,6 +1975,10 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onVibeMode,
+  vibeModeBusy,
+  vibeModes,
+  launchedMode,
   starting,
   stopping,
   onStart,
@@ -1928,6 +2024,11 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onVibeMode: (mode: ModeSlug) => void;
+  vibeModeBusy: boolean;
+  vibeModes: ModeInfo[];
+  /** Set while the running agents still hold a mode other than the saved one. */
+  launchedMode?: ModeSlug;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
@@ -1989,7 +2090,13 @@ function FeatureView({
             <span className="dot-sep" />
             {harnessName(feature.agent)}
             <span className="dot-sep" />
-            {modeName(feature.mode)}
+            {launchedMode && launchedMode !== feature.mode
+              ? (
+                <span title="Running agents keep the mode they were launched with until they restart">
+                  {modeName(launchedMode)} → {modeName(feature.mode)} on restart
+                </span>
+              )
+              : modeName(feature.mode)}
             {feature.is_worktree && (
               <>
                 <span className="dot-sep" />
@@ -2050,6 +2157,18 @@ function FeatureView({
               icon="more"
               className="btn btn-secondary btn-icon"
               items={[
+                ...vibeModes.map((mode) => {
+                  const unsupported = mode.unsupported_agents?.includes(feature.agent) ?? false;
+                  return {
+                    label: `Vibe mode: ${mode.display_name}`,
+                    icon: "sparkles" as const,
+                    hint: feature.mode === mode.slug
+                      ? "Current"
+                      : unsupported ? `Unavailable with ${harnessName(feature.agent)}` : undefined,
+                    disabled: vibeModeBusy || feature.mode === mode.slug || unsupported,
+                    onSelect: () => onVibeMode(mode.slug),
+                  };
+                }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
@@ -2196,6 +2315,21 @@ function FeatureView({
   );
 }
 
+const ALLOWED_HARNESSES_KEY = "allowed-harnesses";
+
+/** The harnesses a creation form offers: the ones creation will accept for
+ * this project, or the global choices before a project exists. Every
+ * supported harness stands in until that answer arrives or if it cannot be
+ * read; the backend still refuses a disallowed one. */
+function useOfferedAgents(projectId: string | null, supported: HarnessInfo[]): HarnessInfo[] {
+  const allowed = useQuery({
+    queryKey: [ALLOWED_HARNESSES_KEY, projectId],
+    queryFn: () => allowedHarnesses(projectId),
+    retry: false,
+  });
+  return allowed.data ?? supported;
+}
+
 function CreateProjectForm({
   agents,
   pending,
@@ -2216,6 +2350,8 @@ function CreateProjectForm({
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
   const [agent, setAgent] = useState<AgentSlug | "">("");
+  const offered = useOfferedAgents(null, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent) ? agent : "";
 
   return (
     <Modal
@@ -2226,7 +2362,7 @@ function CreateProjectForm({
       onSubmit={() => onSubmit({
         path: path.trim(),
         project_name: name.trim(),
-        preferred_agent: agent || null,
+        preferred_agent: selectedAgent || null,
         dry_run: false,
       })}
       footer={
@@ -2266,9 +2402,9 @@ function CreateProjectForm({
           />
         </Field>
         <Field label="Preferred harness">
-          <select value={agent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
+          <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
             <option value="">Default</option>
-            {agents.map((a) => (
+            {offered.map((a) => (
               <option key={a.slug} value={a.slug}>{a.display_name}</option>
             ))}
           </select>
@@ -2307,6 +2443,9 @@ export function CreateFeatureForm({
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
+  const offered = useOfferedAgents(projectId, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
+    ? agent : (offered[0]?.slug ?? agent);
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
@@ -2320,7 +2459,7 @@ export function CreateFeatureForm({
         if (pending || !hook.ready || !branch.trim()) return;
         onSubmit({
           branch: branch.trim(),
-          agent,
+          agent: selectedAgent,
           mode,
           review: false,
           plan_mode: planKind !== "none",
@@ -2354,8 +2493,8 @@ export function CreateFeatureForm({
         </Field>
         <div className="form-row">
           <Field label="Harness">
-            <select value={agent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {agents.map((a) => (
+            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
+              {offered.map((a) => (
                 <option key={a.slug} value={a.slug}>{a.display_name}</option>
               ))}
             </select>
@@ -2430,8 +2569,10 @@ export function TodoNewFeatureForm({
   const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
   const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
   const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-  const selectedAgent = agents.some((candidate) => candidate.slug === agent)
-    ? agent : (agents[0]?.slug ?? agent);
+  // Each project can narrow the list, so it follows the chosen project.
+  const offered = useOfferedAgents(project?.id ?? null, agents);
+  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
+    ? agent : (offered[0]?.slug ?? agent);
   const selectedMode = modes.some((candidate) => candidate.slug === mode)
     ? mode : (modes[0]?.slug ?? mode);
   const hook = useWorktreeHookChoice(project?.id, !!project);
@@ -2490,7 +2631,7 @@ export function TodoNewFeatureForm({
         <div className="form-row">
           <Field label="Harness">
             <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {agents.map((candidate) => (
+              {offered.map((candidate) => (
                 <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
               ))}
             </select>

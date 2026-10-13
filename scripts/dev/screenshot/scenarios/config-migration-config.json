@@ -1,0 +1,23 @@
+{
+  "tmux_control_mode": true,
+  "diff_review_popup_hold_secs": 3.0,
+  "max_concurrent_agents": 9,
+  "context_window_override": 60123,
+  "context_warning_percent": 61,
+  "context_critical_percent": 91,
+  "extension": {
+    "allowed_agents": [
+      "codex"
+    ],
+    "future": {
+      "enabled": true
+    }
+  },
+  "future": {
+    "precise_limit": 18446744073709551615,
+    "nested": [
+      "untouched",
+      null
+    ]
+  }
+}

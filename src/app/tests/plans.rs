@@ -662,6 +662,64 @@ fn app_with_deferred_plan_interview() -> (App, tempfile::NamedTempFile, TempDir)
     plan_interview_app(None)
 }
 
+#[test]
+fn mermaid_plan_review_prepares_diagrams_and_preserves_the_editable_source() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let (mut app, _store_file, _repo) = app_with_deferred_plan_interview();
+    let plan = "# Plan: diagram\n\n## Architecture\n```mermaid\nsequenceDiagram\n User->>AMF: Open plan\n AMF-->>User: Diagram\n```\n";
+    let AppMode::PlanInterview(state) = &mut app.mode else {
+        panic!()
+    };
+    state.phase = PlanInterviewPhase::Review;
+    state.synthesized_plan = Some(plan.into());
+    let mut terminal = Terminal::new(TestBackend::new(120, 45)).unwrap();
+    let draw = |terminal: &mut Terminal<TestBackend>, app: &mut App| {
+        terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+    };
+    draw(&mut terminal, &mut app);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if app.poll_markdown_diagrams() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    draw(&mut terminal, &mut app);
+    let AppMode::PlanInterview(state) = &app.mode else {
+        panic!()
+    };
+    assert!(
+        state
+            .review_rendered_lines
+            .iter()
+            .any(|line| line.to_string().contains("mermaid · diagram"))
+    );
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+        40,
+    )
+    .unwrap();
+    draw(&mut terminal, &mut app);
+    let AppMode::PlanInterview(state) = &app.mode else {
+        panic!()
+    };
+    assert!(state.review_diagrams.show_source);
+    assert_eq!(state.synthesized_plan.as_deref(), Some(plan));
+    crate::handlers::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+        40,
+    )
+    .unwrap();
+    let AppMode::PlanInterview(state) = &app.mode else {
+        panic!()
+    };
+    assert_eq!(state.phase, PlanInterviewPhase::Editing);
+    assert_eq!(state.synthesized_plan.as_deref(), Some(plan));
+}
+
 /// `app_with_deferred_plan_interview` plus a real SQLite database, so the
 /// draft-persistence path writes and reads actual rows. The extra `TempDir`
 /// holds the database file and must outlive the app.

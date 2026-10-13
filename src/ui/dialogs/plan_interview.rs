@@ -1010,6 +1010,7 @@ fn draw_plan_review(
         &mut state.review_rendered_width,
         &mut state.review_rendered_lines,
         theme,
+        Some(&mut state.review_diagrams),
     );
 
     let selected_model = state
@@ -1043,6 +1044,8 @@ fn draw_plan_review(
         ))
     };
     let mut hints = vec![
+        hint("d", theme),
+        Span::raw(" diagram/source  "),
         hint("j/k", theme),
         Span::raw(" scroll  "),
         hint("e", theme),
@@ -1302,6 +1305,7 @@ fn draw_plan_critique(
         &mut state.critique_rendered_width,
         &mut state.critique_rendered_lines,
         theme,
+        None,
     );
 
     let context = if let Some(message) = message {

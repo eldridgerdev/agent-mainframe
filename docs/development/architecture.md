@@ -1,7 +1,9 @@
 # Architecture
 
-AMF is a single Rust executable. It retains the existing event loop and persistence
-formats; feature extraction does not introduce a new framework or library.
+AMF is a Cargo workspace with separate `amf` terminal and `amf-gui` Tauri
+executables. They share the `agent-mainframe` library, persistence and tmux
+integration. The TUI retains its event loop and presentation modules; GUI
+adapters expose shared operations through semantic commands and snapshots.
 See [checks.md](checks.md) for setup, focused suites, CI and contribution guidance.
 The [baseline inventory](baseline/README.md) records the pre-refactor ownership map
 and complete test preservation evidence.
@@ -156,7 +158,11 @@ editors and custom sessions alike.
 each row was decided on. Its confirmed stop re-checks every selected feature
 against those readings and the current scan, then calls the TUI's stop
 (`App::stop_feature_reporting`), whose editor cleanup keeps its ownership
-rules; the module signals no process itself. Terminal attachment records
+rules; the module signals no process itself. Dormant-list deletion shares
+the same observation validation before every TODO-disposition/host choice or
+deletion. It also checks the confirmed name
+and checkout, then calls the existing GUI/TUI deletion engine on that refreshed
+store. The confirmation does not touch attention. Terminal attachment records
 `last_accessed`, as TUI view entry does.
 
 ## Feature modules

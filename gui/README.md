@@ -2,6 +2,11 @@
 
 This is the Tauri desktop interface for AMF. The `amf` terminal interface
 remains available and uses the same project database and tmux sessions.
+See [choosing an interface and upgrading](../docs/interfaces.md) for shared
+state, concurrent use, staged coverage and independent updates.
+
+For AI-driven native GUI interaction with compact JSON observations and an
+isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
 
 ## Install a release build
 
@@ -283,9 +288,15 @@ it does not start an agent or send a message. Templates and target permissions
 are rechecked on insertion. The list refreshes while you browse, and a
 selected template edited or deleted elsewhere is deselected with a notice so
 you never fill an outdated copy. The preview renders as you type. Cancel
-leaves existing composer drafts intact. Create/edit/delete/export templates and
-editable prompt overrides have their own manager (below). Native desktop
-interaction and macOS runtime validation for this library increment remain open.
+leaves existing composer drafts intact. Create/edit/delete/export library
+templates in the TUI; editable prompt overrides have their own desktop manager
+(below). Six asserted native
+Linux frames now cover all four sources, tag search, required fields, multiline
+text and choices, cancellation, external template edits and appending to an
+existing unsent Codex draft. Reproduce with
+`scripts/dev/screenshot/scenarios/gui-prompt-library.txt`; both offline
+receivers are checked to remain empty. Paid-harness and macOS runtime
+validation remain open.
 
 Open **Prompt overrides** in workspace navigation to change the prompts AMF
 sends for headless AI calls (plan interviews, Final Review walkthroughs and
@@ -642,7 +653,24 @@ safeguards as the TUI's `e`. Its feature and agent/shell sessions keep running,
 even with automatic `kill_editor_on_stop` cleanup off. Unsaved editor changes
 are lost. Newly opened windows refuse an older confirmation; go back, refresh
 and confirm the current list. The result reports closed, left-running and
-still-opening windows. Deleting from this list remains a TUI action.
+still-opening windows.
+
+**Delete** beside a dormant feature opens the same confirmation as its feature
+page, without counting as opening the feature. It stops the sessions, removes
+an associated worktree (discarding uncommitted changes but keeping the branch)
+and deletes the feature record; an ordinary repository checkout is kept.
+Unfinished worktree TODOs and a hosted project TODO list get the same choices
+as deletion from a feature page. Every confirmation step rechecks dormancy,
+current thresholds, session identity, feature name and checkout. Changed,
+opened, active, stopped or deleted features are refused before deletion starts.
+Cancel applies no TODO choice and returns to a refreshed dormant list; success
+and refusal also return there. A selection ticked for a batch stop is kept
+across the dialog. Seven asserted native WSLg frames from
+`gui-dormant-delete.txt` verify cancellation through both TODO choices, an
+external-open refusal, TODO preservation, worktree deletion and ordinary
+checkout preservation using private SQLite, Git and tmux fixtures. macOS
+validation remains open.
+
 Four asserted native WSLg frames from `gui-dormancy.txt` verify the list,
 confirmation, a confirm-time refusal and editor ownership with stand-in
 processes on a private tmux server. Six more frames from
@@ -650,11 +678,45 @@ processes on a private tmux server. Six more frames from
 refusal, refreshed confirmation and ownership results while all feature
 sessions keep running and automatic cleanup-on-stop is disabled.
 
+**Context settings** edits the global fallback context-window token limit and
+warning/critical percentages shared with the TUI. Leave the token limit blank to
+restore harness defaults; otherwise use a positive whole token count. Percentages
+must be 1–100, with critical greater than warning. Large token limits remain exact
+across saving and reopening. Harness telemetry with its own limit keeps precedence.
+Saved thresholds update desktop indicator bands immediately; a changed limit marks
+estimated samples stale until the next collection, and in-flight estimates using an
+older fallback limit cannot become fresh. Samples whose limit came from telemetry
+stay fresh. If the stored values are invalid (a hand-edited critical below warning,
+or a zero limit), the dialog opens on them so they can be corrected; they are not
+applied until they are. External config edits are picked up automatically within a
+few seconds. Save/reload/cancel protect unsaved choices and refuse stale writes,
+preserving unrelated config and running sessions. No migration is required.
+
+An already open TUI does not see these edits, and it rewrites the whole config
+file from its own copy whenever it saves any setting (theme, config wizard and so
+on). That puts its older context, agent-availability and dormancy values back on
+disk, and the desktop then adopts the reverted context settings. Restart an open
+TUI after saving here, before changing settings in it.
+
+**Agent availability** in workspace navigation edits the global allowed-agent
+choices shared with the TUI config wizard. Select at least one of Claude Code,
+Codex, OpenCode or Pi, then **Save settings**. Project `amf.json` allowed-agent
+settings take precedence, and installed harness availability still applies.
+Existing sessions keep running; this does not install or authenticate a harness.
+Cancel and reload ask before discarding unsaved choices. Saves preserve unrelated
+JSON settings and refuse external config edits until reloaded, sharing the same
+revision and writer lock as dormancy settings. New actions in the desktop app
+read the saved choices directly, and the New project, New feature and
+TODO-to-feature forms offer only the harnesses the chosen project allows.
+Restart an already open TUI after saving: it keeps the choices it started with,
+and saving settings from it (the config wizard, or a theme change) writes them
+back over the desktop change. No database migration is required.
+
 Dormant features → **Settings** edits the global idle-minute and unattended-hour
 thresholds. Both must be exceeded for a feature to appear; either value at zero
 turns detection off. Saving refreshes the list and clears its selection without
-stopping anything. Refresh and confirmed stops read the latest thresholds from
-`~/.config/amf/config.json`. Restart an already running TUI to apply changed
+stopping anything. Refresh, confirmed stops and deletion confirmations read
+the latest thresholds from `~/.config/amf/config.json`. Restart an already running TUI to apply changed
 thresholds there. The form preserves unrelated config keys, refuses malformed
 or changed files, retains failed-save drafts and asks before discarding edits.
 Reload after a conflict before saving again. Settings saves from desktop windows

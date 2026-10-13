@@ -48,6 +48,23 @@ Lineup checked 2026-10-09. Prices are per million input/output tokens, Anthropic
 - This section covers Claude Code's own model use. AMF's product-side model
   pickers and advice (`model_evidence.rs`, `model_analysis/`) are separate.
 
+### AI interaction tooling
+
+Read [`skills/amf-interact/SKILL.md`](skills/amf-interact/SKILL.md) when choosing
+how to operate AMF. Use the [GUI driver](docs/development/gui-ai-driver.md) for
+native desktop controls/backend behavior and the
+[TUI driver](docs/development/tui-ai-driver.md) for rendered terminal text and
+xterm-compatible keys/paste. Reuse isolated sessions, scope snapshots, and batch
+actions with local waits. Capture screenshots only when explicitly requested.
+
+AMF embeds and injects the skill, drivers and references into managed projects,
+including projects outside the AMF checkout. The TUI driver works with installed
+`amf`; the GUI driver needs matching frontend source and a Linux debug GUI.
+Driver sessions are private fixtures. For requested changes to the live TUI use
+`amf automation`; for workspace configuration use AMF's config skills/`amf.json`.
+Prefer focused component/core tests when a native interface round trip adds no
+useful coverage.
+
 **HeadlessRunner** (headless.rs):
 
 - Harness-neutral one-shot runs for Claude, Codex, OpenCode, and Pi

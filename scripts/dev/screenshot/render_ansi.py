@@ -10,7 +10,9 @@ current SGR attributes per cell, then rasterize the grid.
 import argparse
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +20,34 @@ from PIL import Image, ImageDraw, ImageFont
 
 # v1 limitation: double-width CJK/emoji cells are drawn single-width (each
 # codepoint gets one cell), so wide glyphs will visually overlap/clip.
+
+# Box-drawing and block-element characters are drawn as geometry instead of
+# taken from the font, the way terminal emulators do it. A font's glyph is
+# sized to the font's own fractional advance and line height, so once the
+# cell is rounded to whole pixels neighbouring glyphs stop short of each
+# other and a border reads as a row of dashes.
+LIGHT, HEAVY, DOUBLE = 1, 2, 3
+BOX_WEIGHTS = {"LIGHT": LIGHT, "SINGLE": LIGHT, "HEAVY": HEAVY, "DOUBLE": DOUBLE}
+BOX_DIRECTIONS = {
+    "UP": "u", "DOWN": "d", "LEFT": "l", "RIGHT": "r",
+    "VERTICAL": "ud", "HORIZONTAL": "lr",
+}
+DASH_COUNTS = {"DOUBLE": 2, "TRIPLE": 3, "QUADRUPLE": 4}
+# Arms on either side of an arm, keyed by the arm: (negative-offset side,
+# positive-offset side), then the arm straight across the cell.
+BOX_SIDES = {"u": "lr", "d": "lr", "l": "ud", "r": "ud"}
+BOX_OPPOSITE = {"u": "d", "d": "u", "l": "r", "r": "l"}
+ARC_SUPERSAMPLE = 4
+# PIL arc start angle (clockwise from 3 o'clock) for the quarter turn joining
+# a horizontal arm on side sx to a vertical arm on side sy.
+ARC_START = {(1, 1): 180, (-1, 1): 270, (-1, -1): 0, (1, -1): 90}
+SHADE_ALPHA = {"░": 64, "▒": 128, "▓": 191}
+# Quadrant characters U+2596..U+259F as (upper-left, upper-right, lower-left,
+# lower-right) fill flags.
+QUADRANTS = [
+    (0, 0, 1, 0), (0, 0, 0, 1), (1, 0, 0, 0), (1, 0, 1, 1), (1, 0, 0, 1),
+    (1, 1, 1, 0), (1, 1, 0, 1), (0, 1, 0, 0), (0, 1, 1, 0), (0, 1, 1, 1),
+]
 
 ANSI_16 = [
     (0x00, 0x00, 0x00), (0xaa, 0x00, 0x00), (0x00, 0xaa, 0x00), (0xaa, 0x55, 0x00),
@@ -195,12 +225,188 @@ def load_font(path_candidates, size):
     return None
 
 
-def render(grid, rows, cols, font_size, theme_name, out_path):
+@lru_cache(maxsize=None)
+def box_spec(char: str):
+    """Decode a box-drawing character from its Unicode name.
+
+    Returns ("lines" | "arc", {arm: weight}) or ("dash", weight, count,
+    vertical), or None for anything left to the font (diagonals).
+    """
+    if not "─" <= char <= "╿":
+        return None
+    words = unicodedata.name(char, "").replace("BOX DRAWINGS ", "").split()
+    if not words or "DIAGONAL" in words:
+        return None
+    if "DASH" in words:
+        return ("dash", BOX_WEIGHTS[words[0]], DASH_COUNTS[words[1]], words[-1] == "VERTICAL")
+    # "LIGHT DOWN AND RIGHT", "DOWN LIGHT AND RIGHT HEAVY", "UP HEAVY AND
+    # RIGHT DOWN LIGHT": a weight covers the directions in its own group, and
+    # a group that names none inherits the one before it.
+    arms = dict.fromkeys("urdl", 0)
+    weight = 0
+    for group in " ".join(words).split(" AND "):
+        tokens = group.split()
+        weight = next((BOX_WEIGHTS[t] for t in tokens if t in BOX_WEIGHTS), weight)
+        for token in tokens:
+            for arm in BOX_DIRECTIONS.get(token, ""):
+                arms[arm] = weight
+    return ("arc" if "ARC" in words else "lines", arms)
+
+
+def stroke_span(centre: int, thickness: int):
+    lo = centre - thickness // 2
+    return lo, lo + thickness - 1
+
+
+def draw_box_lines(draw, arms, w, h, light):
+    """Fill a cell-sized mask with straight box-drawing arms.
+
+    Every arm runs from its cell edge to a stopping point near the centre.
+    A double line is two light strokes one stroke-width either side of the
+    centre line; where each stops is what makes corners and tees join.
+    """
+    cx, cy = w // 2, h // 2
+    gap = light
+
+    def thickness(arm):
+        return light * 2 if arms[arm] == HEAVY else light if arms[arm] else 0
+
+    def fill(arm, lateral, thick, forward, perp_thick):
+        # `forward` is how far past the centre (toward the opposite edge) the
+        # perpendicular stroke this one meets sits; `perp_thick` is that
+        # stroke's thickness, or 0 to stop on the centre pixel itself.
+        vertical = arm in "ud"
+        sign = 1 if arm in "ul" else -1
+        centre = (cy if vertical else cx) + sign * forward
+        lo, hi = stroke_span(centre, perp_thick) if perp_thick else (centre, centre)
+        length = h if vertical else w
+        a0, a1 = (0, hi) if sign > 0 else (lo, length - 1)
+        b0, b1 = stroke_span((cx if vertical else cy) + lateral, thick)
+        draw.rectangle([b0, a0, b1, a1] if vertical else [a0, b0, a1, b1], fill=255)
+
+    for arm, weight in arms.items():
+        if not weight:
+            continue
+        near_side, far_side = BOX_SIDES[arm]
+        opposite = arms[BOX_OPPOSITE[arm]]
+        if weight == DOUBLE:
+            for lateral, side, other in ((-gap, near_side, far_side), (gap, far_side, near_side)):
+                if arms[side] == DOUBLE:
+                    fill(arm, lateral, light, -gap, light)
+                elif arms[side]:
+                    fill(arm, lateral, light, 0, thickness(side))
+                elif opposite:
+                    fill(arm, lateral, light, 0, 0)
+                elif arms[other] == DOUBLE:
+                    fill(arm, lateral, light, gap, light)
+                elif arms[other]:
+                    fill(arm, lateral, light, 0, thickness(other))
+                else:
+                    fill(arm, lateral, light, 0, 0)
+            continue
+        sides = (arms[near_side], arms[far_side])
+        if DOUBLE in sides:
+            if opposite:
+                fill(arm, 0, thickness(arm), 0, 0)
+            else:
+                fill(arm, 0, thickness(arm), -gap if all(sides) else gap, light)
+        else:
+            fill(arm, 0, thickness(arm), 0, max(thickness(near_side), thickness(far_side)))
+
+
+def draw_box_arc(draw, arms, w, h, light):
+    """Rounded corner, drawn on a canvas ARC_SUPERSAMPLE times the cell."""
+    k = ARC_SUPERSAMPLE
+    t = light * k
+    xc = stroke_span(w // 2, light)[0] * k + t / 2
+    yc = stroke_span(h // 2, light)[0] * k + t / 2
+    sx = 1 if arms["r"] else -1
+    sy = 1 if arms["d"] else -1
+    radius = min(xc, w * k - xc, yc, h * k - yc)
+    ax, ay = xc + sx * radius, yc + sy * radius
+    outer = radius + t / 2
+    start = ARC_START[(sx, sy)]
+    draw.arc([ax - outer, ay - outer, ax + outer, ay + outer], start, start + 90, fill=255, width=t)
+    draw.rectangle([min(ax, (w * k if sx > 0 else 0)), yc - t / 2,
+                    max(ax, (w * k if sx > 0 else 0)), yc + t / 2 - 1], fill=255)
+    draw.rectangle([xc - t / 2, min(ay, (h * k if sy > 0 else 0)),
+                    xc + t / 2 - 1, max(ay, (h * k if sy > 0 else 0))], fill=255)
+
+
+def draw_block_element(draw, char, w, h):
+    code = ord(char)
+    if char in SHADE_ALPHA:
+        draw.rectangle([0, 0, w - 1, h - 1], fill=SHADE_ALPHA[char])
+    elif code == 0x2580:  # upper half
+        draw.rectangle([0, 0, w - 1, round(h / 2) - 1], fill=255)
+    elif 0x2581 <= code <= 0x2588:  # lower 1/8 .. full
+        draw.rectangle([0, h - round(h * (code - 0x2580) / 8), w - 1, h - 1], fill=255)
+    elif 0x2589 <= code <= 0x258f:  # left 7/8 .. 1/8
+        draw.rectangle([0, 0, max(1, round(w * (0x2590 - code) / 8)) - 1, h - 1], fill=255)
+    elif code == 0x2590:  # right half
+        draw.rectangle([w - round(w / 2), 0, w - 1, h - 1], fill=255)
+    elif code == 0x2594:  # upper 1/8
+        draw.rectangle([0, 0, w - 1, max(1, round(h / 8)) - 1], fill=255)
+    elif code == 0x2595:  # right 1/8
+        draw.rectangle([w - max(1, round(w / 8)), 0, w - 1, h - 1], fill=255)
+    else:
+        mx, my = round(w / 2), round(h / 2)
+        quads = [(0, 0, mx - 1, my - 1), (mx, 0, w - 1, my - 1),
+                 (0, my, mx - 1, h - 1), (mx, my, w - 1, h - 1)]
+        for filled, rect in zip(QUADRANTS[code - 0x2596], quads):
+            if filled:
+                draw.rectangle(rect, fill=255)
+
+
+@lru_cache(maxsize=None)
+def cell_mask(char: str, w: int, h: int, light: int):
+    """Coverage mask for a character drawn as geometry, or None to use the font."""
+    spec = box_spec(char)
+    if spec is None and not "▀" <= char <= "▟":
+        return None
+    scale = ARC_SUPERSAMPLE if spec and spec[0] == "arc" else 1
+    mask = Image.new("L", (w * scale, h * scale), 0)
+    draw = ImageDraw.Draw(mask)
+    if spec is None:
+        draw_block_element(draw, char, w, h)
+    elif spec[0] == "arc":
+        draw_box_arc(draw, spec[1], w, h, light)
+        mask = mask.resize((w, h), Image.BOX)
+    elif spec[0] == "dash":
+        _, weight, count, vertical = spec
+        thick = light * 2 if weight == HEAVY else light
+        length = h if vertical else w
+        b0, b1 = stroke_span((w if vertical else h) // 2, thick)
+        gap = max(1, round(length / count / 4))
+        for i in range(count):
+            a0, a1 = round(i * length / count), round((i + 1) * length / count) - gap - 1
+            draw.rectangle([b0, a0, b1, a1] if vertical else [a0, b0, a1, b1], fill=255)
+    else:
+        draw_box_lines(draw, spec[1], w, h, light)
+    return mask
+
+
+def render(grid, rows, cols, font_size, theme_name, out_path, scale=2):
     theme = THEMES[theme_name]
     default_bg, default_fg = theme["bg"], theme["fg"]
 
+    font_size *= scale
     font = load_font(FONT_CANDIDATES, font_size)
     bold_font = load_font(BOLD_FONT_CANDIDATES, font_size)
+    # DejaVu Sans Mono has no Braille glyphs. Terminal emulators fall back
+    # to another font for these Mermaid connectors; do the same per cell.
+    braille_font = next(
+        (
+            ImageFont.truetype(path, font_size)
+            for path in (
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            )
+            if Path(path).exists()
+        ),
+        None,
+    )
     if font is None:
         print(
             "warning: DejaVuSansMono.ttf not found, falling back to Pillow default "
@@ -210,12 +416,12 @@ def render(grid, rows, cols, font_size, theme_name, out_path):
         font = ImageFont.load_default()
         bold_font = None
 
-    probe = Image.new("RGB", (1, 1))
-    probe_draw = ImageDraw.Draw(probe)
-    bbox = probe_draw.textbbox((0, 0), "M", font=font)
-    cell_w = bbox[2] - bbox[0] + 2
+    # The font's own advance and line height, with no padding: any extra
+    # spreads the text out and opens a seam between adjacent cells.
+    cell_w = max(1, round(font.getlength("M")))
     ascent, descent = font.getmetrics()
-    cell_h = ascent + descent + 2
+    cell_h = ascent + descent
+    light = max(1, round(cell_h / 16))
 
     img = Image.new("RGB", (cols * cell_w, rows * cell_h), default_bg)
     draw = ImageDraw.Draw(img)
@@ -232,14 +438,19 @@ def render(grid, rows, cols, font_size, theme_name, out_path):
             x0, y0 = c * cell_w, r * cell_h
             if bg != default_bg:
                 draw.rectangle([x0, y0, x0 + cell_w - 1, y0 + cell_h - 1], fill=bg)
-            if char != " ":
+            mask = cell_mask(char, cell_w, cell_h, light) if char != " " else None
+            if mask is not None:
+                img.paste(fg, (x0, y0), mask)
+            elif char != " ":
                 use_font = bold_font if (state.bold and bold_font) else font
-                draw.text((x0 + 1, y0 + 1), char, font=use_font, fill=fg)
+                if "\u2800" <= char <= "\u28ff" and braille_font:
+                    use_font = braille_font
+                draw.text((x0, y0), char, font=use_font, fill=fg)
                 if state.bold and not bold_font:
-                    draw.text((x0 + 2, y0 + 1), char, font=use_font, fill=fg)
+                    draw.text((x0 + 1, y0), char, font=use_font, fill=fg)
             if state.underline:
-                uy = y0 + cell_h - 2
-                draw.line([(x0, uy), (x0 + cell_w - 1, uy)], fill=fg)
+                uy = y0 + cell_h - 1 - light
+                draw.rectangle([x0, uy, x0 + cell_w - 1, uy + light - 1], fill=fg)
 
     img.save(out_path)
 
@@ -251,8 +462,14 @@ def main():
     ap.add_argument("--cols", type=int, help="override grid column count")
     ap.add_argument("--rows", type=int, help="override grid row count")
     ap.add_argument("--font-size", type=int, default=14)
+    ap.add_argument(
+        "--scale", type=int, default=2,
+        help="pixel density multiplier; 2 stays sharp on a HiDPI display (default 2)",
+    )
     ap.add_argument("--theme", choices=["dark", "light"], default="dark")
     args = ap.parse_args()
+    if args.scale < 1:
+        ap.error("--scale must be at least 1")
 
     if args.input:
         text = Path(args.input).read_text(errors="replace")
@@ -263,7 +480,7 @@ def main():
     rows = args.rows or (max_row + 1)
     cols = args.cols or (max_col + 1)
 
-    render(grid, rows, cols, args.font_size, args.theme, args.out)
+    render(grid, rows, cols, args.font_size, args.theme, args.out, args.scale)
     print(f"wrote {args.out} ({cols}x{rows} cells)")
 
 

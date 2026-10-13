@@ -17,7 +17,14 @@ const projects: Project[] = ["one", "two"].map((id) => ({
 }));
 const clients: QueryClient[] = [];
 
-beforeEach(() => { vi.mocked(invoke).mockResolvedValue(prompt); });
+// The forms also read which harnesses they may offer; only the hook prompt
+// is under test here, so each test scripts `hookPrompt` alone.
+const hookPrompt = vi.fn();
+beforeEach(() => {
+  hookPrompt.mockResolvedValue(prompt);
+  vi.mocked(invoke).mockImplementation(async (command, args) =>
+    command === "allowed_harnesses" ? agents : hookPrompt(command, args));
+});
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.resetAllMocks(); });
 
 function mount(element: React.ReactElement) {
@@ -69,7 +76,7 @@ it("requires a new choice when the TODO destination project changes", async () =
 });
 
 it("blocks a failed prompt lookup until retry succeeds", async () => {
-  vi.mocked(invoke).mockRejectedValueOnce({ kind: "internal", message: "Unavailable" }).mockResolvedValue(null);
+  hookPrompt.mockReset().mockRejectedValueOnce({ kind: "internal", message: "Unavailable" }).mockResolvedValue(null);
   const onSubmit = vi.fn();
   mount(<TodoNewFeatureForm kind="launch" todoTitle="Improve API" projects={[projects[0]]} agents={agents} modes={modes}
     pending={false} onCancel={vi.fn()} onSubmit={onSubmit} />);
@@ -92,7 +99,8 @@ it("cancel applies neither the selected hook nor feature creation", async () => 
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(onCancel).toHaveBeenCalledOnce();
   expect(onSubmit).not.toHaveBeenCalled();
-  expect(vi.mocked(invoke).mock.calls.every(([command]) => command === "worktree_hook_prompt")).toBe(true);
+  expect(vi.mocked(invoke).mock.calls.every(([command]) =>
+    command === "worktree_hook_prompt" || command === "allowed_harnesses")).toBe(true);
 });
 
 it("does not request or send a worktree hook for the repository checkout", () => {
@@ -102,5 +110,5 @@ it("does not request or send a worktree hook for the repository checkout", () =>
   fireEvent.change(screen.getByLabelText("Branch / feature name"), { target: { value: "new-work" } });
   fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ use_worktree: false, hook_choice: null }), "none");
-  expect(invoke).not.toHaveBeenCalled();
+  expect(hookPrompt).not.toHaveBeenCalled();
 });

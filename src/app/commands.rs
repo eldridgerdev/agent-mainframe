@@ -45,8 +45,7 @@ impl App {
         } else {
             Vec::new()
         };
-        // Only offered with a feature in hand: the interview plans one
-        // feature's workdir, so there is nothing to run it against otherwise.
+        // Planning and permission-mode changes require a selected feature.
         if matches!(
             self.selection,
             Selection::Feature(_, _) | Selection::Session(_, _, _)
@@ -59,6 +58,27 @@ impl App {
                     command: LocalCommand::PlanInterview,
                 },
             });
+            // Only the modes that would change something: the current one is
+            // left out, as is one the feature's agent cannot run in.
+            let other_modes = self
+                .feature_for_command_picker(from_view.as_ref())
+                .map(|feature| {
+                    crate::project::VibeMode::ALL
+                        .into_iter()
+                        .filter(|mode| *mode != feature.mode && mode.supports_agent(&feature.agent))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for mode in other_modes {
+                commands.push(CommandEntry {
+                    name: format!("change-vibe-mode-{}", mode.display_name().to_lowercase()),
+                    source: "AMF".to_string(),
+                    path: None,
+                    action: CommandAction::Local {
+                        command: LocalCommand::ChangeVibeMode(mode),
+                    },
+                });
+            }
         }
         commands.extend(local_debug_commands());
 
@@ -119,6 +139,14 @@ impl App {
             from_view,
             hide_perf_logs: false,
         });
+    }
+
+    fn feature_for_command_picker(&self, from_view: Option<&ViewState>) -> Option<&Feature> {
+        if let Some(view) = from_view {
+            self.feature_for_view(view)
+        } else {
+            self.selected_feature().map(|(_, feature)| feature)
+        }
     }
 
     pub fn refresh_status_and_notifications(&mut self) {

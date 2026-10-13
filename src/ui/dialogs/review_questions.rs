@@ -107,6 +107,7 @@ pub(crate) fn draw(frame: &mut Frame, q: &mut Questions, theme: &Theme) {
         &mut width,
         &mut lines,
         theme,
+        None,
     );
 
     // Input: only shows a cursor when typing goes somewhere.

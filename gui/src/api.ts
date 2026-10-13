@@ -672,7 +672,8 @@ export type LearningAction =
   | { kind: "keep_todo"; qa_id: string; title: string; notes: string };
 export interface LearningHandoff {
   target: SessionTarget;
-  draft_prompt: string;
+  /** Unsent composer seed for a newly opened session; null when returning to the linked one. */
+  draft_prompt: string | null;
   notice: string | null;
   info: string | null;
   /** The linked session still exists but is stopped; start it instead of opening another. */

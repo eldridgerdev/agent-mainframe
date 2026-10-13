@@ -611,3 +611,24 @@ the latter distinguish an editable draft from a message sent to a harness.
 Local runs may set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY` to reuse a
 matching desktop build. The binary's compiled dev URL must use the same port.
 The ordinary capture workflow builds the requested ref and defaults to port 1420.
+
+### Native Learning proof
+
+`scenarios/gui-learning.txt` exercises the desktop reader and question engine
+through real Tauri IPC against private SQLite, Git worktrees and tmux. The
+offline Codex fixture refuses non-fixture checkouts and headless commands
+without a read-only sandbox. It records requests and receives terminal input
+locally; no paid harness runs.
+
+Eleven frames cover repository and diff reading, line/hunk selection, a starter
+question and unsent-close protection, a saved answer reloaded after reopening,
+a threaded follow-up, editable keep-as-TODO and its save, the resource warning,
+an editable unsent handoff and the offer to return to it. SQLite, receiver and
+page assertions between frames verify the answer/TODO/session links, a
+follow-up relabelled as a change request, unchanged state after cancelling the
+TODO draft or the resource warning, and that returning to the linked session
+adds no session, sends nothing and leaves the edited draft exactly as it was.
+The proof does not validate paid execution, other harnesses, deep dives, drift
+notices, stopped-session resume or macOS desktop interactions.
+
+`AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY` apply as described above.

@@ -176,6 +176,11 @@ are tagged.
 
 ### Fixed
 
+- **Returning to a Learning editing agent keeps your draft as it was.** In the
+  desktop app, *Return to editing agent* no longer adds a second copy of the
+  handoff prompt beneath the one you were still editing, matching the TUI. No
+  migration is required.
+
 - Cancelling a desktop planning agent call returns to the editable interview
   step instead of getting stuck on “Finishing up…”. Entered answers and the
   previous AI consent choice are preserved for retrying or drafting without AI.

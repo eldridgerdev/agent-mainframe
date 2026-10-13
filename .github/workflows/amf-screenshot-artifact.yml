@@ -158,7 +158,7 @@ jobs:
           python3 scripts/dev/screenshot/build_gallery.py \
             --input-dir "$OUT_DIR" --out "$OUT_DIR/gallery.html" \
             --repository "$GITHUB_REPOSITORY" --ref "$CAPTURE_REF" \
-            --sha "$GITHUB_SHA" --scenario "$SCENARIO" \
+            --sha "$(git rev-parse HEAD)" --scenario "$SCENARIO" \
             --geometry "$GEOMETRY" --pr-number "$PR_NUMBER" \
             --run-id "$GITHUB_RUN_ID" \
             --artifact-name "amf-screenshot-pr-${PR_NUMBER}-${GITHUB_RUN_ID}" \

@@ -475,8 +475,9 @@ skipped), any saved apply-on-finish batch, the configured check and PR posting.
 Completing works like the TUI finish. It applies that batch, reruns the
 configured check (earlier results in the summary are not reused) and records
 the round in `.claude/final-review-feedback.md`. It then clears saved progress
-and closes the review. While the check runs you can **Cancel completion**, and
-nothing is written. Choose **Complete and hand off to …** to give an actionable
+and closes the review. While the check runs you can **Cancel completion**;
+no feedback round is recorded, and any suggestions already applied remain in
+source files. Choose **Complete and hand off to …** to give an actionable
 round's "address the feedback" prompt to the feature's first agent session. It
 is submitted when the TUI's `final_review_submit_prompt` setting is on and the
 session is running. Otherwise it is added to that session's composer as an
@@ -487,8 +488,14 @@ before anything is written. The completion is delivered once. Choosing another
 destination (a dedicated session, another feature or a companion feature)
 remains in the TUI.
 
-The summary, batch and completion controls have automated command/component
-coverage; native desktop and macOS interaction validation remain open.
+The summary and batch controls have automated command/component coverage and
+an eight-frame native Linux scenario at
+`scripts/dev/screenshot/scenarios/gui-review-batch.txt`. It checks filtered-file
+summary rows, confirmation/cancellation, whole-batch refusal after an external
+edit, bottom-up same-file replacements, a read-only partial failure, approval
+invalidation, pause/reopen and retry of only the remaining replacement. Source,
+progress and offline-receiver assertions confirm that preparation leaves the
+review open and sends no feedback. macOS runtime remains unvalidated.
 
 Question-to-comment drafting has command/component coverage and eight asserted
 native WSLg frames from `gui-review-question-drafts.txt`, including edited drafts,

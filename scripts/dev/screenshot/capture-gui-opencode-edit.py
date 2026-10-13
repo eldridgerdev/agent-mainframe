@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Learning proof using private SQLite/Git/tmux and offline CLIs."""
+"""Native OpenCode supervised-edit proof using private SQLite/Git/tmux and offline CLIs."""
 import json
 import os
 import pathlib

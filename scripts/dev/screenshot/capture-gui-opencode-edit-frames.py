@@ -152,7 +152,8 @@ def capture(name, note, expects, expression=None, allow_error=False):
     assert digest not in captured_frames, "The native window saved a stale frame"
     captured_frames.add(digest)
     (out / name.replace(".png", ".txt")).write_text(body)
-    notes.append({"file": name, "note": note, "expects": expects})
+    # The gallery looks a frame's note up by its `.ansi` capture name.
+    notes.append({"file": name.replace(".png", ".ansi"), "note": note, "expects": expects})
     print("PASS:", name, note, flush=True)
 
 
@@ -160,6 +161,12 @@ scratch = pathlib.Path(sys.argv[6])
 workspace = pathlib.Path(__file__).resolve().parents[3]
 notify_dir=pathlib.Path(os.environ['XDG_CONFIG_HOME'])/'amf/notifications'
 hooks=[]
+# The shipped plugin lets an unanswered write through after its own timeout,
+# so "the hook is still blocked" can only be proved inside that window.
+auto_allow=re.search(r'const timeout = (\d+)\n', (scratch/'change-tracker.mjs').read_text())
+assert auto_allow, 'The shipped plugin timeout changed; recheck the blocked-hook assertions'
+auto_allow_secs=int(auto_allow.group(1))/1000
+auto_allow_at={}
 
 
 def input_value(selector, value):
@@ -169,21 +176,37 @@ def input_value(selector, value):
 def start_hook(name):
     before=set(notify_dir.glob('*.json'))
     result=scratch/(name+'-result.json')
+    # Taken before the plugin starts its own clock, so this deadline is early.
+    deadline=time.monotonic()+auto_allow_secs
     hook=subprocess.Popen(['node',str(workspace/'scripts/dev/screenshot/fixtures/gui-opencode-hook.mjs'),str(scratch/'change-tracker.mjs'),str(scratch/'worktrees/host'),name,str(result)],
                           cwd=scratch/'worktrees/host',env=os.environ.copy(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)
     hooks.append(hook)
+    auto_allow_at[hook]=deadline
     for _ in range(100):
         assert hook.poll() is None, ('Hook exited before a request',hook.communicate())
         created=set(notify_dir.glob('*.json'))-before
         if created:
             notification=created.pop()
-            request=json.loads(notification.read_text())
+            try:
+                request=json.loads(notification.read_text())
+            except json.JSONDecodeError:
+                # The plugin writes this file in place; read it again once whole.
+                time.sleep(0.1)
+                continue
             assert request['type']=='change-reason' and request['amf_feature_session_id']=='host-opencode'
             assert pathlib.Path(request['response_file']).is_relative_to(scratch/'reviews')
             assert pathlib.Path(request['proposed_file']).is_file()
             return hook,notification,request,result
         time.sleep(0.1)
     raise AssertionError('The actual OpenCode plugin did not create its private fallback request')
+
+
+def still_blocked(hook, request):
+    # A run slower than the plugin's timeout fails for that reason, not with a
+    # misleading assertion about a write the plugin allowed on its own.
+    if time.monotonic()>=auto_allow_at[hook]:
+        raise RuntimeError(f'This run took longer than the {auto_allow_secs:g}s after which the shipped plugin allows an unanswered write, so it can no longer prove this hook is blocked. Rerun on a faster display.')
+    assert hook.poll() is None and not pathlib.Path(request['proceed_signal']).exists()
 
 
 def edit_ready(name):
@@ -223,10 +246,10 @@ try:
     capture('001-opencode-reason.png',
             'The shipped OpenCode change-tracker logic creates a private change-reason request and opens the native review automatically. Its generated reason, captured diff and feedback limitation are visible before any answer.',
             ['Supervised edits · host', "Agent's reason:", 'Modify code in approve.py', 'OpenCode does not forward rejection feedback', 'Approve edit'])
-    assert approve.poll() is None and not pathlib.Path(approve_request['proceed_signal']).exists()
+    still_blocked(approve,approve_request)
     evaluate('document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))')
     wait('!document.querySelector(`[role=dialog][aria-label="Supervised edits"]`)')
-    assert approve.poll() is None
+    still_blocked(approve,approve_request)
     click_js('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim().startsWith("Supervised edits"))')
     edit_ready('approve')
     click('Approve edit')
@@ -235,7 +258,7 @@ try:
             'Approval explicitly says the agent will write the change and record its stated reason. Merely opening this confirmation leaves the real hook waiting and the source unchanged.',
             ['Approve this edit?', 'The agent writes this change and records its stated reason.', 'Send approval'])
     assert 'return used < limit' in (scratch/'worktrees/host/approve.py').read_text()
-    assert approve.poll() is None
+    still_blocked(approve,approve_request)
     click('Send approval')
     approved=finish(approve,approve_result)
     assert approved['status']=='written' and 'return used <= limit' in approved['after']
@@ -253,7 +276,7 @@ try:
     capture('004-reject-with-opencode-effect.png',
             'OpenCode rejection states that the tool will not write and that reviewer feedback is not forwarded. The editable feedback remains local while the confirmation is open.',
             ['Reject this edit?', 'OpenCode is told the change was rejected; your feedback is not forwarded.', 'Send rejection', 'OpenCode does not forward rejection feedback'])
-    assert reject.poll() is None and not pathlib.Path(reject_request['proceed_signal']).exists()
+    still_blocked(reject,reject_request)
     click('Send rejection')
     rejected=finish(reject,reject_result)
     assert rejected['status']=='rejected' and rejected['error']=='Change rejected by user'
@@ -270,7 +293,7 @@ try:
     capture('006-cancel-is-opencode-skip.png',
             'OpenCode cancellation is explicitly a skip: it permits the tool to write without recording a reason. The confirmation describes this effect before sending anything.',
             ['Cancel this edit?', 'OpenCode treats cancel as a skip: the agent writes this change without recording a reason.', 'Send cancellation'])
-    assert cancel.poll() is None
+    still_blocked(cancel,cancel_request)
     click('Send cancellation')
     cancelled=finish(cancel,cancel_result)
     assert cancelled['status']=='written' and 'return used <= limit' in cancelled['after']
@@ -286,21 +309,41 @@ try:
     pathlib.Path(stale_request['proposed_file']).write_text('def changed_after_review():\n    return False\n')
     click('Send approval')
     wait('document.querySelector(`[role=alert]`)?.textContent.includes("changed after you reviewed")')
-    assert stale.poll() is None and not pathlib.Path(stale_request['proceed_signal']).exists()
+    still_blocked(stale,stale_request)
     capture('008-changed-captured-diff-refused.png',
-            'Changing the hook’s captured proposal after confirmation refuses the stale answer. The live hook remains blocked, its source is unchanged and no proceed signal is written.',
+            f'Changing the hook’s captured proposal after confirmation refuses the stale answer. Inside the {auto_allow_secs:g} seconds before the plugin lets an unanswered write through, the live hook is still blocked, its source is unchanged and no proceed signal is written.',
             ['This edit changed after you reviewed it', 'stale.py'], allow_error=True)
-    os.killpg(stale.pid,signal.SIGTERM)
-    stale.communicate(timeout=5)
-    assert not stale_result.exists()
-    click('Refresh')
-    wait('document.body.innerText.includes("The agent is no longer waiting for this edit")')
+    still_blocked(stale,stale_request)
+    # Answer the refreshed proposal, so this request leaves through the
+    # plugin's own cleanup and the abandoned one below is reviewed alone.
+    click('Reject edit')
+    confirm_open()
+    click('Send rejection')
+    refused=finish(stale,stale_result)
+    assert refused['status']=='rejected' and refused['after']==refused['before'] and len(refused['history'])==2
+    assert not stale_file.exists()
+
+    abandon,abandon_file,abandon_request,abandon_result=start_hook('abandon')
+    edit_ready('abandon')
+    click('Approve edit')
+    confirm_open()
+    still_blocked(abandon,abandon_request)
+    # SIGKILL skips the plugin's cleanup, leaving every request file behind.
+    # Reap the hook as well: a zombie PID would still count as a live owner.
+    os.killpg(abandon.pid,signal.SIGKILL)
+    abandon.communicate()
+    abandon_dir=pathlib.Path(abandon_request['response_file']).parent
+    remaining=sorted(path.name for path in abandon_dir.iterdir())
+    assert abandon_file.exists() and 'waiter.json' in remaining
+    click('Send approval')
+    wait('document.querySelector(`[role=alert]`)?.textContent.includes("The agent is no longer waiting for this edit")')
     capture('009-abandoned-hook-refused.png',
-            'After the request-owning OpenCode process exits, its remaining files cannot authorize an answer. Native review marks it unanswerable and disables all decisions rather than recreating its reply paths.',
-            ['The agent is no longer waiting for this edit', 'Not answerable', 'stale.py'],
+            'An approval sent after the request-owning OpenCode process is killed is refused: its remaining files cannot authorize an answer. Native review marks it unanswerable and disables all decisions rather than recreating its reply paths.',
+            ['The agent is no longer waiting for this edit', 'Not answerable', 'abandon.py'],
             'Array.from(document.querySelectorAll(".supervised-actions button")).filter(b=>["Approve edit","Reject edit","Cancel edit"].includes(b.textContent.trim())).every(b=>b.disabled)', allow_error=True)
-    assert 'return used < limit' in (scratch/'worktrees/host/stale.py').read_text()
-    assert not pathlib.Path(stale_request['proceed_signal']).exists()
+    assert sorted(path.name for path in abandon_dir.iterdir())==remaining, 'The refused answer wrote into the abandoned request'
+    assert not pathlib.Path(abandon_request['proceed_signal']).exists() and not abandon_result.exists()
+    assert 'return used < limit' in (scratch/'worktrees/host/abandon.py').read_text()
     (out/'validation.json').write_text(json.dumps({'native_ipc':True,'shipped_opencode_plugin':True,'path_substitutions_only':3,'approved_records_reason':True,'rejected_source_unchanged':True,'feedback_not_forwarded':True,'cancel_writes_without_reason':True,'stale_and_abandoned_refused':True,'paid_harness_calls':0},indent=2)+'\n')
 finally:
     for hook in hooks:
@@ -312,6 +355,11 @@ finally:
                 os.killpg(hook.pid,signal.SIGKILL)
                 hook.communicate()
     (out/'capture-notes.jsonl').write_text(''.join(json.dumps(note)+'\n' for note in notes))
-    (out/'last-state.txt').write_text(evaluate('document.body.innerText'))
-    ws.close()
-    x.close()
+    try:
+        (out/'last-state.txt').write_text(evaluate('document.body.innerText'))
+    except Exception as error:
+        # A dead inspector must not replace the failure that ended the run.
+        print('Could not record the last page state:', repr(error), file=sys.stderr, flush=True)
+    finally:
+        ws.close()
+        x.close()

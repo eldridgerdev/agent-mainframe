@@ -531,8 +531,17 @@ approval and recorded reason, rejection with its no-feedback-forwarding warning,
 cancellation as OpenCode skip with a null reason, changed-proposal refusal and
 abandoned-owner refusal. Filesystem/history assertions distinguish blocking an
 edit from allowing it, and confirm that stale or abandoned requests receive no
-proceed signal. The proof leaves live OpenCode/client integration, AI edit
+proceed signal. The abandoned case uses its own request: an approval is sent
+after that request's hook is killed, and the refusal must leave its reply
+directory untouched. The proof leaves live OpenCode/client integration, AI edit
 explanations, requests delivered to a running TUI and macOS validation open.
+
+The shipped plugin does not block forever: after 30 seconds with no answer it
+lets the write through and records the generated reason. Every "the hook is
+still blocked" assertion therefore holds only inside that window. The frames
+script reads the timeout from the plugin copy and, if a request has been open
+that long, stops with an error naming the slow run instead of reporting the
+plugin's own write as a failed refusal.
 
 Local direct runs can set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY`
 for a desktop build compiled with the same dev URL. The isolated capture workflow

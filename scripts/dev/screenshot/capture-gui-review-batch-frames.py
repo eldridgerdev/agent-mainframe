@@ -186,6 +186,7 @@ blocked_mode = blocked_path.stat().st_mode
 upper = "  const total = invoice.subtotal + tax;\n  const cents = total + Number.EPSILON;\n  return Math.round(cents * 100) / 100;"
 lower = '  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total);'
 blocked_replacement = 'import { invoiceTotal as calculateTotal } from "./invoice";'
+stale_refusal = "Review changes changed; refresh changes before continuing"
 
 
 def progress():
@@ -214,6 +215,11 @@ def filter_files(value):
 def begin_batch():
     click("Apply pending suggestions")
     wait('document.querySelector("[role=alertdialog]")?.getAttribute("aria-label")==="Apply pending suggestions locally"')
+
+
+def verdict_is(path, verdict):
+    # The file row reads "<verdict>" or "<verdict> · changed since last review".
+    return f'Array.from(document.querySelectorAll(".diff-file")).some(b=>b.querySelector("span").textContent==={json.dumps(path)} && b.querySelector("small").textContent.split(" ")[0]==={json.dumps(verdict)})'
 
 
 def no_completion():
@@ -247,13 +253,13 @@ try:
     ready()
     capture("001-summary-includes-hidden-suggestions.png", "The summary includes all three saved suggestions even when the editor filters to invoice.ts; browsing changes no source.", ["3 open suggestion(s)", "2 approved", "invoice.ts", "invoice.test.ts", "receipt.bin", "Apply pending suggestions"])
     evaluate("document.querySelector('.review-summary').lastElementChild.scrollIntoView({block:'end'})")
-    capture("001b-summary-hidden-file-rows.png", "The summary retains the filtered-out binary row and both saved invoice replacements; it changes no source or saved progress.", ["receipt.bin", upper, lower])
+    capture("002-summary-hidden-file-rows.png", "The summary retains the filtered-out binary row and both saved invoice replacements; it changes no source or saved progress.", ["receipt.bin", upper, lower])
     evaluate("document.querySelector('.review-summary').scrollIntoView({block:'start'})")
     assert source_path.read_text() == original_source
     assert blocked_path.read_text() == original_blocked
     saved_before = progress_path.read_bytes()
     begin_batch()
-    capture("002-batch-confirmation.png", "Batch application explicitly confirms checkout writes, successful-thread resolution and approval invalidation without finishing or sending feedback.", ["Apply 3 saved replacement(s)", "Blocked suggestions stay open", "Apply batch locally", "Cancel batch application"])
+    capture("003-batch-confirmation.png", "Batch application explicitly confirms checkout writes, successful-thread resolution and approval invalidation without finishing or sending feedback.", ["Apply 3 saved replacement(s)", "Blocked suggestions stay open", "Apply batch locally", "Cancel batch application"])
     click("Cancel batch application")
     wait('!document.querySelector("[role=alertdialog]")')
     assert source_path.read_text() == original_source
@@ -265,8 +271,9 @@ try:
     begin_batch()
     click("Apply batch locally")
     ready()
-    wait('!!document.querySelector("[role=alert]")')
-    capture("003-changed-patch-refuses-entire-batch.png", "An external patch edit refuses the whole batch before any source is written; saved replacements and external text survive.", ["refresh", "3 open suggestion(s)", "Apply batch locally"], allow_alert=True)
+    stale_alert = f'Array.from(document.querySelectorAll("[role=alert]")).some(a=>a.textContent==={json.dumps(stale_refusal)})'
+    wait(stale_alert)
+    capture("004-changed-patch-refuses-entire-batch.png", "An external patch edit refuses the whole batch before any source is written; saved replacements and external text survive.", [stale_refusal, "3 open suggestion(s)", "0 applied locally", "Apply batch locally"], stale_alert, allow_alert=True)
     assert source_path.read_text() == changed_source
     assert blocked_path.read_text() == original_blocked
     assert progress_path.read_bytes() == saved_before
@@ -276,26 +283,39 @@ try:
     click("Refresh changes")
     ready()
     filter_files("")
+    # Refreshing already forgot invoice.ts's approval, because the external edit
+    # changed its patch. Approve the refreshed patch so the batch below, not the
+    # refresh, is what invalidates it.
+    wait(verdict_is("invoice.ts", "undecided"))
+    assert "invoice.ts" not in progress()["decisions"]
+    choose_file("invoice.ts")
+    click("Approve file")
+    ready()
+    wait(verdict_is("invoice.ts", "approved"))
+    assert progress()["decisions"]["invoice.ts"] == "Approve"
+    assert progress()["decisions"]["invoice.test.ts"] == "Approve"
     click("Pre-finish summary")
     ready()
+    wait('document.body.innerText.includes("2 approved")')
     blocked_path.chmod(0o444)
     begin_batch()
     click("Apply batch locally")
     ready()
     wait('document.body.innerText.includes("2 applied locally")')
-    capture("004-partial-batch-preserves-blocked-replacement.png", "Two same-file replacements apply bottom-up despite different line counts; a read-only second file stays unchanged and its suggestion remains open with the failure reason.", ["1 open suggestion(s)", "2 applied locally", "Some suggestions could not be applied", "could not write file", "1 approved"], allow_alert=True)
+    capture("005-partial-batch-preserves-blocked-replacement.png", "Two same-file replacements apply bottom-up despite different line counts; a read-only second file stays unchanged and its suggestion remains open with the failure reason.", ["1 open suggestion(s)", "2 applied locally", "Some suggestions could not be applied", "could not write file", "1 approved"], allow_alert=True)
     expected_source = changed_source.replace("  const total = invoice.subtotal + tax;\n  return Math.round(total * 100) / 100;", upper).replace('  return new Intl.NumberFormat("en-US", {\n    style: "currency",\n    currency: "USD",\n  }).format(total);', lower)
     assert source_path.read_text() == expected_source
     assert blocked_path.read_text() == original_blocked
     saved = progress()
     assert len(saved["applied_suggestions"]) == 2
     assert "invoice.ts" not in saved["decisions"]
+    assert saved["decisions"]["invoice.test.ts"] == "Approve"
     assert all(c["suggestion"] is None and c["resolved"] for c in saved["line_comments"].get("invoice.ts", []))
     assert saved["line_comments"]["invoice.test.ts"][0]["suggestion"] == blocked_replacement
     no_completion()
     click("Return to review")
     choose_file("invoice.ts")
-    capture("005-source-ready-for-rereview.png", "Batch preparation leaves the review open with changed source and invalidated approval, preserving the external edit and showing two application records.", ["Number.EPSILON", "Applied locally (2)", "undecided"])
+    capture("006-source-ready-for-rereview.png", "Batch preparation leaves the review open with changed source and invalidated approval, preserving the external edit and showing two application records.", ["Number.EPSILON", "Applied locally (2)", "1 approved"], verdict_is("invoice.ts", "undecided"))
     click("Pause review")
     wait('!document.querySelector("[role=dialog]")')
     click("Final Review")
@@ -303,17 +323,20 @@ try:
     click("Pre-finish summary")
     ready()
     evaluate('Array.from(document.querySelectorAll("details")).forEach(d=>d.open=true)')
-    capture("006-reopen-retains-batch-history-and-failure.png", "Pause/reopen restores application history and the unapplied replacement/failure; reopening does not repeat source writes or finish the review.", ["1 open suggestion(s)", "2 applied locally", "Some suggestions could not be applied", blocked_replacement], allow_alert=True)
+    capture("007-reopen-retains-batch-history-and-failure.png", "Pause/reopen restores application history and the unapplied replacement/failure; reopening does not repeat source writes or finish the review.", ["1 open suggestion(s)", "2 applied locally", "Some suggestions could not be applied", blocked_replacement, "1 approved"], allow_alert=True)
     assert source_path.read_text() == expected_source
+    assert progress()["decisions"]["invoice.test.ts"] == "Approve"
     blocked_path.chmod(blocked_mode)
     begin_batch()
     click("Apply batch locally")
     ready()
     wait('document.body.innerText.includes("0 open suggestion(s)")')
-    capture("007-retry-applies-only-retained-replacement.png", "After restoring write permission, retry applies only the retained replacement, clears its failure and leaves all three application records in the open review.", ["0 open suggestion(s)", "3 applied locally", "Applied locally (3)"], 'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Apply pending suggestions").disabled')
+    capture("008-retry-applies-only-retained-replacement.png", "After restoring write permission, retry applies only the retained replacement, clears its failure, invalidates that file's approval and leaves all three application records in the open review.", ["0 open suggestion(s)", "3 applied locally", "Applied locally (3)", "0 approved"], 'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Apply pending suggestions").disabled')
     assert source_path.read_text() == expected_source
     assert blocked_path.read_text() == original_blocked.replace('import { invoiceTotal } from "./invoice";', blocked_replacement)
-    assert len(progress()["applied_suggestions"]) == 3
+    saved = progress()
+    assert len(saved["applied_suggestions"]) == 3
+    assert "invoice.test.ts" not in saved["decisions"]
     no_completion()
     (out / "validation.json").write_text(json.dumps({"native_ipc": True, "applied_suggestions": 3, "same_file_bottom_up": True, "partial_failure_retry": True, "feedback_recorded": False, "prompts_sent": 0}, indent=2) + "\n")
     (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]}) + "\n" for n in notes))

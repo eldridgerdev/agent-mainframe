@@ -57,9 +57,13 @@ fn validate(settings: &DormancySettings) -> GuiResult<()> {
 }
 
 fn apply(gui: &mut GuiHandle, settings: &DormancySettings) {
-    let config = &mut gui.app_for_workflow().config;
-    config.dormant_idle_minutes = settings.idle_minutes;
-    config.dormant_last_accessed_hours = settings.unattended_hours;
+    let app = gui.app_for_workflow();
+    // These are the file's values, so the saved copy takes them too: a later
+    // settings save must not mistake them for its own unsaved change.
+    for config in [&mut app.config, &mut app.saved_config] {
+        config.dormant_idle_minutes = settings.idle_minutes;
+        config.dormant_last_accessed_hours = settings.unattended_hours;
+    }
 }
 
 pub fn load() -> GuiResult<DormancySettingsView> {

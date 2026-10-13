@@ -122,7 +122,10 @@ are tagged.
 
 - **Keep custom settings when upgrading.** Starting either interface with an
   older global config now preserves unrecognized settings while applying the
-  existing one-time defaults migration. No migration is required.
+  existing one-time defaults migration, and saving a setting from the terminal
+  interface changes only that setting instead of rewriting the whole file. A
+  symlinked `config.json` stays a symlink, and a stuck lock no longer holds up
+  startup. No migration is required.
 
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block

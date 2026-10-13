@@ -793,58 +793,204 @@ fn read_config_at(path: &Path) -> AppConfig {
 /// Startup writes only migrated keys into the original document. A newer
 /// interface or extension may own fields this binary does not understand.
 pub(crate) fn load_config_at(path: &Path) -> AppConfig {
-    try_load_config_at(path).unwrap_or_else(|_| read_config_at(path))
+    try_load_config_at(path).unwrap_or_else(|error| {
+        // The debug log, not stderr: both interfaces start through here and
+        // neither has a terminal to spare. Without this a migration that can
+        // never be written reruns in memory on every start, and an unparseable
+        // file quietly becomes all defaults.
+        crate::debug::log_to_file(
+            crate::debug::LogLevel::Warn,
+            "config",
+            &format!(
+                "could not load or migrate {}: {error:#}; using it as read, or defaults if it cannot be parsed",
+                path.display()
+            ),
+        );
+        read_config_at(path)
+    })
 }
 
 fn try_load_config_at(path: &Path) -> anyhow::Result<AppConfig> {
+    // The usual start has nothing to migrate, so nothing to write and no lock
+    // worth waiting on. Every AMF writer replaces the file by rename, so this
+    // unlocked read sees a whole document.
+    if let Some((_, mut config)) = read_config_document(path)?
+        && !migrate_app_config(&mut config)
+    {
+        return Ok(config);
+    }
     let dir = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
     std::fs::create_dir_all(dir)?;
-    // Share the desktop settings lock and read after acquiring it so startup
-    // cannot overwrite a settings save made while it was waiting.
+    let _lock = lock_config(path)?;
+    // Read again now that the lock is held, so startup cannot overwrite a
+    // settings save made while it was waiting.
+    let Some((mut value, mut config)) = read_config_document(path)? else {
+        let config = AppConfig::default();
+        write_config_document(path, &serde_json::to_value(&config)?)?;
+        return Ok(config);
+    };
+    let before = serde_json::to_value(&config)?;
+    if !migrate_app_config(&mut config) {
+        return Ok(config);
+    }
+    merge_config_changes(&mut value, &before, &serde_json::to_value(&config)?);
+    write_config_document(path, &value)?;
+    Ok(config)
+}
+
+/// Persist an explicit settings change. `before` is the config as this process
+/// last read or wrote it and `after` the one to save; only the difference is
+/// merged into the document on disk, under the lock startup and the desktop
+/// settings writer share. Unknown fields survive, and so does a setting some
+/// other writer changed while this process was running.
+pub(crate) fn save_config_at(
+    path: &Path,
+    before: &AppConfig,
+    after: &AppConfig,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let after = serde_json::to_value(after)?;
+    let _lock = lock_config(path)?;
+    // A document this binary cannot load is left for its owner to repair
+    // rather than patched into something that still will not load.
+    let Some((mut value, _)) = read_config_document(path)
+        .with_context(|| format!("{} is not a usable AMF config", path.display()))?
+    else {
+        return write_config_document(path, &after);
+    };
+    let before = serde_json::to_value(before)?;
+    if before == after {
+        return Ok(());
+    }
+    merge_config_changes(&mut value, &before, &after);
+    write_config_document(path, &value)
+}
+
+/// The global config as both the raw document and the typed view of it, or
+/// `None` when there is no file yet.
+fn read_config_document(path: &Path) -> anyhow::Result<Option<(serde_json::Value, AppConfig)>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        value.is_object(),
+        "Global config must contain a JSON object"
+    );
+    let config = serde_json::from_value(value.clone())?;
+    Ok(Some((value, config)))
+}
+
+const CONFIG_LOCK_ATTEMPTS: u32 = 20;
+const CONFIG_LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Take the lock every `config.json` writer shares, giving up after about a
+/// second. A healthy holder is done in milliseconds; waiting indefinitely on a
+/// stuck one would hang startup, or the UI thread on a settings save, with
+/// nothing on screen to say why.
+fn lock_config(path: &Path) -> anyhow::Result<std::fs::File> {
+    let lock_path = path.with_extension("json.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(path.with_extension("json.lock"))?;
-    lock.lock()?;
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    let (config, value) = if let Some(bytes) = bytes {
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        anyhow::ensure!(
-            value.is_object(),
-            "Global config must contain a JSON object"
-        );
-        let mut config: AppConfig = serde_json::from_value(value.clone())?;
-        let before = serde_json::to_value(&config)?;
-        if !migrate_app_config(&mut config) {
-            return Ok(config);
+        .open(&lock_path)?;
+    for attempt in 1..=CONFIG_LOCK_ATTEMPTS {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if attempt < CONFIG_LOCK_ATTEMPTS => {
+                std::thread::sleep(CONFIG_LOCK_RETRY);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
-        let after = serde_json::to_value(&config)?;
-        for (key, migrated) in after.as_object().expect("AppConfig is an object") {
-            if before.get(key) != Some(migrated) {
-                value[key] = migrated.clone();
+    }
+    anyhow::bail!(
+        "{} is still held by another AMF process",
+        lock_path.display()
+    )
+}
+
+/// Copy into `document` only what changed between `before` and `after`, two
+/// serializations of the same `AppConfig`. A key neither of them mentions
+/// belongs to someone else and is left as found, at any depth. A key `after`
+/// dropped (a cleared `skip_serializing_if` field) is removed: left behind, it
+/// would load again on the next start with nothing to clear it a second time.
+fn merge_config_changes(
+    document: &mut serde_json::Value,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) {
+    let (Some(target), Some(before), Some(after)) = (
+        document.as_object_mut(),
+        before.as_object(),
+        after.as_object(),
+    ) else {
+        *document = after.clone();
+        return;
+    };
+    for (key, new) in after {
+        match (target.get_mut(key), before.get(key)) {
+            (_, Some(old)) if old == new => {}
+            (Some(existing), Some(old)) => merge_config_changes(existing, old, new),
+            _ => {
+                target.insert(key.clone(), new.clone());
             }
         }
-        (config, value)
-    } else {
-        let config = AppConfig::default();
-        let value = serde_json::to_value(&config)?;
-        (config, value)
-    };
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    if let Ok(metadata) = std::fs::metadata(path) {
+    }
+    for key in before.keys() {
+        if !after.contains_key(key) {
+            target.remove(key);
+        }
+    }
+}
+
+/// The file a config write has to replace. `config.json` is often a symlink
+/// into a dotfiles checkout, and renaming over the link itself would swap it
+/// for a regular file and leave the checkout stale.
+fn config_write_target(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
+        // A link whose target does not exist yet: create the target, as a
+        // plain write through the link would.
+        Ok(link) => path.parent().unwrap_or(Path::new("")).join(link),
+        Err(_) => path.to_path_buf(),
+    })
+}
+
+/// Replace the global config with `value` in one rename, keeping the mode of
+/// the file it replaces.
+fn write_config_document(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    let target = config_write_target(path);
+    let dir = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let existing = std::fs::metadata(&target).ok();
+    let mut builder = tempfile::Builder::new();
+    // A temp file is private (0600) by default. A config created here gets the
+    // umask-default mode a plain create would have given it.
+    #[cfg(unix)]
+    if existing.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temp = builder.tempfile_in(dir)?;
+    if let Some(metadata) = existing {
         temp.as_file().set_permissions(metadata.permissions())?;
     }
-    serde_json::to_writer_pretty(&mut temp, &value)?;
+    serde_json::to_writer_pretty(&mut temp, value)?;
     temp.flush()?;
-    temp.persist(path).map_err(|error| error.error)?;
-    Ok(config)
+    temp.persist(&target).map_err(|error| error.error)?;
+    Ok(())
 }
 
 pub fn load_config() -> AppConfig {

@@ -2,4 +2,4 @@
 note:The isolated TUI is ready before native prompt-library validation.
 expect:0 projects, 0 features
 shot:gui-capture-ready
-run:AMF_GUI_CAPTURE_PORT=1441 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1441"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-prompt-library.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-prompt-library-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"
+run:AMF_GUI_CAPTURE_PORT=1442 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1442"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-prompt-library.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-prompt-library-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

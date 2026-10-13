@@ -6,6 +6,7 @@ Only the window belonging to the supplied isolated GUI PID is inspected.
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -77,12 +78,14 @@ def wait(expression):
     raise AssertionError(f"Timed out: {expression}; body={evaluate('document.body.innerText')}")
 
 
-def click(text):
+def click(text, selector="button"):
     # Listing dormancy loads Rust state asynchronously. Its Settings button
     # is present but disabled until that load completes on slower runners.
-    wait(f'Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==={json.dumps(text)} && !b.disabled)')
+    # "Prompt library" labels both a workspace nav item and a composer button,
+    # and they open the panel differently, so those clicks pass a selector.
+    wait(f'Array.from(document.querySelectorAll({json.dumps(selector)})).some(b=>b.textContent.trim()==={json.dumps(text)} && !b.disabled)')
     evaluate(
-        f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
+        f'Array.from(document.querySelectorAll({json.dumps(selector)})).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
     )
 
 
@@ -151,6 +154,11 @@ def field(label, value):
     evaluate(f"""(()=>{{const l=Array.from(document.querySelectorAll('[role=dialog] label')).find(l=>l.querySelector('span')?.textContent==={json.dumps(label)});if(!l)throw new Error('Missing field '+{json.dumps(label)});const e=l.querySelector('input,textarea,select');if(e.tagName==='SELECT'){{e.value={json.dumps(value)};e.dispatchEvent(new Event('change',{{bubbles:true}}));}}else{{const proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,{json.dumps(value)});e.dispatchEvent(new Event('input',{{bubbles:true}}));}}}})()""")
 
 
+def assert_destination(key):
+    picked=evaluate("""(()=>{const l=Array.from(document.querySelectorAll('[role=dialog] label')).find(l=>l.querySelector('span')?.textContent==='Agent session');const e=l?.querySelector('select');return e?[e.value,e.selectedOptions[0]?.textContent.trim()??'']:null;})()""")
+    assert picked and picked[0]==key and 'no longer available' not in picked[1],picked
+
+
 def choose(name):
     wait(f'Array.from(document.querySelectorAll(".library-item")).some(b=>b.querySelector("strong")?.textContent==={json.dumps(name)})')
     evaluate(f'Array.from(document.querySelectorAll(".library-item")).find(b=>b.querySelector("strong")?.textContent==={json.dumps(name)}).click()')
@@ -168,7 +176,11 @@ try:
     with sqlite3.connect(dbpath) as db:
         repo=pathlib.Path(db.execute("SELECT repo FROM projects WHERE id='shot-project'").fetchone()[0])
     worktree=repo.parent/'prompt-worktree'
-    subprocess.run(['git','-C',str(repo),'worktree','add','-b','prompt-library-proof',str(worktree)],check=True,capture_output=True)
+    # The runner passes its GUI environment, not its private git one, so the
+    # user's global and system git config (hooks included) is shut out here.
+    git_env=os.environ|{'GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1'}
+    added=subprocess.run(['git','-C',str(repo),'worktree','add','-b','prompt-library-proof',str(worktree)],env=git_env,capture_output=True,text=True)
+    assert added.returncode==0,f'git worktree add failed: {added.stderr}'
     template={"name":"Invoice repair","description":"Repair invoice behavior without sending a prompt.","tags":["bug"],"body":"Fix {{area}} in {{env: dev|prod}}.\n{{notes}}\nUse {{rust|go}}.","placeholders":[{"key":"area","label":"Area","kind":"text","default":"billing","required":True},{"key":"notes","label":"Notes","kind":"multi_line","default":"Keep unit tests."}]}
     project_config={"prompt_templates":[template]}
     (repo/'amf.json').write_text(json.dumps(project_config))
@@ -188,28 +200,31 @@ try:
     wait('!!document.querySelector(".composer textarea")')
     evaluate("""(()=>{const e=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(e,'Existing unsent draft');e.dispatchEvent(new Event('input',{bubbles:true}));})()""")
     wait('document.querySelector(".composer textarea").value==="Existing unsent draft"')
-    click('Prompt library')
+    # The composer's button hands its own session to the panel as the
+    # destination; the workspace nav item (the last open below) hands none.
+    codex=json.dumps(['shot-project','shot-feature','shot-codex'],separators=(',',':'))
+    click('Prompt library','.composer button')
     wait('document.querySelectorAll(".library-item").length===4')
-    capture('001-four-library-sources.png','The feature library reads user SQLite templates plus worktree, project and global config sources through real Rust IPC. Opening it preserves the existing unsent Codex draft.',['Prompt library','User repair','Worktree audit','Invoice repair','Global review'])
+    capture('001-four-library-sources.png','Opened from the Codex composer, the feature library reads user SQLite templates plus worktree, project and global config sources through real Rust IPC. Opening it preserves the existing unsent Codex draft.',['Prompt library','User repair','Worktree audit','Invoice repair','Global review'])
     field('Search prompts','#bug')
     wait('document.querySelectorAll(".library-item").length===2')
     choose('Invoice repair')
-    field('Agent session',json.dumps(['shot-project','shot-feature','shot-codex'],separators=(',',':')))
+    assert_destination(codex)
     field('Area (required)','')
     wait('Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==="Add to draft").disabled')
-    capture('002-required-field-blocked.png','Tag search selects two bug templates. The required Area field blocks insertion until filled; original and resolved prompt previews remain available.',['Invoice repair','Fill the required fields','Prompt preview'])
+    capture('002-required-field-blocked.png','Tag search selects two bug templates, and the Codex session whose composer opened the library is already the destination. The required Area field blocks insertion until filled; original and resolved prompt previews remain available.',['Invoice repair','Fill the required fields','Prompt preview','Agent session'])
     field('Area (required)','invoice totals')
     field('Notes','Keep tests.\nCheck rounding.')
     field('env','prod')
     field('Choose an option','go')
     wait('document.querySelector(\'[aria-label="Resolved prompt"]\').textContent==="Fix invoice totals in prod.\\nKeep tests.\\nCheck rounding.\\nUse go."')
-    capture('003-filled-preview.png','Text, multiline and choice fields resolve locally into an editable preview. Add to draft remains explicit, and no prompt has been sent.',['Invoice repair','Fix invoice totals in prod.','Check rounding.','Use go.'])
+    capture('003-filled-preview.png','Text, multiline and choice fields resolve locally into a live preview. Add to draft remains explicit, and no prompt has been sent.',['Invoice repair','Fix invoice totals in prod.','Check rounding.','Use go.'])
     click('Cancel')
     wait('!document.querySelector(\'[role=dialog][aria-label="Prompt library"]\')')
     assert evaluate('document.querySelector(".composer textarea").value')=='Existing unsent draft'
-    click('Prompt library')
+    click('Prompt library','.composer button')
     choose('Invoice repair')
-    field('Agent session',json.dumps(['shot-project','shot-feature','shot-codex'],separators=(',',':')))
+    assert_destination(codex)
     # An external config edit retires the selected content key on refresh.
     project_config['prompt_templates'][0]['body']='Updated repair {{area}}.'
     (repo/'amf.json').write_text(json.dumps(project_config))
@@ -217,7 +232,7 @@ try:
     wait('document.body.innerText.includes("was changed or removed outside this window")')
     capture('004-external-edit-retired.png','Refreshing after an external project template edit retires the old selection and refuses insertion until the current version is selected. The existing composer draft is unchanged.',['was changed or removed outside this window','Select a prompt'])
     choose('Invoice repair')
-    field('Agent session',json.dumps(['shot-project','shot-feature','shot-codex'],separators=(',',':')))
+    assert_destination(codex)
     field('Area (required)','invoice totals')
     wait('document.querySelector(\'[aria-label="Resolved prompt"]\').textContent==="Updated repair invoice totals."')
     click('Add to draft')
@@ -227,11 +242,13 @@ try:
     assert draft.startswith('Existing unsent draft') and draft.count('Updated repair invoice totals.')==1,draft
     capture('005-appended-unsent-draft.png','Explicit insertion appends the reselected template to the existing Codex draft once. Both private offline agent receivers remain empty, proving that insertion never sends the prompt.',['Round invoice totals','Codex'],'document.querySelector(".composer textarea").value.includes("Existing unsent draft") && document.querySelector(".composer textarea").value.includes("Updated repair invoice totals.")')
     for filename in ['claude-received.json','codex-received.json']:
-        assert json.loads((repo/filename).read_text())==[]
-    click('Prompt library')
+        assert json.loads((repo/filename).read_text())==[],f'Prompt library insertion submitted a prompt ({filename})'
+    click('Prompt library','.nav-item')
+    choose('User repair')
+    assert_destination('')
     field('Library scope',json.dumps({'kind':'global'},separators=(',',':')))
     wait('document.querySelectorAll(".library-item").length===2')
-    capture('006-global-scope.png','Switching to User and global prompts hides project/worktree entries while retaining the two shared sources. Browsing and cancellation leave both live sessions and the appended unsent draft intact.',['User repair','Global review','Select a prompt'],'!Array.from(document.querySelectorAll(".library-item strong")).some(e=>["Invoice repair","Worktree audit"].includes(e.textContent))')
+    capture('006-global-scope.png','Reopened from workspace navigation, which preselects no session. Switching to User and global prompts hides project/worktree entries while retaining the two shared sources. Browsing and cancellation leave both live sessions and the appended unsent draft intact.',['User repair','Global review','Select a prompt'],'!Array.from(document.querySelectorAll(".library-item strong")).some(e=>["Invoice repair","Worktree audit"].includes(e.textContent))')
     click('Cancel')
     assert evaluate('document.querySelector(".composer textarea").value')==draft
     with sqlite3.connect(dbpath) as db:
@@ -240,7 +257,12 @@ try:
     (out/'capture-notes.jsonl').write_text(''.join(json.dumps({'file':n['file'],'note':n['note']})+'\n' for n in notes))
     print('PASS: sources, tag search, required/multiline/choice fields, cancellation, external edits and append-only unsent handoff',flush=True)
 except Exception:
-    (out / "last-state.txt").write_text(evaluate("document.body.innerText"))
+    # Best effort. A dead inspector must not replace the failure being reported.
+    try:
+        ws.settimeout(2)
+        (out / "last-state.txt").write_text(evaluate("document.body.innerText") or "")
+    except Exception:
+        pass
     raise
 finally:
     ws.close()

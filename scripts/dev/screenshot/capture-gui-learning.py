@@ -117,7 +117,7 @@ with tempfile.TemporaryDirectory(prefix='amf-gui-learning-') as temporary:
                            ('host-' + kind, 'host', kind, kind.capitalize(), kind, stamp, index))
             db.execute("INSERT OR REPLACE INTO store_meta(key,value) VALUES ('store_version',COALESCE((SELECT CAST(value AS INTEGER) FROM store_meta WHERE key='store_version'),0)+1)")
         subprocess.run(['/usr/bin/python3', str(workspace / 'scripts/dev/screenshot/capture-gui-learning-frames.py'),
-                        str(out), gui_pid_path.read_text().strip(), inspector, str(dbpath), str(repo), str(scratch)], env=env, check=True)
+                        str(out), gui_pid_path.read_text().strip(), inspector, str(dbpath), str(scratch)], env=env, check=True)
     finally:
         subprocess.run(tmux + ['kill-server'], check=False, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:

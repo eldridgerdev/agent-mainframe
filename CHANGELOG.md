@@ -120,6 +120,11 @@ are tagged.
 
 ### Fixed
 
+- **Returning to a Learning editing agent keeps your draft as it was.** In the
+  desktop app, *Return to editing agent* no longer adds a second copy of the
+  handoff prompt beneath the one you were still editing, matching the TUI. No
+  migration is required.
+
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block
   contributions and releases. No migration is required.

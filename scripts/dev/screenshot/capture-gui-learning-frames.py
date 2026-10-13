@@ -153,22 +153,18 @@ def capture(name, note, expects, expression=None, allow_error=False):
 
 
 dbpath = pathlib.Path(sys.argv[4])
-repo = pathlib.Path(sys.argv[5])
-scratch = pathlib.Path(sys.argv[6])
+scratch = pathlib.Path(sys.argv[5])
 calls = scratch / 'calls.jsonl'
+receiver = scratch / 'worktrees/host/.fixture-received.json'
 
 
-def field(label, value, root='document'):
+def field(label, value):
     wait('!!document.querySelector(".learning-controls select") && !document.querySelector(".learning-controls select").disabled')
-    evaluate(f'''(()=>{{const f=Array.from({root}.querySelectorAll('label')).find(l=>l.querySelector('.field-label')?.textContent.trim()==={json.dumps(label)} || l.firstElementChild?.textContent.trim()==={json.dumps(label)}); if(!f)throw Error('Missing field '+{json.dumps(label)});const e=f.querySelector('input,select,textarea');const p=e.tagName==='SELECT'?HTMLSelectElement:e.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;Object.getOwnPropertyDescriptor(p.prototype,'value').set.call(e,{json.dumps(value)});e.dispatchEvent(new Event(e.tagName==='SELECT'?'change':'input',{{bubbles:true}}));}})()''')
+    evaluate(f'''(()=>{{const f=Array.from(document.querySelectorAll('label')).find(l=>l.querySelector('.field-label')?.textContent.trim()==={json.dumps(label)} || l.firstElementChild?.textContent.trim()==={json.dumps(label)}); if(!f)throw Error('Missing field '+{json.dumps(label)});const e=f.querySelector('input,select,textarea');const p=e.tagName==='SELECT'?HTMLSelectElement:e.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;Object.getOwnPropertyDescriptor(p.prototype,'value').set.call(e,{json.dumps(value)});e.dispatchEvent(new Event(e.tagName==='SELECT'?'change':'input',{{bubbles:true}}));}})()''')
 
 
 def input_value(selector, value):
     evaluate(f'''(()=>{{const e=document.querySelector({json.dumps(selector)});const p=e.tagName==='TEXTAREA'?HTMLTextAreaElement:HTMLInputElement;Object.getOwnPropertyDescriptor(p.prototype,'value').set.call(e,{json.dumps(value)});e.dispatchEvent(new Event('input',{{bubbles:true}}));}})()''')
-
-
-def select_text(selector, text):
-    evaluate(f'''(()=>{{const e=document.querySelector({json.dumps(selector)});const o=Array.from(e.options).find(o=>o.text.trim()==={json.dumps(text)});if(!o)throw Error('Missing option '+{json.dumps(text)});e.value=o.value;e.dispatchEvent(new Event('change',{{bubbles:true}}));}})()''')
 
 
 def rows(sql, values=()):
@@ -186,6 +182,15 @@ def wait_db(sql, expected, values=()):
 
 def call_records(kind):
     return [row for row in map(json.loads, calls.read_text().splitlines()) if row['kind'] == kind]
+
+
+def received_messages():
+    # None until the offline editing agent has started and its (non-atomic)
+    # write has landed.
+    try:
+        return json.loads(receiver.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 
 def scroll(selector):
@@ -281,9 +286,11 @@ try:
     scroll('[aria-label="Learning answer"]')
     capture('006-followup-thread.png',
             'A follow-up is persisted under its original question with the same captured code anchor. Its real offline request contains the earlier turn, and both answers remain in history.',
-            ['Which boundary test?', 'Quota explanation', 'Keep as TODO'])
+            ['Which boundary test?', 'Why reject work at quota?', 'Quota explanation', 'Keep as TODO'],
+            'document.querySelectorAll(`[aria-label="Question history"] button`).length===2')
     click('Re-file as change request')
     wait_db('SELECT intent FROM learning_qa WHERE id=?', [('action',)], (child[0],))
+    wait('document.querySelector(`[aria-label="Learning answer"] .field-hint`).innerText.includes("change request")')
     click('Keep as TODO')
     wait('!!document.querySelector(`form[aria-label="Keep as TODO"]`)')
     field('TODO title', 'Add quota boundary regression')
@@ -323,18 +330,22 @@ try:
     wait('!!document.querySelector(`[role=dialog][aria-label="Approve Learning agent"]`)')
     click('Start anyway')
     wait('!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
-    for _ in range(100):
-        if (scratch/'worktrees/host/.fixture-received.json').is_file():
+    # The session launches through the user's own login shell, whose startup
+    # against these empty XDG directories can take well over ten seconds.
+    for _ in range(600):
+        if received_messages() is not None:
             break
         time.sleep(0.1)
-    receiver=scratch/'worktrees/host/.fixture-received.json'
-    assert json.loads(receiver.read_text()) == [] and len(call_records('interactive')) == 1
+    else:
+        raise AssertionError('The offline editing agent never started')
+    assert received_messages() == [] and len(call_records('interactive')) == 1
     linked=rows('SELECT spawned_session_id FROM learning_qa WHERE id=?',(child[0],))[0][0]
     assert linked and rows('SELECT COUNT(*) FROM feature_sessions') == [(count+1,)]
     compose='textarea[aria-label="Draft prompt"]'
     prompt=evaluate(f'document.querySelector({json.dumps(compose)}).value')
     assert 'Which boundary test?' in prompt
-    input_value(compose, prompt+'\nUser review: keep this unsent until approved.')
+    edited=prompt+'\nUser review: keep this unsent until approved.'
+    input_value(compose, edited)
     if evaluate('!!document.querySelector(`button[aria-label="Hide agent sidebar"]`)'):
         evaluate('document.querySelector(`button[aria-label="Hide agent sidebar"]`).click()')
         wait('!document.querySelector(`button[aria-label="Hide agent sidebar"]`)')
@@ -352,14 +363,21 @@ try:
             'Reopening Learning offers the answer’s existing editing session. Returning reuses its persisted link, creates no additional session and preserves the unsent composer edits.',
             ['Return to editing agent', 'On the TODO list', 'Which boundary test?'])
     click('Return to editing agent')
-    wait('!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
+    # The composer stays mounted under Learning, so only the reader closing
+    # shows that the return has been handled.
+    wait('!document.querySelector(`[role=dialog][aria-label="Learning"]`)')
     assert rows('SELECT COUNT(*) FROM feature_sessions') == [(count+1,)]
     assert rows('SELECT spawned_session_id FROM learning_qa WHERE id=?',(child[0],)) == [(linked,)]
-    assert json.loads(receiver.read_text()) == [] and len(call_records('interactive')) == 1
-    assert evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).value.includes("User review: keep this unsent")')
+    assert received_messages() == [] and len(call_records('interactive')) == 1
+    # Exactly the edited draft: returning must not hand the seed over again.
+    assert evaluate(f'document.querySelector({json.dumps(compose)}).value') == edited
     (out/'validation.json').write_text(json.dumps({'native_ipc':True,'offline_answer_calls':len(call_records('answer')),'offline_interactive_calls':len(call_records('interactive')),'persisted_questions':len(rows('SELECT id FROM learning_qa')),'kept_todo':True,'unsent_handoff':True,'linked_session_reused':True},indent=2)+'\n')
 finally:
     (out/'capture-notes.jsonl').write_text(''.join(json.dumps(note)+'\n' for note in notes))
-    (out/'last-state.txt').write_text(evaluate('document.body.innerText'))
+    try:
+        (out/'last-state.txt').write_text(evaluate('document.body.innerText'))
+    except Exception as error:
+        # A dead inspector must not replace the failure that brought us here.
+        print('Could not save the last GUI state:', error, file=sys.stderr)
     ws.close()
     x.close()

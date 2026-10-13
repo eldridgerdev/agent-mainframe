@@ -525,10 +525,12 @@ locally; no paid harness runs.
 
 Eleven frames cover repository and diff reading, line/hunk selection, a starter
 question and unsent-close protection, a saved answer reloaded after reopening,
-a threaded follow-up, intent relabelling, editable keep-as-TODO cancellation and
-save, resource-warning cancellation/approval, and an editable unsent handoff.
-SQLite and receiver assertions verify the answer/TODO/session links, unchanged
-state on cancellation, linked-session reuse and zero submitted agent messages.
+a threaded follow-up, editable keep-as-TODO and its save, the resource warning,
+an editable unsent handoff and the offer to return to it. SQLite, receiver and
+page assertions between frames verify the answer/TODO/session links, a
+follow-up relabelled as a change request, unchanged state after cancelling the
+TODO draft or the resource warning, and that returning to the linked session
+adds no session, sends nothing and leaves the edited draft exactly as it was.
 The proof does not validate paid execution, other harnesses, deep dives, drift
 notices, stopped-session resume or macOS desktop interactions.
 

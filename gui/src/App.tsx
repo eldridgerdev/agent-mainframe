@@ -698,7 +698,7 @@ export default function App() {
     try {
       const handoff = await learningLaunchAgent(learning, qaId, approved);
       setLearning(null); setLearningApproval(null);
-      openSession(handoff.target, handoff.draft_prompt);
+      openSession(handoff.target, handoff.draft_prompt ?? undefined);
       if (handoff.notice) pushToast({ tone: "error", title: "Learning", message: handoff.notice });
       if (handoff.info) pushToast({ tone: "info", title: "Learning", message: handoff.info });
       // A stopped linked session goes through the tab's own start, which

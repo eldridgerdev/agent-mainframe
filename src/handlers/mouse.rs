@@ -259,6 +259,9 @@ fn handle_click(
                     crate::project::VibeMode::Vibe => 7,
                     crate::project::VibeMode::SuperVibe => 11,
                 };
+                if let Some(pending) = view.pending_vibe_mode_badge() {
+                    header_len += pending.chars().count() as u16;
+                }
                 if view.review {
                     header_len += 9;
                 }

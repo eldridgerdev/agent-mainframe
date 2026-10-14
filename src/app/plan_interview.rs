@@ -956,11 +956,13 @@ impl App {
         } else if synthesis_attempted {
             // Defensive only: both writers of `synthesis_attempted`
             // (`begin_synthesis`/`apply_synthesis`) leave the phase at
-            // `SynthesisLoading`/`Review`, and nothing transitions back to
-            // `Done` from there, so no current call site reaches this arm. It
-            // stays as a backstop: were such a transition ever added, this
-            // re-opens the plan that was already paid for rather than silently
-            // spending tokens on a second synthesis pass.
+            // `SynthesisLoading`/`Review`. The one transition back to `Done`
+            // from there is a Quick Plan escalation, which clears the flag
+            // because its triage pass produced no plan, so no current call
+            // site reaches this arm. It stays as a backstop: were another
+            // such transition ever added, this re-opens the plan that was
+            // already paid for rather than silently spending tokens on a
+            // second synthesis pass.
             self.open_plan_interview_review(None);
             Ok(())
         } else if synthesis_allowed {
@@ -2555,6 +2557,12 @@ impl App {
             state.kind = PlanInterviewMode::Full;
             state.ai_followups_opted_in = true;
             state.skip_ai_rounds = false;
+            // The pass that just returned was Quick Plan's triage, not the
+            // full synthesis, and it produced no plan. Left set, the flag
+            // would send the full interview to the raw Q&A review once its
+            // rounds are spent instead of synthesizing.
+            state.synthesis_attempted = false;
+            state.synthesis_started_at = None;
             state.phase = PlanInterviewPhase::Done;
         } else {
             return;

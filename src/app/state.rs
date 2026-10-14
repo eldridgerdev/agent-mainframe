@@ -86,6 +86,10 @@ pub struct ViewState {
     pub session_label: String,
     pub session_kind: SessionKind,
     pub vibe_mode: VibeMode,
+    /// The feature's saved mode when it differs from the one this view's
+    /// agent was launched with. `vibe_mode` stays on the launched mode -- the
+    /// flags the live agent is really running under -- until a restart.
+    pub pending_vibe_mode: Option<VibeMode>,
     pub review: bool,
     pub scroll_offset: usize,
     pub scroll_content: String,
@@ -119,6 +123,7 @@ impl ViewState {
             session_label,
             session_kind,
             vibe_mode,
+            pending_vibe_mode: None,
             review,
             scroll_offset: 0,
             scroll_content: String::new(),
@@ -130,6 +135,29 @@ impl ViewState {
             todos_expanded: false,
             startup_mask_started_at: None,
         }
+    }
+
+    /// Record a mode saved for the feature while this view is open. A live
+    /// agent keeps its launch flags, so its badge stays put and the saved mode
+    /// is shown as pending; any other session has no flags to go stale and
+    /// simply takes the saved mode.
+    pub fn note_saved_vibe_mode(&mut self, saved: &VibeMode) {
+        if !self.session_kind.is_agent_harness() {
+            self.vibe_mode = saved.clone();
+            return;
+        }
+        self.pending_vibe_mode = (*saved != self.vibe_mode).then(|| saved.clone());
+    }
+
+    /// The header's "saved mode is waiting on a restart" marker, shared by the
+    /// renderer and the mouse hit-test so their widths cannot disagree.
+    pub fn pending_vibe_mode_badge(&self) -> Option<String> {
+        self.pending_vibe_mode.as_ref().map(|mode| {
+            format!(
+                "\u{2192} {} on restart ",
+                mode.display_name().to_lowercase()
+            )
+        })
     }
 
     pub fn show_startup_mask(&mut self) {
@@ -3090,6 +3118,14 @@ pub enum PriorAnswerState {
     Cleared,
 }
 
+/// Transient return step for a cancelled GUI headless-call notice.
+pub(crate) struct PlanPrecallCheckpoint {
+    phase: PlanInterviewPhase,
+    ai_followups_opted_in: bool,
+    skip_ai_rounds: bool,
+    synthesis_requested: bool,
+}
+
 /// In-memory state for one plan-mode discovery interview.
 ///
 /// `pending_launch` is optional so the same state can also support on-demand
@@ -3105,6 +3141,12 @@ pub struct PlanInterviewState {
     /// Full Plan-mode interview or Quick Plan. See [`PlanInterviewMode`].
     pub kind: PlanInterviewMode,
     pub phase: PlanInterviewPhase,
+    /// The editable step before a GUI action entered `Done` and opened a
+    /// headless-call notice. Continue retains the prepared call state;
+    /// cancellation restores this step and its previous token consent. `None`
+    /// for a notice no action opened (a poll, or resuming a draft), which
+    /// cancels through [`Self::return_to_ai_consent`] instead.
+    pub(crate) precall_checkpoint: Option<PlanPrecallCheckpoint>,
     pub questions: Vec<PlanQuestion>,
     pub question_index: usize,
     pub brief: String,
@@ -3172,6 +3214,8 @@ pub struct PlanInterviewState {
     /// True once plan synthesis has been started or deliberately bypassed
     /// because no headless engine is available. Prevents a failed plan-file
     /// write from spending tokens again when the user retries completion.
+    /// Cleared when a Quick Plan escalates: that pass was triage and left no
+    /// plan, so the full interview's synthesis has not been attempted yet.
     pub synthesis_attempted: bool,
     /// The plan currently displayed at the review gate. App-level completion
     /// fills this with either valid synthesized markdown or the raw-Q&A
@@ -3278,6 +3322,45 @@ pub struct PlanInterviewState {
 }
 
 impl PlanInterviewState {
+    pub(crate) fn precall_checkpoint(&self) -> PlanPrecallCheckpoint {
+        PlanPrecallCheckpoint {
+            phase: self.phase,
+            ai_followups_opted_in: self.ai_followups_opted_in,
+            skip_ai_rounds: self.skip_ai_rounds,
+            synthesis_requested: self.synthesis_requested,
+        }
+    }
+
+    pub(crate) fn restore_precall_checkpoint(&mut self) {
+        if let Some(checkpoint) = self.precall_checkpoint.take() {
+            self.phase = checkpoint.phase;
+            self.ai_followups_opted_in = checkpoint.ai_followups_opted_in;
+            self.skip_ai_rounds = checkpoint.skip_ai_rounds;
+            self.synthesis_requested = checkpoint.synthesis_requested;
+        }
+    }
+
+    /// Leave `Done` for the AI consent step with no token consent held.
+    ///
+    /// The GUI's fallback for a cancelled headless-call notice that no action
+    /// checkpointed: one opened by a poll (a round with no usable follow-ups,
+    /// a Quick Plan escalation) or by resuming a fully answered draft. There
+    /// is no editable step to return to, so this lands on the choice that
+    /// follows the answers — the same sibling of `Done` that
+    /// [`Self::resume_from_draft`] picks — and withdraws the consent the
+    /// cancelled call was acting on, so `Next` there is a real zero-token
+    /// path. Spent rounds stay counted. Returns `false` outside `Done`.
+    pub(crate) fn return_to_ai_consent(&mut self) -> bool {
+        if self.phase != PlanInterviewPhase::Done {
+            return false;
+        }
+        self.phase = PlanInterviewPhase::AiConsent;
+        self.ai_followups_opted_in = false;
+        self.skip_ai_rounds = false;
+        self.synthesis_requested = false;
+        true
+    }
+
     pub fn for_feature_creation(
         pending_launch: PreparedFeatureLaunch,
         questions: Vec<PlanQuestion>,
@@ -3380,6 +3463,7 @@ impl PlanInterviewState {
             interview_key,
             kind: PlanInterviewMode::Full,
             phase: PlanInterviewPhase::Brief,
+            precall_checkpoint: None,
             questions,
             question_index: 0,
             brief: String::new(),

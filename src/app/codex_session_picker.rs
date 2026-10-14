@@ -274,6 +274,9 @@ impl App {
             .and_then(|p| p.features.get(fi))
             .is_some_and(|feature| self.tmux.session_exists(&feature.tmux_session));
         if !already_running {
+            if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
+                super::feature_ops::ensure_workdir_present(feature)?;
+            }
             self.gate_launch(StartIntent::Warn("the resumed agent session"));
         }
 

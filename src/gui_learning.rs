@@ -145,7 +145,11 @@ pub enum LearningAction {
 #[derive(Debug, Clone, Serialize)]
 pub struct LearningHandoff {
     pub target: SessionTarget,
-    pub draft_prompt: String,
+    /// The editable, unsent seed for a session this handoff opened. `None`
+    /// when the answer's linked session is handed back: it was seeded when
+    /// it was opened, and a second copy would land on top of the user's
+    /// unsent edits.
+    pub draft_prompt: Option<String>,
     /// A partial failure worth an error notice.
     pub notice: Option<String>,
     /// What happened to the answer's linked session, when it was not simply
@@ -704,7 +708,10 @@ pub fn launch_agent(
             "That answer is still generating — you can hand it to an editing agent once it arrives.",
         ));
     }
-    let draft_prompt = crate::app::learning::escalation_seed(&qa, s.drift_for(qa_id));
+    let draft_prompt = Some(crate::app::learning::escalation_seed(
+        &qa,
+        s.drift_for(qa_id),
+    ));
     let mut replacing_removed = false;
     if let Some(session_id) = &qa.spawned_session_id {
         let f = &app.store.projects[s.pi].features[s.fi];
@@ -722,7 +729,8 @@ pub fn launch_agent(
                     feature_id: target.feature_id,
                     session_id: session_id.clone(),
                 },
-                draft_prompt,
+                // No re-seed: that conversation already has this.
+                draft_prompt: None,
                 notice: None,
                 info: (!live).then(|| {
                     format!(
@@ -1124,7 +1132,7 @@ mod tests {
         assert!(view.qa[0].spawned_session_id.is_none());
         let handoff =
             launch_agent(&mut gui, &view.workflow_id, view.revision, &qa_id, true).unwrap();
-        assert!(handoff.draft_prompt.contains("An explanation."));
+        assert!(handoff.draft_prompt.unwrap().contains("An explanation."));
         assert!(snapshot(&mut gui).unwrap().is_none());
         let saved = gui
             .db()
@@ -1424,6 +1432,10 @@ mod tests {
         let handoff =
             launch_agent(&mut gui, &view.workflow_id, view.revision, &qa_id, false).unwrap();
         assert!(handoff.start_required);
+        assert!(
+            handoff.draft_prompt.is_none(),
+            "a session that was already seeded is not seeded again"
+        );
         assert_eq!(handoff.target.session_id, session_id);
         assert!(handoff.info.unwrap().contains("is stopped"));
         assert!(snapshot(&mut gui).unwrap().is_none());
@@ -1459,6 +1471,10 @@ mod tests {
         let handoff =
             launch_agent(&mut gui, &view.workflow_id, view.revision, &qa_id, true).unwrap();
         assert!(!handoff.start_required);
+        assert!(
+            handoff.draft_prompt.is_some(),
+            "a new session gets the seed"
+        );
         assert_ne!(handoff.target.session_id, "removed-session");
         assert!(handoff.info.unwrap().contains("is gone"));
     }

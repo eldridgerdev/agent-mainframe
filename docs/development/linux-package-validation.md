@@ -58,21 +58,24 @@ pair, a TUI-only upgrade in a separate fixture, and completion in the opposite
 order. At each checkpoint:
 
 - Installing one interface leaves the other interface's binary hash unchanged.
-- Both interfaces reopen the same project, feature and session records.
+- Both interfaces reopen the same project, feature and session records. The
+  TUI dashboard is started before the GUI opens and again after it closes.
 - The original tmux session, pane, pane process and server IDs remain identical,
   including after the GUI closes. The native GUI reattaches and its real
   `terminal_input` command reaches the same unpaid raw receiver.
 - SQLite integrity remains valid. The released additive migrations advance
   schema 43 to 45, and the older released interface can reopen that fixture
-  after the newer interface migrates it.
+  after the newer interface migrates it: the v0.48.0 TUI after the v0.49.0 GUI
+  in one order, the v0.48.0 GUI after the v0.49.0 TUI in the other.
 
 The unpaid receiver starts and reports ready before either GUI opens, creating
 its tmux server independently of AppImage's environment. Every identity requires
 nonempty numeric session, pane and process IDs: `tmux display-message` succeeding
 with empty target fields does not count as a live session.
 
-`package-validation.json` records versions, package kind, binary hashes, schema versions,
-tmux version, process identities and received input. With `--capture`, five
+`package-validation.json` records versions, package kind, binary hashes, schema
+versions, the live tmux server's version beside the installed client's, process
+identities and received input. With `--capture`, five
 native PNGs and `capture-notes.jsonl` accompany it. Windows are selected by the
 owned GUI PID; cleanup stops only owned child groups and the private tmux server.
 A group is reaped only after every member has exited, escalating to `SIGKILL`,

@@ -33,11 +33,13 @@ ASSETS = {
         "deb": "e7b852bc0811989cceee9cbdee46c32277972e8d8721a04259b7694e1413b378",
         "gnu": "1de0b900120ad223e996d9e465e37bfa2943aa0a8a945ffb7a2dc1a82b6e22b7",
         "musl": "ca67e7fc52595ca2350cc00972a6a281866522fb02baa131393c8eba0823604f",
+        "appimage": "ac30fedfa5b4a0991140de04ef2c40c03f009c71c8d9ee079823e9f82639d3dc",
     },
     "0.49.0": {
         "deb": "6eb78f71372bfd53ec6d50806f0bc4dca5ab8d480a7626818e8f3302f5d629eb",
         "gnu": "4dac7af8913d09dcbed357906503b99426168e84eeb650fef610326e71fcb6c9",
         "musl": "9dc64d8c636f9383438f12e79f93e837b4e5f24e3c8402ba7202f39347029981",
+        "appimage": "aa01a96e53a7e9f67802a370142144a35561f907f11afa7ef4d60af168ae48db",
     },
 }
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
@@ -122,18 +124,23 @@ class Inspector:
 
 
 class PairProof:
-    def __init__(self, scratch, out, assets, capture, tui_target):
+    def __init__(self, scratch, out, assets, capture, tui_target, gui_package):
         self.scratch, self.out, self.assets, self.capture = scratch, out, assets, capture
         self.tui_target = tui_target
+        self.gui_package = gui_package
         self.root = scratch / "install"
+        self.gui_binary = self.root / ("opt/amf-gui.AppImage" if gui_package == "appimage" else "usr/bin/amf-gui")
         self.config = scratch / "config/amf"
         self.config.mkdir(parents=True)
         (self.config / "config.json").write_text('{"config_version":1,"context_warning_percent":70,"context_critical_percent":85}\n')
-        admin = self.root / "var/lib/dpkg"
-        admin.mkdir(parents=True)
-        (admin / "status").touch()
+        if gui_package == "deb":
+            admin = self.root / "var/lib/dpkg"
+            admin.mkdir(parents=True)
+            (admin / "status").touch()
+        (scratch / "tmp").mkdir()
         self.env = os.environ.copy()
         self.env.update(XDG_CONFIG_HOME=str(scratch / "config"), XDG_STATE_HOME=str(scratch / "state"), XDG_DATA_HOME=str(scratch / "data"), XDG_CACHE_HOME=str(scratch / "cache"), AMF_TMUX_SOCKET=str(scratch / "tmux.sock"), AMF_TMUX_BIN=str(self.root / "opt/amf/tmux"), GDK_BACKEND="x11")
+        self.env["TMPDIR"] = str(scratch / "tmp")
         self.tmux = [str(self.root / "opt/amf/tmux"), "-S", self.env["AMF_TMUX_SOCKET"]]
         self.gui = None
         self.gui_log = None
@@ -145,7 +152,11 @@ class PairProof:
         self.server_started = False
 
     def asset(self, version, kind):
-        name = "amf-gui-x86_64-unknown-linux-gnu.deb" if kind == "deb" else f"amf-x86_64-unknown-linux-{kind}.tar.gz"
+        if kind in ["deb", "appimage"]:
+            extension = "deb" if kind == "deb" else "AppImage"
+            name = "amf-gui-x86_64-unknown-linux-gnu." + extension
+        else:
+            name = f"amf-x86_64-unknown-linux-{kind}.tar.gz"
         directory = self.assets / ("v" + version)
         path = directory / name
         if not path.exists():
@@ -159,7 +170,17 @@ class PairProof:
     def install_gui(self, version):
         self.close_gui()
         before_tui = sha256(self.root / "opt/amf/amf") if "tui" in self.versions else None
-        path = self.asset(version, "deb")
+        path = self.asset(version, self.gui_package)
+        if self.gui_package == "appimage":
+            self.gui_binary.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.gui_binary.with_suffix(".new")
+            shutil.copyfile(path, temporary)
+            temporary.chmod(0o755)
+            temporary.replace(self.gui_binary)
+            self.versions["gui"] = version
+            if before_tui:
+                assert sha256(self.root / "opt/amf/amf") == before_tui, "GUI update changed TUI"
+            return
         metadata = subprocess.check_output(["dpkg-deb", "--field", str(path)], text=True)
         assert f"Package: amf-gui\n" in metadata and f"Version: {version}\n" in metadata and "Architecture: amd64\n" in metadata
         assert all(name in metadata for name in ["tmux", "libwebkit2gtk-4.1-0", "libgtk-3-0"])
@@ -172,7 +193,7 @@ class PairProof:
         self.versions["gui"] = version
 
     def install_tui(self, version):
-        before_gui = sha256(self.root / "usr/bin/amf-gui") if "gui" in self.versions else None
+        before_gui = sha256(self.gui_binary) if "gui" in self.versions else None
         stage = self.scratch / ("unpack-" + version)
         stage.mkdir()
         with tarfile.open(self.asset(version, self.tui_target)) as archive:
@@ -180,7 +201,7 @@ class PairProof:
             # data filter rejects escaping paths/links and special device files.
             assert hasattr(tarfile, "data_filter"), "Python with safe tar data filter required"
             archive.extractall(stage, filter=bundle_filter)
-        (self.root / "opt").mkdir(exist_ok=True)
+        (self.root / "opt").mkdir(parents=True, exist_ok=True)
         current = self.root / "opt/amf"
         if current.exists():
             current.rename(self.root / ("opt/previous-amf-" + self.versions["tui"]))
@@ -189,7 +210,7 @@ class PairProof:
         assert version in version_output, version_output
         assert (current / "tmux").is_file() and (current / "tmux-real").is_file()
         if before_gui:
-            assert sha256(self.root / "usr/bin/amf-gui") == before_gui, "TUI install changed GUI"
+            assert sha256(self.gui_binary) == before_gui, "TUI install changed GUI"
         self.versions["tui"] = version
 
     def open_gui(self):
@@ -197,9 +218,28 @@ class PairProof:
             listener.bind(("127.0.0.1", 0))
             address = f"127.0.0.1:{listener.getsockname()[1]}"
         self.gui_log = open(self.out / "packaged-gui.log", "a")
-        self.gui = subprocess.Popen([str(self.root / "usr/bin/amf-gui")], cwd=self.scratch, env=self.env | {"WEBKIT_INSPECTOR_HTTP_SERVER": address}, stdout=self.gui_log, stderr=subprocess.STDOUT, start_new_session=True)
+        command = [str(self.gui_binary)]
+        if self.gui_package == "appimage":
+            command.append("--appimage-extract-and-run")
+        self.gui = subprocess.Popen(command, cwd=self.scratch, env=self.env | {"WEBKIT_INSPECTOR_HTTP_SERVER": address}, stdout=self.gui_log, stderr=subprocess.STDOUT, start_new_session=True)
         self.inspector = Inspector(address)
         wait(lambda: self.inspector.evaluate("!!window.__TAURI_INTERNALS__ && !document.body.innerText.includes('Loading workspace')"), "packaged app loaded")
+        if self.capture:
+            self.size_window()
+
+    def size_window(self):
+        # Xvfb's 1600x1000 screen always fits. A smaller local display or its
+        # window manager may clamp the request: capture at the granted size.
+        x, window = self.owned_window()
+        screen = x.screen()
+        width, height = min(1420, screen.width_in_pixels), min(900, screen.height_in_pixels)
+        window.configure(x=0, y=0, width=width, height=height)
+        x.sync()
+        try:
+            wait(lambda: self.inspector.evaluate(f"window.innerWidth >= {width - 20}"), "native window size")
+        except AssertionError:
+            print(f"WARNING: window manager kept the GUI narrower than {width}px; capturing at its granted size", flush=True)
+        x.close()
 
     def close_gui(self):
         if self.inspector:
@@ -214,16 +254,20 @@ class PairProof:
             assert self.identity() == self.pane_identity, "Closing GUI stopped/replaced fixture session"
 
     def seed(self):
-        self.open_gui()
-        self.inspector.invoke("get_snapshot")
-        self.close_gui()
+        # Create the pre-existing session before the GUI can start a tmux server.
+        # AppImage's runtime environment must not become the fixture's server
+        # environment: its PYTHONHOME is intended for its own bundled programs.
         self.repo = self.scratch / "repo"
         self.repo.mkdir()
         self.received = self.scratch / "received.json"
         command = shlex.join(["/usr/bin/python3", str(SCRIPT_DIR / "fixtures/gui-composer-harness.py"), str(self.received), "Released Linux packages — unpaid continuity fixture"])
         subprocess.run(self.tmux + ["new-session", "-d", "-s", "amf-package-proof", "-n", "codex", "-x", "120", "-y", "30", command], check=True)
         self.server_started = True
+        wait(self.received.exists, "pre-existing unpaid receiver ready")
         self.pane_identity = self.identity()
+        self.open_gui()
+        self.inspector.invoke("get_snapshot")
+        self.close_gui()
         with sqlite3.connect(self.config / "amf.db") as db:
             stamp = "2026-10-11T17:00:00Z"
             db.execute("INSERT INTO projects(id,name,repo,is_git,created_at) VALUES(?,?,?,?,?)", ("package-project", "Linux package continuity", str(self.repo), 0, stamp))
@@ -233,7 +277,11 @@ class PairProof:
             self.initial_schema = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
 
     def identity(self):
-        return subprocess.check_output(self.tmux + ["display-message", "-p", "-t", "amf-package-proof:codex", "#{session_id}:#{pane_id}:#{pane_pid}:#{pid}"], text=True).strip()
+        value = subprocess.check_output(self.tmux + ["display-message", "-p", "-t", "amf-package-proof:codex", "#{session_id}:#{pane_id}:#{pane_pid}:#{pid}"], text=True).strip()
+        # display-message can succeed with empty target fields for a missing
+        # session. Such a result never proves a live pane survived an upgrade.
+        assert re.fullmatch(r"\$\d+:%\d+:[1-9]\d*:[1-9]\d*", value), f"Missing live fixture identity: {value!r}"
+        return value
 
     def tui_smoke(self):
         self.close_gui()
@@ -258,8 +306,12 @@ class PairProof:
         assert [s["id"] for s in feature["sessions"]] == ["package-session"]
         wait(lambda: self.inspector.evaluate("Array.from(document.querySelectorAll('button')).some(b=>b.textContent.includes('Preserve this live session'))"), "existing packaged feature navigation")
         self.inspector.evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent.includes('Preserve this live session')).click()")
-        wait(lambda: self.inspector.evaluate("!!document.querySelector('.xterm')"), "reattached live terminal")
-        marker = f"{name}: GUI {self.versions['gui']} / TUI {self.versions['tui']} ({self.tui_target}) — same live pane"
+        try:
+            wait(lambda: self.inspector.evaluate("!!document.querySelector('.xterm')"), "reattached live terminal")
+        except AssertionError:
+            (self.out / (name + "-failure.txt")).write_text(self.inspector.evaluate("document.body.innerText"))
+            raise
+        marker = f"{name}: GUI {self.versions['gui']} ({self.gui_package}) / TUI {self.versions['tui']} ({self.tui_target}) — same live pane"
         # The app's real terminal_input command writes to its attached tmux pane.
         # Only a rejection (terminal not attached yet) is retried: it wrote
         # nothing. A timed-out call may have been delivered, so it propagates
@@ -280,7 +332,7 @@ class PairProof:
             assert db.execute("SELECT id FROM projects").fetchall() == [("package-project",)]
             assert db.execute("SELECT id FROM features").fetchall() == [("package-feature",)]
             assert db.execute("SELECT id FROM feature_sessions").fetchall() == [("package-session",)]
-        record = {"phase": name, "versions": dict(self.versions), "pane_identity": self.pane_identity, "schema": schema, "initial_schema": self.initial_schema, "gui_sha256": sha256(self.root / "usr/bin/amf-gui"), "tui_sha256": sha256(self.root / "opt/amf/amf"), "tmux_server_version": subprocess.check_output(self.tmux + ["display-message", "-p", "-t", "amf-package-proof:codex", "#{version}"], text=True).strip(), "tmux_client_version": subprocess.check_output(self.tmux[:1] + ["-V"], text=True).strip(), "terminal_input": marker}
+        record = {"phase": name, "versions": dict(self.versions), "pane_identity": self.pane_identity, "schema": schema, "initial_schema": self.initial_schema, "gui_package": self.gui_package, "gui_sha256": sha256(self.gui_binary), "tui_sha256": sha256(self.root / "opt/amf/amf"), "tmux_server_version": subprocess.check_output(self.tmux + ["display-message", "-p", "-t", "amf-package-proof:codex", "#{version}"], text=True).strip(), "tmux_client_version": subprocess.check_output(self.tmux[:1] + ["-V"], text=True).strip(), "terminal_input": marker}
         self.report.append(record)
         if self.capture:
             self.screenshot(name, marker)
@@ -290,19 +342,15 @@ class PairProof:
         self.tui_smoke()
         print("PASS:", marker, flush=True)
 
-    def screenshot(self, name, marker):
+    def owned_window(self):
         from Xlib import display
-        import gi
-        gi.require_version("Gdk", "3.0")
-        gi.require_version("GdkX11", "3.0")
-        from gi.repository import Gdk, GdkX11
         x = display.Display()
         windows = []
         atom = x.intern_atom("_NET_WM_PID")
         def visit(window):
             try:
                 pid = window.get_full_property(atom, 0)
-                if pid and int(pid.value[0]) == self.gui.pid and window.get_geometry().width > 500:
+                if pid and self.owns_gui_pid(int(pid.value[0])) and window.get_geometry().width > 500:
                     windows.append(window)
                 for child in window.query_tree().children:
                     visit(child)
@@ -310,9 +358,14 @@ class PairProof:
                 pass
         visit(x.screen().root)
         assert windows, "No window belonging to owned packaged GUI"
-        window = max(windows, key=lambda w: w.get_geometry().width * w.get_geometry().height)
-        window.configure(x=0, y=0, width=1180, height=840)
-        x.sync()
+        return x, max(windows, key=lambda w: w.get_geometry().width * w.get_geometry().height)
+
+    def screenshot(self, name, marker):
+        import gi
+        gi.require_version("Gdk", "3.0")
+        gi.require_version("GdkX11", "3.0")
+        from gi.repository import Gdk, GdkX11
+        x, window = self.owned_window()
         wait(lambda: self.inspector.evaluate("document.fonts.status==='loaded'"), "packaged fonts")
         time.sleep(1)
         geometry = window.get_geometry()
@@ -321,8 +374,20 @@ class PairProof:
         assert picture
         filename = name + ".png"
         picture.savev(str(self.out / filename), "png", [], [])
-        self.notes.append({"file": filename, "note": marker + ". Official released payloads; rootless private install and shared database, not a system installer test."})
+        method = "AppImage extract-and-run without FUSE" if self.gui_package == "appimage" else "rootless Debian install"
+        self.notes.append({"file": filename, "note": marker + f". Official released payloads; {method} and shared database, not a system installer test."})
         x.close()
+
+    def owns_gui_pid(self, pid):
+        # AppImage's runtime owns a child GUI. The live unreaped launcher pins
+        # its private process group; never accept a window by title or a stale
+        # descendant PID after that launcher has exited.
+        if self.gui is None or self.gui.poll() is not None:
+            return False
+        try:
+            return os.getpgid(pid) == self.gui.pid
+        except ProcessLookupError:
+            return False
 
     def cleanup(self):
         try:
@@ -337,6 +402,7 @@ def main():
     parser.add_argument("out", type=pathlib.Path)
     parser.add_argument("--assets-dir", type=pathlib.Path)
     parser.add_argument("--tui-target", choices=["gnu", "musl"], default="musl", help="Released TUI bundle; GNU requires the release's glibc version")
+    parser.add_argument("--gui-package", choices=["deb", "appimage"], default="deb", help="Debian private install or AppImage extract-and-run without FUSE")
     parser.add_argument("--capture", action="store_true", help="Also save native PNG proof, when explicitly requested")
     args = parser.parse_args()
     out = args.out.resolve()
@@ -347,7 +413,7 @@ def main():
         for ordering in ["gui-first", "tui-first"]:
             with tempfile.TemporaryDirectory(prefix="amf-linux-packages-") as temporary:
                 scratch = pathlib.Path(temporary)
-                proof = PairProof(scratch, out, assets, args.capture, args.tui_target)
+                proof = PairProof(scratch, out, assets, args.capture, args.tui_target, args.gui_package)
                 try:
                     proof.install_tui("0.48.0")
                     proof.install_gui("0.48.0")
@@ -371,7 +437,7 @@ def main():
                     notes.extend(proof.notes)
                 finally:
                     proof.cleanup()
-    (out / "package-validation.json").write_text(json.dumps({"release_digest_pins": ASSETS, "tui_target": args.tui_target, "host": os.uname().sysname + " " + os.uname().machine, "host_glibc": os.confstr("CS_GNU_LIBC_VERSION"), "rootless_dependencies": "host GTK/WebKit; TUI bundled tmux; no apt resolution or system installation", "sequences": reports}, indent=2) + "\n")
+    (out / "package-validation.json").write_text(json.dumps({"release_digest_pins": ASSETS, "tui_target": args.tui_target, "gui_package": args.gui_package, "host": os.uname().sysname + " " + os.uname().machine, "host_glibc": os.confstr("CS_GNU_LIBC_VERSION"), "rootless_dependencies": "host GTK/WebKit; TUI bundled tmux; no apt resolution or system installation", "sequences": reports}, indent=2) + "\n")
     if args.capture:
         # build_static_gallery.py looks each PNG's note up under its .ansi name.
         (out / "capture-notes.jsonl").write_text("".join(json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]}) + "\n" for n in notes))

@@ -19,14 +19,16 @@ class OwnedProcessTests(unittest.TestCase):
         process.poll.return_value = returncode
         return process
 
+    @patch("owned_process._wait_for_empty_group", return_value=True)
     @patch("owned_process.os.killpg")
     @patch("owned_process.os.getpgid", return_value=12345)
-    def test_live_owned_child_signals_its_dedicated_group_and_reaps(self, getpgid, killpg):
+    def test_live_owned_child_signals_its_dedicated_group_and_reaps(self, getpgid, killpg, empty):
         process = self.child()
         stop_owned_process_group(process)
         getpgid.assert_called_once_with(process.pid)
         killpg.assert_called_once_with(process.pid, signal.SIGTERM)
-        process.wait.assert_called_once_with(timeout=5)
+        empty.assert_called_once_with(process, 5)
+        process.wait.assert_called_once_with()
 
     @patch("owned_process.os.killpg")
     @patch("owned_process.os.getpgid")
@@ -53,24 +55,35 @@ class OwnedProcessTests(unittest.TestCase):
             stop_owned_process_group(self.child())
         killpg.assert_not_called()
 
+    @patch("owned_process._wait_for_empty_group", side_effect=[False, True])
     @patch("owned_process.os.killpg")
     @patch("owned_process.os.getpgid", return_value=12345)
-    def test_timeout_escalates_before_reaping(self, getpgid, killpg):
+    def test_lingering_group_escalates_before_reaping(self, getpgid, killpg, empty):
         process = self.child()
-        process.wait.side_effect = [subprocess.TimeoutExpired("stand-in", 5), None]
         stop_owned_process_group(process)
         self.assertEqual(killpg.call_args_list, [
             unittest.mock.call(process.pid, signal.SIGTERM),
             unittest.mock.call(process.pid, signal.SIGKILL),
         ])
-        self.assertEqual(process.wait.call_count, 2)
+        process.wait.assert_called_once_with()
 
+    @patch("owned_process.group_members", return_value=[23456])
+    @patch("owned_process._wait_for_empty_group", return_value=False)
+    @patch("owned_process.os.killpg")
+    @patch("owned_process.os.getpgid", return_value=12345)
+    def test_group_surviving_sigkill_is_reported_without_unpinning_it(self, getpgid, killpg, empty, members):
+        process = self.child()
+        with self.assertRaisesRegex(RuntimeError, "survived SIGKILL"):
+            stop_owned_process_group(process)
+        process.wait.assert_not_called()
+
+    @patch("owned_process._wait_for_empty_group", return_value=True)
     @patch("owned_process.os.killpg", side_effect=ProcessLookupError)
     @patch("owned_process.os.getpgid", return_value=12345)
-    def test_exit_between_identity_check_and_signal_is_reaped(self, getpgid, killpg):
+    def test_exit_between_identity_check_and_signal_is_reaped(self, getpgid, killpg, empty):
         process = self.child()
         stop_owned_process_group(process)
-        process.wait.assert_called_once_with(timeout=5)
+        process.wait.assert_called_once_with()
 
     def test_real_owned_group_cleanup_ends_the_stand_in_child(self):
         # A short maximum lifetime bounds the fixture even if an assertion fails.
@@ -96,6 +109,28 @@ class OwnedProcessTests(unittest.TestCase):
             stop_owned_process_group(process)
             process.stdout.close()
 
+
+    def test_launcher_exit_does_not_orphan_a_child_ignoring_sigterm(self):
+        # Like AppImage's runtime: the leader dies on SIGTERM at once, while
+        # its child ignores SIGTERM and must still be gone before return.
+        child = "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); import os; print(os.getpid(), flush=True); time.sleep(10)"
+        process = subprocess.Popen(
+            [sys.executable, "-c", f"import subprocess,sys; subprocess.Popen([sys.executable,'-c',{child!r}]).wait()"],
+            stdout=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        try:
+            child_pid = int(process.stdout.readline())
+            self.assertEqual(os.getpgid(child_pid), process.pid)
+            stop_owned_process_group(process, timeout=0.5)
+            self.assertIsNotNone(process.returncode)
+            try:
+                state = pathlib.Path(f"/proc/{child_pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                state = "gone"
+            self.assertIn(state, ["gone", "Z"])
+        finally:
+            stop_owned_process_group(process)
+            process.stdout.close()
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,35 @@ class BundleFilterTests(unittest.TestCase):
                 package_pair.bundle_filter(tarfile.TarInfo("redirect/outside"), str(destination))
 
 
+class PaneIdentityTests(unittest.TestCase):
+    def test_missing_target_success_is_not_accepted_as_a_live_pane(self):
+        proof = package_pair.PairProof.__new__(package_pair.PairProof)
+        proof.tmux = ["tmux"]
+        for value in [":::123\n", "", "$1:%1::123", "$1:%1:0:123"]:
+            with self.subTest(value=value), mock.patch.object(package_pair.subprocess, "check_output", return_value=value):
+                with self.assertRaises(AssertionError):
+                    proof.identity()
+        with mock.patch.object(package_pair.subprocess, "check_output", return_value="$1:%1:123:456\n"):
+            self.assertEqual(proof.identity(), "$1:%1:123:456")
+
+
+class AppImageWindowOwnershipTests(unittest.TestCase):
+    def test_only_a_live_launcher_owns_its_gui_descendant_group(self):
+        proof = package_pair.PairProof.__new__(package_pair.PairProof)
+        proof.gui = mock.Mock(pid=123)
+        proof.gui.poll.return_value = None
+        with mock.patch.object(package_pair.os, "getpgid", return_value=123):
+            self.assertTrue(proof.owns_gui_pid(456))
+        with mock.patch.object(package_pair.os, "getpgid", return_value=789):
+            self.assertFalse(proof.owns_gui_pid(456))
+        with mock.patch.object(package_pair.os, "getpgid", side_effect=ProcessLookupError):
+            self.assertFalse(proof.owns_gui_pid(456))
+        proof.gui.poll.return_value = 0
+        with mock.patch.object(package_pair.os, "getpgid") as group:
+            self.assertFalse(proof.owns_gui_pid(456))
+            group.assert_not_called()
+
+
 class AssetDigestTests(unittest.TestCase):
     def test_mismatched_asset_is_refused_by_an_exception_not_an_assert(self):
         # AssertionError would mean the gate disappears under `python -O`.
@@ -84,7 +113,7 @@ class AssetDigestTests(unittest.TestCase):
             asset = root / "assets/v0.49.0/amf-gui-x86_64-unknown-linux-gnu.deb"
             asset.parent.mkdir(parents=True)
             asset.write_bytes(b"not the released package")
-            proof = package_pair.PairProof(root / "scratch", root / "out", root / "assets", False, "musl")
+            proof = package_pair.PairProof(root / "scratch", root / "out", root / "assets", False, "musl", "deb")
             with self.assertRaises(RuntimeError):
                 proof.asset("0.49.0", "deb")
 

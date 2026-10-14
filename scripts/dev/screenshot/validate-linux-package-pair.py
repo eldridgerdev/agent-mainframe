@@ -128,9 +128,10 @@ class PairProof:
         self.config = scratch / "config/amf"
         self.config.mkdir(parents=True)
         (self.config / "config.json").write_text('{"config_version":1,"context_warning_percent":70,"context_critical_percent":85}\n')
-        admin = self.root / "var/lib/dpkg"
-        admin.mkdir(parents=True)
-        (admin / "status").touch()
+        if gui_package == "deb":
+            admin = self.root / "var/lib/dpkg"
+            admin.mkdir(parents=True)
+            (admin / "status").touch()
         (scratch / "tmp").mkdir()
         self.env = os.environ.copy()
         self.env.update(XDG_CONFIG_HOME=str(scratch / "config"), XDG_STATE_HOME=str(scratch / "state"), XDG_DATA_HOME=str(scratch / "data"), XDG_CACHE_HOME=str(scratch / "cache"), AMF_TMUX_SOCKET=str(scratch / "tmux.sock"), AMF_TMUX_BIN=str(self.root / "opt/amf/tmux"), GDK_BACKEND="x11")
@@ -164,6 +165,7 @@ class PairProof:
         before_tui = sha256(self.root / "opt/amf/amf") if "tui" in self.versions else None
         path = self.asset(version, self.gui_package)
         if self.gui_package == "appimage":
+            self.gui_binary.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.gui_binary.with_suffix(".new")
             shutil.copyfile(path, temporary)
             temporary.chmod(0o755)
@@ -192,7 +194,7 @@ class PairProof:
             # data filter rejects escaping paths/links and special device files.
             assert hasattr(tarfile, "data_filter"), "Python with safe tar data filter required"
             archive.extractall(stage, filter=bundle_filter)
-        (self.root / "opt").mkdir(exist_ok=True)
+        (self.root / "opt").mkdir(parents=True, exist_ok=True)
         current = self.root / "opt/amf"
         if current.exists():
             current.rename(self.root / ("opt/previous-amf-" + self.versions["tui"]))
@@ -216,11 +218,21 @@ class PairProof:
         self.inspector = Inspector(address)
         wait(lambda: self.inspector.evaluate("!!window.__TAURI_INTERNALS__ && !document.body.innerText.includes('Loading workspace')"), "packaged app loaded")
         if self.capture:
-            x, window = self.owned_window()
-            window.configure(x=0, y=0, width=1420, height=900)
-            x.sync()
-            wait(lambda: self.inspector.evaluate("window.innerWidth >= 1400"), "fixed native window size")
-            x.close()
+            self.size_window()
+
+    def size_window(self):
+        # Xvfb's 1600x1000 screen always fits. A smaller local display or its
+        # window manager may clamp the request: capture at the granted size.
+        x, window = self.owned_window()
+        screen = x.screen()
+        width, height = min(1420, screen.width_in_pixels), min(900, screen.height_in_pixels)
+        window.configure(x=0, y=0, width=width, height=height)
+        x.sync()
+        try:
+            wait(lambda: self.inspector.evaluate(f"window.innerWidth >= {width - 20}"), "native window size")
+        except AssertionError:
+            print(f"WARNING: window manager kept the GUI narrower than {width}px; capturing at its granted size", flush=True)
+        x.close()
 
     def close_gui(self):
         if self.inspector:

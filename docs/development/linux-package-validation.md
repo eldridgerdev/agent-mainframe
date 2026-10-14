@@ -37,9 +37,9 @@ AMF_GUI_PACKAGE=appimage AMF_PACKAGE_ASSETS_DIR=/tmp/release-assets \
 python3 scripts/dev/screenshot/test_linux_package_pair.py
 ```
 
-Each upgrade order owns a temporary installation root, private dpkg database when
-using Debian packages, XDG
-configuration/state/data/cache and private tmux socket. `HOME` stays unchanged.
+Each upgrade order owns a temporary installation root, XDG
+configuration/state/data/cache and private tmux socket, plus a private dpkg
+database for the `.deb` run (an AppImage run creates none). `HOME` stays unchanged.
 The `.deb` is installed/configured with `fakeroot dpkg --root=...`; all dpkg logs
 also go to the output directory. The TUI archive goes into that root's private
 `opt/amf`, with directory replacement preserving the old mapped tmux binary.
@@ -75,6 +75,8 @@ with empty target fields does not count as a live session.
 tmux version, process identities and received input. With `--capture`, five
 native PNGs and `capture-notes.jsonl` accompany it. Windows are selected by the
 owned GUI PID; cleanup stops only owned child groups and the private tmux server.
+A group is reaped only after every member has exited, escalating to `SIGKILL`,
+so an AppImage GUI cannot outlive its launcher into the next step.
 All temporary installation roots are removed, including on assertion failure.
 The screenshot scenario is
 [`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt),

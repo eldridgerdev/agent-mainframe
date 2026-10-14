@@ -97,11 +97,10 @@ with tempfile.TemporaryDirectory(prefix="amf-source-appimage-") as temporary:
         assert gui_environment.get('PYTHONPATH') == str(app_dir/'usr/share/pyshared')+'/:'+host_path, gui_environment
         report['bundle_redirects_observed_in_gui'] = True
         home = subprocess.run(tmux + ["show-environment", "-g", "PYTHONHOME"], text=True, capture_output=True)
-        expected_home = env.get('PYTHONHOME')
         report['allowlisted_gui_environment'] = gui_environment
         report['allowlisted_server_environment'] = {key: subprocess.run(tmux + ['show-environment','-g',key],text=True,capture_output=True).stdout.strip() for key in ['PYTHONHOME','PYTHONPATH']}
-        report['expected_host_python_environment'] = {'PYTHONHOME': expected_home, 'PYTHONPATH': host_path}
-        assert (home.returncode != 0 or home.stdout == '-PYTHONHOME\n') if expected_home is None else home.stdout.strip() == 'PYTHONHOME='+expected_home, 'Bundle Python home reached tmux server'
+        report['expected_host_python_environment'] = {'PYTHONHOME': None, 'PYTHONPATH': host_path}
+        assert home.returncode != 0 or home.stdout == '-PYTHONHOME\n', 'Bundle Python home reached tmux server'
         server_path = subprocess.check_output(tmux + ["show-environment", "-g", "PYTHONPATH"], text=True).strip()
         assert server_path == 'PYTHONPATH='+host_path, 'Host Python path was not preserved'
         report['bundle_redirects_removed_from_server'] = True

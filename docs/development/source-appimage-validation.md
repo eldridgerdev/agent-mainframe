@@ -41,6 +41,10 @@ cleanup are required. Only the explicitly allowlisted Python/AppRun environment
 fields are recorded in `source-appimage-proof.json`. Two native PNGs show the
 live receivers; the runner sends no prompt and starts no paid harness.
 
+AppRun overwrites any incoming `PYTHONHOME` before the GUI starts. The probe
+therefore expects that variable to be absent from the tmux server; it does not
+claim to restore a host value already discarded by the launcher.
+
 Validated locally on 2026-10-12:
 
 - Product source: `b6842320f716273d34351ac4360b21159f4eb713`.

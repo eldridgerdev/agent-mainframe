@@ -1,0 +1,6 @@
+# Local use calls validate-linux-package-pair.sh directly with AMF_GUI_PACKAGE=appimage.
+# The hosted outer screenshot wrapper runs on an isolated runner.
+note:The source-built TUI is setup only; this proof runs official AppImages using extract-and-run, without FUSE.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_PACKAGE=appimage bash "$SCRIPT_DIR/validate-linux-package-pair.sh" "$OUT_DIR"

@@ -1071,7 +1071,6 @@ it("retains the bookmark picker and current draft when workspace refresh fails, 
   client.clear();
 });
 
-
 it("opens global agent availability from navigation and preserves the active composer draft through save", async () => {
   const client = await openFeature([session("Agent", "claude")]);
   const original = vi.mocked(invoke).getMockImplementation()!;
@@ -1082,8 +1081,13 @@ it("opens global agent availability from navigation and preserves the active com
       allowed = (args as { settings: { allowed_agents: string[] } }).settings.allowed_agents;
       return Promise.resolve({ revision: "saved-rev", settings: { allowed_agents: allowed } });
     }
+    if (command === "allowed_harnesses") return Promise.resolve(allowed.map((slug) => ({ slug, display_name: slug })));
     return original(command, args, options);
   });
+  const preferred = () => Array.from((screen.getByLabelText("Preferred harness") as HTMLSelectElement).options).map((option) => option.text);
+  fireEvent.click(screen.getByRole("button", { name: "New project" }));
+  await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode", "pi"]));
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   fireEvent.change(draftInput(), { target: { value: "Keep my unsent draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
   await screen.findByRole("dialog", { name: "Agent availability" });
@@ -1094,5 +1098,274 @@ it("opens global agent availability from navigation and preserves the active com
   expect(promptCalls()).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
   expect(await screen.findByLabelText("Pi")).toHaveProperty("checked", false);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  // The saved choice reaches the creation forms, not only the session picker.
+  fireEvent.click(screen.getByRole("button", { name: "New project" }));
+  await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode"]));
+  expect(invoke).toHaveBeenCalledWith("allowed_harnesses", { projectId: null });
   client.clear();
+});
+
+function dormantDeleteRow(isWorktree = false) {
+  return {
+    project_name: "demo", workdir: "/private/quiet", is_worktree: isWorktree, editor_alive: false, editors: [],
+    idle_secs: 7200, unattended_secs: 86400,
+    observation: {
+      target: { project_id: "project", feature_id: "quiet" }, feature_name: "Quiet feature",
+      tmux_session: "amf-quiet", last_activity: "2026-10-05T08:00:00Z", last_accessed: "2026-10-04T10:00:00Z",
+    },
+  };
+}
+
+async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktree = false, select = false) {
+  // The row deliberately isn't in the workspace cache. Deletion must use its
+  // listed identity, never the selected feature or a stale workspace lookup.
+  const client = await openFeature([session("Shell")], [], "stopped");
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const row = dormantDeleteRow(isWorktree);
+  let loads = 0;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    if (command === "dormancy_load") {
+      loads++;
+      return { enabled: true, idle_minutes: 60, unattended_hours: 4, kill_editor_on_stop: true,
+        checked_at: "2026-10-05T10:00:00Z", features: [row] };
+    }
+    if (command === "dormancy_delete") return handler(args);
+    return original(command, args, options);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Dormant features" }));
+  if (select) fireEvent.click(await screen.findByRole("checkbox", { name: "Select Quiet feature" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete Quiet feature" }));
+  expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
+  expect(screen.queryByRole("dialog", { name: "Dormant features" })).toBeNull();
+  expect(screen.getByText(/Each confirmation checks dormancy again/)).toBeTruthy();
+  return { client, row, loads: () => loads };
+}
+
+it("cancels dormant deletion and refreshes the list without opening or deleting the feature", async () => {
+  const { client, loads } = await openDormantDeletion(() => { throw new Error("must not delete"); }, false, true);
+  expect(screen.getByText(/repository checkout itself is left alone/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  // The panel was hidden, not unmounted: the batch selection is still there.
+  expect((screen.getByRole("checkbox", { name: "Select Quiet feature" }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.getByRole("button", { name: "Stop selected (1)" })).toBeTruthy();
+  expect(screen.queryByText(/were deselected/)).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_delete" || command === "delete_feature" || command === "dormancy_stop")).toHaveLength(0);
+  client.clear();
+});
+
+it("carries a dormant observation through TODO choices and blocks duplicate deletion and dismissal", async () => {
+  let calls = 0;
+  let finish!: (value: unknown) => void;
+  const { client, row, loads } = await openDormantDeletion(() => {
+    calls++;
+    if (calls === 1) return { status: "needs_todo_disposition", unfinished: 2 };
+    if (calls === 2) return { status: "needs_todo_host", prompt: {
+      list_id: "project-list", todo_count: 3, candidates: [{ feature_id: "survivor", name: "Survivor" }],
+    } };
+    // Trigger dismissal before React has rendered busy=true.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    return new Promise((resolve) => { finish = resolve; });
+  }, true);
+  expect(screen.getByText(/Uncommitted changes in it are discarded/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  fireEvent.click(await screen.findByRole("radio", { name: "Move them to the global list" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  await screen.findByRole("radio", { name: "Keep on Survivor" });
+  const confirm = screen.getByRole("button", { name: "Delete feature", exact: true });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+  await waitFor(() => expect(calls).toBe(3));
+  expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
+  expect(confirm.hasAttribute("disabled")).toBe(true);
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("dormancy_delete", {
+    request: { observation: row.observation, workdir: row.workdir, is_worktree: true },
+    todos: "move_to_global", todoHost: { list_id: "project-list", feature_id: "survivor" },
+  });
+  await act(async () => { finish({ status: "deleted", feature_id: "quiet", message: "Quiet feature deleted" }); });
+  expect(await screen.findByText("Quiet feature deleted")).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "delete_feature" || command === "dormancy_stop")).toHaveLength(0);
+  client.clear();
+});
+
+it("returns to a fresh dormant list after refusal without retrying a stale deletion", async () => {
+  const { client, loads } = await openDormantDeletion(() => {
+    throw { kind: "conflict", message: "Not deleted: It was opened in AMF after the list was loaded. Refresh Dormant features to see what is still listed" };
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Delete feature", exact: true }));
+  expect(await screen.findByText(/Not deleted: It was opened in AMF/)).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Delete Quiet feature" })).toBeTruthy();
+  await waitFor(() => expect(loads()).toBe(2));
+  expect(screen.queryByRole("dialog", { name: "Delete feature" })).toBeNull();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "dormancy_delete")).toHaveLength(1);
+  client.clear();
+});
+
+it("opens project availability, keeps composer draft and refreshes later New session choices", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let allowed = ["claude", "codex", "pi"];
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "supported_harnesses") return Promise.resolve([
+      { slug: "claude", display_name: "Claude" }, { slug: "codex", display_name: "Codex" }, { slug: "pi", display_name: "Pi" },
+    ]);
+    if (command === "project_agent_availability_load") return Promise.resolve({
+      revision: "project-settings-rev", settings: { allowed_agents: allowed }, inherited_agents: ["claude", "pi"], effective_agents: ["codex"],
+      project_name: "demo", repo: "/demo", config_path: "/demo/amf.json", source_path: "/demo/amf.json",
+    });
+    if (command === "project_agent_availability_save") {
+      allowed = (args as { settings: { allowed_agents: string[] } }).settings.allowed_agents;
+      return Promise.resolve({ revision: "saved-rev", settings: { allowed_agents: allowed } });
+    }
+    if (command === "new_session_options") return Promise.resolve({
+      builtin: allowed.map(kind => ({ kind, label: kind === "codex" ? "Codex" : kind, disabled: null })),
+      custom: [], config_warning: null, feature_stopped: false,
+    });
+    return original(command, args, options);
+  });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["supported-harnesses"] }); });
+  fireEvent.change(draftInput(), { target: { value: "Keep this existing session draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Project agent availability", exact: true }));
+  await screen.findByRole("dialog", { name: "Project agent availability" }); await screen.findByLabelText("Codex");
+  expect(invoke).toHaveBeenCalledWith("project_agent_availability_load", { projectId: "project" });
+  fireEvent.click(screen.getByLabelText("Claude Code")); fireEvent.click(screen.getByLabelText("Pi"));
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Project agent availability" })).toBeNull());
+  expect(invoke).toHaveBeenCalledWith("project_agent_availability_save", {
+    projectId: "project", revision: "project-settings-rev", settings: { allowed_agents: ["codex"] },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
+  await screen.findByRole("combobox", { name: "Harness" });
+  const featureDialog = screen.getByRole("dialog", { name: "New feature" });
+  expect(within(featureDialog).getAllByRole("option").filter(option => ["Claude", "Codex", "Pi"].includes(option.textContent ?? ""))
+    .map(option => option.textContent)).toEqual(["Codex"]);
+  fireEvent.click(within(featureDialog).getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("button", { name: "my-feat", exact: true }));
+  expect(draftInput().value).toBe("Keep this existing session draft");
+  fireEvent.click(screen.getByRole("button", { name: "New session", exact: true }));
+  const dialog = await screen.findByRole("dialog", { name: "New session" });
+  expect(within(dialog).getByRole("radio", { name: "Codex" })).toHaveProperty("checked", true);
+  expect(within(dialog).queryByRole("radio", { name: "claude" })).toBeNull();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(draftInput().value).toBe("Keep this existing session draft"); expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it("loads inherited project choices before feature creation, retries errors and rereads on reopening", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let fail = true;
+  let finish!: (view: unknown) => void;
+  let delayed = false;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "supported_harnesses") return Promise.resolve([
+      { slug: "claude", display_name: "Claude" }, { slug: "pi", display_name: "Pi" },
+    ]);
+    if (command === "project_agent_availability_load") {
+      if (delayed) return new Promise(resolve => { finish = resolve; });
+      return fail ? Promise.reject({ kind: "internal", message: "Project JSON is invalid" })
+        : Promise.resolve({ settings: { allowed_agents: null }, inherited_agents: ["claude"], effective_agents: ["claude"] });
+    }
+    return original(command, args, options);
+  });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["supported-harnesses"] }); });
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
+  const dialog = await screen.findByRole("dialog", { name: "New feature" });
+  expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Project JSON is invalid");
+  expect(within(dialog).queryByRole("combobox", { name: "Harness" })).toBeNull();
+  fail = false;
+  fireEvent.click(within(dialog).getByRole("button", { name: "Reload agent choices" }));
+  expect(await screen.findByRole("combobox", { name: "Harness" })).toBeTruthy();
+  expect(invoke).toHaveBeenCalledWith("project_agent_availability_load", { projectId: "project" });
+  fireEvent.click(screen.getByRole("button", { name: "Cancel", exact: true }));
+  delayed = true;
+  fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
+  expect(await screen.findByText("Loading project agent choices…")).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
+  await act(async () => finish({ settings: { allowed_agents: ["pi"] }, inherited_agents: ["pi"], effective_agents: [] }));
+  expect(await screen.findByRole("alert")).toHaveProperty("textContent",
+    "No allowed agent is available for this project. Check installed agents and Agent availability.");
+  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Reload agent choices" }));
+  await screen.findByText("Loading project agent choices…");
+  await act(async () => finish({ settings: { allowed_agents: ["claude", "pi"] }, inherited_agents: ["pi"], effective_agents: ["claude"] }));
+  const harness = await screen.findByRole("combobox", { name: "Harness" });
+  expect(within(harness).getAllByRole("option").map(option => option.textContent)).toEqual(["Claude"]);
+  client.clear();
+});
+
+it("takes vibe mode availability from the backend and shows a change on a running feature as waiting on a restart", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let mode = "vibeless";
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => {
+    // An availability no frontend rule would guess, so only the backend's list can produce it.
+    if (command === "supported_modes") return [
+      { slug: "vibeless", display_name: "Vibeless", description: "", unsupported_agents: [] },
+      { slug: "vibe", display_name: "Vibe", description: "", unsupported_agents: [] },
+      { slug: "supervibe", display_name: "SuperVibe", description: "", unsupported_agents: ["claude"] },
+    ];
+    if (command === "set_feature_vibe_mode") {
+      mode = (args as { mode: string }).mode;
+      return null;
+    }
+    const result = await original(command, args, options);
+    if (command !== "get_snapshot") return result;
+    const snapshot = result as WorkspaceSnapshot;
+    return { ...snapshot, projects: snapshot.projects.map(project => ({
+      ...project, features: project.features.map(feature => ({ ...feature, mode })),
+    })) };
+  });
+  await act(async () => { await client.invalidateQueries({ queryKey: ["supported-modes"] }); });
+
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  const item = (name: RegExp) => screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+  await screen.findByRole("menuitem", { name: /Vibe mode: SuperVibe/ });
+  expect(item(/Vibe mode: Vibeless/).disabled).toBe(true);
+  expect(item(/Vibe mode: Vibeless/).textContent).toContain("Current");
+  expect(item(/Vibe mode: SuperVibe/).disabled).toBe(true);
+  expect(item(/Vibe mode: SuperVibe/).textContent).toContain("Unavailable with Claude");
+  expect(item(/Vibe mode: Vibe$/).disabled).toBe(false);
+
+  fireEvent.click(item(/Vibe mode: Vibe$/));
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("set_feature_vibe_mode", {
+    target: { project_id: "project", feature_id: "feature" }, mode: "vibe",
+  }));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  // The agent is still running under Vibeless; the saved mode is not what is live.
+  expect(await screen.findByText("Vibeless → Vibe on restart")).toBeTruthy();
+
+  // Changing back to what the agents were launched with leaves nothing pending.
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(item(/Vibe mode: Vibeless/));
+  await waitFor(() => expect(mode).toBe("vibeless"));
+  await act(async () => { await client.invalidateQueries({ queryKey: ["workspace-snapshot"] }); });
+  await waitFor(() => expect(screen.queryByText(/on restart/)).toBeNull());
+  client.clear();
+});
+
+
+it("opens Context settings beside an agent, saves and retains its unsent composer draft", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "context_settings_load" || command === "context_settings_save") return Promise.resolve({ revision: "context-rev", settings: { window_limit: "", warning_percent: "70", critical_percent: "85" } });
+    return original(command, args, options);
+  });
+  fireEvent.change(draftInput(), { target: { value: "Unsent context draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Context settings", exact: true }));
+  await screen.findByRole("dialog", { name: "Context settings" });
+  fireEvent.change(await screen.findByLabelText("Warning percent"), { target: { value: "60" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context settings" })).toBeNull());
+  expect(draftInput().value).toBe("Unsent context draft");
+  expect(promptCalls()).toHaveLength(0); client.clear();
 });

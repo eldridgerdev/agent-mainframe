@@ -26,22 +26,27 @@ scratch AMF instance**, never the user's real one:
   `${AMF_SHOT_DIR:-/tmp/amf-shots}/<timestamp>/` — the real
   `~/.config/amf/amf.db` and any real running `amf` session are never
   touched.
-- A dedicated tmux session (`amf-shot-<timestamp>`), separate from any
-  `amf-*` session the user already has.
+- A dedicated tmux **server** on a run-owned socket, holding the capture
+  session (`amf-shot-<timestamp>`) and every session the run starts. The
+  scratch AMF, its automation calls, and plain `tmux` in `run:` steps all
+  target it; the user's own tmux server and `amf-*` sessions are never
+  listed or touched.
 - `gh` still authenticates as the real user (`GH_CONFIG_DIR` is pinned
   to the real config before `XDG_CONFIG_HOME` is overridden) — needed
   for any scenario that opens PR Triage or the PR picker. Same idea as
   leaving `HOME` untouched for `claude` auth / git identity.
 - Fixed geometry, `120x40` by default (`--geometry WxH` to override) —
   reproducible pane layout across runs.
-- Teardown kills the scratch tmux session **and any other tmux session
-  AMF itself spawned during the run** (e.g. starting a feature creates
-  its own top-level `amf-<project>-<feature>` session, outside
-  `amf-shot-*`) — found by diffing tmux's session list against a
-  pre-run snapshot, not by name pattern, so it catches whatever the
-  scenario/seed named things. The scratch root is also deleted on
-  exit. Pass `--keep` to preserve both the scratch root and any
-  spawned sessions for debugging.
+- Teardown kills that private server, which takes the capture session
+  **and any other tmux session AMF itself spawned during the run** with
+  it (e.g. starting a feature creates its own top-level
+  `amf-<project>-<feature>` session, outside `amf-shot-*`). Ownership is
+  the socket, not a name pattern or a before/after session list, so
+  sessions started elsewhere while a capture runs are left alone. The
+  scratch root is also deleted on exit. Pass `--keep` to preserve the
+  scratch root and any spawned sessions for debugging; the capture pane
+  is still closed, and the server is stopped by hand with
+  `tmux -S <printed-socket> kill-server`.
 
 **Not sandboxed:** reading PR comments (opening PR Triage / the PR
 picker) is a real, read-only `gh` call against GitHub — safe by
@@ -143,17 +148,25 @@ plain-text `.txt` twin (same capture, no escape codes) in `--out-dir`
 ## Step 3: render PNGs
 
 **`amf-capture.sh` does not render PNGs unless `--gif` is passed** —
-without `--gif` you get raw `.ansi` dumps only, and must render each
-one yourself:
+without `--gif` you get raw `.ansi` dumps only, and must render them
+yourself, all in one call:
 
 ```bash
-python3 scripts/dev/screenshot/render_ansi.py <dump>.ansi --out <dump>.png --cols 120 --rows 40
+scripts/dev/screenshot/render-captures.sh --cols 120 --rows 40 <dir>/*.ansi
 ```
 
-Pass `--cols`/`--rows` matching the `--geometry` used for the capture
-(120x40 by default) so every frame renders at the same size. Repeat
-per `.ansi` file. If `--gif` was passed instead, the driver already
-renders and assembles the GIF — nothing further to do.
+Each PNG is written beside its `.ansi`. Pass `--cols`/`--rows` matching
+the `--geometry` used for the capture (120x40 by default) so every frame
+renders at the same size. If `--gif` was passed instead, the driver
+already renders and assembles the GIF — nothing further to do.
+
+The frames are drawn by xterm.js in headless Chromium, the same terminal
+emulator and palette as the desktop app. If the command warns that the
+xterm.js renderer could not run, it has fallen back to the Pillow renderer
+(`render_ansi.py`): the PNGs are still usable, but say so when you report
+them, since colours and dim text differ. `node
+scripts/dev/screenshot/render_xterm.cjs --install` sets the xterm.js
+renderer up; it downloads a browser, so ask before running it.
 
 ## Step 4: verify cheaply, then return the result
 

@@ -1,0 +1,6 @@
+# Native GUI deletion proof uses private SQLite, Git worktrees and tmux sessions.
+# No paid harness, live AMF session or real editor is involved.
+note:The empty isolated TUI confirms the screenshot harness is ready before native deletion proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-dormant-delete.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

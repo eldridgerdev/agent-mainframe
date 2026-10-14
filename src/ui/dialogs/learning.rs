@@ -938,6 +938,7 @@ fn draw_answer(frame: &mut Frame, state: &mut LearningViewState, theme: &Theme) 
                 &mut state.answer_rendered_width,
                 &mut state.answer_rendered_lines,
                 theme,
+                None,
             );
         }
         (None, Some(error)) => {

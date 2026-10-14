@@ -33,12 +33,17 @@ use agent_mainframe::gui_contract::{
 };
 use agent_mainframe::gui_debug_log::{self, DebugLogView};
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
-use agent_mainframe::gui_dormancy::{self, DormancyStopResult, DormancyView, DormantObservation};
+use agent_mainframe::gui_dormancy::{
+    self, DormancyStopResult, DormancyView, DormantDeleteRequest, DormantObservation,
+};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
+};
+use agent_mainframe::gui_project_settings::{
+    self, ProjectAgentAvailability, ProjectAgentAvailabilityView,
 };
 use agent_mainframe::gui_prompt_overrides::{
     self, ClearOverride, OverrideContext, OverridesView, PrecallOverrideTarget, SaveOverride,
@@ -53,7 +58,8 @@ use agent_mainframe::gui_sessions::{
     NewSessionOptions, OpenVscodeResponse,
 };
 use agent_mainframe::gui_settings::{
-    self, AgentAvailability, AgentAvailabilityView, DormancySettings, DormancySettingsView,
+    self, AgentAvailability, AgentAvailabilityView, ContextSettingsInput, ContextSettingsView,
+    DormancySettings, DormancySettingsView,
 };
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
@@ -373,17 +379,35 @@ struct HarnessInfo {
     display_name: String,
 }
 
+impl From<&AgentKind> for HarnessInfo {
+    fn from(kind: &AgentKind) -> Self {
+        Self {
+            slug: kind.slug().to_string(),
+            display_name: kind.display_name().to_string(),
+        }
+    }
+}
+
 /// Returns the harnesses AMF supports, straight from the same [`AgentKind`]
 /// the TUI and the automation JSON API already use.
 #[tauri::command]
 fn supported_harnesses() -> Vec<HarnessInfo> {
-    AgentKind::ALL
-        .iter()
-        .map(|kind| HarnessInfo {
-            slug: kind.slug().to_string(),
-            display_name: kind.display_name().to_string(),
-        })
-        .collect()
+    AgentKind::ALL.iter().map(HarnessInfo::from).collect()
+}
+
+/// The harnesses a creation form may offer for `project_id`, or for a project
+/// that does not exist yet: the ones creation will accept, not every
+/// supported one.
+#[tauri::command]
+fn allowed_harnesses(
+    state: State<AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<HarnessInfo>, GuiError> {
+    let allowed = gui_settings::allowed_harnesses(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        project_id.as_deref(),
+    )?;
+    Ok(allowed.iter().map(HarnessInfo::from).collect())
 }
 
 #[derive(Serialize)]
@@ -391,6 +415,9 @@ struct ModeInfo {
     slug: String,
     display_name: String,
     description: String,
+    /// Slugs of the primary agents that cannot run in this mode, from
+    /// `VibeMode::supports_agent`, so the frontend never restates the rule.
+    unsupported_agents: Vec<String>,
 }
 
 /// Returns the vibe modes AMF supports. `slug` is derived from `VibeMode`'s
@@ -408,6 +435,11 @@ fn supported_modes() -> Vec<ModeInfo> {
                 .unwrap_or_default(),
             display_name: mode.display_name().to_string(),
             description: mode.description().to_string(),
+            unsupported_agents: AgentKind::ALL
+                .iter()
+                .filter(|agent| !mode.supports_agent(agent))
+                .map(|agent| agent.slug().to_string())
+                .collect(),
         })
         .collect()
 }
@@ -659,6 +691,19 @@ fn delete_feature(
     let response = gui.delete_feature(target, todos, todo_host)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(response)
+}
+
+#[tauri::command]
+fn set_feature_vibe_mode(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    mode: VibeMode,
+) -> Result<(), GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    gui.set_feature_vibe_mode(target, mode)?;
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1119,6 +1164,24 @@ async fn feature_presets_choices(
 }
 
 #[tauri::command]
+async fn context_settings_load() -> Result<ContextSettingsView, GuiError> {
+    gui_settings::context_load()
+}
+
+#[tauri::command]
+async fn context_settings_save(
+    state: State<'_, AppState>,
+    revision: String,
+    settings: ContextSettingsInput,
+) -> Result<ContextSettingsView, GuiError> {
+    gui_settings::context_save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &revision,
+        settings,
+    )
+}
+
+#[tauri::command]
 async fn agent_availability_load() -> Result<AgentAvailabilityView, GuiError> {
     gui_settings::agents_load()
 }
@@ -1131,6 +1194,32 @@ async fn agent_availability_save(
 ) -> Result<AgentAvailabilityView, GuiError> {
     gui_settings::agents_save(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &revision,
+        settings,
+    )
+}
+
+#[tauri::command]
+async fn project_agent_availability_load(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<ProjectAgentAvailabilityView, GuiError> {
+    gui_project_settings::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
+    )
+}
+
+#[tauri::command]
+async fn project_agent_availability_save(
+    state: State<'_, AppState>,
+    project_id: String,
+    revision: String,
+    settings: ProjectAgentAvailability,
+) -> Result<ProjectAgentAvailabilityView, GuiError> {
+    gui_project_settings::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
         &revision,
         settings,
     )
@@ -1176,6 +1265,23 @@ async fn dormancy_stop(
         .broadcast_snapshot();
     emit_workspace_changed(&app, &snapshot);
     Ok(results)
+}
+
+/// Deletion can wait for worktree/editor cleanup; keep it off the UI thread.
+#[tauri::command]
+async fn dormancy_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: DormantDeleteRequest,
+    todos: Option<TodoDeleteChoice>,
+    todo_host: Option<TodoHostChoice>,
+) -> Result<DeleteFeatureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui_dormancy::delete(&mut gui, request, todos, todo_host);
+    // On an error too: validation may have adopted another process's store
+    // changes, and deletion can fail after the feature is already gone.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    response
 }
 
 // PR Triage reads GitHub through `gh`, which can be slow or hang (network,
@@ -1586,6 +1692,7 @@ fn main() {
             review_take_completion,
             load_diff,
             supported_harnesses,
+            allowed_harnesses,
             supported_modes,
             get_snapshot,
             set_collapsed,
@@ -1599,6 +1706,7 @@ fn main() {
             stop_session,
             remove_session,
             delete_feature,
+            set_feature_vibe_mode,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,
@@ -1636,13 +1744,18 @@ fn main() {
             feature_presets_load,
             feature_presets_save,
             feature_presets_choices,
+            context_settings_load,
+            context_settings_save,
             agent_availability_load,
             agent_availability_save,
+            project_agent_availability_load,
+            project_agent_availability_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,
             debug_log_load,
             dormancy_stop,
+            dormancy_delete,
             pr_review_begin,
             pr_review_snapshot,
             pr_review_act,

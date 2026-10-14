@@ -119,10 +119,8 @@ fn running_tmux() -> MockTmuxOps {
 
 /// A `code` stand-in that answers `--version` and exits on a launch.
 fn stub_cli(dir: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.join("code");
-    std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::resources::test_support::write_executable_script(&path, "#!/bin/sh\nexit 0\n");
     path
 }
 

@@ -11,8 +11,24 @@ milestone.
 These labels describe the code in this branch, not a packaged GUI release.
 Keep them current as the staged GUI scope grows.
 
+Released Linux package validation (2026-10-11) is recorded separately from these
+source capabilities. The rootless v0.48.0/v0.49.0 Debian GUI or AppImage
+extract-and-run paired with the musl TUI
+passes independent upgrades in both orders, native GUI reattachment, real TUI
+dashboard startup, shared-record/schema preservation and unchanged live tmux
+process identities. The GNU v0.48.0 TUI fails on Ubuntu 22.04 because it requires
+GLIBC 2.39. System dependency resolution/installers, AppImage FUSE/desktop integration, other architectures
+and macOS remain open; the package task is not complete. A separate fresh-server
+probe also found AppImage-created tmux servers inheriting invalid `PYTHONHOME` /
+`PYTHONPATH`: a new host Python import fails on both releases. Existing-session
+continuity passes; new Python startup needs a runtime fix. Reproduce with the
+[package validation guide](../development/linux-package-validation.md) and
+[`gui-linux-package-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-package-pair.txt)
+or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-linux-appimage-pair.txt).
+
 | Status | GUI workflow |
 | --- | --- |
+| Available | Change an existing feature's vibe mode from **More feature actions** in desktop or the TUI's AMF commands (`a` on a feature). Both interfaces save through the same operation and refresh the generated hooks of every harness the feature has a session for (a feature start does the same); restart agent sessions to apply the saved mode. Vibeless is unavailable when the feature's primary agent is Codex, the same rule every other launch path applies; a Codex session beside another primary agent is allowed in any mode. Desktop takes each mode's unavailable agents from `supported_modes` rather than restating the rule. While a changed feature keeps running, the TUI session header and the desktop feature subtitle show the launched mode followed by the saved one (`Vibeless → Vibe on restart`). That marker is local to the view or window that made the change: a view re-entered later, the other interface and a restarted AMF show only the saved mode, because the mode a session was launched with is not persisted. Regression tests cover persistence after another process reorders projects, a Codex primary agent, a secondary Codex session, per-harness hook refresh on change and on start, the picker omitting the current mode, the restart marker and rollback after a failed save. Native visual validation remains open. |
 | Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, the rest of the TUI `s` picker (VS Code, the per-feature TODOs session and the effective `amf.json` custom sessions with icon, description, command, working directory, pre-check, on-stop and autolaunch), stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
 | Available | VS Code uses the TUI picker's launch (`code --new-window`, a tracked `launched_editors` row and background window attribution), so feature stop and dormancy cleanup apply unchanged. It has no tmux pane: a **VS Code** tab and a sidebar chip list the feature's tracked windows (opening, AMF's, not AMF's) and close AMF's after confirmation through the shared editor cleanup (the TUI dormant list's `e`). A window opened after the list loaded is refused rather than closed unseen. Custom sessions run their `pre_check` without holding the GUI lock, show a failure with its output in the dialog, and refuse an entry changed or removed in `amf.json` since the dialog listed it. Duplicate custom adds are refused while their pre-check is running. A non-autolaunch session is added without switching tabs, as the TUI stays on its dashboard. Like every GUI add, a session that would start a stopped feature asks for resource approval (the TUI only warns for custom sessions). An unreadable project `amf.json` is reported rather than silently treated as empty. Six asserted native WSLg frames cover the picker, the pre-check failure, custom-session attachment and the VS Code open/close flow with stand-in `code`, `docker` and `npm` executables. |
 | Limited | VS Code has no terminal pane. Focusing an existing external window remains open; **Open another VS Code window** always uses the tracked new-window launch. Native macOS validation of VS Code and custom sessions remains open. |
@@ -27,15 +43,15 @@ Keep them current as the staged GUI scope grows.
 | Available | Script-only and choice-prompting `on_worktree_created` hooks during ordinary creation, direct TODO creation, Full/Quick creation-time planning and TODO planning. The creation forms load project-specific options before submission; missing or invalid choices are rejected before creating a checkout or reserving a TODO. Hooks finish before the interview opens; cancelling that interview keeps the already-created worktree without launching its agent. |
 | Available | Deleting a feature that hosts the project TODO list asks which surviving feature should keep it, or whether to delete the list and its TODOs. The GUI collects this choice before deletion; Cancel leaves the feature and both lists untouched. |
 | Available | Learning on a feature: repository file tree or branch changes, file/line/hunk/project questions, starter questions, persisted answers, follow-ups, deep dives, intent relabelling, keep-as-TODO with editable title and notes, harness and reading-level selection, anchor-drift notices, and explicit editing-agent handoff with resource approval and an unsent draft. A stopped linked editing session is restarted through its tab's resume choice rather than duplicated. |
-| Limited | Native desktop Learning interactions and paid-harness runs are not yet validated. |
+| Limited | Eleven asserted native Linux/WSLg frames verify repository/diff/line/hunk reading, starter and unsent-close protection, persisted answers and reopening, threaded follow-ups, relabelling an answer as a change request, editable keep-as-TODO cancellation/save, resource approval and unsent editing handoff with linked-session reuse through real Rust IPC and offline read-only Codex. Other harnesses, deep dives, anchor-drift notices, stopped-session resume, remaining native interactions, paid-harness runs and macOS validation remain open. |
 | Available | Standalone diffs on Git features, including stopped features: all current changes or one feature commit, file filtering, hunk navigation, unified and side-by-side layouts, whitespace filtering, automatic or chosen base ref, expanded context, rename/mode metadata, binary notices and explicit refresh. |
 | Limited | Native WSLg captures verify the stopped-feature entry, current changes, unified/split layouts, whole-file context, commit selection and binary notice through real Rust IPC. Other native interactions and macOS validation remain open. Standalone Changes is read-only; use Final Review for whole-file and line/range comments and suggestion editing. Walkthroughs, AI questions and feedback handoff remain in the TUI. |
 | Available | Manual Final Review on Git features, including stopped features: approve/reject/skip, undo verdicts, whole-file and line/range comments with severity, suggestion editing and confirmed local application, resolve/reopen comments, overall feedback, developer notes, saved line threads/suggestions, persisted application history, read-only review round history with on-demand archive loading, a complete pre-finish summary with explicitly confirmed batch suggestion preparation, confirmed project checks with bounded output, cancellation and stale-result handling, and pause/resume using the TUI progress file. Local application uses the shared TUI write guards, consumes the replacement, resolves its thread, refreshes the diff and invalidates the changed file's approval/undo. Changed patches and detected external progress edits require refresh/reload; failed saves retain edits with retry. |
 | Available | Final Review per-file Claude walkthroughs, cached changeset overview, Claude co-review drafts with explicit accept/dismiss, and repository-aware questions/follow-ups using the project's allowed Claude, Codex, OpenCode or Pi harnesses. Each new AI call requires a pre-call confirmation with prompt preview; polling never launches work. Changed patches, feature targets and external review saves discard pending results. Question conversations and generated notes remain in memory for the open review; accepted co-review findings share the TUI's saved progress. Answered questions can draft inline comments or overall feedback with their answering harness, another pre-call notice and editable text. Transfer checks the repository again without an AI call, appends existing prose and opens an unsaved editor; explicit Save keeps the feedback. |
 | Available | Completing Final Review from the pre-finish summary with explicit confirmation: the saved apply-on-finish batch, a rerun of the configured check (cancellable; earlier summary results are not reused) and the TUI's round recording, progress clearing and optional PR post. Actionable feedback can be handed to the feature's first agent session, submitted when the TUI setting submits and the session runs, otherwise as an unsent composer draft, or completion can skip the handoff. Stale revisions, patches, saved progress, check commands, agent sessions and deleted/moved features are refused before writing; completion is delivered once and unsaved/generated drafts block it. |
-| Limited | Seven asserted native WSLg frames verify completion entry, unsaved-draft blocking, the confirmation, changed-patch refusal, the running/cancelled completion check and the unsent-draft handoff through real Rust IPC with no agent receiving anything. Choosing another feedback destination (dedicated session, another feature, companion feature) remains in the TUI; paid-agent delivery, remaining native interactions and macOS validation stay open. Desktop check results stay in the open review; completion reruns the configured check. Seven asserted native WSLg frames verify check previews, confirmation, failed/passing output, cancellation and stale-result rejection through real Rust IPC. Remaining native interactions and macOS validation stay open. GUI batch preparation keeps the review open to inspect changed source; automated coverage is available, with native desktop validation still open. Seven asserted native WSLg frames verify round history, archive loading, draft restoration and read-error recovery through real Rust IPC; remaining interactions and macOS validation stay open. Question-to-comment drafting has command/component tests and eight asserted native WSLg frames through real Rust IPC with offline Codex; paid-harness execution remains unvalidated. Automated tests and eight asserted native WSLg frames cover walkthroughs, questions and co-review using offline CLI fixtures and real Rust IPC. Paid-harness runs remain unvalidated. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Native WSLg captures also verify range selection, line/range prose and replacement editing, split display, unsaved-suggestion protection, thread resolution/reopening and pause/reopen persistence. Native WSLg captures also verify confirmed local application and cancellation, changed source and approval invalidation, stale-file and read-only-file refusals, progress-save retry and restored application history. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
+| Limited | Seven asserted native WSLg frames verify completion entry, unsaved-draft blocking, the confirmation, changed-patch refusal, the running/cancelled completion check and the unsent-draft handoff through real Rust IPC with no agent receiving anything. Choosing another feedback destination (dedicated session, another feature, companion feature) remains in the TUI; paid-agent delivery, remaining native interactions and macOS validation stay open. Desktop check results stay in the open review; completion reruns the configured check. Seven asserted native WSLg frames verify check previews, confirmation, failed/passing output, cancellation and stale-result rejection through real Rust IPC. Remaining native interactions and macOS validation stay open. GUI batch preparation keeps the review open to inspect changed source; eight asserted native Linux frames verify summary filtering, confirmation/cancellation, stale-patch refusal, bottom-up application, partial failure, approval invalidation and pause/reopen/retry without recording a round or sending feedback. macOS runtime remains unvalidated. Seven asserted native WSLg frames verify round history, archive loading, draft restoration and read-error recovery through real Rust IPC; remaining interactions and macOS validation stay open. Question-to-comment drafting has command/component tests and eight asserted native WSLg frames through real Rust IPC with offline Codex; paid-harness execution remains unvalidated. Automated tests and eight asserted native WSLg frames cover walkthroughs, questions and co-review using offline CLI fixtures and real Rust IPC. Paid-harness runs remain unvalidated. Native WSLg captures verify entry, notes/threads, verdicts/comments, split layout, unsaved-draft protection, pause/resume, changed-patch rejection and refresh invalidation through real Rust IPC. Native WSLg captures also verify range selection, line/range prose and replacement editing, split display, unsaved-suggestion protection, thread resolution/reopening and pause/reopen persistence. Native WSLg captures also verify confirmed local application and cancellation, changed source and approval invalidation, stale-file and read-only-file refusals, progress-save retry and restored application history. Remaining native interactions and macOS validation are open. Edit a given review in one interface at a time. |
 | Available | Supervised edits (Vibeless per-edit approval) from the hook's file fallback, which a Claude or OpenCode hook uses when no AMF TUI is listening: navigation and feature-page badges with an arrival notice, an automatic oldest-first popup over the current page or agent tab with the configured answer hold, dismissal without answering and focus restoration, deferral around dialogs and unsent form/agent drafts, a GUI-only auto-open preference, the hook's captured diff in unified/side-by-side layouts with adjustable context, the agent's stated reason, and explicitly confirmed approve, reject-with-feedback and cancel answers that state each harness's effect. Answers name a stable edit ID and the reviewed revision; changed, already-answered and abandoned edits are refused, and unsent feedback requires explicit discard. |
-| Limited | Edits delivered over IPC to a running TUI are answered in that TUI; the GUI binds no IPC socket. AI explanations of an edit remain TUI-only. Codex Vibeless review is unsupported in both interfaces. Native WSLg frames cover Claude's hook; OpenCode, the change-reason flow and macOS have automated coverage only. |
+| Limited | Edits delivered over IPC to a running TUI are answered in that TUI; the GUI binds no IPC socket. AI explanations of an edit remain TUI-only. Codex Vibeless review is unsupported in both interfaces. Native WSLg frames cover Claude's hook. Nine asserted native Linux/WSLg frames additionally invoke the shipped OpenCode tracker logic with private path substitutions and offline tool input: generated reasons, approval, rejection without forwarded feedback, cancellation-as-skip, stale proposal and abandoned-owner refusals. Live OpenCode/client integration and macOS validation remain open. |
 | Available | PR Triage on Git projects and features: projects open the repository picker directly without a branch lookup, even with no features; features retain the branch PR marker. Open-or-all pull request list, opening by number, the shared comment fetch/cache (inline comments with windowed diff context, review summaries, conversation/bot comments, thread resolution and collated AMF replies), hide-resolved and sort controls, local done/skip, existing feature-agent selection and editable fix prompts handed once to an unsent composer draft with existing text preserved, or explicitly submitted to a running agent after an exact-prompt confirmation (with Fixing persistence and correlated agent reply drafts), read-only investigations and follow-ups with the shared pre-call notice and exact-prompt preview, dismissal, Done/Not needed/findings replies with an exact posted-body confirmation, and confirmed thread resolve/reopen. GitHub writes re-read the PR head or thread first and refuse stale targets while keeping the draft. |
 | Available | Project PR Review: repository-wide open-PR picker with draft/updated badges, fetched PR revisions independent of the current checkout, file comments and overall summary saved in shared SQLite drafts, pause/reopen through the PR list, and exact-payload confirmation for Comment, Approve or Request changes. The shared engine rechecks the PR head before posting; workflow revisions and external draft changes are refused. No feature or agent is required. |
 | Limited | PR Review inline/range comment authoring, suggestion editing, advanced review tools and layout controls remain in the TUI. Existing saved inline comments are preserved and included in the submission preview. Three native WSLg frames validate the project buttons and both PR pickers with no features and an offline GitHub fixture; live GitHub posting and macOS runtime validation remain open. |
@@ -43,18 +59,22 @@ Keep them current as the staged GUI scope grows.
 | Available | Code syntax highlighting in unified/side-by-side diffs, Final Review, supervised edits and the Learning reader, using the TUI's tree-sitter service: the same language detection, parsers and token classes, with whole-file context for multi-line strings and comments. File headers name the language or explain plain text (unknown language, parser missing or broken, too large, binary), and a missing or broken parser can be installed after explicit confirmation with the TUI picker's installer. Colours come from `--syn-*` tokens for light and dark. |
 | Limited | The GUI installs only the shown file's parser; uninstalling and the full language list stay in the TUI's syntax picker. Twelve asserted native WSLg frames cover the install, five languages, a review line comment and the Learning reader in light and dark; macOS validation remains open. |
 | Available | Prompt library browsing from workspace navigation or an agent composer, with shared user/global/project/worktree sources, fuzzy name/body and `#tag` search, original/resolved previews, required text/multiline fields and configured/inline choices. Add to draft targets an allowed Claude, Codex, OpenCode or Pi session, appends existing text and leaves sending explicit. Stopped agent drafts are editable before start. Template/checkout changes and stale/deleted/disallowed targets are rechecked before insertion. |
-| Limited | Prompt-library native desktop and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
+| Limited | Six asserted native Linux frames cover all four source scopes, tag search, required/multiline/choice fields, cancellation, external template edits and append-only unsent Codex handoff through real Rust IPC. Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`; paid-harness and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
 | Available | Headless prompt override manager from workspace navigation, with every registry prompt, its effective layer (and per-harness winner), placeholders, effective and built-in templates. Save feature, project (`amf.json`) or global overrides, shared or per harness. Clear one stored override with confirmation. Unsaved-edit protection is included. Stale saves after TUI, other-window or hand edits of `amf.json` are refused until reloaded, and malformed `amf.json` is reported without being overwritten. Pending Final Review and planning AI calls link to the manager through **Edit prompt**. |
 | Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
 | Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
 | Available | Dormant-list **Close editors** confirms the listed tracked window identities and uses the shared TUI editor cleanup without stopping, opening or deleting the feature. Automatic cleanup-on-stop may be off. A newly opened window refuses the stale confirmation and requires returning to refresh; unowned windows, recycled PIDs and shared instances retain the existing safeguards. Six asserted native WSLg frames (`gui-dormant-editor-close.txt`) prove listing, confirmation, a newly opened window refusal, refreshed confirmation, ownership cleanup and the feature still dormant afterwards, with automatic stop cleanup disabled. |
-| Limited | Deleting from the dormant list remains a TUI action. Four asserted native WSLg frames verify the list, confirmation, a confirm-time refusal and editor ownership through real Rust IPC with stand-in editors; macOS validation is open. |
+| Available | Dormant-list **Delete** opens the shared feature-deletion confirmation without marking the feature opened. Each step rechecks the listed dormancy readings, current thresholds, session identity, name and checkout before shared TODO disposition/host choices or deletion. Worktrees are removed with the branch kept; ordinary checkouts remain. Cancel, success and refusal return to a refreshed dormant list. Command/component regressions cover cancellation, stale/external changes, TODO preservation, duplicate clicks and dismissal during deletion. Seven asserted native WSLg frames (`gui-dormant-delete.txt`) verify cancellation through both TODO prompts, external-open refusal, TODO destination/host preservation, worktree removal with the branch kept and ordinary checkout preservation. |
+| Limited | Dormant-list deletion macOS validation remains open. Four asserted native WSLg frames verify the original list, stop confirmation, confirm-time refusal and editor ownership through real Rust IPC with stand-in editors. |
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
 | Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
-| Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Available | Global Feature presets manager: add/edit/delete templates, every stored field including Full/Quick Plan, review, Chrome and Remote Control, explicit Save/reload/cancel and unsaved-change protection. Revisioned atomic writes preserve unknown outer/extension and retained preset-row keys. Ordinary new-feature creation applies effective project-over-global presets filtered by current harness availability; filled fields remain editable. Saving templates leaves existing features and processes unchanged. Eight asserted native frames use `gui-feature-presets.txt`. |
 | Limited | Remote Control templates remain usable in the TUI; desktop creation blocks Remote Control until explicitly cleared. Preset selection for TODO creation and native macOS preset interactions remain unvalidated/deferred. |
+| Available | Global context settings: positive token-limit override or blank for harness defaults, ordered warning/critical percentages, unsaved-edit protection and stale-save refusal. Desktop indicators apply saved/external policy updates; old fallback-limit collections cannot publish fresh context after a policy change. |
+| Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. The new-session picker and the New project, New feature and TODO-to-feature forms offer only the allowed harnesses. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
+| Limited | An already open TUI keeps the allowed-agent choices it started with, and its next settings save writes them back; restart it after a desktop change. |
+| Available | Project Agent availability from the project page: explicit global inheritance or an allowed-agent override, save/reload/cancel with unsaved protection, strict project config validation and stale-file/project/repository refusal. Saves preserve unrelated JSON and legacy config while updating tracked `amf.json`; effective future feature/session choices use the shared resolver. Existing sessions keep running. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
@@ -148,6 +168,26 @@ the complete interface for workflows marked Planned.
 ## Remaining GUI parity priority
 
 Completed increments and remaining work, in priority order:
+
+- [x] **AI GUI/TUI interaction tooling (2026-10-12).** Persistent private
+  instances support compact observations, batched actions and local waits.
+  The GUI driver targets exact/scoped native controls and React form values;
+  the TUI driver reads tmux's rendered grid and supports changed rows,
+  terminal-mode-aware keys/paste and private automation. The injected
+  `amf-interact` skill includes helpers and on-demand guides for agents working
+  on other projects, with installed-AMF fallback for TUI use and explicit
+  source/debug prerequisites for GUI use. Upgrade refresh and cleanup cover
+  Claude, Codex, OpenCode and Pi, including mixed-harness features.
+  Validation: 21 Python checks, four frontend driver regressions, the full
+  parallel Rust workspace suite (3,513 library + seven GUI tests; one existing
+  ignored), formatting, strict Clippy and both native builds. Both native
+  workflows pass using copied injected bundles from an unrelated project
+  directory; the TUI probe verifies exact Unicode, application-cursor and
+  bracketed-paste bytes. No screenshot artifact was generated. Text checks do
+  not validate xterm rendering or browser event routing; macOS GUI interaction
+  remains unsupported by this driver. See the
+  [GUI](../development/gui-ai-driver.md) and
+  [TUI](../development/tui-ai-driver.md) operating guides.
 
 - [x] **Session bookmarks (2026-10-10).** Workspace navigation provides the
   shared nine-slot picker, add/remove and stable-session navigation. Duplicate
@@ -353,8 +393,14 @@ Completed increments and remaining work, in priority order:
   suite passes (3,235 library tests and seven GUI-crate tests; one pre-existing
   live-GitHub acceptance test ignored). All 136 frontend tests, production frontend
   build, both executable builds, formatting and strict workspace/all-target Clippy
-  pass. The library inventory retains all 3,229 baseline test names and adds seven. Native desktop and macOS
-  interaction validation remain open; authoring/export and overrides are later work.
+  pass. The library inventory retains all 3,229 baseline test names and adds seven.
+  Six asserted native Linux frames now verify four-source browsing, tag search,
+  required/multiline/choice fields, cancellation, external-edit retirement and
+  an append-only unsent Codex handoff using private SQLite/Git/worktree/tmux.
+  Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`.
+  Paid-harness and macOS interaction validation remain open; library
+  authoring/export remain in the TUI. Prompt overrides have since shipped
+  separately, as recorded below.
 
 - [ ] **Remaining diff and review parity.** Complete diff-related workflows,
   including finish-time batch suggestion application, finish checks and feedback
@@ -409,9 +455,15 @@ Completed increments and remaining work, in priority order:
     parallel workspace suite passes (3,242 library and seven GUI-crate tests;
     one existing live-GitHub test ignored), along with all 144 frontend tests,
     the production frontend build, both executable builds, formatting and strict
-    workspace/all-target Clippy. Completing the review and
-    explicit feedback handoff are next. Native desktop and macOS validation
-    remain open.
+    workspace/all-target Clippy. Completion and feedback handoff are implemented
+    in the later increment above. Eight asserted native Linux frames now verify
+    batch preparation through real Rust IPC: filtered-out summary rows,
+    confirmation/cancellation, stale changeset refusal, bottom-up replacements,
+    partial write failure, invalidated approval, pause/reopen and retry. Source,
+    saved progress and offline receivers assert no repeated write, completed
+    round or submitted feedback. Reproduce with
+    [`gui-review-batch.txt`](../../scripts/dev/screenshot/scenarios/gui-review-batch.txt).
+    macOS runtime remains unvalidated.
   - [x] **Local suggestion application (2026-10-04).** Explicit confirmation
     writes one exact kept thread through the TUI engine, settles it, refreshes
     source and persists the application record. Stale targets/patches/progress,
@@ -515,12 +567,25 @@ Completed increments and remaining work, in priority order:
   draft and the successful zero-threshold save disabling detection through
   real Rust IPC. The private config file is checked after save. Reproduce with
   [`gui-dormancy-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
+- [x] **Dormant-list deletion (2026-10-10).** Per-row Delete uses the existing
+  feature confirmation and TUI deletion/TODO engines, with fresh dormancy and
+  checkout checks at every step. It never opens the feature, and returns to a
+  refreshed list on cancel, completion or refusal. Four Rust regressions and
+  four frontend interactions cover the command and frontend. Full parallel
+  workspace tests pass (3,480 library and seven GUI tests; one pre-existing
+  ignored), along with all 378 frontend tests, production build, formatting,
+  strict workspace/all-target Clippy and both native executable builds. All
+  3,484 baseline test names remain, with four additions. Seven asserted native
+  WSLg frames verify cancellation through both TODO prompts, external-open
+  refusal, TODO disposition/host preservation, worktree deletion and ordinary
+  checkout preservation using private SQLite, Git and tmux fixtures. Reproduce
+  with `gui-dormant-delete.txt`; macOS validation remains open.
 - [x] **Desktop global agent availability (2026-10-11).** Four harness choices
   share the TUI extension config and effective-agent resolver. The desktop
   settings writers share a lock and whole-document revision, retain unknown
   fields and file permissions, and reject malformed known settings. The modal
   protects unsaved drafts and refuses empty selections, duplicate saves and
-  dismissal while saving. Project-scoped editing and harness setup remain open.
+  dismissal while saving. Broader harness setup remains open; project editing is recorded below.
   Four asserted native WSLg frames and real Rust IPC verify loaded choices,
   discard protection, stale-save refusal, persisted Codex/Pi choices, effective
   new-session options and preservation of unrelated config/existing sessions.
@@ -529,7 +594,51 @@ Completed increments and remaining work, in priority order:
   ignored), all 380 frontend tests, both executable builds, production frontend
   build, formatting and strict all-target Clippy pass. macOS interaction
   validation remains open.
+  Review follow-up (2026-10-12): creation forms ask the backend which
+  harnesses the chosen project allows, saves report the order a reload
+  returns, the in-memory apply has its own commit-only regression, and the
+  two settings panels share one revisioned modal. The native frames were not
+  re-captured.
   Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
+
+- [x] **Desktop project agent availability (2026-10-11).** Project-page entry
+  offers explicit inheritance and project override choices, with guarded
+  save/reload/cancel and no harness setup side effects. The shared JSON writer
+  preserves unknown fields and existing permissions; strict whole-project
+  schema validation refuses malformed active config. Revisions bind project ID,
+  raw/resolved repository identity, both config files and inherited global
+  choices. Canonical saves copy effective legacy contents without rewriting or
+  deleting legacy config. Existing sessions and composer drafts remain intact;
+  later feature/session forms read the shared resolver fresh, including installed
+  harness filtering before the New feature form opens. Eight asserted native
+  frames cover loaded override, unsaved guard, stale refusal, saved choices,
+  New feature/session forms, explicit inheritance and existing composer/pane
+  preservation. All 3,488 library and 7 GUI Rust tests pass (one existing GitHub
+  acceptance test ignored), plus 385 frontend tests/build, both native builds,
+  formatting and strict all-target Clippy. Broader harness setup and macOS
+  interaction validation remain open. Native scenario:
+  [`gui-project-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-project-agent-availability.txt).
+
+- [x] **Desktop context settings (2026-10-11, stacked on agent availability).**
+  Shared TUI/GUI parsing preserves optional positive u64 token limits and ordered
+  1–100 thresholds. Scoped saves/clears preserve other fields, refuse stale files
+  and apply runtime changes only after commit. Existing indicators reband;
+  changed limits mark estimated samples stale and old in-flight estimates cannot
+  publish fresh context, while samples with a telemetry limit stay fresh.
+  External config edits refresh before GUI context polling, read only when the
+  file's modification time or size changes. Invalid stored values load for repair
+  and are refused at save and refresh. A running TUI still overwrites the file
+  from its own copy on its next config save (open: re-read before TUI saves). The
+  dialog protects drafts and pending saves. Six asserted native WSLg frames
+  prove validation, draft protection, stale-save refusal, exact maximum-u64
+  persistence and restoration of harness defaults without changing unrelated
+  config or existing sessions. The normal parallel workspace suite passes
+  (3,484 library tests + seven GUI tests; one existing ignored), alongside all
+  388 frontend tests, both executable builds, production frontend build,
+  formatting and strict all-target Clippy. An isolated native TUI smoke checks
+  the existing `w` entry, rendering and Enter save. macOS validation remains
+  open. Native proof scenario:
+  [`gui-context-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-context-settings.txt).
 
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.

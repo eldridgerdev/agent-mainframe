@@ -9,6 +9,15 @@ pub(super) fn prompt_entry(text: &str) -> String {
     text.to_string()
 }
 
+/// The checkout the shared fixture feature points at. A start refuses a
+/// feature whose workdir is missing, so handing the path out creates it
+/// rather than leaving that to whichever test first writes hooks there.
+pub(super) fn test_workdir() -> PathBuf {
+    let workdir = PathBuf::from("/tmp/test-workdir");
+    std::fs::create_dir_all(&workdir).unwrap();
+    workdir
+}
+
 /// Build a minimal `ProjectStore` with one project and one
 /// feature at the requested status.
 pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
@@ -17,7 +26,7 @@ pub(super) fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         id: "feat-1".to_string(),
         name: "my-feat".to_string(),
         branch: "my-feat".to_string(),
-        workdir: PathBuf::from("/tmp/test-workdir"),
+        workdir: test_workdir(),
         is_worktree: false,
         tmux_session: "amf-my-feat".to_string(),
         sessions: vec![],

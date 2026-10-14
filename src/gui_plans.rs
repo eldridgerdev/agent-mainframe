@@ -648,7 +648,17 @@ pub fn act(
     if matches!(app.mode, AppMode::PromptPrecall(_)) {
         match action {
             PlanAction::PrecallConfirm => app.precall_confirm().map_err(GuiError::from)?,
-            PlanAction::PrecallCancel => app.precall_cancel(),
+            PlanAction::PrecallCancel => {
+                app.precall_cancel();
+                // Only an `act` call leaves a checkpoint to restore. A notice
+                // opened by `poll` (a round with no usable follow-ups, a Quick
+                // Plan escalation) or by `Resume` landing on `Done` has none,
+                // and `Done` offers no action here but abandoning the
+                // interview — the TUI retries from it with Enter.
+                if let AppMode::PlanInterview(state) = &mut app.mode {
+                    state.return_to_ai_consent();
+                }
+            }
             PlanAction::PrecallToggleView => app.precall_toggle_view(),
             _ => return Err(GuiError::conflict("Answer the headless-call notice first")),
         }
@@ -675,6 +685,20 @@ pub fn act(
     ) {
         apply_input(app, input.as_ref())?;
     }
+
+    let precall_checkpoint = match &app.mode {
+        AppMode::PlanInterview(state)
+            if matches!(
+                state.phase,
+                PlanInterviewPhase::Brief
+                    | PlanInterviewPhase::StaticQuestions
+                    | PlanInterviewPhase::AiConsent
+            ) =>
+        {
+            Some(state.precall_checkpoint())
+        }
+        _ => None,
+    };
 
     match action {
         PlanAction::Resume => app.resume_plan_interview_draft().map_err(GuiError::from)?,
@@ -960,6 +984,12 @@ pub fn act(
             unreachable!()
         }
     }
+    if let AppMode::PromptPrecall(pending) = &mut app.mode
+        && let AppMode::PlanInterview(state) = pending.prior_mode.as_mut()
+        && state.phase == PlanInterviewPhase::Done
+    {
+        state.precall_checkpoint = precall_checkpoint;
+    }
     Ok(status_of(app))
 }
 
@@ -1182,6 +1212,303 @@ mod tests {
         let cancelled = act(&mut gui, &brief.step_key, PlanAction::PrecallCancel, None).unwrap();
         assert!(cancelled.precall.is_none());
         assert_eq!(cancelled.active.unwrap().phase, "brief");
+    }
+
+    #[test]
+    fn cancelling_real_synthesis_notice_restores_input_and_no_ai_consent() {
+        for starting_phase in [PlanInterviewPhase::Brief, PlanInterviewPhase::AiConsent] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut gui, target) = fixture(dir.path());
+            let brief = begin(&mut gui, &target, false).unwrap().active.unwrap();
+            let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+                panic!("interview missing");
+            };
+            state.questions.clear();
+            state.answers.clear();
+            state.phase = starting_phase;
+            state.brief = "Preserve quota checks".into();
+            state.editor = TextEditor::new(state.brief.clone());
+            // Resolve to an offline-capable engine without spawning it: the
+            // real action must stop at its pre-call gate on every platform.
+            state.ai_harness = Some(Some(AgentKind::Codex));
+            let view = status_of(gui.app_for_workflow()).active.unwrap();
+            let notice = act(
+                &mut gui,
+                &view.step_key,
+                PlanAction::FinishEarly,
+                (starting_phase == PlanInterviewPhase::Brief).then(|| PlanInput {
+                    text: "Preserve quota checks".into(),
+                    selected_option: None,
+                }),
+            )
+            .unwrap();
+            assert!(notice.precall.is_some());
+            let cancelled = act(
+                &mut gui,
+                &notice.active.unwrap().step_key,
+                PlanAction::PrecallCancel,
+                None,
+            )
+            .unwrap();
+            let restored = cancelled.active.unwrap();
+            assert_eq!(restored.phase, phase_name(starting_phase));
+            assert_eq!(restored.editor_text, "Preserve quota checks");
+            let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+                panic!("interview missing");
+            };
+            assert!(!state.synthesis_requested);
+            assert!(!state.skip_ai_rounds);
+            assert!(!state.ai_followups_opted_in);
+            assert!(state.precall_checkpoint.is_none());
+
+            // Retrying still requires approval; cancelling a second time
+            // must not make the later zero-token completion synthesize.
+            let retry = act(&mut gui, &restored.step_key, PlanAction::FinishEarly, None).unwrap();
+            assert!(retry.precall.is_some());
+            let restored = act(
+                &mut gui,
+                &retry.active.unwrap().step_key,
+                PlanAction::PrecallCancel,
+                None,
+            )
+            .unwrap()
+            .active
+            .unwrap();
+            let consent = if starting_phase == PlanInterviewPhase::Brief {
+                next(&mut gui, restored, "Preserve quota checks")
+            } else {
+                restored
+            };
+            let review = next(&mut gui, consent, "");
+            assert_eq!(review.phase, "review");
+            assert!(poll(&mut gui).precall.is_none());
+            assert!(gui.app_for_workflow().plan_interview_synthesis_bg.is_none());
+            assert!(!dir.path().join("AMF_PLAN.md").exists());
+            assert_eq!(brief.interview_key, review.interview_key);
+        }
+    }
+
+    #[test]
+    fn cancelling_real_followup_notice_restores_the_consent_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, target) = fixture(dir.path());
+        let brief = begin(&mut gui, &target, false).unwrap().active.unwrap();
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.questions.clear();
+        state.answers.clear();
+        let consent = next(&mut gui, brief, "Keep quota checks");
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        let notice = act(&mut gui, &consent.step_key, PlanAction::OptInAi, None).unwrap();
+        assert!(notice.precall.is_some());
+        let restored = act(
+            &mut gui,
+            &notice.active.unwrap().step_key,
+            PlanAction::PrecallCancel,
+            None,
+        )
+        .unwrap()
+        .active
+        .unwrap();
+        assert_eq!(restored.phase, "ai_consent");
+        let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        assert!(!state.ai_followups_opted_in);
+        assert!(gui.app_for_workflow().plan_interview_ai_bg.is_none());
+        assert_eq!(next(&mut gui, restored, "").phase, "review");
+    }
+
+    const NO_FOLLOWUPS: &str = "```json\n{\"questions\":[]}\n```";
+    const ONE_FOLLOWUP: &str = "```json\n{\"questions\":[{\"id\":\"retry-policy\",\"text\":\"How should retries behave?\",\"kind\":\"free_text\"}]}\n```";
+
+    /// A full interview parked mid-round, as confirming the `round` notice
+    /// leaves it, with the worker's reply already waiting. Nothing is spawned:
+    /// the engine is pinned so the next call stops at its pre-call gate.
+    fn fixture_awaiting_ai_round(
+        workdir: &Path,
+        round: usize,
+        response: &str,
+    ) -> (GuiHandle, FeatureTarget) {
+        let (mut gui, target) = fixture(workdir);
+        begin(&mut gui, &target, false).unwrap();
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.questions.clear();
+        state.answers.clear();
+        state.brief = "Preserve quota checks".into();
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        state.ai_followups_opted_in = true;
+        state.ai_rounds_completed = round - 1;
+        state.begin_ai_round(0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        gui.app_for_workflow().plan_interview_ai_bg = Some(rx);
+        tx.send((round, Ok(response.to_string()))).unwrap();
+        (gui, target)
+    }
+
+    fn notice_action(gui: &mut GuiHandle) -> PrecallAction {
+        match &gui.app_for_workflow().mode {
+            AppMode::PromptPrecall(pending) => pending.action,
+            _ => panic!("no headless-call notice is open"),
+        }
+    }
+
+    /// Cancel a notice that no `act` call checkpointed. The interview must
+    /// leave `Done` for the consent choice with no token consent held, and
+    /// the zero-token path from there must reach the review without a call.
+    fn assert_cancel_returns_to_consent(gui: &mut GuiHandle, notice: PlanStatus) {
+        assert!(notice.precall.is_some());
+        let pending = notice.active.unwrap();
+        assert_eq!(pending.phase, "done");
+        let cancelled = act(gui, &pending.step_key, PlanAction::PrecallCancel, None).unwrap();
+        assert!(cancelled.precall.is_none());
+        let restored = cancelled.active.unwrap();
+        assert_eq!(restored.phase, "ai_consent");
+        let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        assert!(!state.ai_followups_opted_in);
+        assert!(!state.skip_ai_rounds);
+        assert!(!state.synthesis_requested);
+
+        assert_eq!(next(gui, restored, "").phase, "review");
+        assert!(poll(gui).precall.is_none());
+        assert!(gui.app_for_workflow().plan_interview_ai_bg.is_none());
+        assert!(gui.app_for_workflow().plan_interview_synthesis_bg.is_none());
+    }
+
+    #[test]
+    fn cancelling_the_notice_after_the_last_ai_followup_restores_that_answer() {
+        // Answering the last follow-up offers the next round, or synthesis
+        // once the rounds are spent.
+        for (round, expected) in [
+            (1, PrecallAction::PlanRound),
+            (
+                crate::plan_interview::MAX_AI_ROUNDS,
+                PrecallAction::PlanSynthesis,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut gui, _target) = fixture_awaiting_ai_round(dir.path(), round, ONE_FOLLOWUP);
+            let followup = poll(&mut gui).active.unwrap();
+            assert_eq!(followup.phase, "static_questions");
+
+            let notice = act(
+                &mut gui,
+                &followup.step_key,
+                PlanAction::Next,
+                Some(PlanInput {
+                    text: "Retry twice".into(),
+                    selected_option: None,
+                }),
+            )
+            .unwrap();
+            assert!(notice.precall.is_some());
+            assert_eq!(notice_action(&mut gui), expected);
+            let restored = act(
+                &mut gui,
+                &notice.active.unwrap().step_key,
+                PlanAction::PrecallCancel,
+                None,
+            )
+            .unwrap()
+            .active
+            .unwrap();
+            assert_eq!(restored.phase, "static_questions");
+            assert_eq!(restored.question.as_ref().unwrap().id, "retry-policy");
+            assert_eq!(restored.editor_text, "Retry twice");
+            let AppMode::PlanInterview(state) = &gui.app_for_workflow().mode else {
+                panic!("interview missing");
+            };
+            // The follow-ups were already opted into; cancelling one call
+            // does not withdraw that.
+            assert!(state.ai_followups_opted_in);
+            assert!(state.precall_checkpoint.is_none());
+            assert!(gui.app_for_workflow().plan_interview_ai_bg.is_none());
+            assert!(gui.app_for_workflow().plan_interview_synthesis_bg.is_none());
+
+            // The kept answer re-offers the same call rather than a new one.
+            let retry = act(&mut gui, &restored.step_key, PlanAction::Next, None).unwrap();
+            assert!(retry.precall.is_some());
+            assert_eq!(notice_action(&mut gui), expected);
+        }
+    }
+
+    #[test]
+    fn cancelling_the_notice_opened_by_an_empty_ai_round_returns_to_consent() {
+        // `poll` opens these with no `act` call to checkpoint them: an empty
+        // round offers the next one, and the last empty round offers synthesis.
+        for (round, expected) in [
+            (1, PrecallAction::PlanRound),
+            (
+                crate::plan_interview::MAX_AI_ROUNDS,
+                PrecallAction::PlanSynthesis,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut gui, _target) = fixture_awaiting_ai_round(dir.path(), round, NO_FOLLOWUPS);
+            let notice = poll(&mut gui);
+            assert!(notice.precall.is_some());
+            assert_eq!(notice_action(&mut gui), expected);
+            assert_cancel_returns_to_consent(&mut gui, notice);
+        }
+    }
+
+    #[test]
+    fn cancelling_the_notice_after_a_quick_plan_escalation_returns_to_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, target) = fixture(dir.path());
+        begin(&mut gui, &target, true).unwrap();
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.brief = "Rework quota billing".into();
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        state.begin_synthesis(0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        gui.app_for_workflow().plan_interview_synthesis_bg = Some(rx);
+        tx.send(Ok(
+            "```json\n{\"outcome\":\"escalate\",\"reason\":\"Touches billing\"}\n```".to_string(),
+        ))
+        .unwrap();
+
+        let notice = poll(&mut gui);
+        assert_eq!(notice.active.as_ref().unwrap().kind, "full");
+        assert!(notice.precall.is_some());
+        assert_eq!(notice_action(&mut gui), PrecallAction::PlanRound);
+        assert_cancel_returns_to_consent(&mut gui, notice);
+    }
+
+    #[test]
+    fn cancelling_the_notice_opened_by_resuming_an_answered_draft_returns_to_consent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut gui, target) = fixture(dir.path());
+        begin(&mut gui, &target, false).unwrap();
+        let AppMode::PlanInterview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("interview missing");
+        };
+        state.questions.clear();
+        state.answers.clear();
+        state.brief = "Preserve quota checks".into();
+        state.ai_harness = Some(Some(AgentKind::Codex));
+        // Nothing left to answer and a round already spent: resuming carries
+        // that consent forward and lands straight on `Done`.
+        let mut draft = state.to_draft_record();
+        draft.ai_rounds_completed = 1;
+        state.offer_resume(draft);
+        let prompt = status_of(gui.app_for_workflow()).active.unwrap();
+        assert_eq!(prompt.phase, "resume_prompt");
+
+        let notice = act(&mut gui, &prompt.step_key, PlanAction::Resume, None).unwrap();
+        assert!(notice.precall.is_some());
+        assert_eq!(notice_action(&mut gui), PrecallAction::PlanRound);
+        assert_cancel_returns_to_consent(&mut gui, notice);
     }
 
     #[test]

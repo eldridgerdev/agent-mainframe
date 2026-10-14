@@ -19,6 +19,8 @@ export interface ModeInfo {
   slug: ModeSlug;
   display_name: string;
   description: string;
+  /** Primary agents that cannot run in this mode; the backend owns the rule. */
+  unsupported_agents?: AgentSlug[];
 }
 
 export interface FeatureSession {
@@ -156,6 +158,19 @@ export function asGuiError(err: unknown): GuiError {
 
 export function supportedHarnesses(): Promise<HarnessInfo[]> {
   return invoke("supported_harnesses");
+}
+
+/** The harnesses creation accepts for a project: the global choices, its own
+ * override and what is installed. `null` is a project that does not exist yet. */
+export function allowedHarnesses(projectId: string | null): Promise<HarnessInfo[]> {
+  return invoke("allowed_harnesses", { projectId });
+}
+
+/** Resolve effective creation choices with the shared installed-agent filter. */
+export async function projectAgentChoices(projectId: string): Promise<AgentSlug[]> {
+  const view = await invoke<{ effective_agents: AgentSlug[] }>(
+    "project_agent_availability_load", { projectId });
+  return view.effective_agents;
 }
 
 export function supportedModes(): Promise<ModeInfo[]> {
@@ -317,6 +332,10 @@ export function deleteFeature(
   todoHost: TodoHostChoice | null,
 ): Promise<DeleteFeatureResponse> {
   return invoke("delete_feature", { target, todos, todoHost });
+}
+
+export function setFeatureVibeMode(target: FeatureTarget, mode: ModeSlug): Promise<void> {
+  return invoke("set_feature_vibe_mode", { target, mode });
 }
 
 export interface SessionRecoveryOption {
@@ -653,7 +672,8 @@ export type LearningAction =
   | { kind: "keep_todo"; qa_id: string; title: string; notes: string };
 export interface LearningHandoff {
   target: SessionTarget;
-  draft_prompt: string;
+  /** Unsent composer seed for a newly opened session; null when returning to the linked one. */
+  draft_prompt: string | null;
   notice: string | null;
   info: string | null;
   /** The linked session still exists but is stopped; start it instead of opening another. */
@@ -919,4 +939,14 @@ export interface PresetRow { original_index: number | null; preset: FeaturePrese
 export interface PresetsView { rows: PresetRow[]; revision: string }
 export function featurePresetsChoices(projectId: string): Promise<FeaturePreset[]> {
   return invoke("feature_presets_choices", { projectId });
+}
+
+/** Checkout and observation shown before a dormant feature deletion. */
+export type DormantDeleteRequest = Pick<DormantFeatureView, "observation" | "workdir" | "is_worktree">;
+export function dormancyDelete(
+  request: DormantDeleteRequest,
+  todos: TodoDeleteChoice | null,
+  todoHost: TodoHostChoice | null,
+): Promise<DeleteFeatureResponse> {
+  return invoke("dormancy_delete", { request, todos, todoHost });
 }

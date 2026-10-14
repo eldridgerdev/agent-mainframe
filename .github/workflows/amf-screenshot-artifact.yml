@@ -87,6 +87,20 @@ jobs:
           "$RUNNER_TEMP/amf-screenshot-venv/bin/pip" install --disable-pip-version-check Pillow
           echo "$RUNNER_TEMP/amf-screenshot-venv/bin" >> "$GITHUB_PATH"
 
+      # Frames are rendered by xterm.js in headless Chromium. Pillow above
+      # still assembles GIFs, and is the renderer render-captures.sh falls
+      # back to if this step fails or its browser cannot start; either way
+      # the run is annotated, here or by render-captures.sh, so a Pillow
+      # gallery is never mistaken for an xterm.js one. This file always runs
+      # from main while the scripts come from the requested ref, so a ref
+      # that predates the xterm.js renderer has neither script.
+      - name: Install xterm.js renderer
+        run: |
+          if [[ -f scripts/dev/screenshot/render_xterm.cjs ]]; then
+            node scripts/dev/screenshot/render_xterm.cjs --install ||
+              echo "::warning title=xterm.js renderer not installed::render_xterm.cjs --install failed; frames will be drawn by the Pillow fallback."
+          fi
+
       - name: Build AMF
         run: cargo build --locked
 
@@ -127,16 +141,24 @@ jobs:
             shopt -s nullglob
             ansi_files=("$OUT_DIR"/*.ansi)
             shopt -u nullglob
-            for ansi in "${ansi_files[@]}"; do
-              python3 scripts/dev/screenshot/render_ansi.py "$ansi" \
-                --out "${ansi%.ansi}.png" --cols "$cols" --rows "$rows"
-            done
+            # None when a scenario wrote its own PNGs (a browser capture).
+            if [[ ${#ansi_files[@]} -eq 0 ]]; then
+              :
+            elif [[ -x scripts/dev/screenshot/render-captures.sh ]]; then
+              scripts/dev/screenshot/render-captures.sh \
+                --cols "$cols" --rows "$rows" "${ansi_files[@]}"
+            else
+              for ansi in "${ansi_files[@]}"; do
+                python3 scripts/dev/screenshot/render_ansi.py "$ansi" \
+                  --out "${ansi%.ansi}.png" --cols "$cols" --rows "$rows"
+              done
+            fi
           fi
 
           python3 scripts/dev/screenshot/build_gallery.py \
             --input-dir "$OUT_DIR" --out "$OUT_DIR/gallery.html" \
             --repository "$GITHUB_REPOSITORY" --ref "$CAPTURE_REF" \
-            --sha "$GITHUB_SHA" --scenario "$SCENARIO" \
+            --sha "$(git rev-parse HEAD)" --scenario "$SCENARIO" \
             --geometry "$GEOMETRY" --pr-number "$PR_NUMBER" \
             --run-id "$GITHUB_RUN_ID" \
             --artifact-name "amf-screenshot-pr-${PR_NUMBER}-${GITHUB_RUN_ID}" \

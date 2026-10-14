@@ -12,11 +12,54 @@ are tagged.
 
 ### Added
 
+- **Desktop context settings.** Set a fallback context-window token limit and
+  warning/critical percentages from workspace navigation. A blank limit restores
+  harness defaults. Saves protect unsaved drafts, refuse conflicting config
+  edits and update desktop indicators; external settings edits refresh
+  automatically. Invalid hand-edited values open in the dialog for correction.
+  Restart an already open TUI after saving: until then it keeps its old values
+  and writes them back the next time it saves any setting. No migration is
+  required.
+
+- **AI interaction helpers for AMF.** Agents can reuse private GUI or TUI
+  instances, read compact observations, and batch actions with local waits.
+  The injected `amf-interact` skill explains which tools to use and includes
+  the helpers for projects managed outside AMF's source checkout. TUI use needs
+  Python, tmux and installed AMF; GUI use also needs matching frontend source,
+  a Linux/WSLg debug GUI and its prerequisites. Existing agents may need a skill
+  reload or restart after upgrading. No configuration migration is required.
+  Injected `amf-*` skills for Codex, OpenCode and Pi are now kept out of
+  `git status` through the repository's `.git/info/exclude`.
+
+- **Change a feature's vibe mode.** Choose a different mode from the desktop
+  feature's More actions menu or the TUI's AMF commands (`a` on a feature).
+  Restart agent sessions to apply the saved mode: until then the session
+  header (TUI) and the feature subtitle (desktop) keep showing the mode the
+  running agents were launched with, followed by the saved one. Hooks are
+  refreshed for every harness the feature has a session for. Vibeless is
+  unavailable for a feature whose primary agent is Codex. No migration is
+  required.
+
+- **Project agent choices in desktop.** Open Agent availability on a project
+  page to choose its allowed agents or clear the override and inherit global
+  choices. New features and sessions use those choices; existing sessions keep
+  running. Unsaved edits and external config changes are protected. Saving a
+  legacy project config copies it to `amf.json` and retains the original file.
+
 - **Desktop agent availability.** Choose globally allowed Claude Code, Codex,
   OpenCode and Pi agents from workspace navigation, using the TUI's settings.
-  Project overrides keep precedence and existing sessions keep running. Unsaved
-  drafts are protected and conflicting config edits require a reload. No
-  migration is required.
+  Project overrides keep precedence and existing sessions keep running. The
+  desktop creation forms offer only the allowed agents. Unsaved drafts are
+  protected and conflicting config edits require a reload. Restart an already
+  open TUI after saving, or its next settings save restores the old choices.
+  No migration is required.
+
+- **Delete dormant features from desktop.** Delete directly from Dormant
+  features with the same confirmation and TODO choices as the feature page.
+  Each step checks that the feature is still dormant and unchanged; Cancel
+  returns to the refreshed list without deleting anything, with your stop
+  selection kept.
+  No migration is required.
 
 - **Desktop session bookmarks.** Save, open and remove sessions from workspace
   navigation using the same nine slots as the TUI. A tenth bookmark evicts the
@@ -124,7 +167,43 @@ are tagged.
   Anthropic guidance was re-checked on 2026-10-09 and is good until
   2026-11-09. Haiku 4.5 is still never suggested. No migration is required.
 
+- **Pi features no longer receive Claude Code hooks.** Starting a Pi feature
+  used to write Claude's notification hooks and `amf-*` skills into
+  `.claude/`, which Pi never read. New Pi features get neither, and upgrading
+  removes them from existing Pi workdirs unless a Claude session shares the
+  checkout. `.claude/.gitignore` is kept, so AMF's review feedback files stay
+  ignored. No migration is required.
+
 ### Fixed
+
+- **Returning to a Learning editing agent keeps your draft as it was.** In the
+  desktop app, *Return to editing agent* no longer adds a second copy of the
+  handoff prompt beneath the one you were still editing, matching the TUI. No
+  migration is required.
+
+- Cancelling a desktop planning agent call returns to the editable interview
+  step instead of getting stuck on “Finishing up…”. Entered answers and the
+  previous AI consent choice are preserved for retrying or drafting without AI.
+  A call offered on its own — after a follow-up round, a Quick Plan
+  escalation, or resuming a draft — returns to the follow-ups choice.
+
+- A Quick Plan that escalates to a full Plan interview now writes a
+  synthesized plan after its follow-up rounds. It previously stopped at the
+  raw questions and answers.
+
+- **Keep custom settings when upgrading.** Starting either interface with an
+  older global config now preserves unrecognized settings while applying the
+  existing one-time defaults migration, and saving a setting from the terminal
+  interface changes only that setting instead of rewriting the whole file. A
+  symlinked `config.json` stays a symlink, and a stuck lock no longer holds up
+  startup. Desktop settings saves follow the same rules, including for a
+  project's `amf.json`: a symlinked file stays a symlink, and a save blocked
+  by another AMF process reports that instead of hanging. No migration is
+  required.
+
+- Screenshot capture now owns a private tmux server and cleans up only that
+  server. Existing sessions and sessions started elsewhere during a capture
+  remain running, including when a screenshot assertion fails.
 
 - **More reliable desktop terminal checks.** Parallel terminal tests now use
   independent tmux servers, reducing intermittent failures that could block

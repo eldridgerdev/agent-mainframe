@@ -14,6 +14,12 @@ and feature, creates isolated git worktrees when needed, and shows which
 agents are asking a question and which have finished work waiting to be
 reviewed.
 
+AMF also has a separately usable desktop interface, `amf-gui`. Both interfaces
+share projects, features and tmux sessions. Use `amf` in a terminal or over SSH;
+use the GUI for desktop navigation and the workflows it currently supports.
+See [choosing an interface and upgrading](docs/interfaces.md) and the
+[GUI installation guide](gui/README.md).
+
 <img width="1896" height="1030" alt="AMF dashboard showing several agent sessions" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 
@@ -26,6 +32,8 @@ reviewed.
   estimated cost.
 - Supports guided planning, supervised edits, final diff review, and GitHub PR
   review workflows.
+- Renders basic [Mermaid flowcharts and sequences](docs/mermaid-mvp.md) in the
+  terminal Markdown viewer and plan review, with a source toggle.
 - Explains code you didn't write: browse a repository read-only and ask an
   agent about any file, hunk, or line range, with the answers kept per project.
 - Provides reusable prompts, scoped TODO lists, themes, lifecycle hooks, and
@@ -668,6 +676,15 @@ close-editor, delete, and open.
 AMF creates its global configuration at `~/.config/amf/config.json`. A project
 can add `amf.json` at its repository root; project settings override
 matching global settings.
+
+In the desktop, **Agent availability** in workspace navigation changes global
+agent choices. On a project's page, **Agent availability** edits that project's
+choices, or clears its override with **Use global setting** and **Save settings**.
+Both interfaces share the saved choices for future features and sessions;
+existing sessions keep running. Installed harness availability still applies.
+Project saves preserve unrelated config and refuse stale edits until you reload.
+If only legacy `.amf/config.json` exists, saving copies its effective contents to
+tracked `amf.json` and keeps the legacy file unchanged.
 
 From an embedded session, press `Ctrl+Space`, then `c` to open the configuration
 wizard. It covers the common customizations, including:

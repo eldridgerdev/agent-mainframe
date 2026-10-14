@@ -612,6 +612,36 @@ Local runs may set `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY` to reuse 
 matching desktop build. The binary's compiled dev URL must use the same port.
 The ordinary capture workflow builds the requested ref and defaults to port 1420.
 
+If double-width glyph fidelity or true video output ever becomes a hard
+requirement, revisit this path — but the lightweight ANSI-grid renderer
+covers AMF's actual dashboard UI (no wide glyphs in the chrome itself)
+today.
+
+### Global Feature presets
+
+`scenarios/gui-feature-presets.txt` exercises the native preset manager and
+ordinary new-feature picker through real Tauri IPC. It owns a temporary global
+config, SQLite store, Git repository/worktree, tmux socket and GUI/Vite process
+groups. HOME is retained; discovery-only harness fixtures refuse execution.
+The local driver can reuse a GUI binary built with the matching dev URL:
+
+```sh
+AMF_GUI_CAPTURE_PORT=1441 \
+AMF_GUI_CAPTURE_BINARY=/absolute/path/to/amf-gui \
+/usr/bin/python3 scripts/dev/screenshot/capture-gui-feature-presets.py /tmp/amf-presets-proof
+```
+
+Eight asserted frames cover load, unsaved Cancel, editing every stored preset
+field, explicit Save/reopen, staged add/delete, stale-file refusal and confirmed
+Reload, effective project overrides and allowed-harness filtering, plus an
+explicit Remote Control opt-out before desktop creation becomes available.
+The fixture checks unknown outer/extension/retained-row JSON, and verifies that
+saving/prefilling does not mutate or launch its existing feature. It never
+submits the creation form. Stored Remote Control templates remain valid for the
+TUI; desktop creation deliberately blocks that option until explicitly cleared.
+TODO creation, paid harness execution and macOS interaction are outside this
+scenario. Hosted capture builds the pushed ref with port 1441 before running it.
+
 ### Native Learning proof
 
 `scenarios/gui-learning.txt` exercises the desktop reader and question engine

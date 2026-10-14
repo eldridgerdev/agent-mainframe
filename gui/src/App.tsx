@@ -44,6 +44,7 @@ import {
   deleteFeature,
   dormancyDelete,
   DormantDeleteRequest,
+  featurePresetsChoices,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -82,6 +83,7 @@ import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
+import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
@@ -189,6 +191,7 @@ export default function App() {
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
     contextNote?: string | null;
   } | null>(null);
+  const [showFeaturePresets, setShowFeaturePresets] = useState(false);
   const [showContextSettings, setShowContextSettings] = useState(false);
   const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
@@ -1195,6 +1198,7 @@ export default function App() {
 
           <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
 
+          <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
           <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
           <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
 
@@ -1291,6 +1295,7 @@ export default function App() {
           if (automaticEditId && autoReviewEdits && !hasWaiting) setSupervisedTarget(null);
         }}
         onClose={() => setSupervisedTarget(null)} />}
+      {showFeaturePresets && <FeaturePresetsPanel onClose={() => setShowFeaturePresets(false)} />}
       {showContextSettings && <ContextSettingsPanel onClose={() => setShowContextSettings(false)} onSaved={() => { setShowContextSettings(false); void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY }); }} />}
       {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
         projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
@@ -2442,6 +2447,15 @@ export function CreateFeatureForm({
   const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
+  const [review, setReview] = useState(false);
+  const [chrome, setChrome] = useState(false);
+  const [remoteControl, setRemoteControl] = useState(false);
+  const [presetIndex, setPresetIndex] = useState("");
+  // Prefix the last applied preset put on the branch, so the next one can swap it out.
+  const [appliedPrefix, setAppliedPrefix] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
+  const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
+  const unsupportedMode = agent === "codex" && mode === "vibeless";
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
   const offered = useOfferedAgents(projectId, agents);
   const selectedAgent = offered.some((candidate) => candidate.slug === agent)
@@ -2450,22 +2464,23 @@ export function CreateFeatureForm({
 
   return (
     <Modal
+      size="lg"
       label="New feature"
       title="New feature"
       subtitle={`in ${projectName}`}
       onClose={onCancel}
       dismissable={!pending}
       onSubmit={() => {
-        if (pending || !hook.ready || !branch.trim()) return;
+        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode) return;
         onSubmit({
           branch: branch.trim(),
           agent: selectedAgent,
           mode,
-          review: false,
+          review,
           plan_mode: planKind !== "none",
           create_terminal: false,
           use_worktree: useWorktree,
-          enable_chrome: false,
+          enable_chrome: chrome,
           hook_choice: hook.choice || null,
           dry_run: false,
         }, planKind);
@@ -2473,7 +2488,7 @@ export function CreateFeatureForm({
       footer={
         <>
           <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim()}>
+          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode}>
             {pending && <Spinner />}
             {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
           </button>
@@ -2481,6 +2496,32 @@ export function CreateFeatureForm({
       }
     >
       <div className="form-stack">
+        <Field label="Feature preset" hint="Project templates override global templates by name. Applying a template fills fields you can edit before creating.">
+          <select aria-label="Feature preset" value={presetIndex} disabled={pending || presets.isPending} onChange={(event) => {
+            const value = event.target.value; setPresetIndex(value); setPresetNotice(null);
+            if (!value) return;
+            const preset = presets.data?.[Number(value)];
+            if (!preset) return;
+            if (offered.some((candidate) => candidate.slug === preset.agent)) setAgent(preset.agent);
+            else setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
+            setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
+            setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
+            // Keep the name the user typed; only the preset's prefix changes.
+            const prefix = preset.branch_prefix?.trim() || null;
+            setBranch((current) => {
+              const base = appliedPrefix && current.startsWith(`${appliedPrefix}/`) ? current.slice(appliedPrefix.length + 1) : current;
+              return prefix ? `${prefix}/${base}` : base;
+            });
+            setAppliedPrefix(prefix);
+          }}>
+            <option value="">Custom settings</option>
+            {(presets.data ?? []).map((preset, index) => <option key={`${index}:${preset.name}`} value={String(index)}>{preset.name}</option>)}
+          </select>
+        </Field>
+        {presets.error && <p className="callout callout-danger" role="alert">Could not load presets: {asGuiError(presets.error).message}</p>}
+        {presetNotice && <p className="callout callout-warning" role="alert">{presetNotice}</p>}
+        {remoteControl && <p className="callout callout-warning" role="alert">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
+        {unsupportedMode && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.</p>}
         <Field label="Branch / feature name">
           <input
             className="mono"
@@ -2535,6 +2576,11 @@ export function CreateFeatureForm({
             hint="Gives the feature its own checkout so agents don't collide."
           />
         )}
+        <div className="form-row">
+          <Switch checked={review} onChange={setReview} label="Review" />
+          <Switch checked={chrome} onChange={setChrome} label="Chrome" />
+        </div>
+        {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
         <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>

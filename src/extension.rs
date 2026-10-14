@@ -94,7 +94,7 @@ pub struct LifecycleHooks {
     pub on_worktree_created: Option<HookConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
 #[serde(default)]
 pub struct FeaturePreset {
     pub name: String,

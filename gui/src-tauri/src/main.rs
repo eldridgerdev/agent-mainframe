@@ -1135,6 +1135,35 @@ async fn debug_log_load(state: State<'_, AppState>) -> Result<DebugLogView, GuiE
 }
 
 #[tauri::command]
+async fn feature_presets_load() -> Result<agent_mainframe::gui_presets::PresetsView, GuiError> {
+    agent_mainframe::gui_presets::load()
+}
+
+#[tauri::command]
+async fn feature_presets_save(
+    state: State<'_, AppState>,
+    revision: String,
+    rows: Vec<agent_mainframe::gui_presets::PresetRow>,
+) -> Result<agent_mainframe::gui_presets::PresetsView, GuiError> {
+    agent_mainframe::gui_presets::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &revision,
+        rows,
+    )
+}
+
+#[tauri::command]
+async fn feature_presets_choices(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<agent_mainframe::gui_presets::FeaturePreset>, GuiError> {
+    agent_mainframe::gui_presets::creation_choices(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
+    )
+}
+
+#[tauri::command]
 async fn context_settings_load() -> Result<ContextSettingsView, GuiError> {
     gui_settings::context_load()
 }
@@ -1712,6 +1741,9 @@ fn main() {
             supervised_edits_load,
             supervised_edit_counts,
             supervised_edit_respond,
+            feature_presets_load,
+            feature_presets_save,
+            feature_presets_choices,
             context_settings_load,
             context_settings_save,
             agent_availability_load,

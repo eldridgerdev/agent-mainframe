@@ -17,13 +17,15 @@ const projects: Project[] = ["one", "two"].map((id) => ({
 }));
 const clients: QueryClient[] = [];
 
-// The forms also read which harnesses they may offer; only the hook prompt
+// The forms also read which harnesses and presets they may offer; only the hook prompt
 // is under test here, so each test scripts `hookPrompt` alone.
 const hookPrompt = vi.fn();
 beforeEach(() => {
   hookPrompt.mockResolvedValue(prompt);
   vi.mocked(invoke).mockImplementation(async (command, args) =>
-    command === "allowed_harnesses" ? agents : hookPrompt(command, args));
+    command === "allowed_harnesses" ? agents
+      : command === "feature_presets_choices" ? []
+        : hookPrompt(command, args));
 });
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.resetAllMocks(); });
 

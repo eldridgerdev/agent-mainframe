@@ -782,3 +782,28 @@ Additionally:
 
 No milestone in this feature removes, mocks out, or skips an existing TUI
 test to make room for GUI code, per `AMF_PLAN.md`'s "additive" decision.
+
+
+### AppImage Python environment boundary
+
+Released v0.48.0 and v0.49.0 AppImages fail host Python standard-library imports
+when their GUI starts a fresh tmux server: AppRun points PYTHONHOME into an image
+without a Python standard library. The shared tmux command now removes only that
+bundle-owned home and the known AppRun PYTHONPATH prefix; user search paths,
+normal source/Debian launches, and the GUI's own GTK/WebKit environment remain
+unchanged. Running servers are not modified.
+
+`gui-appimage-python.txt` is a current-source native regression scenario with
+those released Python redirects injected only into the GUI child. The GUI must
+start its private server first. Two fresh unpaid receivers import json and a
+module from the retained host PYTHONPATH; the scenario checks the server's two
+Python variables and receiver readiness before capturing live terminal views.
+The unchanged main binary fails the same scenario at the bundle-home assertion.
+This is separate from released-package upgrade continuity and does not establish
+FUSE installation or a newly bundled AppImage's runtime behavior.
+
+A separate [source-built debug AppImage probe](../development/source-appimage-validation.md)
+now validates the actual AppRun path, embedded production assets, fresh private
+server and two host Python imports without injecting AppRun variables or patching
+the payload. The recorded source and artifact hash passed locally; this remains
+debug extract-and-run proof, with release/FUSE/desktop installation gates open.

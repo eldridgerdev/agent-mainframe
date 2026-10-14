@@ -1,0 +1,5 @@
+# Current-source AppRun environment regression; no release artifact claim.
+note:The private TUI is ready before the native fresh-server Python proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_PORT=1441 TAURI_CONFIG='{ "build": { "devUrl": "http://localhost:1441" } }' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-appimage-python.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

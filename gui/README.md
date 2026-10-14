@@ -34,6 +34,16 @@ AppImage and other platform checks remain open. The released v0.48.0 GNU TUI
 requires GLIBC 2.39 and did not launch on the Ubuntu 22.04 validation host; use
 the musl TUI there. These release checks do not establish current-source parity.
 
+AppImage's launcher supplies Python paths inside the image even though AMF
+ships no Python installation. Current source removes those bundle-owned Python
+redirects only from tmux child commands, preserving host search paths and the
+GUI's GTK/WebKit environment. Existing servers are not rewritten. The isolated
+[`gui-appimage-python.txt`](../scripts/dev/screenshot/scenarios/gui-appimage-python.txt)
+starts the source-built GUI with the released launcher's Python redirects before
+creating two Python panes, and checks standard-library and host-module imports.
+Its native screenshots prove that environment boundary, rather than a rebuilt
+release artifact or FUSE installation.
+
 ## macOS
 
 Releases include `amf-gui-aarch64-apple-darwin.dmg` for Apple Silicon Macs

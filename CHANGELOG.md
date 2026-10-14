@@ -176,6 +176,12 @@ are tagged.
 
 ### Fixed
 
+- **Python in AppImage sessions.** New tmux servers started by the Linux
+  desktop app no longer inherit AppImage's bundled Python home and search-path
+  prefix, which could make host Python fail to import even its standard
+  library. Host search paths remain available. Existing server environments
+  are not rewritten.
+
 - **Returning to a Learning editing agent keeps your draft as it was.** In the
   desktop app, *Return to editing agent* no longer adds a second copy of the
   handoff prompt beneath the one you were still editing, matching the TUI. No

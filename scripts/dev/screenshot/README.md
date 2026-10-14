@@ -692,3 +692,11 @@ that long, stops with an error naming the slow run instead of reporting the
 plugin's own write as a failed refusal.
 
 `AMF_GUI_CAPTURE_PORT` and `AMF_GUI_CAPTURE_BINARY` apply as described above.
+
+## Actual debug AppImage probe
+
+The [source AppImage validation guide](../../../docs/development/source-appimage-validation.md)
+records the exclusively owned build and actual AppRun probe. Unlike
+`gui-appimage-python.txt`, this local helper launches an unmodified debug
+AppImage with embedded assets and does not inject or remove AppRun variables.
+It uses private XDG/TMPDIR/tmux state, two unpaid Python receivers and no prompt.

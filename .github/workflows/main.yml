@@ -13,8 +13,20 @@ on:
 permissions:
   contents: read
 
+# A newer push to a pull request supersedes the run for the older one. Pushes
+# and the scheduled audit key on their own run, so they never cancel: a commit
+# id would be shared by one commit reaching two refs (main fast-forwarded to
+# testing), and the main run is the one that saves the caches.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
+  # A fresh checkout rebuilds the workspace crates every run, so incremental
+  # state is never reused and full debuginfo only slows codegen and linking.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   test:
@@ -51,25 +63,34 @@ jobs:
       - name: Verify test prerequisites
         shell: bash
         run: |
-          for tool in git tmux sh bash ps sleep mkfifo cc; do
+          for tool in git tmux sh bash ps sleep mkfifo cc python3; do
             command -v "$tool"
           done
           rustc --version
           cargo --version
 
-      - name: Cache cargo registry and build artifacts
-        uses: actions/cache@v4
+      # Keyed per job and platform by the action: `Test` needs codegen
+      # artifacts and `Lint` only check metadata, so one shared key lets
+      # whichever job saves first leave the other compiling every dependency.
+      # Only main writes; pull requests read its cache.
+      - name: Cache cargo registry and dependency builds
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo test
         run: cargo test --workspace --locked --verbose
+
+      # Real tmux on test-owned sockets, against a stand-in amf: no build needed.
+      - name: Screenshot capture isolation tests
+        if: ${{ !cancelled() }}
+        run: python3 -m unittest discover -s scripts/dev/screenshot -p 'test_capture_isolation.py' -v
+
+      - name: Native TUI driver smoke
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --locked --bin amf
+          python3 scripts/dev/tui-driver/smoke.py
 
   lint:
     name: Lint
@@ -89,16 +110,14 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
 
-      - name: Cache cargo registry and build artifacts
-        uses: actions/cache@v4
+      # Keyed per job and platform by the action: `Test` needs codegen
+      # artifacts and `Lint` only check metadata, so one shared key lets
+      # whichever job saves first leave the other compiling every dependency.
+      # Only main writes; pull requests read its cache.
+      - name: Cache cargo registry and dependency builds
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -129,6 +148,12 @@ jobs:
       - name: Frontend interaction tests
         run: npm test
 
+      - name: AI driver protocol and lifecycle tests
+        run: |
+          python3 ../scripts/dev/test_ai_driver.py
+          python3 ../scripts/dev/gui-driver/test_driver.py
+          python3 ../scripts/dev/tui-driver/test_driver.py
+
       - name: Typecheck and build
         run: npm run build
 
@@ -138,6 +163,8 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    env:
+      CARGO_AUDIT_VERSION: 0.22.2
     steps:
       - uses: actions/checkout@v4
         with:
@@ -146,13 +173,32 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Building the pinned tool from source takes minutes; keep the binary.
+      # Restore and save are separate steps because the combined action only
+      # saves when the job succeeds, and this job fails on any open advisory.
+      - name: Restore pinned cargo-audit
+        id: cargo-audit
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ env.CARGO_AUDIT_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
       - name: Install audit build prerequisites
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libssl-dev
 
       - name: Install pinned cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: Save pinned cargo-audit
+        if: steps.cargo-audit.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ steps.cargo-audit.outputs.cache-primary-key }}
 
       - name: Audit locked dependencies against RustSec
         run: cargo audit --file Cargo.lock

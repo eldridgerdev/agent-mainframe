@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::project::{AgentKind, Feature, ProjectStore, SessionKind, VibeMode};
@@ -47,11 +48,43 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         "release-notes",
         include_str!("../../skills/amf-release-notes/SKILL.md"),
     ),
+    (
+        "interact",
+        include_str!("../../skills/amf-interact/SKILL.md"),
+    ),
+];
+// Embed the actual helpers rather than source-checkout paths: managed projects
+// may have only an installed AMF binary and its injected assistance files.
+const AMF_INTERACTION_ASSETS: &[(&str, &str)] = &[
+    (
+        "scripts/ai_driver.py",
+        include_str!("../../scripts/dev/ai_driver.py"),
+    ),
+    (
+        "scripts/tui-driver/amf-tui-driver.py",
+        include_str!("../../scripts/dev/tui-driver/amf-tui-driver.py"),
+    ),
+    (
+        "scripts/gui-driver/amf-gui-driver.py",
+        include_str!("../../scripts/dev/gui-driver/amf-gui-driver.py"),
+    ),
+    (
+        "scripts/gui-driver/dom.js",
+        include_str!("../../scripts/dev/gui-driver/dom.js"),
+    ),
+    (
+        "references/tui.md",
+        include_str!("../../skills/amf-interact/references/tui.md"),
+    ),
+    (
+        "references/gui.md",
+        include_str!("../../skills/amf-interact/references/gui.md"),
+    ),
 ];
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":jqless-hooks-v9");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":ai-interaction-skills-v10");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -646,9 +679,8 @@ fn mark_hooks_current() {
     let _ = std::fs::write(hook_refresh_stamp_path(), HOOK_REFRESH_STAMP);
 }
 
-/// Refresh opencode plugin files in all known opencode feature
-/// workdirs, so existing sessions/worktrees pick up plugin fixes
-/// without requiring feature recreation.
+/// Refresh opencode plugins and injected skills in all known feature workdirs,
+/// so existing sessions/worktrees pick up fixes without feature recreation.
 ///
 /// Writes the version stamp after running so that subsequent startups
 /// on the same binary version skip both this pass and the Claude hooks
@@ -660,6 +692,7 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
+            refresh_feature_skills(feature);
             if !matches!(feature.agent, AgentKind::Opencode) {
                 continue;
             }
@@ -777,40 +810,235 @@ pub(crate) fn migrate_app_config(config: &mut AppConfig) -> bool {
 /// must leave all of that alone, so it reads through here instead — migrations
 /// are applied in memory only.
 pub fn read_config() -> AppConfig {
-    let config_path = crate::project::amf_config_dir().join("config.json");
-    let mut config: AppConfig = std::fs::read_to_string(&config_path)
+    read_config_at(&crate::project::amf_config_dir().join("config.json"))
+}
+
+fn read_config_at(path: &Path) -> AppConfig {
+    let mut config: AppConfig = std::fs::read(path)
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     migrate_app_config(&mut config);
     config
 }
 
-pub fn load_config() -> AppConfig {
-    let config_path = crate::project::amf_config_dir().join("config.json");
-
-    let config = if config_path.exists() {
-        let mut config: AppConfig = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        if migrate_app_config(&mut config) {
-            let _ = std::fs::write(
-                &config_path,
-                serde_json::to_string_pretty(&config).unwrap_or_default(),
-            );
-        }
-        config
-    } else {
-        let config = AppConfig::default();
-        let dir = config_path.parent().unwrap();
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&config).unwrap_or_default(),
+/// Startup writes only migrated keys into the original document. A newer
+/// interface or extension may own fields this binary does not understand.
+pub(crate) fn load_config_at(path: &Path) -> AppConfig {
+    try_load_config_at(path).unwrap_or_else(|error| {
+        // The debug log, not stderr: both interfaces start through here and
+        // neither has a terminal to spare. Without this a migration that can
+        // never be written reruns in memory on every start, and an unparseable
+        // file quietly becomes all defaults.
+        crate::debug::log_to_file(
+            crate::debug::LogLevel::Warn,
+            "config",
+            &format!(
+                "could not load or migrate {}: {error:#}; using it as read, or defaults if it cannot be parsed",
+                path.display()
+            ),
         );
-        config
+        read_config_at(path)
+    })
+}
+
+fn try_load_config_at(path: &Path) -> anyhow::Result<AppConfig> {
+    // The usual start has nothing to migrate, so nothing to write and no lock
+    // worth waiting on. Every AMF writer replaces the file by rename, so this
+    // unlocked read sees a whole document.
+    if let Some((_, mut config)) = read_config_document(path)?
+        && !migrate_app_config(&mut config)
+    {
+        return Ok(config);
+    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let _lock = lock_config(path)?;
+    // Read again now that the lock is held, so startup cannot overwrite a
+    // settings save made while it was waiting.
+    let Some((mut value, mut config)) = read_config_document(path)? else {
+        let config = AppConfig::default();
+        write_config_document(path, &serde_json::to_value(&config)?)?;
+        return Ok(config);
     };
+    let before = serde_json::to_value(&config)?;
+    if !migrate_app_config(&mut config) {
+        return Ok(config);
+    }
+    merge_config_changes(&mut value, &before, &serde_json::to_value(&config)?);
+    write_config_document(path, &value)?;
+    Ok(config)
+}
+
+/// Persist an explicit settings change. `before` is the config as this process
+/// last read or wrote it and `after` the one to save; only the difference is
+/// merged into the document on disk, under the lock startup and the desktop
+/// settings writer share. Unknown fields survive, and so does a setting some
+/// other writer changed while this process was running.
+pub(crate) fn save_config_at(
+    path: &Path,
+    before: &AppConfig,
+    after: &AppConfig,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let after = serde_json::to_value(after)?;
+    let _lock = lock_config(path)?;
+    // A document this binary cannot load is left for its owner to repair
+    // rather than patched into something that still will not load.
+    let Some((mut value, _)) = read_config_document(path)
+        .with_context(|| format!("{} is not a usable AMF config", path.display()))?
+    else {
+        return write_config_document(path, &after);
+    };
+    let before = serde_json::to_value(before)?;
+    if before == after {
+        return Ok(());
+    }
+    merge_config_changes(&mut value, &before, &after);
+    write_config_document(path, &value)
+}
+
+/// The global config as both the raw document and the typed view of it, or
+/// `None` when there is no file yet.
+fn read_config_document(path: &Path) -> anyhow::Result<Option<(serde_json::Value, AppConfig)>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    anyhow::ensure!(
+        value.is_object(),
+        "Global config must contain a JSON object"
+    );
+    let config = serde_json::from_value(value.clone())?;
+    Ok(Some((value, config)))
+}
+
+const CONFIG_LOCK_ATTEMPTS: u32 = 20;
+const CONFIG_LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Take the lock every writer of this JSON config shares (`config.json`, or a
+/// project's `amf.json` for the desktop), giving up after about a second. A
+/// healthy holder is done in milliseconds; waiting indefinitely on a stuck one
+/// would hang startup, or the UI thread on a settings save, with nothing on
+/// screen to say why.
+pub(crate) fn lock_config(path: &Path) -> anyhow::Result<std::fs::File> {
+    let lock_path = path.with_extension("json.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    for attempt in 1..=CONFIG_LOCK_ATTEMPTS {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if attempt < CONFIG_LOCK_ATTEMPTS => {
+                std::thread::sleep(CONFIG_LOCK_RETRY);
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    anyhow::bail!(
+        "{} is still held by another AMF process",
+        lock_path.display()
+    )
+}
+
+/// Copy into `document` only what changed between `before` and `after`, two
+/// serializations of the same `AppConfig`. A key neither of them mentions
+/// belongs to someone else and is left as found, at any depth. A key `after`
+/// dropped (a cleared `skip_serializing_if` field) is removed: left behind, it
+/// would load again on the next start with nothing to clear it a second time.
+fn merge_config_changes(
+    document: &mut serde_json::Value,
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+) {
+    let (Some(target), Some(before), Some(after)) = (
+        document.as_object_mut(),
+        before.as_object(),
+        after.as_object(),
+    ) else {
+        *document = after.clone();
+        return;
+    };
+    for (key, new) in after {
+        match (target.get_mut(key), before.get(key)) {
+            (_, Some(old)) if old == new => {}
+            (Some(existing), Some(old)) => merge_config_changes(existing, old, new),
+            _ => {
+                target.insert(key.clone(), new.clone());
+            }
+        }
+    }
+    for key in before.keys() {
+        if !after.contains_key(key) {
+            target.remove(key);
+        }
+    }
+}
+
+/// The file a config write has to replace. A config is often a symlink into a
+/// dotfiles checkout, and renaming over the link itself would swap it for a
+/// regular file and leave the checkout stale.
+fn config_write_target(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| match std::fs::read_link(path) {
+        // A link whose target does not exist yet: create the target, as a
+        // plain write through the link would.
+        Ok(link) => path.parent().unwrap_or(Path::new("")).join(link),
+        Err(_) => path.to_path_buf(),
+    })
+}
+
+/// Replace the global config with `value` in one rename, keeping the mode of
+/// the file it replaces.
+fn write_config_document(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    write_json_document(path, value, path)
+}
+
+/// Replace a JSON config with `value` in one rename, through a symlink if
+/// `path` is one. The new file takes its mode from `permissions_from`: `path`
+/// itself, or the legacy file a first canonical copy is made from.
+pub(crate) fn write_json_document(
+    path: &Path,
+    value: &serde_json::Value,
+    permissions_from: &Path,
+) -> anyhow::Result<()> {
+    let target = config_write_target(path);
+    let dir = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Missing config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let existing = std::fs::metadata(permissions_from).ok();
+    let mut builder = tempfile::Builder::new();
+    // A temp file is private (0600) by default. A config created here gets the
+    // umask-default mode a plain create would have given it.
+    #[cfg(unix)]
+    if existing.is_none() {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temp = builder.tempfile_in(dir)?;
+    if let Some(metadata) = existing {
+        temp.as_file().set_permissions(metadata.permissions())?;
+    }
+    serde_json::to_writer_pretty(&mut temp, value)?;
+    temp.flush()?;
+    temp.persist(&target).map_err(|error| error.error)?;
+    Ok(())
+}
+
+pub fn load_config() -> AppConfig {
+    let config = load_config_at(&crate::project::amf_config_dir().join("config.json"));
 
     if let Some(ref theme) = config.opencode_theme {
         let _ = update_opencode_theme(theme);
@@ -960,35 +1188,102 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     }
 }
 
-fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> Option<PathBuf> {
+fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> PathBuf {
     match agent {
-        AgentKind::Claude => Some(workdir.join(".claude").join("skills")),
-        AgentKind::Opencode => Some(workdir.join(".opencode").join("skills")),
-        AgentKind::Codex => Some(workdir.join(".agents").join("skills")),
-        AgentKind::Pi => None,
+        AgentKind::Claude => workdir.join(".claude").join("skills"),
+        AgentKind::Opencode => workdir.join(".opencode").join("skills"),
+        AgentKind::Codex => workdir.join(".agents").join("skills"),
+        AgentKind::Pi => workdir.join(".pi").join("skills"),
+    }
+}
+
+pub(super) fn refresh_feature_skills(feature: &Feature) {
+    // A removed worktree must not be recreated just to refresh assistance.
+    if !feature.workdir.is_dir() {
+        return;
+    }
+    let mut agents = vec![feature.agent.clone()];
+    for session in &feature.sessions {
+        let agent = match session.kind {
+            SessionKind::Claude => AgentKind::Claude,
+            SessionKind::Codex => AgentKind::Codex,
+            SessionKind::Opencode => AgentKind::Opencode,
+            SessionKind::Pi => AgentKind::Pi,
+            _ => continue,
+        };
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
+    }
+    // Pi used to fall through to Claude's setup, which handed it hooks and
+    // skills it never read. Take them back on this upgrade pass, unless a
+    // Claude session in the same checkout is what they are there for.
+    if agents.contains(&AgentKind::Pi) && !agents.contains(&AgentKind::Claude) {
+        let claude_dir = feature.workdir.join(".claude");
+        cleanup_claude_settings_file(
+            &claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON),
+            Some(&claude_dir.join(CLAUDE_STATE_JSON)),
+        );
+        cleanup_amf_skills(&feature.workdir, &AgentKind::Claude);
+    }
+    for agent in agents {
+        ensure_amf_skills(&feature.workdir, &agent);
     }
 }
 
 fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
-    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
-        return;
-    };
+    let skills_dir = agent_skills_dir(workdir, agent);
     for (name, content) in AMF_SKILLS {
-        let skill_dir = skills_dir.join(format!("amf-{name}"));
-        let skill_path = skill_dir.join("SKILL.md");
-        if std::fs::read_to_string(&skill_path).ok().as_deref() == Some(content) {
+        // Pi has no legacy AMF configuration skills. Add only the portable
+        // interaction skill, without changing those existing skill contracts.
+        if matches!(agent, AgentKind::Pi) && *name != "interact" {
             continue;
         }
+        let skill_dir = skills_dir.join(format!("amf-{name}"));
+        let skill_path = skill_dir.join("SKILL.md");
         let _ = std::fs::create_dir_all(&skill_dir);
-        let _ = std::fs::write(&skill_path, content);
+        write_if_changed(&skill_path, content);
+        if *name == "interact" {
+            for (relative, asset) in AMF_INTERACTION_ASSETS {
+                let path = skill_dir.join(relative);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                write_if_changed(&path, asset);
+            }
+        }
     }
+    ensure_amf_skills_ignored(workdir, agent, &skills_dir);
+}
+
+/// Keep every injected `amf-*` skill out of `git status`. Claude's are covered
+/// by the `.claude/.gitignore` AMF already maintains. The other harness
+/// directories get one pattern in `.git/info/exclude` rather than a
+/// `.gitignore` of their own, which would itself be an untracked file for
+/// `git add -A` to commit and would outlive the skills it ignores.
+fn ensure_amf_skills_ignored(workdir: &Path, agent: &AgentKind, skills_dir: &Path) {
+    if matches!(agent, AgentKind::Claude) {
+        return;
+    }
+    let Ok(relative) = skills_dir.strip_prefix(workdir) else {
+        return;
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    // `**/` rather than an anchored pattern: a workdir may be a subdirectory of
+    // its repository, and one entry then serves every worktree.
+    crate::worktree::WorktreeManager::exclude_locally(
+        workdir,
+        &format!("{relative}/amf-interact/"),
+        &format!("**/{relative}/amf-*/"),
+    );
 }
 
 fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
-    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
-        return;
-    };
+    let skills_dir = agent_skills_dir(workdir, agent);
     for (name, _) in AMF_SKILLS {
+        if matches!(agent, AgentKind::Pi) && *name != "interact" {
+            continue;
+        }
         let _ = std::fs::remove_dir_all(skills_dir.join(format!("amf-{name}")));
     }
 }
@@ -1065,7 +1360,7 @@ pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
         AgentKind::Claude => cleanup_claude_notification_hooks(workdir),
         AgentKind::Opencode => cleanup_opencode_plugins(workdir),
         AgentKind::Codex => cleanup_codex_notify_hook(workdir),
-        AgentKind::Pi => {}
+        AgentKind::Pi => cleanup_amf_skills(workdir, agent),
     }
 }
 
@@ -1104,6 +1399,14 @@ pub fn ensure_notification_hooks(
     ensure_notify_scripts();
     remove_old_diff_review_plugin(repo);
 
+    if matches!(agent, AgentKind::Pi) {
+        // Pi reads no Claude settings, so it gets no hooks. AMF still writes
+        // its own review feedback and notification files under `.claude/`
+        // whatever the harness, and a Pi feature has always had them ignored.
+        ensure_claude_runtime_ignores(workdir);
+        ensure_amf_skills(workdir, agent);
+        return;
+    }
     if matches!(agent, AgentKind::Opencode) {
         ensure_opencode_plugins(workdir, mode);
         ensure_amf_skills(workdir, agent);
@@ -1233,7 +1536,14 @@ pub fn ensure_notification_hooks(
     write_json_object(&settings_path, &settings);
     cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
-    // Ensure notifications/ is gitignored within .claude/
+    ensure_claude_runtime_ignores(workdir);
+    ensure_amf_skills(workdir, agent);
+}
+
+/// Gitignore, within `.claude/`, the files AMF itself writes there.
+fn ensure_claude_runtime_ignores(workdir: &Path) {
+    let claude_dir = workdir.join(".claude");
+    let _ = std::fs::create_dir_all(&claude_dir);
     let claude_gitignore = claude_dir.join(".gitignore");
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
@@ -1242,8 +1552,6 @@ pub fn ensure_notification_hooks(
     ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
     ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
-
-    ensure_amf_skills(workdir, agent);
 }
 
 const PLAN_BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";

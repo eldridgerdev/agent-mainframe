@@ -337,7 +337,7 @@ fn effort_rank(level: &str) -> Option<u8> {
 mod tests {
     use super::*;
     use crate::model_options::{EligibleOptions, LaunchPath};
-    use std::os::unix::fs::PermissionsExt;
+    use crate::resources::test_support::write_executable_script;
 
     fn initialized() -> Value {
         json!({"account":{"apiProvider":"firstParty","subscriptionType":"Claude Pro"},"models":[
@@ -439,8 +439,7 @@ done
         } else {
             script
         };
-        std::fs::write(&binary, script).unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable_script(&binary, &script);
         binary
     }
 
@@ -501,8 +500,7 @@ done
     fn readiness_checks_also_obey_cancellation_and_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let binary = dir.path().join("hung-version");
-        std::fs::write(&binary, "#!/bin/sh\nsleep 30\n").unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable_script(&binary, "#!/bin/sh\nsleep 30\n");
         let cancelled = AtomicBool::new(false);
         let start = Instant::now();
         assert!(!version_available(

@@ -113,6 +113,7 @@ export function Modal({
   footer,
   size = "md",
   dismissable = true,
+  hidden = false,
   headerActions,
   onSubmit,
 }: {
@@ -124,18 +125,21 @@ export function Modal({
   footer?: ReactNode;
   size?: "sm" | "md" | "lg" | "xl";
   dismissable?: boolean;
+  /** Keeps the modal mounted, with its state, while another dialog is in
+   * front: not drawn, not in the accessibility tree, and deaf to Escape. */
+  hidden?: boolean;
   headerActions?: ReactNode;
   /** Makes the body and footer one form, so Enter submits. */
   onSubmit?: () => void;
 }) {
   useEffect(() => {
-    if (!dismissable) return;
+    if (!dismissable || hidden) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissable, onClose]);
+  }, [dismissable, hidden, onClose]);
 
   const content = (
     <>
@@ -147,6 +151,7 @@ export function Modal({
   return (
     <div
       className="modal-backdrop"
+      hidden={hidden}
       onMouseDown={(event) => {
         if (dismissable && event.target === event.currentTarget) onClose();
       }}

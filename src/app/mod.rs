@@ -344,15 +344,16 @@ pub enum CodexDebugCommand {
     ClearInputDemo,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
     CheckPendingDiffReview,
     PlanInterview,
+    ChangeVibeMode(VibeMode),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandAction {
     SlashCommand,
     Local { command: LocalCommand },
@@ -962,6 +963,10 @@ pub struct App {
     /// opened (`e`); restored when the manager closes.
     pub precall_return: Option<Box<precall::PendingPrecall>>,
     pub config: AppConfig,
+    /// `config` as this process last read it from or wrote it to
+    /// `config.json`. A save writes only what differs from this, so it cannot
+    /// undo a setting another writer changed in the meantime.
+    pub(crate) saved_config: AppConfig,
     pub active_extension: ExtensionConfig,
     pub theme: crate::theme::Theme,
     pub selection: Selection,
@@ -1527,6 +1532,10 @@ impl App {
             view.session_label.hash(&mut hasher);
             std::mem::discriminant(&view.session_kind).hash(&mut hasher);
             std::mem::discriminant(&view.vibe_mode).hash(&mut hasher);
+            view.pending_vibe_mode
+                .as_ref()
+                .map(std::mem::discriminant)
+                .hash(&mut hasher);
             view.review.hash(&mut hasher);
             view.scroll_offset.hash(&mut hasher);
             view.scroll_mode.hash(&mut hasher);
@@ -2559,6 +2568,7 @@ impl App {
             precall_cleared: None,
             defer_review_progress_persist: false,
             precall_return: None,
+            saved_config: config.clone(),
             config,
             active_extension,
             theme,
@@ -2821,6 +2831,7 @@ impl App {
             precall_cleared: None,
             defer_review_progress_persist: false,
             precall_return: None,
+            saved_config: AppConfig::default(),
             config: AppConfig {
                 // Whether a test warns before starting an agent must not
                 // depend on how much memory the machine running it happens to
@@ -3551,11 +3562,20 @@ impl App {
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
-        let ext_allowed = self.extension_for_repo(repo).allowed_agents();
+        self.installed_agents(self.extension_for_repo(repo).allowed_agents())
+    }
+
+    /// The global choices alone, for a project that does not exist yet and so
+    /// has no `amf.json` to override them.
+    pub(crate) fn globally_allowed_agents(&self) -> Vec<AgentKind> {
+        self.installed_agents(load_global_extension_config().allowed_agents())
+    }
+
+    fn installed_agents(&self, allowed: Vec<AgentKind>) -> Vec<AgentKind> {
         if self.store.available_harnesses.is_empty() {
-            ext_allowed
+            allowed
         } else {
-            ext_allowed
+            allowed
                 .into_iter()
                 .filter(|a| self.store.available_harnesses.contains(a))
                 .collect()
@@ -3724,7 +3744,7 @@ impl App {
         agent: &AgentKind,
         mode: &VibeMode,
     ) -> Result<()> {
-        if matches!(agent, AgentKind::Codex) && matches!(mode, VibeMode::Vibeless) {
+        if !mode.supports_agent(agent) {
             anyhow::bail!(
                 "Codex does not support Vibeless diff review. Use Claude/Opencode, or switch to Vibe or SuperVibe."
             );
@@ -4075,22 +4095,20 @@ impl App {
         }
     }
 
-    pub fn save_config(&self) {
+    pub fn save_config(&mut self) {
         if let Err(e) = self.try_save_config() {
             // Fire-and-forget callers (theme/background) can't surface errors; log only.
-            eprintln!("save_config failed: {e}");
+            self.log_error("config", format!("save_config failed: {e:#}"));
         }
     }
 
-    pub fn try_save_config(&self) -> anyhow::Result<()> {
+    pub fn try_save_config(&mut self) -> anyhow::Result<()> {
         if self.store_path.as_os_str().is_empty() {
             return Ok(());
         }
         let config_path = crate::project::amf_config_dir().join("config.json");
-        let dir = config_path.parent().unwrap();
-        std::fs::create_dir_all(dir)?;
-        let json = serde_json::to_string_pretty(&self.config)?;
-        std::fs::write(&config_path, json)?;
+        setup::save_config_at(&config_path, &self.saved_config, &self.config)?;
+        self.saved_config = self.config.clone();
         Ok(())
     }
 }

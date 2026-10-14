@@ -248,7 +248,7 @@ impl FeatureSession {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum VibeMode {
     #[default]
@@ -338,6 +338,13 @@ impl VibeMode {
     }
 
     pub const ALL: [VibeMode; 3] = [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
+
+    /// Whether a feature whose primary agent is `agent` can run in this mode.
+    /// The rule is about the primary agent only: a Codex session added beside
+    /// another harness is allowed in every mode.
+    pub fn supports_agent(&self, agent: &AgentKind) -> bool {
+        !(matches!(self, VibeMode::Vibeless) && matches!(agent, AgentKind::Codex))
+    }
 }
 
 fn default_true() -> bool {

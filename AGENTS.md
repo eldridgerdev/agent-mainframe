@@ -37,6 +37,25 @@ Central AppMode remains the routing boundary. Feature test suites live under
 `src/app/tests/`, with shared fixtures in `support.rs`; small unit suites stay
 with their implementation.
 
+For native GUI interaction, use the [AI GUI driver](docs/development/gui-ai-driver.md)
+to reuse an isolated Linux/WSLg session, inspect compact scoped snapshots, and
+batch actions and local waits. Prefer component/core tests for focused changes;
+use the native driver when the webview/backend round trip matters. Capture visual
+proof only when explicitly requested.
+
+For TUI interaction, use the [AI TUI driver](docs/development/tui-ai-driver.md)
+for a persistent private tmux session, compact/changed-row observations, batched
+keys/paste and local waits. Its native smoke check covers xterm-compatible input
+modes and Unicode without a browser or paid agent.
+
+For tool selection and use from other projects, read the portable
+[`amf-interact` skill](skills/amf-interact/SKILL.md). AMF embeds and injects its
+drivers and references alongside the existing assistance skills for Claude,
+Codex and OpenCode, and injects this skill for Pi. Installed AMF is sufficient
+for TUI interaction; GUI interaction requires a matching AMF debug/source build.
+Driver sessions are disposable private instances. Use `amf automation` for
+requested changes to the live TUI, and AMF configuration skills for `amf.json`.
+
 Preserve persistence formats, keybindings, worker identity checks and process
 lifetimes during refactors. Keep pure transformations independent of App. Inject
 tmux/worktree operations through `TmuxOps`/`WorktreeOps`; do not add persistence or

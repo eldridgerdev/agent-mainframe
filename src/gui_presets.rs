@@ -77,6 +77,20 @@ fn save_at(path: &Path, revision: &str, mut rows: Vec<PresetRow>) -> GuiResult<P
         if row.preset.name.is_empty() || !names.insert(row.preset.name.clone()) {
             return Err(anyhow::anyhow!("Preset names must be nonempty and unique").into());
         }
+        // Creation would refuse this pair later, so a new or edited row may not
+        // introduce it. A stored row left untouched is only warned about in the
+        // panel, so one bad preset never blocks saving the others.
+        let stored_unchanged = row
+            .original_index
+            .and_then(|index| previous.rows.get(index))
+            .is_some_and(|stored| stored.preset == row.preset);
+        if !stored_unchanged && !row.preset.mode.supports_agent(&row.preset.agent) {
+            return Err(anyhow::anyhow!(
+                "Preset \"{}\": Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.",
+                row.preset.name
+            )
+            .into());
+        }
         let mut raw = match row.original_index {
             Some(index) if index < previous.rows.len() && indices.insert(index) => {
                 value["extension"]["feature_presets"][index].clone()
@@ -200,6 +214,41 @@ mod tests {
             assert!(save_at(&path, &initial.revision, rows).is_err());
             assert!(!path.exists());
         }
+        let unsupported = PresetRow {
+            original_index: None,
+            preset: FeaturePreset {
+                name: "codex-review".into(),
+                agent: crate::project::AgentKind::Codex,
+                mode: crate::project::VibeMode::Vibeless,
+                ..Default::default()
+            },
+        };
+        let error = save_at(&path, &initial.revision, vec![unsupported]).unwrap_err();
+        assert!(error.message.contains("codex-review"));
+        assert!(error.message.contains("Codex does not support Vibeless"));
+        assert!(!path.exists());
+        // A stored Codex row with no mode is Vibeless: untouched it still saves
+        // beside other edits, but editing it must fix the pair first.
+        std::fs::write(
+            &path,
+            r#"{"extension":{"feature_presets":[{"name":"legacy","agent":"codex"}]}}"#,
+        )
+        .unwrap();
+        let stored = read(&path).unwrap().1;
+        let added = PresetRow {
+            original_index: None,
+            preset: FeaturePreset {
+                name: "added".into(),
+                ..Default::default()
+            },
+        };
+        let saved = save_at(&path, &stored.revision, vec![stored.rows[0].clone(), added]).unwrap();
+        let mut edited = saved.rows[0].clone();
+        edited.preset.review = true;
+        assert!(save_at(&path, &saved.revision, vec![edited.clone()]).is_err());
+        edited.preset.mode = crate::project::VibeMode::Vibe;
+        save_at(&path, &saved.revision, vec![edited]).unwrap();
+        std::fs::remove_file(&path).unwrap();
         for text in [
             "{",
             "[]",
@@ -274,6 +323,7 @@ mod tests {
                 preset: FeaturePreset {
                     name: "saved".into(),
                     agent: AgentKind::Codex,
+                    mode: VibeMode::Vibe,
                     ..Default::default()
                 },
             }],
@@ -312,7 +362,7 @@ mod tests {
         use crate::project::AgentKind;
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.json");
-        std::fs::write(&path, r#"{"extension":{"feature_presets":[{"name":"shared","agent":"claude"},{"name":"global","agent":"codex"},{"name":"hidden","agent":"pi"}]}}"#).unwrap();
+        std::fs::write(&path, r#"{"extension":{"feature_presets":[{"name":"shared","agent":"claude"},{"name":"global","agent":"codex","mode":"vibe"},{"name":"hidden","agent":"pi"}]}}"#).unwrap();
         let view = read(&path).unwrap().1;
         save_at(&path, &view.revision, view.rows).unwrap();
         std::fs::write(root.path().join("amf.json"), r#"{"allowed_agents":["codex"],"feature_presets":[{"name":"shared","agent":"codex","review":true}]}"#).unwrap();

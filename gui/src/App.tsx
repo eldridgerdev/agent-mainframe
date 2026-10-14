@@ -1,5 +1,3 @@
-import FeaturePresetsPanel from "./FeaturePresetsPanel";
-import { featurePresetsChoices } from "./api";
 import { ReactNode, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
@@ -46,6 +44,7 @@ import {
   deleteFeature,
   dormancyDelete,
   DormantDeleteRequest,
+  featurePresetsChoices,
   getSnapshot,
   newSessionOptions,
   planAct,
@@ -84,6 +83,7 @@ import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
+import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
@@ -2451,6 +2451,9 @@ export function CreateFeatureForm({
   const [chrome, setChrome] = useState(false);
   const [remoteControl, setRemoteControl] = useState(false);
   const [presetIndex, setPresetIndex] = useState("");
+  // Prefix the last applied preset put on the branch, so the next one can swap it out.
+  const [appliedPrefix, setAppliedPrefix] = useState<string | null>(null);
+  const [presetNotice, setPresetNotice] = useState<string | null>(null);
   const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const unsupportedMode = agent === "codex" && mode === "vibeless";
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
@@ -2495,19 +2498,28 @@ export function CreateFeatureForm({
       <div className="form-stack">
         <Field label="Feature preset" hint="Project templates override global templates by name. Applying a template fills fields you can edit before creating.">
           <select aria-label="Feature preset" value={presetIndex} disabled={pending || presets.isPending} onChange={(event) => {
-            const value = event.target.value; setPresetIndex(value);
+            const value = event.target.value; setPresetIndex(value); setPresetNotice(null);
             if (!value) return;
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
-            setAgent(preset.agent); setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
+            if (offered.some((candidate) => candidate.slug === preset.agent)) setAgent(preset.agent);
+            else setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
+            setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
-            if (preset.branch_prefix) setBranch(`${preset.branch_prefix}/`);
+            // Keep the name the user typed; only the preset's prefix changes.
+            const prefix = preset.branch_prefix?.trim() || null;
+            setBranch((current) => {
+              const base = appliedPrefix && current.startsWith(`${appliedPrefix}/`) ? current.slice(appliedPrefix.length + 1) : current;
+              return prefix ? `${prefix}/${base}` : base;
+            });
+            setAppliedPrefix(prefix);
           }}>
             <option value="">Custom settings</option>
             {(presets.data ?? []).map((preset, index) => <option key={`${index}:${preset.name}`} value={String(index)}>{preset.name}</option>)}
           </select>
         </Field>
         {presets.error && <p className="callout callout-danger" role="alert">Could not load presets: {asGuiError(presets.error).message}</p>}
+        {presetNotice && <p className="callout callout-warning" role="alert">{presetNotice}</p>}
         {remoteControl && <p className="callout callout-warning" role="alert">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
         {unsupportedMode && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.</p>}
         <Field label="Branch / feature name">

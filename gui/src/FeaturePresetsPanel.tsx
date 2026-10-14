@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { asGuiError, FeaturePreset, PresetRow, PresetsView } from "./api";
+import { asGuiError, FeaturePreset, featurePresetsLoad, featurePresetsSave, PresetRow, PresetsView } from "./api";
 import { Field, Modal, Spinner } from "./ui";
 
 const emptyPreset = (): FeaturePreset => ({ name: "", branch_prefix: null, mode: "vibe", agent: "claude",
@@ -16,14 +15,20 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
   const inFlight = useRef(false);
   const dirty = !!view && JSON.stringify(rows) !== JSON.stringify(view.rows);
   const names = rows.map((row) => row.preset.name.trim());
-  const valid = names.every(Boolean) && new Set(names).size === names.length;
+  const namesValid = names.every(Boolean) && new Set(names).size === names.length;
+  const unsupported = (item: PresetRow) => item.preset.agent === "codex" && item.preset.mode === "vibeless";
+  // Stored rows left untouched only warn; new or edited rows must not add the pair.
+  const storedUnchanged = (item: PresetRow) => item.original_index !== null
+    && JSON.stringify(view?.rows[item.original_index]?.preset) === JSON.stringify(item.preset);
+  const blocking = rows.filter((item) => unsupported(item) && !storedUnchanged(item));
+  const valid = namesValid && !blocking.length;
   const row = rows[selected];
 
   async function load() {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); setError(null);
     try {
-      const fresh = await invoke<PresetsView>("feature_presets_load");
+      const fresh = await featurePresetsLoad();
       setView(fresh); setRows(fresh.rows); setSelected(0);
     } catch (err) { setError(asGuiError(err).message); }
     finally { inFlight.current = false; setBusy(false); }
@@ -42,7 +47,7 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
     if (inFlight.current || !view || !valid) return;
     inFlight.current = true; setBusy(true); setError(null);
     try {
-      const fresh = await invoke<PresetsView>("feature_presets_save", { revision: view.revision, rows });
+      const fresh = await featurePresetsSave(view.revision, rows);
       setView(fresh); setRows(fresh.rows);
     } catch (err) { setError(asGuiError(err).message); }
     finally { inFlight.current = false; setBusy(false); }
@@ -83,6 +88,8 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
             <option value="vibeless">Vibeless</option><option value="vibe">Vibe</option><option value="supervibe">SuperVibe</option>
           </select></Field>
         </div>
+        {unsupported(row) && <p className="callout callout-warning" role="alert">Codex does not support Vibeless. Choose Vibe or SuperVibe, or another harness.{
+          storedUnchanged(row) ? " Features cannot be created from this stored preset until it is fixed." : " Save is blocked until this is fixed."}</p>}
         <Field label="Planning"><select value={!row.preset.plan_mode ? "none" : row.preset.quick_plan ? "quick" : "full"} disabled={busy}
           onChange={(event) => edit({ plan_mode: event.target.value !== "none", quick_plan: event.target.value === "quick" })}>
           <option value="none">Start directly</option><option value="quick">Quick Plan</option><option value="full">Full Plan</option>
@@ -92,7 +99,9 @@ export default function FeaturePresetsPanel({ onClose }: { onClose: () => void }
         <p className="muted">Project presets with the same name override these templates. Creation offers presets whose harness is allowed and installed.
           Remote Control templates can be used in the TUI; desktop creation requires explicitly clearing that option.</p>
       </>}
-      {!valid && <p role="alert">Use a nonempty, unique name for every preset.</p>}
+      {!namesValid && <p role="alert">Use a nonempty, unique name for every preset.</p>}
+      {blocking.some((item) => item !== row) && <p role="alert">Fix the Codex + Vibeless combination in: {
+        blocking.filter((item) => item !== row).map((item) => item.preset.name || "Unnamed preset").join(", ")}.</p>}
     </div>}
     {discard && <div role="alertdialog" aria-label="Discard unsaved presets" className="callout callout-warning">
       <p>Discard unsaved presets and {discard === "close" ? "close" : "reload"}?</p>

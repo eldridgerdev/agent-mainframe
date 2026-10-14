@@ -6,8 +6,6 @@ Only the window belonging to the supplied isolated GUI PID is inspected.
 
 import hashlib
 import json
-import os
-import signal
 import pathlib
 import re
 import subprocess
@@ -15,18 +13,13 @@ import sys
 import time
 import urllib.request
 
-import gi
 import websocket
 from Xlib import display
-
-gi.require_version("Gdk", "3.0")
-gi.require_version("GdkX11", "3.0")
-from gi.repository import Gdk, GdkX11
 
 out = pathlib.Path(sys.argv[1]).resolve()
 pid = int(sys.argv[2])
 
-for attempt in range(100):
+for _ in range(100):
     try:
         with urllib.request.urlopen(f"http://{sys.argv[3]}/", timeout=2) as response:
             inspector_page = response.read().decode()
@@ -107,7 +100,7 @@ def visit(w):
         pass
 
 
-for attempt in range(100):
+for _ in range(100):
     visit(x.screen().root)
     if windows:
         break

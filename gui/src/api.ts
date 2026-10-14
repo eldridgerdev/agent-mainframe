@@ -937,6 +937,9 @@ export interface FeaturePreset {
 }
 export interface PresetRow { original_index: number | null; preset: FeaturePreset }
 export interface PresetsView { rows: PresetRow[]; revision: string }
+export const featurePresetsLoad = (): Promise<PresetsView> => invoke("feature_presets_load");
+export const featurePresetsSave = (revision: string, rows: PresetRow[]): Promise<PresetsView> =>
+  invoke("feature_presets_save", { revision, rows });
 export function featurePresetsChoices(projectId: string): Promise<FeaturePreset[]> {
   return invoke("feature_presets_choices", { projectId });
 }

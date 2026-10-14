@@ -54,9 +54,30 @@ it("refuses duplicate names and locks discard controls during a pending save", a
   expect(invoke).toHaveBeenCalledTimes(2); resolve(view);
   await waitFor(() => expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", true));
 });
+it("blocks saving a Codex + Vibeless preset and says why next to the selects", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce(view);
+  render(<FeaturePresetsPanel onClose={vi.fn()} />);
+  await screen.findByLabelText("Preset name"); change("Harness", "codex"); change("Mode", "vibeless");
+  expect(screen.getByRole("alert").textContent).toContain("Codex does not support Vibeless");
+  expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", true);
+  change("Mode", "vibe");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", false);
+});
+it("only warns about an untouched stored Codex + Vibeless preset", async () => {
+  vi.mocked(invoke).mockResolvedValueOnce({ revision: "rev1", rows: [{ original_index: 0, preset: { ...preset, agent: "codex", mode: "vibeless" } }] });
+  render(<FeaturePresetsPanel onClose={vi.fn()} />);
+  await screen.findByLabelText("Preset name");
+  expect(screen.getByRole("alert").textContent).toContain("cannot be created from this stored preset");
+  click("Add preset"); change("Preset name", "New");
+  expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", false);
+  change("Stored preset", "0"); fireEvent.click(screen.getByLabelText("Review"));
+  expect(screen.getByRole("alert").textContent).toContain("Save is blocked");
+  expect(screen.getByRole("button", { name: "Save presets" })).toHaveProperty("disabled", true);
+});
 
-function creation(selected: FeaturePreset) {
-  vi.mocked(invoke).mockImplementation(async (command) => command === "feature_presets_choices" ? [selected] : null);
+function creation(...selected: FeaturePreset[]) {
+  vi.mocked(invoke).mockImplementation(async (command) => command === "feature_presets_choices" ? selected : null);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
   const onSubmit = vi.fn();
   render(<QueryClientProvider client={client}><CreateFeatureForm projectId="one" projectName="one" isGit defaultUseWorktree
@@ -83,4 +104,22 @@ it("never silently drops remote intent after field edits or switching to custom 
   fireEvent.click(screen.getByRole("checkbox", { name: /^Remote Control/ }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   click("Create feature"); expect(onSubmit).toHaveBeenCalledOnce();
+});
+it("keeps a typed branch name when presets swap the prefix", async () => {
+  creation(preset, { ...preset, name: "Fix", branch_prefix: "fix" }, { ...preset, name: "Plain", branch_prefix: null });
+  await screen.findByRole("option", { name: "Plain" });
+  change("Branch / feature name", "login");
+  change("Feature preset", "0"); expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "feat/login");
+  change("Feature preset", "1"); expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "fix/login");
+  change("Feature preset", "2"); expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "login");
+});
+it("leaves the harness alone and warns when a preset's agent is not offered", async () => {
+  const onSubmit = creation({ ...preset, agent: "codex", mode: "vibe" });
+  await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
+  expect(screen.getByRole("alert").textContent).toContain("not offered for this project");
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "claude");
+  change("Branch / feature name", "feat/x");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
+  click("Create feature");
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "claude" }), "none");
 });

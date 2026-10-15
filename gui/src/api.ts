@@ -590,8 +590,8 @@ export function planBeginCreation(request: CreateFeatureRequest, quick: boolean)
   return invoke("plan_begin_creation", { request, quick });
 }
 
-export function planBeginTodoNew(todoId: string, request: CreateFeatureRequest): Promise<PlanStatus> {
-  return invoke("plan_begin_todo_new", { todoId, request });
+export function planBeginTodoNew(todoId: string, request: CreateFeatureRequest, quick = false): Promise<PlanStatus> {
+  return invoke("plan_begin_todo_new", { todoId, request, quick });
 }
 
 export function planSnapshot(): Promise<PlanStatus> {

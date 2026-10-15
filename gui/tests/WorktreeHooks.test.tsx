@@ -58,7 +58,7 @@ it.each(["plan", "launch"] as const)("includes the choice for a TODO %s", async 
   const select = await screen.findByLabelText("Choose stack");
   fireEvent.change(select, { target: { value: "rust & tools" } });
   fireEvent.click(screen.getByRole("button", { name: kind === "plan" ? "Start plan" : "Create and start" }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: "rust & tools", project_name: "one" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: "rust & tools", project_name: "one" }), kind === "plan" ? "full" : "none");
 });
 
 it("requires a new choice when the TODO destination project changes", async () => {
@@ -74,7 +74,7 @@ it("requires a new choice when the TODO destination project changes", async () =
   fireEvent.change(screen.getByLabelText("Choose stack"), { target: { value: "node" } });
   await waitFor(() => expect((screen.getByRole("button", { name: "Create and start" }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Create and start" }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", hook_choice: "node" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", hook_choice: "node" }), "none");
 });
 
 it("blocks a failed prompt lookup until retry succeeds", async () => {
@@ -89,7 +89,7 @@ it("blocks a failed prompt lookup until retry succeeds", async () => {
   const button = screen.getByRole("button", { name: "Create and start" });
   await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(button);
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: null }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: null }), "none");
 });
 
 it("cancel applies neither the selected hook nor feature creation", async () => {
@@ -99,10 +99,12 @@ it("cancel applies neither the selected hook nor feature creation", async () => 
     pending={false} onCancel={onCancel} onSubmit={onSubmit} />);
   fireEvent.change(await screen.findByLabelText("Choose stack"), { target: { value: "node" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onCancel).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(onCancel).toHaveBeenCalledOnce();
   expect(onSubmit).not.toHaveBeenCalled();
   expect(vi.mocked(invoke).mock.calls.every(([command]) =>
-    command === "worktree_hook_prompt" || command === "allowed_harnesses")).toBe(true);
+    command === "worktree_hook_prompt" || command === "allowed_harnesses" || command === "feature_presets_choices")).toBe(true);
 });
 
 it("does not request or send a worktree hook for the repository checkout", () => {

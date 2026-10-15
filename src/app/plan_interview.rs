@@ -550,9 +550,8 @@ impl App {
     /// feature-creation launch deferred into the lightweight, dynamically-sized
     /// interview instead of the full one.
     ///
-    /// v1 scope cut: unlike `start_plan_interview`, this does not read a saved
-    /// draft or pre-fill a TODO-composed brief — Quick Plan does not persist
-    /// to the `plan_interviews` table at all (see [`PlanInterviewMode::Quick`]
+    /// Unlike `start_plan_interview`, this does not read a saved draft. Quick
+    /// Plan does not persist to the `plan_interviews` table at all (see [`PlanInterviewMode::Quick`]
     /// on [`crate::app::PlanInterviewState::kind`] and the guards in
     /// `persist_plan_interview_draft`/`finalize_plan_interview_transcript`), so
     /// there is never a draft to resume. A TODO origin is still carried onto
@@ -562,6 +561,14 @@ impl App {
         let todo_origin = prepared.todo_origin.clone();
         let mut state = PlanInterviewState::for_feature_creation_quick(prepared);
         if let Some(brief) = startup_brief {
+            state.editor = crate::editor::TextEditor::new(brief);
+        }
+        // Like Full Plan, consume the stash even when this is not a TODO
+        // launch. Cancellation must not leave another TODO's brief behind.
+        let composed_brief = self.pending_todo_plan_brief.take();
+        if todo_origin.is_some()
+            && let Some(brief) = composed_brief
+        {
             state.editor = crate::editor::TextEditor::new(brief);
         }
         state.todo_origin = todo_origin;

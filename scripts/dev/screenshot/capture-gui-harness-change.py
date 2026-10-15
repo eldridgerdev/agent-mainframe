@@ -115,7 +115,14 @@ for line in sys.stdin:
         for _ in range(100):
             assert gui.poll() is None, (out/'gui.log').read_text()
             try:
-                with sqlite3.connect(dbpath) as db: db.execute('SELECT value FROM store_meta')
+                with sqlite3.connect(dbpath) as db:
+                    # store_meta exists before later migrations add stopped.
+                    # Seed only after this source's complete schema is present.
+                    version = db.execute('SELECT COALESCE(MAX(version),0) FROM schema_version').fetchone()[0]
+                    if version < 47:
+                        time.sleep(.2)
+                        continue
+                    db.execute('SELECT stopped,token_usage_source,token_usage_source_match FROM feature_sessions LIMIT 0')
                 break
             except sqlite3.OperationalError: time.sleep(.2)
         else: raise RuntimeError('Private database did not initialize')
@@ -130,7 +137,9 @@ for line in sys.stdin:
                             shlex.quote(str(fixture_bin/'opencode')) if kind=='custom' else None, 'touch '+shlex.quote(str(scratch/'custom-stopped')) if kind=='custom' else None))
             for index in [0,1]:
                 db.execute('UPDATE feature_sessions SET token_usage_source=?,token_usage_source_match=? WHERE id=?',
-                           (json.dumps({'provider':'claude','id':f'old-conversation-{index}'}),'exact',f'proof-{index}'))
+                           # Match db/store.rs::source_to_json byte-for-byte;
+                           # ordinary background saves normalize JSON whitespace.
+                           (json.dumps({'provider':'claude','id':f'old-conversation-{index}'}, separators=(',', ':')),'exact',f'proof-{index}'))
             db.execute("INSERT OR REPLACE INTO store_meta(key,value) VALUES('store_version',COALESCE((SELECT CAST(value AS INTEGER) FROM store_meta WHERE key='store_version'),0)+1)")
         subprocess.run(['/usr/bin/python3',str(workspace/'scripts/dev/screenshot/capture-gui-harness-change-frames.py'),str(out),pid_path.read_text().strip(),inspector,str(dbpath),str(repo),str(scratch)],env=env,check=True)
     finally:

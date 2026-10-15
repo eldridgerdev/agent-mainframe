@@ -37,6 +37,12 @@ def wait_for(condition, label):
         time.sleep(.1)
     raise AssertionError(label)
 
+def assert_unchanged(expected_rows, expected_panes, phase):
+    actual_rows, actual_panes = rows(), feature_panes()
+    assert actual_rows == expected_rows and actual_panes == expected_panes, json.dumps({
+        'phase':phase, 'expected_rows':expected_rows, 'actual_rows':actual_rows,
+        'expected_panes':expected_panes, 'actual_panes':actual_panes}, indent=2)
+
 with GuiFrames.from_argv() as frames:
     class InspectorAdapter:
         def evaluate(self, expression, deadline): return frames.evaluate(expression)
@@ -59,19 +65,20 @@ with GuiFrames.from_argv() as frames:
     click('Invoice rounding','nav[aria-label=Workspace]')
     action('wait',expression='!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
     initial_rows = rows(); initial_panes = feature_panes()
+    print('Initial fixture rows: '+json.dumps(initial_rows), flush=True)
     assert all(row[8] is not None and row[9]=="exact" for row in initial_rows[:2])
     frames.capture('001-running-claude.png','Running offline Claude worktree with one individually stopped agent, a terminal and a custom watcher.', ['Invoice rounding','Primary agent','Paused agent','Terminal','Watcher'])
     action('fill',name='Draft prompt',value='Keep this unsent invoice investigation.')
     open_dialog(); choose('opencode'); consent()
     frames.capture('002-draft-guard.png','An unsent agent draft blocks harness replacement; selecting and confirming does not mutate.', ['unsent agent drafts','All 2 agent session rows','Previously runnable sessions'], allow_alert=True,
                    expression='Array.from(document.querySelectorAll("[role=dialog] button")).find(b=>b.textContent==="Change harness").disabled')
-    assert rows()==initial_rows and feature_panes()==initial_panes
+    assert_unchanged(initial_rows, initial_panes, 'draft guard')
     close_dialog()
     assert frames.evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).value')=='Keep this unsent invoice investigation.'
     action('fill',name='Draft prompt',value='')
     open_dialog(); choose('opencode'); consent()
     frames.capture('003-confirm-running-switch.png','Explicit replacement confirmation describes all agent rows, cleared conversations, stop/restart and individually stopped choices.', ['All 2 agent session rows','conversation IDs','all its sessions will stop','individually stopped sessions remain stopped'])
-    close_dialog(); assert rows()==initial_rows and feature_panes()==initial_panes
+    close_dialog(); assert_unchanged(initial_rows, initial_panes, 'cancel')
     open_dialog(); choose('opencode'); consent()
     # A second AMF/SQLite writer changes a persisted row while confirmation is
     # open. The command must refresh before any stop or hook mutation.

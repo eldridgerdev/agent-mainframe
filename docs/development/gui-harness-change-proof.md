@@ -49,3 +49,9 @@ CAS conflicts before binding persistence and after launch.
 For the isolated hosted capture, use
 `scripts/dev/screenshot/scenarios/gui-harness-change.txt`. Publish only after its
 branch is pushed with `scripts/dev/screenshot/publish-pages.sh --strict`.
+
+This scenario opts into a mandatory Bubblewrap namespace probe. If the probe is
+blocked by Ubuntu's AppArmor policy, only an ephemeral GitHub-hosted Linux runner
+may temporarily relax that policy; the capture shell restores it on exit. Local
+and self-hosted runners receive no policy change and must already permit the
+private runtime mount. A failed probe never falls back to the real runtime.

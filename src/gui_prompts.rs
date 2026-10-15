@@ -1,5 +1,7 @@
-//! Read-only desktop prompt library. Source merging, search and substitution
+//! Desktop prompt library browsing, draft insertion and scoped User authoring. Source merging, search and substitution
 //! are shared with the TUI; delivery returns an unsent frontend draft only.
+pub mod authoring;
+
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -48,6 +50,11 @@ pub struct LibraryEntry {
     pub tags: Vec<String>,
     pub source: &'static str,
     pub slots: Vec<LibrarySlot>,
+    pub user_id: Option<String>,
+    #[serde(skip_serializing)]
+    template: crate::prompt_library::PromptTemplate,
+    #[serde(skip_serializing)]
+    source_index: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,7 +121,11 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
     // an unrelated template is added, removed or reordered.
     let mut occurrences: HashMap<String, usize> = HashMap::new();
     let mut available_keys = Vec::new();
+    let mut source_counts: HashMap<&str, usize> = HashMap::new();
     for entry in app.prompt_library_for_scope(pi, fi) {
+        let source_index = source_counts.entry(entry.source.label()).or_default();
+        let ordinal = *source_index;
+        *source_index += 1;
         let template = entry.template;
         let slots = resolve_placeholders(&template);
         // Config entries without IDs/timestamps are reconstructed on every read.
@@ -128,6 +139,7 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
             &template.description,
             &template.body,
             &template.tags,
+            &template.placeholders,
             &slots,
             (entry.source == crate::prompt_library::PromptSource::User).then_some(&template.id),
         ))
@@ -146,6 +158,10 @@ pub fn load(gui: &mut GuiHandle, scope: &LibraryScope, query: &str) -> GuiResult
         scored.push((
             score,
             LibraryEntry {
+                user_id: (entry.source == crate::prompt_library::PromptSource::User)
+                    .then(|| template.id.clone()),
+                template: template.clone(),
+                source_index: ordinal,
                 key,
                 name: template.name,
                 description: template.description,
@@ -255,7 +271,7 @@ mod tests {
     use crate::prompt_library::PromptTemplate;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
 
-    fn fixture() -> (tempfile::TempDir, GuiHandle, LibraryScope, SessionTarget) {
+    pub(super) fn fixture() -> (tempfile::TempDir, GuiHandle, LibraryScope, SessionTarget) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         let workdir = dir.path().join("worktree");

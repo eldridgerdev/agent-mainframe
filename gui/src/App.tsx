@@ -76,6 +76,7 @@ import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
 import ProjectsSidebar from "./ProjectsSidebar";
+import UserPromptEditor from "./UserPromptEditor";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
@@ -186,6 +187,7 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
+  const [savePromptBody, setSavePromptBody] = useState<string | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [promptOverrides, setPromptOverrides] = useState<{
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
@@ -1468,6 +1470,7 @@ export default function App() {
             launchedMode={selectedFeature.status === "stopped" ? undefined : launchedModes[selectedFeature.id]}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
+            onSavePrompt={setSavePromptBody}
             drafts={drafts}
             onDraftChange={changeDraft}
             sendingPrompts={sendingPrompts}
@@ -1763,6 +1766,12 @@ export default function App() {
       )}
 
       {showAppearance && <ThemePicker appearance={appearance} onClose={() => setShowAppearance(false)} />}
+      {savePromptBody !== null && <UserPromptEditor snapshot={null} seedBody={savePromptBody}
+        onClose={() => setSavePromptBody(null)} onSaved={() => {
+          setSavePromptBody(null);
+          void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
+          pushToast({ tone: "info", title: "User template saved", message: "Your composer draft is unchanged. Sending remains explicit." });
+        }} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
         onClose={() => setPromptLibrary(null)} onInsert={insertLibraryPrompt}
@@ -1990,6 +1999,7 @@ function FeatureView({
   onStop,
   drafts,
   onPromptLibrary,
+  onSavePrompt,
   onDraftChange,
   sendingPrompts,
   onSendDraft,
@@ -2036,6 +2046,7 @@ function FeatureView({
   launchedMode?: ModeSlug;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
+  onSavePrompt: (body: string) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
@@ -2079,7 +2090,8 @@ function FeatureView({
       focusRequested={composerFocusKey === sessionKey(target)} onFocusHandled={onComposerFocusHandled}
       onChange={(text) => onDraftChange(target, text)} onClear={() => onDraftChange(target, "")}
       onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
-      onLibrary={() => onPromptLibrary(target)} />
+      onLibrary={() => onPromptLibrary(target)}
+      onSaveTemplate={() => onSavePrompt(drafts[sessionKey(target)] ?? "")} />
   ) : null;
 
   return (

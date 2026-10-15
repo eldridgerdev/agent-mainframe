@@ -376,6 +376,19 @@ interview keeps the worktree and its setup changes, without saving a plan or
 launching an agent. A failed setup still allows planning to continue and shows
 a notice.
 
+The TODO new-feature form also offers effective project/global **Feature
+presets**. Apply one to fill the branch prefix, harness, mode, review, Chrome
+and **Start directly / Quick Plan / Full Plan** choices, then edit those choices
+before submitting. The final planning choice determines the route, regardless
+of which TODO action opened the form. Project templates override global ones
+with the same name; unavailable harnesses are filtered. Remote Control remains
+unsupported in desktop: explicitly clear it or select a non-remote template.
+Cancel protects edited settings, and pending launches cannot be dismissed or
+duplicated. Both planning routes prefill the TODO brief and retain its origin;
+the TODO is linked only on acceptance. Cancelling an interview retains its
+prepared worktree without reserving the TODO. Direct launches return an unsent
+composer draft.
+
 Use **Learning** on a feature page to browse its files or branch changes and
 ask about the project, a file, or a selected range (click, then Shift-click).
 Choose an answering harness and reading level; answers and follow-ups share

@@ -1,0 +1,5 @@
+# Real desktop IPC: confirmed harness conversion, draft/cancel/stale guards and stopped-row preservation.
+note:The isolated TUI confirms readiness before the native offline harness-change proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-harness-change.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

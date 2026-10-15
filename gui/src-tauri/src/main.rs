@@ -706,6 +706,30 @@ fn set_feature_vibe_mode(
     Ok(())
 }
 
+#[tauri::command]
+fn feature_harness_load(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<agent_mainframe::gui_harness_change::HarnessChangeView, GuiError> {
+    agent_mainframe::gui_harness_change::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+fn feature_harness_apply(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    request: agent_mainframe::gui_harness_change::HarnessChangeRequest,
+) -> Result<(), GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let result = agent_mainframe::gui_harness_change::apply(&mut gui, request);
+    // Shutdown, hooks or restart may have partially completed even on error.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    result
+}
+
 #[derive(Serialize)]
 struct AttachTerminalResponse {
     key: String,
@@ -1707,6 +1731,8 @@ fn main() {
             remove_session,
             delete_feature,
             set_feature_vibe_mode,
+            feature_harness_load,
+            feature_harness_apply,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,

@@ -48,6 +48,10 @@ export default function ThemePicker({ onClose, appearance }: { onClose: () => vo
     {missing && <p role="status">The selected theme is unavailable. Using the system palette until it is restored or another theme is selected.</p>}
     {catalog.isError && <p role="alert">Could not load themes. Built-in choices remain available. <button onClick={() => void catalog.refetch()}>Retry</button></p>}
     {catalog.data && <><p className="small">Custom JSON themes: <span className="mono">{catalog.data.directory}</span>. Files reload automatically.</p>
-      {catalog.data.errors.map((error) => <p role="alert" key={error}>{error}</p>)}</>}
+      {catalog.data.errors.map((error) => <p role="alert" key={error}>{error}</p>)}
+      {!!catalog.data.warnings?.length && <div aria-label="Custom theme contrast">
+        <p className="small">Some custom theme colours are hard to read. They are used as written:</p>
+        <ul className="small">{catalog.data.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+      </div>}</>}
   </Modal>;
 }

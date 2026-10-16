@@ -13,6 +13,8 @@ export interface ThemeCatalog {
   tui_theme: string;
   themes: GuiTheme[];
   errors: string[];
+  /** Low-contrast pairs a custom theme sets itself; its colours are kept. */
+  warnings?: string[];
   directory: string;
 }
 const key = "amf.gui.theme";

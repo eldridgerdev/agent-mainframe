@@ -185,5 +185,69 @@ class DriverTests(unittest.TestCase):
                 patch.object(driver.socket, "socket", side_effect=OSError("address family not supported")):
             self.assertFalse(driver.frontend_port_occupied())
 
+
+class ContrastAuditTests(unittest.TestCase):
+    RAW = {"themes": ["light", "dark", "a", "b", "c", "d", "e", "f"], "findings": [
+        {"kind": "text", "element": "div.card > p.muted", "sample": "Hint", "disabled": False, "worst": 2.1,
+         "themes": {"light": 3.0, "dark": 2.5, "a": 2.1, "b": 4.0, "c": 3.9, "d": 3.8, "e": 3.7, "f": 3.6}},
+        {"kind": "controls", "element": "button.btn", "disabled": True, "worst": 1.5, "themes": {"dark": 1.5}},
+    ]}
+
+    def gui(self, error=None, ready=(True,), raw=None):
+        inspector = Mock()
+        answers = {"ready": iter(ready), "error": error}
+
+        def evaluate(expression, deadline):
+            if "ready()" in expression:
+                return next(answers["ready"], True)
+            if "state.error" in expression:
+                return answers["error"]
+            if "auditThemes" in expression:
+                return raw if raw is not None else self.RAW
+            return True
+
+        inspector.evaluate.side_effect = evaluate
+        return driver.Driver(inspector, helper="H", contrast="CONTRAST"), inspector
+
+    def test_arguments_reach_the_request(self):
+        args = driver.parser().parse_args(["--session", "/s", "audit-contrast", "--scope", "main", "--themes", "dark,x", "--include-disabled", "--json"])
+        self.assertEqual((args.op, args.scope, args.themes, args.include_disabled, args.json), ("audit-contrast", "main", "dark,x", True, True))
+        args = driver.parser().parse_args(["audit-contrast"])
+        self.assertEqual((args.scope, args.themes, args.include_disabled, args.json), (None, None, False, False))
+
+    def test_lines_list_worst_themes_first_capped_and_omit_disabled(self):
+        gui, inspector = self.gui(ready=(False, True))
+        with patch.object(driver.time, "sleep"):
+            result = gui.run({"op": "audit-contrast", "scope": "main", "themes": "light, dark"})
+        self.assertEqual((result["themes"], result["findings"]), (8, 1))
+        self.assertEqual(result["lines"], ['8/8 text div.card > p.muted "Hint" worst=2.1 :: a=2.1 dark=2.5 light=3.0 f=3.6 e=3.7 d=3.8 +2 more'])
+        self.assertEqual(inspector.evaluate.call_args_list[0].args[0], "CONTRAST")
+        audit = [c.args[0] for c in inspector.evaluate.call_args_list if "auditThemes" in c.args[0]][0]
+        self.assertEqual(audit, 'window.__amfContrast.auditThemes("main", ["light","dark"])')
+
+    def test_include_disabled_tags_and_json_returns_raw(self):
+        gui, _ = self.gui()
+        result = gui.run({"op": "audit-contrast", "include_disabled": True})
+        self.assertEqual(result["findings"], 2)
+        self.assertEqual(result["lines"][1], "1/8 controls button.btn worst=1.5 [disabled] :: dark=1.5")
+        self.assertEqual(gui.run({"op": "audit-contrast", "json": True}), self.RAW)
+        audit = [c.args[0] for c in gui.inspector.evaluate.call_args_list if "auditThemes" in c.args[0]][-1]
+        self.assertEqual(audit, "window.__amfContrast.auditThemes(null, null)")
+
+    def test_catalog_error_and_timeout_fail_clearly(self):
+        gui, _ = self.gui(error="no such command")
+        with self.assertRaisesRegex(RuntimeError, "Theme catalog failed to load: no such command"):
+            gui.run({"op": "audit-contrast"})
+        gui, _ = self.gui(ready=__import__("itertools").repeat(False))
+        with patch.object(driver.time, "sleep"), self.assertRaisesRegex(TimeoutError, "catalog did not load"):
+            gui.run({"op": "audit-contrast", "timeout": 0.05})
+
+    def test_output_stays_within_the_budget(self):
+        raw = {"themes": ["t"], "findings": [{"kind": "text", "element": "p", "sample": "x", "disabled": False, "worst": 1, "themes": {"t": 1}}] * 500}
+        result = driver.bounded(driver.format_contrast(raw), 1000)
+        self.assertLessEqual(len(driver.encode(result)), 1000)
+        self.assertTrue(result["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main()

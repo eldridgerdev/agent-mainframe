@@ -52,19 +52,41 @@ it("keeps the new dark control, on-colour and disabled tokens readable in both d
   }
 });
 
-it("checks merged PR, harness icons and every supervibe gradient stop", () => {
-  failures.length = 0;
-  // These dark-only rules follow the base selectors in the shipped stylesheet.
-  const overrides = css.slice(css.lastIndexOf("@media (prefers-color-scheme: dark)"));
-  const merged = overrides.match(/\.tree-pr\.pr-merged \{ color: (#[\da-f]+); background: ([^;]+);/)!;
-  const icons = ["kind-claude", "kind-vscode"].map((kind) =>
-    overrides.match(new RegExp(`\\.${kind} \\{ color: (#[\\da-f]+);`))![1]);
-  const gradient = overrides.match(/background: linear-gradient\(90deg, ([^)]+)\)/)![1].split(", ");
-  for (const [name, bg] of Object.entries(backgrounds)) {
-    check(`merged PR on ${name}`, parse(merged[1]).rgb, over(merged[2], bg));
-    for (const colour of icons) check(`icon ${colour} on ${name}`, parse(colour).rgb, bg);
+it("keeps the kind, merged-PR and supervibe tokens readable in both dark blocks", () => {
+  const themed = css.slice(css.lastIndexOf(':root[data-theme="dark"] {'));
+  for (const block of [dark, themed]) {
+    failures.length = 0;
+    // Resolve a `var(--x)` alias to the token it points at.
+    const resolve = (name: string) => {
+      const value = token(block, name);
+      return parse(value.startsWith("var(") ? token(block, value.slice(6, -1)) : value).rgb;
+    };
+    for (const [name, bg] of Object.entries(backgrounds)) {
+      for (const kind of ["kind-nvim", "kind-vscode", "purple"]) check(`${kind} on ${name}`, resolve(kind), bg);
+      check(`purple on purple-soft/${name}`, parse(token(block, "purple")).rgb, over(token(block, "purple-soft"), bg));
+    }
+    // Tree session rows sit on the active-row tint over the sidebar.
+    const active = over(token(block, "accent-soft"), backgrounds["bg-sidebar"]);
+    for (const kind of ["kind-nvim", "kind-vscode", "kind-claude", "kind-codex", "kind-opencode", "kind-pi", "purple"]) {
+      // --sb-harness-* aliases live in sessionSidebar.css and are tested there.
+      if (!token(block, kind).startsWith("var(--sb-")) check(`${kind} on the active row`, resolve(kind), active);
+    }
+    expect(failures).toEqual([]);
   }
-  for (const stop of gradient) check(`supervibe on ${stop}`, parse("#ffffff").rgb, parse(stop).rgb);
+  // Only the token form remains: no per-mode literal overrides.
+  expect(css).toContain("background: var(--purple-soft); color: var(--purple);");
+  expect(css).not.toMatch(/\[data-theme="(light|dark)"\]\)? \.(kind-|tree-pr)/);
+});
+
+it("draws the supervibe label on the surface with a decorative rainbow ring", () => {
+  failures.length = 0;
+  const rule = css.match(/\.tree-chip-mode\.mode-supervibe \{([^}]+)\}/)![1];
+  expect(rule).toContain("linear-gradient(var(--surface), var(--surface)) padding-box");
+  expect(rule).toMatch(/linear-gradient\(90deg, [^)]+\) border-box/);
+  expect(rule).toContain("color: var(--text)");
+  for (const [name, bg] of Object.entries(backgrounds)) {
+    if (name === "surface") check("supervibe text on surface", parse(token(dark, "text")).rgb, bg);
+  }
   expect(failures).toEqual([]);
 });
 
@@ -86,8 +108,7 @@ it("keeps terminal foreground colors, selection and cursor readable on the page 
 it("keeps independent agent-sidebar accents and VS Code glyphs readable", () => {
   failures.length = 0;
   const sidebar = blocks(readFileSync(new URL("../src/sessionSidebar.css", import.meta.url), "utf8")).dark;
-  const sessions = readFileSync(new URL("../src/sessions.css", import.meta.url), "utf8");
-  const vscode = blocks(sessions).dark.match(/color: (#[\da-f]+);/)![1];
+  const vscode = token(dark, "kind-vscode");
   for (const role of ["harness-claude", "harness-codex", "harness-opencode", "accent-pr", "accent-summary", "accent-prompt"]) {
     for (const [name, bg] of Object.entries(backgrounds)) {
       check(`agent sidebar ${role} on ${name}`, parse(token(sidebar, `sb-${role}`)).rgb, bg);

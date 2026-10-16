@@ -48,6 +48,14 @@
   --red-soft: rgba(184, 41, 41, 0.08);
   --amber-soft: rgba(128, 89, 9, 0.1);
   --green-soft: rgba(25, 110, 57, 0.1);
+  --kind-claude: var(--sb-harness-claude);
+  --kind-codex: var(--sb-harness-codex);
+  --kind-opencode: var(--sb-harness-opencode);
+  --kind-pi: var(--sb-harness-pi);
+  --kind-nvim: #3a6e2d;
+  --kind-vscode: #13668f;
+  --purple: #7a40ad;
+  --purple-soft: rgba(122, 64, 173, 0.14);
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-lg: 0 20px 48px rgba(16, 24, 40, 0.18), 0 2px 6px rgba(16, 24, 40, 0.08);
   --backdrop: rgba(20, 24, 32, 0.38);
@@ -86,6 +94,14 @@
     --red-soft: rgba(255, 170, 162, 0.1);
     --amber-soft: rgba(255, 209, 125, 0.1);
     --green-soft: rgba(136, 224, 168, 0.1);
+    --kind-claude: var(--sb-harness-claude);
+    --kind-codex: var(--sb-harness-codex);
+    --kind-opencode: var(--sb-harness-opencode);
+    --kind-pi: var(--sb-harness-pi);
+    --kind-nvim: var(--green);
+    --kind-vscode: #9cd7ff;
+    --purple: #e0c7ff;
+    --purple-soft: rgba(224, 199, 255, 0.12);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
     --backdrop: rgba(0, 0, 0, 0.55);
@@ -248,6 +264,9 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .tree-feature { margin: 1px 0; padding: 3px 6px 4px 14px; border-radius: 6px; }
 .tree-feature:hover { background: var(--surface-3); }
 .tree-feature-active, .tree-feature-active:hover { background: var(--accent-soft); }
+/* The accent tint costs faint text its margin (built-in light: 4.2:1), so
+   faint text inside an active row steps up to muted. */
+.tree-feature-active, .nav-item-active { --text-faint: var(--text-muted); }
 .tree-row { display: flex; align-items: center; gap: 5px; min-height: 24px; }
 .tree-row .nav-chevron { flex-shrink: 0; }
 .tree-name {
@@ -320,14 +339,18 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .tree-chip-action:hover { text-decoration: underline; }
 .tree-chip-mode.mode-vibe { background: var(--amber-soft); color: var(--amber); }
 .tree-chip-mode.mode-supervibe {
-  background: linear-gradient(90deg, #e5484d, #e0ab3e, #30a46c, #4f5bd5, #8e4ec6);
-  color: #fff;
+  /* Label on a solid surface; the rainbow is only the decorative ring. */
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(90deg, #e5484d, #e0ab3e, #30a46c, #4f5bd5, #8e4ec6) border-box;
+  border: 1.5px solid transparent;
+  color: var(--text);
   font-weight: 600;
 }
 .tree-pr { font-weight: 600; }
 .tree-pr.pr-open { background: var(--accent-soft); color: var(--accent); }
 .tree-pr.pr-clear { background: var(--green-soft); color: var(--green); }
-.tree-pr.pr-merged { background: rgba(142, 78, 198, 0.14); color: #8e4ec6; }
+.tree-pr.pr-merged { background: var(--purple-soft); color: var(--purple); }
 .tree-pr.pr-closed { background: var(--red-soft); color: var(--red); }
 .tree-summary {
   padding: 2px 0 0 38px;
@@ -373,12 +396,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   font-weight: 700;
   color: var(--text-muted);
 }
-.kind-claude { color: #d97757; }
-.kind-codex, .kind-pi { color: #10a37f; }
-.kind-opencode { color: #6e7bff; }
+.kind-claude { color: var(--kind-claude); }
+.kind-codex { color: var(--kind-codex); }
+.kind-pi { color: var(--kind-pi); }
+.kind-opencode { color: var(--kind-opencode); }
 .kind-terminal { color: var(--green); }
-.kind-nvim { color: #57a143; }
-.kind-vscode { color: #23a9f2; }
+.kind-nvim { color: var(--kind-nvim); }
+.kind-vscode { color: var(--kind-vscode); }
 .kind-custom, .kind-todos { color: var(--amber); }
 /* The label truncates first so the context indicator stays readable, but
    never below a few characters: like the TUI row, the name wins. */
@@ -387,7 +411,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .ctx-normal { color: var(--green); }
 .ctx-warning { color: var(--amber); font-weight: 700; }
 .ctx-critical { color: var(--red); font-weight: 700; }
-.ctx-stale { opacity: 0.75; font-style: italic; }
+.ctx-stale { font-style: italic; }
 .ctx-pending { color: var(--text-faint); }
 .tree-session-status {
   padding: 0 4px 2px 33px;
@@ -679,8 +703,9 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   margin: -10px -4px 8px -12px;
   padding: 8px 12px;
   font-size: 12.5px;
-  color: #ffb4ae;
-  background: rgba(244, 112, 103, 0.14);
+  color: var(--red);
+  background: var(--surface);
+  border-left: 3px solid var(--red);
 }
 
 .composer {
@@ -876,7 +901,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .new-session-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
 .delete-feature-todos { grid-template-columns: 1fr; margin: 16px 0 0; }
 .tab-group { display: inline-flex; align-items: center; }
-.tab-stopped { opacity: 0.55; font-style: italic; }
+.tab-stopped { font-style: italic; }
 .tab-close { visibility: hidden; margin: 0 4px 0 -8px; }
 .tab-group:hover .tab-close, .tab-group:focus-within .tab-close, .tab-group .tab-active + .tab-close { visibility: visible; }
 .modal-lead { margin-bottom: 14px; }
@@ -1370,16 +1395,16 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   gap: 8px;
   padding: 6px 8px 6px 12px;
   font-size: 12.5px;
-  color: #d7dce2;
-  background: rgba(27, 31, 37, 0.94);
-  border: 1px solid #3a4250;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
   z-index: 5;
 }
-.term-scrollback-new { color: #e8c66b; font-weight: 600; }
-.term-scrollback-keys { color: #8b95a3; font-size: 11.5px; }
-.term-scrollback-keys kbd { background: #1b1f25; border-color: #3a4250; color: #d7dce2; }
+.term-scrollback-new { color: var(--amber); font-weight: 600; }
+.term-scrollback-keys { color: var(--text-muted); font-size: 11.5px; }
+.term-scrollback-keys kbd { background: var(--surface-2); border-color: var(--border); color: var(--text); }
 .term-scrollback-notice { padding: 6px 14px; border-radius: 10px; text-align: center; }
 
 .screenshot-toolbar { flex-wrap: wrap; margin-bottom: 12px; }
@@ -1407,21 +1432,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 
 @media (prefers-color-scheme: dark) {
   /* Dark-only adjustments keep the existing light palette intact. */
-  :root:not([data-theme="light"]) .tree-pr.pr-merged { color: #e0c7ff; background: rgba(224, 199, 255, 0.12); }
-  :root:not([data-theme="light"]) .tree-chip-mode.mode-supervibe {
-    background: linear-gradient(90deg, #852d38, #6b4b15, #205a40, #394485, #62358a);
-  }
-  :root:not([data-theme="light"]) .kind-claude { color: #ffb69b; }
-  :root:not([data-theme="light"]) .kind-codex, :root:not([data-theme="light"]) .kind-pi, :root:not([data-theme="light"]) .kind-nvim { color: var(--green); }
-  :root:not([data-theme="light"]) .kind-opencode { color: var(--accent); }
-  :root:not([data-theme="light"]) .kind-vscode { color: #9cd7ff; }
   :root:not([data-theme="light"]) .switch::after { background: var(--accent-fg); }
-  :root:not([data-theme="light"]) .ctx-stale { opacity: 1; }
-  :root:not([data-theme="light"]) .tab-stopped { opacity: 1; }
-  :root:not([data-theme="light"]) .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }
-  :root:not([data-theme="light"]) .term-scrollback-new { color: var(--amber); }
-  :root:not([data-theme="light"]) .term-scrollback-keys { color: var(--text-muted); }
-  :root:not([data-theme="light"]) .term-scrollback-keys kbd { color: var(--text); background: var(--surface-2); border-color: var(--border); }
 }
 
 /* Explicit GUI preference overrides the system colour scheme. */
@@ -1452,6 +1463,14 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   --red-soft: rgba(255, 170, 162, 0.1);
   --amber-soft: rgba(255, 209, 125, 0.1);
   --green-soft: rgba(136, 224, 168, 0.1);
+  --kind-claude: var(--sb-harness-claude);
+  --kind-codex: var(--sb-harness-codex);
+  --kind-opencode: var(--sb-harness-opencode);
+  --kind-pi: var(--sb-harness-pi);
+  --kind-nvim: var(--green);
+  --kind-vscode: #9cd7ff;
+  --purple: #e0c7ff;
+  --purple-soft: rgba(224, 199, 255, 0.12);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
   --backdrop: rgba(0, 0, 0, 0.55);
@@ -1461,21 +1480,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 
 
 /* Dark-only adjustments keep the existing light palette intact. */
-:root[data-theme="dark"] .tree-pr.pr-merged { color: #e0c7ff; background: rgba(224, 199, 255, 0.12); }
-:root[data-theme="dark"] .tree-chip-mode.mode-supervibe {
-  background: linear-gradient(90deg, #852d38, #6b4b15, #205a40, #394485, #62358a);
-}
-:root[data-theme="dark"] .kind-claude { color: #ffb69b; }
-:root[data-theme="dark"] .kind-codex, :root[data-theme="dark"] .kind-pi, :root[data-theme="dark"] .kind-nvim { color: var(--green); }
-:root[data-theme="dark"] .kind-opencode { color: var(--accent); }
-:root[data-theme="dark"] .kind-vscode { color: #9cd7ff; }
 :root[data-theme="dark"] .switch::after { background: var(--accent-fg); }
-:root[data-theme="dark"] .ctx-stale { opacity: 1; }
-:root[data-theme="dark"] .tab-stopped { opacity: 1; }
-:root[data-theme="dark"] .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }
-:root[data-theme="dark"] .term-scrollback-new { color: var(--amber); }
-:root[data-theme="dark"] .term-scrollback-keys { color: var(--text-muted); }
-:root[data-theme="dark"] .term-scrollback-keys kbd { color: var(--text); background: var(--surface-2); border-color: var(--border); }
 
 .debug-log-toolbar { flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }
 .debug-log-toolbar input[type="search"] {

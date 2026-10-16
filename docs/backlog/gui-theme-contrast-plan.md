@@ -1,6 +1,6 @@
 # GUI theme contrast and readability
 
-- **Status:** Partial (E1–E5 landed; E6–E7 open)
+- **Status:** In progress (all epics E1–E7 implemented; E4–E7 awaiting merge)
 - **Owner:** unassigned
 - **Relates to:** `src/gui_themes.rs` (TUI → GUI theme projection),
   `gui/src/styles.css`, `gui/src/sessionSidebar.css`, `gui/src/sessions.css`,
@@ -224,8 +224,9 @@ judged on corrected colors.
       "Create feature" and "Send prompt" look broken.
 - [x] Move chip text off `text-faint` on `surface-3` (`.tree-chip`
       `:286`, `.tag`, `.sb-chip`) to `text-muted` (they already used it).
-- [ ] Audit the remaining `text-faint` uses that may sit on `surface-3`
-      (built-in light, about 4.16:1).
+- [x] Audit the remaining `text-faint` uses that may sit on `surface-3`
+      (built-in light, about 4.16:1): chips, tags, segmented controls,
+      code, and hover states scope `--text-faint` to `--text-muted`.
 - [x] Add `gui/tests/lightContrast.test.ts`, which mirrors
       `darkContrast.test.ts` for the light block: body/hint/faint text on
       every surface, status colors on soft tints, on-color buttons, and
@@ -237,8 +238,8 @@ judged on corrected colors.
       row tint (`accent-soft` over sidebar/surface) in the projection;
       `.nav-count` uses `--text-muted`; light `--sb-harness-*`/`--sb-accent-*`
       raised to AA; the Debug log search box uses `--border-control`.
-- [ ] Learning file list: highlight the open file (needs a selected flag
-      from the backend view).
+- [x] Learning file list: highlight the open file (`LearningView.selected_key`,
+      `aria-current`, accent edge).
 
 ### E4 — Tokenize hard-coded colors and opacity dimming (P1)
 
@@ -279,25 +280,27 @@ judged on corrected colors.
 
 ### E6 — Live audit tooling + docs (P2)
 
-- [ ] Commit the audit script used for this plan as
+- [x] Commit the audit script used for this plan as
       `scripts/dev/gui-driver/contrast-audit.js`. It walks visible text,
       composites backgrounds and opacity, reports WCAG ratios, checks control
       boundaries, and loops over themes by applying catalog tokens in place.
       Freeze transitions while measuring; otherwise `getComputedStyle` reads
       mid-transition colors.
-- [ ] Add an `audit-contrast [--scope] [--themes]` driver subcommand, or
+- [x] Add an `audit-contrast [--scope] [--themes]` driver subcommand, or
       document the `eval` recipe in `docs/development/gui-ai-driver.md`.
-- [ ] Note in `themes/README.md` / the custom-theme docs that the GUI floors
-      derived roles and warns about explicit low-contrast pairs.
+- [x] Note in the custom-theme docs (`gui/README.md`) that the GUI floors
+      derived roles and warns about explicit low-contrast pairs, and implement
+      the warnings (`ThemeCatalog.warnings`, listed in Appearance).
 
 ### E7 — Size/weight polish for small faint text (P2)
 
-- [ ] Raise the floor of 10.5px text (`.tree-chip`, `.tree-detail`,
+- [x] Raise the floor of 10.5px text (`.tree-chip`, `.tree-detail`,
       `.tree-context`, `.tree-chip-detail` at 10px) to 11px. Raise 11px
       section labels (`.nav-section`, `.sb-section-head h3`, `.syntax-chip`)
       to 11.5px, or give them weight 600.
-- [ ] Re-run the E6 audit across all 28 themes and both built-ins, with zero
-      non-disabled failures.
+- [x] Re-run the E6 audit across all 28 themes and both built-ins, with zero
+      non-disabled failures: 36 screens and states, 29 themes, 0 findings.
+      The last one fixed was the TODO entry box border in built-in light.
 
 ## Verification
 

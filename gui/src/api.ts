@@ -640,6 +640,8 @@ export interface LearningView {
   scope: "repo_tree" | "branch_changes";
   is_git: boolean;
   entries: LearningEntry[];
+  /** Key of the highlighted file-list entry, or null when none. */
+  selected_key: string | null;
   content_path: string | null;
   content: string[];
   content_line_labels: string[];

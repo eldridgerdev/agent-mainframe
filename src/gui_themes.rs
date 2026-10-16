@@ -172,6 +172,8 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
     let green = with_tint(rgb(&theme.success));
     let amber = with_tint(rgb(&theme.warning));
     let red = with_tint(rgb(&theme.danger));
+    // Merged-PR chips use the TUI's own merged-PR colour.
+    let purple = with_tint(rgb(&theme.pr_merged));
     let on_fill = |fill: Rgb| best_on(fill, &[text, bg, BLACK, WHITE]);
     let accent_fg = on_fill(accent);
     // The primary button's hover fill: still text-safe, and still carries
@@ -240,6 +242,11 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
             on_chrome(rgb(&theme.session_icon_opencode)),
         ),
         ("sb-harness-pi", accent),
+        // `--kind-claude/codex/opencode/pi` alias the `sb-harness-*` tokens in
+        // CSS; only the session kinds the sidebar has no token for are new.
+        ("kind-nvim", on_chrome(rgb(&theme.session_icon_nvim))),
+        ("kind-vscode", on_chrome(rgb(&theme.session_icon_vscode))),
+        ("purple", purple),
         ("sb-accent-pr", on_chrome(rgb(&theme.info))),
         ("sb-accent-summary", on_chrome(rgb(&theme.info))),
         ("sb-accent-prompt", on_chrome(rgb(&theme.secondary))),
@@ -284,6 +291,7 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
         ("red-soft", "red"),
         ("amber-soft", "amber"),
         ("green-soft", "green"),
+        ("purple-soft", "purple"),
     ] {
         tokens.insert(key.into(), format!("{}20", tokens[role]));
     }
@@ -413,6 +421,14 @@ const CUSTOM_TOKENS: &[&str] = &[
     "green",
     "amber",
     "red",
+    "purple",
+    "purple-soft",
+    "kind-claude",
+    "kind-codex",
+    "kind-opencode",
+    "kind-pi",
+    "kind-nvim",
+    "kind-vscode",
     "green-soft",
     "amber-soft",
     "red-soft",
@@ -874,7 +890,12 @@ mod tests {
                     check(key, tok(key), bg_name, bg, 4.5);
                 }
             }
-            for key in ["accent", "green", "amber", "red"] {
+            for key in ["kind-nvim", "kind-vscode"] {
+                for (bg_name, bg) in surfaces.into_iter().take(4).chain(active) {
+                    check(key, tok(key), bg_name, bg, 4.5);
+                }
+            }
+            for key in ["accent", "green", "amber", "red", "purple"] {
                 let fg = tok(key);
                 let tint = format!("{key}-soft");
                 check(key, fg, "surface", surface, 4.5);

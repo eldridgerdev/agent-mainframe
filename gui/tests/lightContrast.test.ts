@@ -62,3 +62,16 @@ it("keeps light agent-sidebar accents and active-row text readable", () => {
   for (const text of ["text", "text-muted"]) check(`${text} on the active row`, rgb(text), active);
   expect(failures).toEqual([]);
 });
+
+it("keeps the nvim, VS Code and merged-PR tokens readable on surfaces and tints", () => {
+  failures.length = 0;
+  const active = over(token(light, "accent-soft"), rgb("bg-sidebar"));
+  for (const kind of ["kind-nvim", "kind-vscode", "purple"]) {
+    for (const name of surfaces) check(`${kind} on ${name}`, rgb(kind), rgb(name));
+    check(`${kind} on the active row`, rgb(kind), active);
+  }
+  for (const name of ["surface", "bg-sidebar"]) {
+    check(`purple on purple-soft/${name}`, rgb("purple"), over(token(light, "purple-soft"), rgb(name)));
+  }
+  expect(failures).toEqual([]);
+});

@@ -1,6 +1,6 @@
 # GUI theme contrast and readability
 
-- **Status:** Partial (E1–E3 landed; E4–E7 open)
+- **Status:** Partial (E1–E4 landed; E5–E7 open)
 - **Owner:** unassigned
 - **Relates to:** `src/gui_themes.rs` (TUI → GUI theme projection),
   `gui/src/styles.css`, `gui/src/sessionSidebar.css`, `gui/src/sessions.css`,
@@ -191,7 +191,9 @@ judged on corrected colors.
       backgrounds.
 - [x] Project the missing `sb-*` tones and accents, `sb-harness-pi`,
       `sb-ctx-*` from the floored roles.
-- [ ] Project `kind-*` tokens (blocked on E4 defining them in CSS).
+- [x] Project `kind-nvim`/`kind-vscode` (from the TUI's session icons) and
+      `purple`/`purple-soft` (from `pr_merged`); `kind-claude/codex/opencode/pi`
+      alias the `sb-harness-*` tokens in CSS.
 - [x] Custom theme files: `fill_derived_tokens` derives `accent-fg`,
       `danger-fg`, `warning-fg`, `success-fg`, `border-control`,
       `disabled-bg` and `disabled-fg` from the colors a file sets, when it
@@ -240,27 +242,30 @@ judged on corrected colors.
 
 ### E4 — Tokenize hard-coded colors and opacity dimming (P1)
 
-- [ ] Add `--kind-claude/codex/opencode/nvim/vscode` (light + dark) and use
+- [x] Add `--kind-claude/codex/opencode/nvim/vscode` (light + dark) and use
       them in `.kind-*` (`styles.css:364-369`), `.vscode-editor-glyph` and
       `.tree-chip-vscode` (`sessions.css:66,72`). Fold in the dark overrides
       at `styles.css:1389-1392,1439-1442` and `sessions.css:74-79`. Reuse
       the `--sb-harness-*` values where they already exist.
-- [ ] Add `--purple` / `--purple-soft` for `.tree-pr.pr-merged` (`:318`).
-- [ ] SuperVibe chip (`:311-312`): keep the gradient but put the label on a
+- [x] Add `--purple` / `--purple-soft` for `.tree-pr.pr-merged` (`:318`).
+- [x] SuperVibe chip (`:311-312`): keep the gradient but put the label on a
       solid `--surface` pill inside it, or use a darker gradient with
       `--accent-fg`. White on the yellow stop is about 2:1.
-- [ ] `.term-error` (`:663-664`): use `--red`/`--red-soft` with `--surface`
+- [x] `.term-error` (`:663-664`): use `--red`/`--red-soft` with `--surface`
       underneath so that it works on light terminals.
-- [ ] `.term-scrollback*` (`:1348-1357`): use the token form (currently
+- [x] `.term-scrollback*` (`:1348-1357`): use the token form (currently
       dark-only) in light mode too, and delete the literal block.
 - [x] `.learning-line-number`: opacity dimming replaced with `--text-faint`
       (dark-only overrides dropped).
-- [ ] Replace opacity-dimmed text with colors: `.ctx-stale` (`:378`),
+- [x] Replace opacity-dimmed text with colors: `.ctx-stale` (`:378`),
       `.tab-stopped` (`:860`), then drop their dark-only `opacity: 1`
       overrides.
-- [ ] Add a lint-style test that fails on a new hex/rgb literal in
+- [x] Add a lint-style test that fails on a new hex/rgb literal in
       `gui/src/*.css` outside token blocks (allow-list `.screenshot-canvas`
       and shadows).
+- [x] Faint text inside an active row (`.tree-feature-active`,
+      `.nav-item-active`) steps up to `--text-muted`; built-in light was
+      4.2:1 on the accent tint.
 
 ### E5 — Terminal contrast in light themes (P1)
 

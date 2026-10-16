@@ -283,13 +283,13 @@ doc always says exactly what remains.
   script, scenario/seed examples, and a screenshot skill; GIF on request,
   high-fidelity `vhs` path left as future work.
 - [GUI theme contrast and readability](gui-theme-contrast-plan.md) —
-  _Ready._ A driver-run WCAG audit of 32 GUI screens across 10 themes, plus
-  a static matrix over all 28 catalog themes, found 73 failing elements
-  that trace back to six root causes. The biggest: `src/gui_themes.rs`
-  maps the GUI's neutral `surface-2` to the TUI's vivid
-  `shortcut_background`, so selected rows, modal footers, badges and
-  hunk headers become bright blocks with text at about 1.2–1.6:1 in
-  gruvbox-dark. The plan: derive GUI roles with a contrast floor instead
-  of copying TUI colors, fix the built-in light palette, tokenize
-  hard-coded colors and opacity dimming, enable xterm contrast correction
-  on light terminals, and add regression tests for every catalog theme.
+  _Partial (E1–E3 landed; E4–E7 open)._ A driver-run WCAG audit of 32 GUI
+  screens across 10 themes, plus a static matrix over all 28 catalog
+  themes, found 73 failing elements from six root causes. Landed: GUI roles
+  are now derived from TUI palettes with a contrast floor instead of
+  copied (neutral `surface-2`/`surface-3`, floored text and status colors,
+  computed on-fill text), the built-in light palette is fixed, and a
+  catalog-wide regression test guards it. Left: tokenize the remaining
+  hard-coded colors and opacity dimming (E4), xterm contrast correction on
+  light terminals (E5), the live audit script and custom-theme docs (E6),
+  and size/weight polish for small faint text (E7).

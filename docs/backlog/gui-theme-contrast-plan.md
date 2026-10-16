@@ -30,6 +30,10 @@ The result is 73 distinct failing elements. Almost all of them trace back to
 
 ### Root causes
 
+File and line references in this table describe the code as audited, before
+E1–E3 landed (`main` at `0817a99c`). The projection code they point to has
+since been replaced.
+
 | # | Cause | Where | Effect |
 |---|---|---|---|
 | R1 | **`surface-2` is projected from the TUI's `shortcut_background`.** That is a vivid key-hint color: yellow `#fabd2f` in gruvbox-dark, `#e5e510` in amf, orange in dracula, blue in catppuccin. The GUI uses `surface-2` as a *neutral raised surface* (24 rules). | `src/gui_themes.rs:87` | In 27/28 catalog themes these sit on a bright color block at about **1.0–1.6:1**: the selected file in Changes, Final Review and Learning; selected options in New session; modal footers (Cancel/Close text); `.badge`; `.syntax-chip`; diff and PR hunk headers; the composer head; Learning line hover and selection; and file-status `small` labels. The primary button also disappears into the footer (catppuccin 1.0:1). |
@@ -129,7 +133,7 @@ the tests are what enforce them.
 
 | Token | Now | Suggested | Note |
 |---|---|---|---|
-| `--text-faint` | `#8a929d` (2.6–3.1) | `#687079` | ≥ 4.5 except on `surface-3`; move chips to `text-muted` |
+| `--text-faint` | `#8a929d` (2.6–3.1) | `#626a75` (shipped) | ≥ 4.5 on every surface including `surface-3` (4.54); `#687079`, the first suggestion, is 4.16 there. Chips moved to `text-muted` |
 | `--amber` | `#b07a0c` (2.9–3.7) | `#805909` | text use; keep a brighter `--amber-fill` for dots if wanted |
 | `--green` | `#1f8a47` (3.4–4.4) | `#196e39` | |
 | `--red` | `#cf2e2e` | `#b82929` | passes on red-soft |
@@ -188,6 +192,12 @@ judged on corrected colors.
 - [x] Project the missing `sb-*` tones and accents, `sb-harness-pi`,
       `sb-ctx-*` from the floored roles.
 - [ ] Project `kind-*` tokens (blocked on E4 defining them in CSS).
+- [x] Custom theme files: `fill_derived_tokens` derives `accent-fg`,
+      `danger-fg`, `warning-fg`, `success-fg`, `border-control`,
+      `disabled-bg` and `disabled-fg` from the colors a file sets, when it
+      leaves them out. Without it a file's deep `red` got the built-in
+      palette's `danger-fg`. Roles whose inputs the file doesn't set keep the
+      built-in pair. Warnings for explicit failing pairs are still open (E6).
 - [x] The E1 test passes for all 28 themes. Update `entire_tui_catalog_is_projected`
       if the token set changes.
 - [x] Check by eye in gruvbox-dark, dracula, catppuccin-latte and
@@ -305,9 +315,17 @@ judged on corrected colors.
   readability?
 - **AAA for body text:** the floor is AA (4.5). Some users asking for
   "readable" want 7:1 for `text`. That is easy to add for `text` only.
-- **`text-faint` vs `text-muted` in light mode:** at AA they end up close
-  (`#687079` vs `#5a6370`). Either accept that, or drop `text-faint` from
-  real text and keep it for decorative glyphs only.
+- **`text-faint` vs `text-muted` vs `disabled-fg` in light mode:** at AA
+  the three end up close. The shipped values are `text-muted` `#5a6370`,
+  `text-faint` `#626a75` and `disabled-fg` `#6f7782` (5.0, 4.5 and 3.8:1 on
+  `surface-3`). Faint and disabled are only about 1.2:1 apart, so an enabled
+  menu hint is about as quiet as a disabled menu label. _Decided for now:_
+  accept it. In a menu the label is what says enabled or disabled (`text`
+  at about 16:1 against `disabled-fg` at 4.5:1), and the hint follows its
+  label. Lightening `disabled-fg` to widen the gap would undo the E3
+  legibility fix. Revisit if a surface shows faint text next to disabled
+  text with no `text`-colored neighbor, or drop `text-faint` from real text
+  and keep it for decorative glyphs only.
 
 ## Reasoning / when to build
 

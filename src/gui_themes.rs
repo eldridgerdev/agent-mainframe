@@ -465,8 +465,74 @@ fn valid_color(value: &str) -> bool {
         && matches!(value.len(), 7 | 9)
         && value[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
+/// Fills in the derived roles a custom file leaves out, from the colours it
+/// does set, the same way [`project_tokens`] derives them. A custom theme is
+/// applied over the built-in light or dark palette, so without this a file
+/// that sets a deep `red` but no `danger-fg` would get the built-in palette's
+/// `danger-fg`, chosen for the built-in `red`. Roles whose inputs the file
+/// does not set are left to the built-in palette, whose own pairs already
+/// meet the floor. Explicit tokens are never changed.
+fn fill_derived_tokens(tokens: &mut BTreeMap<String, String>) {
+    let get = |tokens: &BTreeMap<String, String>, key: &str| match tokens
+        .get(key)
+        .and_then(|v| Rgb::parse(v))
+    {
+        Some((rgb, 1.0)) => Some(rgb),
+        _ => None,
+    };
+    let mut derived: Vec<(&str, Rgb)> = vec![];
+    let on_fill_candidates: Vec<Rgb> = ["text", "bg"]
+        .into_iter()
+        .filter_map(|key| get(tokens, key))
+        .chain([BLACK, WHITE])
+        .collect();
+    for (fg, fill) in [
+        ("accent-fg", "accent"),
+        ("danger-fg", "red"),
+        ("warning-fg", "amber"),
+        ("success-fg", "green"),
+    ] {
+        if !tokens.contains_key(fg)
+            && let Some(fill) = get(tokens, fill)
+        {
+            derived.push((fg, best_on(fill, &on_fill_candidates)));
+        }
+    }
+    let boundary_bgs: Vec<Rgb> = ["bg", "bg-sidebar", "surface", "surface-2"]
+        .into_iter()
+        .filter_map(|key| get(tokens, key))
+        .collect();
+    if !tokens.contains_key("border-control")
+        && let (Some(surface), Some(text)) = (get(tokens, "surface"), get(tokens, "text"))
+    {
+        derived.push((
+            "border-control",
+            ensure_contrast(mix(surface, text, 0.35), &boundary_bgs, NON_TEXT_MIN),
+        ));
+    }
+    let disabled_bg = get(tokens, "disabled-bg").or_else(|| get(tokens, "surface-3"));
+    if !tokens.contains_key("disabled-bg")
+        && let Some(surface3) = disabled_bg
+    {
+        derived.push(("disabled-bg", surface3));
+    }
+    if !tokens.contains_key("disabled-fg")
+        && let (Some(faint), Some(disabled_bg)) = (get(tokens, "text-faint"), disabled_bg)
+    {
+        let mut bgs = boundary_bgs.clone();
+        bgs.push(disabled_bg);
+        derived.push((
+            "disabled-fg",
+            ensure_contrast(mix(faint, disabled_bg, 0.5), &bgs, NON_TEXT_MIN),
+        ));
+    }
+    for (key, color) in derived {
+        tokens.insert(key.into(), color.hex());
+    }
+}
+
 fn parse_custom(contents: &str) -> Result<GuiTheme, String> {
-    let theme: GuiTheme = serde_json::from_str(contents).map_err(|e| e.to_string())?;
+    let mut theme: GuiTheme = serde_json::from_str(contents).map_err(|e| e.to_string())?;
     if theme.id.is_empty()
         || !theme
             .id
@@ -499,6 +565,7 @@ fn parse_custom(contents: &str) -> Result<GuiTheme, String> {
             ));
         }
     }
+    fill_derived_tokens(&mut theme.tokens);
     Ok(theme)
 }
 
@@ -674,6 +741,42 @@ mod tests {
         }
     }
     #[test]
+    fn custom_files_get_derived_roles_for_the_colours_they_set() {
+        let theme = parse_custom(
+            r##"{"id":"x","name":"X","mode":"dark","tokens":{
+                "bg":"#101418","surface":"#1a2028","surface-3":"#2a323c",
+                "text":"#e8eef4","text-faint":"#98a4b0","accent-fg":"#ff00ff",
+                "red":"#7a1010","amber":"#ffd17d"}}"##,
+        )
+        .unwrap();
+        let t = &theme.tokens;
+        let color = |key: &str| Rgb::parse(&t[key]).unwrap().0;
+        // Explicit tokens are kept even when a derived one would differ.
+        assert_eq!(t["accent-fg"], "#ff00ff");
+        // A deep red gets light text; a light amber gets dark text.
+        assert_eq!(t["danger-fg"], "#ffffff");
+        assert!(contrast(color("warning-fg"), color("amber")) >= TEXT_MIN);
+        assert!(contrast(color("warning-fg"), color("amber")) > 10.0);
+        // No `green` in the file: `success-fg` stays with the built-in pair.
+        assert!(!t.contains_key("success-fg"));
+        assert_eq!(t["disabled-bg"], "#2a323c");
+        for bg in ["disabled-bg", "surface", "bg"] {
+            assert!(
+                contrast(color("disabled-fg"), color(bg)) >= NON_TEXT_MIN,
+                "{bg}"
+            );
+        }
+        for bg in ["surface", "bg"] {
+            assert!(
+                contrast(color("border-control"), color(bg)) >= NON_TEXT_MIN,
+                "{bg}"
+            );
+        }
+        // A file that sets none of the inputs gets nothing derived.
+        let bare = parse_custom(r#"{"id":"y","name":"Y","mode":"light"}"#).unwrap();
+        assert!(bare.tokens.is_empty());
+    }
+    #[test]
     fn invalid_keys_and_colours_are_rejected() {
         for extra in [
             r##", "tokens":{"bogus":"#abcdef"}"##,
@@ -701,19 +804,34 @@ mod tests {
             }
             let theme = project(name);
             let id = &theme.id;
-            let mut missing = vec![];
-            let mut tok = |key: &str| -> Rgb {
-                match theme.tokens.get(key).and_then(|v| Rgb::parse(v)) {
+            // A missing or malformed token is reported, not a panic, so one
+            // theme's gap doesn't hide every other theme's failures.
+            let missing = std::cell::RefCell::new(vec![]);
+            let parse = |key: &str| {
+                theme
+                    .tokens
+                    .get(key)
+                    .and_then(|v| Rgb::parse(v))
+                    .or_else(|| {
+                        missing.borrow_mut().push(key.to_owned());
+                        None
+                    })
+            };
+            let tok = |key: &str| -> Rgb {
+                match parse(key) {
                     Some((rgb, 1.0)) => rgb,
-                    _ => {
-                        missing.push(key.to_owned());
+                    Some(_) => {
+                        missing.borrow_mut().push(key.to_owned());
                         Rgb(255.0, 0.0, 255.0)
                     }
+                    None => Rgb(255.0, 0.0, 255.0),
                 }
             };
             let soft = |key: &str, base: Rgb| -> Rgb {
-                let (rgb, alpha) = Rgb::parse(&theme.tokens[key]).unwrap();
-                over(rgb, alpha, base)
+                match parse(key) {
+                    Some((rgb, alpha)) => over(rgb, alpha, base),
+                    None => Rgb(255.0, 0.0, 255.0),
+                }
             };
             let surfaces = [
                 ("bg", tok("bg")),
@@ -796,8 +914,8 @@ mod tests {
             let code = [
                 ("surface", surface),
                 ("surface-2", surface2),
-                ("added", over(Rgb(46.0, 160.0, 67.0), 0.16, surface)),
-                ("removed", over(Rgb(248.0, 81.0, 73.0), 0.16, surface)),
+                ("added", over(DIFF_ADDED.0, DIFF_ADDED.1, surface)),
+                ("removed", over(DIFF_REMOVED.0, DIFF_REMOVED.1, surface)),
                 ("selected", soft("accent-soft", surface)),
             ];
             for role in [
@@ -820,6 +938,9 @@ mod tests {
                     check(&key, fg, bg_name, bg, 4.5);
                 }
             }
+            let mut missing = missing.into_inner();
+            missing.sort();
+            missing.dedup();
             for key in missing {
                 failures.push(format!("{id}: missing token {key}"));
             }

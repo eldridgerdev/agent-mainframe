@@ -923,7 +923,8 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   gap: 2px;
   border-radius: 8px;
   background: var(--surface-3);
-  border: 1px solid var(--border-control);
+  /* Inset, not a border: keeps the control 34px tall beside inputs. */
+  box-shadow: inset 0 0 0 1px var(--border-control);
   align-self: flex-start;
 }
 .segment {

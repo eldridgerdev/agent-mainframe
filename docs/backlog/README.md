@@ -283,13 +283,13 @@ doc always says exactly what remains.
   script, scenario/seed examples, and a screenshot skill; GIF on request,
   high-fidelity `vhs` path left as future work.
 - [GUI theme contrast and readability](gui-theme-contrast-plan.md) —
-  _Partial (E1–E3 landed; E4–E7 open)._ A driver-run WCAG audit of 32 GUI
-  screens across 10 themes, plus a static matrix over all 28 catalog
-  themes, found 73 failing elements from six root causes. Landed: GUI roles
-  are now derived from TUI palettes with a contrast floor instead of
-  copied (neutral `surface-2`/`surface-3`, floored text and status colors,
-  computed on-fill text), the built-in light palette is fixed, and a
-  catalog-wide regression test guards it. Left: tokenize the remaining
-  hard-coded colors and opacity dimming (E4), xterm contrast correction on
-  light terminals (E5), the live audit script and custom-theme docs (E6),
-  and size/weight polish for small faint text (E7).
+  _All 7 epics shipped (#753, #754, #755)._ A
+  driver-run WCAG audit of 32 GUI screens across 10 themes, plus a static
+  matrix over all 28 catalog themes, found 73 failing elements from six root
+  causes. GUI roles are now derived from TUI palettes with a contrast floor
+  instead of copied. The built-in palettes, hard-coded colors and opacity
+  dimming are tokenized and guarded by tests. xterm corrects contrast in
+  every theme. Custom themes report their own low-contrast pairs. Small text
+  is at least 11px. The audit is committed as the driver's `audit-contrast`,
+  and its final run shows zero non-disabled findings on 36 screens across
+  29 themes.

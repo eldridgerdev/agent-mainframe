@@ -19,6 +19,7 @@
 .custom-session-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); }
 .custom-session-option input { margin-top: 3px; }
 .custom-session-icon {
+  --text-faint: var(--text-muted); /* on --surface-3 */
   width: 22px;
   height: 22px;
   flex-shrink: 0;

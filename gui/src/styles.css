@@ -199,7 +199,7 @@ kbd {
   align-items: center;
   justify-content: space-between;
   padding: 16px 8px 4px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -267,6 +267,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 /* The accent tint costs faint text its margin (built-in light: 4.2:1), so
    faint text inside an active row steps up to muted. */
 .tree-feature-active, .nav-item-active { --text-faint: var(--text-muted); }
+/* Same for --surface-3 (built-in light: 4.2:1): chips, tags, pills, code and
+   hover fills step faint text up to muted instead of darkening the global token.
+   A stopped chip is transparent, not surface-3, and its faint text is what
+   reads as "stopped", so it keeps the faint colour it inherits. */
+.tree-chip:not(.tree-chip-stopped), .tag, .chip, .empty-icon, .segmented, .md code, .md pre,
+.nav-item:hover, .tree-feature:hover, .btn-ghost:hover, .menu-item:hover { --text-faint: var(--text-muted); }
 .tree-row { display: flex; align-items: center; gap: 5px; min-height: 24px; }
 .tree-row .nav-chevron { flex-shrink: 0; }
 .tree-name {
@@ -323,7 +329,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   border-radius: 4px;
   background: var(--surface-3);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 16px;
   white-space: nowrap;
   overflow: hidden;
@@ -333,7 +339,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .tree-chip-danger { background: var(--red-soft); color: var(--red); font-weight: 600; }
 .tree-chip-info { background: var(--accent-soft); color: var(--accent); }
 .tree-chip-review { background: var(--green-soft); color: var(--green); }
-.tree-chip-detail { font-family: var(--mono); font-size: 10px; }
+.tree-chip-detail { font-family: var(--mono); font-size: 11px; }
 .tree-chip-age { background: transparent; color: var(--amber); padding: 0 2px; }
 .tree-chip-stopped { background: transparent; color: var(--text-faint); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .tree-chip-action:hover { text-decoration: underline; }
@@ -363,7 +369,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .tree-sessions { margin: 3px 0 0 22px; border-left: 1px solid var(--border-strong); padding-left: 6px; }
 .tree-detail {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -407,7 +413,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 /* The label truncates first so the context indicator stays readable, but
    never below a few characters: like the TUI row, the name wins. */
 .tree-session-label { flex: 1 1 0; min-width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tree-context { flex-shrink: 0; font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
+.tree-context { flex-shrink: 0; font-family: var(--mono); font-size: 11px; white-space: nowrap; }
 .ctx-normal { color: var(--green); }
 .ctx-warning { color: var(--amber); font-weight: 700; }
 .ctx-critical { color: var(--red); font-weight: 700; }
@@ -768,7 +774,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   margin: 0 12px 6px;
   padding: 0 6px 0 10px;
   height: 36px;
-  border: 1px dashed var(--border-strong);
+  border: 1px dashed var(--border-control);
   border-radius: var(--radius);
   color: var(--text-faint);
 }
@@ -1210,6 +1216,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; color: var(--text-faint); font-family: monospace; }
 .learning-line:hover, .learning-line-selected { background: var(--surface-2); }
 .learning-line-selected { box-shadow: inset 3px 0 var(--accent); }
+.learning-file-selected { background: var(--surface-2); box-shadow: inset 3px 0 var(--accent); }
 .learning-hunk { display: block; width: 100%; margin-top: 4px; padding: 2px 8px; border: 0; border-top: 1px dashed var(--border); background: transparent; color: var(--text-muted); font-size: 11px; text-align: left; cursor: pointer; }
 .learning-hunk:hover { background: var(--surface-2); }
 .learning-starters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }

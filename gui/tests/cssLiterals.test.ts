@@ -51,3 +51,15 @@ it("keeps hex and rgb literals inside token blocks or the explicit allow-list", 
   }
   expect(offenders).toEqual([]);
 });
+
+it("keeps every px font-size at 11px or larger", () => {
+  const offenders: string[] = [];
+  for (const file of readdirSync(dir).filter((f) => f.endsWith(".css"))) {
+    for (const { selector, body } of rules(readFileSync(new URL(file, dir), "utf8"))) {
+      for (const m of body.matchAll(/(?:^|[;\s])font-size:\s*([\d.]+)px/g)) {
+        if (Number(m[1]) < 11) offenders.push(`${file}: ${selector} { font-size: ${m[1]}px }`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});

@@ -85,6 +85,8 @@ it("faint text inside a surface-3 container resolves to text-muted", () => {
   for (const sel of [".tree-chip", ".tag", ".chip", ".empty-icon", ".segmented", ".md code", ".md pre", ".nav-item:hover", ".tree-feature:hover", ".btn-ghost:hover", ".menu-item:hover"]) {
     expect(shared, sel).toContain(sel);
   }
+  // The stopped chip is transparent and relies on faint text to read dimmed.
+  expect(shared).toContain(".tree-chip:not(.tree-chip-stopped)");
   expect(scoped("sessions.css")).toContain(".custom-session-icon");
   expect(scoped("sessionSidebar.css")).toContain(".sb-chip");
   check("text-muted on surface-3", rgb("text-muted"), rgb("surface-3"));

@@ -268,8 +268,10 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
    faint text inside an active row steps up to muted. */
 .tree-feature-active, .nav-item-active { --text-faint: var(--text-muted); }
 /* Same for --surface-3 (built-in light: 4.2:1): chips, tags, pills, code and
-   hover fills step faint text up to muted instead of darkening the global token. */
-.tree-chip, .tag, .chip, .empty-icon, .segmented, .md code, .md pre,
+   hover fills step faint text up to muted instead of darkening the global token.
+   A stopped chip is transparent, not surface-3, and its faint text is what
+   reads as "stopped", so it keeps the faint colour it inherits. */
+.tree-chip:not(.tree-chip-stopped), .tag, .chip, .empty-icon, .segmented, .md code, .md pre,
 .nav-item:hover, .tree-feature:hover, .btn-ghost:hover, .menu-item:hover { --text-faint: var(--text-muted); }
 .tree-row { display: flex; align-items: center; gap: 5px; min-height: 24px; }
 .tree-row .nav-chevron { flex-shrink: 0; }

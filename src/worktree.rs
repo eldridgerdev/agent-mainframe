@@ -390,6 +390,14 @@ impl WorktreeManager {
     /// more untracked file for `git add -A` to pick up. Nothing happens when
     /// `probe` is already ignored or `workdir` is not a Git work tree.
     pub fn exclude_locally(workdir: &Path, probe: &str, pattern: &str) {
+        let _ = Self::exclude_locally_checked(workdir, probe, pattern);
+    }
+
+    pub(crate) fn exclude_locally_checked(
+        workdir: &Path,
+        probe: &str,
+        pattern: &str,
+    ) -> Result<()> {
         let already_ignored = Command::new("git")
             .arg("-C")
             .arg(workdir)
@@ -399,35 +407,38 @@ impl WorktreeManager {
             .map(|status| status.success())
             .unwrap_or(false);
         if already_ignored {
-            return;
+            return Ok(());
         }
 
-        let Ok(output) = Command::new("git")
+        let output = Command::new("git")
             .arg("-C")
             .arg(workdir)
             .args(["rev-parse", "--git-path", "info/exclude"])
             .stderr(Stdio::null())
-            .output()
-        else {
-            return;
-        };
-        if !output.status.success() {
-            return;
-        }
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "Cannot resolve Git exclude file for {}",
+            workdir.display()
+        );
         let rel = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if rel.is_empty() {
-            return;
+            return Ok(());
         }
         // `--git-path` prints relative to `-C`'s directory; a rare absolute result
         // replaces the join entirely, which is also correct.
         let exclude_path = workdir.join(rel);
-        let mut contents = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+        let mut contents = match std::fs::read_to_string(&exclude_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error.into()),
+        };
         let wanted = pattern.trim_end_matches('/');
         if contents
             .lines()
             .any(|line| line.trim().trim_end_matches('/') == wanted)
         {
-            return;
+            return Ok(());
         }
         if !contents.is_empty() && !contents.ends_with('\n') {
             contents.push('\n');
@@ -435,9 +446,10 @@ impl WorktreeManager {
         contents.push_str(pattern);
         contents.push('\n');
         if let Some(parent) = exclude_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::write(&exclude_path, contents);
+        std::fs::write(&exclude_path, contents)?;
+        Ok(())
     }
 }
 

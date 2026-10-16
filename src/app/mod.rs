@@ -21,6 +21,7 @@ pub(crate) mod feature_setup;
 pub(crate) mod fix_cost;
 pub(crate) mod github_workflow;
 mod handoff;
+mod harness_change;
 mod hooks;
 pub(crate) mod issue_fixer;
 pub(crate) mod learning;

@@ -212,7 +212,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .nav-group { margin-bottom: 2px; }
 
 .nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nav-count { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.nav-count { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 
 .nav-chevron, .nav-link {
   border: 0;
@@ -1181,7 +1181,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .learning-code { overflow: auto; flex: 1; }
 .learning-line { display: flex; width: max-content; min-width: 100%; background: transparent; border: 0; padding: 0 8px; text-align: left; color: inherit; cursor: pointer; }
 .learning-line code { white-space: pre; font-size: 12px; line-height: 20px; }
-.learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; opacity: .5; font-family: monospace; }
+.learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; color: var(--text-faint); font-family: monospace; }
 .learning-line:hover, .learning-line-selected { background: var(--surface-2); }
 .learning-line-selected { box-shadow: inset 3px 0 var(--accent); }
 .learning-hunk { display: block; width: 100%; margin-top: 4px; padding: 2px 8px; border: 0; border-top: 1px dashed var(--border); background: transparent; color: var(--text-muted); font-size: 11px; text-align: left; cursor: pointer; }
@@ -1417,7 +1417,6 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   :root:not([data-theme="light"]) .switch::after { background: var(--accent-fg); }
   :root:not([data-theme="light"]) .ctx-stale { opacity: 1; }
   :root:not([data-theme="light"]) .tab-stopped { opacity: 1; }
-  :root:not([data-theme="light"]) .learning-line-number { opacity: 1; color: var(--text-faint); }
   :root:not([data-theme="light"]) .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }
   :root:not([data-theme="light"]) .term-scrollback-new { color: var(--amber); }
   :root:not([data-theme="light"]) .term-scrollback-keys { color: var(--text-muted); }
@@ -1472,13 +1471,21 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 :root[data-theme="dark"] .switch::after { background: var(--accent-fg); }
 :root[data-theme="dark"] .ctx-stale { opacity: 1; }
 :root[data-theme="dark"] .tab-stopped { opacity: 1; }
-:root[data-theme="dark"] .learning-line-number { opacity: 1; color: var(--text-faint); }
 :root[data-theme="dark"] .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }
 :root[data-theme="dark"] .term-scrollback-new { color: var(--amber); }
 :root[data-theme="dark"] .term-scrollback-keys { color: var(--text-muted); }
 :root[data-theme="dark"] .term-scrollback-keys kbd { color: var(--text); background: var(--surface-2); border-color: var(--border); }
 
 .debug-log-toolbar { flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem; }
+.debug-log-toolbar input[type="search"] {
+  height: 30px;
+  margin-left: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border-control);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.debug-log-toolbar input[type="search"]:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .debug-log-entries { list-style: none; padding: 0; margin: 0; }
 .debug-log-entry { padding: .75rem; border-bottom: 1px solid var(--border); }
 .debug-log-entry time { color: var(--text-muted); font-size: .85rem; }

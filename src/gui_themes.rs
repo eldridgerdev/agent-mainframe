@@ -127,7 +127,30 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
     // brighter dark `surface-3` would push `text-muted` up toward `text`.
     let (surface2, t2) = step_from(surface, text_source, 0.03, SURFACE_2_TARGET);
     let (surface3, _) = step_from(surface, text_source, t2 + 0.03, SURFACE_3_TARGET);
-    let surfaces = [bg, sidebar, surface, surface2, surface3];
+    // Accent first: the selected nav item and active feature row are its
+    // soft tint, and every text role is drawn on those rows too.
+    let chrome_bgs = [bg, sidebar, surface, surface2];
+    let with_tint_on = |c: Rgb, base: &[Rgb]| {
+        ensure_contrast_by(c, TEXT_MIN, |c| {
+            let mut bgs = base.to_vec();
+            bgs.extend([over(c, SOFT_ALPHA, surface), over(c, SOFT_ALPHA, sidebar)]);
+            bgs
+        })
+    };
+    let accent = with_tint_on(rgb(&theme.primary), &chrome_bgs);
+    let active_rows = [
+        over(accent, SOFT_ALPHA, sidebar),
+        over(accent, SOFT_ALPHA, surface),
+    ];
+    let surfaces = [
+        bg,
+        sidebar,
+        surface,
+        surface2,
+        surface3,
+        active_rows[0],
+        active_rows[1],
+    ];
 
     let text = ensure_contrast(text_source, &surfaces, TEXT_STRONG_MIN);
     let muted_source = rgb(&theme.text_muted);
@@ -136,16 +159,16 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
 
     // Status and accent colours are drawn as text on the chrome and on their
     // own soft tint, so the tint is computed from the colour being floored.
-    let text_bgs = [bg, sidebar, surface, surface2];
+    let text_bgs = [
+        bg,
+        sidebar,
+        surface,
+        surface2,
+        active_rows[0],
+        active_rows[1],
+    ];
     let on_chrome = |c: Rgb| ensure_contrast(c, &text_bgs, TEXT_MIN);
-    let with_tint = |c: Rgb| {
-        ensure_contrast_by(c, TEXT_MIN, |c| {
-            let mut bgs = text_bgs.to_vec();
-            bgs.extend([over(c, SOFT_ALPHA, surface), over(c, SOFT_ALPHA, sidebar)]);
-            bgs
-        })
-    };
-    let accent = with_tint(rgb(&theme.primary));
+    let with_tint = |c: Rgb| with_tint_on(c, &text_bgs);
     let green = with_tint(rgb(&theme.success));
     let amber = with_tint(rgb(&theme.warning));
     let red = with_tint(rgb(&theme.danger));
@@ -722,8 +745,14 @@ mod tests {
                     failures.push(format!("{id}: {fg_name} on {bg_name} {ratio:.2} < {min}"));
                 }
             };
+            // The selected nav item and active feature row are the accent
+            // tint; their counts, chips and ages are drawn on it.
+            let active = [
+                ("active/bg-sidebar", soft("accent-soft", sidebar)),
+                ("active/surface", soft("accent-soft", surface)),
+            ];
             for key in ["text", "text-muted", "text-faint"] {
-                for (bg_name, bg) in surfaces {
+                for (bg_name, bg) in surfaces.into_iter().chain(active) {
                     check(key, tok(key), bg_name, bg, 4.5);
                 }
             }
@@ -732,6 +761,11 @@ mod tests {
                 let tint = format!("{key}-soft");
                 check(key, fg, "surface", surface, 4.5);
                 check(key, fg, "bg-sidebar", sidebar, 4.5);
+                if key != "accent" {
+                    for (bg_name, bg) in active {
+                        check(key, fg, bg_name, bg, 4.5);
+                    }
+                }
                 check(key, fg, "soft/surface", soft(&tint, surface), 4.5);
                 check(key, fg, "soft/bg-sidebar", soft(&tint, sidebar), 4.5);
             }

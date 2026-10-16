@@ -10,18 +10,18 @@
 :root {
   --sb-width: 300px;
   --sb-rail-width: 30px;
-  --sb-harness-claude: #c4643f;
-  --sb-harness-codex: #0e8a6a;
-  --sb-harness-opencode: #5562e8;
+  --sb-harness-claude: #a35334;
+  --sb-harness-codex: #0c785c;
+  --sb-harness-opencode: #4f5bd8;
   --sb-harness-pi: var(--accent);
   --sb-accent-status: var(--amber);
   --sb-accent-usage: var(--green);
   --sb-accent-plan: var(--amber);
   --sb-accent-issue: var(--text-faint);
-  --sb-accent-pr: #1d7fb8;
+  --sb-accent-pr: #196ea0;
   --sb-accent-work: var(--accent);
-  --sb-accent-summary: #1d7fb8;
-  --sb-accent-prompt: #8a4fd0;
+  --sb-accent-summary: #196ea0;
+  --sb-accent-prompt: #844cc8;
   --sb-accent-todos: var(--green);
   --sb-tone-ready: var(--green);
   --sb-tone-waiting: var(--amber);

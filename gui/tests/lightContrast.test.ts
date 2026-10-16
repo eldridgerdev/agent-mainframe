@@ -49,3 +49,16 @@ it("draws control boundaries at 3:1 and keeps disabled controls legible", () => 
   check("disabled-fg on surface", rgb("disabled-fg"), rgb("surface"), 3);
   expect(failures).toEqual([]);
 });
+
+it("keeps light agent-sidebar accents and active-row text readable", () => {
+  failures.length = 0;
+  const sidebar = blocks(readFileSync(new URL("../src/sessionSidebar.css", import.meta.url), "utf8")).light;
+  for (const role of ["harness-claude", "harness-codex", "harness-opencode", "accent-pr", "accent-summary", "accent-prompt"]) {
+    for (const name of surfaces) check(`agent sidebar ${role} on ${name}`, parse(token(sidebar, `sb-${role}`)).rgb, rgb(name));
+  }
+  // The selected nav item and active feature row are the accent tint over
+  // the sidebar; their counts and labels are drawn on it.
+  const active = over(token(light, "accent-soft"), rgb("bg-sidebar"));
+  for (const text of ["text", "text-muted"]) check(`${text} on the active row`, rgb(text), active);
+  expect(failures).toEqual([]);
+});

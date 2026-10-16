@@ -221,6 +221,10 @@ judged on corrected colors.
 - [x] Selected list rows (`.diff-file-selected`, `.learning-line-selected`)
       carry an accent edge (`inset 3px 0 var(--accent)`), matching
       `.review-line-selected`. The neutral fill alone was too subtle.
+- [x] Follow-up audit fixes: floor text and status colors on the active
+      row tint (`accent-soft` over sidebar/surface) in the projection;
+      `.nav-count` uses `--text-muted`; light `--sb-harness-*`/`--sb-accent-*`
+      raised to AA; the Debug log search box uses `--border-control`.
 - [ ] Learning file list: highlight the open file (needs a selected flag
       from the backend view).
 
@@ -239,9 +243,11 @@ judged on corrected colors.
       underneath so that it works on light terminals.
 - [ ] `.term-scrollback*` (`:1348-1357`): use the token form (currently
       dark-only) in light mode too, and delete the literal block.
+- [x] `.learning-line-number`: opacity dimming replaced with `--text-faint`
+      (dark-only overrides dropped).
 - [ ] Replace opacity-dimmed text with colors: `.ctx-stale` (`:378`),
-      `.tab-stopped` (`:860`), `.learning-line-number` (`:1164`), then drop
-      their dark-only `opacity: 1` overrides.
+      `.tab-stopped` (`:860`), then drop their dark-only `opacity: 1`
+      overrides.
 - [ ] Add a lint-style test that fails on a new hex/rgb literal in
       `gui/src/*.css` outside token blocks (allow-list `.screenshot-canvas`
       and shadows).

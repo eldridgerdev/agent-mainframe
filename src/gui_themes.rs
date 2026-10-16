@@ -4,6 +4,10 @@ use std::{collections::BTreeMap, fs, path::Path};
 use crate::theme::{ColorDef, Theme, ThemeName};
 use serde::{Deserialize, Serialize};
 
+mod color;
+
+use color::{BLACK, Rgb, WHITE, best_on, contrast, ensure_contrast, ensure_contrast_by, mix, over};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeMode {
@@ -57,6 +61,212 @@ fn hex(color: &ColorDef) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
 }
 
+fn rgb(color: &ColorDef) -> Rgb {
+    Rgb::parse(&hex(color)).expect("hex() emits #rrggbb").0
+}
+
+/// WCAG AA for body text; every text role is floored here on every
+/// background it is drawn on.
+const TEXT_MIN: f64 = 4.5;
+/// `text`, `text-muted` and `text-faint` (which gets [`TEXT_MIN`]) are
+/// floored a step apart so they stay distinguishable from one another even
+/// where a palette's own text is barely above AA on its raised surfaces
+/// (catppuccin-latte `text` was 5.4:1 on `surface-3`).
+const TEXT_STRONG_MIN: f64 = 6.0;
+const MUTED_MIN: f64 = 5.0;
+/// WCAG 1.4.11 non-text contrast: control boundaries. Also used for
+/// disabled text, which WCAG exempts but which should still be legible.
+const NON_TEXT_MIN: f64 = 3.0;
+/// How far `surface-2` (footers, badges, selected rows) and `surface-3`
+/// (chips, hover) step from `surface`. 1.10:1 is about ΔL* 4 on both light
+/// and dark surfaces, the smallest step that reads as a distinct fill; these
+/// targets sit a little above the floors the catalog test asserts (1.10 and
+/// 1.20).
+const SURFACE_2_TARGET: f64 = 1.12;
+const SURFACE_3_TARGET: f64 = 1.25;
+/// Below this the page and its cards/sidebar would read as one colour.
+const PANEL_SEPARATION: f64 = 1.04;
+/// The `20` alpha suffix of every `*-soft` tint.
+const SOFT_ALPHA: f64 = 32.0 / 255.0;
+/// The diff row tints in `gui/src/styles.css` (`.diff-added`/`.diff-removed`).
+const DIFF_ADDED: (Rgb, f64) = (Rgb(46.0, 160.0, 67.0), 0.16);
+const DIFF_REMOVED: (Rgb, f64) = (Rgb(248.0, 81.0, 73.0), 0.16);
+
+/// `base` moved toward `toward` from mix fraction `start`, in 1% steps, until
+/// it is at least `min_step` away from `base`. Returns the colour and the
+/// fraction used.
+fn step_from(base: Rgb, toward: Rgb, start: f64, min_step: f64) -> (Rgb, f64) {
+    let mut t = start;
+    loop {
+        let candidate = mix(base, toward, t).rounded();
+        if contrast(base, candidate) >= min_step || t >= 1.0 {
+            return (candidate, t);
+        }
+        t = (t + 0.01).min(1.0);
+    }
+}
+
+/// Derives the GUI's roles from a TUI palette instead of copying it. A TUI
+/// palette is tuned for a terminal, where `shortcut_background` should be
+/// loud and `text_muted` should recede; the GUI needs neutral raised
+/// surfaces and secondary text that is still readable. Hues are kept: every
+/// adjustment only moves a colour toward black or white (or toward `text`
+/// for surfaces), the smallest amount that meets the floor.
+fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
+    let bg = rgb(&theme.background);
+    let text_source = rgb(&theme.text);
+    let mut panel = rgb(&theme.header_background);
+    if contrast(panel, bg) < PANEL_SEPARATION {
+        panel = step_from(bg, text_source, 0.02, PANEL_SEPARATION).0;
+    }
+    let (sidebar, surface) = (panel, panel);
+    // Neutral raised surfaces: a little of the text colour mixed into the
+    // card surface, never the key-hint or selection colours.
+    // Sized by contrast step rather than a fixed mix: a fixed 6%/12% lands
+    // near 1.10/1.22 on light surfaces but 1.15/1.35 on dark ones, and the
+    // brighter dark `surface-3` would push `text-muted` up toward `text`.
+    let (surface2, t2) = step_from(surface, text_source, 0.03, SURFACE_2_TARGET);
+    let (surface3, _) = step_from(surface, text_source, t2 + 0.03, SURFACE_3_TARGET);
+    let surfaces = [bg, sidebar, surface, surface2, surface3];
+
+    let text = ensure_contrast(text_source, &surfaces, TEXT_STRONG_MIN);
+    let muted_source = rgb(&theme.text_muted);
+    let muted = ensure_contrast(muted_source, &surfaces, MUTED_MIN);
+    let faint = ensure_contrast(mix(muted_source, bg, 0.3), &surfaces, TEXT_MIN);
+
+    // Status and accent colours are drawn as text on the chrome and on their
+    // own soft tint, so the tint is computed from the colour being floored.
+    let text_bgs = [bg, sidebar, surface, surface2];
+    let on_chrome = |c: Rgb| ensure_contrast(c, &text_bgs, TEXT_MIN);
+    let with_tint = |c: Rgb| {
+        ensure_contrast_by(c, TEXT_MIN, |c| {
+            let mut bgs = text_bgs.to_vec();
+            bgs.extend([over(c, SOFT_ALPHA, surface), over(c, SOFT_ALPHA, sidebar)]);
+            bgs
+        })
+    };
+    let accent = with_tint(rgb(&theme.primary));
+    let green = with_tint(rgb(&theme.success));
+    let amber = with_tint(rgb(&theme.warning));
+    let red = with_tint(rgb(&theme.danger));
+    let on_fill = |fill: Rgb| best_on(fill, &[text, bg, BLACK, WHITE]);
+    let accent_fg = on_fill(accent);
+    // The primary button's hover fill: still text-safe, and still carries
+    // `accent-fg`.
+    let accent_hover = ensure_contrast_by(rgb(&theme.secondary), TEXT_MIN, |c| {
+        let mut bgs = text_bgs.to_vec();
+        bgs.extend([over(c, SOFT_ALPHA, surface), accent_fg]);
+        bgs
+    });
+
+    let boundary_bgs = [bg, sidebar, surface, surface2];
+    let border_strong = ensure_contrast(rgb(&theme.border_focus), &boundary_bgs, NON_TEXT_MIN);
+    let border_control = ensure_contrast(mix(surface, text, 0.35), &boundary_bgs, NON_TEXT_MIN);
+    let disabled_bg = surface3;
+    let disabled_fg = ensure_contrast(
+        mix(faint, disabled_bg, 0.5),
+        &[disabled_bg, bg, sidebar, surface, surface2],
+        NON_TEXT_MIN,
+    );
+
+    // Code is drawn on the card surface, the selected line, the diff row
+    // tints and the review selection (see `gui/tests/syntaxContrast.test.ts`).
+    let code_bgs = [
+        surface,
+        surface2,
+        over(DIFF_ADDED.0, DIFF_ADDED.1, surface),
+        over(DIFF_REMOVED.0, DIFF_REMOVED.1, surface),
+        over(accent, SOFT_ALPHA, surface),
+    ];
+    let code = |c: &ColorDef| ensure_contrast(rgb(c), &code_bgs, TEXT_MIN);
+
+    let mut tokens = BTreeMap::new();
+    for (key, color) in [
+        ("bg", bg),
+        ("bg-sidebar", sidebar),
+        ("surface", surface),
+        ("surface-2", surface2),
+        ("surface-3", surface3),
+        ("border", rgb(&theme.border)),
+        ("border-strong", border_strong),
+        ("border-control", border_control),
+        ("text", text),
+        ("text-muted", muted),
+        ("text-faint", faint),
+        ("accent", accent),
+        ("accent-hover", accent_hover),
+        ("accent-fg", accent_fg),
+        ("green", green),
+        ("amber", amber),
+        ("red", red),
+        ("danger-fg", on_fill(red)),
+        ("warning-fg", on_fill(amber)),
+        ("success-fg", on_fill(green)),
+        ("disabled-bg", disabled_bg),
+        ("disabled-fg", disabled_fg),
+        (
+            "sb-harness-claude",
+            on_chrome(rgb(&theme.session_icon_claude)),
+        ),
+        (
+            "sb-harness-codex",
+            on_chrome(rgb(&theme.session_icon_codex)),
+        ),
+        (
+            "sb-harness-opencode",
+            on_chrome(rgb(&theme.session_icon_opencode)),
+        ),
+        ("sb-harness-pi", accent),
+        ("sb-accent-pr", on_chrome(rgb(&theme.info))),
+        ("sb-accent-summary", on_chrome(rgb(&theme.info))),
+        ("sb-accent-prompt", on_chrome(rgb(&theme.secondary))),
+        ("sb-accent-status", amber),
+        ("sb-accent-usage", green),
+        ("sb-accent-plan", amber),
+        ("sb-accent-issue", faint),
+        ("sb-accent-work", accent),
+        ("sb-accent-todos", green),
+        ("sb-tone-ready", green),
+        ("sb-tone-waiting", amber),
+        ("sb-tone-busy", accent),
+        ("sb-tone-pr-working", amber),
+        ("sb-tone-muted", faint),
+        ("sb-tone-detail", muted),
+        ("sb-tone-todo", green),
+        ("sb-tone-stopped", faint),
+        ("sb-usage-low", green),
+        ("sb-usage-medium", amber),
+        ("sb-usage-high", red),
+        ("sb-ctx-normal", green),
+        ("sb-ctx-warning", amber),
+        ("sb-ctx-critical", red),
+        ("sb-track", surface3),
+        ("syn-comment", code(&theme.text_muted)),
+        ("syn-keyword", code(&theme.secondary)),
+        ("syn-function", code(&theme.info)),
+        ("syn-string", code(&theme.success)),
+        ("syn-number", code(&theme.warning)),
+        ("syn-type", code(&theme.info)),
+        ("syn-property", code(&theme.primary)),
+        ("syn-tag", code(&theme.danger)),
+        ("syn-accent", code(&theme.secondary)),
+        ("syn-builtin", code(&theme.danger)),
+        ("syn-parameter", code(&theme.warning)),
+        ("syn-punctuation", code(&theme.text_muted)),
+    ] {
+        tokens.insert(key.into(), color.hex());
+    }
+    for (key, role) in [
+        ("accent-soft", "accent"),
+        ("red-soft", "red"),
+        ("amber-soft", "amber"),
+        ("green-soft", "green"),
+    ] {
+        tokens.insert(key.into(), format!("{}20", tokens[role]));
+    }
+    tokens
+}
+
 fn project(name: ThemeName) -> GuiTheme {
     let id = serde_json::to_value(name)
         .unwrap()
@@ -79,53 +289,7 @@ fn project(name: ThemeName) -> GuiTheme {
     } else {
         false
     };
-    let mut tokens = BTreeMap::new();
-    for (key, color) in [
-        ("bg", &theme.background),
-        ("bg-sidebar", &theme.header_background),
-        ("surface", &theme.header_background),
-        ("surface-2", &theme.shortcut_background),
-        ("surface-3", &theme.selection),
-        ("border", &theme.border),
-        ("border-strong", &theme.border_focus),
-        ("text", &theme.text),
-        ("text-muted", &theme.text_muted),
-        ("text-faint", &theme.text_muted),
-        ("accent", &theme.primary),
-        ("accent-hover", &theme.secondary),
-        ("accent-fg", &theme.background),
-        ("green", &theme.success),
-        ("amber", &theme.warning),
-        ("red", &theme.danger),
-        ("sb-harness-claude", &theme.session_icon_claude),
-        ("sb-harness-codex", &theme.session_icon_codex),
-        ("sb-harness-opencode", &theme.session_icon_opencode),
-        ("sb-accent-pr", &theme.info),
-        ("sb-accent-summary", &theme.info),
-        ("sb-accent-prompt", &theme.secondary),
-        ("syn-comment", &theme.text_muted),
-        ("syn-keyword", &theme.secondary),
-        ("syn-function", &theme.info),
-        ("syn-string", &theme.success),
-        ("syn-number", &theme.warning),
-        ("syn-type", &theme.info),
-        ("syn-property", &theme.primary),
-        ("syn-tag", &theme.danger),
-        ("syn-accent", &theme.secondary),
-        ("syn-builtin", &theme.danger),
-        ("syn-parameter", &theme.warning),
-        ("syn-punctuation", &theme.text_muted),
-    ] {
-        tokens.insert(key.into(), hex(color));
-    }
-    for (key, role) in [
-        ("accent-soft", "accent"),
-        ("red-soft", "red"),
-        ("amber-soft", "amber"),
-        ("green-soft", "green"),
-    ] {
-        tokens.insert(key.into(), format!("{}20", tokens[role]));
-    }
+    let mut tokens = project_tokens(&theme);
     let mut terminal = BTreeMap::new();
     for (key, color) in [
         ("background", &theme.background),
@@ -210,6 +374,7 @@ const CUSTOM_TOKENS: &[&str] = &[
     "surface-3",
     "border",
     "border-strong",
+    "border-control",
     "text",
     "text-muted",
     "text-faint",
@@ -217,6 +382,11 @@ const CUSTOM_TOKENS: &[&str] = &[
     "accent-hover",
     "accent-fg",
     "accent-soft",
+    "danger-fg",
+    "warning-fg",
+    "success-fg",
+    "disabled-fg",
+    "disabled-bg",
     "green",
     "amber",
     "red",
@@ -493,5 +663,138 @@ mod tests {
                 parse_custom(&format!(r#"{{"id":"x","name":"X","mode":"light"{extra}}}"#)).is_err()
             );
         }
+    }
+
+    /// The GUI's readability floor for every catalog theme: WCAG AA 4.5:1 for
+    /// text, 3:1 for control boundaries and disabled text (WCAG exempts
+    /// disabled controls; 3:1 keeps them legible), on every background each
+    /// role is drawn on. Mirrors `gui/tests/syntaxContrast.test.ts` for code.
+    #[test]
+    fn every_catalog_theme_meets_the_gui_contrast_floor() {
+        let mut failures = vec![];
+        for name in Theme::list() {
+            if name == ThemeName::Default {
+                continue;
+            }
+            let theme = project(name);
+            let id = &theme.id;
+            let mut missing = vec![];
+            let mut tok = |key: &str| -> Rgb {
+                match theme.tokens.get(key).and_then(|v| Rgb::parse(v)) {
+                    Some((rgb, 1.0)) => rgb,
+                    _ => {
+                        missing.push(key.to_owned());
+                        Rgb(255.0, 0.0, 255.0)
+                    }
+                }
+            };
+            let soft = |key: &str, base: Rgb| -> Rgb {
+                let (rgb, alpha) = Rgb::parse(&theme.tokens[key]).unwrap();
+                over(rgb, alpha, base)
+            };
+            let surfaces = [
+                ("bg", tok("bg")),
+                ("bg-sidebar", tok("bg-sidebar")),
+                ("surface", tok("surface")),
+                ("surface-2", tok("surface-2")),
+                ("surface-3", tok("surface-3")),
+            ];
+            let [
+                (_, bg),
+                (_, sidebar),
+                (_, surface),
+                (_, surface2),
+                (_, surface3),
+            ] = surfaces;
+            // 1.10:1 is about the smallest step that reads as a distinct
+            // fill on both light and dark surfaces (≈ ΔL* 3–4 on a light
+            // one); surface-3 (chips, hover) must step further than
+            // surface-2 (footers, selected rows) so the two stay ordered.
+            let (step2, step3) = (contrast(surface, surface2), contrast(surface, surface3));
+            if step2 < 1.10 || step3 < 1.20 || step3 <= step2 {
+                failures.push(format!(
+                    "{id}: surface steps surface-2 {step2:.3} (≥1.10), surface-3 {step3:.3} (≥1.20)"
+                ));
+            }
+            let mut check = |fg_name: &str, fg: Rgb, bg_name: &str, bg: Rgb, min: f64| {
+                let ratio = contrast(fg, bg);
+                if ratio < min {
+                    failures.push(format!("{id}: {fg_name} on {bg_name} {ratio:.2} < {min}"));
+                }
+            };
+            for key in ["text", "text-muted", "text-faint"] {
+                for (bg_name, bg) in surfaces {
+                    check(key, tok(key), bg_name, bg, 4.5);
+                }
+            }
+            for key in ["accent", "green", "amber", "red"] {
+                let fg = tok(key);
+                let tint = format!("{key}-soft");
+                check(key, fg, "surface", surface, 4.5);
+                check(key, fg, "bg-sidebar", sidebar, 4.5);
+                check(key, fg, "soft/surface", soft(&tint, surface), 4.5);
+                check(key, fg, "soft/bg-sidebar", soft(&tint, sidebar), 4.5);
+            }
+            for (fg, fill) in [
+                ("accent-fg", "accent"),
+                ("accent-fg", "accent-hover"),
+                ("danger-fg", "red"),
+                ("warning-fg", "amber"),
+                ("success-fg", "green"),
+            ] {
+                check(fg, tok(fg), fill, tok(fill), 4.5);
+            }
+            for key in ["border-control", "border-strong"] {
+                check(key, tok(key), "surface", surface, 3.0);
+                check(key, tok(key), "bg", bg, 3.0);
+            }
+            check(
+                "border-control",
+                tok("border-control"),
+                "surface-2",
+                surface2,
+                3.0,
+            );
+            let disabled_bg = tok("disabled-bg");
+            for (bg_name, bg) in [("disabled-bg", disabled_bg), ("surface", surface)] {
+                check("disabled-fg", tok("disabled-fg"), bg_name, bg, 3.0);
+            }
+            let code = [
+                ("surface", surface),
+                ("surface-2", surface2),
+                ("added", over(Rgb(46.0, 160.0, 67.0), 0.16, surface)),
+                ("removed", over(Rgb(248.0, 81.0, 73.0), 0.16, surface)),
+                ("selected", soft("accent-soft", surface)),
+            ];
+            for role in [
+                "comment",
+                "keyword",
+                "function",
+                "string",
+                "number",
+                "type",
+                "property",
+                "tag",
+                "accent",
+                "builtin",
+                "parameter",
+                "punctuation",
+            ] {
+                let key = format!("syn-{role}");
+                let fg = tok(&key);
+                for (bg_name, bg) in code {
+                    check(&key, fg, bg_name, bg, 4.5);
+                }
+            }
+            for key in missing {
+                failures.push(format!("{id}: missing token {key}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} failures:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 }

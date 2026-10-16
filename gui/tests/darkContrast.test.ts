@@ -37,6 +37,21 @@ it("keeps dark body text, status/context colours and chrome readable on real sur
   expect(failures).toEqual([]);
 });
 
+it("keeps the new dark control, on-colour and disabled tokens readable in both dark blocks", () => {
+  const themed = css.slice(css.lastIndexOf(':root[data-theme="dark"] {'));
+  for (const block of [dark, themed]) {
+    failures.length = 0;
+    for (const [name, bg] of Object.entries(backgrounds)) check(`border-control on ${name}`, parse(token(block, "border-control")).rgb, bg, 3);
+    for (const [fg, fill] of [["danger-fg", "red"], ["warning-fg", "amber"], ["success-fg", "green"]]) {
+      check(`${fg} on ${fill}`, parse(token(block, fg)).rgb, parse(token(block, fill)).rgb);
+    }
+    const disabledFg = parse(token(block, "disabled-fg")).rgb;
+    check("disabled-fg on disabled-bg", disabledFg, parse(token(block, "disabled-bg")).rgb, 3);
+    for (const name of ["surface", "surface-2"]) check(`disabled-fg on ${name}`, disabledFg, backgrounds[name], 3);
+    expect(failures).toEqual([]);
+  }
+});
+
 it("checks merged PR, harness icons and every supervibe gradient stop", () => {
   failures.length = 0;
   // These dark-only rules follow the base selectors in the shipped stylesheet.

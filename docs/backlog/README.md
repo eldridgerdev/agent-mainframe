@@ -282,3 +282,14 @@ doc always says exactly what remains.
   feature works. A Python + Pillow ANSI→PNG renderer, a tmux driver
   script, scenario/seed examples, and a screenshot skill; GIF on request,
   high-fidelity `vhs` path left as future work.
+- [GUI theme contrast and readability](gui-theme-contrast-plan.md) —
+  _Ready._ A driver-run WCAG audit of 32 GUI screens across 10 themes, plus
+  a static matrix over all 28 catalog themes, found 73 failing elements
+  that trace back to six root causes. The biggest: `src/gui_themes.rs`
+  maps the GUI's neutral `surface-2` to the TUI's vivid
+  `shortcut_background`, so selected rows, modal footers, badges and
+  hunk headers become bright blocks with text at about 1.2–1.6:1 in
+  gruvbox-dark. The plan: derive GUI roles with a contrast floor instead
+  of copying TUI colors, fix the built-in light palette, tokenize
+  hard-coded colors and opacity dimming, enable xterm contrast correction
+  on light terminals, and add regression tests for every catalog theme.

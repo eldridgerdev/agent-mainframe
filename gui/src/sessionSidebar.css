@@ -161,7 +161,7 @@
   cursor: pointer;
 }
 .sb-action:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.sb-action:disabled { opacity: 0.55; cursor: default; }
+.sb-action:disabled { background: var(--disabled-bg); border-color: var(--disabled-bg); color: var(--disabled-fg); cursor: default; }
 
 .sb-lines { display: flex; flex-direction: column; gap: 2px; }
 .sb-line { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }

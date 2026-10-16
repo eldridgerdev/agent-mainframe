@@ -29,19 +29,25 @@
   --surface-3: #e7eaef;
   --border: #e2e5ea;
   --border-strong: #cdd2da;
+  --border-control: #82878c;
   --text: #1a1e24;
   --text-muted: #5a6370;
-  --text-faint: #8a929d;
-  --accent: #4f5bd5;
-  --accent-hover: #4350c7;
+  --text-faint: #626a75;
+  --accent: #4954c4;
+  --accent-hover: #3f49b0;
   --accent-fg: #ffffff;
-  --accent-soft: rgba(79, 91, 213, 0.1);
-  --green: #1f8a47;
-  --amber: #b07a0c;
-  --red: #cf2e2e;
-  --red-soft: rgba(207, 46, 46, 0.08);
-  --amber-soft: rgba(176, 122, 12, 0.1);
-  --green-soft: rgba(31, 138, 71, 0.1);
+  --danger-fg: #ffffff;
+  --warning-fg: #ffffff;
+  --success-fg: #ffffff;
+  --disabled-fg: #6f7782;
+  --disabled-bg: #e9ecf0;
+  --accent-soft: rgba(73, 84, 196, 0.1);
+  --green: #196e39;
+  --amber: #805909;
+  --red: #b82929;
+  --red-soft: rgba(184, 41, 41, 0.08);
+  --amber-soft: rgba(128, 89, 9, 0.1);
+  --green-soft: rgba(25, 110, 57, 0.1);
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-lg: 0 20px 48px rgba(16, 24, 40, 0.18), 0 2px 6px rgba(16, 24, 40, 0.08);
   --backdrop: rgba(20, 24, 32, 0.38);
@@ -61,12 +67,18 @@
     --surface-3: #3c4756;
     --border: #94a3b8;
     --border-strong: #afbdd0;
+    --border-control: #9aa8bb;
     --text: #f1f4f8;
     --text-muted: #d0d8e3;
     --text-faint: #c1cad6;
     --accent: #bec7ff;
     --accent-hover: #c5ccff;
     --accent-fg: #0c0f1c;
+    --danger-fg: #0c0f1c;
+    --warning-fg: #0c0f1c;
+    --success-fg: #0c0f1c;
+    --disabled-fg: #8d97a5;
+    --disabled-bg: #363e4a;
     --accent-soft: rgba(176, 186, 255, 0.12);
     --green: #88e0a8;
     --amber: #ffd17d;
@@ -472,19 +484,26 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-.btn:disabled { opacity: 0.55; }
+.btn:disabled, .btn-primary:disabled, .btn-secondary:disabled, .btn-danger:disabled, .btn-warning:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-bg);
+  color: var(--disabled-fg);
+  box-shadow: none;
+  filter: none;
+}
+.btn-ghost:disabled { background: transparent; border-color: transparent; color: var(--disabled-fg); }
 .btn-sm { height: 26px; padding: 0 9px; font-size: 12.5px; border-radius: 6px; gap: 5px; }
 .btn-icon { width: 32px; padding: 0; }
 .btn-icon.btn-sm { width: 26px; }
 
 .btn-primary { background: var(--accent); color: var(--accent-fg); }
 .btn-primary:not(:disabled):hover { background: var(--accent-hover); }
-.btn-secondary { background: var(--surface); border-color: var(--border-strong); color: var(--text); box-shadow: var(--shadow-sm); }
+.btn-secondary { background: var(--surface); border-color: var(--border-control); color: var(--text); box-shadow: var(--shadow-sm); }
 .btn-secondary:not(:disabled):hover { background: var(--surface-2); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:not(:disabled):hover { background: var(--surface-3); color: var(--text); }
-.btn-danger { background: var(--red); color: #fff; }
-.btn-warning { background: var(--amber); color: #fff; }
+.btn-danger { background: var(--red); color: var(--danger-fg); }
+.btn-warning { background: var(--amber); color: var(--warning-fg); }
 .btn-warning:not(:disabled):hover, .btn-danger:not(:disabled):hover { filter: brightness(1.08); }
 
 .link-button {
@@ -764,7 +783,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   background-clip: content-box;
   padding: 2px;
 }
-.todo-completed .todo-check { border-color: var(--green); background: var(--green); color: #fff; }
+.todo-completed .todo-check { border-color: var(--green); background: var(--green); color: var(--success-fg); }
 .todo-main { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; padding: 5px 0; }
 .todo-title { overflow-wrap: anywhere; }
 .todo-completed .todo-title { color: var(--text-faint); text-decoration: line-through; }
@@ -801,7 +820,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 }
 .menu-item .icon { color: var(--text-faint); }
 .menu-item:not(:disabled):hover { background: var(--surface-3); }
-.menu-item:disabled { opacity: 0.4; }
+.menu-item:disabled, .menu-item:disabled .icon, .menu-item:disabled .menu-item-hint { color: var(--disabled-fg); }
 .menu-item-label { flex: 1; }
 .menu-item-hint { font-size: 11.5px; color: var(--text-faint); }
 .menu-item-danger, .menu-item-danger .icon { color: var(--red); }
@@ -886,7 +905,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   width: 100%;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border-control);
   border-radius: 7px;
   background: var(--surface);
   transition: border-color 0.12s, box-shadow 0.12s;
@@ -904,6 +923,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   gap: 2px;
   border-radius: 8px;
   background: var(--surface-3);
+  border: 1px solid var(--border-control);
   align-self: flex-start;
 }
 .segment {
@@ -928,7 +948,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   height: 18px;
   margin: 1px 0 0;
   border-radius: 999px;
-  background: var(--border-strong);
+  background: var(--border-control);
   position: relative;
   cursor: pointer;
   transition: background 0.15s;
@@ -1163,6 +1183,7 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .learning-line code { white-space: pre; font-size: 12px; line-height: 20px; }
 .learning-line-number { min-width: 40px; text-align: right; padding-right: 12px; opacity: .5; font-family: monospace; }
 .learning-line:hover, .learning-line-selected { background: var(--surface-2); }
+.learning-line-selected { box-shadow: inset 3px 0 var(--accent); }
 .learning-hunk { display: block; width: 100%; margin-top: 4px; padding: 2px 8px; border: 0; border-top: 1px dashed var(--border); background: transparent; color: var(--text-muted); font-size: 11px; text-align: left; cursor: pointer; }
 .learning-hunk:hover { background: var(--surface-2); }
 .learning-starters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
@@ -1185,6 +1206,9 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-file { display: flex; flex-direction: column; width: 100%; padding: 8px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .diff-file small { color: var(--text-muted); }
 .diff-file:hover, .diff-file-selected { background: var(--surface-2); }
+/* Selected rows carry an accent edge, like .review-line-selected: the
+   neutral fill alone sits too close to its neighbours to read as selected. */
+.diff-file-selected { box-shadow: inset 3px 0 var(--accent); }
 .diff-content { min-width: 0; display: flex; flex-direction: column; }
 .diff-file-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; overflow-wrap: anywhere; font-size: 12px; }
 .diff-code { overflow: auto; flex: 1; position: relative; }
@@ -1392,7 +1416,6 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   :root:not([data-theme="light"]) .kind-vscode { color: #9cd7ff; }
   :root:not([data-theme="light"]) .switch::after { background: var(--accent-fg); }
   :root:not([data-theme="light"]) .ctx-stale { opacity: 1; }
-  :root:not([data-theme="light"]) .btn-danger, :root:not([data-theme="light"]) .btn-warning, :root:not([data-theme="light"]) .todo-completed .todo-check { color: var(--accent-fg); }
   :root:not([data-theme="light"]) .tab-stopped { opacity: 1; }
   :root:not([data-theme="light"]) .learning-line-number { opacity: 1; color: var(--text-faint); }
   :root:not([data-theme="light"]) .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }
@@ -1410,12 +1433,18 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   --surface-3: #3c4756;
   --border: #94a3b8;
   --border-strong: #afbdd0;
+  --border-control: #9aa8bb;
   --text: #f1f4f8;
   --text-muted: #d0d8e3;
   --text-faint: #c1cad6;
   --accent: #bec7ff;
   --accent-hover: #c5ccff;
   --accent-fg: #0c0f1c;
+  --danger-fg: #0c0f1c;
+  --warning-fg: #0c0f1c;
+  --success-fg: #0c0f1c;
+  --disabled-fg: #8d97a5;
+  --disabled-bg: #363e4a;
   --accent-soft: rgba(176, 186, 255, 0.12);
   --green: #88e0a8;
   --amber: #ffd17d;
@@ -1442,7 +1471,6 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 :root[data-theme="dark"] .kind-vscode { color: #9cd7ff; }
 :root[data-theme="dark"] .switch::after { background: var(--accent-fg); }
 :root[data-theme="dark"] .ctx-stale { opacity: 1; }
-:root[data-theme="dark"] .btn-danger, :root[data-theme="dark"] .btn-warning, :root[data-theme="dark"] .todo-completed .todo-check { color: var(--accent-fg); }
 :root[data-theme="dark"] .tab-stopped { opacity: 1; }
 :root[data-theme="dark"] .learning-line-number { opacity: 1; color: var(--text-faint); }
 :root[data-theme="dark"] .term-scrollback { color: var(--text); background: var(--surface); border-color: var(--border); }

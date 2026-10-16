@@ -120,6 +120,6 @@ it("applies explicit dark chrome, syntax and sidebar tokens and restores light d
     const light = getComputedStyle(document.documentElement);
     expect(light.getPropertyValue("--bg").trim()).toBe("#f6f7f9");
     expect(light.getPropertyValue("--syn-comment").trim()).toBe("#5a6574");
-    expect(light.getPropertyValue("--sb-harness-claude").trim()).toBe("#c4643f");
+    expect(light.getPropertyValue("--sb-harness-claude").trim()).toBe("#a35334");
   } finally { style.remove(); }
 });

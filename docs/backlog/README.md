@@ -282,3 +282,14 @@ doc always says exactly what remains.
   feature works. A Python + Pillow ANSI→PNG renderer, a tmux driver
   script, scenario/seed examples, and a screenshot skill; GIF on request,
   high-fidelity `vhs` path left as future work.
+- [GUI theme contrast and readability](gui-theme-contrast-plan.md) —
+  _Partial (E1–E3 landed; E4–E7 open)._ A driver-run WCAG audit of 32 GUI
+  screens across 10 themes, plus a static matrix over all 28 catalog
+  themes, found 73 failing elements from six root causes. Landed: GUI roles
+  are now derived from TUI palettes with a contrast floor instead of
+  copied (neutral `surface-2`/`surface-3`, floored text and status colors,
+  computed on-fill text), the built-in light palette is fixed, and a
+  catalog-wide regression test guards it. Left: tokenize the remaining
+  hard-coded colors and opacity dimming (E4), xterm contrast correction on
+  light terminals (E5), the live audit script and custom-theme docs (E6),
+  and size/weight polish for small faint text (E7).

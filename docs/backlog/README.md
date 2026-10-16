@@ -283,7 +283,7 @@ doc always says exactly what remains.
   script, scenario/seed examples, and a screenshot skill; GIF on request,
   high-fidelity `vhs` path left as future work.
 - [GUI theme contrast and readability](gui-theme-contrast-plan.md) —
-  _All 7 epics implemented (E1–E3 merged; E4–E7 awaiting merge)._ A
+  _All 7 epics shipped (#753, #754, #755)._ A
   driver-run WCAG audit of 32 GUI screens across 10 themes, plus a static
   matrix over all 28 catalog themes, found 73 failing elements from six root
   causes. GUI roles are now derived from TUI palettes with a contrast floor

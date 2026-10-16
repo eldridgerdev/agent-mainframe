@@ -1,6 +1,6 @@
 # GUI theme contrast and readability
 
-- **Status:** In progress (all epics E1–E7 implemented; E4–E7 awaiting merge)
+- **Status:** Done (all epics E1–E7 shipped: #753, #754, #755)
 - **Owner:** unassigned
 - **Relates to:** `src/gui_themes.rs` (TUI → GUI theme projection),
   `gui/src/styles.css`, `gui/src/sessionSidebar.css`, `gui/src/sessions.css`,

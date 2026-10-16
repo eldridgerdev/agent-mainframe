@@ -124,40 +124,67 @@ impl App {
         let Some(project) = self.store.projects.get(pi) else {
             return Ok(());
         };
-
-        if !self.allows_agent_for_repo(&project.repo, &next_agent) {
-            self.message = Some(format!(
-                "Error: Harness '{}' is not allowed for this workspace",
-                next_agent.display_name()
-            ));
-            self.mode = AppMode::Normal;
-            return Ok(());
-        }
-
-        if project.preferred_agent == next_agent {
-            self.mode = AppMode::Normal;
-            self.message = Some(format!(
-                "'{}' already prefers {}",
-                project.name,
-                next_agent.display_name()
-            ));
-            return Ok(());
-        }
-
+        let project_id = project.id.clone();
         let project_name = project.name.clone();
-        if let Some(project) = self.store.projects.get_mut(pi) {
-            project.preferred_agent = next_agent.clone();
-        }
-
         self.mode = AppMode::Normal;
-        self.save()?;
+        let changed = self.set_project_preferred_harness(&project_id, next_agent.clone())?;
         self.message = Some(format!(
-            "Updated '{}' preferred harness to {}",
+            "{} '{}' preferred harness to {}",
+            if changed { "Updated" } else { "Kept" },
             project_name,
             next_agent.display_name()
         ));
 
         Ok(())
+    }
+
+    /// Persist only the project default. Existing features, sessions and
+    /// processes are untouched. Both front ends use this validation/save path.
+    pub(crate) fn set_project_preferred_harness(
+        &mut self,
+        project_id: &str,
+        next: AgentKind,
+    ) -> Result<bool> {
+        let project = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project was deleted or moved"))?;
+        if !self.allows_agent_for_repo(&project.repo, &next) {
+            anyhow::bail!(
+                "Harness '{}' is not allowed for this workspace",
+                next.display_name()
+            );
+        }
+        self.tmux.check_harness_available(&next)?;
+        let previous = project.preferred_agent.clone();
+        if previous == next {
+            return Ok(false);
+        }
+        let version = self.store_version;
+        self.store
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .expect("resolved project")
+            .preferred_agent = next.clone();
+        if let Err(error) = self.save() {
+            // CAS failure adopts the sibling's store. An I/O failure without
+            // reload must not leave an unsaved preference displayed as saved.
+            if self.store_version == version
+                && let Some(project) = self
+                    .store
+                    .projects
+                    .iter_mut()
+                    .find(|project| project.id == project_id)
+                && project.preferred_agent == next
+            {
+                project.preferred_agent = previous;
+            }
+            return Err(error);
+        }
+        Ok(true)
     }
 
     fn apply_feature_agent_change(

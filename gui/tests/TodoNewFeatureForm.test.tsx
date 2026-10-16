@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,7 +8,7 @@ import type { FeaturePreset, Project } from "../src/api";
 import { TodoNewFeatureForm } from "../src/App";
 
 vi.mock("../src/TerminalPane", () => ({ default: () => null }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async (command) => command === "allowed_harnesses" ? [{ slug: "claude", display_name: "Claude" }] : command === "feature_presets_choices" ? [] : null) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async (command) => command === "project_harness_choices" ? creationChoices(["claude"]) : command === "allowed_harnesses" ? [{ slug: "claude", display_name: "Claude" }] : command === "feature_presets_choices" ? [] : null) }));
 
 afterEach(cleanup);
 
@@ -59,7 +60,7 @@ afterEach(() => { clients.splice(0).forEach((client) => client.clear()); vi.clea
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const click = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
 function mount(overrides: Partial<Parameters<typeof TodoNewFeatureForm>[0]> = {}, presets: FeaturePreset[] = [preset]) {
-  vi.mocked(invoke).mockImplementation(async (command) => command === "allowed_harnesses" ? agents : command === "feature_presets_choices" ? presets : null);
+  vi.mocked(invoke).mockImplementation(async (command) => command === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : command === "allowed_harnesses" ? agents : command === "feature_presets_choices" ? presets : null);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
   const props = { kind: "launch" as const, todoTitle: "Improve the API", projects: [projects[0]], agents, modes,
     pending: false, onCancel: vi.fn(), onSubmit: vi.fn(), ...overrides };
@@ -105,7 +106,8 @@ it("retains Remote Control intent through edits, custom settings and project swi
 it("never submits an unavailable preset harness or an unsupported mode", async () => {
   const { onSubmit } = mount({}, [{ ...preset, agent: "pi", mode: "vibe", plan_mode: false }, { ...preset, name: "Unsupported", mode: "vibeless", plan_mode: false }]);
   await ready(); change("Feature preset", "0");
-  expect(screen.getByText(/not offered for this project/)).toBeTruthy(); expect(screen.getByLabelText("Harness")).toHaveProperty("value", "claude");
+  expect(screen.getByText(/not offered for this project/)).toBeTruthy(); expect(screen.getByLabelText("Harness")).toHaveProperty("value", "pi");
+  expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   change("Feature preset", "1"); expect(screen.getByText(/Vibeless is unavailable with Codex/)).toBeTruthy();
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
   change("Mode", "vibe"); await ready(); click("Create and start");
@@ -113,39 +115,41 @@ it("never submits an unavailable preset harness or an unsupported mode", async (
 });
 it("loads the chosen project's presets without discarding its edited branch", async () => {
   mount({ projects }); await ready();
-  vi.mocked(invoke).mockImplementation(async (command) => command === "allowed_harnesses" ? agents.slice(0, 1)
+  vi.mocked(invoke).mockImplementation(async (command) => command === "project_harness_choices" ? creationChoices(["claude"]) : command === "allowed_harnesses" ? agents.slice(0, 1)
     : command === "feature_presets_choices" ? [{ ...preset, name: "Second only", agent: "claude" }, preset] : null);
   change("Feature preset", "0"); change("Branch", "custom/retain"); change("Project", "second");
   await screen.findByRole("option", { name: "Second only" });
   expect(screen.getByLabelText("Feature preset")).toHaveProperty("value", "");
   expect(screen.getByLabelText("Branch")).toHaveProperty("value", "custom/retain");
   // Returned data reordered the old index; no preset is silently reapplied.
-  expect(screen.getByLabelText("Harness").querySelectorAll("option")).toHaveLength(1);
+  expect(screen.getByLabelText("Harness").querySelectorAll("option")).toHaveLength(2);
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  expect(screen.getByRole("button", { name: "Start Quick Plan" })).toHaveProperty("disabled", true);
   change("Project", "demo");
   await screen.findByRole("option", { name: "Second only" });
   expect(screen.getByLabelText("Feature preset")).toHaveProperty("value", "");
   expect(screen.getByLabelText("Branch")).toHaveProperty("value", "custom/retain");
 });
-it.each(["allowed_harnesses", "feature_presets_choices"])("blocks failed %s lookup until explicit successful retry", async (command) => {
+it.each(["project_harness_choices", "feature_presets_choices"])("blocks failed %s lookup until explicit successful retry", async (command) => {
   const { onSubmit, client } = mount(); await ready();
   vi.mocked(invoke).mockImplementation(async (name) => {
     if (name === command) throw { kind: "internal", message: "Unreadable config" };
-    return name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null;
+    return name === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null;
   });
-  await client.invalidateQueries({ queryKey: [command === "allowed_harnesses" ? "allowed-harnesses" : "feature-presets"] });
+  await client.invalidateQueries({ queryKey: [command === "project_harness_choices" ? "project-harness-choices" : "feature-presets"] });
   await screen.findByText(/Unreadable config/); fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  vi.mocked(invoke).mockImplementation(async (name) => name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null);
-  click(command === "allowed_harnesses" ? "Retry harnesses" : "Retry presets"); await ready(); click("Create and start"); expect(onSubmit).toHaveBeenCalledOnce();
+  vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null);
+  click(command === "project_harness_choices" ? "Retry harnesses" : "Retry presets"); await ready(); click("Create and start"); expect(onSubmit).toHaveBeenCalledOnce();
 });
 it("blocks loading, empty harnesses and a deleted destination without falling back", async () => {
   const { onSubmit, rerender, client } = mount({ projects });
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true); await ready();
-  vi.mocked(invoke).mockImplementation(async (name) => name === "allowed_harnesses" || name === "feature_presets_choices" ? [] : null);
-  await client.invalidateQueries({ queryKey: ["allowed-harnesses"] }); await screen.findByText(/No allowed, installed harnesses/);
+  vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices([]) : name === "feature_presets_choices" ? [] : null);
+  await client.invalidateQueries({ queryKey: ["project-harness-choices"] }); await screen.findByText(/No allowed, installed harnesses/);
   expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
   rerender({ projects: [projects[1]] }); await screen.findByText(/Choose an available git project/);
   fireEvent.submit(screen.getByRole("dialog").querySelector("form")!); expect(onSubmit).not.toHaveBeenCalled();
-  vi.mocked(invoke).mockImplementation(async (name) => name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null);
+  vi.mocked(invoke).mockImplementation(async (name) => name === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : name === "allowed_harnesses" ? agents : name === "feature_presets_choices" ? [] : null);
   change("Project", "second"); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "second", branch: "improve-the-api" }), "none");
 });

@@ -23,6 +23,7 @@ pub mod gui_plans;
 pub mod gui_pr_review;
 pub mod gui_pr_triage;
 pub mod gui_presets;
+pub mod gui_project_preference;
 pub mod gui_project_settings;
 pub mod gui_prompt_overrides;
 pub mod gui_prompts;

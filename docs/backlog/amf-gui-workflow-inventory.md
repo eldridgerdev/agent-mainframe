@@ -603,6 +603,18 @@ Completed increments and remaining work, in priority order:
   re-captured.
   Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
 
+- [x] **Desktop project preferred harness (2026-10-16).** A separate project
+  preference dialog shares the TUI validation/save operation, with explicit
+  save/reload/cancel and stale SQLite/config/repository/choice guards. Saving
+  changes no existing feature/session binding and launches no process. Ordinary
+  and TODO creation initialize from the shared normalized project preference;
+  explicit/manual/preset choices survive async loads, refresh and destination
+  changes, and unavailable intent blocks rather than silently falling back.
+  The offline native scenario exercises actual ordinary/TODO launches and an
+  unsent TODO draft while preserving original panes. Reproduction and bounds:
+  [project preference proof](../development/gui-project-preference-proof.md).
+  Paid-harness and native macOS behavior remain unvalidated.
+
 - [x] **Desktop project agent availability (2026-10-11).** Project-page entry
   offers explicit inheritance and project override choices, with guarded
   save/reload/cancel and no harness setup side effects. The shared JSON writer

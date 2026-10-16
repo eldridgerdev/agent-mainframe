@@ -166,6 +166,14 @@ impl AgentKind {
     pub fn index_in(agents: &[AgentKind], target: &AgentKind) -> usize {
         agents.iter().position(|agent| agent == target).unwrap_or(0)
     }
+
+    pub(crate) fn preferred_in(agents: &[AgentKind], preferred: &AgentKind) -> Option<Self> {
+        agents
+            .iter()
+            .find(|agent| *agent == preferred)
+            .or(agents.first())
+            .cloned()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

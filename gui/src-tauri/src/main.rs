@@ -42,6 +42,9 @@ use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
+use agent_mainframe::gui_project_preference::{
+    self, ProjectHarnessChoices, ProjectHarnessPreference,
+};
 use agent_mainframe::gui_project_settings::{
     self, ProjectAgentAvailability, ProjectAgentAvailabilityView,
 };
@@ -1213,6 +1216,32 @@ async fn project_agent_availability_load(
 }
 
 #[tauri::command]
+async fn project_harness_choices(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    gui_project_preference::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &project_id,
+    )
+}
+
+#[tauri::command]
+async fn project_preference_save(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    project_id: String,
+    revision: String,
+    settings: ProjectHarnessPreference,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let result =
+        gui_project_preference::save(&mut gui, &project_id, &revision, settings.preferred_agent);
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    result
+}
+
+#[tauri::command]
 async fn project_agent_availability_save(
     state: State<'_, AppState>,
     project_id: String,
@@ -1752,6 +1781,8 @@ fn main() {
             agent_availability_save,
             project_agent_availability_load,
             project_agent_availability_save,
+            project_harness_choices,
+            project_preference_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,

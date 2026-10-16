@@ -1,6 +1,6 @@
 # GUI theme contrast and readability
 
-- **Status:** Partial (E1–E4 landed; E5–E7 open)
+- **Status:** Partial (E1–E5 landed; E6–E7 open)
 - **Owner:** unassigned
 - **Relates to:** `src/gui_themes.rs` (TUI → GUI theme projection),
   `gui/src/styles.css`, `gui/src/sessionSidebar.css`, `gui/src/sessions.css`,
@@ -269,12 +269,12 @@ judged on corrected colors.
 
 ### E5 — Terminal contrast in light themes (P1)
 
-- [ ] In `terminalAppearance()` (`gui/src/themes.ts:54-60`), set
+- [x] In `terminalAppearance()` (`gui/src/themes.ts:54-60`), set
       `minimumContrastRatio` to 4.5 everywhere. If preserving exact colors on
       the built-in light-mode terminal matters, decide from the *terminal
       background's* luminance, not `theme.mode`. xterm only adjusts cells
       that fail, so passing colors don't change.
-- [ ] Extend the terminal test in `darkContrast.test.ts` (or `Themes.test.tsx`)
+- [x] Extend the terminal test in `darkContrast.test.ts` (or `Themes.test.tsx`)
       so that a light catalog theme gets a nonzero minimum contrast.
 
 ### E6 — Live audit tooling + docs (P2)

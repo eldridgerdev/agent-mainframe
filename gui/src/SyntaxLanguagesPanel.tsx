@@ -89,7 +89,7 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
       {operation.output && <pre className="syntax-install-output">{operation.output}</pre>}
       <p className="small">This operation continues if you close the manager. Reopen it to see progress.</p>
     </div>}
-    {!operation?.running && operation?.message && <p role="status" className="callout callout-info">{operation.message}</p>}
+    {!operation?.running && operation?.message && <p role="status" className="callout callout-info">Last operation: {operation.message}</p>}
     {!operation?.running && operation?.error && <p role="alert" className="callout callout-danger">{operation.error} Parser files may have changed; refresh before retrying.</p>}
     {confirmation && <div role="alertdialog" aria-label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning">
       <p>{title(confirmation.action)} the {confirmation.row.title} parser?</p>

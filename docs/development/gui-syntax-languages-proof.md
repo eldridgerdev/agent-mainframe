@@ -14,6 +14,10 @@ coordinator excludes overlapping operations within the desktop process, and
 operation IDs reject late progress/completion replies. Another process can
 still edit files after validation; this is not a filesystem transaction. Failed
 operations report an error and refresh actual state rather than claiming rollback.
+Compilation stages its shared library at a unique path and publishes it by
+atomic rename, so polling readers cannot open half-written linker output. The
+previous library and its permissions survive a failed compile; source checkout
+replacement still follows the existing nontransactional installer behavior.
 Output is bounded. Diff, Final Review and Learning stay mounted behind the
 manager, retaining selections and unsent drafts.
 
@@ -46,7 +50,7 @@ close/reopen deterministic, then delegates to the actual compiler. No global
 Git configuration is written. `grammar-provenance.json` records this boundary.
 
 Eleven asserted frames cover the full catalog, cancelled install, a stale
-uninstall after external library replacement, busy repair and close/reopen,
+uninstall after external library replacement, busy install and close/reopen,
 loadable installation, highlighted Learning content, discovery of a broken
 external replacement, repair, uninstall and an unchanged unsent Learning
 question. Every frame checks the original feature/session rows and pane PIDs.

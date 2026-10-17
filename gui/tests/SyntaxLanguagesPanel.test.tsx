@@ -81,7 +81,7 @@ it("reopens a running shared worker and reloads external state after completion"
   expect(screen.queryByRole("button", { name: "Install JSON parser" })).toBeNull();
   status = { ...status, running: false, completed: 8, message: "Repaired JSON parser" };
   expect(await screen.findByRole("button", { name: "Install JSON parser" }, { timeout: 2500 })).toBeTruthy();
-  expect(screen.getByText("Repaired JSON parser")).toBeTruthy();
+  expect(screen.getByText("Last operation: Repaired JSON parser")).toBeTruthy();
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "syntax_languages_apply")).toHaveLength(0);
 });
 
@@ -98,10 +98,10 @@ it("does not apply late progress from a closed manager to its replacement", asyn
   await waitFor(() => expect(resolveOld).toBeTypeOf("function"), { timeout: 2500 });
   first.unmount(); generation = 2;
   render(<SyntaxLanguagesPanel onClose={vi.fn()} />);
-  await screen.findByText("new manager state");
+  await screen.findByText("Last operation: new manager state");
   await act(async () => resolveOld({ ...running, running: false, completed: 1, message: "stale reply" }));
   expect(screen.queryByText("stale reply")).toBeNull();
-  expect(screen.getByText("new manager state")).toBeTruthy();
+  expect(screen.getByText("Last operation: new manager state")).toBeTruthy();
 });
 
 it("reports unreadable parser state and retries without any mutation", async () => {

@@ -49,7 +49,7 @@ export function Hunk({ hunk, split, selection }: { hunk: DiffHunk; split: boolea
   </section>;
 }
 
-export default function DiffPanel({ target, onClose }: { target: FeatureTarget; onClose: () => void }) {
+export default function DiffPanel({ target, onClose, hidden = false }: { target: FeatureTarget; onClose: () => void; hidden?: boolean }) {
   const [options, setOptions] = useState<DiffOptions>({ commit: null, base_ref: null, ignore_whitespace: false, context: "standard" });
   const [baseDraft, setBaseDraft] = useState("");
   const [path, setPath] = useState<string | null>(null);
@@ -73,7 +73,7 @@ export default function DiffPanel({ target, onClose }: { target: FeatureTarget; 
     const element = content.current?.querySelectorAll<HTMLElement>(".diff-hunk")[index];
     if (element && content.current) content.current.scrollTop = element.offsetTop;
   }
-  return <Modal label="Diff viewer" title={view ? `Changes · ${view.feature_name}` : "Changes"} size="xl" onClose={onClose}
+  return <Modal hidden={hidden} label="Diff viewer" title={view ? `Changes · ${view.feature_name}` : "Changes"} size="xl" onClose={onClose}
     footer={<button className="btn btn-secondary" onClick={onClose}>Close</button>}>
     <div className="diff-controls">
       <Field label="Diff scope"><select value={options.commit ?? ""} onChange={(event) => setOptions({ ...options, commit: event.target.value || null })}>

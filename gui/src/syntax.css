@@ -60,6 +60,10 @@
 .syntax-install { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
 .syntax-install p { margin: 0; flex-basis: 100%; }
 .syntax-install-output { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; color: var(--text-faint); }
+.syntax-languages { width: 100%; border-collapse: collapse; }
+.syntax-languages th, .syntax-languages td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); }
+.syntax-languages td:last-child { display: flex; flex-wrap: wrap; gap: 6px; }
+.callout pre.syntax-install-output { white-space: pre-wrap; max-height: 10em; overflow: auto; }
 
 /* Explicit GUI preference overrides the system colour scheme. */
 :root[data-theme="dark"] {

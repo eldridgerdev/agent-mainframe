@@ -199,3 +199,19 @@ it("colours the Learning reader and keeps its line selection", () => {
   fireEvent.click(screen.getByRole("button", { name: "Select line 4" }));
   expect(onAct).toHaveBeenLastCalledWith({ kind: "lines_anchor", start: 4, end: 4 });
 });
+
+it("keeps a Learning question mounted while the language manager owns Escape", async () => {
+  const close = vi.fn();
+  const props = { view: learning, busy: false, onAct: vi.fn(async () => true), onClose: close, onLaunch: vi.fn() };
+  const { rerender } = render(<LearningPanel {...props} />);
+  const question = screen.getByRole("textbox", { name: "Question" });
+  fireEvent.change(question, { target: { value: "Keep my unsent parser question" } });
+  rerender(<LearningPanel {...props} hidden />);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  rerender(<LearningPanel {...props} />);
+  expect(screen.getByRole("textbox", { name: "Question" })).toBe(question);
+  expect(question).toHaveProperty("value", "Keep my unsent parser question");
+});

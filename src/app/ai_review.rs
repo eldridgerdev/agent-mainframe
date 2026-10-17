@@ -94,6 +94,111 @@ pub struct AiReviewAttribution {
     /// so the persisted representation is harness-neutral and serde-friendly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// Which review-memory docs the run read and whether their text reached
+    /// the prompt. `None` for a cache row written before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<AiReviewMemoryUsage>,
+}
+
+/// What review memory a completed run actually used. It records both what was
+/// read from disk and what was sent, so a memory doc that loaded but never
+/// reached the agent (an override template without `{{recurring_findings}}`)
+/// can be told apart from one that was used.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiReviewMemoryUsage {
+    /// Project doc first, then global, as read when the run started.
+    #[serde(default)]
+    pub docs: Vec<review_memory::MemoryDocStatus>,
+    /// Length of the merged memory context; `0` means there was nothing to
+    /// send.
+    #[serde(default)]
+    pub context_chars: usize,
+    /// Review prompts sent: one for a single pass, or one per slice when the
+    /// diff was batched. Synthesis passes are excluded because they never
+    /// carry memory.
+    #[serde(default)]
+    pub prompts: usize,
+    /// How many of those prompts contained the memory text.
+    #[serde(default)]
+    pub prompts_with_memory: usize,
+}
+
+impl AiReviewMemoryUsage {
+    pub fn total_findings(&self) -> usize {
+        self.docs.iter().map(|doc| doc.findings).sum()
+    }
+
+    /// One-line description for the AI Review pane, and whether it is a
+    /// warning (memory was read but not, or only partly, sent).
+    pub fn label(&self) -> (String, bool) {
+        if self.context_chars == 0 {
+            return ("last run used no review memory".to_string(), false);
+        }
+        let findings = self.total_findings();
+        let sources = self
+            .docs
+            .iter()
+            .filter(|doc| doc.state == review_memory::MemoryDocState::Loaded && doc.findings > 0)
+            .map(|doc| format!("{} {}", doc.scope.label(), doc.findings))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let sources = if sources.is_empty() {
+            String::new()
+        } else {
+            format!(" ({sources})")
+        };
+        let plural = if findings == 1 { "" } else { "s" };
+        if self.prompts > 0 && self.prompts_with_memory == self.prompts {
+            (
+                format!("last run sent {findings} memory finding{plural}{sources} to the agent"),
+                false,
+            )
+        } else if self.prompts_with_memory == 0 {
+            (
+                "⚠ last run read memory but did not send it: the prompt template has no \
+                 {{recurring_findings}}"
+                    .to_string(),
+                true,
+            )
+        } else {
+            (
+                format!(
+                    "⚠ last run sent memory in only {}/{} prompts{sources}",
+                    self.prompts_with_memory, self.prompts
+                ),
+                true,
+            )
+        }
+    }
+}
+
+/// Counts the review prompts a run sends and how many carried the memory
+/// text. Shared with the batched runner's renderer closures, which run on the
+/// worker thread.
+#[derive(Debug, Default)]
+struct MemoryDelivery {
+    prompts: std::sync::atomic::AtomicUsize,
+    with_memory: std::sync::atomic::AtomicUsize,
+}
+
+impl MemoryDelivery {
+    fn record(&self, prompt: &str, memory: &str) {
+        use std::sync::atomic::Ordering;
+        self.prompts.fetch_add(1, Ordering::Relaxed);
+        if review_memory::prompt_carries_memory(prompt, memory) {
+            self.with_memory.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn usage(&self, docs: &[review_memory::MemoryDocStatus], memory: &str) -> AiReviewMemoryUsage {
+        use std::sync::atomic::Ordering;
+        AiReviewMemoryUsage {
+            docs: docs.to_vec(),
+            context_chars: memory.trim().chars().count(),
+            prompts: self.prompts.load(Ordering::Relaxed),
+            prompts_with_memory: self.with_memory.load(Ordering::Relaxed),
+        }
+    }
 }
 
 impl AiReviewAttribution {
@@ -147,6 +252,7 @@ impl AiReviewAttribution {
             total_tokens: usage.and_then(|usage| usage.total_tokens),
             estimated_cost,
             elapsed_ms: Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+            memory: None,
         }
     }
 
@@ -1122,17 +1228,18 @@ fn batch_slice_context(
 }
 
 /// `{{token}}` context for a single `review.hunk_split` slice: the hunk group's
-/// annotated diff plus the file path and hunk label that name it.
+/// annotated diff plus the file path and hunk label that name it, and the same
+/// review memory every other review prompt carries. Before this, files large
+/// enough to be split by hunk were reviewed with no memory at all.
 fn hunk_slice_context(
     slice_diff: &str,
     file_path: &str,
     hunk_label: &str,
+    memory: &str,
 ) -> crate::prompts::PromptContext {
-    crate::prompts::PromptContext::new()
+    ai_review_prompt_context(slice_diff, memory, None)
         .with("file_path", file_path.to_string())
         .with("hunk_label", hunk_label.to_string())
-        .with("annotated_diff", annotated_diff_for_ai_review(slice_diff))
-        .with("finding_heading_prefix", AI_FINDING_HEADING_PREFIX)
 }
 
 /// `{{token}}` context for `review.synthesis`.
@@ -1186,27 +1293,35 @@ fn run_batched_ai_pr_review(
     model: Option<&str>,
     reasoning: Option<crate::headless::ReasoningLevel>,
     templates: &BatchReviewTemplates,
+    delivery: &std::sync::Arc<MemoryDelivery>,
     tx: &std::sync::mpsc::Sender<AiReviewProgress>,
 ) -> Option<Result<AiReviewOutcome>> {
     let batch_tpl = templates.batch.clone();
     let hunk_tpl = templates.hunk_split.clone();
     let memory_for_batch = memory.to_string();
+    let memory_for_hunk = memory.to_string();
     let skill_for_batch = skill.map(str::to_string);
+    let batch_delivery = std::sync::Arc::clone(delivery);
+    let hunk_delivery = std::sync::Arc::clone(delivery);
     let batch_runner = crate::review_batch::HeadlessBatchRunner::new(
         harness.clone(),
         workdir.to_path_buf(),
         model.map(str::to_string),
         Box::new(move |slice: &str| {
-            crate::prompts::render_template(
+            let prompt = crate::prompts::render_template(
                 &batch_tpl,
                 &batch_slice_context(slice, &memory_for_batch, skill_for_batch.as_deref()),
-            )
+            );
+            batch_delivery.record(&prompt, &memory_for_batch);
+            prompt
         }),
         Box::new(move |slice: &str, file_path: &str, hunk_label: &str| {
-            crate::prompts::render_template(
+            let prompt = crate::prompts::render_template(
                 &hunk_tpl,
-                &hunk_slice_context(slice, file_path, hunk_label),
-            )
+                &hunk_slice_context(slice, file_path, hunk_label, &memory_for_hunk),
+            );
+            hunk_delivery.record(&prompt, &memory_for_hunk);
+            prompt
         }),
     )
     .with_reasoning(reasoning);
@@ -1314,6 +1429,9 @@ fn run_ai_pr_review(
     workdir: PathBuf,
     diff: String,
     memory: String,
+    // What each memory doc held when the run started, recorded on the
+    // outcome's attribution alongside how much of it reached the prompt.
+    memory_docs: Vec<review_memory::MemoryDocStatus>,
     skill: Option<String>,
     model: Option<String>,
     reasoning: Option<crate::headless::ReasoningLevel>,
@@ -1331,6 +1449,7 @@ fn run_ai_pr_review(
         &template,
         &ai_review_prompt_context(&diff, &memory, skill.as_deref()),
     );
+    let memory_usage = |delivery: &MemoryDelivery| Some(delivery.usage(&memory_docs, &memory));
     let _ = tx.send(AiReviewProgress::Reviewing {
         token_estimate: super::pr_review::estimate_tokens(&prompt),
     });
@@ -1347,6 +1466,7 @@ fn run_ai_pr_review(
     // size gate is disabled (`review_prompt_budget_tokens: 0`); in that case
     // an actual "prompt too long" from the single pass below triggers the
     // same fallback instead.
+    let batched_delivery = std::sync::Arc::new(MemoryDelivery::default());
     if crate::headless::will_overflow_with_budget(&prompt, batch_templates.budget_tokens)
         && let Some(result) = run_batched_ai_pr_review(
             &harness,
@@ -1357,6 +1477,7 @@ fn run_ai_pr_review(
             model.as_deref(),
             reasoning,
             &batch_templates,
+            &batched_delivery,
             &tx,
         )
     {
@@ -1369,6 +1490,7 @@ fn run_ai_pr_review(
                 &pricing,
                 started_at.elapsed(),
             );
+            outcome.attribution.memory = memory_usage(&batched_delivery);
             outcome
         });
         let _ = tx.send(AiReviewProgress::Done(result));
@@ -1378,6 +1500,8 @@ fn run_ai_pr_review(
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let usage_sink = std::sync::Arc::clone(&last_usage);
     let progress_tx = tx.clone();
+    let single_delivery = MemoryDelivery::default();
+    single_delivery.record(&prompt, &memory);
     let result = HeadlessRunner::run_with_progress(
         &harness,
         &workdir,
@@ -1412,6 +1536,7 @@ fn run_ai_pr_review(
             &pricing,
             started_at.elapsed(),
         );
+        outcome.attribution.memory = memory_usage(&single_delivery);
         outcome
     });
 
@@ -1424,6 +1549,9 @@ fn run_ai_pr_review(
             let _ = tx.send(AiReviewProgress::Activity(
                 "Prompt too long — retrying as a batched review".to_string(),
             ));
+            // Fresh counts: the rejected single pass is not what produced
+            // these findings.
+            let fallback_delivery = std::sync::Arc::new(MemoryDelivery::default());
             match run_batched_ai_pr_review(
                 &harness,
                 &workdir,
@@ -1433,6 +1561,7 @@ fn run_ai_pr_review(
                 model.as_deref(),
                 reasoning,
                 &batch_templates,
+                &fallback_delivery,
                 &tx,
             ) {
                 Some(batched) => batched.map(|mut outcome| {
@@ -1444,6 +1573,7 @@ fn run_ai_pr_review(
                         &pricing,
                         started_at.elapsed(),
                     );
+                    outcome.attribution.memory = memory_usage(&fallback_delivery);
                     outcome
                 }),
                 // Diff did not parse into file sections — nothing to batch.
@@ -1552,7 +1682,64 @@ impl App {
             finding_editor: None,
             post_confirm: None,
             marked: Default::default(),
+            memory_status: None,
         });
+        self.refresh_ai_review_memory_status();
+    }
+
+    /// Re-read which review-memory docs the next `A` run would use, for the
+    /// pane's Memory line. Called when the pane opens; a run refreshes it again
+    /// with exactly what it read.
+    pub(crate) fn refresh_ai_review_memory_status(&mut self) {
+        let AppMode::AiReview(state) = &self.mode else {
+            return;
+        };
+        let repo = self.repo_for_project_path(&state.workdir);
+        let status = review_memory::load_review_memory(&self.review_memory_paths(&repo)).status;
+        if let AppMode::AiReview(state) = &mut self.mode {
+            state.memory_status = Some(status);
+        }
+    }
+
+    /// Record in the debug log which memory docs a review read, so an
+    /// "is memory being used?" question can be answered from the log alone.
+    fn log_review_memory_status(
+        &mut self,
+        pr_number: u32,
+        status: &review_memory::ReviewMemoryStatus,
+    ) {
+        let docs = status
+            .docs
+            .iter()
+            .map(|doc| {
+                let state = match doc.state {
+                    review_memory::MemoryDocState::Loaded => {
+                        format!("{} findings", doc.findings)
+                    }
+                    review_memory::MemoryDocState::Missing => "not found".to_string(),
+                    review_memory::MemoryDocState::Empty => "empty".to_string(),
+                    review_memory::MemoryDocState::Unreadable => format!(
+                        "unreadable: {}",
+                        doc.error.as_deref().unwrap_or("unknown error")
+                    ),
+                };
+                format!("{} {} ({state})", doc.scope.label(), doc.path.display())
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        self.log_info(
+            "pr_review",
+            format!("AI review of PR #{pr_number} review memory: {docs}"),
+        );
+        if let Some(stray) = &status.stray_worktree_doc {
+            self.log_warn(
+                "pr_review",
+                format!(
+                    "worktree-only review memory {} is not read; the shared doc is used instead",
+                    stray.display()
+                ),
+            );
+        }
     }
 
     /// Resolve the current feature's (or `Viewing` session's) branch to a PR
@@ -2186,11 +2373,11 @@ impl App {
         // Both docs feed the reviewer: the repo's own findings plus the
         // user's cross-project ones, with the overlap between them collapsed
         // so a promoted rule isn't paid for twice in the prompt.
-        let memory_paths = self.review_memory_paths(&repo);
-        let memory = review_memory::merge_memory_context(
-            &std::fs::read_to_string(&memory_paths.project).unwrap_or_default(),
-            &std::fs::read_to_string(&memory_paths.global).unwrap_or_default(),
-        );
+        let loaded = review_memory::load_review_memory(&self.review_memory_paths(&repo));
+        self.log_review_memory_status(number, &loaded.status);
+        origin.memory_status = Some(loaded.status.clone());
+        let memory = loaded.context;
+        let memory_docs = loaded.status.docs;
         let skill = self.config.ai_review_skill.clone();
         let pricing = self.config.token_pricing.clone();
         let (template, _) = self.resolve_headless_template(
@@ -2257,6 +2444,7 @@ impl App {
                 thread_workdir,
                 diff,
                 memory,
+                memory_docs,
                 skill,
                 model,
                 reasoning,
@@ -3497,6 +3685,120 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
     fn ai_review_prompt_omits_empty_memory_section() {
         let prompt = ai_review_prompt("diff", "", None);
         assert!(!prompt.contains("Known recurring findings"));
+    }
+
+    fn loaded_doc(
+        scope: review_memory::MemoryScope,
+        findings: usize,
+    ) -> review_memory::MemoryDocStatus {
+        review_memory::MemoryDocStatus {
+            scope,
+            path: PathBuf::from("/doc.md"),
+            state: review_memory::MemoryDocState::Loaded,
+            findings,
+            duplicates: 0,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn hunk_split_prompt_carries_review_memory() {
+        // Files big enough to be split hunk by hunk used to be reviewed with
+        // no memory at all.
+        let memory = "## Tests\n- Cover the error path";
+        let prompt = crate::prompts::render_template(
+            crate::prompts::PromptId::ReviewHunkSplit
+                .spec()
+                .default_template,
+            &hunk_slice_context("", "src/lib.rs", "hunks 1-2", memory),
+        );
+        assert!(review_memory::prompt_carries_memory(&prompt, memory));
+        assert!(prompt.contains("hunks 1-2 of `src/lib.rs`"));
+    }
+
+    #[test]
+    fn memory_delivery_counts_prompts_that_dropped_the_memory() {
+        let memory = "- Cover the error path";
+        let docs = vec![loaded_doc(review_memory::MemoryScope::Project, 1)];
+
+        let delivery = MemoryDelivery::default();
+        delivery.record(&ai_review_prompt("diff", memory, None), memory);
+        // An override template with no `{{recurring_findings}}`.
+        delivery.record(
+            &crate::prompts::render_template(
+                "Review this: {{annotated_diff}}",
+                &ai_review_prompt_context("diff", memory, None),
+            ),
+            memory,
+        );
+
+        let usage = delivery.usage(&docs, memory);
+        assert_eq!((usage.prompts, usage.prompts_with_memory), (2, 1));
+        let (label, warn) = usage.label();
+        assert!(warn);
+        assert!(label.contains("1/2 prompts"), "{label}");
+    }
+
+    #[test]
+    fn memory_usage_label_distinguishes_sent_dropped_and_absent() {
+        let docs = vec![
+            loaded_doc(review_memory::MemoryScope::Project, 3),
+            loaded_doc(review_memory::MemoryScope::Global, 2),
+        ];
+        let sent = AiReviewMemoryUsage {
+            docs: docs.clone(),
+            context_chars: 40,
+            prompts: 1,
+            prompts_with_memory: 1,
+        };
+        assert_eq!(
+            sent.label(),
+            (
+                "last run sent 5 memory findings (project 3 + global 2) to the agent".to_string(),
+                false
+            )
+        );
+
+        let dropped = AiReviewMemoryUsage {
+            prompts_with_memory: 0,
+            ..sent.clone()
+        };
+        let (label, warn) = dropped.label();
+        assert!(warn);
+        assert!(label.contains("{{recurring_findings}}"), "{label}");
+
+        let absent = AiReviewMemoryUsage {
+            docs: Vec::new(),
+            context_chars: 0,
+            prompts: 1,
+            prompts_with_memory: 0,
+        };
+        assert_eq!(
+            absent.label(),
+            ("last run used no review memory".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn memory_usage_roundtrips_through_attribution_json() {
+        let attribution = AiReviewAttribution {
+            harness: Some("claude".to_string()),
+            memory: Some(AiReviewMemoryUsage {
+                docs: vec![loaded_doc(review_memory::MemoryScope::Global, 2)],
+                context_chars: 10,
+                prompts: 1,
+                prompts_with_memory: 1,
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&attribution).unwrap();
+        assert_eq!(
+            serde_json::from_str::<AiReviewAttribution>(&json).unwrap(),
+            attribution
+        );
+        // A cache row from before memory was recorded still loads.
+        let legacy: AiReviewAttribution = serde_json::from_str(r#"{"harness":"claude"}"#).unwrap();
+        assert_eq!(legacy.memory, None);
     }
 
     #[test]

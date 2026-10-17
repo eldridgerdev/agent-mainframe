@@ -156,6 +156,21 @@ are tagged.
 
 ### Changed
 
+- **Add to Memory asks where the finding goes.** In PR Triage (`M`), the
+  dialog no longer preselects the project doc. It lists both destinations
+  with their full paths, and `⏎` does nothing until you press `p` (this repo)
+  or `g` (every repo), so a finding can't land in the wrong doc unnoticed.
+  `g` used to toggle between the two; `p` and `g` now each choose one. The
+  confirmation toast names the file written. No migration is required.
+
+- **AI Review shows its review memory.** The AI Review pane lists the
+  project and cross-project memory docs the next `A` run will read, with each
+  one's path and finding count, or whether it is missing, empty or
+  unreadable. After a run it says how many findings were sent to the agent,
+  and warns when memory was read but not sent, for example because a custom
+  prompt template is missing `{{recurring_findings}}`. No migration is
+  required.
+
 - **Brighter desktop dark theme.** Panels, dialogs and terminals use lighter
   backgrounds, clearer borders and more readable text, status badges and code
   colors. Terminal colors follow system appearance changes without losing
@@ -175,6 +190,16 @@ are tagged.
   ignored. No migration is required.
 
 ### Fixed
+
+- **Review memory is shared across a repo's worktrees.** The default memory
+  doc (`.amf/review-memory.md`) is gitignored, so each feature worktree used
+  to read and write its own private copy. Findings added while triaging in
+  one worktree never reached an AI review run from another, and they were
+  deleted with the worktree. Every worktree now uses the main checkout's
+  copy. A memory doc that git tracks still stays with its branch. Large files
+  reviewed hunk by hunk now get the memory too. If an old worktree still has
+  its own copy, the AI Review pane says it is no longer read; move its
+  findings into the main checkout's doc to keep them.
 
 - **Python in AppImage sessions.** New tmux servers started by the Linux
   desktop app no longer inherit AppImage's bundled Python home and search-path

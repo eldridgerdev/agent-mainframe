@@ -571,6 +571,7 @@ fn single_and_combined_fix_prompts_omit_posted_review_usage() {
         total_tokens: Some(20_000),
         elapsed_ms: Some(125_000),
         estimated_cost: Some("$0.10".into()),
+        memory: None,
     };
     let legacy_usage = "### AI review usage\n\
         - Harness: codex\n\

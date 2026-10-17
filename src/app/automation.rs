@@ -658,10 +658,10 @@ impl App {
                 outcome: crate::app::ai_review::AiReviewRunOutcome::Findings(count),
             }),
             summary: Some(request.summary.clone()),
-            // The screenshot fixture seeder has no harness/model/usage inputs,
-            // so the seeded row renders the bare `— AI review via AMF` marker
-            // with no model/token/cost disclosure line.
-            attribution: None,
+            // Without a fixture attribution the seeded row renders the bare
+            // `— AI review via AMF` marker with no model/token/cost disclosure
+            // line and no last-run memory line.
+            attribution: request.attribution.clone(),
         };
         self.db
             .as_ref()

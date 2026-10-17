@@ -48,3 +48,29 @@ introduced by the GUI dependency graph:
 
 No warning is ignored. This table records the local dependency paths and
 keeps the existing maintainer follow-up policy above.
+
+## Rustls patch update (2026-10-15)
+
+The unchanged main lockfile's rustls 0.23.45 failed PR #748's dependency
+audit after four advisories were published on 2026-10-14:
+
+- [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346): TLS secrets exposed by client-session `Debug` output.
+- [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347): buffered application data sent after ECH rejection.
+- [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348): excessive allocation during Brotli certificate decompression.
+- [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349): key-exchange downgrade affecting later connections.
+
+A targeted update to rustls 0.23.46 clears all four. Only that package's
+version and checksum change; manifests and all other locked packages remain
+unchanged. The dependency path is AMF → ureq → rustls, with a second edge
+through rustls-platform-verifier. The patch is applied without assuming these
+issues are unreachable through AMF's selected features.
+
+Local cargo-audit 0.22.2 exits 0 against advisory database commit
+`edb58f5974b83eb8302332821cb6d389777aa351` (1,329 advisories), with zero
+blocking vulnerabilities and 13 visible nonfatal warnings. The previous
+tables account for 12; the additional existing warning is ttf-parser 0.25.1,
+[RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
+unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep that
+replacement follow-up separate from this TLS patch. No advisory is ignored.
+Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
+the dependency fix is considered ready to merge.

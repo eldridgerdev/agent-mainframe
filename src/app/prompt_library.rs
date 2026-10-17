@@ -426,19 +426,18 @@ impl App {
             }
         };
 
-        let name = state.name.trim().to_string();
-        let body = state.editor.text().trim().to_string();
-        let tags = crate::prompt_library::parse_tags(&state.tags);
-        if name.is_empty() {
-            self.message = Some("Name cannot be empty".into());
-            self.mode = AppMode::PromptEditor(state);
-            return Ok(());
-        }
-        if body.is_empty() {
-            self.message = Some("Prompt body cannot be empty".into());
-            self.mode = AppMode::PromptEditor(state);
-            return Ok(());
-        }
+        let (name, body, tags) = match crate::prompt_library::validate_user_draft(
+            &state.name,
+            state.editor.text(),
+            &state.tags,
+        ) {
+            Ok(draft) => draft,
+            Err(error) => {
+                self.message = Some(error.to_string());
+                self.mode = AppMode::PromptEditor(state);
+                return Ok(());
+            }
+        };
 
         // Extract from_view before consuming state (needed by config resolvers).
         let from_view: Option<ViewState> = match state.return_to.as_ref() {
@@ -632,12 +631,7 @@ impl App {
             return Ok(());
         };
 
-        let mut template = entry.template.clone();
-        let now = Utc::now();
-        template.id = uuid::Uuid::new_v4().to_string();
-        template.name = format!("{} (copy)", template.name);
-        template.created_at = now;
-        template.updated_at = now;
+        let template = entry.template.user_copy();
         let copy_name = template.name.clone();
         if let Some(db) = &self.db {
             db.insert_prompt_template(&template)?;
@@ -1649,6 +1643,60 @@ mod tests {
             state.select_prev();
             assert_eq!(state.select_index, 2);
         }
+    }
+
+    #[test]
+    fn shared_user_authoring_keeps_tui_validation_and_copy_metadata() {
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut app = App::new_for_test(
+            project_store_at(repo.path()),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.open_prompt_library(None);
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.name = " ".into();
+            state.editor = TextEditor::new("body".into());
+        }
+        app.submit_prompt_editor().unwrap();
+        assert_eq!(app.message.as_deref(), Some("Name cannot be empty"));
+        assert!(matches!(app.mode, AppMode::PromptEditor(_)));
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.name = " Repair ".into();
+            state.editor = TextEditor::new(" ".into());
+        }
+        app.submit_prompt_editor().unwrap();
+        assert_eq!(app.message.as_deref(), Some("Prompt body cannot be empty"));
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.tags = "#bug BUG, Frontend".into();
+            state.editor = TextEditor::new(" Fix {{area}} ".into());
+        }
+        app.submit_prompt_editor().unwrap();
+        let original = app.store.prompt_templates.last_mut().unwrap();
+        original.description = Some("Keep description".into());
+        original.placeholders = vec![PromptPlaceholder {
+            key: "unused".into(),
+            label: Some("Retained".into()),
+            kind: PlaceholderKind::MultiLine {
+                default: Some("Notes".into()),
+            },
+            required: false,
+        }];
+        let original = original.clone();
+        assert_eq!(original.name, "Repair");
+        assert_eq!(original.body, "Fix {{area}}");
+        assert_eq!(original.tags, ["bug", "Frontend"]);
+        app.open_prompt_library(None);
+        app.duplicate_selected_template_to_user().unwrap();
+        let copy = app.store.prompt_templates.last().unwrap();
+        assert_ne!(copy.id, original.id);
+        assert_eq!(copy.name, "Repair (copy)");
+        assert_eq!(copy.description, original.description);
+        assert_eq!(copy.placeholders, original.placeholders);
+        assert_eq!(copy.tags, original.tags);
+        assert_eq!(copy.created_at, copy.updated_at);
     }
 
     #[test]

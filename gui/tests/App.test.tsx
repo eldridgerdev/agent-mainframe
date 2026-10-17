@@ -1369,3 +1369,39 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
   expect(draftInput().value).toBe("Unsent context draft");
   expect(promptCalls()).toHaveLength(0); client.clear();
 });
+
+it("saves an unsent composer as a User template while retaining the mounted draft through failure, cancellation and success", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let fails = true;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_save") return fails ? Promise.reject({ kind: "operation_failed", message: "Database busy" }) : Promise.resolve("new-user-template");
+    return original(command, args, options);
+  });
+  const text = "Keep this unsent 世界\n{{area}}";
+  const composer = draftInput();
+  fireEvent.change(composer, { target: { value: text } });
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  const editor = screen.getByRole("dialog", { name: "User prompt editor" });
+  fireEvent.change(within(editor).getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fireEvent.change(within(editor).getByRole("textbox", { name: /^Template body/ }), { target: { value: "Edited template only" } });
+  fireEvent.click(within(editor).getByRole("button", { name: "Save User template" }));
+  await screen.findByText("Database busy");
+  expect(composer.value).toBe(text);
+  fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull();
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe(text);
+  fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fails = false;
+  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull());
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_save").at(-1)?.[1]).toEqual({ draft: { id: null, revision: null, name: "Saved composer", body: text, tags: "" } });
+  client.clear();
+});

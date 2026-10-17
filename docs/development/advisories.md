@@ -93,8 +93,10 @@ old 0.2.183 is rejected by the resolver. Other existing packages stay locked.
 
 AMF uses ZipArchive to read bounded screenshot-artifact entries, checking
 paths, member types and size limits, and uses ZipWriter in its test fixtures.
-It does not call the extraction APIs named by these advisories. The dependency
-is updated without suppressing findings or weakening those archive guards.
+It does not call the extraction APIs named by these advisories. The reader
+propagates the new fallible filename API and retains UTF-8 and legacy CP437
+names; the regression tests both encodings. The dependency is updated without
+suppressing findings or weakening archive guards.
 
 Local cargo-audit 0.22.2 exits 0 against advisory database commit
 `64f92cdc64401fab47baa10e2e11fe382aa57155` (1,334 advisories), with zero

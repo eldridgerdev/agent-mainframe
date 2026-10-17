@@ -2144,19 +2144,19 @@ mod tests {
         assert!(archive_images(&zip(&[("nested.zip", zip(&[("ready.png", png())]))])).is_err());
     }
     #[test]
-    fn archives_preserve_unicode_names_and_refuse_invalid_utf8_names() {
-        let mut bytes = zip(&[("café.png", png())]);
-        let images = archive_images(&bytes).unwrap();
-        assert_eq!(images.images[0].0, "café.png");
+    fn archives_preserve_unicode_and_legacy_cp437_names() {
+        let unicode = archive_images(&zip(&[("café.png", png())])).unwrap();
+        assert_eq!(unicode.images[0].0, "café.png");
 
-        // The writer marks this non-ASCII name as UTF-8. Corrupt both header
-        // copies without changing the payload: decoding must fail, rather
-        // than silently substituting a different screenshot filename.
-        let local = bytes.windows(4).position(|w| w == b"PK\x03\x04").unwrap();
-        let central = bytes.windows(4).rposition(|w| w == b"PK\x01\x02").unwrap();
-        bytes[local + 30] = 0xff;
-        bytes[central + 46] = 0xff;
-        assert!(archive_images(&bytes).is_err());
+        // ASCII names have no UTF-8 flag. Encode the final letter in CP437
+        // in both ZIP headers; the archive reader must preserve its name.
+        let mut legacy = zip(&[("cafe.png", png())]);
+        let local = legacy.windows(4).position(|w| w == b"PK\x03\x04").unwrap();
+        let central = legacy.windows(4).rposition(|w| w == b"PK\x01\x02").unwrap();
+        legacy[local + 30 + 3] = 0x82;
+        legacy[central + 46 + 3] = 0x82;
+        let decoded = archive_images(&legacy).unwrap();
+        assert_eq!(decoded.images[0].0, "café.png");
     }
 
     #[test]

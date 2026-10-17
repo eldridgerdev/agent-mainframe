@@ -48,3 +48,60 @@ introduced by the GUI dependency graph:
 
 No warning is ignored. This table records the local dependency paths and
 keeps the existing maintainer follow-up policy above.
+
+## Rustls patch update (2026-10-15)
+
+The unchanged main lockfile's rustls 0.23.45 failed PR #748's dependency
+audit after four advisories were published on 2026-10-14:
+
+- [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346): TLS secrets exposed by client-session `Debug` output.
+- [RUSTSEC-2026-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347): buffered application data sent after ECH rejection.
+- [RUSTSEC-2026-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348): excessive allocation during Brotli certificate decompression.
+- [RUSTSEC-2026-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349): key-exchange downgrade affecting later connections.
+
+A targeted update to rustls 0.23.46 clears all four. Only that package's
+version and checksum change; manifests and all other locked packages remain
+unchanged. The dependency path is AMF → ureq → rustls, with a second edge
+through rustls-platform-verifier. The patch is applied without assuming these
+issues are unreachable through AMF's selected features.
+
+Local cargo-audit 0.22.2 exits 0 against advisory database commit
+`edb58f5974b83eb8302332821cb6d389777aa351` (1,329 advisories), with zero
+blocking vulnerabilities and 13 visible nonfatal warnings. The previous
+tables account for 12; the additional existing warning is ttf-parser 0.25.1,
+[RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
+unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep that
+replacement follow-up separate from this TLS patch. No advisory is ignored.
+Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
+the dependency fix is considered ready to merge.
+
+## ZIP archive dependency update (2026-10-16)
+
+PR #756's unchanged zip 6.0.0 dependency fails the current audit database on
+[RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367),
+[RUSTSEC-2026-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368) and
+[RUSTSEC-2026-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369). These
+cover privileged permission bits and symlink handling in archive extraction.
+The database lists zip >=9.0.0 as patched.
+
+The direct requirement moves to zip 9, locked at 9.0.4, retaining
+`default-features = false` and the existing `deflate` feature. The lockfile
+adds zip's nix/cfg_aliases and typed-path dependencies and removes its former
+arbitrary/derive_arbitrary edge. nix 0.31.3 requires libc >=0.2.186, so the
+compatible libc patch update to 0.2.191 is required; attempting to retain the
+old 0.2.183 is rejected by the resolver. Other existing packages stay locked.
+
+AMF uses ZipArchive to read bounded screenshot-artifact entries, checking
+paths, member types and size limits, and uses ZipWriter in its test fixtures.
+It does not call the extraction APIs named by these advisories. The reader
+propagates the new fallible filename API and retains UTF-8 and legacy CP437
+names; the regression tests both encodings. The dependency is updated without
+suppressing findings or weakening archive guards.
+
+Local cargo-audit 0.22.2 exits 0 against advisory database commit
+`64f92cdc64401fab47baa10e2e11fe382aa57155` (1,334 advisories), with zero
+blocking vulnerabilities and the same 13 visible nonfatal warnings above.
+Archive-reader/writer compatibility and full hosted Linux/macOS, lint,
+frontend and audit checks remain required before this fix is ready for review.
+The branch also contains the separate #749 rustls patch; merge #749 first
+so this PR's effective dependency diff narrows to the ZIP update.

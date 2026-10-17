@@ -376,6 +376,34 @@ pub(super) fn pr_review_test_app() -> App {
     )
 }
 
+/// A worktree mock whose `repo_root` answers with the path it is given.
+/// Opening the AI Review pane reads which review-memory docs it would use,
+/// which resolves the repo, so a test that opens the pane needs this.
+pub(super) fn worktree_rooted_at_workdir() -> MockWorktreeOps {
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|path| Ok(path.to_path_buf()));
+    worktree
+}
+
+/// [`pr_review_test_app`] for tests that open the AI Review pane.
+pub(super) fn ai_review_test_app() -> App {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
+    )
+}
+
 pub(super) fn pr_review_with_comments(n: u64) -> crate::app::pr_review::PrReview {
     let comments: Vec<crate::github::ReviewComment> = (1..=n)
         .map(|id| crate::github::ReviewComment {
@@ -509,6 +537,7 @@ pub(super) fn sample_ai_review_state(
         finding_editor: None,
         post_confirm: None,
         marked: Default::default(),
+        memory_status: None,
     }
 }
 

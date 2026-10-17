@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
+use crate::app::review_memory::MemoryScope;
 
 /// Lines scrolled per detail-pane scroll keypress.
 const DETAIL_SCROLL_STEP: usize = 5;
@@ -392,9 +393,9 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
 /// Key handling while the "add to memory" dialog is open.
 ///
 /// Confirm view: `⏎` appends, `e` edits, `s` summarizes the finding with AI
-/// (opens the per-use harness picker below), `Tab` cycles the category, `g`
-/// toggles the destination doc (this repo's / cross-project), `esc`/`q`
-/// cancels. Edit mode: keystrokes flow to the finding editor; `esc` returns to
+/// (opens the per-use harness picker below), `Tab` cycles the category, `p` /
+/// `g` choose the destination doc (this repo's / cross-project, no default:
+/// `⏎` refuses until one is picked), `esc`/`q` cancels. Edit mode: keystrokes flow to the finding editor; `esc` returns to
 /// the confirm view.
 fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
     // The per-use AI-summary harness picker (`s`), when open, captures all keys.
@@ -430,7 +431,8 @@ fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<
         KeyCode::Char('e') => app.pr_review_memory_add_edit(),
         KeyCode::Char('s') => app.pr_review_open_memory_ai_summary_pick(),
         KeyCode::Tab => app.pr_review_cycle_memory_category(),
-        KeyCode::Char('g') => app.pr_review_toggle_memory_scope(),
+        KeyCode::Char('p') => app.pr_review_set_memory_scope(MemoryScope::Project),
+        KeyCode::Char('g') => app.pr_review_set_memory_scope(MemoryScope::Global),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_memory_add(),
         _ => {}
     }

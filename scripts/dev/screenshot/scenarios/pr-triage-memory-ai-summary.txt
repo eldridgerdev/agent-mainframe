@@ -40,7 +40,7 @@ shot:triage-pane
 
 key:M|wait:400
 expect:summarize with AI
-note:The "add to memory" dialog's confirm view, seeded from the comment's own text plus a `(file:line)` hint. The hint bar now has two rows: `[s] summarize with AI` alongside the pre-existing `[e] edit` / `[Tab] category` / `[g] project/global` / `[esc] cancel`.
+note:The "add to memory" dialog's confirm view, seeded from the comment's own text plus a `(file:line)` hint. The hint bar now has two rows: `[s] summarize with AI` alongside the pre-existing `[e] edit` / `[p] project` / `[g] global` / `[Tab] category` / `[esc] cancel`.
 shot:memory-add-dialog
 
 key:s|wait:400

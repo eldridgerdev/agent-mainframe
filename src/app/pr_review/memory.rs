@@ -430,7 +430,8 @@ impl App {
             state.memory_add = Some(MemoryAddState {
                 comment_id,
                 category: 0,
-                scope: MemoryScope::Project,
+                scope: None,
+                scope_required: false,
                 editor: TextEditor::new(seed),
                 editing: false,
                 ai_summary: None,
@@ -475,13 +476,14 @@ impl App {
         }
     }
 
-    /// Toggle which doc the finding is appended to (confirm view only):
-    /// this repo's committed doc, or the user's cross-project one.
-    pub fn pr_review_toggle_memory_scope(&mut self) {
+    /// Choose which doc the finding is appended to (confirm view only):
+    /// this repo's doc (`p`), or the user's cross-project one (`g`).
+    pub fn pr_review_set_memory_scope(&mut self, scope: MemoryScope) {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(memory_add) = &mut state.memory_add
         {
-            memory_add.scope = memory_add.scope.toggled();
+            memory_add.scope = Some(scope);
+            memory_add.scope_required = false;
         }
     }
 
@@ -809,20 +811,30 @@ impl App {
             self.message = Some("Finding is empty — type something or esc to cancel".into());
             return Ok(());
         }
+        // No default destination: the dialog says why nothing happened.
+        let Some(scope) = scope else {
+            if let AppMode::PrReview(state) = &mut self.mode
+                && let Some(memory_add) = &mut state.memory_add
+            {
+                memory_add.scope_required = true;
+            }
+            return Ok(());
+        };
 
         let repo = self.repo_for_project_path(&workdir);
         let paths = self.review_memory_paths(&repo);
-        let appended =
-            review_memory::append_finding(paths.for_scope(scope), scope, category, &finding)?;
+        let path = paths.for_scope(scope);
+        let appended = review_memory::append_finding(path, scope, category, &finding)?;
 
         if let AppMode::PrReview(state) = &mut self.mode {
             state.memory_add = None;
         }
         let scope_label = scope.label();
+        let path = path.display();
         let toast = if appended {
-            format!("Added to {scope_label} memory · {category}")
+            format!("Added to {scope_label} memory · {category} → {path}")
         } else {
-            format!("Already in {scope_label} memory · skipped")
+            format!("Already in {scope_label} memory ({path}) · skipped")
         };
         self.push_toast_success(toast);
         Ok(())

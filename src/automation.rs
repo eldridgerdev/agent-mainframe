@@ -27,6 +27,10 @@ pub struct SeedAiReviewRequest {
     pub workdir: Option<PathBuf>,
     pub repository: Option<String>,
     pub head_ref: Option<String>,
+    /// Optional run attribution (harness/model/usage and the review memory the
+    /// run read and sent), so a visual test can show the attribution and
+    /// memory lines without running a review. Omitted, the row has none.
+    pub attribution: Option<crate::app::ai_review::AiReviewAttribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

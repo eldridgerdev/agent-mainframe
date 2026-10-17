@@ -408,6 +408,10 @@ pub struct AiReviewState {
     /// Indices into `findings` marked for a combined fix (`space`, then `B`).
     /// Cleared when a new run replaces the findings.
     pub marked: std::collections::HashSet<usize>,
+    /// Which review-memory docs the next `A` run would read and what each
+    /// holds, for the pane's Memory line. Read on open and refreshed by each
+    /// run. What a *completed* run used is in `attribution.memory`.
+    pub memory_status: Option<crate::app::review_memory::ReviewMemoryStatus>,
 }
 
 /// State for the full-screen PR Triage pane.
@@ -988,15 +992,19 @@ pub struct MemoryAddState {
     pub comment_id: u64,
     /// Index into `crate::app::pr_review::MEMORY_CATEGORIES`, cycled with `Tab`.
     pub category: usize,
-    /// Which doc the finding lands in, toggled with `g`. Defaults to
-    /// `Project` — a finding from this PR is about this repo until the user
-    /// says it's a habit worth carrying everywhere.
-    pub scope: crate::app::review_memory::MemoryScope,
+    /// Which doc the finding lands in: `p` picks this repo's, `g` the
+    /// cross-project one. Starts `None` on purpose. A default was too easy
+    /// to confirm without noticing where the finding went, so `⏎` refuses
+    /// until one is chosen.
+    pub scope: Option<crate::app::review_memory::MemoryScope>,
+    /// Set when `⏎` was pressed with no `scope` chosen, so the dialog can say
+    /// why nothing happened. Cleared once a scope is picked.
+    pub scope_required: bool,
     /// The finding text, editable before it's appended.
     pub editor: TextEditor,
     /// True while keystrokes go to the editor (`e` to enter); false in the
-    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `g` toggle
-    /// scope / `s` summarize with AI / `esc` cancel).
+    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `p`/`g`
+    /// pick project/global / `s` summarize with AI / `esc` cancel).
     pub editing: bool,
     /// The "summarize with AI" sub-flow (`s`), when active. `None` — the
     /// steady state — covers both "never started" and "a summary already

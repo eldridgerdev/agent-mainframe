@@ -5,12 +5,13 @@ import { Field, Icon, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** The question draft stays local across backend polls and navigation. */
-export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: {
+export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hidden = false }: {
   view: LearningView;
   busy: boolean;
   onAct: (action: LearningAction) => Promise<boolean>;
   onLaunch: (qaId: string) => void;
   onClose: () => void;
+  hidden?: boolean;
 }) {
   const [question, setQuestion] = useState("");
   const [intent, setIntent] = useState("explain");
@@ -36,7 +37,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: 
     }
   }
   return (
-    <Modal label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
+    <Modal hidden={hidden} label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
       subtitle="Read code and ask questions. Opening an editing agent is a separate action."
       dismissable={!busy} onClose={() => question.trim() ? setConfirmClose(true) : onClose()}>
       {confirmClose && <div className="callout callout-warning" role="alert">

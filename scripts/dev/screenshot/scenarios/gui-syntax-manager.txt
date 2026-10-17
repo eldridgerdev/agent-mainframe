@@ -1,0 +1,5 @@
+# Full syntax manager: real parser install/repair/uninstall with retained workflow.
+note:The private TUI confirms readiness before the native syntax-language proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-syntax-manager.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

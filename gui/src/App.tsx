@@ -85,6 +85,8 @@ import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
+import SyntaxLanguagesPanel from "./SyntaxLanguagesPanel";
+import { OPEN_SYNTAX_LANGUAGES } from "./syntaxApi";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ScreenshotsPanel from "./ScreenshotsPanel";
@@ -193,6 +195,12 @@ export default function App() {
   } | null>(null);
   const [showFeaturePresets, setShowFeaturePresets] = useState(false);
   const [showContextSettings, setShowContextSettings] = useState(false);
+  const [showSyntaxLanguages, setShowSyntaxLanguages] = useState(false);
+  useEffect(() => {
+    const open = () => setShowSyntaxLanguages(true);
+    window.addEventListener(OPEN_SYNTAX_LANGUAGES, open);
+    return () => window.removeEventListener(OPEN_SYNTAX_LANGUAGES, open);
+  }, []);
   const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
@@ -1200,6 +1208,7 @@ export default function App() {
 
           <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
           <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
+          <button className="nav-item" onClick={() => setShowSyntaxLanguages(true)}><Icon name="list" /><span className="nav-label">Syntax languages</span></button>
           <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
 
           <button className="nav-item" onClick={() => setShowDormancy(true)}>
@@ -1297,6 +1306,7 @@ export default function App() {
         onClose={() => setSupervisedTarget(null)} />}
       {showFeaturePresets && <FeaturePresetsPanel onClose={() => setShowFeaturePresets(false)} />}
       {showContextSettings && <ContextSettingsPanel onClose={() => setShowContextSettings(false)} onSaved={() => { setShowContextSettings(false); void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY }); }} />}
+      {showSyntaxLanguages && <SyntaxLanguagesPanel onClose={() => setShowSyntaxLanguages(false)} />}
       {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
         projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
           setAgentAvailabilityScope(null);
@@ -1324,10 +1334,10 @@ export default function App() {
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
-      {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
-      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
+      {diffTarget && <DiffPanel hidden={showSyntaxLanguages} key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
+      {review && <ReviewPanel hidden={showSyntaxLanguages} key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
-        <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
+        <LearningPanel hidden={showSyntaxLanguages} key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
           onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
           onClose={() => void actLearning({ kind: "close" })} />
       )}

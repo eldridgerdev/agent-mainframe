@@ -35,10 +35,21 @@ with GuiFrames.from_argv() as frames:
     class InspectorAdapter:
         def evaluate(self, expression, deadline): return frames.evaluate(expression)
     driver = module.Driver(InspectorAdapter()); driver.inject(time.monotonic()+10)
-    def action(op, **kwargs): return driver.run({'op':op, **kwargs})
+    def action(op, **kwargs):
+        try:
+            return driver.run({'op':op, **kwargs})
+        except BaseException:
+            (out/'last-state.txt').write_text(frames.evaluate('document.body.innerText'))
+            frames.evaluate('window.__syntaxFailureStatus=null;window.__TAURI_INTERNALS__.invoke("syntax_install_status").then(v=>window.__syntaxFailureStatus=v).catch(e=>window.__syntaxFailureStatus={error:String(e)})')
+            frames.wait('window.__syntaxFailureStatus!==null')
+            (out/'last-status.json').write_text(json.dumps(frames.evaluate('window.__syntaxFailureStatus'),indent=2)+'\n')
+            (out/'last-files.json').write_text(json.dumps({'source_exists':source.exists(),'library_exists':library.exists(),'library_size':library.stat().st_size if library.exists() else None,'compiler_gate':(scratch/'hold-compiler').exists()},indent=2)+'\n')
+            raise
     def click(name,scope=None): return action('click',name=name,**({'scope':scope} if scope else {}))
     def wait(expression): return action('wait',expression=expression)
     def manager(): click('Syntax languages'); action('wait',text='JSON',scope='[role=dialog][aria-label="Syntax languages"]')
+    def close_manager():
+        click('Close manager'); wait('!document.querySelector(`[role=dialog][aria-label="Syntax languages"]`)')
     def state_is(name):
         wait('Array.from(document.querySelectorAll(`.syntax-languages tbody tr`)).find(r=>r.querySelector(`th`)?.textContent==="JSON")?.querySelector(`td`)?.textContent === '+json.dumps(name))
     def parser_action(name): click(name+' JSON parser','[role=dialog][aria-label="Syntax languages"]')
@@ -61,7 +72,7 @@ with GuiFrames.from_argv() as frames:
     (scratch/'hold-compiler').touch(); parser_action('Install'); confirm('Install'); wait_file(scratch/'compiler-waiting')
     capture('003-install-busy.png','Confirmed Install uses the real shared installer and compiler. While the compiler is gated, duplicate actions are disabled and progress is visible.', ['Installing JSON parser','continues if you close'])
     assert frames.evaluate('Array.from(document.querySelectorAll(`.syntax-languages button`)).every(b=>b.disabled)')
-    click('Close manager'); manager()
+    close_manager(); manager()
     action('wait',text='Installing JSON parser',scope='[role=dialog][aria-label="Syntax languages"]')
     capture('004-busy-reopened.png','Closing and reopening the manager observes the same still-running install worker; it does not start a second operation.', ['Installing JSON parser','Refresh languages','Close manager'])
     (scratch/'hold-compiler').unlink(); state_is('Installed')
@@ -74,7 +85,7 @@ with GuiFrames.from_argv() as frames:
     assert library.read_bytes()==b'externally replaced parser' and source.exists()
     capture('006-stale-refusal.png','An external library replacement invalidates the confirmed revision. The stale uninstall is refused and preserves the replacement.', ['Parser files changed.','Uninstall the JSON parser?'],allow_alert=True)
     click('Refresh languages'); state_is('Needs repair'); parser_action('Repair'); confirm('Repair'); state_is('Installed')
-    click('Close manager'); click('Learning','main')
+    close_manager(); click('Learning','main')
     action('wait',text='invoice.json',scope='[role=dialog][aria-label="Learning"]')
     click('invoice.json','[role=dialog][aria-label="Learning"]')
     wait('!!document.querySelector(`.learning-reader .syn-string`) || !!document.querySelector(`.learning-content .syn-string`) || !!document.querySelector(`[role=dialog][aria-label="Learning"] .syn-string`)')
@@ -91,7 +102,7 @@ with GuiFrames.from_argv() as frames:
     confirm('Uninstall'); state_is('Not installed')
     assert not source.exists() and not library.exists()
     capture('010-uninstalled.png','Confirmed uninstall removes only the private shared parser and managed grammar checkout, then refreshes the catalog to Not installed.', ['JSON','Not installed','Removed JSON tree-sitter parser'])
-    click('Close manager')
+    close_manager()
     wait('document.querySelector(`[role=dialog][aria-label="Learning"] textarea`)?.value === "Keep this unsent question while repairing JSON."')
     action('wait',text='JSON parser not installed',scope='[role=dialog][aria-label="Learning"]')
     capture('011-learning-draft-preserved.png','Returning to Learning retains the exact unsent question and selected file; the removed parser now renders as plain text without sending anything.', ['Learning','Plain text','JSON parser not installed','Question'])

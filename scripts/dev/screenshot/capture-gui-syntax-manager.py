@@ -96,7 +96,7 @@ for line in sys.stdin:
     real_cc = shutil.which('cc')
     assert real_cc, 'The real shared installer requires a C compiler'
     cc = fixture_bin/'cc'
-    cc.write_text('#!/usr/bin/python3\nimport os,pathlib,sys,time\nroot=pathlib.Path(os.environ["AMF_HARNESS_FIXTURE"])\nif (root/"hold-compiler").exists():\n (root/"compiler-waiting").touch()\n deadline=time.monotonic()+60\n while (root/"hold-compiler").exists():\n  assert time.monotonic()<deadline, "Fixture compiler gate timed out"\n  time.sleep(.05)\nos.execv('+repr(real_cc)+',["cc",*sys.argv[1:]])\n')
+    cc.write_text('#!/usr/bin/python3\nimport os,pathlib,sys,time\nroot=pathlib.Path(os.environ["AMF_HARNESS_FIXTURE"])\nif (root/"hold-compiler").exists():\n (root/"compiler-waiting").touch()\n deadline=time.monotonic()+60\n while (root/"hold-compiler").exists():\n  assert time.monotonic()<deadline, "Fixture compiler gate timed out"\n  time.sleep(.05)\nos.execv('+repr(real_cc)+',['+repr(real_cc)+',*sys.argv[1:]])\n')
     cc.chmod(0o755)
     (out/'grammar-provenance.json').write_text(json.dumps({'upstream':grammar_url,'commit':grammar_sha,'private_mirror':True,'actual_compiler':real_cc},indent=2)+'\n')
     tmux = [shutil.which('tmux'),'-S',env['AMF_TMUX_SOCKET']]

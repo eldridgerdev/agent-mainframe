@@ -84,14 +84,14 @@ export default function SyntaxLanguagesPanel({ onClose }: { onClose: () => void 
     <p className="muted small">Install or repair clones a grammar from GitHub and compiles it with your C compiler. Uninstall removes its parser and managed source checkout. Files in your project stay unchanged.</p>
     {loading && <p role="status"><Spinner /> Reading parser state…</p>}
     {error && <p role="alert" className="callout callout-danger">{error}</p>}
-    {operation?.running && <div role="status" className="callout callout-info"><Spinner />
+    {operation?.running && <div role="status" className="callout callout-info syntax-manager-progress"><Spinner />
       {operation.action === "uninstall" ? "Removing" : operation.action === "repair" ? "Repairing" : "Installing"} {operation.language} parser…
       {operation.output && <pre className="syntax-install-output">{operation.output}</pre>}
       <p className="small">This operation continues if you close the manager. Reopen it to see progress.</p>
     </div>}
     {!operation?.running && operation?.message && <p role="status" className="callout callout-info">Last operation: {operation.message}</p>}
     {!operation?.running && operation?.error && <p role="alert" className="callout callout-danger">{operation.error} Parser files may have changed; refresh before retrying.</p>}
-    {confirmation && <div role="alertdialog" aria-label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning">
+    {confirmation && <div role="alertdialog" aria-label={`${title(confirmation.action)} ${confirmation.row.title} parser`} className="callout callout-warning syntax-manager-confirmation">
       <p>{title(confirmation.action)} the {confirmation.row.title} parser?</p>
       <p>{confirmation.action === "uninstall" ? "Remove its shared parser library and managed source checkout. This language will use plain text until installed again."
         : "Clone its grammar from GitHub and compile a shared parser. Repair replaces the existing managed parser files."}</p>

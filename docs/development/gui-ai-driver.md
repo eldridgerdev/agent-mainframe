@@ -131,6 +131,35 @@ A batch stops at the first error and reports its one-based action index. Earlier
 mutations remain applied; nothing is rolled back or retried. Inspect current
 state before continuing after an error. CLI errors return JSON and a nonzero exit.
 
+## Contrast audit
+
+`driver audit-contrast [--scope CSS] [--themes id,id] [--include-disabled] [--json]`
+measures the current page against WCAG 1.4.3 (text: 4.5:1, or 3:1 when large) and
+1.4.11 (inputs, selects, `.btn` and `.switch` boundaries or fills: 3:1). Colours are
+composited through ancestor backgrounds, `opacity` and alpha. Text over a
+gradient is judged against each stop of the gradient's top layer (the one drawn
+behind content). A borderless, unfilled field is credited with the boundary of
+the box that draws it. Disabled elements, which WCAG exempts, are omitted unless
+`--include-disabled`, which tags them.
+
+Themes are applied in place, as `applyTheme` does, so one page state is measured
+under the built-in palettes and every catalog theme; nothing is navigated, and the
+original theme is restored afterwards. Transitions and animations are frozen while
+measuring, because `getComputedStyle` otherwise reports colours part-way through a
+theme change. The theme catalog loads from the backend; if it cannot, the command
+fails with the reason. The xterm canvas and SVG are excluded, as are native
+checkboxes and radios: WebKitGTK paints those itself, so their CSS colours do not
+describe what is drawn.
+
+Each finding is one line, `<themes failing>/<themes audited> <kind> <element>
+"<sample>" worst=<ratio> :: theme=ratio ...`, worst theme first and capped at six.
+It obeys `--max-output`; scope the audit to shrink it. Open the view to audit first.
+
+```sh
+driver audit-contrast --scope '[role=dialog]'
+# {"ok":true,"result":{"themes":14,"findings":1,"lines":["3/14 text div.card > p.muted \"Hint\" worst=2.1 :: nord=2.1 dark=2.5 light=3.0"]}}
+```
+
 ## Existing tools and when to use them
 
 | Tool | Useful for | Limit |

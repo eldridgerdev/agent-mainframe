@@ -12,6 +12,22 @@ are tagged.
 
 ### Added
 
+- **Edit and export declarative desktop prompts.** Update Global, Project or
+  Worktree templates without losing their extra metadata or unrelated settings.
+  Export any library template to an explicit configuration destination, with
+  confirmation before replacing a same-name entry. Stale or malformed files
+  refuse writes and keep local edits. TUI edits and exports use the same guarded
+  writer; F5 reload leaves Ctrl+R redo intact. Legacy local configuration is
+  copied to amf.json with its permissions while the original legacy file remains.
+  Existing composer drafts and running sessions are kept.
+
+- **Author User prompts in the desktop library.** Create, edit and confirm
+  deletion of User templates, duplicate any supported library source into User,
+  or save an unsent composer draft as a new template. Descriptions and configured
+  placeholders are kept. Conflicting external edits are refused while keeping
+  your draft.
+  Saving never sends or clears the composer. No migration is required.
+
 - **Desktop context settings.** Set a fallback context-window token limit and
   warning/critical percentages from workspace navigation. A blank limit restores
   harness defaults. Saves protect unsaved drafts, refuse conflicting config

@@ -940,7 +940,7 @@ pub(crate) fn archive_images(bytes: &[u8]) -> Result<ArchiveImages> {
     let mut pixels = 0u64;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.into_owned();
         let components: Vec<_> = name.trim_end_matches('/').split('/').collect();
         ensure!(
             !name.starts_with('/')
@@ -2143,6 +2143,22 @@ mod tests {
         assert_eq!(result.issues.len(), 1);
         assert!(archive_images(&zip(&[("nested.zip", zip(&[("ready.png", png())]))])).is_err());
     }
+    #[test]
+    fn archives_preserve_unicode_names_and_refuse_invalid_utf8_names() {
+        let mut bytes = zip(&[("café.png", png())]);
+        let images = archive_images(&bytes).unwrap();
+        assert_eq!(images.images[0].0, "café.png");
+
+        // The writer marks this non-ASCII name as UTF-8. Corrupt both header
+        // copies without changing the payload: decoding must fail, rather
+        // than silently substituting a different screenshot filename.
+        let local = bytes.windows(4).position(|w| w == b"PK\x03\x04").unwrap();
+        let central = bytes.windows(4).rposition(|w| w == b"PK\x01\x02").unwrap();
+        bytes[local + 30] = 0xff;
+        bytes[central + 46] = 0xff;
+        assert!(archive_images(&bytes).is_err());
+    }
+
     #[test]
     fn archives_are_bounded_and_path_escape_is_rejected_without_extracting() {
         assert_eq!(

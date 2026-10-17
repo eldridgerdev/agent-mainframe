@@ -74,3 +74,32 @@ unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep tha
 replacement follow-up separate from this TLS patch. No advisory is ignored.
 Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
 the dependency fix is considered ready to merge.
+
+## ZIP archive dependency update (2026-10-16)
+
+PR #756's unchanged zip 6.0.0 dependency fails the current audit database on
+[RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367),
+[RUSTSEC-2026-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368) and
+[RUSTSEC-2026-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369). These
+cover privileged permission bits and symlink handling in archive extraction.
+The database lists zip >=9.0.0 as patched.
+
+The direct requirement moves to zip 9, locked at 9.0.4, retaining
+`default-features = false` and the existing `deflate` feature. The lockfile
+adds zip's nix/cfg_aliases and typed-path dependencies and removes its former
+arbitrary/derive_arbitrary edge. nix 0.31.3 requires libc >=0.2.186, so the
+compatible libc patch update to 0.2.191 is required; attempting to retain the
+old 0.2.183 is rejected by the resolver. Other existing packages stay locked.
+
+AMF uses ZipArchive to read bounded screenshot-artifact entries, checking
+paths, member types and size limits, and uses ZipWriter in its test fixtures.
+It does not call the extraction APIs named by these advisories. The dependency
+is updated without suppressing findings or weakening those archive guards.
+
+Local cargo-audit 0.22.2 exits 0 against advisory database commit
+`64f92cdc64401fab47baa10e2e11fe382aa57155` (1,334 advisories), with zero
+blocking vulnerabilities and the same 13 visible nonfatal warnings above.
+Archive-reader/writer compatibility and full hosted Linux/macOS, lint,
+frontend and audit checks remain required before this fix is ready for review.
+The branch also contains the separate #749 rustls patch; merge #749 first
+so this PR's effective dependency diff narrows to the ZIP update.

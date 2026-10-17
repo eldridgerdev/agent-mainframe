@@ -301,3 +301,21 @@ it.each(["duplicate", "delete"])("protects a pending %s even if Escape arrives b
   await act(async () => finish());
   await screen.findByText(action === "duplicate" ? "Duplicated to your User library." : "Deleted from your User library.");
 });
+it("opens the owned declarative editor and export destination flow while preserving insertion state",async()=>{
+ const snapshot={selection:{scope,source:"Project",ordinal:0},context_revision:"checkout",revision:"file",name:"Project prompt",body:"Plain prompt",tags:"",description:"kept",configured_fields:1,original_id:null,original_name:"Project prompt",source_path:"/repo/amf.json",destination_path:"/repo/amf.json"};
+ vi.mocked(invoke).mockImplementation(async(command)=>{
+  if(command==="prompt_library_load")return view;
+  if(command==="prompt_file_edit")return snapshot;
+  throw new Error(`Unexpected command ${command}`);
+ });
+ const {onInsert,onClose}=mount();fireEvent.click(await screen.findByRole("button",{name:/Project prompt/}));
+ fireEvent.click(screen.getByRole("button",{name:"Edit declarative template"}));await screen.findByRole("dialog",{name:"Declarative prompt editor"});
+ expect(invoke).toHaveBeenCalledWith("prompt_file_edit",{scope,entryKey:"project-template"});
+ fireEvent.change(screen.getByLabelText("Template name"),{target:{value:"Local draft"}});fireEvent.keyDown(document,{key:"Escape"});
+ expect(screen.getByRole("dialog",{name:"Discard prompt edits"})).toBeTruthy();expect(onClose).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole("button",{name:"Keep editing"}));expect((screen.getByLabelText("Template name") as HTMLInputElement).value).toBe("Local draft");
+ fireEvent.click(screen.getByRole("button",{name:"Cancel"}));fireEvent.click(screen.getByRole("button",{name:"Discard changes"}));
+ expect(screen.getByLabelText("Resolved prompt").textContent).toBe("Plain prompt");
+ fireEvent.click(screen.getByRole("button",{name:"Export template…"}));expect(screen.getByRole("dialog",{name:"Export prompt template"})).toBeTruthy();
+ fireEvent.click(screen.getByRole("button",{name:"Cancel"}));expect(onInsert).not.toHaveBeenCalled();expect(onClose).not.toHaveBeenCalled();
+});

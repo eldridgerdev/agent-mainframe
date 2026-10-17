@@ -11,7 +11,7 @@ with a fresh identity and dates and the TUI's ` (copy)` name suffix. The source
 stays unchanged. A declarative template with unsupported metadata is browseable
 but cannot be copied when a User row could lose those fields. Malformed User
 metadata must be repaired externally before authoring; browsing remains tolerant.
-Editing declarative sources and exporting templates remain TUI actions.
+Declarative source editing and export use the separate [scoped file editor](gui-declarative-prompts.md).
 
 An agent composer's **Save as template** opens a new User editor with its current
 unsent text. Saving, cancellation and write failures leave the mounted composer

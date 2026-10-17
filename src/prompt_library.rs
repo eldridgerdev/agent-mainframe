@@ -11,6 +11,8 @@
 //! phase 1 simply delivers the body verbatim. The richer types are kept
 //! here so the storage schema is forward-compatible.
 
+pub(crate) mod declarative;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -833,6 +833,8 @@ pub struct PromptLibraryState {
     pub confirm_delete: bool,
     /// Set after `x`; `g` exports to global config, `p` to project.
     pub pending_export: bool,
+    pub(crate) file_export: Option<super::prompt_library_files::PromptFileExport>,
+    pub(crate) replacement: Option<super::prompt_library_files::PromptFileReplacement>,
     pub from_view: Option<ViewState>,
 }
 
@@ -886,6 +888,8 @@ pub struct PromptEditorState {
     /// Original template for config-file sources (Project/Global/Worktree),
     /// preserving id/description/placeholders across edits.
     pub original_template: Option<crate::prompt_library::PromptTemplate>,
+    pub(crate) file_edit: Option<super::prompt_library_files::PromptFileEdit>,
+    pub(crate) file_discard: Option<bool>,
     pub name: String,
     /// Raw comma/space-separated tag input; parsed into the template's
     /// `tags` on save (see `prompt_library::parse_tags`).

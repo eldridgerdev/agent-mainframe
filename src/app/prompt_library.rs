@@ -40,7 +40,7 @@ impl App {
     /// Falls back to position 0 when the focused entry isn't in the list
     /// (e.g. hidden by a higher-priority Worktree/Project entry with the
     /// same name).
-    fn rebuild_prompt_library(
+    pub(super) fn rebuild_prompt_library(
         &mut self,
         from_view: Option<ViewState>,
         focus: Option<(&str, PromptSource)>,
@@ -114,6 +114,8 @@ impl App {
             selected,
             confirm_delete: false,
             pending_export: false,
+            file_export: None,
+            replacement: None,
             from_view,
         });
         self.message = None;
@@ -342,6 +344,8 @@ impl App {
             editing_id: None,
             editing_source: PromptSource::User,
             original_template: None,
+            file_edit: None,
+            file_discard: None,
             name: String::new(),
             tags: String::new(),
             focus: PromptEditorFocus::Name,
@@ -362,6 +366,19 @@ impl App {
             return;
         };
 
+        let file_edit = if entry.source != PromptSource::User
+            && !(entry.source == PromptSource::Global && self.store_path.as_os_str().is_empty())
+        {
+            match self.selected_prompt_file_edit() {
+                Ok(edit) => Some(edit),
+                Err(error) => {
+                    self.message = Some(format!("Edit refused: {error}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         let original_template = if entry.source.is_deletable() {
             None
         } else {
@@ -375,6 +392,8 @@ impl App {
             editing_id: Some(entry.template.id.clone()),
             editing_source: entry.source,
             original_template,
+            file_edit,
+            file_discard: None,
             name: entry.template.name.clone(),
             tags: crate::prompt_library::format_tags(&entry.template.tags),
             focus: PromptEditorFocus::Body,
@@ -406,6 +425,8 @@ impl App {
             editing_id: None,
             editing_source: PromptSource::User,
             original_template: None,
+            file_edit: None,
+            file_discard: None,
             name: String::new(),
             tags: String::new(),
             focus: PromptEditorFocus::Name,
@@ -439,11 +460,6 @@ impl App {
             }
         };
 
-        // Extract from_view before consuming state (needed by config resolvers).
-        let from_view: Option<ViewState> = match state.return_to.as_ref() {
-            AppMode::PromptLibrary(picker) => picker.from_view.clone(),
-            _ => None,
-        };
         // Capture the final name before the match arms consume it (User arms move name).
         let focus_name = name.clone();
 
@@ -480,74 +496,36 @@ impl App {
                     }
                 }
             }
-            PromptSource::Global => {
-                let orig = state
-                    .original_template
-                    .as_ref()
-                    .expect("config edit always has original");
-                let updated = PromptTemplate {
-                    name: name.clone(),
-                    body,
-                    tags: tags.clone(),
-                    updated_at: Utc::now(),
-                    ..orig.clone()
-                };
-                if orig.name != name {
+            PromptSource::Global | PromptSource::Project | PromptSource::Worktree => {
+                if let Some(snapshot) = &state.file_edit {
+                    if let Err(error) =
+                        self.commit_prompt_file_edit(snapshot, &name, &body, &state.tags)
+                    {
+                        self.message = Some(format!("Save refused; your draft is kept: {error}"));
+                        self.mode = AppMode::PromptEditor(state);
+                        return Ok(());
+                    }
+                } else if state.editing_source == PromptSource::Global
+                    && self.store_path.as_os_str().is_empty()
+                {
+                    let mut updated = state
+                        .original_template
+                        .as_ref()
+                        .expect("config edit has original")
+                        .clone();
                     self.config
                         .extension
                         .prompt_templates
-                        .retain(|t| t.name != orig.name);
-                }
-                upsert_template(&mut self.config.extension.prompt_templates, updated);
-                if let Err(e) = self.try_save_config() {
-                    self.push_toast_warning(format!("Failed to save global config: {e}"));
-                    self.return_from_prompt_editor(*state.return_to);
+                        .retain(|t| t.name != updated.name);
+                    updated.name = name;
+                    updated.body = body;
+                    updated.tags = tags;
+                    upsert_template(&mut self.config.extension.prompt_templates, updated);
+                } else {
+                    self.message=Some("The original file snapshot is unavailable; keep your draft and reopen the template".into());
+                    self.mode = AppMode::PromptEditor(state);
                     return Ok(());
                 }
-            }
-            PromptSource::Project => {
-                let orig = state
-                    .original_template
-                    .as_ref()
-                    .expect("config edit always has original");
-                let updated = PromptTemplate {
-                    name: name.clone(),
-                    body,
-                    tags: tags.clone(),
-                    updated_at: Utc::now(),
-                    ..orig.clone()
-                };
-                let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
-                    self.push_toast_warning("No project repo — can't save");
-                    self.return_from_prompt_editor(*state.return_to);
-                    return Ok(());
-                };
-                if orig.name != name {
-                    remove_template_from_config(&repo, &orig.name)?;
-                }
-                export_template_to_project_config(&repo, &updated)?;
-            }
-            PromptSource::Worktree => {
-                let orig = state
-                    .original_template
-                    .as_ref()
-                    .expect("config edit always has original");
-                let updated = PromptTemplate {
-                    name: name.clone(),
-                    body,
-                    tags: tags.clone(),
-                    updated_at: Utc::now(),
-                    ..orig.clone()
-                };
-                let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
-                    self.push_toast_warning("No worktree — can't save");
-                    self.return_from_prompt_editor(*state.return_to);
-                    return Ok(());
-                };
-                if orig.name != name {
-                    remove_template_from_config(&workdir, &orig.name)?;
-                }
-                export_template_to_project_config(&workdir, &updated)?;
             }
         }
         let focus = (focus_name, state.editing_source);
@@ -557,6 +535,12 @@ impl App {
     }
 
     pub fn cancel_prompt_editor(&mut self) {
+        if self.guard_prompt_file_discard(false) {
+            return;
+        }
+        self.finish_cancel_prompt_editor();
+    }
+    pub(crate) fn finish_cancel_prompt_editor(&mut self) {
         if let AppMode::PromptEditor(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
             self.return_from_prompt_editor(*state.return_to);
         }
@@ -648,102 +632,24 @@ impl App {
     /// `config.json` so it becomes a version-controllable, shareable
     /// entry. Existing config entries with the same name are replaced.
     pub fn export_selected_template(&mut self, target: PromptExportTarget) -> Result<()> {
-        let (template, from_view) = match &self.mode {
-            AppMode::PromptLibrary(state) => (
-                state.selected_entry().map(|e| e.template.clone()),
-                state.from_view.clone(),
-            ),
-            _ => return Ok(()),
-        };
-        if let AppMode::PromptLibrary(state) = &mut self.mode {
-            state.pending_export = false;
-        }
-
-        let Some(template) = template else {
-            self.message = Some("No template to export".into());
+        // Tests without a persisted store retain their in-memory Global
+        // fixture behavior; production always uses the scoped file engine.
+        if target == PromptExportTarget::Global && self.store_path.as_os_str().is_empty() {
+            let (template, view) = match &self.mode {
+                AppMode::PromptLibrary(state) => (
+                    state.selected_entry().map(|e| e.template.clone()),
+                    state.from_view.clone(),
+                ),
+                _ => return Ok(()),
+            };
+            if let Some(template) = template {
+                let name = template.name.clone();
+                upsert_template(&mut self.config.extension.prompt_templates, template);
+                self.rebuild_prompt_library(view, Some((&name, PromptSource::Global)));
+            }
             return Ok(());
-        };
-
-        let mut success: Option<(String, PromptSource)> = None;
-        match target {
-            PromptExportTarget::Global => {
-                upsert_template(
-                    &mut self.config.extension.prompt_templates,
-                    template.clone(),
-                );
-                match self.try_save_config() {
-                    Ok(()) => {
-                        self.log_info(
-                            "prompt-library",
-                            format!("exported \"{}\" to global config", template.name),
-                        );
-                        success = Some((
-                            format!("Exported \"{}\" to global config", template.name),
-                            PromptSource::Global,
-                        ));
-                    }
-                    Err(e) => {
-                        // Roll back the in-memory upsert so the list stays consistent.
-                        self.config
-                            .extension
-                            .prompt_templates
-                            .retain(|t| t.name != template.name);
-                        self.push_toast_warning(format!("Export failed: {e}"));
-                        return Ok(());
-                    }
-                }
-            }
-            PromptExportTarget::Project => {
-                let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
-                    self.push_toast_warning(
-                        "No project to export to — open a session or run AMF in a repo",
-                    );
-                    return Ok(());
-                };
-                match export_template_to_project_config(&repo, &template) {
-                    Ok(path) => {
-                        let short = crate::app::util::shorten_path(&path);
-                        self.log_info(
-                            "prompt-library",
-                            format!("exported \"{}\" to {short}", template.name),
-                        );
-                        success = Some((
-                            format!("Exported \"{}\" to {short}", template.name),
-                            PromptSource::Project,
-                        ));
-                    }
-                    Err(e) => self.push_toast_warning(format!("Export failed: {e}")),
-                }
-            }
-            PromptExportTarget::Worktree => {
-                let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
-                    self.push_toast_warning(
-                        "No worktree to export to — open a feature session first",
-                    );
-                    return Ok(());
-                };
-                match export_template_to_project_config(&workdir, &template) {
-                    Ok(path) => {
-                        let short = crate::app::util::shorten_path(&path);
-                        self.log_info(
-                            "prompt-library",
-                            format!("exported \"{}\" to {short}", template.name),
-                        );
-                        success = Some((
-                            format!("Exported \"{}\" to {short}", template.name),
-                            PromptSource::Worktree,
-                        ));
-                    }
-                    Err(e) => self.push_toast_warning(format!("Export failed: {e}")),
-                }
-            }
         }
-        if let Some((msg, source)) = success {
-            self.push_toast_success(msg.clone());
-            self.rebuild_prompt_library(from_view, Some((&template.name, source)));
-            self.message = Some(msg);
-        }
-        Ok(())
+        self.export_prompt_file(target)
     }
 
     /// Resolve the repo whose `amf.json` project templates should
@@ -752,7 +658,7 @@ impl App {
     /// falls back to the working directory, so the picker only shows project
     /// templates when there is real project context (and unit tests stay
     /// deterministic). Used by both display and export so they always agree.
-    fn resolve_library_repo(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
+    pub(super) fn resolve_library_repo(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
         if let Some(view) = from_view
             && let Some(project) = self
                 .store
@@ -771,14 +677,6 @@ impl App {
             .projects
             .get(pi)
             .map(|project| project.repo.clone())
-    }
-
-    /// Resolve the repo to export a project template into. Delegates to
-    /// `resolve_library_repo` so display and export always target the same
-    /// main-repo root, regardless of whether AMF was launched from inside a
-    /// worktree.
-    fn resolve_export_repo(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
-        self.resolve_library_repo(from_view)
     }
 
     /// The on-disk location a template of `source` is read from / written to,
@@ -825,7 +723,7 @@ impl App {
     /// feature's `workdir` when opened from a session, else the selected
     /// feature's `workdir` on the dashboard. Returns `None` when no feature
     /// context is available.
-    fn resolve_worktree_dir(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
+    pub(super) fn resolve_worktree_dir(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
         if let Some(view) = from_view {
             return self
                 .store
@@ -1033,60 +931,18 @@ fn upsert_template(list: &mut Vec<PromptTemplate>, template: PromptTemplate) {
 /// replacing any same-name entry and preserving all other keys in the
 /// file. Reads through the legacy path when that is where config still
 /// lives, but always writes `amf.json`. Returns the path written.
+#[cfg(test)]
 fn export_template_to_project_config(repo: &Path, template: &PromptTemplate) -> Result<PathBuf> {
-    let mut root: serde_json::Value = match crate::extension::resolve_project_config_path(repo) {
-        Some(existing) => {
-            let contents = std::fs::read_to_string(&existing)?;
-            serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}))
-        }
-        None => serde_json::json!({}),
+    use crate::prompt_library::declarative::{Document, Export, ExportSource, Location, revision};
+    let raw = serde_json::to_value(template)?;
+    let source = ExportSource {
+        revision: revision(&raw)?,
+        raw,
+        file: None,
     };
-    if !root.is_object() {
-        root = serde_json::json!({});
-    }
-
-    let obj = root.as_object_mut().expect("root is an object");
-    let arr = obj
-        .entry("prompt_templates")
-        .or_insert_with(|| serde_json::json!([]));
-    if !arr.is_array() {
-        *arr = serde_json::json!([]);
-    }
-    let arr = arr.as_array_mut().expect("prompt_templates is an array");
-
-    let entry = serde_json::to_value(template)?;
-    if let Some(slot) = arr
-        .iter_mut()
-        .find(|value| value.get("name").and_then(|n| n.as_str()) == Some(template.name.as_str()))
-    {
-        *slot = entry;
-    } else {
-        arr.push(entry);
-    }
-
-    crate::extension::write_project_config(repo, &(serde_json::to_string_pretty(&root)? + "\n"))
-}
-
-/// Remove the entry matching `name` from the project config. Used when
-/// renaming a config-source template so the old name doesn't linger.
-fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
-    let Some(path) = crate::extension::resolve_project_config_path(repo) else {
-        return Ok(());
-    };
-    let contents = std::fs::read_to_string(&path)?;
-    let mut root: serde_json::Value =
-        serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(arr) = root
-        .get_mut("prompt_templates")
-        .and_then(|v| v.as_array_mut())
-    {
-        arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
-    }
-    // Writes go through the migrating helper too, so a rename on a repo
-    // still holding the legacy file lands in `amf.json` rather than
-    // rewriting the file the next read will ignore.
-    crate::extension::write_project_config(repo, &(serde_json::to_string_pretty(&root)? + "\n"))?;
-    Ok(())
+    let document = Export::prepare(source, Document::read(Location::Local(repo.into()))?)?
+        .commit(true, || Ok(()))?;
+    Ok(document.location.canonical())
 }
 
 #[cfg(test)]
@@ -1267,8 +1123,8 @@ mod tests {
 
         let contents = std::fs::read_to_string(tmp.path().join("amf.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&contents).unwrap();
-        // Migrated: the legacy file is gone, so reads have one answer.
-        assert!(!amf.join("config.json").exists());
+        // Canonical writes retain the untouched legacy source.
+        assert!(amf.join("config.json").exists());
         // Unrelated key preserved.
         assert_eq!(value["allowed_agents"][0], "claude");
         // Same-name entry replaced (not duplicated).

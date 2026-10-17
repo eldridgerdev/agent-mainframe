@@ -42,7 +42,11 @@ fn stale() -> GuiError {
         "This User template changed or was deleted. Keep your draft, then reload the template before saving or deleting.",
     )
 }
-fn selected(gui: &mut GuiHandle, scope: &LibraryScope, key: &str) -> GuiResult<LibraryEntry> {
+pub(super) fn selected(
+    gui: &mut GuiHandle,
+    scope: &LibraryScope,
+    key: &str,
+) -> GuiResult<LibraryEntry> {
     load(gui, scope, "")?
         .entries
         .into_iter()

@@ -1,6 +1,7 @@
 //! Desktop prompt library browsing, draft insertion and scoped User authoring. Source merging, search and substitution
 //! are shared with the TUI; delivery returns an unsent frontend draft only.
 pub mod authoring;
+pub mod declarative;
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;

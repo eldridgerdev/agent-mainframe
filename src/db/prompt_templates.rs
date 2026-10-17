@@ -141,6 +141,20 @@ pub(crate) struct Snapshot {
     pub revision: String,
     raw_tags: String,
     raw_placeholders: String,
+    raw_created_at: String,
+    raw_updated_at: String,
+}
+
+impl Snapshot {
+    pub(crate) fn raw_template(&self) -> Result<serde_json::Value> {
+        Ok(
+            serde_json::json!({"id":self.template.id,"name":self.template.name,
+            "description":self.template.description,"body":self.template.body,
+            "tags":serde_json::from_str::<serde_json::Value>(&self.raw_tags)?,
+            "placeholders":serde_json::from_str::<serde_json::Value>(&self.raw_placeholders)?,
+            "created_at":self.raw_created_at,"updated_at":self.raw_updated_at}),
+        )
+    }
 }
 
 pub(crate) enum Mutation {
@@ -210,6 +224,8 @@ pub(crate) fn snapshot(conn: &Connection, id: &str) -> Result<Option<Snapshot>> 
         revision,
         raw_tags: raw.4,
         raw_placeholders: raw.5,
+        raw_created_at: raw.6,
+        raw_updated_at: raw.7,
     }))
 }
 

@@ -319,6 +319,7 @@ try:
             ['Start in a new feature', 'Implement invoice guard', 'Choose fixture stack', 'editable draft', 'Create and start'],
             'document.querySelector(`select[aria-label="Choose fixture stack"]`).value==="rust & tools"')
     click('Cancel')
+    click('Discard changes')
     no_launch('todo-form-cancel')
     todo_form('Implement invoice guard', 'todo-direct')
     click('Create and start')
@@ -330,6 +331,7 @@ try:
     evaluate('document.querySelector(`[role=dialog][aria-label="Approve new TODO feature"] button.btn-ghost`).click()')
     no_launch('todo-direct')
     click('Cancel')
+    click('Discard changes')
     todo_form('Implement invoice guard', 'todo-direct')
     click('Create and start')
     wait('!!document.querySelector(`[role=dialog][aria-label="Approve new TODO feature"]`)')

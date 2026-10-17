@@ -1,0 +1,5 @@
+# Native TODO preset choices, explicit planning routes, cancellation and unsent handoff.
+note:The isolated TUI confirms the native capture fixture starts with no user records.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-todo-presets.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

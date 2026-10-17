@@ -3642,11 +3642,8 @@ impl App {
         preferred: &AgentKind,
     ) -> (AgentKind, usize) {
         let allowed = self.allowed_agents_for_repo(repo);
-        let selected = allowed
-            .iter()
-            .find(|agent| *agent == preferred)
-            .cloned()
-            .unwrap_or_else(|| allowed[0].clone());
+        let selected =
+            AgentKind::preferred_in(&allowed, preferred).unwrap_or_else(|| preferred.clone());
         let index = AgentKind::index_in(&allowed, &selected);
         (selected, index)
     }

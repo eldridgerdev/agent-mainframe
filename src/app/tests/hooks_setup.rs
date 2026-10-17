@@ -2052,11 +2052,11 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_check_harness_available()
+        .times(1)
+        .returning(|_| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Project(0);

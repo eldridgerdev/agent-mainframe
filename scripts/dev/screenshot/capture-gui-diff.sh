@@ -14,6 +14,12 @@ if [[ "${CI:-}" == "true" ]]; then
     libayatana-appindicator3-dev librsvg2-dev xvfb xauth \
     python3-gi gir1.2-gtk-3.0 python3-websocket python3-xlib dbus-x11 bubblewrap
 fi
+if [[ "${AMF_GUI_CAPTURE_REQUIRE_USERNS:-}" == 1 ]]; then
+  # Opt-in fixtures require private HOME runtime mounts. There is no fallback
+  # that runs them against the user's real runtime directory.
+  source "$SCRIPT_DIR/native-userns.sh"
+  amf_require_native_userns
+fi
 npm --prefix "$REPO_ROOT/gui" ci --no-audit --no-fund
 npm --prefix "$REPO_ROOT/gui" run build
 cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p amf-gui --locked

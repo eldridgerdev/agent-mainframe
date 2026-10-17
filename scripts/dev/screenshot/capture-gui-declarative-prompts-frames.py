@@ -151,6 +151,9 @@ def capture(name, note, expects, expression=None, allow_alert=False):
 
 
 def field(label, value):
+    # Authoring buttons load a fresh backend snapshot asynchronously. A click
+    # returning does not mean the owned editor/destination dialog is mounted.
+    wait(f'Array.from(document.querySelectorAll("[role=dialog] label")).some(l=>l.querySelector("span")?.textContent==={json.dumps(label)} && l.querySelector("input,textarea,select") && l.getClientRects().length>0)')
     evaluate(f"""(()=>{{const l=Array.from(document.querySelectorAll('[role=dialog] label')).find(l=>l.querySelector('span')?.textContent==={json.dumps(label)});if(!l)throw new Error('Missing field '+{json.dumps(label)});const e=l.querySelector('input,textarea,select');if(e.tagName==='SELECT'){{e.value={json.dumps(value)};e.dispatchEvent(new Event('change',{{bubbles:true}}));}}else{{const proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;Object.getOwnPropertyDescriptor(proto,'value').set.call(e,{json.dumps(value)});e.dispatchEvent(new Event('input',{{bubbles:true}}));}}}})()""")
 
 

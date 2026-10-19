@@ -1928,16 +1928,6 @@ fn cleanup_opencode_hooks_removes_sidebar_state_artifacts() {
 fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
     let repo = TempDir::new().unwrap();
     let workdir = TempDir::new().unwrap();
-    assert!(
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(workdir.path())
-            .arg("init")
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
 
     ensure_notification_hooks(
         workdir.path(),

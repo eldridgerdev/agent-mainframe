@@ -72,12 +72,23 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   useEffect(() => {
     if (!view || !waiting || busy) return;
     const workflowId = view.workflow_id;
-    const timer = window.setInterval(() => {
-      void prTriageSnapshot(workflowId).then((next) => {
-        setView((current) => current?.workflow_id === workflowId && !pending.current ? next : current);
-      }).catch((err) => setError(asGuiError(err).message));
-    }, 700);
-    return () => window.clearInterval(timer);
+    let live = true;
+    let timer = 0;
+    const poll = async () => {
+      const startedAt = performance.now();
+      try {
+        const next = await prTriageSnapshot(workflowId);
+        if (live) setView((current) => current?.workflow_id === workflowId && !pending.current ? next : current);
+      } catch (err) {
+        if (live) setError(asGuiError(err).message);
+      } finally {
+        // Keep at most one read in flight; GitHub-backed snapshots can take
+        // longer than the normal polling interval.
+        if (live) timer = window.setTimeout(poll, Math.max(700, 1400 - (performance.now() - startedAt)));
+      }
+    };
+    timer = window.setTimeout(poll, 700);
+    return () => { live = false; window.clearTimeout(timer); };
   }, [view?.workflow_id, waiting, busy]);
 
   // Seed the local reply editor once per opened reply; later polls never

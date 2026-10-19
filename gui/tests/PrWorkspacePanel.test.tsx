@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import PrWorkspacePanel from "../src/PrWorkspacePanel";
 import type { PrTriageView } from "../src/prTriageApi";
@@ -58,4 +58,30 @@ it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a ru
   fireEvent.click(screen.getByRole("button", { name: "Cancel AI review" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Start AI review" })).toBeTruthy());
   expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "cancel")).toBe(true);
+});
+
+it("does not overlap slow PR thread snapshots", async () => {
+  const loading: PrTriageView = { ...picker, revision: 2, stage: "loading", picker: null, loading_pr: 42 };
+  let resolveSnapshot!: (value: PrTriageView) => void;
+  let snapshots = 0;
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_act") return loading;
+    if (command === "pr_triage_snapshot") {
+      snapshots += 1;
+      return new Promise<PrTriageView>((resolve) => { resolveSnapshot = resolve; });
+    }
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_close") return undefined;
+    throw new Error(`Unexpected command ${command}`);
+  });
+
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  await waitFor(() => expect(screen.getByText(/Loading review comments for PR #42/)).toBeTruthy());
+  await waitFor(() => expect(snapshots).toBe(1), { timeout: 1500 });
+  await new Promise((resolve) => window.setTimeout(resolve, 800));
+  expect(snapshots).toBe(1);
+
+  await act(async () => resolveSnapshot(reviewing));
 });

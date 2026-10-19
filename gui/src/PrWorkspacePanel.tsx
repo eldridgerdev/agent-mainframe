@@ -70,8 +70,23 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
 
   useEffect(() => {
     if (!workflowId || !ai?.running || busy) return;
-    const timer = window.setInterval(() => void workspaceAiSnapshot(workflowId).then(setAi).catch((e) => setError(asGuiError(e).message)), 700);
-    return () => window.clearInterval(timer);
+    let live = true;
+    let timer = 0;
+    const poll = async () => {
+      const startedAt = performance.now();
+      try {
+        const next = await workspaceAiSnapshot(workflowId);
+        if (live) setAi(next);
+      } catch (e) {
+        if (live) setError(asGuiError(e).message);
+      } finally {
+        // Schedule after completion so a slow Tauri command cannot accumulate
+        // overlapping snapshots and stale responses.
+        if (live) timer = window.setTimeout(poll, Math.max(700, 1400 - (performance.now() - startedAt)));
+      }
+    };
+    timer = window.setTimeout(poll, 700);
+    return () => { live = false; window.clearTimeout(timer); };
   }, [workflowId, ai?.running, busy]);
 
   const aiAct = async (kind: "start" | "cancel" | "confirm_precall" | "cancel_precall") => {

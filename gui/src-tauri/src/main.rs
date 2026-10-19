@@ -1220,10 +1220,7 @@ async fn project_harness_choices(
     state: State<'_, AppState>,
     project_id: String,
 ) -> Result<ProjectHarnessChoices, GuiError> {
-    gui_project_preference::load(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &project_id,
-    )
+    gui_project_preference::load(&state.0, &project_id)
 }
 
 #[tauri::command]
@@ -1234,10 +1231,15 @@ async fn project_preference_save(
     revision: String,
     settings: ProjectHarnessPreference,
 ) -> Result<ProjectHarnessChoices, GuiError> {
-    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    // Harness probes run outside the lock; take it again only to broadcast.
     let result =
-        gui_project_preference::save(&mut gui, &project_id, &revision, settings.preferred_agent);
-    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+        gui_project_preference::save(&state.0, &project_id, &revision, settings.preferred_agent);
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
     result
 }
 

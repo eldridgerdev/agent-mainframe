@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { AgentSlug, ProjectHarnessChoices } from "./api";
+import { AgentSlug, HarnessInfo, ProjectHarnessChoices } from "./api";
 import RevisionedSettingsModal from "./RevisionedSettingsModal";
 import { Field } from "./ui";
 
-export default function ProjectPreferencePanel({ projectId, onClose, onSaved }: {
-  projectId: string; onClose: () => void; onSaved: () => void;
+export default function ProjectPreferencePanel({ projectId, supported, onClose, onSaved }: {
+  projectId: string; supported: HarnessInfo[]; onClose: () => void; onSaved: () => void;
 }) {
+  // The same labels the creation forms show.
+  const name = (slug: AgentSlug) => supported.find(info => info.slug === slug)?.display_name ?? slug;
   const [agent, setAgent] = useState<AgentSlug | null>(null);
   const [offered, setOffered] = useState<AgentSlug[]>([]);
   return <RevisionedSettingsModal<ProjectHarnessChoices["settings"], ProjectHarnessChoices>
@@ -19,11 +21,11 @@ export default function ProjectPreferencePanel({ projectId, onClose, onSaved }: 
       <p className="muted small">Sets the default for new features. Existing sessions keep their harness. Agent availability is saved separately. Nothing starts or stops.</p>
       <Field label="Preferred harness"><select value={agent ?? ""} disabled={busy || !view.agents.length}
         onChange={event => setAgent(event.target.value as AgentSlug)}>
-        {agent && !view.agents.includes(agent) && <option value={agent} disabled>{agent} — unavailable</option>}
-        {view.agents.map(choice => <option key={choice} value={choice}>{choice}</option>)}
+        {agent && !view.agents.includes(agent) && <option value={agent} disabled>{name(agent)} — unavailable</option>}
+        {view.agents.map(choice => <option key={choice} value={choice}>{name(choice)}</option>)}
       </select></Field>
       {!view.agents.length && <p role="alert" className="callout callout-warning">No allowed, installed harness is available. Update Agent availability or install a harness, then reload.</p>}
-      {agent && !view.agents.includes(agent) && <p role="alert" className="callout callout-warning">The saved preference is unavailable. New features default to {view.default_agent ?? "no harness"}; choose an available harness to update the preference.</p>}
+      {agent && !view.agents.includes(agent) && <p role="alert" className="callout callout-warning">The saved preference is unavailable. New features default to {view.default_agent ? name(view.default_agent) : "no harness"}; choose an available harness to update the preference.</p>}
     </>}
   </RevisionedSettingsModal>;
 }

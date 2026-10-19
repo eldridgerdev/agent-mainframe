@@ -6,16 +6,20 @@ use crate::gui_contract::GuiErrorKind;
 use crate::project::{Feature, Project, ProjectStore, VibeMode};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
 use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 struct Fixture {
     root: tempfile::TempDir,
-    gui: GuiHandle,
+    gui: Mutex<GuiHandle>,
     id: String,
     available: Arc<AtomicUsize>,
+    /// The shared setter's own check of the chosen harness, through tmux.
     calls: Arc<AtomicUsize>,
+    /// Version probes for the offered choices, outside the GUI lock.
+    probes: AtomicUsize,
+    probed_while_locked: AtomicBool,
     conflict_at: Arc<AtomicUsize>,
 }
 impl Drop for Fixture {
@@ -33,13 +37,33 @@ impl Fixture {
     fn db(&self) -> AmfDb {
         AmfDb::open(&self.root.path().join("amf.db")).unwrap()
     }
-    fn load(&mut self) -> ProjectHarnessChoices {
-        let path = self.global();
-        read(&mut self.gui, &self.id, &path).unwrap()
+    fn probe(&self, agent: &AgentKind) -> bool {
+        self.probes.fetch_add(1, Ordering::SeqCst);
+        if self.gui.try_lock().is_err() {
+            self.probed_while_locked.store(true, Ordering::SeqCst);
+        }
+        let index = AgentKind::ALL
+            .iter()
+            .position(|candidate| candidate == agent)
+            .unwrap();
+        self.available.load(Ordering::SeqCst) & (1 << index) != 0
     }
-    fn save(&mut self, revision: &str, next: AgentKind) -> GuiResult<ProjectHarnessChoices> {
+    fn try_load(&self) -> GuiResult<ProjectHarnessChoices> {
+        read(&self.gui, &self.id, &self.global(), &|agent| {
+            self.probe(agent)
+        })
+    }
+    fn load(&self) -> ProjectHarnessChoices {
+        self.try_load().unwrap()
+    }
+    fn save(&self, revision: &str, next: AgentKind) -> GuiResult<ProjectHarnessChoices> {
         let path = self.global();
-        save_at(&mut self.gui, &self.id, revision, next, &path)
+        save_at(&self.gui, &self.id, revision, next, &path, &|agent| {
+            self.probe(agent)
+        })
+    }
+    fn app(&self) -> std::sync::MutexGuard<'_, GuiHandle> {
+        self.gui.lock().unwrap()
     }
     fn edit(&self, edit: impl FnOnce(&mut ProjectStore)) {
         let db = self.db();
@@ -104,17 +128,19 @@ fn fixture() -> Fixture {
     set_test_global_extension_config(Some(ExtensionConfig::default()));
     Fixture {
         root,
-        gui: GuiHandle::from_app(app),
+        gui: Mutex::new(GuiHandle::from_app(app)),
         id,
         available,
         calls,
+        probes: AtomicUsize::new(0),
+        probed_while_locked: AtomicBool::new(false),
         conflict_at,
     }
 }
 
 #[test]
 fn preference_changes_only_default_and_shared_normalization() {
-    let mut f = fixture();
+    let f = fixture();
     let view = f.load();
     assert_eq!(view.default_agent, Some(AgentKind::Codex));
     let before = serde_json::to_value(&f.db().load_store().unwrap().projects[0].features).unwrap();
@@ -130,7 +156,7 @@ fn preference_changes_only_default_and_shared_normalization() {
 
 #[test]
 fn unavailable_or_outside_saved_catalog_falls_back_without_rewriting_preference() {
-    let mut f = fixture();
+    let f = fixture();
     f.available.store(3, Ordering::SeqCst);
     let view = f.load();
     assert_eq!(view.default_agent, Some(AgentKind::Claude));
@@ -148,7 +174,7 @@ fn unavailable_or_outside_saved_catalog_falls_back_without_rewriting_preference(
 #[test]
 fn real_external_preference_project_config_and_installation_edits_invalidate_confirmation() {
     for change in 0..5 {
-        let mut f = fixture();
+        let f = fixture();
         let view = f.load();
         match change {
             0 => f.edit(|store| store.projects[0].preferred_agent = AgentKind::Pi),
@@ -172,7 +198,7 @@ fn real_external_preference_project_config_and_installation_edits_invalidate_con
 
 #[test]
 fn checkout_replacement_and_project_deletion_refuse_save() {
-    let mut f = fixture();
+    let f = fixture();
     let view = f.load();
     std::fs::rename(f.repo(), f.root.path().join("old-repo")).unwrap();
     std::fs::create_dir(f.repo()).unwrap();
@@ -189,7 +215,7 @@ fn checkout_replacement_and_project_deletion_refuse_save() {
 
 #[test]
 fn unrelated_sibling_changes_survive_and_post_validation_cas_never_overwrites() {
-    let mut f = fixture();
+    let f = fixture();
     let view = f.load();
     f.edit(|store| store.projects[0].features[0].nickname = Some("Earlier change".into()));
     f.save(&view.revision, AgentKind::Opencode).unwrap();
@@ -200,10 +226,10 @@ fn unrelated_sibling_changes_survive_and_post_validation_cas_never_overwrites() 
         Some("Earlier change")
     );
     let view = f.load();
-    // Four offered probes then the setter's selected-harness check. Inject a
-    // real external save after validation, immediately before persistence.
+    // The setter's selected-harness check runs after validation. Inject a
+    // real external save there, immediately before persistence.
     f.conflict_at
-        .store(f.calls.load(Ordering::SeqCst) + 5, Ordering::SeqCst);
+        .store(f.calls.load(Ordering::SeqCst) + 1, Ordering::SeqCst);
     assert_eq!(
         f.save(&view.revision, AgentKind::Pi).unwrap_err().kind,
         GuiErrorKind::Conflict
@@ -215,14 +241,14 @@ fn unrelated_sibling_changes_survive_and_post_validation_cas_never_overwrites() 
         Some("Sibling change")
     );
     assert_eq!(
-        f.gui.app_for_workflow().store.projects[0].preferred_agent,
+        f.app().app_for_workflow().store.projects[0].preferred_agent,
         AgentKind::Opencode
     );
 }
 
 #[test]
 fn malformed_config_and_failed_save_preserve_saved_preference() {
-    let mut f = fixture();
+    let f = fixture();
     let view = f.load();
     std::fs::write(f.repo().join("amf.json"), "{invalid").unwrap();
     assert!(f.save(&view.revision, AgentKind::Pi).is_err());
@@ -236,8 +262,41 @@ fn malformed_config_and_failed_save_preserve_saved_preference() {
     db.execute_batch("CREATE TRIGGER reject_preference BEFORE INSERT ON projects BEGIN SELECT RAISE(FAIL, 'fixture save failure'); END;").unwrap();
     assert!(f.save(&view.revision, AgentKind::Pi).is_err());
     assert_eq!(
-        f.gui.app_for_workflow().store.projects[0].preferred_agent,
+        f.app().app_for_workflow().store.projects[0].preferred_agent,
         AgentKind::Codex
+    );
+    assert_eq!(
+        f.db().load_store().unwrap().projects[0].preferred_agent,
+        AgentKind::Codex
+    );
+}
+
+#[test]
+fn probes_run_outside_the_lock_and_save_probes_each_harness_once() {
+    let f = fixture();
+    let view = f.load();
+    assert_eq!(f.probes.load(Ordering::SeqCst), AgentKind::ALL.len());
+    f.probes.store(0, Ordering::SeqCst);
+    f.save(&view.revision, AgentKind::Opencode).unwrap();
+    // One round for the offered choices, reused for the refreshed view, plus
+    // the shared setter's check of the chosen harness.
+    assert_eq!(f.probes.load(Ordering::SeqCst), AgentKind::ALL.len());
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+    assert!(!f.probed_while_locked.load(Ordering::SeqCst));
+}
+
+#[test]
+fn an_active_workflow_blocks_saving_but_not_reading_choices() {
+    let f = fixture();
+    let view = f.load();
+    f.app().app_for_workflow().mode = AppMode::DeletingProject("Project".into());
+    // The creation forms read the same choices while a workflow is open.
+    assert_eq!(f.try_load().unwrap().revision, view.revision);
+    assert_eq!(
+        f.save(&view.revision, AgentKind::Opencode)
+            .unwrap_err()
+            .kind,
+        GuiErrorKind::Conflict
     );
     assert_eq!(
         f.db().load_store().unwrap().projects[0].preferred_agent,

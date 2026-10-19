@@ -3636,6 +3636,12 @@ impl App {
         allowed.contains(agent)
     }
 
+    /// The preferred harness if allowed, else the first allowed one.
+    ///
+    /// With nothing allowed, returns `preferred` itself at index 0. That is
+    /// only a placeholder: callers never index the installed list with the
+    /// result, and every launch path re-checks `allows_agent_for_repo` (or
+    /// returns early on an empty list) before using the harness.
     pub(crate) fn normalize_agent_for_repo(
         &self,
         repo: &Path,

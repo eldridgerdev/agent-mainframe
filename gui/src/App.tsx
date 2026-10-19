@@ -1301,6 +1301,7 @@ export default function App() {
           void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
         }} />}
       {projectPreference && <ProjectPreferencePanel key={projectPreference} projectId={projectPreference}
+        supported={harnesses.data ?? []}
         onClose={() => setProjectPreference(null)} onSaved={() => {
           setProjectPreference(null);
           void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });

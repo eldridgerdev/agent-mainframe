@@ -22,8 +22,10 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   onSubmit: (request: CreateFeatureRequest, planKind: PlanKind) => void | Promise<unknown>;
 }) {
   const suggested = todoTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "todo-work";
+  // The harness is not here: useCreationHarness owns it, and a change counts
+  // toward `dirty` through `harness.explicit`.
   const initial = useRef({ projectId: projects[0]?.id ?? "", branch: suggested,
-    agent: agents[0]?.slug ?? "claude", mode: modes[0]?.slug ?? "vibe",
+    mode: modes[0]?.slug ?? "vibe",
     planKind: kind === "plan" ? "full" as const : "none" as const, review: false, chrome: false, remoteControl: false }).current;
   const [projectId, setProjectId] = useState(initial.projectId);
   const [branch, setBranch] = useState(initial.branch);
@@ -53,7 +55,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
   const busy = pending || submitting;
   const ready = !!project?.is_git && harness.ready && !!selectedAgent && !!selectedMode
     && presets.isSuccess && !presets.isFetching && hook.ready && !!branch.trim() && !remoteControl && !unsupported;
-  const dirty = JSON.stringify({ projectId, branch, agent: initial.agent, mode, planKind, review, chrome, remoteControl }) !== JSON.stringify(initial) || harness.explicit || !!hook.choice;
+  const dirty = JSON.stringify({ projectId, branch, mode, planKind, review, chrome, remoteControl }) !== JSON.stringify(initial) || harness.explicit || !!hook.choice;
   function close() {
     if (busy) return;
     if (dirty) setDiscard(true); else onCancel();

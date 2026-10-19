@@ -145,6 +145,23 @@ pub fn select_pr(gui: &mut GuiHandle, id: &str, number: u32) -> GuiResult<()> {
     let context = workspace.as_ref().unwrap();
     let target = context.target.clone();
     let context_workdir = context.workdir.clone();
+    // Once a PR has been selected, its identity remains valid while the AI
+    // pane is active or its background run finishes. The embedded triage
+    // panel can re-emit the same selection during that transition; keep the
+    // cached ref instead of requiring AppMode::PrReview to be foregrounded.
+    if !matches!(&app.mode, AppMode::PrReview(state) if state.review.pr.number == number)
+        && context
+            .pr
+            .as_ref()
+            .is_some_and(|selected| selected.number == number)
+    {
+        if context_workdir != context_for_feature(app, &target)? {
+            return Err(GuiError::conflict(
+                "Feature checkout changed; reopen PR Workspace",
+            ));
+        }
+        return Ok(());
+    }
     let pr = match &app.mode {
         AppMode::PrReview(state) if state.review.pr.number == number => state.review.pr.clone(),
         _ => {
@@ -511,6 +528,24 @@ mod tests {
         let id = begin(&mut gui, target).unwrap();
         let error = files_request(&gui, &id).unwrap_err();
         assert!(error.message.contains("Select a PR in Threads first"));
+    }
+
+    #[test]
+    fn reselecting_the_cached_pr_works_while_another_workspace_pane_is_foregrounded() {
+        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let id = begin(&mut gui, target).unwrap();
+        let selected = crate::github::PrRef {
+            number: 42,
+            head_sha: "head-sha".into(),
+            url: "https://example.test/pull/42".into(),
+            owner: "fixture".into(),
+            repo: "repo".into(),
+            head_ref: "feature".into(),
+        };
+        gui.pr_workspace_context.as_mut().unwrap().pr = Some(selected);
+        // The normal mode is standing in for the AI pane or its completion
+        // transition; the selected PR must remain usable in this state.
+        assert!(select_pr(&mut gui, &id, 42).is_ok());
     }
 
     #[test]

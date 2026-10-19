@@ -90,7 +90,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
   }
   function saved() {
     setEditor(null); setSelected(null); setValues({}); setError(null); setSearch("");
-    setNotice("Saved in your User library. Your composer draft is unchanged.");
+    setNotice("Saved in your User library.");
     void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
   }
   async function author(action: "edit" | "delete" | "duplicate") {
@@ -98,9 +98,15 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     inFlight.current = true; authorPending.current = true; setAuthorBusy(true); setError(null);
     try {
       if (action === "duplicate") {
-        await promptUserDuplicate(scope, selected.key);
-        setSelected(null); setValues({}); setSearch(""); setNotice("Duplicated to your User library.");
-        await queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
+        const id = await promptUserDuplicate(scope, selected.key);
+        setSearch("");
+        // Mark every cached search stale, then load the unfiltered list once
+        // so the new copy can be selected for immediate use.
+        await queryClient.invalidateQueries({ queryKey: ["prompt-library"], refetchType: "none" });
+        const fresh = await queryClient.fetchQuery({ queryKey: ["prompt-library", scope, ""], queryFn: () => promptLibraryLoad(scope, "") });
+        const copy = fresh.entries.find((entry) => entry.user_id === id);
+        if (copy) choose(copy); else { setSelected(null); setValues({}); }
+        setNotice("Duplicated to your User library.");
       } else {
         const snapshot = await promptUserEdit(scope, selected.key);
         if (action === "edit") setEditor({ snapshot });
@@ -149,7 +155,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
         </button>)}
       </div>
       <div className="library-detail">
-        {!selected && notice && <p role="status" className="muted">{notice}</p>}
+        {notice && <p role="status" className="muted">{notice}</p>}
         {!selected && <EmptyState icon="file" title="Select a prompt">Preview its text and customize any placeholders before adding it.</EmptyState>}
         {selected && <>
           <div className="library-actions">

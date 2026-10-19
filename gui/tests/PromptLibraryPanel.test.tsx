@@ -272,8 +272,15 @@ it("duplicates declarative sources into User while never offering edit or deleti
   fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_duplicate")).toHaveLength(1);
   expect(invoke).toHaveBeenCalledWith("prompt_user_duplicate", { scope, entryKey: "project-template" });
+  const copied = { ...entry, key: "copied-template", name: "Project prompt (copy)", user_id: "copied", slots: [], body: "Plain prompt" };
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_library_load"
+    ? Promise.resolve({ ...view, entries: [...view.entries, copied], available_keys: [...view.available_keys, copied.key] })
+    : original(command, args, options));
   await act(async () => finish());
   await screen.findByText("Duplicated to your User library.");
+  // The new copy is selected, so it can be edited or inserted straight away.
+  await waitFor(() => expect(screen.getByRole("button", { name: /Project prompt \(copy\)/ }).getAttribute("aria-pressed")).toBe("true"));
+  expect(screen.getByRole("button", { name: "Edit User template" })).toBeTruthy();
 });
 
 it.each(["duplicate", "delete"])("protects a pending %s even if Escape arrives before React commits the busy state", async (action) => {

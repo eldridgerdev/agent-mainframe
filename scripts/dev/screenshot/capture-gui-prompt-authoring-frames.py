@@ -225,7 +225,8 @@ try:
     assert not evaluate('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Edit User template")')
     click('Duplicate to User')
     wait('document.body.innerText.includes("Duplicated to your User library.")')
-    choose('Invoice repair (copy)')
+    # The new copy is selected on its own; no click is needed to reach it.
+    wait('document.querySelector(".library-item-active strong")?.textContent==="Invoice repair (copy)"')
     click('Edit User template')
     wait('!!document.querySelector(\'[role=dialog][aria-label="User prompt editor"]\')')
     capture('002-declarative-copy-keeps-metadata.png','Duplicate to User creates a fresh editable copy with the original description and both configured placeholder definitions, including the unused definition. Declarative source files remain byte-identical.',['Edit User prompt','Keep all configured metadata.','2 configured placeholder definitions'])

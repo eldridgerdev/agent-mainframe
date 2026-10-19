@@ -974,6 +974,10 @@ fn load_project_prompt_templates(repo: &Path) -> Vec<PromptTemplate> {
 /// config for feature presets etc., but is wrong here: silently hiding an
 /// exported template because a higher-priority copy exists makes the export
 /// appear to have failed.)
+///
+/// Keep every entry in source order: the GUI's duplicate path
+/// (`gui_prompts::authoring::declarative_row`) maps an entry's position
+/// within its source back to the same row in the config file.
 fn merge_prompt_library_entries(
     user: &[PromptTemplate],
     global: &[PromptTemplate],

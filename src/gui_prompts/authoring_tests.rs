@@ -236,3 +236,45 @@ fn source_reordering_preserves_selection_and_duplicate_never_writes_the_source()
     assert_eq!(std::fs::read(&path).unwrap(), changed);
     assert_eq!(gui.db().unwrap().load_prompt_templates().unwrap().len(), 1);
 }
+#[test]
+fn global_duplicate_reads_the_real_config_file_and_refuses_unsupported_metadata() {
+    // The fixture's in-memory Global entry is "Same" / "global"; the file below
+    // is what duplication must actually read and validate.
+    let (dir, mut gui, scope, _) = fixture();
+    let config = dir.path().join("global-config.json");
+    let key = load(&mut gui, &scope, "")
+        .unwrap()
+        .entries
+        .iter()
+        .find(|entry| entry.source == "Global")
+        .unwrap()
+        .key
+        .clone();
+    let unsupported = r#"{"extension":{"prompt_templates":[{"name":"Same","body":"global","future_metadata":1}]}}"#;
+    std::fs::write(&config, unsupported).unwrap();
+    assert_eq!(
+        duplicate_at(&mut gui, &scope, &key, &config)
+            .unwrap_err()
+            .kind,
+        GuiErrorKind::Conflict
+    );
+    assert!(
+        gui.db()
+            .unwrap()
+            .load_prompt_templates()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), unsupported);
+
+    let supported =
+        r#"{"theme":"keep","extension":{"prompt_templates":[{"name":"Same","body":"global"}]}}"#;
+    std::fs::write(&config, supported).unwrap();
+    let id = duplicate_at(&mut gui, &scope, &key, &config).unwrap();
+    assert_eq!(reload(&gui, &id).unwrap().name, "Same (copy)");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), supported);
+
+    std::fs::remove_file(&config).unwrap();
+    assert!(duplicate_at(&mut gui, &scope, &key, &config).is_err());
+    assert_eq!(gui.db().unwrap().load_prompt_templates().unwrap().len(), 1);
+}

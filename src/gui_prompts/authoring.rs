@@ -106,6 +106,21 @@ pub fn delete(gui: &mut GuiHandle, id: &str, revision: &str) -> GuiResult<()> {
     Ok(())
 }
 pub fn duplicate(gui: &mut GuiHandle, scope: &LibraryScope, key: &str) -> GuiResult<String> {
+    duplicate_at(
+        gui,
+        scope,
+        key,
+        &crate::project::amf_config_dir().join("config.json"),
+    )
+}
+/// `duplicate` with the Global config file supplied by the caller, so tests
+/// can exercise the real Global read against a private file.
+fn duplicate_at(
+    gui: &mut GuiHandle,
+    scope: &LibraryScope,
+    key: &str,
+    global_config: &std::path::Path,
+) -> GuiResult<String> {
     let entry = selected(gui, scope, key)?;
     if entry.source == "User" {
         let snapshot = user_snapshot(gui, &entry)?;
@@ -120,7 +135,7 @@ pub fn duplicate(gui: &mut GuiHandle, scope: &LibraryScope, key: &str) -> GuiRes
     }
     // Browsing is intentionally tolerant. Duplication must instead check the
     // actual authored metadata, refusing fields a User row cannot preserve.
-    let raw = declarative_row(gui, scope, &entry)?;
+    let raw = declarative_row(gui, scope, &entry, global_config)?;
     validate_declarative_metadata(&raw)?;
     let parsed: PromptTemplate = serde_json::from_value(raw).map_err(anyhow::Error::from)?;
     if parsed.name != entry.template.name
@@ -141,14 +156,9 @@ fn declarative_row(
     gui: &mut GuiHandle,
     scope: &LibraryScope,
     entry: &LibraryEntry,
+    global_config: &std::path::Path,
 ) -> GuiResult<serde_json::Value> {
     let app = gui.app_for_workflow();
-    #[cfg(test)]
-    if entry.source == "Global" && app.store_path.as_os_str().is_empty() {
-        return serde_json::to_value(&entry.template)
-            .map_err(anyhow::Error::from)
-            .map_err(Into::into);
-    }
     let repo = match scope {
         LibraryScope::Global => None,
         LibraryScope::Project { project_id } | LibraryScope::Feature { project_id, .. } => app
@@ -159,7 +169,7 @@ fn declarative_row(
             .map(|project| &project.repo),
     };
     let path = match entry.source {
-        "Global" => crate::project::amf_config_dir().join("config.json"),
+        "Global" => global_config.to_path_buf(),
         "Project" => repo
             .and_then(|repo| crate::extension::resolve_project_config_path(repo))
             .ok_or_else(|| GuiError::conflict("Project config was removed"))?,
@@ -190,6 +200,13 @@ fn declarative_row(
     } else {
         &value["prompt_templates"]
     };
+    // `source_index` is the entry's position among its source's merged
+    // entries, used here as an index into the raw file array. That holds only
+    // because every source loader returns all of a file's rows in file order
+    // (an unparseable file yields none, never a partial list) and
+    // `merge_prompt_library_entries` never filters or dedupes. If either
+    // changes, this would fetch a different row; the caller's field-by-field
+    // comparison then refuses the copy as "changed while copying".
     templates
         .as_array()
         .and_then(|rows| rows.get(entry.source_index))

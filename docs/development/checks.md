@@ -39,12 +39,18 @@ python3 scripts/dev/gui-driver/test_driver.py
 python3 scripts/dev/tui-driver/test_driver.py
 cargo build --locked --bin amf
 python3 scripts/dev/tui-driver/smoke.py
+python3 scripts/dev/tui-driver/pr_workspace_smoke.py --binary target/debug/amf
 ```
 
 The smoke check needs tmux and no display/browser or paid harness. It uses a
 private server/database and covers real TUI input, persistence and terminal
 modes. See [the TUI driver guide](tui-ai-driver.md) for compact observations and
 [the GUI driver guide](gui-ai-driver.md) for native desktop interaction.
+
+The PR workspace smoke check creates a private fixture repository and masks
+GitHub with offline responses. It exercises leader+G, feedback-to-code navigation,
+draft editing and resumption, submission preview, resizing, and the unchanged
+legacy leader+U entry. It does not post reviews, launch paid agents, or capture images.
 
 The Rust `app::tests::hooks_setup` suite checks injected `amf-interact` bundles
 for all four harnesses, including imports from another working directory,

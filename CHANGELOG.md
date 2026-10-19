@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.50.0] - 2026-10-19
+
+A new split PR workspace keeps files, GitHub threads and AI findings for one
+PR side by side in the TUI. The desktop app gains prompt authoring, feature
+presets, harness changes, context and dormancy settings, screenshot evidence,
+themes and agent sidebars. Terminal Markdown and plan review now draw Mermaid
+diagrams, and several paste, upgrade and PR-triage problems are fixed.
+
 ### Added
 
 - **Edit and export declarative desktop prompts.** Update Global, Project or
@@ -20,6 +30,37 @@ are tagged.
   writer; F5 reload leaves Ctrl+R redo intact. Legacy local configuration is
   copied to amf.json with its permissions while the original legacy file remains.
   Existing composer drafts and running sessions are kept.
+- **Split PR workspace (experimental).** `G` on the dashboard, or leader+`G`
+  on the dashboard or in a session, opens one PR with Files, GitHub threads
+  and AI findings side by side. Each tab keeps its own selection and reading
+  position, and selecting feedback opens the code it refers to. Stale or
+  outdated feedback is flagged instead of pointing at unrelated code. An AI
+  review runs in the background with progress in the navigator and can be
+  cancelled with Ctrl+X or the Cancel control. Your review draft is kept
+  between visits, and human and AI reviews are still posted separately after
+  confirmation. Opened from a feature, the PR picker preselects that feature's
+  PR.
+- **Mermaid diagrams in the terminal.** Mermaid flowcharts and sequence
+  diagrams in the Markdown viewer and plan-interview review render inline as
+  text diagrams. Press `d` to switch to the source and `r` to refresh an
+  edited file. Unsupported, invalid or too-wide diagrams keep their source and
+  say why.
+- **Screenshot evidence and inline PR images in the desktop app.** Features
+  and sessions show screenshots agents captured, with zoom, pan and the session
+  that produced each one. Images in PR descriptions, comments and replies
+  render inline and open in the same viewer without losing your selected
+  comment or unsent reply. Agents are told to capture screenshots only when you
+  explicitly ask.
+- **Change a feature's harness from the desktop app.** *More feature actions →
+  Change harness…* switches every agent in a worktree feature to another
+  harness after confirmation. Saved conversations are cleared, sessions that
+  were running restart on the new harness, and stopped ones stay stopped.
+- **Desktop feature presets manager.** Add, edit and delete global feature
+  presets, then Save or Reload them. New features created in the desktop app
+  can start from a project or global preset; edits after applying it win.
+- **Custom-theme contrast warnings.** The desktop Appearance settings list
+  colour pairs in a custom theme that are hard to read, separately from load
+  errors. Your colours are kept as written.
 
 - **Author User prompts in the desktop library.** Create, edit and confirm
   deletion of User templates, duplicate any supported library source into User,
@@ -27,6 +68,11 @@ are tagged.
   placeholders are kept. Conflicting external edits are refused while keeping
   your draft.
   Saving never sends or clears the composer. No migration is required.
+- **Feature presets for TODO launches.** Apply project or global templates when
+  starting a TODO in a new feature, then edit its branch, harness, mode, review,
+  Chrome and direct/Full/Quick Plan choices. Remote Control templates require
+  explicit opt-out in desktop. Cancelling protects edited settings; planning
+  keeps the TODO available until acceptance, and agent handoffs stay unsent.
 
 - **Desktop context settings.** Set a fallback context-window token limit and
   warning/critical percentages from workspace navigation. A blank limit restores
@@ -172,6 +218,12 @@ are tagged.
 
 ### Changed
 
+- **`G` now opens the PR workspace.** The previous PR Triage / Review flow is
+  still available on leader+`U`, and `W` still opens AI Review.
+- **Readable desktop colours under every TUI theme.** Dialogs, selected rows,
+  badges, harness icons and terminal messages now keep readable contrast in
+  light and dark themes, instead of copying vivid TUI accent colours onto
+  backgrounds.
 - **Brighter desktop dark theme.** Panels, dialogs and terminals use lighter
   backgrounds, clearer borders and more readable text, status badges and code
   colors. Terminal colors follow system appearance changes without losing
@@ -192,6 +244,17 @@ are tagged.
 
 ### Fixed
 
+- **Large pastes.** Pasting 128 KiB or more into a session no longer fails
+  with "Failed to set tmux buffer".
+- **PR comment triage saves again on affected databases.** Some databases
+  missed an earlier triage-table upgrade, so every triage save failed with an
+  `ON CONFLICT` error. AMF now repairs the table on start.
+- **Clear error when a feature's checkout is missing.** Starting a feature
+  whose worktree folder was deleted (for example one under `/tmp` after a
+  reboot) now names the missing path, instead of failing with "No such file or
+  directory" or recreating an empty folder.
+- **Supervised edit retries.** Answering a supervised edit again right after an
+  earlier answer no longer reports "Another reviewer is answering this edit".
 - **Python in AppImage sessions.** New tmux servers started by the Linux
   desktop app no longer inherit AppImage's bundled Python home and search-path
   prefix, which could make host Python fail to import even its standard
@@ -256,6 +319,19 @@ are tagged.
   locals queries (current tree-sitter-python) now load instead of failing, so
   Python files are highlighted in the TUI and AMF stops trying to reinstall the
   parser at every start.
+
+### Security
+
+- Updated rustls to 0.23.46 to clear four newly published security
+  advisories (RUSTSEC-2026-0346 to RUSTSEC-2026-0349).
+
+### Migration
+
+- No configuration migration is required. AMF's shared database upgrades
+  automatically the first time either interface starts.
+- The legacy PR Triage / Review flow moved from `G` to leader+`U`.
+- After saving context or dormancy settings in the desktop app, restart any
+  TUI that was already open so it picks up the new values.
 
 ## [v0.49.0] - 2026-10-06
 

@@ -18,6 +18,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
         }
         return Ok(());
     }
+    if super::pr_workspace::paste(app, text) {
+        return Ok(());
+    }
     match &app.mode {
         AppMode::Viewing(view) => {
             if app.compose_intercept_active(view) {

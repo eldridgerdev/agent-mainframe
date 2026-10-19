@@ -1,0 +1,96 @@
+// @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
+import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import App from "../src/App";
+import type { FeaturePreset, WorkspaceSnapshot } from "../src/api";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }));
+vi.mock("../src/TerminalPane", () => ({ default: () => <p>Offline terminal</p> }));
+// Keep the App callback/routing real; the asserted native fixture exercises the actual TODO menu.
+vi.mock("../src/TodoPanel", () => ({ default: ({ onLaunchNew, onPlanNew }: {
+  onLaunchNew?: (id: string, title: string) => void; onPlanNew?: (id: string, title: string) => void;
+}) => <><button onClick={() => onLaunchNew?.("todo", "Improve quotas")}>TODO launch entry</button>
+  <button onClick={() => onPlanNew?.("todo", "Improve quotas")}>TODO plan entry</button></> }));
+const clients: QueryClient[] = [];
+afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.resetAllMocks(); localStorage.clear(); });
+it.each(["none", "full", "quick"] as const)("routes a TODO preset through App to %s with explicit fields and no prompt send", async (kind) => {
+  const preset: FeaturePreset = { name: "Quota preset", branch_prefix: "feat", agent: "codex", mode: "vibe",
+    review: true, enable_chrome: true, remote_control: false, plan_mode: kind !== "none", quick_plan: kind === "quick" };
+  const snapshot: WorkspaceSnapshot = { projects: [{ id: "project", name: "demo", repo: "/tmp/demo", is_git: true, features: [] }],
+    snapshot_at: "2026-10-14T00:00:00Z", stopped_session_ids: [] };
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "get_snapshot") return snapshot;
+    if (command === "project_harness_choices") return creationChoices(["codex"]);
+    if (command === "supported_harnesses" || command === "allowed_harnesses") return [{ slug: "codex", display_name: "Codex" }];
+    if (command === "supported_modes") return [{ slug: "vibe", display_name: "Vibe", description: "" }];
+    if (command === "feature_presets_choices") return [preset];
+    if (command === "worktree_hook_prompt") return null;
+    if (command === "plan_snapshot" || command === "plan_begin_todo_new") return { active: null, precall: null };
+    if (command === "todo_launch_new_feature") {
+      snapshot.projects[0].features.push({ id: "created", name: "feat/improve-quotas", branch: "feat/improve-quotas", workdir: "/tmp/demo/.worktrees/quotas",
+        is_worktree: true, status: "idle", agent: "codex", mode: "vibe", sessions: [{ id: "agent", kind: "codex", label: "Codex", tmux_window: "codex" }] });
+      return { target: { project_id: "project", feature_id: "created", session_id: "agent" }, draft_prompt: "Implement quota TODO", reused_session: false };
+    }
+    return null;
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Global TODOs" }));
+  fireEvent.click(await screen.findByRole("button", { name: "TODO launch entry" }));
+  await screen.findByRole("option", { name: "Quota preset" });
+  fireEvent.change(screen.getByLabelText("Feature preset"), { target: { value: "0" } });
+  const button = screen.getByRole("button", { name: kind === "none" ? "Create and start" : kind === "quick" ? "Start Quick Plan" : "Start plan" });
+  await waitFor(() => expect(button).toHaveProperty("disabled", false)); fireEvent.click(button);
+  const expectedRequest = expect.objectContaining({ project_name: "demo", branch: "feat/improve-quotas", agent: "codex", mode: "vibe", review: true,
+    enable_chrome: true, plan_mode: kind !== "none", use_worktree: true });
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith(kind === "none" ? "todo_launch_new_feature" : "plan_begin_todo_new",
+    kind === "none" ? { todoId: "todo", request: expectedRequest, approved: false } : { todoId: "todo", request: expectedRequest, quick: kind === "quick" }));
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === (kind === "none" ? "plan_begin_todo_new" : "todo_launch_new_feature"))).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "terminal_submit_prompt" || command === "terminal_input")).toHaveLength(0);
+  if (kind === "none") expect(await screen.findByRole("textbox", { name: "Draft prompt" })).toHaveProperty("value", "Implement quota TODO");
+});
+it("opens the agent a Quick Plan direct outcome starts during a plan poll", async () => {
+  const preset: FeaturePreset = { name: "Quota preset", branch_prefix: "feat", agent: "codex", mode: "vibe",
+    review: false, enable_chrome: false, remote_control: false, plan_mode: true, quick_plan: true };
+  const snapshot: WorkspaceSnapshot = { projects: [{ id: "project", name: "demo", repo: "/tmp/demo", is_git: true, features: [] }],
+    snapshot_at: "2026-10-14T00:00:00Z", stopped_session_ids: [] };
+  const loading = { interview_key: "todo", feature_name: "feat/improve-quotas", pending_project_name: "demo", kind: "quick",
+    phase: "synthesis_loading", step_key: "todo:synthesis_loading:0:0:docs0", question_index: 0, question_count: 0, question: null,
+    editor_text: "Improve quotas", selected_option: null, review_markdown: null, critique: null, attached_docs: [], kickoff_target: null };
+  let launched = false;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "get_snapshot") return snapshot;
+    if (command === "supported_harnesses" || command === "allowed_harnesses") return [{ slug: "codex", display_name: "Codex" }];
+    if (command === "supported_modes") return [{ slug: "vibe", display_name: "Vibe", description: "" }];
+    if (command === "project_harness_choices") return creationChoices(["codex"]);
+    if (command === "feature_presets_choices") return [preset];
+    if (command === "worktree_hook_prompt") return null;
+    if (command === "plan_begin_todo_new") return { active: loading, precall: null, message: null, handoff: null };
+    if (command === "plan_snapshot") {
+      if (!snapshot.projects[0].features.length) return { active: loading, precall: null, message: null, handoff: null };
+      if (launched) return { active: null, precall: null, message: "Quick Plan: Small change", handoff: null };
+      launched = true;
+      return { active: null, precall: null, message: "Quick Plan: Small change",
+        handoff: { target: { project_id: "project", feature_id: "created", session_id: "agent" }, draft_prompt: "Implement quota TODO" } };
+    }
+    return null;
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
+  render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
+  fireEvent.click(await screen.findByRole("button", { name: "Global TODOs" }));
+  fireEvent.click(await screen.findByRole("button", { name: "TODO plan entry" }));
+  await screen.findByRole("option", { name: "Quota preset" });
+  fireEvent.change(screen.getByLabelText("Feature preset"), { target: { value: "0" } });
+  const button = screen.getByRole("button", { name: "Start Quick Plan" });
+  await waitFor(() => expect(button).toHaveProperty("disabled", false)); fireEvent.click(button);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("plan_begin_todo_new", expect.objectContaining({ quick: true })));
+  // The backend's direct outcome creates the feature and its agent between polls.
+  snapshot.projects[0].features.push({ id: "created", name: "feat/improve-quotas", branch: "feat/improve-quotas", workdir: "/tmp/demo/.worktrees/quotas",
+    is_worktree: true, status: "idle", agent: "codex", mode: "vibe", sessions: [{ id: "agent", kind: "codex", label: "Codex", tmux_window: "codex" }] });
+  expect(await screen.findByRole("textbox", { name: "Draft prompt" }, { timeout: 4000 })).toHaveProperty("value", "Implement quota TODO");
+  expect(await screen.findByText("Quick Plan: Small change")).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "terminal_submit_prompt" || command === "terminal_input")).toHaveLength(0);
+});

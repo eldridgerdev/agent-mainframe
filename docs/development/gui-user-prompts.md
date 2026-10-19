@@ -30,6 +30,7 @@ and the User editor/library/App component tests. The asserted native Linux
 scenario is
 [`gui-prompt-authoring.txt`](../../scripts/dev/screenshot/scenarios/gui-prompt-authoring.txt).
 It uses private Git/worktree, SQLite, tmux and runtime-home fixtures with offline
-Claude/OpenCode receivers, preserves `HOME`, checks user harness configurations by
+Claude/OpenCode receivers, preserves `HOME` (a missing `~/.amf` mount point is
+created for the run and removed afterwards), checks user harness configurations by
 digest only and captures only its own GUI PID. It neither starts a paid harness
 nor writes declarative sources. macOS authoring interactions remain unvalidated.

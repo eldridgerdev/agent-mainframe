@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run native GUI prompt-authoring proof with isolated config and GUI fixtures.
 
-HOME is preserved. Only owned GUI/Vite process groups are stopped on exit.
+HOME is preserved; a missing ~/.amf mount point is created for the run and
+removed afterwards. Only owned GUI/Vite process groups are stopped on exit.
 """
 
+import contextlib
 import hashlib
 import shutil
 import json
@@ -142,7 +144,14 @@ export function formatTotal(total: number): string {
     runtime.mkdir()
     gui_pid_path = scratch / 'gui.pid'
     binary = os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))
-    gui_command = ['bwrap', '--die-with-parent', '--dev-bind', '/', '/', '--bind', str(runtime), str(pathlib.Path.home() / '.amf'), '--', '/bin/sh', '-c', 'echo "$$" > "$1"; exec "$2"', 'prompt-authoring', str(gui_pid_path), binary]
+    # bwrap needs an existing mount point. Left to itself it would mkdir
+    # ~/.amf on the real filesystem (exposed by --dev-bind / /), so create it
+    # explicitly when missing and remove it again on exit.
+    amf_home = pathlib.Path.home() / '.amf'
+    amf_home_created = not amf_home.exists()
+    if amf_home_created:
+        amf_home.mkdir()
+    gui_command = ['bwrap', '--die-with-parent', '--dev-bind', '/', '/', '--bind', str(runtime), str(amf_home), '--', '/bin/sh', '-c', 'echo "$$" > "$1"; exec "$2"', 'prompt-authoring', str(gui_pid_path), binary]
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
@@ -260,7 +269,15 @@ export function formatTotal(total: number): string {
         subprocess.run(tmux + ["kill-server"], check=False, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:
             stop_owned_process_group(child)
-        assert user_config_digests() == before, "Real user harness configuration changed"
-        (out / "user-config-proof.json").write_text(json.dumps({"unchanged": True, "home_preserved": True, "runtime_home_private": True, "production_harness_setup": False}) + "\n")
+        if amf_home_created:
+            # rmdir only succeeds while empty; a leftover is reported below
+            # rather than here, where it would mask the original error.
+            with contextlib.suppress(OSError):
+                amf_home.rmdir()
         gui_log.close()
         vite_log.close()
+    # Checked only after a successful run, so a failure above keeps its own
+    # traceback and never leaves a proof file claiming success.
+    assert user_config_digests() == before, "Real user harness configuration changed"
+    assert not (amf_home_created and amf_home.exists()), f"Something wrote to the temporary mount point {amf_home}"
+    (out / "user-config-proof.json").write_text(json.dumps({"unchanged": True, "home_preserved": True, "runtime_home_private": True, "production_harness_setup": False, "amf_mount_point_created": amf_home_created}) + "\n")

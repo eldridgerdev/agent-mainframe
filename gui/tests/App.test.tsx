@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -186,13 +187,14 @@ async function openFeature(
   stoppedSessionIds: string[] = [],
   status: Feature["status"] = "idle",
   isGit = false,
+  isWorktree = false,
 ) {
   const snapshot: WorkspaceSnapshot = {
     projects: [{
       id: "project", name: "demo", repo: "/demo", is_git: isGit,
       features: [{
         id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo",
-        is_worktree: false, status, agent: "claude", mode: "vibeless", sessions,
+        is_worktree: isWorktree, status, agent: "claude", mode: "vibeless", sessions,
       }],
     }],
     snapshot_at: "2026-09-26T00:00:00Z",
@@ -1215,6 +1217,7 @@ it("opens project availability, keeps composer draft and refreshes later New ses
     if (command === "supported_harnesses") return Promise.resolve([
       { slug: "claude", display_name: "Claude" }, { slug: "codex", display_name: "Codex" }, { slug: "pi", display_name: "Pi" },
     ]);
+    if (command === "project_harness_choices") return Promise.resolve(creationChoices(["codex"]));
     if (command === "project_agent_availability_load") return Promise.resolve({
       revision: "project-settings-rev", settings: { allowed_agents: allowed }, inherited_agents: ["claude", "pi"], effective_agents: ["codex"],
       project_name: "demo", repo: "/demo", config_path: "/demo/amf.json", source_path: "/demo/amf.json",
@@ -1244,6 +1247,7 @@ it("opens project availability, keeps composer draft and refreshes later New ses
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
   await screen.findByRole("combobox", { name: "Harness" });
   const featureDialog = screen.getByRole("dialog", { name: "New feature" });
+  await within(featureDialog).findByRole("option", { name: "Codex" });
   expect(within(featureDialog).getAllByRole("option").filter(option => ["Claude", "Codex", "Pi"].includes(option.textContent ?? ""))
     .map(option => option.textContent)).toEqual(["Codex"]);
   fireEvent.click(within(featureDialog).getByRole("button", { name: "Cancel" }));
@@ -1268,10 +1272,11 @@ it("loads inherited project choices before feature creation, retries errors and 
     if (command === "supported_harnesses") return Promise.resolve([
       { slug: "claude", display_name: "Claude" }, { slug: "pi", display_name: "Pi" },
     ]);
-    if (command === "project_agent_availability_load") {
+    if (command === "feature_presets_choices") return Promise.resolve([]);
+    if (command === "project_harness_choices") {
       if (delayed) return new Promise(resolve => { finish = resolve; });
       return fail ? Promise.reject({ kind: "internal", message: "Project JSON is invalid" })
-        : Promise.resolve({ settings: { allowed_agents: null }, inherited_agents: ["claude"], effective_agents: ["claude"] });
+        : Promise.resolve(creationChoices(["claude"]));
     }
     return original(command, args, options);
   });
@@ -1279,24 +1284,23 @@ it("loads inherited project choices before feature creation, retries errors and 
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
   const dialog = await screen.findByRole("dialog", { name: "New feature" });
-  expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Project JSON is invalid");
-  expect(within(dialog).queryByRole("combobox", { name: "Harness" })).toBeNull();
+  expect(await within(dialog).findByText(/Project JSON is invalid/)).toBeTruthy();
+  expect(within(dialog).getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
   fail = false;
-  fireEvent.click(within(dialog).getByRole("button", { name: "Reload agent choices" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retry harnesses" }));
   expect(await screen.findByRole("combobox", { name: "Harness" })).toBeTruthy();
-  expect(invoke).toHaveBeenCalledWith("project_agent_availability_load", { projectId: "project" });
+  expect(invoke).toHaveBeenCalledWith("project_harness_choices", { projectId: "project" });
   fireEvent.click(screen.getByRole("button", { name: "Cancel", exact: true }));
   delayed = true;
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  expect(await screen.findByText("Loading project agent choices…")).toBeTruthy();
-  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
-  await act(async () => finish({ settings: { allowed_agents: ["pi"] }, inherited_agents: ["pi"], effective_agents: [] }));
-  expect(await screen.findByRole("alert")).toHaveProperty("textContent",
-    "No allowed agent is available for this project. Check installed agents and Agent availability.");
-  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Reload agent choices" }));
-  await screen.findByText("Loading project agent choices…");
-  await act(async () => finish({ settings: { allowed_agents: ["claude", "pi"] }, inherited_agents: ["pi"], effective_agents: ["claude"] }));
+  expect(await screen.findByText("Loading project harness default…")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
+  await act(async () => finish(creationChoices([])));
+  expect((await screen.findByRole("alert")).textContent).toContain("No allowed, installed harnesses");
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Reload harnesses" }));
+  await screen.findByText("Loading project harness default…");
+  await act(async () => finish(creationChoices(["claude"])));
   const harness = await screen.findByRole("combobox", { name: "Harness" });
   expect(within(harness).getAllByRole("option").map(option => option.textContent)).toEqual(["Claude"]);
   client.clear();
@@ -1403,5 +1407,29 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   expect(promptCalls()).toHaveLength(0);
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_save").at(-1)?.[1]).toEqual({ draft: { id: null, revision: null, name: "Saved composer", body: text, tags: "" } });
+  client.clear();
+});
+
+it("blocks changing harness for an unsent draft in another agent tab and preserves it on Cancel", async () => {
+  const client = await openFeature([session("Agent", "claude"), session("Other", "claude")], [], "idle", true, true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "feature_harness_load" ? Promise.resolve({
+    target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", current_agent: "claude", running: true, agent_rows: 2, revision: "observed",
+    choices: [{ agent: "claude", name: "Claude", unavailable: null }, { agent: "opencode", name: "OpenCode", unavailable: null }],
+  }) : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent draft" } });
+  fireEvent.click(screen.getByRole("tab", { name: "Other" }));
+  expect(draftInput().value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Change harness…" }));
+  await screen.findByLabelText("Replacement harness");
+  fireEvent.change(screen.getByLabelText("Replacement harness"), { target: { value: "opencode" } });
+  fireEvent.click(screen.getByLabelText("I understand and confirm this harness change"));
+  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(within(screen.getByRole("dialog", { name: "Change feature harness" })).getByRole("alert").textContent).toContain("unsent agent drafts");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+  expect(draftInput().value).toBe("Keep this unsent draft");
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "feature_harness_apply")).toBe(false);
   client.clear();
 });

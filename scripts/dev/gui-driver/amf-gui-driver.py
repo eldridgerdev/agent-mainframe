@@ -16,6 +16,8 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[3]
 DOM = Path(__file__).with_name("dom.js")
+CONTRAST = Path(__file__).with_name("contrast-audit.js")
+MAX_THEMES_LISTED = 6
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ai_driver import ProcessRuntime, RequestDriver, bounded, call, encode, serve, start_session, stop_session
 
@@ -152,8 +154,9 @@ class Inspector:
 class Driver(RequestDriver):
     MISSING = "__amf_gui_driver_missing__"
 
-    def __init__(self, inspector, helper=None):
+    def __init__(self, inspector, helper=None, contrast=None):
         self.inspector = inspector
+        self.contrast = contrast
         self.helper = DOM.read_text() if helper is None else helper
         self.injections = 0
 
@@ -194,12 +197,48 @@ class Driver(RequestDriver):
                     return {"ok": True}
                 time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             raise TimeoutError("Wait condition did not become true")
+        if op == "audit-contrast":
+            return self.audit_contrast(action, deadline)
         if op not in {"snapshot", "click", "fill", "select"}:
             raise ValueError(f"Unknown operation: {op}")
         return self.evaluate_helper(self.call(action), deadline)
 
+    def audit_contrast(self, action, deadline):
+        script = CONTRAST.read_text() if self.contrast is None else self.contrast
+        self.inspector.evaluate(script, deadline)
+        self.inspector.evaluate("window.__amfContrast.loadCatalog()", deadline)
+        while not self.inspector.evaluate("window.__amfContrast.ready()", deadline):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Theme catalog did not load")
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+        error = self.inspector.evaluate("window.__amfContrast.state.error", deadline)
+        if error:
+            raise RuntimeError(f"Theme catalog failed to load: {error}")
+        themes = action.get("themes")
+        ids = [t.strip() for t in themes.split(",") if t.strip()] if isinstance(themes, str) else None
+        raw = self.inspector.evaluate(f"window.__amfContrast.auditThemes({encode(action.get('scope'))}, {encode(ids)})", deadline)
+        if action.get("json"):
+            return raw
+        return format_contrast(raw, bool(action.get("include_disabled")))
+
     def close(self):
         self.inspector.close()
+
+
+def format_contrast(raw, include_disabled=False):
+    """Compact, worst-first rendering of `auditThemes` output."""
+    themes = raw.get("themes") or []
+    findings = [f for f in raw.get("findings") or [] if include_disabled or not f.get("disabled")]
+    lines = []
+    for finding in findings:
+        ratios = sorted(finding.get("themes", {}).items(), key=lambda item: (item[1], item[0]))
+        listed = " ".join(f"{name}={ratio}" for name, ratio in ratios[:MAX_THEMES_LISTED])
+        if len(ratios) > MAX_THEMES_LISTED:
+            listed += f" +{len(ratios) - MAX_THEMES_LISTED} more"
+        sample = f' "{finding["sample"]}"' if finding.get("sample") else ""
+        tag = " [disabled]" if finding.get("disabled") else ""
+        lines.append(f'{len(ratios)}/{len(themes)} {finding["kind"]} {finding["element"]}{sample} worst={finding["worst"]}{tag} :: {listed}')
+    return {"themes": len(themes), "findings": len(findings), "lines": lines}
 
 
 class Runtime(ProcessRuntime):
@@ -268,6 +307,11 @@ def parser():
     wait.add_argument("--scope")
     evaluate = commands.add_parser("eval", help="Evaluate synchronous JavaScript in the native webview")
     evaluate.add_argument("expression")
+    contrast = commands.add_parser("audit-contrast", help="WCAG contrast audit of the current page under every catalog theme")
+    contrast.add_argument("--scope", help="Unique CSS selector to narrow the audit")
+    contrast.add_argument("--themes", help="Comma-separated theme ids (default: all)")
+    contrast.add_argument("--include-disabled", action="store_true", help="Also report disabled elements, which WCAG exempts")
+    contrast.add_argument("--json", action="store_true", help="Raw findings instead of one line each")
     batch = commands.add_parser("batch", help="JSON array of actions; stops at first failure; returns last result")
     batch.add_argument("--file", type=argparse.FileType("r"), default=sys.stdin)
     return cli

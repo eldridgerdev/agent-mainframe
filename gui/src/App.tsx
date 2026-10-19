@@ -28,6 +28,7 @@ import {
   ModeSlug,
   PlanAction,
   PlanInput,
+  PlanHandoff,
   PlanStatus,
   Project,
   SavedAgentSession,
@@ -65,13 +66,13 @@ import {
   stopSession,
   allowedHarnesses,
   supportedHarnesses,
-  projectAgentChoices,
   supportedModes,
   terminalSubmitPrompt,
   todoLaunchAgent,
   todoLaunchNewFeature,
 } from "./api";
 import ThemePicker, { useGuiTheme } from "./ThemePicker";
+import FeatureHarnessDialog from "./FeatureHarnessDialog";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
@@ -82,6 +83,9 @@ import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
 import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
+import ProjectPreferencePanel from "./ProjectPreferencePanel";
+import { useCreationHarness } from "./useCreationHarness";
+import CreationHarnessField from "./CreationHarnessField";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
@@ -92,6 +96,8 @@ import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
 import type { PrTriageTarget } from "./prTriageApi";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import TodoNewFeatureForm from "./TodoNewFeatureForm";
+export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
@@ -196,9 +202,12 @@ export default function App() {
   const [showFeaturePresets, setShowFeaturePresets] = useState(false);
   const [showContextSettings, setShowContextSettings] = useState(false);
   const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
+  const [projectPreference, setProjectPreference] = useState<string | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
+  const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -308,14 +317,6 @@ export default function App() {
     queryFn: supportedHarnesses,
   });
   const modes = useQuery({ queryKey: ["supported-modes"], queryFn: supportedModes });
-  const featureAgents = useQuery({
-    queryKey: ["project-feature-agents", createFeatureFor],
-    queryFn: () => projectAgentChoices(createFeatureFor!),
-    enabled: createFeatureFor !== null,
-    retry: false,
-    // Reopening reads external edits; focus changes must not discard form drafts.
-    staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false,
-  });
   const workspace = useQuery({
     queryKey: SNAPSHOT_KEY,
     queryFn: getSnapshot,
@@ -323,7 +324,18 @@ export default function App() {
   });
   const plan = useQuery({
     queryKey: PLAN_KEY,
-    queryFn: planSnapshot,
+    queryFn: async () => {
+      const wasActive = !!queryClient.getQueryData<PlanStatus>(PLAN_KEY)?.active;
+      const status = await planSnapshot();
+      // A Quick Plan "direct" outcome closes the interview and starts its
+      // agent inside this poll rather than in an action. Apply the one-shot
+      // handoff here, so a poll cancelled by a later action still delivers it.
+      if (status.handoff) applyPlanHandoff(status.handoff);
+      if (wasActive && !status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
+      return status;
+    },
     refetchInterval: planBusy ? false : 750,
   });
 
@@ -735,12 +747,14 @@ export default function App() {
     } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  function applyPlanHandoff(handoff: PlanHandoff) {
+    openSession(handoff.target, handoff.draft_prompt);
+    void queryClient.invalidateQueries({ queryKey: ["todos"] });
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
-    if (status.handoff) {
-      openSession(status.handoff.target, status.handoff.draft_prompt);
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
-    }
+    if (status.handoff) applyPlanHandoff(status.handoff);
     if (!status.active && status.message) {
       pushToast({ tone: "info", title: "Plan", message: status.message });
     }
@@ -1303,6 +1317,15 @@ export default function App() {
         projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
           setAgentAvailabilityScope(null);
           void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
+          void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
+        }} />}
+      {projectPreference && <ProjectPreferencePanel key={projectPreference} projectId={projectPreference}
+        supported={harnesses.data ?? []}
+        onClose={() => setProjectPreference(null)} onSaved={() => {
+          setProjectPreference(null);
+          void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+          void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
+          pushToast({ tone: "info", title: "Project preference saved", message: "New features use this default. Existing sessions keep their harness." });
         }} />}
       {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
         onDeleteFeature={(row) => setDeleteFeatureDialog({
@@ -1375,6 +1398,7 @@ export default function App() {
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
             onPrReview={() => setPrReviewProject(selectedProject.id)}
             onAgentAvailability={() => setAgentAvailabilityScope({ projectId: selectedProject.id })}
+            onProjectPreference={() => setProjectPreference(selectedProject.id)}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "project", project_id: selectedProject.id }}
@@ -1392,7 +1416,7 @@ export default function App() {
 
         {view?.kind === "feature" && selectedProject && selectedFeature && (
           <FeatureView
-            key={selectedFeature.id}
+            key={`${selectedFeature.id}:${harnessEpochs[selectedFeature.id] ?? 0}`}
             project={selectedProject}
             feature={selectedFeature}
             harnessName={harnessName}
@@ -1453,6 +1477,7 @@ export default function App() {
                 workspace.data?.stopped_session_ids ?? [],
               ),
             })}
+            onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -1521,23 +1546,11 @@ export default function App() {
         />
       )}
 
-      {createFeatureProject && (featureAgents.isPending || featureAgents.isFetching || featureAgents.isError ||
-        !featureAgents.data?.length || harnesses.isPending || harnesses.isError ?
-        <Modal label="New feature" title="New feature" subtitle={`in ${createFeatureProject.name}`}
-          onClose={() => setCreateFeatureFor(null)} footer={<>
-            <button className="btn btn-ghost" onClick={() => setCreateFeatureFor(null)}>Cancel</button>
-            <button className="btn btn-secondary" disabled={featureAgents.isFetching || harnesses.isFetching}
-              onClick={() => { void featureAgents.refetch(); void harnesses.refetch(); }}>Reload agent choices</button>
-          </>}>
-          {featureAgents.isPending || featureAgents.isFetching || harnesses.isPending
-            ? <p role="status"><Spinner /> Loading project agent choices…</p>
-            : <p role="alert">{featureAgents.isError ? asGuiError(featureAgents.error).message
-              : harnesses.isError ? asGuiError(harnesses.error).message : "No allowed agent is available for this project. Check installed agents and Agent availability."}</p>}
-        </Modal> :
+      {createFeatureProject && (
         <CreateFeatureForm
           projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
-          agents={(harnesses.data ?? []).filter(agent => featureAgents.data?.includes(agent.slug))}
+          agents={harnesses.data ?? []}
           modes={modes.data ?? []}
           isGit={createFeatureProject.is_git}
           defaultUseWorktree={createFeatureProject.is_git && createFeatureProject.features.length > 0}
@@ -1564,12 +1577,12 @@ export default function App() {
           modes={modes.data ?? []}
           pending={planBusy || todoNewBusy || pendingTodoNewApproval !== null}
           onCancel={() => setPendingTodoNew(null)}
-          onSubmit={(request) => {
-            if (pendingTodoNew.kind === "plan") {
-              void runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request))
+          onSubmit={(request, planKind) => {
+            if (planKind !== "none") {
+              return runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request, planKind === "quick"))
                 .then((started) => { if (started) setPendingTodoNew(null); });
             } else {
-              void launchTodoNewFeature(pendingTodoNew.todoId, request, false);
+              return launchTodoNewFeature(pendingTodoNew.todoId, request, false);
             }
           }}
         />
@@ -1703,6 +1716,24 @@ export default function App() {
           onCancel={() => setCloseSessionDialog(null)}
         />
       )}
+
+      {harnessTarget && <FeatureHarnessDialog
+        key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
+        target={harnessTarget}
+        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
+          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
+        onClose={() => setHarnessTarget(null)}
+        onChanged={() => {
+          setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
+          pushToast({ tone: "info", title: "Harness changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
+        }}
+        onResync={() => {
+          setHarnessEpochs((previous) => ({ ...previous, [harnessTarget.feature_id]: (previous[harnessTarget.feature_id] ?? 0) + 1 }));
+          void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+        }}
+      />}
 
       {deleteFeatureDialog && (
         <DeleteFeatureDialog
@@ -1856,6 +1887,7 @@ function ProjectView({
   onPrTriage,
   onPrReview,
   onAgentAvailability,
+  onProjectPreference,
   todoPanel,
 }: {
   project: Project;
@@ -1867,6 +1899,7 @@ function ProjectView({
   onPrTriage: () => void;
   onPrReview: () => void;
   onAgentAvailability: () => void;
+  onProjectPreference: () => void;
   todoPanel: ReactNode;
 }) {
   const running = project.features.filter((feature) => feature.status !== "stopped").length;
@@ -1886,6 +1919,7 @@ function ProjectView({
             <button className="btn btn-secondary" aria-label="Project agent availability" onClick={onAgentAvailability}>
               <Icon name="list" size={12} /> Agent availability
             </button>
+            <button className="btn btn-secondary" onClick={onProjectPreference}>Preferred harness</button>
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}
@@ -1989,6 +2023,7 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onChangeHarness,
   onVibeMode,
   vibeModeBusy,
   vibeModes,
@@ -2039,6 +2074,7 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onChangeHarness?: () => void;
   onVibeMode: (mode: ModeSlug) => void;
   vibeModeBusy: boolean;
   vibeModes: ModeInfo[];
@@ -2187,6 +2223,7 @@ function FeatureView({
                   };
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />
@@ -2455,7 +2492,9 @@ export function CreateFeatureForm({
   onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind) => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
+  const harness = useCreationHarness(projectId);
+  const agent = harness.agent;
+  const setAgent = harness.choose;
   const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
@@ -2469,9 +2508,7 @@ export function CreateFeatureForm({
   const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const unsupportedMode = agent === "codex" && mode === "vibeless";
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
-  const offered = useOfferedAgents(projectId, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
-    ? agent : (offered[0]?.slug ?? agent);
+  const selectedAgent = agent;
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
@@ -2483,7 +2520,7 @@ export function CreateFeatureForm({
       onClose={onCancel}
       dismissable={!pending}
       onSubmit={() => {
-        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode) return;
+        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
         onSubmit({
           branch: branch.trim(),
           agent: selectedAgent,
@@ -2500,7 +2537,7 @@ export function CreateFeatureForm({
       footer={
         <>
           <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode}>
+          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready}>
             {pending && <Spinner />}
             {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
           </button>
@@ -2514,8 +2551,8 @@ export function CreateFeatureForm({
             if (!value) return;
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
-            if (offered.some((candidate) => candidate.slug === preset.agent)) setAgent(preset.agent);
-            else setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
+            setAgent(preset.agent);
+            if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
             setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
             // Keep the name the user typed; only the preset's prefix changes.
@@ -2545,13 +2582,7 @@ export function CreateFeatureForm({
           />
         </Field>
         <div className="form-row">
-          <Field label="Harness">
-            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {offered.map((a) => (
-                <option key={a.slug} value={a.slug}>{a.display_name}</option>
-              ))}
-            </select>
-          </Field>
+          <CreationHarnessField harness={harness} supported={agents} disabled={pending} />
           <Field label="Mode">
             <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
               {modes.map((m) => (
@@ -2593,115 +2624,6 @@ export function CreateFeatureForm({
           <Switch checked={chrome} onChange={setChrome} label="Chrome" />
         </div>
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
-        <WorktreeHookField hook={hook} disabled={pending} />
-      </div>
-    </Modal>
-  );
-}
-
-export function TodoNewFeatureForm({
-  kind,
-  todoTitle,
-  projects,
-  agents,
-  modes,
-  pending,
-  onCancel,
-  onSubmit,
-}: {
-  kind: "plan" | "launch";
-  todoTitle: string;
-  projects: Project[];
-  agents: { slug: AgentSlug; display_name: string }[];
-  modes: { slug: ModeSlug; display_name: string }[];
-  pending: boolean;
-  onCancel: () => void;
-  onSubmit: (request: CreateFeatureRequest) => void;
-}) {
-  const suggested = todoTitle.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40) || "todo-work";
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
-  const [branch, setBranch] = useState(suggested);
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
-  const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
-  const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-  // Each project can narrow the list, so it follows the chosen project.
-  const offered = useOfferedAgents(project?.id ?? null, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
-    ? agent : (offered[0]?.slug ?? agent);
-  const selectedMode = modes.some((candidate) => candidate.slug === mode)
-    ? mode : (modes[0]?.slug ?? mode);
-  const hook = useWorktreeHookChoice(project?.id, !!project);
-
-  return (
-    <Modal
-      label={kind === "plan" ? "Plan TODO in a new feature" : "Start TODO in a new feature"}
-      title={kind === "plan" ? "Plan in a new feature" : "Start in a new feature"}
-      subtitle={todoTitle}
-      onClose={onCancel}
-      dismissable={!pending}
-      onSubmit={() => {
-        if (pending || !project || !branch.trim() || !hook.ready) return;
-        onSubmit({
-          project_name: project.name,
-          branch: branch.trim(),
-          agent: selectedAgent,
-          mode: selectedMode,
-          review: false,
-          plan_mode: kind === "plan",
-          create_terminal: false,
-          use_worktree: true,
-          enable_chrome: false,
-          hook_choice: hook.choice || null,
-          dry_run: false,
-        });
-      }}
-      footer={
-        <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim() || !hook.ready}>
-            {pending && <Spinner />}
-            {kind === "plan" ? "Start plan" : "Create and start"}
-          </button>
-        </>
-      }
-    >
-      <p className="muted small modal-lead">
-        {kind === "plan"
-          ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
-          : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}
-      </p>
-      <div className="form-stack">
-        {projects.length > 1 && (
-          <Field label="Project">
-            <select value={project?.id ?? ""} onChange={(event) => setProjectId(event.target.value)}>
-              {projects.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <Field label="Branch">
-          <input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Harness">
-            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {offered.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Mode">
-            <select value={selectedMode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-              {modes.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
         <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>

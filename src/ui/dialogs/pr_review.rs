@@ -688,8 +688,25 @@ fn picker_tab_title(active: PickerTab, theme: &Theme) -> Line<'static> {
 /// The PR picker's Review tab: every open PR, with loading, empty, and
 /// failure states drawn in place of the list so each says what to do next.
 pub fn draw_pr_review_list(frame: &mut Frame, state: &PrReviewListState, theme: &Theme) {
+    draw_review_list(frame, state, theme, false);
+}
+
+pub(super) fn draw_pr_workspace_list(frame: &mut Frame, state: &PrReviewListState, theme: &Theme) {
+    draw_review_list(frame, state, theme, true);
+}
+
+fn draw_review_list(
+    frame: &mut Frame,
+    state: &PrReviewListState,
+    theme: &Theme,
+    experimental: bool,
+) {
     let area = frame.area();
-    let block = pane_block(theme).title(picker_tab_title(PickerTab::Review, theme));
+    let block = if experimental {
+        pane_block(theme).title(" PR Workspace (experimental) · choose a PR ")
+    } else {
+        pane_block(theme).title(picker_tab_title(PickerTab::Review, theme))
+    };
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -759,15 +776,17 @@ pub fn draw_pr_review_list(frame: &mut Frame, state: &PrReviewListState, theme: 
         }
         PrReviewListLoad::Loaded(prs) => {
             let current_user = state.current_user.as_deref();
+            let feature_pr = state.feature_pr_number();
             let items: Vec<ListItem> = prs
                 .iter()
                 .map(|pr| {
-                    ListItem::new(pr_review_list_row(
-                        pr,
-                        state.drafts.get(&pr.number),
-                        current_user,
-                        theme,
-                    ))
+                    let mut row =
+                        pr_review_list_row(pr, state.drafts.get(&pr.number), current_user, theme);
+                    if feature_pr == Some(pr.number) {
+                        row.spans
+                            .insert(0, chip("current feature", theme.warning.to_color()));
+                    }
+                    ListItem::new(row)
                 })
                 .collect();
             let list = List::new(items)
@@ -802,7 +821,11 @@ pub fn draw_pr_review_list(frame: &mut Frame, state: &PrReviewListState, theme: 
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            " j/k move   \u{23ce} review   r reload   tab triage   esc close",
+            if experimental {
+                " j/k move   \u{23ce} open workspace   r reload   esc close"
+            } else {
+                " j/k move   \u{23ce} review   r reload   tab triage   esc close"
+            },
             muted,
         ))),
         layout[3],
@@ -2417,7 +2440,12 @@ fn draw_mark_pick(
     );
 }
 
-fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme: &Theme) {
+pub(super) fn draw_comment_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &PrReviewState,
+    theme: &Theme,
+) {
     let block = pane_block(theme).title(" Comments ");
 
     if state.review.comments.is_empty() {
@@ -2648,7 +2676,7 @@ pub(crate) fn truncate_left(s: &str, max: usize) -> String {
 /// detail is laid out as distinct sections — a chip-laden header, the diff hunk
 /// (colored by add/remove/context), the Markdown-rendered body, and any local
 /// triage note — separated by subtle dividers.
-fn draw_comment_detail(
+pub(super) fn draw_comment_detail(
     frame: &mut Frame,
     area: Rect,
     comment: Option<&PrComment>,
@@ -3295,6 +3323,7 @@ mod tests {
             workdir: std::path::PathBuf::from("/tmp/repo"),
             load,
             selected: 0,
+            feature_branch: None,
             reloading: false,
             request_id: 1,
             triage: None,

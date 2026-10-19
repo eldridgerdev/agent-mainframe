@@ -28,6 +28,7 @@ import {
   ModeSlug,
   PlanAction,
   PlanInput,
+  PlanHandoff,
   PlanStatus,
   Project,
   SavedAgentSession,
@@ -323,7 +324,18 @@ export default function App() {
   });
   const plan = useQuery({
     queryKey: PLAN_KEY,
-    queryFn: planSnapshot,
+    queryFn: async () => {
+      const wasActive = !!queryClient.getQueryData<PlanStatus>(PLAN_KEY)?.active;
+      const status = await planSnapshot();
+      // A Quick Plan "direct" outcome closes the interview and starts its
+      // agent inside this poll rather than in an action. Apply the one-shot
+      // handoff here, so a poll cancelled by a later action still delivers it.
+      if (status.handoff) applyPlanHandoff(status.handoff);
+      if (wasActive && !status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
+      return status;
+    },
     refetchInterval: planBusy ? false : 750,
   });
 
@@ -735,12 +747,14 @@ export default function App() {
     } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  function applyPlanHandoff(handoff: PlanHandoff) {
+    openSession(handoff.target, handoff.draft_prompt);
+    void queryClient.invalidateQueries({ queryKey: ["todos"] });
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
-    if (status.handoff) {
-      openSession(status.handoff.target, status.handoff.draft_prompt);
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
-    }
+    if (status.handoff) applyPlanHandoff(status.handoff);
     if (!status.active && status.message) {
       pushToast({ tone: "info", title: "Plan", message: status.message });
     }

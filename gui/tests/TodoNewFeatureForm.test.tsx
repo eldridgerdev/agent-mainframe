@@ -111,6 +111,18 @@ it("never submits an unavailable preset harness or an unsupported mode", async (
   change("Mode", "vibe"); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "vibe" }), "none");
 });
+it("leaves the mode unchanged and says why when a preset's mode is not listed", async () => {
+  const { onSubmit } = mount({}, [{ ...preset, mode: "retired" as FeaturePreset["mode"], plan_mode: false },
+    { ...preset, name: "Both", agent: "pi", mode: "retired" as FeaturePreset["mode"], plan_mode: false }]);
+  await ready(); change("Mode", "supervibe"); change("Feature preset", "0");
+  expect(screen.getByText(/Ship uses the retired mode, which is not available here/)).toBeTruthy();
+  expect(screen.getByLabelText("Mode")).toHaveProperty("value", "supervibe");
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  change("Feature preset", "1");
+  expect(screen.getByText(/Both uses pi, which is not offered.*It also uses the retired mode/)).toBeTruthy();
+  await ready(); click("Create and start");
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "supervibe", review: true }), "none");
+});
 it("loads the chosen project's presets without discarding its edited branch", async () => {
   mount({ projects }); await ready();
   vi.mocked(invoke).mockImplementation(async (command) => command === "allowed_harnesses" ? agents.slice(0, 1)

@@ -546,12 +546,80 @@ pub fn begin_todo_in_host(
 /// remain owned by the shared `App` state machine.
 pub fn poll(gui: &mut GuiHandle) -> PlanStatus {
     let app = gui.app_for_workflow();
+    // A Quick Plan `direct` outcome launches the deferred feature from inside
+    // the synthesis poll, so no Accept is there to collect its agent session.
+    let deferred = match &app.mode {
+        AppMode::PlanInterview(state) => state
+            .pending_launch
+            .as_ref()
+            .map(|pending| (pending.project_name.clone(), pending.branch.clone())),
+        _ => None,
+    };
     app.poll_plan_interview_ai_bg();
     app.poll_plan_interview_synthesis_bg();
     app.poll_plan_interview_critique_bg();
     app.poll_plan_interview_directed_feedback_bg();
     app.poll_plan_interview_investigation_bg();
-    status_of(app)
+    let mut handoff = None;
+    if let Some((project_name, branch)) = deferred
+        && status_of(app).active.is_none()
+    {
+        // Keep the Quick Plan summary rather than "Returned to dashboard".
+        let message = app.message.take();
+        handoff = take_launch_handoff(app, &project_name, &branch);
+        app.message = message;
+        let created = app
+            .store
+            .find_project(&project_name)
+            .is_some_and(|project| project.features.iter().any(|f| f.name == branch));
+        if handoff.is_none() && created {
+            // The launch's own explanation is a TUI toast the desktop never
+            // shows (for example, a resource limit that skipped the start).
+            let note =
+                "The feature was created, but its agent did not start; start it from the sidebar.";
+            app.message = Some(match app.message.take() {
+                Some(message) => format!("{message} {note}"),
+                None => note.into(),
+            });
+        }
+    }
+    let mut status = status_of(app);
+    status.handoff = handoff;
+    status
+}
+
+/// Collect the agent session a deferred feature launch just started. The
+/// shared launch opens the new agent's TUI composer; the desktop seeds its own
+/// composer from the captured text instead, so the App returns to the
+/// dashboard rather than leaving a TUI view that blocks later GUI workflows.
+fn take_launch_handoff(app: &mut App, project_name: &str, branch: &str) -> Option<PlanHandoff> {
+    let handoff = match &app.mode {
+        AppMode::Compose(state) => app
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| {
+                let feature = project.features.iter().find(|f| f.name == branch)?;
+                let session = feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.tmux_window == state.view.window)?;
+                Some(PlanHandoff {
+                    target: SessionTarget {
+                        project_id: project.id.clone(),
+                        feature_id: feature.id.clone(),
+                        session_id: session.id.clone(),
+                    },
+                    draft_prompt: state.editor.text().to_string(),
+                })
+            }),
+        _ => None,
+    };
+    if matches!(&app.mode, AppMode::Compose(_) | AppMode::Viewing(_)) {
+        app.exit_view_without_resuming_plan_interview();
+    }
+    handoff
 }
 
 fn advance_error(error: PlanInterviewAdvanceError) -> GuiError {
@@ -937,26 +1005,8 @@ pub fn act(
             }
             completed.map_err(GuiError::from)?;
             if let Some((project_name, branch)) = pending_feature {
-                if let AppMode::Compose(state) = &app.mode
-                    && let Some(project) =
-                        app.store.projects.iter().find(|p| p.name == project_name)
-                    && let Some(feature) = project.features.iter().find(|f| f.name == branch)
-                    && let Some(session) = feature
-                        .sessions
-                        .iter()
-                        .find(|session| session.tmux_window == state.view.window)
-                {
-                    handoff = Some(PlanHandoff {
-                        target: SessionTarget {
-                            project_id: project.id.clone(),
-                            feature_id: feature.id.clone(),
-                            session_id: session.id.clone(),
-                        },
-                        draft_prompt: state.editor.text().to_string(),
-                    });
-                }
-                if matches!(&app.mode, AppMode::Compose(_) | AppMode::Viewing(_)) {
-                    app.exit_view_without_resuming_plan_interview();
+                if let Some(launched) = take_launch_handoff(app, &project_name, &branch) {
+                    handoff = Some(launched);
                 }
                 app.message = Some(if todo_plan_id.is_some() {
                     "Plan saved; TODO feature created".into()
@@ -2126,6 +2176,70 @@ mod tests {
                     .contains("Build the TODO")
             );
         }
+    }
+
+    #[test]
+    fn quick_todo_plan_direct_outcome_hands_its_agent_to_the_gui() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let created = Arc::new(AtomicBool::new(false));
+        let seen = created.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_list_sessions().returning(|| Ok(vec![]));
+        let (mut gui, request, todo_id, worktree_dir) = todo_new_feature_fixture(dir.path(), tmux);
+        begin_todo_in_new_feature(&mut gui, &todo_id, &request, true).unwrap();
+        let app = gui.app_for_workflow();
+        app.config.max_concurrent_agents = 8;
+        app.config.low_memory_warn_mb = 0;
+        let AppMode::PlanInterview(state) = &mut app.mode else {
+            panic!("expected interview");
+        };
+        state.brief = "Improve the API".into();
+        state.begin_synthesis(0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.plan_interview_synthesis_bg = Some(rx);
+        tx.send(Ok(
+            "```json\n{\"outcome\":\"direct\",\"summary\":\"Small change\"}\n```".to_string(),
+        ))
+        .unwrap();
+
+        let status = poll(&mut gui);
+        assert!(status.active.is_none());
+        let handoff = status.handoff.expect("direct launch hands its agent over");
+        assert!(handoff.draft_prompt.contains("Improve the API"));
+        assert_eq!(status.message.as_deref(), Some("Quick Plan: Small change"));
+        // The TUI composer the launch opened must not block later GUI work.
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        let feature_id = gui.app_for_workflow().store.projects[0].features[0]
+            .id
+            .clone();
+        assert_eq!(feature_id, handoff.target.feature_id);
+        let todo = gui
+            .db()
+            .unwrap()
+            .find_todo_by_id(&todo_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(todo.work.status, TodoStatus::InProgress);
+        assert_eq!(todo.work.agent_session_id, Some(handoff.target.session_id));
+        assert_eq!(todo.linked_feature_id.as_deref(), Some(feature_id.as_str()));
+        assert!(!worktree_dir.join("AMF_PLAN.md").exists());
+        // The handoff is reported once.
+        assert!(poll(&mut gui).handoff.is_none());
     }
 
     #[test]

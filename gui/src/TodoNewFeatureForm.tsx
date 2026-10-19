@@ -101,9 +101,13 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
               const index = event.target.value; setSelection({ projectId, index }); setNotice(null);
               if (!index) return; // Custom settings retain every field, including remote intent.
               const preset = presets.data?.[Number(index)]; if (!preset) return;
+              const skipped: string[] = [];
               if (offered.some((candidate) => candidate.slug === preset.agent)) setAgent(preset.agent);
-              else setNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
-              setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
+              else skipped.push(`uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
+              if (modes.some((candidate) => candidate.slug === preset.mode)) setMode(preset.mode);
+              else skipped.push(`uses the ${preset.mode} mode, which is not available here. The mode was left unchanged.`);
+              if (skipped.length) setNotice(`${preset.name} ${skipped.join(" It also ")}`);
+              setReview(preset.review); setChrome(preset.enable_chrome);
               setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
               const prefix = preset.branch_prefix?.trim() || null;
               setBranch((current) => {

@@ -1435,6 +1435,11 @@ impl App {
     }
 
     pub(crate) fn has_visible_animation(&self) -> bool {
+        if self.pr_workspace.as_ref().is_some_and(|workspace| {
+            workspace.owns_mode(&self.mode) && workspace.ai_running(&self.ai_review_run)
+        }) {
+            return true;
+        }
         if self
             .review_questions()
             .is_some_and(|q| q.open && q.request.is_some())

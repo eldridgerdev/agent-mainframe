@@ -74,6 +74,28 @@ pub(crate) struct PrWorkspace {
 }
 
 impl PrWorkspace {
+    /// Every route into Files must drop a Threads/AI placeholder; otherwise
+    /// the Diff pane keeps showing it and swallows keys until `1` is pressed.
+    fn set_tab(&mut self, tab: WorkspaceTab) {
+        if tab == WorkspaceTab::Files && self.tab != WorkspaceTab::Files {
+            self.anchor_message = None;
+            self.last_anchor = None;
+        }
+        self.tab = tab;
+    }
+
+    pub(crate) fn ai_running(&self, run: &super::pr_review::runtime::AiReviewRun) -> bool {
+        run.is_pending()
+            && run.origin().as_ref().is_some_and(|origin| {
+                origin.workdir == self.workdir
+                    && self.pr.as_ref().is_some_and(|pr| {
+                        pr.number == origin.pr.number
+                            && pr.head_sha == origin.pr.head_sha
+                            && pr.url.eq_ignore_ascii_case(&origin.pr.url)
+                    })
+            })
+    }
+
     pub(crate) fn new(workdir: PathBuf, origin: AppMode) -> Self {
         Self {
             workdir,
@@ -300,7 +322,7 @@ impl App {
             changed = true;
         }
         if let Some(tab) = WorkspaceTab::for_mode(&self.mode) {
-            workspace.tab = tab;
+            workspace.set_tab(tab);
         }
         // A legacy close from an editor/run may return to the PR picker. Keep
         // the shell, but release the previous PR views before opening another.
@@ -326,7 +348,7 @@ impl App {
             return false;
         }
         if WorkspaceTab::for_mode(&self.mode) == Some(tab) {
-            workspace.tab = tab;
+            workspace.set_tab(tab);
             return true;
         }
         let Some(next) = workspace.parked[tab.index()].take() else {
@@ -341,7 +363,7 @@ impl App {
                 Some(Box::new(std::mem::replace(&mut self.mode, previous)));
             return false;
         }
-        workspace.tab = tab;
+        workspace.set_tab(tab);
         true
     }
 
@@ -610,6 +632,28 @@ impl App {
         self.pr_workspace
             .as_ref()
             .is_some_and(|workspace| workspace.pr.is_some())
+    }
+
+    pub(crate) fn cancel_workspace_ai_review(&mut self) {
+        let Some(workspace) = &self.pr_workspace else {
+            return;
+        };
+        if !workspace.ai_running(&self.ai_review_run) {
+            return;
+        }
+        let visible = workspace.tab;
+        if !self.switch_pr_workspace(WorkspaceTab::Ai) {
+            return;
+        }
+        if let Some(origin) = self.ai_review_run.cancel()
+            && matches!(self.mode, AppMode::AiReviewRunning(_))
+        {
+            self.mode = AppMode::AiReview(origin);
+        }
+        self.switch_pr_workspace(visible);
+        self.message =
+            Some("AI review cancelled · previous findings and your drafts are kept".into());
+        self.log_info("pr_review", "AI review cancelled by reviewer".into());
     }
 
     pub(crate) fn retry_workspace_comments(&mut self) {

@@ -449,7 +449,10 @@ Wide terminals show three panes. Below 125 columns the navigator becomes a
 drawer; below 85 columns only the focused pane is shown.
 
 `A` starts an AI review using the existing harness/model choices. You can read
-files while it runs. `p` previews your human review, while `W` in AI previews
+files while it runs. A spinner in the left navigator shows the current stage
+and elapsed time until the run finishes. Click `[Ctrl+X Cancel]` or press
+`Ctrl+X` to stop the AI review; existing findings and human drafts are kept.
+`p` previews your human review, while `W` in AI previews
 kept AI findings; both keep the existing explicit posting confirmations and
 authorship. Triage's fix, investigation, reply, and resolution actions use the
 same engines as before. Editors and confirmation dialogs retain their existing

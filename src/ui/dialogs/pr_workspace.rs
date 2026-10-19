@@ -65,6 +65,19 @@ pub(crate) fn pane_areas(
     }
 }
 
+/// Shared by the displayed control and pointer routing.
+pub(crate) fn cancel_button_area(area: Rect, focus: WorkspacePane, expanded: bool) -> Option<Rect> {
+    let (_, navigator) = pane_areas(area, focus, expanded)
+        .into_iter()
+        .find(|(pane, rect)| *pane == WorkspacePane::Navigator && rect.height >= 8)?;
+    Some(Rect::new(
+        navigator.x + 1,
+        navigator.y + 3,
+        navigator.width.saturating_sub(2).min(15),
+        1,
+    ))
+}
+
 pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
     let Some(mut workspace) = app.pr_workspace.take() else {
         return false;
@@ -90,6 +103,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
     }
     let area = frame.area();
     let theme = &app.theme;
+    let ai_running = workspace.ai_running(&app.ai_review_run);
     frame.render_widget(
         Block::default().style(
             Style::default()
@@ -104,17 +118,32 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
         Constraint::Length(3),
     ])
     .split(area);
-    draw_header(
-        frame,
-        rows[0],
-        &workspace,
-        &app.mode,
-        theme,
-        app.ai_review_run.is_pending(),
-    );
+    draw_header(frame, rows[0], &workspace, &app.mode, theme, ai_running);
     for (pane, rect) in pane_areas(area, workspace.focus, workspace.expanded) {
         frame.render_widget(Clear, rect);
-        draw_pane(frame, rect, pane, &mut workspace, &mut app.mode, theme);
+        let content = if pane == WorkspacePane::Navigator && ai_running && rect.height >= 8 {
+            let sections =
+                Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).split(rect);
+            draw_ai_progress(
+                frame,
+                sections[0],
+                app.ai_review_run.progress().as_ref(),
+                &app.throbber_state,
+                theme,
+            );
+            sections[1]
+        } else {
+            rect
+        };
+        draw_pane(
+            frame,
+            content,
+            pane,
+            &mut workspace,
+            &mut app.mode,
+            theme,
+            ai_running,
+        );
         let title = match pane {
             WorkspacePane::Navigator => match workspace.tab {
                 WorkspaceTab::Files => " Files ",
@@ -164,13 +193,15 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
             "s skip · e edit · f fix · Space mark · B fix marked · W preview/post AI review"
         }
     };
-    let navigation = "1 Files · 2 Threads · 3 AI · Tab focus · z expand · A run AI · p submit human review · ? help · q close";
+    let navigation = if ai_running {
+        "1 Files · 2 Threads · 3 AI · Tab focus · z expand · Ctrl+X cancel AI · p submit human review · ? help · q close"
+    } else {
+        "1 Files · 2 Threads · 3 AI · Tab focus · z expand · A run AI · p submit human review · ? help · q close"
+    };
     let message = workspace.errors[workspace.tab.index()]
         .as_deref()
         .or(app.message.as_deref())
-        .unwrap_or(
-            "F5 reopen this PR at its latest head · Existing G/W workflows remain available",
-        );
+        .unwrap_or("F5 reopen this PR at its latest head · leader+U / W open the legacy workflows");
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(navigation, Style::default().fg(theme.primary.to_color())),
@@ -192,6 +223,46 @@ fn ai_state(mode: Option<&AppMode>) -> Option<&AiReviewState> {
         AppMode::AiReviewRunning(state) => Some(&state.origin),
         _ => None,
     }
+}
+
+fn draw_ai_progress(
+    frame: &mut Frame,
+    area: Rect,
+    progress: Option<&crate::app::AiReviewRunProgress>,
+    throbber: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let accent = Style::default().fg(theme.warning.to_color());
+    let detail = progress.map_or_else(
+        || " Working in background".to_owned(),
+        |progress| {
+            let stage = match progress.stage {
+                crate::app::ai_review::AiReviewStage::PreparingDiff => "Fetching diff",
+                crate::app::ai_review::AiReviewStage::Reviewing { .. } => "Reviewing code",
+            };
+            let seconds = progress.started_at.elapsed().as_secs();
+            format!(" {stage} · {}m {:02}s", seconds / 60, seconds % 60)
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                throbber_widgets_tui::Throbber::default()
+                    .style(accent)
+                    .to_symbol_span(throbber),
+                Span::styled(" AI review running", accent.add_modifier(Modifier::BOLD)),
+            ]),
+            Line::styled(detail, Style::default().fg(theme.text_muted.to_color())),
+            Line::styled(
+                "[Ctrl+X Cancel]",
+                accent
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .block(Block::default().borders(Borders::ALL).border_style(accent)),
+        area,
+    );
 }
 
 fn draw_header(
@@ -330,6 +401,7 @@ fn draw_pane(
     workspace: &mut PrWorkspace,
     active: &mut AppMode,
     theme: &Theme,
+    ai_running: bool,
 ) {
     let tab = workspace.tab;
     if pane == WorkspacePane::Diff {
@@ -393,9 +465,9 @@ fn draw_pane(
                 );
             }
         }
-        Some(AppMode::AiReview(state)) => draw_ai_pane(frame, area, pane, state, theme),
+        Some(AppMode::AiReview(state)) => draw_ai_pane(frame, area, pane, state, theme, ai_running),
         Some(AppMode::AiReviewRunning(state)) => {
-            draw_ai_pane(frame, area, pane, &mut state.origin, theme)
+            draw_ai_pane(frame, area, pane, &mut state.origin, theme, ai_running)
         }
         _ => placeholder(
             frame,
@@ -501,6 +573,7 @@ fn draw_ai_pane(
     pane: WorkspacePane,
     state: &mut AiReviewState,
     theme: &Theme,
+    ai_running: bool,
 ) {
     if pane == WorkspacePane::Navigator {
         super::ai_review::draw_finding_list(frame, area, state, theme, &[]);
@@ -509,7 +582,11 @@ fn draw_ai_pane(
             frame,
             area,
             " AI Review ",
-            "Press A to generate an AI review. You can browse Files while it runs.\n\nGenerating does not post findings to GitHub.",
+            if ai_running {
+                "AI review in progress.\n\nYou can browse Files and Threads while it runs. Findings will appear here automatically."
+            } else {
+                "Press A to generate an AI review. You can browse Files while it runs.\n\nGenerating does not post findings to GitHub."
+            },
             theme,
         );
     } else {
@@ -559,7 +636,7 @@ fn draw_help(frame: &mut Frame, theme: &Theme, scroll: u16) {
         frame,
         area,
         " PR Workspace · experimental ",
-        "1 / 2 / 3    Files / GitHub threads / AI findings\nTab          Focus next pane (Shift+Tab goes back)\nj / k        Move in the navigator; scroll the focused pane\nEnter        Focus code; in line-cursor mode, write a comment\nz            Expand / restore the focused pane\nEsc          Restore an expanded pane, otherwise save draft and close\n\nA            Generate AI review (uses existing harness/model pickers)\np            Preview and submit your human review\nW            In AI: preview and post kept AI findings\nF5           Reopen this same PR at the latest head\n\nFiles/code: c line cursor · m file comment · f summary\n            a approve file · s skip · Enter write line comment\nThreads:    f fix · v investigate · e investigation context\n            a investigation actions · R reply · m mark/resolve\n            r refresh comments · P visit fix session\nAI:         s skip · e edit · f fix · Space mark · B fix marked\n\nEditors and confirmation dialogs retain their existing controls.\nHuman drafts and AI findings are posted separately with attribution.\nUnpublished AI findings can be fixed without posting them.\n\nResize: 125+ columns = three panes; 85–124 = navigator drawer;\nunder 85 = focused pane only. z expands any pane.\n\n? / Esc closes help. Original G / W workflows remain available.",
+        "1 / 2 / 3    Files / GitHub threads / AI findings\nTab          Focus next pane (Shift+Tab goes back)\nj / k        Move in the navigator; scroll the focused pane\nEnter        Focus code; in line-cursor mode, write a comment\nz            Expand / restore the focused pane\n             (on a Files folder row, z / Enter fold that folder)\nEsc          Restore an expanded pane, otherwise save draft and close\n\nA            Generate AI review (uses existing harness/model pickers)\nCtrl+X       Cancel the AI review (also clickable in the navigator)\np            Preview and submit your human review\nW            In AI: preview and post kept AI findings\nF5           Reopen this same PR at the latest head\n\nFiles/code: c line cursor · m file comment · f summary\n            a approve file · s skip · Enter write line comment\nThreads:    f fix · v investigate · e investigation context\n            a investigation actions · R reply · m mark/resolve\n            r refresh comments · P visit fix session\nAI:         s skip · e edit · f fix · Space mark · B fix marked\n\nEditors and confirmation dialogs retain their existing controls.\nHuman drafts and AI findings are posted separately with attribution.\nUnpublished AI findings can be fixed without posting them.\n\nResize: 125+ columns = three panes; 85–124 = navigator drawer;\nunder 85 = focused pane only. z expands any pane.\n\n? / Esc closes help. leader+U / leader+W open the legacy PR Triage / AI Review workflows.",
         theme,
         scroll,
     );

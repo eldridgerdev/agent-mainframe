@@ -703,3 +703,248 @@ fn picker_does_not_mark_a_project_row_or_a_missing_or_ambiguous_feature_pr() {
         assert_eq!(workspace_picker(&app).feature_pr_number(), None);
     }
 }
+
+fn rendered_navigator(app: &mut App, width: u16) -> (String, String) {
+    let mut terminal = Terminal::new(TestBackend::new(width, 30)).unwrap();
+    terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+    let workspace = app.pr_workspace.as_ref().unwrap();
+    let (_, area) = crate::ui::pr_workspace_pane_areas(
+        ratatui::layout::Rect::new(0, 0, width, 30),
+        workspace.focus,
+        workspace.expanded,
+    )
+    .into_iter()
+    .find(|(pane, _)| *pane == WorkspacePane::Navigator)
+    .unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            text.push_str(buffer[(x, y)].symbol());
+        }
+        text.push('\n');
+    }
+    (text, buffer[(area.x + 1, area.y + 1)].symbol().to_owned())
+}
+
+#[test]
+fn ai_running_indicator_animates_in_the_navigator_and_clears_when_the_run_finishes() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('3'));
+    let AppMode::AiReview(state) = &mut app.mode else {
+        unreachable!();
+    };
+    state.findings.clear();
+    let origin = state.clone();
+    let (tx, rx) = mpsc::channel();
+    app.ai_review_run.begin(rx, origin);
+    app.ai_review_run.show_progress(AiReviewRunProgress {
+        stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+        started_at: Instant::now() - Duration::from_secs(65),
+        activity: None,
+        usage: None,
+    });
+    app.throbber_state.calc_next();
+    for key in ['1', '2', '3'] {
+        press(app, KeyCode::Char(key));
+        assert!(
+            app.has_visible_animation(),
+            "spinner must tick in every category"
+        );
+        for width in [160, 100, 60] {
+            let (text, first_frame) = rendered_navigator(app, width);
+            assert!(text.contains("AI review running"), "{text}");
+            assert!(text.contains("Fetching diff"), "{text}");
+            assert!(text.contains("1m "), "{text}");
+            app.throbber_state.calc_next();
+            let (_, next_frame) = rendered_navigator(app, width);
+            assert_ne!(first_frame, next_frame, "spinner did not advance");
+        }
+    }
+    tx.send(AiReviewProgress::Reviewing {
+        token_estimate: 100,
+    })
+    .unwrap();
+    app.poll_pr_workspace_bg();
+    assert!(rendered_navigator(app, 160).0.contains("Reviewing code"));
+    press(app, KeyCode::Char('1'));
+    tx.send(AiReviewProgress::Done(Err(anyhow::anyhow!(
+        "offline run failed"
+    ))))
+    .unwrap();
+    app.poll_pr_workspace_bg();
+    assert!(!app.ai_review_run.is_pending());
+    assert!(!rendered_navigator(app, 160).0.contains("AI review running"));
+    assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+}
+
+#[test]
+fn navigator_does_not_show_an_ai_run_for_a_different_pr_or_head() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('3'));
+    let AppMode::AiReview(state) = &app.mode else {
+        unreachable!();
+    };
+    let origin = state.clone();
+    let (_tx, rx) = mpsc::channel();
+    app.ai_review_run.begin(rx, origin.clone());
+    press(app, KeyCode::Char('1'));
+    for another_head in [false, true] {
+        let mut unrelated = origin.clone();
+        if another_head {
+            unrelated.pr.head_sha = "another-head".into();
+        } else {
+            unrelated.pr.number += 1;
+        }
+        app.ai_review_run.set_origin_for_test(Some(unrelated));
+        assert!(!app.has_visible_animation());
+        assert!(!rendered_navigator(app, 160).0.contains("AI review running"));
+    }
+}
+
+#[test]
+fn cancel_button_and_shortcut_stop_the_run_and_preserve_existing_review_work() {
+    for click in [false, true] {
+        let mut fixture = Fixture::new();
+        let app = &mut fixture.app;
+        app.viewport_cols = 160;
+        app.viewport_total_rows = 30;
+        press(app, KeyCode::Char('m'));
+        crate::handlers::handle_paste(app, "Keep this human draft").unwrap();
+        press(app, KeyCode::Tab);
+        press(app, KeyCode::Char('3'));
+        let AppMode::AiReview(origin) = &app.mode else {
+            unreachable!();
+        };
+        let origin = origin.clone();
+        let (tx, rx) = mpsc::channel();
+        let cancelled = app.ai_review_run.begin(rx, origin.clone());
+        let progress = AiReviewRunProgress {
+            stage: crate::app::ai_review::AiReviewStage::PreparingDiff,
+            started_at: Instant::now(),
+            activity: None,
+            usage: None,
+        };
+        app.ai_review_run.show_progress(progress.clone());
+        app.mode = AppMode::AiReviewRunning(AiReviewRunState { origin, progress });
+        press(app, KeyCode::Char('1'));
+        assert!(rendered_navigator(app, 160).0.contains("[Ctrl+X Cancel]"));
+        if click {
+            let button = crate::ui::pr_workspace_cancel_button_area(
+                ratatui::layout::Rect::new(0, 0, 160, 30),
+                WorkspacePane::Navigator,
+                false,
+            )
+            .unwrap();
+            crate::handlers::handle_mouse(
+                app,
+                crossterm::event::MouseEvent {
+                    kind: crossterm::event::MouseEventKind::Down(
+                        crossterm::event::MouseButton::Left,
+                    ),
+                    column: button.x + 2,
+                    row: button.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                30,
+            )
+            .unwrap();
+        } else {
+            crate::handlers::handle_key(
+                app,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+                30,
+            )
+            .unwrap();
+        }
+        assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!app.ai_review_run.is_pending());
+        assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+        assert_eq!(
+            files(app).file_comments["src/file1.rs"].text,
+            "Keep this human draft"
+        );
+        assert!(!rendered_navigator(app, 160).0.contains("[Ctrl+X Cancel]"));
+        assert!(
+            tx.send(AiReviewProgress::Done(Ok(AiReviewOutcome {
+                findings: vec![],
+                summary: None,
+                raw_output: String::new(),
+                attribution: Default::default(),
+            })))
+            .is_err(),
+            "cancelled worker must not be able to deliver a late result"
+        );
+        press(app, KeyCode::Char('3'));
+        assert!(
+            matches!(&app.mode, AppMode::AiReview(state) if state.findings.len() == 1 && state.last_run.is_none())
+        );
+        let AppMode::AiReview(origin) = &app.mode else {
+            unreachable!();
+        };
+        let (next_tx, next_rx) = mpsc::channel();
+        let next_token = app.ai_review_run.begin(next_rx, origin.clone());
+        assert!(!next_token.load(std::sync::atomic::Ordering::Relaxed));
+        app.cancel_workspace_ai_review();
+        drop(next_tx);
+    }
+}
+
+#[test]
+fn z_and_enter_fold_a_files_folder_but_keep_shell_meanings_on_file_rows() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    if let AppMode::DiffViewer(files) = &mut app.mode {
+        files.tree_cursor_dir = Some("src".into());
+    }
+    press(app, KeyCode::Char('z'));
+    assert!(files(app).collapsed_dirs.contains("src"));
+    assert!(!app.pr_workspace.as_ref().unwrap().expanded);
+    press(app, KeyCode::Enter);
+    assert!(!files(app).collapsed_dirs.contains("src"));
+    assert_eq!(
+        app.pr_workspace.as_ref().unwrap().focus,
+        WorkspacePane::Navigator
+    );
+    if let AppMode::DiffViewer(files) = &mut app.mode {
+        files.tree_cursor_dir = None;
+    }
+    press(app, KeyCode::Char('z'));
+    assert!(app.pr_workspace.as_ref().unwrap().expanded);
+    press(app, KeyCode::Esc);
+    press(app, KeyCode::Enter);
+    assert_eq!(
+        app.pr_workspace.as_ref().unwrap().focus,
+        WorkspacePane::Diff
+    );
+}
+
+#[test]
+fn submitting_from_an_outdated_thread_clears_its_code_placeholder() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[1].outdated = true;
+    }
+    press(app, KeyCode::Char('j'));
+    assert!(app.pr_workspace.as_ref().unwrap().anchor_message.is_some());
+    press(app, KeyCode::Char('p'));
+    assert!(files(app).pr_submit.is_some());
+    press(app, KeyCode::Esc);
+    let workspace = app.pr_workspace.as_ref().unwrap();
+    assert_eq!(workspace.tab, WorkspaceTab::Files);
+    assert!(workspace.anchor_message.is_none());
+    press(app, KeyCode::Tab);
+    app.message = None;
+    press(app, KeyCode::Char('j'));
+    assert!(
+        app.message
+            .as_ref()
+            .is_none_or(|message| !message.contains("Press 1 to browse code")),
+        "Diff pane still swallows keys: {:?}",
+        app.message
+    );
+}

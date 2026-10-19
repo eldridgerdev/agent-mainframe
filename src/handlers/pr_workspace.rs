@@ -54,9 +54,21 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
     }
     // Only unmodified keys belong to the shell. Ctrl+digit etc. retain the
     // backend's semantics; a text editor was already given full precedence.
-    if !key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL {
+        app.cancel_workspace_ai_review();
+        return Ok(());
+    }
+    // On a directory row of the Files navigator, `z`/Enter fold that folder
+    // exactly as in the diff viewer; the shell's expand/focus meanings apply
+    // to file rows only.
+    let folds_directory = workspace.tab == WorkspaceTab::Files
+        && workspace.focus == WorkspacePane::Navigator
+        && matches!(key.code, KeyCode::Char('z') | KeyCode::Enter)
+        && files_cursor_on_directory(&app.mode);
+    if !folds_directory
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
     {
         match key.code {
             KeyCode::Char('1') => {
@@ -92,6 +104,8 @@ pub(crate) fn handle(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 app.close_pr_workspace();
                 return Ok(());
             }
+            // `A` is the diff viewer's co-review, but that refuses PR diffs
+            // (it needs a local checkout), so nothing is lost by taking it.
             KeyCode::Char('A') => {
                 if app.switch_pr_workspace(WorkspaceTab::Ai) {
                     app.start_ai_pr_review();
@@ -247,6 +261,18 @@ pub(crate) fn mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
     if workspace.help {
         return Ok(true);
     }
+    if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+        && workspace.ai_running(&app.ai_review_run)
+        && crate::ui::pr_workspace_cancel_button_area(
+            ratatui::layout::Rect::new(0, 0, app.viewport_cols, app.viewport_total_rows),
+            workspace.focus,
+            workspace.expanded,
+        )
+        .is_some_and(|rect| rect.contains((mouse.column, mouse.row).into()))
+    {
+        app.cancel_workspace_ai_review();
+        return Ok(true);
+    }
     let layout = crate::ui::pr_workspace_pane_areas(
         ratatui::layout::Rect::new(0, 0, app.viewport_cols, app.viewport_total_rows),
         workspace.focus,
@@ -342,4 +368,15 @@ pub(crate) fn paste(app: &mut App, text: &str) -> bool {
     } else {
         false
     }
+}
+
+/// Whether the Files tab's tree cursor is parked on a directory row.
+fn files_cursor_on_directory(mode: &AppMode) -> bool {
+    let AppMode::DiffViewer(state) = mode else {
+        return false;
+    };
+    let rows = state.file_tree_rows();
+    state
+        .tree_cursor_row(&rows)
+        .is_some_and(|pos| matches!(rows[pos], crate::app::FileTreeRow::Dir { .. }))
 }

@@ -1,0 +1,569 @@
+use super::support::*;
+use crate::app::ai_review::{
+    AiReviewAttribution, AiReviewFinding, AiReviewOutcome, AiReviewProgress,
+};
+use crate::app::pr_review::{
+    github_access::fake::FakeGithub,
+    runtime::{PrPostOutcome, ReviewListLoaded},
+};
+use crate::app::{
+    pr_workspace::{PrWorkspace, WorkspacePane, WorkspaceTab},
+    *,
+};
+use crate::diff::DiffSide;
+use crate::traits::{MockTmuxOps, MockWorktreeOps};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{Terminal, backend::TestBackend};
+use std::{
+    path::Path,
+    sync::{Arc, mpsc},
+    time::{Duration, Instant},
+};
+use tempfile::TempDir;
+
+struct Fixture {
+    app: App,
+    _dir: TempDir,
+}
+
+fn reviewable() -> crate::github::ReviewablePr {
+    crate::github::ReviewablePr {
+        number: 7,
+        title: "A real review workspace".into(),
+        author: "alice".into(),
+        is_draft: false,
+        updated_at: String::new(),
+        base_ref: "main".into(),
+        base_oid: "base".into(),
+        head_ref: "main".into(),
+        head_oid: "sha".into(),
+        is_cross_repository: false,
+        head_owner: "o".into(),
+    }
+}
+
+fn finding() -> AiReviewFinding {
+    AiReviewFinding {
+        path: Some("src/file2.rs".into()),
+        line: Some(2),
+        side: Some(DiffSide::New),
+        body: "Check this change".into(),
+        diff_hunk: None,
+        skipped: false,
+        published: false,
+    }
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let dir = TempDir::new().unwrap();
+        let mut app = pr_review_test_app();
+        app.db = Some(crate::db::AmfDb::open(&dir.path().join("test.db")).unwrap());
+        enter_pr_review(&mut app, 3);
+        let AppMode::PrReview(mut triage) = std::mem::replace(&mut app.mode, AppMode::Normal)
+        else {
+            unreachable!()
+        };
+        triage.workdir = dir.path().to_path_buf();
+        let pr = triage.review.pr.clone();
+        let mut ai = sample_ai_review_state(dir.path().to_path_buf(), pr.clone());
+        ai.findings = vec![finding()];
+        let mut files = DiffViewerState::new(
+            view_state_for("project", "feature"),
+            dir.path().to_path_buf(),
+        );
+        files.review = true;
+        files.scope = DiffScope::PullRequest(Box::new(PrDiffTarget {
+            repo: "github.com/o/r".into(),
+            pr: reviewable(),
+            merge_base_oid: "base".into(),
+        }));
+        files.files = crate::diff::parse_unified_diff("diff --git a/src/file1.rs b/src/file1.rs\n--- a/src/file1.rs\n+++ b/src/file1.rs\n@@ -1,3 +1,3 @@\n old\n-before\n+after\n context\ndiff --git a/src/file2.rs b/src/file2.rs\n--- a/src/file2.rs\n+++ b/src/file2.rs\n@@ -1,3 +1,3 @@\n old\n-before\n+after\n context\ndiff --git a/src/file3.rs b/src/file3.rs\n--- a/src/file3.rs\n+++ b/src/file3.rs\n@@ -1,3 +1,3 @@\n old\n-before\n+after\n context\n").unwrap();
+        let mut workspace = PrWorkspace::new(dir.path().to_path_buf(), AppMode::Normal);
+        workspace.pr = Some(pr);
+        workspace.parked[WorkspaceTab::Threads.index()] = Some(Box::new(AppMode::PrReview(triage)));
+        workspace.parked[WorkspaceTab::Ai.index()] = Some(Box::new(AppMode::AiReview(ai)));
+        app.mode = AppMode::DiffViewer(files);
+        app.pr_workspace = Some(workspace);
+        Self { app, _dir: dir }
+    }
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 40).unwrap();
+}
+
+fn files(app: &App) -> &DiffViewerState {
+    app.pr_workspace.as_ref().unwrap().files(&app.mode).unwrap()
+}
+
+fn settle(app: &mut App, pending: impl Fn(&App) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pending(app) {
+        app.poll_pr_workspace_bg();
+        assert!(Instant::now() < deadline, "worker did not finish");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn categories_keep_selection_and_restore_manual_reading_position() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    if let AppMode::DiffViewer(files) = &mut app.mode {
+        files.selected_file = 2;
+        files.patch_scroll = 7;
+    }
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('j'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.selected == 1));
+    assert_eq!(files(app).selected_file, 1);
+    assert!(files(app).comment_cursor.is_some());
+    press(app, KeyCode::Char('3'));
+    press(app, KeyCode::Char('2'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.selected == 1));
+    press(app, KeyCode::Char('1'));
+    assert_eq!(files(app).selected_file, 2);
+    assert_eq!(files(app).patch_scroll, 7);
+}
+
+#[test]
+fn feedback_anchors_respect_old_side_and_general_or_outdated_feedback() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[1].side = Some("LEFT".into());
+    }
+    press(app, KeyCode::Char('j'));
+    let files = files(app);
+    assert_eq!(
+        files.files[files.selected_file].addressable_lines()[files.comment_cursor.unwrap()]
+            .old_line,
+        Some(2)
+    );
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[2].outdated = true;
+    }
+    press(app, KeyCode::Char('j'));
+    assert!(
+        app.pr_workspace
+            .as_ref()
+            .unwrap()
+            .anchor_message
+            .as_ref()
+            .unwrap()
+            .contains("Outdated")
+    );
+    press(app, KeyCode::Char('k'));
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[0].path = None;
+    }
+    press(app, KeyCode::Char('k'));
+    assert!(
+        app.pr_workspace
+            .as_ref()
+            .unwrap()
+            .anchor_message
+            .as_ref()
+            .unwrap()
+            .contains("General")
+    );
+}
+
+#[test]
+fn draft_editor_owns_shortcuts_and_close_saves_parked_human_drafts() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('m'));
+    for c in "123zpq".chars() {
+        press(app, KeyCode::Char(c));
+    }
+    assert!(
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_file_comment && state.feedback_editor.text() == "123zpq")
+    );
+    assert_eq!(app.pr_workspace.as_ref().unwrap().tab, WorkspaceTab::Files);
+    press(app, KeyCode::Tab);
+    assert_eq!(files(app).file_comments["src/file1.rs"].text, "123zpq");
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+    let rendered: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(
+        rendered.contains("123zpq"),
+        "saved human drafts should be visible in the context pane"
+    );
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('q'));
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.pr_workspace.is_none());
+    let draft = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_pr_review_draft("github.com/o/r", 7)
+        .unwrap()
+        .unwrap();
+    assert!(draft.progress.contains("123zpq"));
+}
+
+#[test]
+fn ai_completion_updates_parked_view_without_moving_the_reader() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('3'));
+    let AppMode::AiReview(origin) = &app.mode else {
+        unreachable!()
+    };
+    let origin = origin.clone();
+    let (tx, rx) = mpsc::channel();
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(origin));
+    press(app, KeyCode::Char('1'));
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.selected_file = 2;
+        state.patch_scroll = 4;
+    }
+    tx.send(AiReviewProgress::Done(Ok(AiReviewOutcome {
+        findings: vec![finding(), finding()],
+        summary: Some("Two findings".into()),
+        raw_output: String::new(),
+        attribution: AiReviewAttribution::default(),
+    })))
+    .unwrap();
+    assert!(app.poll_pr_workspace_bg());
+    assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+    assert_eq!(files(app).selected_file, 2);
+    assert_eq!(files(app).patch_scroll, 4);
+    press(app, KeyCode::Char('3'));
+    assert!(matches!(&app.mode, AppMode::AiReview(state) if state.findings.len() == 2));
+}
+
+#[test]
+fn comment_fetch_failure_keeps_files_open_and_can_retry() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    let github = FakeGithub::default();
+    github.state().fail_fetch = Some("offline fixture".into());
+    app.pr_review_work
+        .set_github_for_test(Arc::new(github.clone()));
+    press(app, KeyCode::Char('2'));
+    app.retry_workspace_comments();
+    press(app, KeyCode::Char('1'));
+    settle(app, |app| app.pr_review_work.fetch_pending());
+    assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+    assert!(
+        app.pr_workspace.as_ref().unwrap().errors[WorkspaceTab::Threads.index()]
+            .as_ref()
+            .unwrap()
+            .contains("offline fixture")
+    );
+    github.state().fail_fetch = None;
+    github.state().review = Some(pr_review_with_comments(2));
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('r'));
+    settle(app, |app| app.pr_review_work.fetch_pending());
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.review.comments.len() == 2));
+    assert!(app.pr_workspace.as_ref().unwrap().errors[WorkspaceTab::Threads.index()].is_none());
+}
+
+#[test]
+fn human_submission_uses_real_confirmation_and_worker() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    app.pr_review_work
+        .set_review_poster_for_test(|_| PrPostOutcome::Posted {
+            file_comment_failures: vec![],
+        });
+    press(app, KeyCode::Char('f'));
+    crate::handlers::handle_paste(app, "Human review summary").unwrap();
+    press(app, KeyCode::Tab);
+    assert_eq!(files(app).general_feedback, "Human review summary");
+    press(app, KeyCode::Char('p'));
+    assert!(files(app).pr_submit.is_some());
+    assert!(
+        !app.pr_review_work.review_post_pending(),
+        "preview must not post"
+    );
+    press(app, KeyCode::Enter);
+    assert!(
+        app.pr_review_work.review_post_pending(),
+        "submit status: {:?}; message: {:?}",
+        files(app).pr_submit.as_ref().map(|submit| &submit.status),
+        app.message
+    );
+    settle(app, |app| app.pr_review_work.review_post_pending());
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|message| message.contains("Posted a"))
+    );
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.pr_workspace.is_none());
+    let saved = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_pr_review_draft("github.com/o/r", 7)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.status,
+        crate::db::pr_review_drafts::PrReviewDraftStatus::Posted
+    );
+}
+
+#[test]
+fn focus_and_expansion_do_not_change_category_or_selection() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Tab);
+    press(app, KeyCode::Tab);
+    assert_eq!(
+        app.pr_workspace.as_ref().unwrap().focus,
+        WorkspacePane::Context
+    );
+    press(app, KeyCode::Char('j'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.selected == 0));
+    press(app, KeyCode::Char('z'));
+    assert!(app.pr_workspace.as_ref().unwrap().expanded);
+    press(app, KeyCode::Esc);
+    assert!(!app.pr_workspace.as_ref().unwrap().expanded);
+    assert!(app.pr_workspace.is_some());
+}
+
+#[test]
+fn responsive_layout_uses_real_code_and_feedback_at_every_width() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    for width in [160, 100, 60, 20] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 32)).unwrap();
+        for tab in [KeyCode::Char('1'), KeyCode::Char('2'), KeyCode::Char('3')] {
+            press(app, tab);
+            for _ in 0..3 {
+                terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+                if width == 160 {
+                    let text: String = terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect();
+                    assert!(text.contains("PR Workspace (experimental)"));
+                    assert!(text.contains("after"), "real diff should stay visible");
+                }
+                press(app, KeyCode::Tab);
+            }
+        }
+    }
+}
+
+fn list_loader(_: &Path, _: bool) -> ReviewListLoaded {
+    ReviewListLoaded {
+        prs: Ok(vec![reviewable()]),
+        current_user: Some("me".into()),
+        repo_key: Some("github.com/o/r".into()),
+    }
+}
+
+#[test]
+fn g_opens_workspace_and_leader_u_keeps_the_original_picker() {
+    let dir = TempDir::new().unwrap();
+    let make_app = || {
+        let mut app = App::new_for_test(
+            store_with_repo(dir.path().to_path_buf(), ProjectStatus::Idle),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = Selection::Project(0);
+        app.pr_review_work
+            .set_review_list_loader_for_test(list_loader);
+        app
+    };
+    let mut legacy = make_app();
+    legacy.activate_leader();
+    press(&mut legacy, KeyCode::Char('U'));
+    assert!(legacy.pr_workspace.is_none());
+    assert!(matches!(legacy.mode, AppMode::PrReviewList(_)));
+    let mut leader = make_app();
+    leader.activate_leader();
+    press(&mut leader, KeyCode::Char('G'));
+    assert!(leader.pr_workspace.is_some());
+    assert!(matches!(leader.mode, AppMode::PrReviewList(_)));
+    let mut experimental = make_app();
+    press(&mut experimental, KeyCode::Char('G'));
+    assert!(experimental.pr_workspace.is_some());
+    assert!(matches!(experimental.mode, AppMode::PrReviewList(_)));
+    press(&mut experimental, KeyCode::Esc);
+    assert!(experimental.pr_workspace.is_none());
+    assert!(matches!(experimental.mode, AppMode::Normal));
+}
+
+#[test]
+fn a_failed_draft_save_keeps_the_workspace_and_comments_intact() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('m'));
+    crate::handlers::handle_paste(app, "Keep this draft").unwrap();
+    press(app, KeyCode::Tab);
+    app.db = Some(crate::db::AmfDb::open_read_only(&fixture._dir.path().join("test.db")).unwrap());
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('q'));
+    assert!(app.pr_workspace.is_some());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        files(app).file_comments["src/file1.rs"].text,
+        "Keep this draft"
+    );
+    assert!(
+        app.message
+            .as_ref()
+            .is_some_and(|message| message.contains("Couldn't save"))
+    );
+}
+
+#[test]
+fn closing_during_diff_refresh_saves_the_in_memory_draft() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('f'));
+    crate::handlers::handle_paste(app, "Save while refreshing").unwrap();
+    press(app, KeyCode::Tab);
+    app.refresh_diff_viewer();
+    press(app, KeyCode::Char('q'));
+    assert!(app.pr_workspace.is_none());
+    let draft = app
+        .db
+        .as_ref()
+        .unwrap()
+        .load_pr_review_draft("github.com/o/r", 7)
+        .unwrap()
+        .unwrap();
+    assert!(draft.progress.contains("Save while refreshing"));
+}
+
+#[test]
+fn late_ai_result_for_another_head_cannot_replace_current_findings() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('3'));
+    let AppMode::AiReview(state) = &app.mode else {
+        unreachable!()
+    };
+    let mut old = state.clone();
+    old.pr.head_sha = "previous-head".into();
+    let (tx, rx) = mpsc::channel();
+    app.ai_review_run.set_receiver_for_test(Some(rx));
+    app.ai_review_run.set_origin_for_test(Some(old));
+    press(app, KeyCode::Char('1'));
+    tx.send(AiReviewProgress::Done(Ok(AiReviewOutcome {
+        findings: vec![finding(), finding()],
+        summary: None,
+        raw_output: String::new(),
+        attribution: AiReviewAttribution::default(),
+    })))
+    .unwrap();
+    app.poll_pr_workspace_bg();
+    press(app, KeyCode::Char('3'));
+    assert!(
+        matches!(&app.mode, AppMode::AiReview(state) if state.findings.len() == 1 && state.pr.head_sha == "sha")
+    );
+}
+
+#[test]
+fn leader_g_restores_threads_after_a_fix_session_visit() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('j'));
+    let view = view_state_for("my-project", "my-feat");
+    let AppMode::PrReview(state) = std::mem::replace(&mut app.mode, AppMode::Viewing(view.clone()))
+    else {
+        unreachable!()
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: view.session,
+        window: view.window,
+        state,
+    });
+    app.activate_leader();
+    press(app, KeyCode::Char('G'));
+    assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+    press(app, KeyCode::Char('2'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.selected == 1));
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
+fn refreshed_feedback_at_a_new_head_does_not_highlight_old_code() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.pr.head_sha = "new-head".into();
+    }
+    app.sync_pr_workspace_anchor();
+    assert!(
+        app.pr_workspace
+            .as_ref()
+            .unwrap()
+            .anchor_message
+            .as_ref()
+            .is_some_and(|message| message.contains("different PR head"))
+    );
+    assert!(files(app).comment_cursor.is_none());
+}
+
+#[test]
+fn an_unrelated_legacy_diff_is_not_wrapped_in_the_old_workspace() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    let unrelated = DiffViewerState::new(
+        view_state_for("other", "feature"),
+        fixture._dir.path().to_path_buf(),
+    );
+    app.mode = AppMode::DiffViewer(unrelated);
+    app.reconcile_pr_workspace();
+    assert!(app.pr_workspace.is_none());
+    assert!(
+        matches!(&app.mode, AppMode::DiffViewer(state) if matches!(state.scope, DiffScope::CurrentChanges))
+    );
+}
+
+#[test]
+fn ai_fix_handoff_preserves_the_ai_view_and_reuses_the_existing_triage() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    app.store = store_with_repo(fixture._dir.path().to_path_buf(), ProjectStatus::Idle);
+    app.store.available_harnesses = vec![crate::project::AgentKind::Claude];
+    let root = fixture._dir.path().to_path_buf();
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(root.clone()));
+    app.worktree = Box::new(worktree);
+    app.selection = Selection::Feature(0, 0);
+    press(app, KeyCode::Char('3'));
+    press(app, KeyCode::Char('f'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.review.comments.len() == 4));
+    for _ in 0..4 {
+        if !crate::app::pr_workspace::engine_modal(&app.mode) {
+            break;
+        }
+        press(app, KeyCode::Esc);
+    }
+    press(app, KeyCode::Char('3'));
+    assert!(
+        matches!(&app.mode, AppMode::AiReview(state) if state.findings.len() == 1 && !state.findings[0].published)
+    );
+    press(app, KeyCode::Char('2'));
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.review.comments.len() == 4));
+}

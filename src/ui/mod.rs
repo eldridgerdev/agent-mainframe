@@ -1,5 +1,6 @@
 mod dashboard;
 mod dialogs;
+pub(crate) use dialogs::pr_workspace::pane_areas as pr_workspace_pane_areas;
 pub mod header;
 pub(crate) mod list;
 pub mod pane;

@@ -2144,6 +2144,22 @@ mod tests {
         assert!(archive_images(&zip(&[("nested.zip", zip(&[("ready.png", png())]))])).is_err());
     }
     #[test]
+    fn archives_preserve_unicode_and_legacy_cp437_names() {
+        let unicode = archive_images(&zip(&[("café.png", png())])).unwrap();
+        assert_eq!(unicode.images[0].0, "café.png");
+
+        // ASCII names have no UTF-8 flag. Encode the final letter in CP437
+        // in both ZIP headers; the archive reader must preserve its name.
+        let mut legacy = zip(&[("cafe.png", png())]);
+        let local = legacy.windows(4).position(|w| w == b"PK\x03\x04").unwrap();
+        let central = legacy.windows(4).rposition(|w| w == b"PK\x01\x02").unwrap();
+        legacy[local + 30 + 3] = 0x82;
+        legacy[central + 46 + 3] = 0x82;
+        let decoded = archive_images(&legacy).unwrap();
+        assert_eq!(decoded.images[0].0, "café.png");
+    }
+
+    #[test]
     fn archives_are_bounded_and_path_escape_is_rejected_without_extracting() {
         assert_eq!(
             archive_images(&zip(&[("nested/ready.png", png())]))

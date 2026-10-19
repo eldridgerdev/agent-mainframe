@@ -38,6 +38,7 @@ pub(crate) mod pr_workspace;
 pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
+mod prompt_library_files;
 pub(crate) mod prompt_overrides;
 pub(crate) mod remote_actions;
 pub(crate) mod remote_attention;

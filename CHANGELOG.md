@@ -22,6 +22,14 @@ diagrams, and several paste, upgrade and PR-triage problems are fixed.
 
 ### Added
 
+- **Edit and export declarative desktop prompts.** Update Global, Project or
+  Worktree templates without losing their extra metadata or unrelated settings.
+  Export any library template to an explicit configuration destination, with
+  confirmation before replacing a same-name entry. Stale or malformed files
+  refuse writes and keep local edits. TUI edits and exports use the same guarded
+  writer; F5 reload leaves Ctrl+R redo intact. Legacy local configuration is
+  copied to amf.json with its permissions while the original legacy file remains.
+  Existing composer drafts and running sessions are kept.
 - **Split PR workspace (experimental).** `G` on the dashboard, or leader+`G`
   on the dashboard or in a session, opens one PR with Files, GitHub threads
   and AI findings side by side. Each tab keeps its own selection and reading
@@ -58,7 +66,7 @@ diagrams, and several paste, upgrade and PR-triage problems are fixed.
   deletion of User templates, duplicate any supported library source into User,
   or save an unsent composer draft as a new template. Descriptions and configured
   placeholders are kept. Conflicting external edits are refused while keeping
-  your draft; declarative source editing and export remain in the TUI.
+  your draft.
   Saving never sends or clears the composer. No migration is required.
 - **Feature presets for TODO launches.** Apply project or global templates when
   starting a TODO in a new feature, then edit its branch, harness, mode, review,

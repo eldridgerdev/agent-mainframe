@@ -5,6 +5,9 @@ import {
   UserPromptEditorData, promptLibraryLoad, promptLibraryResolve, promptUserEdit, promptUserDelete, promptUserDuplicate,
 } from "./api";
 import UserPromptEditor from "./UserPromptEditor";
+import DeclarativePromptEditor from "./DeclarativePromptEditor";
+import PromptExportDialog from "./PromptExportDialog";
+import { DeclarativeEditorData, promptFileEdit } from "./promptFilesApi";
 import { renderTemplate } from "./promptTemplate";
 import { EmptyState, Field, Modal, Spinner } from "./ui";
 
@@ -19,6 +22,8 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
 }) {
   const queryClient = useQueryClient();
   const [editor, setEditor] = useState<{ snapshot: UserPromptEditorData | null } | null>(null);
+  const [fileEditor,setFileEditor] = useState<DeclarativeEditorData|null>(null);
+  const [exporting,setExporting] = useState<LibraryEntry|null>(null);
   const [deleting, setDeleting] = useState<UserPromptEditorData | null>(null);
   const [authorBusy, setAuthorBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -37,7 +42,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
   const library = useQuery({
     queryKey: ["prompt-library", scope, search],
     queryFn: () => promptLibraryLoad(scope, search),
-    retry: false, staleTime: 0, refetchInterval: busy || authorBusy || editor || deleting ? false : 3000,
+    retry: false, staleTime: 0, refetchInterval: busy || authorBusy || editor || deleting || fileEditor || exporting ? false : 3000,
   });
   // A key is the entry's content, so an external edit or deletion retires it.
   // `available_keys` ignores the search, which only hides entries.
@@ -66,7 +71,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     setError(null); setNotice(null);
   }
   function close() {
-    if (authorPending.current || authorBusy || editor || deleting) return;
+    if (authorPending.current || authorBusy || editor || deleting || fileEditor || exporting) return;
     active.current = false;
     onClose();
   }
@@ -93,6 +98,18 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     setNotice("Saved in your User library.");
     void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
   }
+  function fileSaved() {
+    setFileEditor(null);setExporting(null);setSelected(null);setValues({});setSearch("");setError(null);
+    setNotice("Saved configuration template. Your composer draft is unchanged.");
+    void queryClient.invalidateQueries({queryKey:["prompt-library"]});
+  }
+  async function editFile() {
+    if(inFlight.current||!selected||library.isError)return;
+    inFlight.current=true;authorPending.current=true;setAuthorBusy(true);setError(null);
+    try{setFileEditor(await promptFileEdit(scope,selected.key));}
+    catch(err){setError(asGuiError(err).message);}
+    finally{inFlight.current=false;authorPending.current=false;setAuthorBusy(false);}
+  }
   async function author(action: "edit" | "delete" | "duplicate") {
     if (inFlight.current || !selected || library.isError || authorBusy) return;
     inFlight.current = true; authorPending.current = true; setAuthorBusy(true); setError(null);
@@ -115,7 +132,7 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
     } catch (err) { setError(asGuiError(err).message); }
     finally { inFlight.current = false; authorPending.current = false; setAuthorBusy(false); }
   }
-  return <><Modal label="Prompt library" title="Prompt library" size="xl" onClose={close} hidden={!!editor || !!deleting} dismissable={!authorBusy}
+  return <><Modal label="Prompt library" title="Prompt library" size="xl" onClose={close} hidden={!!editor || !!deleting || !!fileEditor || !!exporting} dismissable={!authorBusy}
     subtitle="Choose a saved prompt, fill its fields, then add it to an agent draft."
     footer={<>
       <span className="muted small">Existing draft text is kept. Send explicitly from the composer.</span>
@@ -164,6 +181,8 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
               <button className="btn btn-secondary btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("edit")}>Edit User template</button>
               <button className="btn btn-ghost btn-sm" disabled={busy || authorBusy || library.isError} onClick={() => void author("delete")}>Delete User template…</button>
             </>}
+            {selected.source !== "User" && <button className="btn btn-secondary btn-sm" disabled={busy||authorBusy||library.isError} onClick={()=>void editFile()}>Edit declarative template</button>}
+            <button className="btn btn-secondary btn-sm" disabled={busy||authorBusy||library.isError} onClick={()=>setExporting(selected)}>Export template…</button>
           </div>
           <h3>{selected.name} <span className="badge">{selected.source}</span></h3>
           {selected.description && <p className="muted">{selected.description}</p>}
@@ -197,6 +216,8 @@ export default function PromptLibraryPanel({ initialScope, initialTarget, projec
       </div>
     </div>
   </Modal>
+  {fileEditor && <DeclarativePromptEditor snapshot={fileEditor} onClose={()=>setFileEditor(null)} onSaved={fileSaved}/> }
+  {exporting && <PromptExportDialog scope={scope} entry={exporting} projects={projects} onClose={()=>setExporting(null)} onSaved={fileSaved}/> }
   {editor && <UserPromptEditor snapshot={editor.snapshot} onClose={() => setEditor(null)} onSaved={saved} />}
   {deleting && <Modal label="Delete User template" title="Delete this User template?" onClose={() => { if (!inFlight.current && !authorBusy) setDeleting(null); }} dismissable={!authorBusy}
     footer={<><button className="btn btn-secondary" disabled={authorBusy} onClick={() => { if (!inFlight.current) setDeleting(null); }}>Cancel</button>

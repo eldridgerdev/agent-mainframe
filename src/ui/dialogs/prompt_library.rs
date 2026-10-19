@@ -318,7 +318,7 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     } else {
         " New Prompt ".to_string()
     };
-    let footer = Line::from(vec![
+    let mut footer_spans = vec![
         label(" "),
         hint("Tab"),
         label(" switch  "),
@@ -332,7 +332,11 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         label(" cancel (×2 in body)  "),
         hint("Ctrl+Q"),
         label(" cancel "),
-    ]);
+    ];
+    if state.file_edit.is_some() {
+        footer_spans.extend([hint("F5"), label(" reload ")]);
+    }
+    let footer = Line::from(footer_spans);
     let block = Block::default()
         .title(title)
         .title_bottom(footer)

@@ -199,6 +199,63 @@ fn prompt_user_duplicate(
 }
 
 #[tauri::command]
+fn prompt_file_edit(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<gui_prompts::declarative::DeclarativeEditor, GuiError> {
+    gui_prompts::declarative::edit(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        scope,
+        &entry_key,
+    )
+}
+
+#[tauri::command]
+fn prompt_file_reload(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ReloadRequest,
+) -> Result<gui_prompts::declarative::DeclarativeEditor, GuiError> {
+    gui_prompts::declarative::reload(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_file_save(
+    state: State<AppState>,
+    request: gui_prompts::declarative::SaveRequest,
+) -> Result<(), GuiError> {
+    gui_prompts::declarative::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_export_preview(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ExportRequest,
+) -> Result<gui_prompts::declarative::ExportPreview, GuiError> {
+    gui_prompts::declarative::export_preview(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_export_commit(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ExportCommit,
+) -> Result<(), GuiError> {
+    gui_prompts::declarative::export_commit(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
 fn prompt_overrides_load(
     state: State<AppState>,
     context: OverrideContext,
@@ -1816,6 +1873,11 @@ fn main() {
             prompt_user_save,
             prompt_user_delete,
             prompt_user_duplicate,
+            prompt_file_edit,
+            prompt_file_reload,
+            prompt_file_save,
+            prompt_export_preview,
+            prompt_export_commit,
             prompt_overrides_load,
             prompt_overrides_save,
             prompt_overrides_clear,

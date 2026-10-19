@@ -27,8 +27,8 @@ The repository maintainer owns these follow-ups. Exposure has not been ruled
 out; a successful audit exit does not resolve nonfatal warnings. Keep them
 visible on PR and scheduled runs, revisit on the next dependency update, and
 track separate fixes rather than bundling unrelated upgrades into this refactor.
-See [checks.md](checks.md) for audit commands and exception policy. Hosted CI
-validation is still pending publication of this branch.
+See [checks.md](checks.md) for audit commands and exception policy. Hosted
+Linux/macOS tests, lint and dependency audit passed on PR #615.
 
 ## GUI workspace extension (2026-09-23)
 
@@ -72,5 +72,4 @@ tables account for 12; the additional existing warning is ttf-parser 0.25.1,
 [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
 unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep that
 replacement follow-up separate from this TLS patch. No advisory is ignored.
-Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
-the dependency fix is considered ready to merge.
+Hosted Linux/macOS tests, lint, frontend checks and audit passed on PR #749.

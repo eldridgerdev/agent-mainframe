@@ -69,7 +69,9 @@ impl ClaudeLauncher {
             .context("claude CLI not found - is Claude Code installed?")?;
 
         if !output.status.success() {
-            anyhow::bail!("claude CLI returned an error");
+            return Err(crate::headless::version_check_error(
+                "claude", &binary, &output,
+            ));
         }
         Ok(())
     }

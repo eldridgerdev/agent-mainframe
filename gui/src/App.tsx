@@ -73,6 +73,7 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import ThemePicker, { useGuiTheme } from "./ThemePicker";
+import FeatureHarnessDialog from "./FeatureHarnessDialog";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
@@ -200,6 +201,8 @@ export default function App() {
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
+  const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -1406,7 +1409,7 @@ export default function App() {
 
         {view?.kind === "feature" && selectedProject && selectedFeature && (
           <FeatureView
-            key={selectedFeature.id}
+            key={`${selectedFeature.id}:${harnessEpochs[selectedFeature.id] ?? 0}`}
             project={selectedProject}
             feature={selectedFeature}
             harnessName={harnessName}
@@ -1467,6 +1470,7 @@ export default function App() {
                 workspace.data?.stopped_session_ids ?? [],
               ),
             })}
+            onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -1716,6 +1720,24 @@ export default function App() {
           onCancel={() => setCloseSessionDialog(null)}
         />
       )}
+
+      {harnessTarget && <FeatureHarnessDialog
+        key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
+        target={harnessTarget}
+        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
+          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
+        onClose={() => setHarnessTarget(null)}
+        onChanged={() => {
+          setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
+          pushToast({ tone: "info", title: "Harness changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
+        }}
+        onResync={() => {
+          setHarnessEpochs((previous) => ({ ...previous, [harnessTarget.feature_id]: (previous[harnessTarget.feature_id] ?? 0) + 1 }));
+          void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+        }}
+      />}
 
       {deleteFeatureDialog && (
         <DeleteFeatureDialog
@@ -1996,6 +2018,7 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onChangeHarness,
   onVibeMode,
   vibeModeBusy,
   vibeModes,
@@ -2045,6 +2068,7 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onChangeHarness?: () => void;
   onVibeMode: (mode: ModeSlug) => void;
   vibeModeBusy: boolean;
   vibeModes: ModeInfo[];
@@ -2191,6 +2215,7 @@ function FeatureView({
                   };
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />

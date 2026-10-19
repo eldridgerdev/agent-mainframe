@@ -5,6 +5,8 @@ use crate::project::{AgentKind, Feature, ProjectStore, SessionKind, VibeMode};
 use crate::theme::ThemeManager;
 
 use super::AppConfig;
+mod checked_io;
+use checked_io::SetupIo;
 
 const NOTIFY_SH: &str = include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str = include_str!("../../scripts/clear-notify.sh");
@@ -102,77 +104,60 @@ struct ClaudeSettingsState {
 }
 
 impl ClaudeSettingsState {
-    fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|value| {
-                value
-                    .get("permissions_added")
-                    .and_then(|v| v.as_array())
-                    .map(|entries| Self {
-                        permissions_added: entries
-                            .iter()
-                            .filter_map(|entry| entry.as_str().map(ToOwned::to_owned))
-                            .collect(),
-                    })
-            })
-            .unwrap_or_default()
+    fn load_with_io(io: &mut SetupIo, path: &Path) -> Self {
+        let value = io.json(path);
+        Self {
+            permissions_added: value
+                .get("permissions_added")
+                .and_then(serde_json::Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
     }
 
-    fn save(&self, path: &Path) {
+    fn save_with_io(&self, io: &mut SetupIo, path: &Path) {
         if self.permissions_added.is_empty() {
-            let _ = std::fs::remove_file(path);
-            return;
+            let _ = io.remove_file(path);
+        } else {
+            write_json_object_with_io(
+                io,
+                path,
+                &serde_json::json!({ "permissions_added": self.permissions_added }),
+            );
         }
-
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let _ = std::fs::write(
-            path,
-            serde_json::to_string_pretty(&serde_json::json!({
-                "permissions_added": self.permissions_added,
-            }))
-            .unwrap_or_default()
-                + "\n",
-        );
     }
 }
 
 fn read_json_object(path: &Path) -> serde_json::Value {
-    match std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-    {
-        Some(value) if value.is_object() => value,
-        _ => serde_json::json!({}),
-    }
+    read_json_object_with_io(&mut SetupIo::default(), path)
 }
 
-fn write_json_object(path: &Path, value: &serde_json::Value) {
+fn read_json_object_with_io(io: &mut SetupIo, path: &Path) -> serde_json::Value {
+    io.json(path)
+}
+
+fn write_json_object_with_io(io: &mut SetupIo, path: &Path, value: &serde_json::Value) {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        let _ = io.create_dir_all(parent);
     }
-    let _ = std::fs::write(
+    let _ = io.write(
         path,
         serde_json::to_string_pretty(value).unwrap_or_default() + "\n",
     );
 }
 
-fn ensure_gitignore_entry(path: &Path, entry: &str) {
-    let needs_entry = std::fs::read_to_string(path)
+fn ensure_gitignore_entry_with_io(io: &mut SetupIo, path: &Path, entry: &str) {
+    let needs_entry = io
+        .read_to_string(path)
         .map(|s| !s.lines().any(|line| line == entry))
         .unwrap_or(true);
-    if needs_entry
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(format!("{entry}\n").as_bytes());
+    if needs_entry {
+        io.append_entry(path, entry);
     }
 }
 
@@ -343,17 +328,12 @@ fn remove_amf_claude_hooks(settings: &mut serde_json::Value, managed_commands: &
 /// replacing its hook layout. Worktrees can inherit `.claude` settings from
 /// the root repository, so refreshing only the worktree-local file leaves a
 /// stale root command active in Claude.
-fn migrate_amf_claude_hooks_to_runtime_dir(
+fn migrate_amf_claude_hooks_to_runtime_dir_with_io(
+    io: &mut SetupIo,
     settings_path: &Path,
     managed_commands: &[String],
 ) -> bool {
-    let Some(mut settings) = std::fs::read_to_string(settings_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
-        .filter(serde_json::Value::is_object)
-    else {
-        return false;
-    };
+    let mut settings = io.json(settings_path);
     let Some(hooks) = settings
         .get_mut("hooks")
         .and_then(serde_json::Value::as_object_mut)
@@ -402,12 +382,13 @@ fn migrate_amf_claude_hooks_to_runtime_dir(
     }
 
     if changed {
-        write_json_object(settings_path, &settings);
+        write_json_object_with_io(io, settings_path, &settings);
     }
     changed
 }
 
-fn repair_inherited_repo_claude_hooks(
+fn repair_inherited_repo_claude_hooks_with_io(
+    io: &mut SetupIo,
     workdir: &Path,
     repo: &Path,
     is_worktree: bool,
@@ -421,7 +402,11 @@ fn repair_inherited_repo_claude_hooks(
     [CLAUDE_SETTINGS_LOCAL_JSON, CLAUDE_SETTINGS_JSON]
         .into_iter()
         .filter(|name| {
-            migrate_amf_claude_hooks_to_runtime_dir(&claude_dir.join(name), managed_commands)
+            migrate_amf_claude_hooks_to_runtime_dir_with_io(
+                io,
+                &claude_dir.join(name),
+                managed_commands,
+            )
         })
         .count()
 }
@@ -441,12 +426,13 @@ fn push_claude_hook_entry(settings: &mut serde_json::Value, event: &str, entry: 
     entries.push(entry);
 }
 
-fn update_claude_permissions(
+fn update_claude_permissions_with_io(
+    io: &mut SetupIo,
     settings: &mut serde_json::Value,
     state_path: &Path,
     wants_diff_review: bool,
 ) {
-    let mut state = ClaudeSettingsState::load(state_path);
+    let mut state = ClaudeSettingsState::load_with_io(io, state_path);
 
     if wants_diff_review {
         {
@@ -510,20 +496,24 @@ fn update_claude_permissions(
         settings.as_object_mut().unwrap().remove("permissions");
     }
 
-    state.save(state_path);
+    state.save_with_io(io, state_path);
 }
 
 fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
+    cleanup_claude_settings_file_with_io(&mut SetupIo::default(), path, state_path)
+}
+
+fn cleanup_claude_settings_file_with_io(io: &mut SetupIo, path: &Path, state_path: Option<&Path>) {
     if !path.exists() {
         return;
     }
 
     let managed_commands = claude_managed_commands();
-    let mut settings = read_json_object(path);
+    let mut settings = read_json_object_with_io(io, path);
     let had_amf_hooks = remove_amf_claude_hooks(&mut settings, &managed_commands);
 
     if let Some(state_path) = state_path {
-        update_claude_permissions(&mut settings, state_path, false);
+        update_claude_permissions_with_io(io, &mut settings, state_path, false);
     } else if had_amf_hooks
         && let Some(allow) = settings
             .pointer_mut("/permissions/allow")
@@ -552,9 +542,9 @@ fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
     }
 
     if settings.as_object().is_some_and(|root| root.is_empty()) {
-        let _ = std::fs::remove_file(path);
+        let _ = io.remove_file(path);
     } else {
-        write_json_object(path, &settings);
+        write_json_object_with_io(io, path, &settings);
     }
 }
 
@@ -575,84 +565,121 @@ fn write_atomic(path: &Path, content: &str, mode: Option<u32>) -> std::io::Resul
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("script");
-    let tmp = dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
-
-    let write_result = (|| {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-        }
-        #[cfg(not(unix))]
-        let _ = mode;
-        std::fs::rename(&tmp, path)
-    })();
-
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    // Each invocation owns its staging inode. PID-only names collide when
+    // multiple features refresh scripts on parallel worker/test threads.
+    let mut builder = tempfile::Builder::new();
+    let prefix = format!(".{file_name}.tmp.");
+    builder.prefix(&prefix);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
     }
-    write_result
+    let mut file = builder.tempfile_in(dir)?;
+    file.write_all(content.as_bytes())?;
+    file.as_file().sync_all()?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Write `content` to `path` only when the on-disk content differs.
 /// Avoids unnecessary write syscalls when the file is already up to date,
 /// which matters because `ensure_notify_scripts` is called once per feature
 /// on startup. The write itself is atomic (see `write_atomic`).
-fn write_if_changed(path: &Path, content: &str) {
-    if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+fn write_if_changed_with_io(io: &mut SetupIo, path: &Path, content: &str) {
+    if io.read_to_string(path).ok().as_deref() == Some(content) {
         return;
     }
-    let _ = write_atomic(path, content, None);
+    let _ = io.write_atomic(path, content, None);
 }
 
 /// Same as `write_if_changed` but also ensures the file is executable.
 /// Permissions are only set when the file content was actually rewritten.
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn write_executable_if_changed(path: &Path, content: &str) {
-    if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+    write_executable_if_changed_with_io(&mut SetupIo::default(), path, content)
+}
+
+#[cfg(unix)]
+fn write_executable_if_changed_with_io(io: &mut SetupIo, path: &Path, content: &str) {
+    if io.read_to_string(path).ok().as_deref() == Some(content) {
         return;
     }
-    let _ = write_atomic(path, content, Some(0o755));
+    let _ = io.write_atomic(path, content, Some(0o755));
+}
+
+#[cfg(all(test, not(unix)))]
+fn write_executable_if_changed(path: &Path, content: &str) {
+    write_executable_if_changed_with_io(&mut SetupIo::default(), path, content)
 }
 
 #[cfg(not(unix))]
-fn write_executable_if_changed(path: &Path, content: &str) {
-    write_if_changed(path, content);
+fn write_executable_if_changed_with_io(io: &mut SetupIo, path: &Path, content: &str) {
+    write_if_changed_with_io(io, path, content);
 }
 
 pub fn ensure_notify_scripts() {
+    ensure_notify_scripts_with_io(&mut SetupIo::default())
+}
+
+fn ensure_notify_scripts_with_io(io: &mut SetupIo) {
     let config_dir = crate::project::amf_config_dir();
     let claude_hooks_dir = crate::project::amf_claude_hooks_dir();
-    let _ = std::fs::create_dir_all(&config_dir);
-    let _ = std::fs::create_dir_all(&claude_hooks_dir);
-    write_executable_if_changed(&claude_hooks_dir.join("notify.sh"), NOTIFY_SH);
-    write_executable_if_changed(&claude_hooks_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
-    write_executable_if_changed(&claude_hooks_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
-    write_executable_if_changed(
+    let _ = io.create_dir_all(&config_dir);
+    let _ = io.create_dir_all(&claude_hooks_dir);
+    write_executable_if_changed_with_io(io, &claude_hooks_dir.join("notify.sh"), NOTIFY_SH);
+    write_executable_if_changed_with_io(
+        io,
+        &claude_hooks_dir.join("clear-notify.sh"),
+        CLEAR_NOTIFY_SH,
+    );
+    write_executable_if_changed_with_io(
+        io,
+        &claude_hooks_dir.join("save-prompt.sh"),
+        SAVE_PROMPT_SH,
+    );
+    write_executable_if_changed_with_io(
+        io,
         &claude_hooks_dir.join("thinking-start.sh"),
         THINKING_START_SH,
     );
-    write_executable_if_changed(&claude_hooks_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
-    write_executable_if_changed(&claude_hooks_dir.join("tool-start.sh"), TOOL_START_SH);
-    write_executable_if_changed(&claude_hooks_dir.join("tool-stop.sh"), TOOL_STOP_SH);
-    write_executable_if_changed(&claude_hooks_dir.join("attention.sh"), ATTENTION_SH);
-    write_executable_if_changed(
+    write_executable_if_changed_with_io(
+        io,
+        &claude_hooks_dir.join("thinking-stop.sh"),
+        THINKING_STOP_SH,
+    );
+    write_executable_if_changed_with_io(io, &claude_hooks_dir.join("tool-start.sh"), TOOL_START_SH);
+    write_executable_if_changed_with_io(io, &claude_hooks_dir.join("tool-stop.sh"), TOOL_STOP_SH);
+    write_executable_if_changed_with_io(io, &claude_hooks_dir.join("attention.sh"), ATTENTION_SH);
+    write_executable_if_changed_with_io(
+        io,
         &config_dir.join("codex-diff-review.sh"),
         CODEX_DIFF_REVIEW_SH,
     );
-    write_executable_if_changed(&config_dir.join("codex-notify.sh"), CODEX_NOTIFY_SH);
-    write_executable_if_changed(
+    write_executable_if_changed_with_io(io, &config_dir.join("codex-notify.sh"), CODEX_NOTIFY_SH);
+    write_executable_if_changed_with_io(
+        io,
         &config_dir.join("set-session-status.sh"),
         SET_SESSION_STATUS_SH,
     );
     let plugins_dir = config_dir.join("plugins");
-    let _ = std::fs::create_dir_all(&plugins_dir);
-    write_if_changed(&plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);
-    write_if_changed(&plugins_dir.join("change-tracker.js"), CHANGE_TRACKER_JS);
-    write_executable_if_changed(
+    let _ = io.create_dir_all(&plugins_dir);
+    write_if_changed_with_io(io, &plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);
+    write_if_changed_with_io(
+        io,
+        &plugins_dir.join("change-tracker.js"),
+        CHANGE_TRACKER_JS,
+    );
+    write_executable_if_changed_with_io(
+        io,
         &claude_hooks_dir.join("custom-diff-review.sh"),
         CUSTOM_DIFF_REVIEW_SH,
     );
@@ -1079,18 +1106,16 @@ pub fn update_opencode_theme(theme: &str) -> anyhow::Result<()> {
 }
 
 pub fn remove_old_diff_review_plugin(repo: &Path) {
+    remove_old_diff_review_plugin_with_io(&mut SetupIo::default(), repo)
+}
+
+fn remove_old_diff_review_plugin_with_io(io: &mut SetupIo, repo: &Path) {
     let settings_path = repo.join(".claude").join(CLAUDE_SETTINGS_LOCAL_JSON);
     if !settings_path.exists() {
         return;
     }
 
-    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-    {
-        Some(v) => v,
-        None => return,
-    };
+    let mut settings = io.json(&settings_path);
 
     let changed = settings
         .get_mut("enabledPlugins")
@@ -1111,9 +1136,9 @@ pub fn remove_old_diff_review_plugin(repo: &Path) {
     }
 
     if settings.as_object().is_some_and(|obj| obj.is_empty()) {
-        let _ = std::fs::remove_file(&settings_path);
+        let _ = io.remove_file(&settings_path);
     } else {
-        let _ = std::fs::write(
+        let _ = io.write(
             &settings_path,
             serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n",
         );
@@ -1121,9 +1146,16 @@ pub fn remove_old_diff_review_plugin(repo: &Path) {
 }
 
 fn ensure_opencode_plugins(workdir: &Path, mode: &VibeMode) {
+    ensure_opencode_plugins_with_io(&mut SetupIo::default(), workdir, mode)
+}
+
+fn ensure_opencode_plugins_with_io(io: &mut SetupIo, workdir: &Path, mode: &VibeMode) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
-    let _ = std::fs::create_dir_all(&plugins_dir);
-    let _ = ThemeManager::inject_opencode_themes(workdir);
+    let _ = io.create_dir_all(&plugins_dir);
+    if io.can_write() {
+        let result = ThemeManager::inject_opencode_themes(workdir).map_err(std::io::Error::other);
+        let _ = io.result(workdir, result);
+    }
 
     let bundled_plugins_dir = crate::project::amf_config_dir().join("plugins");
     let bundled_input_request = bundled_plugins_dir.join("input-request.js");
@@ -1140,49 +1172,55 @@ fn ensure_opencode_plugins(workdir: &Path, mode: &VibeMode) {
         "feedback-prompt.sh",
         "explain.sh",
     ] {
-        let _ = std::fs::remove_file(plugins_dir.join(stale));
+        let _ = io.remove_file(plugins_dir.join(stale));
     }
-    let _ = std::fs::remove_file(&dst_change_tracker);
-    let _ = std::fs::remove_file(&dst_sidebar_state);
+    let _ = io.remove_file(&dst_change_tracker);
+    let _ = io.remove_file(&dst_sidebar_state);
 
     if bundled_input_request.exists() {
-        let _ = std::fs::copy(&bundled_input_request, &dst_input_request);
+        let _ = io.copy(&bundled_input_request, &dst_input_request);
     }
-    let _ = std::fs::write(&dst_sidebar_state, SIDEBAR_STATE_JS);
+    let _ = io.write(&dst_sidebar_state, SIDEBAR_STATE_JS);
 
     if matches!(mode, VibeMode::Vibeless) {
-        let _ = std::fs::write(&dst_change_tracker, CHANGE_TRACKER_JS);
+        let _ = io.write(&dst_change_tracker, CHANGE_TRACKER_JS);
     }
 }
 
-fn ensure_codex_notify_hook(workdir: &Path) {
+fn ensure_codex_notify_hook_with_io(io: &mut SetupIo, workdir: &Path) {
     let codex_dir = workdir.join(".codex");
-    let _ = std::fs::create_dir_all(&codex_dir);
+    let _ = io.create_dir_all(&codex_dir);
 
     let hook_path = codex_dir.join("amf-codex-notify.sh");
-    let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
+    let _ = io.write(&hook_path, CODEX_NOTIFY_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
+        let _ = io.set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
 
     let global_hook_path = crate::project::amf_config_dir().join("codex-notify.sh");
-    crate::codex_config::ensure_user_config_notify_hook(&global_hook_path);
+    if io.can_write() {
+        if io.is_checked() {
+            let result =
+                crate::codex_config::ensure_user_config_notify_hook_checked(&global_hook_path)
+                    .map_err(std::io::Error::other);
+            let _ = io.result(&global_hook_path, result);
+        } else {
+            crate::codex_config::ensure_user_config_notify_hook(&global_hook_path);
+        }
+    }
 
     let project_config_path = codex_dir.join("config.toml");
     if project_config_path.exists() {
-        let mut config = std::fs::read_to_string(&project_config_path)
-            .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+        let mut config = io.toml(&project_config_path);
 
         if let Some(table) = config.as_table_mut() {
             table.remove("notify");
             if table.is_empty() {
-                let _ = std::fs::remove_file(&project_config_path);
+                let _ = io.remove_file(&project_config_path);
             } else if let Ok(rendered) = toml::to_string_pretty(&config) {
-                let _ = std::fs::write(&project_config_path, rendered + "\n");
+                let _ = io.write(&project_config_path, rendered + "\n");
             }
         }
     }
@@ -1232,6 +1270,10 @@ pub(super) fn refresh_feature_skills(feature: &Feature) {
 }
 
 fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
+    ensure_amf_skills_with_io(&mut SetupIo::default(), workdir, agent)
+}
+
+fn ensure_amf_skills_with_io(io: &mut SetupIo, workdir: &Path, agent: &AgentKind) {
     let skills_dir = agent_skills_dir(workdir, agent);
     for (name, content) in AMF_SKILLS {
         // Pi has no legacy AMF configuration skills. Add only the portable
@@ -1241,19 +1283,19 @@ fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
         }
         let skill_dir = skills_dir.join(format!("amf-{name}"));
         let skill_path = skill_dir.join("SKILL.md");
-        let _ = std::fs::create_dir_all(&skill_dir);
-        write_if_changed(&skill_path, content);
+        let _ = io.create_dir_all(&skill_dir);
+        write_if_changed_with_io(io, &skill_path, content);
         if *name == "interact" {
             for (relative, asset) in AMF_INTERACTION_ASSETS {
                 let path = skill_dir.join(relative);
                 if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    let _ = io.create_dir_all(parent);
                 }
-                write_if_changed(&path, asset);
+                write_if_changed_with_io(io, &path, asset);
             }
         }
     }
-    ensure_amf_skills_ignored(workdir, agent, &skills_dir);
+    ensure_amf_skills_ignored_with_io(io, workdir, agent, &skills_dir);
 }
 
 /// Keep every injected `amf-*` skill out of `git status`. Claude's are covered
@@ -1261,8 +1303,13 @@ fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
 /// directories get one pattern in `.git/info/exclude` rather than a
 /// `.gitignore` of their own, which would itself be an untracked file for
 /// `git add -A` to commit and would outlive the skills it ignores.
-fn ensure_amf_skills_ignored(workdir: &Path, agent: &AgentKind, skills_dir: &Path) {
-    if matches!(agent, AgentKind::Claude) {
+fn ensure_amf_skills_ignored_with_io(
+    io: &mut SetupIo,
+    workdir: &Path,
+    agent: &AgentKind,
+    skills_dir: &Path,
+) {
+    if matches!(agent, AgentKind::Claude) || !io.can_write() {
         return;
     }
     let Ok(relative) = skills_dir.strip_prefix(workdir) else {
@@ -1271,37 +1318,44 @@ fn ensure_amf_skills_ignored(workdir: &Path, agent: &AgentKind, skills_dir: &Pat
     let relative = relative.to_string_lossy().replace('\\', "/");
     // `**/` rather than an anchored pattern: a workdir may be a subdirectory of
     // its repository, and one entry then serves every worktree.
-    crate::worktree::WorktreeManager::exclude_locally(
+    let result = crate::worktree::WorktreeManager::exclude_locally_checked(
         workdir,
         &format!("{relative}/amf-interact/"),
         &format!("**/{relative}/amf-*/"),
-    );
+    )
+    .map_err(std::io::Error::other);
+    let _ = io.result(workdir, result);
 }
 
 fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
+    cleanup_amf_skills_with_io(&mut SetupIo::default(), workdir, agent)
+}
+
+fn cleanup_amf_skills_with_io(io: &mut SetupIo, workdir: &Path, agent: &AgentKind) {
     let skills_dir = agent_skills_dir(workdir, agent);
     for (name, _) in AMF_SKILLS {
         if matches!(agent, AgentKind::Pi) && *name != "interact" {
             continue;
         }
-        let _ = std::fs::remove_dir_all(skills_dir.join(format!("amf-{name}")));
+        let _ = io.remove_dir_all(skills_dir.join(format!("amf-{name}")));
     }
 }
 
-fn cleanup_claude_notification_hooks(workdir: &Path) {
+fn cleanup_claude_notification_hooks_with_io(io: &mut SetupIo, workdir: &Path) {
     let claude_dir = workdir.join(".claude");
-    cleanup_claude_settings_file(
+    cleanup_claude_settings_file_with_io(
+        io,
         &claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON),
         Some(&claude_dir.join(CLAUDE_STATE_JSON)),
     );
-    cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
+    cleanup_claude_settings_file_with_io(io, &claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
-    let _ = std::fs::remove_file(claude_dir.join("latest-prompt.txt"));
-    let _ = std::fs::remove_dir_all(claude_dir.join("notifications"));
-    cleanup_amf_skills(workdir, &AgentKind::Claude);
+    let _ = io.remove_file(claude_dir.join("latest-prompt.txt"));
+    let _ = io.remove_dir_all(claude_dir.join("notifications"));
+    cleanup_amf_skills_with_io(io, workdir, &AgentKind::Claude);
 }
 
-fn cleanup_opencode_plugins(workdir: &Path) {
+fn cleanup_opencode_plugins_with_io(io: &mut SetupIo, workdir: &Path) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let themes_dir = workdir.join(".opencode").join("themes");
     let sidebar_dir = workdir.join(".amf").join("opencode-sidebar");
@@ -1315,7 +1369,7 @@ fn cleanup_opencode_plugins(workdir: &Path) {
         "feedback-prompt.sh",
         "explain.sh",
     ] {
-        let _ = std::fs::remove_file(plugins_dir.join(file));
+        let _ = io.remove_file(plugins_dir.join(file));
     }
 
     for theme in [
@@ -1324,43 +1378,45 @@ fn cleanup_opencode_plugins(workdir: &Path) {
         "amf-catppuccin.json",
         "amf-gruvbox.json",
     ] {
-        let _ = std::fs::remove_file(themes_dir.join(theme));
+        let _ = io.remove_file(themes_dir.join(theme));
     }
 
-    let _ = std::fs::remove_dir_all(sidebar_dir);
-    cleanup_amf_skills(workdir, &AgentKind::Opencode);
+    let _ = io.remove_dir_all(sidebar_dir);
+    cleanup_amf_skills_with_io(io, workdir, &AgentKind::Opencode);
 }
 
-fn cleanup_codex_notify_hook(workdir: &Path) {
+fn cleanup_codex_notify_hook_with_io(io: &mut SetupIo, workdir: &Path) {
     let codex_dir = workdir.join(".codex");
     let hook_path = codex_dir.join("amf-codex-notify.sh");
 
-    let _ = std::fs::remove_file(&hook_path);
+    let _ = io.remove_file(&hook_path);
     let project_config_path = codex_dir.join("config.toml");
     if project_config_path.exists() {
-        let mut config = std::fs::read_to_string(&project_config_path)
-            .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+        let mut config = io.toml(&project_config_path);
 
         if let Some(table) = config.as_table_mut() {
             table.remove("notify");
             if table.is_empty() {
-                let _ = std::fs::remove_file(&project_config_path);
+                let _ = io.remove_file(&project_config_path);
             } else if let Ok(rendered) = toml::to_string_pretty(&config) {
-                let _ = std::fs::write(&project_config_path, rendered + "\n");
+                let _ = io.write(&project_config_path, rendered + "\n");
             }
         }
     }
-    cleanup_amf_skills(workdir, &AgentKind::Codex);
+    cleanup_amf_skills_with_io(io, workdir, &AgentKind::Codex);
 }
 
+#[cfg(test)]
 pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
+    cleanup_agent_injected_files_with_io(&mut SetupIo::default(), workdir, agent)
+}
+
+fn cleanup_agent_injected_files_with_io(io: &mut SetupIo, workdir: &Path, agent: &AgentKind) {
     match agent {
-        AgentKind::Claude => cleanup_claude_notification_hooks(workdir),
-        AgentKind::Opencode => cleanup_opencode_plugins(workdir),
-        AgentKind::Codex => cleanup_codex_notify_hook(workdir),
-        AgentKind::Pi => cleanup_amf_skills(workdir, agent),
+        AgentKind::Claude => cleanup_claude_notification_hooks_with_io(io, workdir),
+        AgentKind::Opencode => cleanup_opencode_plugins_with_io(io, workdir),
+        AgentKind::Codex => cleanup_codex_notify_hook_with_io(io, workdir),
+        AgentKind::Pi => cleanup_amf_skills_with_io(io, workdir, agent),
     }
 }
 
@@ -1394,27 +1450,49 @@ pub fn ensure_notification_hooks(
     agent: &AgentKind,
     is_worktree: bool,
 ) {
+    ensure_notification_hooks_with_io(
+        &mut SetupIo::default(),
+        workdir,
+        repo,
+        mode,
+        agent,
+        is_worktree,
+    )
+}
+
+fn ensure_notification_hooks_with_io(
+    io: &mut SetupIo,
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+    agent: &AgentKind,
+    is_worktree: bool,
+) {
     // Feature creation / restart should not depend on startup having
     // already staged the helper scripts into the AMF runtime directory.
-    ensure_notify_scripts();
-    remove_old_diff_review_plugin(repo);
+    ensure_notify_scripts_with_io(io);
+    if io.is_checked() {
+        remove_old_diff_review_plugin_with_io(io, repo);
+    } else {
+        remove_old_diff_review_plugin(repo);
+    }
 
     if matches!(agent, AgentKind::Pi) {
         // Pi reads no Claude settings, so it gets no hooks. AMF still writes
         // its own review feedback and notification files under `.claude/`
         // whatever the harness, and a Pi feature has always had them ignored.
-        ensure_claude_runtime_ignores(workdir);
-        ensure_amf_skills(workdir, agent);
+        ensure_claude_runtime_ignores_with_io(io, workdir);
+        ensure_amf_skills_with_io(io, workdir, agent);
         return;
     }
     if matches!(agent, AgentKind::Opencode) {
-        ensure_opencode_plugins(workdir, mode);
-        ensure_amf_skills(workdir, agent);
+        ensure_opencode_plugins_with_io(io, workdir, mode);
+        ensure_amf_skills_with_io(io, workdir, agent);
         return;
     }
     if matches!(agent, AgentKind::Codex) {
-        ensure_codex_notify_hook(workdir);
-        ensure_amf_skills(workdir, agent);
+        ensure_codex_notify_hook_with_io(io, workdir);
+        ensure_amf_skills_with_io(io, workdir, agent);
         return;
     }
 
@@ -1424,7 +1502,7 @@ pub fn ensure_notification_hooks(
 
     let hooks_dir = crate::project::amf_claude_hooks_dir();
     let managed_commands = claude_managed_commands();
-    repair_inherited_repo_claude_hooks(workdir, repo, is_worktree, &managed_commands);
+    repair_inherited_repo_claude_hooks_with_io(io, workdir, repo, is_worktree, &managed_commands);
     let notify_path = hooks_dir.join("notify.sh");
     let clear_path = hooks_dir.join("clear-notify.sh");
     let save_prompt_path = hooks_dir.join("save-prompt.sh");
@@ -1441,7 +1519,7 @@ pub fn ensure_notification_hooks(
         None
     };
 
-    let mut settings = read_json_object(&settings_path);
+    let mut settings = read_json_object_with_io(io, &settings_path);
     remove_amf_claude_hooks(&mut settings, &managed_commands);
 
     // Stop: clear active thinking + write stop notification. The turn ending
@@ -1530,28 +1608,28 @@ pub fn ensure_notification_hooks(
         }),
     );
 
-    update_claude_permissions(&mut settings, &state_path, wants_diff_review);
+    update_claude_permissions_with_io(io, &mut settings, &state_path, wants_diff_review);
 
-    let _ = std::fs::create_dir_all(&claude_dir);
-    write_json_object(&settings_path, &settings);
-    cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
+    let _ = io.create_dir_all(&claude_dir);
+    write_json_object_with_io(io, &settings_path, &settings);
+    cleanup_claude_settings_file_with_io(io, &claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
-    ensure_claude_runtime_ignores(workdir);
-    ensure_amf_skills(workdir, agent);
+    ensure_claude_runtime_ignores_with_io(io, workdir);
+    ensure_amf_skills_with_io(io, workdir, agent);
 }
 
 /// Gitignore, within `.claude/`, the files AMF itself writes there.
-fn ensure_claude_runtime_ignores(workdir: &Path) {
+fn ensure_claude_runtime_ignores_with_io(io: &mut SetupIo, workdir: &Path) {
     let claude_dir = workdir.join(".claude");
-    let _ = std::fs::create_dir_all(&claude_dir);
+    let _ = io.create_dir_all(&claude_dir);
     let claude_gitignore = claude_dir.join(".gitignore");
-    ensure_gitignore_entry(&claude_gitignore, "notifications/");
-    ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
-    ensure_gitignore_entry(&claude_gitignore, "review-notes-archive.md");
-    ensure_gitignore_entry(&claude_gitignore, "final-review-feedback.md");
-    ensure_gitignore_entry(&claude_gitignore, "final-review-feedback-archive.md");
-    ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
-    ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "notifications/");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes.md");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes-archive.md");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "final-review-feedback.md");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "final-review-feedback-archive.md");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "latest-prompt.txt");
+    ensure_gitignore_entry_with_io(io, &claude_gitignore, "skills/amf-*/");
 }
 
 const PLAN_BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
@@ -1581,6 +1659,15 @@ pub fn strip_amf_managed_blocks(s: &str) -> String {
 }
 
 pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled: bool) {
+    ensure_plan_mode_instructions_with_io(&mut SetupIo::default(), workdir, agent, enabled)
+}
+
+fn ensure_plan_mode_instructions_with_io(
+    io: &mut SetupIo,
+    workdir: &Path,
+    agent: &AgentKind,
+    enabled: bool,
+) {
     const BEGIN: &str = PLAN_BEGIN;
     const END: &str = PLAN_END;
     const BLOCK: &str = concat!(
@@ -1602,14 +1689,17 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
         "AGENTS.md"
     });
     let instruction_file_existed = md_path.exists();
-    let current = std::fs::read_to_string(&md_path).unwrap_or_default();
+    let current = io.read_to_string(&md_path).unwrap_or_default();
+    if !io.can_write() {
+        return;
+    }
     let has_block = current.contains(BEGIN);
     let gitignore_path = workdir.join(".gitignore");
 
     if uses_claude_local && enabled {
-        ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
+        ensure_gitignore_entry_with_io(io, &gitignore_path, "CLAUDE.local.md");
     } else if enabled && !instruction_file_existed {
-        let ignore = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        let ignore = io.read_to_string(&gitignore_path).unwrap_or_default();
         if !ignore.lines().any(|line| line == "AGENTS.md") {
             let managed_ignore = format!("{AGENTS_IGNORE_BEGIN}\nAGENTS.md\n{AGENTS_IGNORE_END}\n");
             let content = if ignore.is_empty() {
@@ -1617,7 +1707,7 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
             } else {
                 format!("{}\n{}", ignore.trim_end(), managed_ignore)
             };
-            let _ = std::fs::write(&gitignore_path, content);
+            let _ = io.write(&gitignore_path, content);
         }
     }
 
@@ -1636,27 +1726,27 @@ pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled:
             format!("{}\n{}", unmanaged.trim_end(), BLOCK)
         };
         if content != current {
-            let _ = std::fs::write(&md_path, content);
+            let _ = io.write(&md_path, content);
         }
     } else {
         if has_block {
             let stripped = strip_between_markers(&current, BEGIN, END);
             if stripped.trim().is_empty() {
-                let _ = std::fs::remove_file(&md_path);
+                let _ = io.remove_file(&md_path);
             } else {
-                let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+                let _ = io.write(&md_path, format!("{}\n", stripped.trim_end()));
             }
         }
 
         if !uses_claude_local
-            && let Ok(ignore) = std::fs::read_to_string(&gitignore_path)
+            && let Ok(ignore) = io.read_to_string(&gitignore_path)
             && ignore.contains(AGENTS_IGNORE_BEGIN)
         {
             let stripped = strip_between_markers(&ignore, AGENTS_IGNORE_BEGIN, AGENTS_IGNORE_END);
             if stripped.trim().is_empty() {
-                let _ = std::fs::remove_file(&gitignore_path);
+                let _ = io.remove_file(&gitignore_path);
             } else {
-                let _ = std::fs::write(&gitignore_path, format!("{}\n", stripped.trim_end()));
+                let _ = io.write(&gitignore_path, format!("{}\n", stripped.trim_end()));
             }
         }
     }
@@ -1684,6 +1774,10 @@ pub fn strip_between_markers(s: &str, begin: &str, end: &str) -> String {
 }
 
 pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
+    ensure_review_claude_md_with_io(&mut SetupIo::default(), workdir, enabled)
+}
+
+fn ensure_review_claude_md_with_io(io: &mut SetupIo, workdir: &Path, enabled: bool) {
     const BEGIN: &str = REVIEW_BEGIN;
     const END: &str = REVIEW_END;
     const BLOCK: &str = concat!(
@@ -1717,19 +1811,25 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
     // CLAUDE.local.md is Claude Code's designated gitignored variant of
     // CLAUDE.md — it is read automatically but never committed.
     let md_path = workdir.join("CLAUDE.local.md");
-    let current = std::fs::read_to_string(&md_path).unwrap_or_default();
+    let current = io.read_to_string(&md_path).unwrap_or_default();
+    if !io.can_write() {
+        return;
+    }
     let has_block = current.contains(BEGIN);
 
     // Ensure CLAUDE.local.md is gitignored at the workdir root.
     let gitignore_path = workdir.join(".gitignore");
-    ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
+    ensure_gitignore_entry_with_io(io, &gitignore_path, "CLAUDE.local.md");
 
     if enabled {
         let claude_dir = workdir.join(".claude");
-        let _ = std::fs::create_dir_all(&claude_dir);
+        let _ = io.create_dir_all(&claude_dir);
         let claude_gitignore = claude_dir.join(".gitignore");
-        ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
-        ensure_gitignore_entry(&claude_gitignore, "review-notes-archive.md");
+        ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes.md");
+        ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes-archive.md");
+        // Capping old notes is housekeeping, so it stays best-effort even
+        // under checked I/O: a running feature is already stopped by the time
+        // a harness change gets here, and this must not abort the restart.
         if let Err(err) = super::review::archive_review_notes(workdir) {
             crate::debug::log_to_file(
                 crate::debug::LogLevel::Warn,
@@ -1752,16 +1852,77 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
             format!("{}\n{}", unmanaged.trim_end(), BLOCK)
         };
         if content != current {
-            let _ = std::fs::write(&md_path, content);
+            let _ = io.write(&md_path, content);
         }
     } else if has_block {
         let stripped = strip_between_markers(&current, BEGIN, END);
         if stripped.trim().is_empty() {
-            let _ = std::fs::remove_file(&md_path);
+            let _ = io.remove_file(&md_path);
         } else {
-            let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+            let _ = io.write(&md_path, format!("{}\n", stripped.trim_end()));
         }
     }
+}
+
+/// Read every user-authored input before stopping a feature. The checked writer
+/// reads again when applying changes, so a later read failure cannot overwrite
+/// the document with a default value.
+pub(super) fn preflight_harness_change_setup(
+    workdir: &Path,
+    repo: &Path,
+    old_agents: &[AgentKind],
+    next: &AgentKind,
+) -> anyhow::Result<()> {
+    let mut io = SetupIo::checked();
+    // Every replacement checks the repository legacy plugin settings. Only
+    // Claude conversions read its other settings, and only Codex reads TOML.
+    io.json(&repo.join(".claude").join(CLAUDE_SETTINGS_LOCAL_JSON));
+    if old_agents.contains(&AgentKind::Claude) || matches!(next, AgentKind::Claude) {
+        for base in [workdir, repo] {
+            for name in [
+                CLAUDE_SETTINGS_LOCAL_JSON,
+                CLAUDE_SETTINGS_JSON,
+                CLAUDE_STATE_JSON,
+            ] {
+                io.json(&base.join(".claude").join(name));
+            }
+        }
+    }
+    if old_agents.contains(&AgentKind::Codex) || matches!(next, AgentKind::Codex) {
+        io.toml(&workdir.join(".codex/config.toml"));
+    }
+    for name in [
+        "CLAUDE.local.md",
+        "AGENTS.md",
+        ".gitignore",
+        ".claude/.gitignore",
+    ] {
+        let _ = io.read_to_string(workdir.join(name));
+    }
+    io.finish()?;
+    if matches!(next, AgentKind::Codex) {
+        crate::codex_config::preflight_user_config_notify_hook()?;
+    }
+    Ok(())
+}
+
+pub(super) fn change_harness_setup(
+    feature: &Feature,
+    repo: &Path,
+    old_agents: &[AgentKind],
+    next: &AgentKind,
+) -> anyhow::Result<()> {
+    // Also protect a stopped feature and races between preflight and stop.
+    preflight_harness_change_setup(&feature.workdir, repo, old_agents, next)?;
+    let mut io = SetupIo::checked();
+    for old in old_agents {
+        cleanup_agent_injected_files_with_io(&mut io, &feature.workdir, old);
+        ensure_plan_mode_instructions_with_io(&mut io, &feature.workdir, old, false);
+    }
+    ensure_notification_hooks_with_io(&mut io, &feature.workdir, repo, &feature.mode, next, true);
+    ensure_review_claude_md_with_io(&mut io, &feature.workdir, feature.review);
+    ensure_plan_mode_instructions_with_io(&mut io, &feature.workdir, next, feature.plan_mode);
+    io.finish()
 }
 
 #[cfg(test)]
@@ -1792,6 +1953,33 @@ mod atomic_write_tests {
             temp_files_in(dir.path()).is_empty(),
             "no staging temp file should remain"
         );
+    }
+
+    #[test]
+    fn write_atomic_parallel_writers_own_their_staging_files() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.sh");
+        std::thread::scope(|scope| {
+            for index in 0..16 {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        write_atomic(path, &format!("writer-{index}\n"), Some(0o755)).unwrap();
+                    }
+                });
+            }
+        });
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("writer-") && content.lines().count() == 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
+        assert!(temp_files_in(dir.path()).is_empty());
     }
 
     #[test]

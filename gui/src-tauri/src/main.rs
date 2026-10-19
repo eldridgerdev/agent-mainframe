@@ -42,6 +42,9 @@ use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
+use agent_mainframe::gui_pr_workspace::{
+    self, AiAction as PrWorkspaceAiAction, PrWorkspaceAiView, PrWorkspaceFiles,
+};
 use agent_mainframe::gui_project_preference::{
     self, ProjectHarnessChoices, ProjectHarnessPreference,
 };
@@ -1518,6 +1521,114 @@ async fn pr_triage_act(
 }
 
 #[tauri::command]
+fn pr_workspace_begin(
+    state: State<'_, AppState>,
+    target: agent_mainframe::gui_contract::FeatureTarget,
+) -> Result<String, GuiError> {
+    gui_pr_workspace::begin(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_select_pr(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    number: u32,
+) -> Result<(), GuiError> {
+    gui_pr_workspace::select_pr(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        number,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_switch_ai(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    number: u32,
+) -> Result<(), GuiError> {
+    gui_pr_workspace::switch_to_ai(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        number,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_switch_threads(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<(), GuiError> {
+    gui_pr_workspace::switch_to_threads(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_close(state: State<'_, AppState>, workflow_id: String) -> Result<(), GuiError> {
+    gui_pr_workspace::close(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_ai_snapshot(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<PrWorkspaceAiView, GuiError> {
+    gui_pr_workspace::ai_snapshot(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
+fn pr_workspace_ai_act(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    action: PrWorkspaceAiAction,
+) -> Result<PrWorkspaceAiView, GuiError> {
+    gui_pr_workspace::ai_act(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        action,
+    )
+}
+
+#[tauri::command]
+async fn pr_workspace_files(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<PrWorkspaceFiles, GuiError> {
+    let (workdir, number, sha) = gui_pr_workspace::files_request(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )?;
+    let read_workdir = workdir.clone();
+    let patch = tauri::async_runtime::spawn_blocking(move || {
+        gui_pr_workspace::read_pr_diff(&read_workdir, number)
+    })
+    .await
+    .map_err(|e| GuiError::from(anyhow::anyhow!("PR diff read stopped: {e}")))?
+    .map_err(GuiError::from)?;
+    let (current_dir, current_number, current_sha) = gui_pr_workspace::files_request(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )?;
+    if current_dir != workdir || current_number != number || current_sha != sha {
+        return Err(GuiError::from(anyhow::anyhow!(
+            "The selected PR changed while files were loading; retry"
+        )));
+    }
+    gui_pr_workspace::files_result(&workflow_id, number, sha, patch)
+}
+
+#[tauri::command]
 async fn screenshots_list(
     state: State<'_, AppState>,
     selection: EvidenceSelection,
@@ -1900,6 +2011,14 @@ fn main() {
             pr_triage_begin,
             pr_triage_snapshot,
             pr_triage_act,
+            pr_workspace_begin,
+            pr_workspace_select_pr,
+            pr_workspace_switch_ai,
+            pr_workspace_switch_threads,
+            pr_workspace_close,
+            pr_workspace_ai_snapshot,
+            pr_workspace_ai_act,
+            pr_workspace_files,
             syntax_install_status,
             syntax_install,
             session_sidebar,

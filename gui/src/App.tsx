@@ -133,6 +133,7 @@ import {
 
 const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
+const PrWorkspacePanel = lazy(() => import("./PrWorkspacePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
@@ -286,6 +287,7 @@ export default function App() {
   const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
   const [prReviewProject, setPrReviewProject] = useState<string | null>(null);
   const [prTriageTarget, setPrTriageTarget] = useState<PrTriageTarget | null>(null);
+  const [prWorkspaceTarget, setPrWorkspaceTarget] = useState<FeatureTarget | null>(null);
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -1349,6 +1351,9 @@ export default function App() {
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
+      {prWorkspaceTarget && <Suspense fallback={<Modal label="Loading PR workspace" title="Loading PR workspace" size="workspace" onClose={() => setPrWorkspaceTarget(null)}><Spinner /></Modal>}>
+        <PrWorkspacePanel key={`${prWorkspaceTarget.project_id}:${prWorkspaceTarget.feature_id}`} target={prWorkspaceTarget} onClose={() => setPrWorkspaceTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
+      </Suspense>}
       {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
@@ -1436,6 +1441,7 @@ export default function App() {
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onScreenshots={(sessionId) => setScreenshotTarget({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onPrWorkspace={() => setPrWorkspaceTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
@@ -2011,6 +2017,7 @@ function FeatureView({
   pendingEdits,
   onSupervisedEdits,
   onPrTriage,
+  onPrWorkspace,
   onScreenshots,
   onReusePrompt,
   onReview,
@@ -2059,6 +2066,7 @@ function FeatureView({
   pendingEdits: number;
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
+  onPrWorkspace: () => void;
   onScreenshots: (sessionId: string | null) => void;
   /** The agent sidebar's prompt reuse: append to that session's draft. */
   onReusePrompt: (target: SessionTarget, prompt: string) => void;
@@ -2180,6 +2188,9 @@ function FeatureView({
             {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrWorkspace}>
+              <Icon name="file" size={12} /> PR Workspace (experimental)
             </button>}
             <Menu
               label="Plan"

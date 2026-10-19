@@ -33,7 +33,7 @@ function hunkClass(line: string) {
 
 /** PR Triage: browse a pull request's review feedback and act on it. Every
  * GitHub write and AI call is shown first and needs an explicit confirmation. */
-export default function PrTriagePanel({ target, onClose, onHandoff }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
+export default function PrTriagePanel({ target, onClose, onHandoff, embedded = false, embeddedView, onEmbeddedViewChange, onEmbeddedBusyChange, onRequestClose }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void; embedded?: boolean; embeddedView?: PrTriageView | null; onEmbeddedViewChange?: (view: PrTriageView) => void; onEmbeddedBusyChange?: (busy: boolean) => void; onRequestClose?: (requestClose: () => void) => void }) {
   const [view, setView] = useState<PrTriageView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,12 +52,20 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   const reveal = useCallback((node: HTMLElement | null) => { node?.scrollIntoView?.({ block: "nearest" }); }, []);
 
   useEffect(() => {
+    if (embedded && embeddedView) {
+      setView(embeddedView);
+      setBusy(false);
+      return;
+    }
+    if (embedded) return;
     let live = true;
     prTriageBegin(target).then((next) => { if (live) setView(next); })
       .catch((err) => { if (live) setError(asGuiError(err).message); })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
-  }, [target.project_id, target.feature_id]);
+  }, [target.project_id, target.feature_id, embedded, embeddedView?.workflow_id]);
+
+  useEffect(() => { if (embedded && view) onEmbeddedViewChange?.(view); }, [embedded, view, onEmbeddedViewChange]);
 
   // Background work (a comment fetch, a list read or an investigation) reports through polls.
   const waiting = view?.stage === "loading" || !!view?.picker?.loading || view?.review?.investigating != null;
@@ -133,10 +141,12 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
   const replyDirty = reply !== null && reply.text !== reply.seed;
   const dirty = !!fixPrompt && fixPrompt.text !== fixPrompt.seed || replyDirty || !!investigate?.text.trim();
   const locked = busy || !!view?.precall || !!view?.write_confirm || !!view?.fix_draft || review?.investigating != null;
-  const close = () => {
+  const close = useCallback(() => {
     if (dirty) setConfirmClose(true);
     else if (view) void act({ kind: "close" }); else onClose();
-  };
+  }, [dirty, view, act, onClose]);
+  useEffect(() => { if (embedded) onEmbeddedBusyChange?.(busy); }, [embedded, busy, onEmbeddedBusyChange]);
+  useEffect(() => { if (embedded) onRequestClose?.(close); }, [embedded, close, onRequestClose]);
 
   // The draft outlives the preview: it is cleared only once the call starts,
   // so a refused or failed confirmation never costs the user their text.
@@ -155,7 +165,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
 
   return (
     <>
-    <Modal label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
+    <Modal inline={embedded} label="PR Triage" size="xl" dismissable={!busy && !currentImage} onClose={close}
       title={view ? `PR Triage · ${view.feature_name}` : "PR Triage"}
       subtitle="Read review feedback, investigate it, prepare or send an agent fix, and reply. GitHub writes and AI calls always ask first.">
       {confirmClose && <div className="callout callout-warning" role="alert">
@@ -191,12 +201,13 @@ export default function PrTriagePanel({ target, onClose, onHandoff }: { target: 
         {view.picker.entries.length === 0 && !view.picker.error && !view.picker.loading && <p className="muted">No {view.picker.include_closed ? "" : "open "}pull requests. Open one by number instead.</p>}
         <ul className="pr-list">
           {view.picker.entries.map((entry) => <li key={entry.number}>
-            <button className="pr-entry" disabled={busy} onClick={() => void act({ kind: "open", number: entry.number })}
+            <button className={`pr-entry ${entry.selected_for_feature ? "pr-entry-feature" : ""}`} disabled={busy} onClick={() => void act({ kind: "open", number: entry.number })}
+              aria-current={entry.selected_for_feature ? "true" : undefined}
               aria-label={`Open PR #${entry.number} ${entry.title}`}>
               <span className="row"><strong>#{entry.number}</strong> <span className="truncate">{entry.title}</span></span>
               <span className="row small muted">
                 <span className="mono">{entry.head_ref}</span> · {entry.author}
-                {entry.number === view.picker!.branch_pr && <span className="tag tag-accent">This branch</span>}
+                {entry.selected_for_feature && <span className="tag tag-accent">Selected for this feature</span>}
                 {entry.mine && <span className="tag">Yours</span>}
                 {entry.is_draft && <span className="tag">Draft</span>}
                 {entry.state !== "OPEN" && <span className="tag">{entry.state.toLowerCase()}</span>}

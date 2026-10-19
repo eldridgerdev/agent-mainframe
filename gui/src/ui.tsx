@@ -116,6 +116,7 @@ export function Modal({
   hidden = false,
   headerActions,
   onSubmit,
+  inline = false,
 }: {
   label: string;
   title: ReactNode;
@@ -123,7 +124,7 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
-  size?: "sm" | "md" | "lg" | "xl";
+  size?: "sm" | "md" | "lg" | "xl" | "workspace";
   dismissable?: boolean;
   /** Keeps the modal mounted, with its state, while another dialog is in
    * front: not drawn, not in the accessibility tree, and deaf to Escape. */
@@ -131,15 +132,17 @@ export function Modal({
   headerActions?: ReactNode;
   /** Makes the body and footer one form, so Enter submits. */
   onSubmit?: () => void;
+  /** Render a modal's titled content inside an existing workspace pane. */
+  inline?: boolean;
 }) {
   useEffect(() => {
-    if (!dismissable || hidden) return;
+    if (!dismissable || hidden || inline) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissable, hidden, onClose]);
+  }, [dismissable, hidden, inline, onClose]);
 
   const content = (
     <>
@@ -147,6 +150,13 @@ export function Modal({
       {footer && <footer className="modal-footer">{footer}</footer>}
     </>
   );
+
+  if (inline) return <section className="modal-inline" aria-label={label}>
+    <header className="modal-header"><div><h2>{title}</h2>{subtitle && <p className="modal-subtitle">{subtitle}</p>}</div>
+      <div className="modal-header-actions">{headerActions}{dismissable && <button type="button" className="btn btn-icon btn-ghost" aria-label="Close" onClick={onClose}><Icon name="x" /></button>}</div>
+    </header>
+    {content}
+  </section>;
 
   return (
     <div

@@ -330,6 +330,8 @@ enum PendingWrite {
 #[derive(Debug, Clone, Serialize)]
 pub struct PrEntryView {
     pub number: u32,
+    /// The PR selected by the feature's current branch, when present.
+    pub selected_for_feature: bool,
     pub title: String,
     pub author: String,
     pub head_ref: String,
@@ -984,6 +986,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
                 .iter()
                 .map(|e| PrEntryView {
                     number: e.number,
+                    selected_for_feature: branch_pr == Some(e.number),
                     title: e.title.clone(),
                     author: e.author.clone(),
                     head_ref: e.head_ref.clone(),
@@ -3006,6 +3009,7 @@ mod tests {
         let picked = begin(&mut gui, target.clone()).unwrap();
         let picker = picked.picker.as_ref().unwrap();
         assert_eq!(picker.branch_pr, Some(7));
+        assert!(picker.entries[0].selected_for_feature);
         assert_eq!(
             picker.entries.len(),
             1,

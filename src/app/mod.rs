@@ -83,7 +83,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -3707,19 +3707,8 @@ impl App {
 
     pub(crate) fn check_harness_available(kind: &AgentKind) -> Result<()> {
         match kind {
-            AgentKind::Claude => crate::claude::ClaudeLauncher::check_available(),
             AgentKind::Codex => crate::codex::CodexLauncher::check_available(),
-            AgentKind::Opencode => {
-                let output = std::process::Command::new("opencode")
-                    .arg("--version")
-                    .output()
-                    .context("opencode CLI not found - is Opencode installed?")?;
-                if !output.status.success() {
-                    anyhow::bail!("opencode CLI returned an error");
-                }
-                Ok(())
-            }
-            AgentKind::Pi => crate::pi::PiLauncher::check_available(),
+            _ => crate::headless::HeadlessRunner::check_available(kind),
         }
     }
 

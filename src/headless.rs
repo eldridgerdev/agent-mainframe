@@ -357,6 +357,30 @@ const PI_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
     value: Some("json"),
 }];
 
+/// Describe a failed `<cli> --version` probe with the binary, exit status and
+/// whatever the CLI printed, so a broken install is diagnosable from the toast.
+pub(crate) fn version_check_error(
+    cli: &str,
+    binary: &str,
+    output: &std::process::Output,
+) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let printed = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    let detail: String = printed.lines().take(3).collect::<Vec<_>>().join(" | ");
+    let detail: String = detail.chars().take(300).collect();
+    anyhow::anyhow!(
+        "{cli} CLI failed its version check (`{binary} --version`, {}){}{}",
+        output.status,
+        if detail.is_empty() { "" } else { ": " },
+        detail
+    )
+}
+
 impl HeadlessRunner {
     pub fn check_available(harness: &AgentKind) -> Result<()> {
         match harness {
@@ -368,7 +392,7 @@ impl HeadlessRunner {
                     .output()
                     .context("opencode CLI not found - is Opencode installed?")?;
                 if !output.status.success() {
-                    anyhow::bail!("opencode CLI returned an error");
+                    return Err(version_check_error("opencode", "opencode", &output));
                 }
                 Ok(())
             }
@@ -2617,6 +2641,32 @@ mod tests {
             std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
             "review"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn version_check_error_names_binary_status_and_output() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"error: config is corrupt\nsecond line\n".to_vec(),
+        };
+        let message = version_check_error("claude", "/opt/claude", &output).to_string();
+        assert!(message.contains("/opt/claude --version"), "{message}");
+        assert!(message.contains("exit status: 1"), "{message}");
+        assert!(
+            message.contains("error: config is corrupt | second line"),
+            "{message}"
+        );
+
+        let silent = std::process::Output {
+            status: std::process::ExitStatus::from_raw(9),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let message = version_check_error("pi", "pi", &silent).to_string();
+        assert!(message.ends_with(')'), "{message}");
     }
 
     #[test]

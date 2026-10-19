@@ -95,6 +95,7 @@ import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } fro
 import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
 import type { PrTriageTarget } from "./prTriageApi";
+import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
 import TodoNewFeatureForm from "./TodoNewFeatureForm";
 export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
@@ -133,6 +134,7 @@ import {
 
 const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
+const PrWorkspacePanel = lazy(() => import("./PrWorkspacePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
@@ -286,6 +288,9 @@ export default function App() {
   const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
   const [prReviewProject, setPrReviewProject] = useState<string | null>(null);
   const [prTriageTarget, setPrTriageTarget] = useState<PrTriageTarget | null>(null);
+  const [prWorkspaceTarget, setPrWorkspaceTarget] = useState<FeatureTarget | null>(null);
+  const [prWorkspaceVisible, setPrWorkspaceVisible] = useState(false);
+  const [prWorkspaceStatus, setPrWorkspaceStatus] = useState<PrWorkspaceStatus>({ running: false, prNumber: null, completed: false });
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -358,6 +363,11 @@ export default function App() {
     : undefined;
   const selectedFeature: Feature | undefined = view?.kind === "feature"
     ? selectedProject?.features.find((feature) => feature.id === view.featureId)
+    : undefined;
+  const showPrWorkspace = !!prWorkspaceTarget && prWorkspaceVisible && view?.kind === "feature"
+    && view.projectId === prWorkspaceTarget.project_id && view.featureId === prWorkspaceTarget.feature_id;
+  const prWorkspaceFeatureName = prWorkspaceTarget
+    ? projects.find((project) => project.id === prWorkspaceTarget.project_id)?.features.find((feature) => feature.id === prWorkspaceTarget.feature_id)?.name
     : undefined;
 
   // Land on the first project, and fall back gracefully when the selected
@@ -1364,6 +1374,22 @@ export default function App() {
       )}
 
       <main className="main">
+        {prWorkspaceTarget && !showPrWorkspace && <section className={`pr-workspace-background-banner${prWorkspaceStatus.running ? " is-running" : ""}`} aria-live="polite">
+          {prWorkspaceStatus.running ? <Spinner /> : <span className="pr-workspace-background-check">{prWorkspaceStatus.completed ? "✓" : "↗"}</span>}
+          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR Workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setView({ kind: "feature", projectId: prWorkspaceTarget.project_id, featureId: prWorkspaceTarget.feature_id }); setPrWorkspaceVisible(true); }}>Return to PR workspace</button>
+        </section>}
+        {prWorkspaceTarget && <div className="pr-workspace-host" hidden={!showPrWorkspace}>
+          <Suspense fallback={<div className="pr-workspace-loading"><Spinner /><span>Opening PR workspace…</span></div>}>
+            <PrWorkspacePanel key={`${prWorkspaceTarget.project_id}:${prWorkspaceTarget.feature_id}`} target={prWorkspaceTarget}
+              onClose={() => { setPrWorkspaceTarget(null); setPrWorkspaceVisible(false); setPrWorkspaceStatus({ running: false, prNumber: null, completed: false }); }}
+              onReturnToFeature={() => setPrWorkspaceVisible(false)} onStatusChange={setPrWorkspaceStatus}
+              onHandoff={(handoff) => {
+                setPrWorkspaceVisible(false);
+                openSession(handoff.target, handoff.draft_prompt);
+              }} />
+          </Suspense>
+        </div>}
         {view?.kind === "todos" && (
           <div className="page">
             <PageHeader
@@ -1414,7 +1440,7 @@ export default function App() {
           />
         )}
 
-        {view?.kind === "feature" && selectedProject && selectedFeature && (
+        {view?.kind === "feature" && selectedProject && selectedFeature && !showPrWorkspace && (
           <FeatureView
             key={`${selectedFeature.id}:${harnessEpochs[selectedFeature.id] ?? 0}`}
             project={selectedProject}
@@ -1436,6 +1462,7 @@ export default function App() {
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onScreenshots={(sessionId) => setScreenshotTarget({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onPrWorkspace={() => { const target = { project_id: selectedProject.id, feature_id: selectedFeature.id }; setPrWorkspaceTarget(target); setPrWorkspaceVisible(true); }}
             onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
@@ -2011,6 +2038,7 @@ function FeatureView({
   pendingEdits,
   onSupervisedEdits,
   onPrTriage,
+  onPrWorkspace,
   onScreenshots,
   onReusePrompt,
   onReview,
@@ -2059,6 +2087,7 @@ function FeatureView({
   pendingEdits: number;
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
+  onPrWorkspace: () => void;
   onScreenshots: (sessionId: string | null) => void;
   /** The agent sidebar's prompt reuse: append to that session's draft. */
   onReusePrompt: (target: SessionTarget, prompt: string) => void;
@@ -2180,6 +2209,9 @@ function FeatureView({
             {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrWorkspace}>
+              <Icon name="file" size={12} /> PR Workspace (experimental)
             </button>}
             <Menu
               label="Plan"

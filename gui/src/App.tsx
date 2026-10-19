@@ -28,6 +28,7 @@ import {
   ModeSlug,
   PlanAction,
   PlanInput,
+  PlanHandoff,
   PlanStatus,
   Project,
   SavedAgentSession,
@@ -91,6 +92,8 @@ import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
 import type { PrTriageTarget } from "./prTriageApi";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import TodoNewFeatureForm from "./TodoNewFeatureForm";
+export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
@@ -321,7 +324,18 @@ export default function App() {
   });
   const plan = useQuery({
     queryKey: PLAN_KEY,
-    queryFn: planSnapshot,
+    queryFn: async () => {
+      const wasActive = !!queryClient.getQueryData<PlanStatus>(PLAN_KEY)?.active;
+      const status = await planSnapshot();
+      // A Quick Plan "direct" outcome closes the interview and starts its
+      // agent inside this poll rather than in an action. Apply the one-shot
+      // handoff here, so a poll cancelled by a later action still delivers it.
+      if (status.handoff) applyPlanHandoff(status.handoff);
+      if (wasActive && !status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
+      return status;
+    },
     refetchInterval: planBusy ? false : 750,
   });
 
@@ -733,12 +747,14 @@ export default function App() {
     } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  function applyPlanHandoff(handoff: PlanHandoff) {
+    openSession(handoff.target, handoff.draft_prompt);
+    void queryClient.invalidateQueries({ queryKey: ["todos"] });
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
-    if (status.handoff) {
-      openSession(status.handoff.target, status.handoff.draft_prompt);
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
-    }
+    if (status.handoff) applyPlanHandoff(status.handoff);
     if (!status.active && status.message) {
       pushToast({ tone: "info", title: "Plan", message: status.message });
     }
@@ -1561,12 +1577,12 @@ export default function App() {
           modes={modes.data ?? []}
           pending={planBusy || todoNewBusy || pendingTodoNewApproval !== null}
           onCancel={() => setPendingTodoNew(null)}
-          onSubmit={(request) => {
-            if (pendingTodoNew.kind === "plan") {
-              void runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request))
+          onSubmit={(request, planKind) => {
+            if (planKind !== "none") {
+              return runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request, planKind === "quick"))
                 .then((started) => { if (started) setPendingTodoNew(null); });
             } else {
-              void launchTodoNewFeature(pendingTodoNew.todoId, request, false);
+              return launchTodoNewFeature(pendingTodoNew.todoId, request, false);
             }
           }}
         />
@@ -2581,115 +2597,6 @@ export function CreateFeatureForm({
           <Switch checked={chrome} onChange={setChrome} label="Chrome" />
         </div>
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
-        <WorktreeHookField hook={hook} disabled={pending} />
-      </div>
-    </Modal>
-  );
-}
-
-export function TodoNewFeatureForm({
-  kind,
-  todoTitle,
-  projects,
-  agents,
-  modes,
-  pending,
-  onCancel,
-  onSubmit,
-}: {
-  kind: "plan" | "launch";
-  todoTitle: string;
-  projects: Project[];
-  agents: { slug: AgentSlug; display_name: string }[];
-  modes: { slug: ModeSlug; display_name: string }[];
-  pending: boolean;
-  onCancel: () => void;
-  onSubmit: (request: CreateFeatureRequest) => void;
-}) {
-  const suggested = todoTitle.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40) || "todo-work";
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
-  const [branch, setBranch] = useState(suggested);
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
-  const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
-  const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-  // Each project can narrow the list, so it follows the chosen project.
-  const offered = useOfferedAgents(project?.id ?? null, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
-    ? agent : (offered[0]?.slug ?? agent);
-  const selectedMode = modes.some((candidate) => candidate.slug === mode)
-    ? mode : (modes[0]?.slug ?? mode);
-  const hook = useWorktreeHookChoice(project?.id, !!project);
-
-  return (
-    <Modal
-      label={kind === "plan" ? "Plan TODO in a new feature" : "Start TODO in a new feature"}
-      title={kind === "plan" ? "Plan in a new feature" : "Start in a new feature"}
-      subtitle={todoTitle}
-      onClose={onCancel}
-      dismissable={!pending}
-      onSubmit={() => {
-        if (pending || !project || !branch.trim() || !hook.ready) return;
-        onSubmit({
-          project_name: project.name,
-          branch: branch.trim(),
-          agent: selectedAgent,
-          mode: selectedMode,
-          review: false,
-          plan_mode: kind === "plan",
-          create_terminal: false,
-          use_worktree: true,
-          enable_chrome: false,
-          hook_choice: hook.choice || null,
-          dry_run: false,
-        });
-      }}
-      footer={
-        <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim() || !hook.ready}>
-            {pending && <Spinner />}
-            {kind === "plan" ? "Start plan" : "Create and start"}
-          </button>
-        </>
-      }
-    >
-      <p className="muted small modal-lead">
-        {kind === "plan"
-          ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
-          : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}
-      </p>
-      <div className="form-stack">
-        {projects.length > 1 && (
-          <Field label="Project">
-            <select value={project?.id ?? ""} onChange={(event) => setProjectId(event.target.value)}>
-              {projects.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <Field label="Branch">
-          <input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Harness">
-            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {offered.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Mode">
-            <select value={selectedMode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-              {modes.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
         <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>

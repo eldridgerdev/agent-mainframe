@@ -13,7 +13,7 @@ const harness = (slug: HarnessInfo["slug"], display_name: string): HarnessInfo =
 const supported = [harness("claude", "Claude"), harness("opencode", "OpenCode"), harness("codex", "Codex"), harness("pi", "Pi")];
 const modes = [{ slug: "vibe" as const, display_name: "Vibe", description: "" }];
 const projects: Project[] = ["one", "two"].map((id) => ({
-  id, name: id, repo: `/tmp/${id}`, is_git: false, features: [],
+  id, name: id, repo: `/tmp/${id}`, is_git: true, features: [],
 }));
 const clients: QueryClient[] = [];
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()); vi.resetAllMocks(); });
@@ -22,7 +22,7 @@ afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear(
 function mount(element: React.ReactElement, allowed: (projectId: string | null) => HarnessInfo[]) {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "allowed_harnesses") return allowed((args as { projectId: string | null }).projectId);
-    return null;
+    return command === "feature_presets_choices" ? [] : null;
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   clients.push(client);
@@ -55,7 +55,7 @@ it("follows the chosen project's own list when starting a TODO in a new feature"
   const button = screen.getByRole("button", { name: "Create and start" }) as HTMLButtonElement;
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", agent: "pi" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", agent: "pi" }), "none");
 });
 
 it("keeps every supported harness on offer when the allowed list cannot be read", async () => {

@@ -1059,11 +1059,13 @@ fn plan_begin_todo_new(
     state: State<AppState>,
     todo_id: String,
     request: CreateFeatureRequest,
+    quick: Option<bool>,
 ) -> Result<PlanStatus, GuiError> {
     gui_plans::begin_todo_in_new_feature(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &todo_id,
         &request,
+        quick.unwrap_or(false),
     )
 }
 

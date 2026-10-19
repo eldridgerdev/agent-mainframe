@@ -113,6 +113,20 @@ it("never submits an unavailable preset harness or an unsupported mode", async (
   change("Mode", "vibe"); await ready(); click("Create and start");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "vibe" }), "none");
 });
+it("leaves the mode unchanged and says why when a preset's mode is not listed", async () => {
+  const { onSubmit } = mount({}, [{ ...preset, mode: "retired" as FeaturePreset["mode"], plan_mode: false },
+    { ...preset, name: "Both", agent: "pi", mode: "retired" as FeaturePreset["mode"], plan_mode: false }]);
+  await ready(); change("Mode", "supervibe"); change("Feature preset", "0");
+  expect(screen.getByText(/Ship uses the retired mode, which is not available here/)).toBeTruthy();
+  expect(screen.getByLabelText("Mode")).toHaveProperty("value", "supervibe");
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
+  change("Feature preset", "1");
+  expect(screen.getByText(/Both uses pi, which is not offered.*It also uses the retired mode/)).toBeTruthy();
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "pi");
+  expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
+  change("Harness", "codex"); await ready(); click("Create and start");
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex", mode: "supervibe", review: true }), "none");
+});
 it("loads the chosen project's presets without discarding its edited branch", async () => {
   mount({ projects }); await ready();
   vi.mocked(invoke).mockImplementation(async (command) => command === "project_harness_choices" ? creationChoices(["claude"]) : command === "allowed_harnesses" ? agents.slice(0, 1)
@@ -173,13 +187,4 @@ it("shows no harness loading state when no destination project is chosen", async
   expect(screen.getByRole("option", { name: "Choose a project first…" })).toBeTruthy();
   expect(screen.getByText(/Choose an available git project/)).toBeTruthy();
   expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("project_harness_choices", expect.anything());
-});
-it("explains and blocks a preset mode this workspace does not offer", async () => {
-  const { onSubmit } = mount({}, [{ ...preset, agent: "claude", mode: "future-mode" as FeaturePreset["mode"], plan_mode: false }]);
-  await ready(); change("Feature preset", "0");
-  expect(screen.getByText(/The mode future-mode is not available/)).toBeTruthy();
-  expect(screen.getByLabelText("Mode")).toHaveProperty("value", "future-mode");
-  expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
-  change("Mode", "vibe"); await ready(); click("Create and start");
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mode: "vibe" }), "none");
 });

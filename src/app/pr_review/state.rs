@@ -79,6 +79,9 @@ pub struct PrReviewListState {
     pub load: PrReviewListLoad,
     /// Highlighted row, meaningful only while `load` is `Loaded`.
     pub selected: usize,
+    /// Branch of the feature the picker was opened from. Kept independently
+    /// of the cursor so its PR stays marked when the reviewer browses away.
+    pub feature_branch: Option<String>,
     /// True while a reload (`r`) of an already-loaded list is in flight. The
     /// current rows stay on screen, and stay navigable, until it lands, so the
     /// highlight can follow its PR into the new list.
@@ -97,6 +100,20 @@ pub struct PrReviewListState {
     pub open_error: Option<String>,
     /// Saved drafts in this repository, by PR number, for the row badges.
     pub drafts: std::collections::HashMap<u32, PrReviewDraftBadge>,
+}
+
+impl PrReviewListState {
+    /// Only a unique branch match identifies the feature's PR: two forks can
+    /// have open PRs with the same head branch name.
+    pub(crate) fn feature_pr_number(&self) -> Option<u32> {
+        let branch = self.feature_branch.as_deref().filter(|s| !s.is_empty())?;
+        let PrReviewListLoad::Loaded(prs) = &self.load else {
+            return None;
+        };
+        let mut matches = prs.iter().filter(|pr| pr.head_ref == branch);
+        let number = matches.next()?.number;
+        matches.next().is_none().then_some(number)
+    }
 }
 
 /// What a row shows about the draft saved for its PR.

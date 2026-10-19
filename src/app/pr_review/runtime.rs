@@ -407,12 +407,20 @@ pub(crate) struct AiReviewRun {
     receiver: Option<Receiver<AiReviewProgress>>,
     origin: Option<AiReviewState>,
     progress: Option<AiReviewRunProgress>,
+    cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl AiReviewRun {
-    pub(crate) fn begin(&mut self, receiver: Receiver<AiReviewProgress>, origin: AiReviewState) {
+    pub(crate) fn begin(
+        &mut self,
+        receiver: Receiver<AiReviewProgress>,
+        origin: AiReviewState,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.cancelled = Some(cancelled.clone());
         self.receiver = Some(receiver);
         self.origin = Some(origin);
+        cancelled
     }
 
     pub(crate) fn is_pending(&self) -> bool {
@@ -450,7 +458,15 @@ impl AiReviewRun {
     pub(crate) fn finish(&mut self) -> Option<AiReviewState> {
         self.receiver = None;
         self.progress = None;
+        self.cancelled = None;
         self.origin.take()
+    }
+
+    pub(crate) fn cancel(&mut self) -> Option<AiReviewState> {
+        if let Some(cancelled) = &self.cancelled {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.finish()
     }
 
     // A few existing regressions intentionally seed incomplete/disconnected

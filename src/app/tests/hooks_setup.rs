@@ -1984,6 +1984,10 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
     );
     store.projects[0].features[0].mode = VibeMode::Vibe;
     let mut tmux = MockTmuxOps::new();
+    tmux.expect_check_harness_available()
+        .withf(|agent| *agent == AgentKind::Codex)
+        .times(1)
+        .returning(|_| Ok(()));
     tmux.expect_session_exists()
         .withf(|session| session == "amf-my-feat")
         .times(1)

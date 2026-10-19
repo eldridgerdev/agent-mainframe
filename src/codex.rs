@@ -95,7 +95,9 @@ impl CodexLauncher {
             .context("codex CLI not found - is Codex installed?")?;
 
         if !output.status.success() {
-            anyhow::bail!("codex CLI returned an error");
+            return Err(crate::headless::version_check_error(
+                "codex", "codex", &output,
+            ));
         }
         Ok(())
     }

@@ -89,7 +89,6 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
       {presets.isError && <p role="alert" className="callout callout-danger">Could not load presets: {asGuiError(presets.error).message} <button type="button" disabled={busy || presets.isFetching} onClick={() => void presets.refetch()}>Retry presets</button></p>}
       {notice && <p role="alert" className="callout callout-warning">{notice}</p>}
       {remoteControl && <p role="alert" className="callout callout-warning">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
-      {!selectedMode && modes.length > 0 && <p role="alert" className="callout callout-warning">The mode {mode} is not available in this workspace. Choose another mode.</p>}
       {unsupported && <p role="alert" className="callout callout-warning">{selectedMode?.display_name} is unavailable with {offered.find((candidate) => candidate.slug === selectedAgent)?.display_name ?? selectedAgent}. Choose another mode or harness.</p>}
       <fieldset disabled={busy} className="form-stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {(projects.length > 1 || !project) && <Field label="Project"><select value={projectId} disabled={busy || !projects.length} onChange={(event) => { setProjectId(event.target.value); setSelection(null); setNotice(null); }}>
@@ -103,9 +102,15 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
               const index = event.target.value; setSelection({ projectId, index }); setNotice(null);
               if (!index) return; // Custom settings retain every field, including remote intent.
               const preset = presets.data?.[Number(index)]; if (!preset) return;
+              // The preset's harness is kept even when unavailable, so submit
+              // blocks until one is chosen; an unlisted mode is left unchanged.
+              const skipped: string[] = [];
               setAgent(preset.agent);
-              if (!harness.offered.includes(preset.agent)) setNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
-              setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
+              if (!harness.offered.includes(preset.agent)) skipped.push(`uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
+              if (modes.some((candidate) => candidate.slug === preset.mode)) setMode(preset.mode);
+              else skipped.push(`uses the ${preset.mode} mode, which is not available here. The mode was left unchanged.`);
+              if (skipped.length) setNotice(`${preset.name} ${skipped.join(" It also ")}`);
+              setReview(preset.review); setChrome(preset.enable_chrome);
               setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
               const prefix = preset.branch_prefix?.trim() || null;
               setBranch((current) => {
@@ -122,7 +127,6 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
         <div className="form-row">
           <CreationHarnessField harness={harness} supported={agents} disabled={busy} />
           <Field label="Mode"><select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-            {!selectedMode && <option value={mode} disabled>{mode} — unavailable</option>}
             {modes.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>)}
           </select></Field>
         </div>

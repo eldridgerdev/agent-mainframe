@@ -2004,7 +2004,12 @@ fn dir_row_summary(
     spans
 }
 
-fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+pub(super) fn draw_file_list(
+    frame: &mut Frame,
+    area: Rect,
+    state: &DiffViewerState,
+    theme: &Theme,
+) {
     let visible = state.visible_file_indices();
     let rows = state.file_tree_rows();
     let changeset_has_tests = changeset_has_test_changes(&state.files);
@@ -2153,7 +2158,12 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
+pub(super) fn draw_patch(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut DiffViewerState,
+    theme: &Theme,
+) {
     let border = if state.focus == DiffViewerFocus::Patch {
         theme.warning.to_color()
     } else {

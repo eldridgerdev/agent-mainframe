@@ -132,6 +132,18 @@ pub struct PromptTemplate {
 }
 
 impl PromptTemplate {
+    /// The TUI and desktop duplicate into User with fresh identity/dates while
+    /// retaining the complete authored template, including unused definitions.
+    pub(crate) fn user_copy(&self) -> Self {
+        let mut copy = self.clone();
+        let now = Utc::now();
+        copy.id = new_template_id();
+        copy.name = format!("{} (copy)", self.name);
+        copy.created_at = now;
+        copy.updated_at = now;
+        copy
+    }
+
     /// Build a new user template with a fresh id and timestamps.
     pub fn new(name: String, body: String) -> Self {
         let now = Utc::now();
@@ -146,6 +158,19 @@ impl PromptTemplate {
             updated_at: now,
         }
     }
+}
+
+/// The existing editor's normalization and validation, without presentation.
+pub(crate) fn validate_user_draft(
+    name: &str,
+    body: &str,
+    tags: &str,
+) -> anyhow::Result<(String, String, Vec<String>)> {
+    let name = name.trim().to_string();
+    let body = body.trim().to_string();
+    anyhow::ensure!(!name.is_empty(), "Name cannot be empty");
+    anyhow::ensure!(!body.is_empty(), "Prompt body cannot be empty");
+    Ok((name, body, parse_tags(tags)))
 }
 
 /// Substitute `{{key}}` tokens in `body` with the provided values.

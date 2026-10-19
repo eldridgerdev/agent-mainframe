@@ -145,6 +145,60 @@ fn prompt_library_resolve(
 }
 
 #[tauri::command]
+fn prompt_user_edit(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<gui_prompts::authoring::UserPromptEditor, GuiError> {
+    gui_prompts::authoring::edit(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &scope,
+        &entry_key,
+    )
+}
+#[tauri::command]
+fn prompt_user_reload(
+    state: State<AppState>,
+    id: String,
+) -> Result<gui_prompts::authoring::UserPromptEditor, GuiError> {
+    gui_prompts::authoring::reload(&state.0.lock().expect("gui handle mutex poisoned"), &id)
+}
+#[tauri::command]
+fn prompt_user_save(
+    state: State<AppState>,
+    draft: gui_prompts::authoring::UserPromptDraft,
+) -> Result<String, GuiError> {
+    gui_prompts::authoring::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        draft,
+    )
+}
+#[tauri::command]
+fn prompt_user_delete(
+    state: State<AppState>,
+    id: String,
+    revision: String,
+) -> Result<(), GuiError> {
+    gui_prompts::authoring::delete(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &id,
+        &revision,
+    )
+}
+#[tauri::command]
+fn prompt_user_duplicate(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<String, GuiError> {
+    gui_prompts::authoring::duplicate(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &scope,
+        &entry_key,
+    )
+}
+
+#[tauri::command]
 fn prompt_overrides_load(
     state: State<AppState>,
     context: OverrideContext,
@@ -707,6 +761,30 @@ fn set_feature_vibe_mode(
     gui.set_feature_vibe_mode(target, mode)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
     Ok(())
+}
+
+#[tauri::command]
+fn feature_harness_load(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<agent_mainframe::gui_harness_change::HarnessChangeView, GuiError> {
+    agent_mainframe::gui_harness_change::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+fn feature_harness_apply(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    request: agent_mainframe::gui_harness_change::HarnessChangeRequest,
+) -> Result<(), GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let result = agent_mainframe::gui_harness_change::apply(&mut gui, request);
+    // Shutdown, hooks or restart may have partially completed even on error.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    result
 }
 
 #[derive(Serialize)]
@@ -1733,6 +1811,11 @@ fn main() {
             screenshots_cleanup,
             prompt_library_load,
             prompt_library_resolve,
+            prompt_user_edit,
+            prompt_user_reload,
+            prompt_user_save,
+            prompt_user_delete,
+            prompt_user_duplicate,
             prompt_overrides_load,
             prompt_overrides_save,
             prompt_overrides_clear,
@@ -1758,6 +1841,8 @@ fn main() {
             remove_session,
             delete_feature,
             set_feature_vibe_mode,
+            feature_harness_load,
+            feature_harness_apply,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,

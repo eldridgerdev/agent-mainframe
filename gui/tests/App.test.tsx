@@ -187,13 +187,14 @@ async function openFeature(
   stoppedSessionIds: string[] = [],
   status: Feature["status"] = "idle",
   isGit = false,
+  isWorktree = false,
 ) {
   const snapshot: WorkspaceSnapshot = {
     projects: [{
       id: "project", name: "demo", repo: "/demo", is_git: isGit,
       features: [{
         id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo",
-        is_worktree: false, status, agent: "claude", mode: "vibeless", sessions,
+        is_worktree: isWorktree, status, agent: "claude", mode: "vibeless", sessions,
       }],
     }],
     snapshot_at: "2026-09-26T00:00:00Z",
@@ -1371,4 +1372,64 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Context settings" })).toBeNull());
   expect(draftInput().value).toBe("Unsent context draft");
   expect(promptCalls()).toHaveLength(0); client.clear();
+});
+
+it("saves an unsent composer as a User template while retaining the mounted draft through failure, cancellation and success", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let fails = true;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_save") return fails ? Promise.reject({ kind: "operation_failed", message: "Database busy" }) : Promise.resolve("new-user-template");
+    return original(command, args, options);
+  });
+  const text = "Keep this unsent 世界\n{{area}}";
+  const composer = draftInput();
+  fireEvent.change(composer, { target: { value: text } });
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  const editor = screen.getByRole("dialog", { name: "User prompt editor" });
+  fireEvent.change(within(editor).getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fireEvent.change(within(editor).getByRole("textbox", { name: /^Template body/ }), { target: { value: "Edited template only" } });
+  fireEvent.click(within(editor).getByRole("button", { name: "Save User template" }));
+  await screen.findByText("Database busy");
+  expect(composer.value).toBe(text);
+  fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull();
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe(text);
+  fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fails = false;
+  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull());
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_save").at(-1)?.[1]).toEqual({ draft: { id: null, revision: null, name: "Saved composer", body: text, tags: "" } });
+  client.clear();
+});
+
+it("blocks changing harness for an unsent draft in another agent tab and preserves it on Cancel", async () => {
+  const client = await openFeature([session("Agent", "claude"), session("Other", "claude")], [], "idle", true, true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "feature_harness_load" ? Promise.resolve({
+    target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", current_agent: "claude", running: true, agent_rows: 2, revision: "observed",
+    choices: [{ agent: "claude", name: "Claude", unavailable: null }, { agent: "opencode", name: "OpenCode", unavailable: null }],
+  }) : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent draft" } });
+  fireEvent.click(screen.getByRole("tab", { name: "Other" }));
+  expect(draftInput().value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Change harness…" }));
+  await screen.findByLabelText("Replacement harness");
+  fireEvent.change(screen.getByLabelText("Replacement harness"), { target: { value: "opencode" } });
+  fireEvent.click(screen.getByLabelText("I understand and confirm this harness change"));
+  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(within(screen.getByRole("dialog", { name: "Change feature harness" })).getByRole("alert").textContent).toContain("unsent agent drafts");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+  expect(draftInput().value).toBe("Keep this unsent draft");
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "feature_harness_apply")).toBe(false);
+  client.clear();
 });

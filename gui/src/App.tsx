@@ -28,6 +28,7 @@ import {
   ModeSlug,
   PlanAction,
   PlanInput,
+  PlanHandoff,
   PlanStatus,
   Project,
   SavedAgentSession,
@@ -71,10 +72,12 @@ import {
   todoLaunchNewFeature,
 } from "./api";
 import ThemePicker, { useGuiTheme } from "./ThemePicker";
+import FeatureHarnessDialog from "./FeatureHarnessDialog";
 import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
 import ProjectsSidebar from "./ProjectsSidebar";
+import UserPromptEditor from "./UserPromptEditor";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
@@ -190,6 +193,7 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
+  const [savePromptBody, setSavePromptBody] = useState<string | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [promptOverrides, setPromptOverrides] = useState<{
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
@@ -202,6 +206,8 @@ export default function App() {
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
+  const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
+  const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
@@ -318,7 +324,18 @@ export default function App() {
   });
   const plan = useQuery({
     queryKey: PLAN_KEY,
-    queryFn: planSnapshot,
+    queryFn: async () => {
+      const wasActive = !!queryClient.getQueryData<PlanStatus>(PLAN_KEY)?.active;
+      const status = await planSnapshot();
+      // A Quick Plan "direct" outcome closes the interview and starts its
+      // agent inside this poll rather than in an action. Apply the one-shot
+      // handoff here, so a poll cancelled by a later action still delivers it.
+      if (status.handoff) applyPlanHandoff(status.handoff);
+      if (wasActive && !status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
+      return status;
+    },
     refetchInterval: planBusy ? false : 750,
   });
 
@@ -730,12 +747,14 @@ export default function App() {
     } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  function applyPlanHandoff(handoff: PlanHandoff) {
+    openSession(handoff.target, handoff.draft_prompt);
+    void queryClient.invalidateQueries({ queryKey: ["todos"] });
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
-    if (status.handoff) {
-      openSession(status.handoff.target, status.handoff.draft_prompt);
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
-    }
+    if (status.handoff) applyPlanHandoff(status.handoff);
     if (!status.active && status.message) {
       pushToast({ tone: "info", title: "Plan", message: status.message });
     }
@@ -1397,7 +1416,7 @@ export default function App() {
 
         {view?.kind === "feature" && selectedProject && selectedFeature && (
           <FeatureView
-            key={selectedFeature.id}
+            key={`${selectedFeature.id}:${harnessEpochs[selectedFeature.id] ?? 0}`}
             project={selectedProject}
             feature={selectedFeature}
             harnessName={harnessName}
@@ -1458,6 +1477,7 @@ export default function App() {
                 workspace.data?.stopped_session_ids ?? [],
               ),
             })}
+            onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -1475,6 +1495,7 @@ export default function App() {
             launchedMode={selectedFeature.status === "stopped" ? undefined : launchedModes[selectedFeature.id]}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
+            onSavePrompt={setSavePromptBody}
             drafts={drafts}
             onDraftChange={changeDraft}
             sendingPrompts={sendingPrompts}
@@ -1696,6 +1717,24 @@ export default function App() {
         />
       )}
 
+      {harnessTarget && <FeatureHarnessDialog
+        key={`${harnessTarget.project_id}:${harnessTarget.feature_id}`}
+        target={harnessTarget}
+        hasDrafts={projects.flatMap((project) => project.features).filter((feature) => feature.id === harnessTarget.feature_id)
+          .flatMap((feature) => feature.sessions).filter((session) => ["claude", "opencode", "codex", "pi"].includes(session.kind))
+          .some((session) => !!drafts[sessionKey({ feature_id: harnessTarget.feature_id, session_id: session.id })]?.length)}
+        sending={Object.entries(sendingPrompts).some(([key, value]) => value && key.startsWith(`${harnessTarget.feature_id}:`))}
+        onClose={() => setHarnessTarget(null)}
+        onChanged={() => {
+          setLaunchedModes((previous) => { const next = { ...previous }; delete next[harnessTarget.feature_id]; return next; });
+          pushToast({ tone: "info", title: "Harness changed", message: "Agent conversations were cleared. Session definitions and individual stopped choices were preserved." });
+        }}
+        onResync={() => {
+          setHarnessEpochs((previous) => ({ ...previous, [harnessTarget.feature_id]: (previous[harnessTarget.feature_id] ?? 0) + 1 }));
+          void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+        }}
+      />}
+
       {deleteFeatureDialog && (
         <DeleteFeatureDialog
           projectName={deleteFeatureDialog.projectName}
@@ -1758,6 +1797,12 @@ export default function App() {
       )}
 
       {showAppearance && <ThemePicker appearance={appearance} onClose={() => setShowAppearance(false)} />}
+      {savePromptBody !== null && <UserPromptEditor snapshot={null} seedBody={savePromptBody}
+        onClose={() => setSavePromptBody(null)} onSaved={() => {
+          setSavePromptBody(null);
+          void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
+          pushToast({ tone: "info", title: "User template saved", message: "Your composer draft is unchanged. Sending remains explicit." });
+        }} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
         onClose={() => setPromptLibrary(null)} onInsert={insertLibraryPrompt}
@@ -1978,6 +2023,7 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onChangeHarness,
   onVibeMode,
   vibeModeBusy,
   vibeModes,
@@ -1988,6 +2034,7 @@ function FeatureView({
   onStop,
   drafts,
   onPromptLibrary,
+  onSavePrompt,
   onDraftChange,
   sendingPrompts,
   onSendDraft,
@@ -2027,6 +2074,7 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  onChangeHarness?: () => void;
   onVibeMode: (mode: ModeSlug) => void;
   vibeModeBusy: boolean;
   vibeModes: ModeInfo[];
@@ -2034,6 +2082,7 @@ function FeatureView({
   launchedMode?: ModeSlug;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
+  onSavePrompt: (body: string) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
@@ -2077,7 +2126,8 @@ function FeatureView({
       focusRequested={composerFocusKey === sessionKey(target)} onFocusHandled={onComposerFocusHandled}
       onChange={(text) => onDraftChange(target, text)} onClear={() => onDraftChange(target, "")}
       onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
-      onLibrary={() => onPromptLibrary(target)} />
+      onLibrary={() => onPromptLibrary(target)}
+      onSaveTemplate={() => onSavePrompt(drafts[sessionKey(target)] ?? "")} />
   ) : null;
 
   return (
@@ -2173,6 +2223,7 @@ function FeatureView({
                   };
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
+                ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />

@@ -23,6 +23,7 @@ mod picker;
 mod plan_interview;
 mod plan_interview_attach;
 mod pr_review;
+mod pr_workspace;
 mod precall;
 mod prompt_library;
 mod prompt_overrides;
@@ -109,6 +110,16 @@ pub use todos::{
 pub use view::handle_view_key;
 
 pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
+    let result = if app.pr_workspace.is_some() {
+        pr_workspace::handle(app, key, visible_rows)
+    } else {
+        handle_key_inner(app, key, visible_rows)
+    };
+    app.reconcile_pr_workspace();
+    result
+}
+
+fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     use crate::app::AppMode;
 
     if app.review_questions().is_some_and(|q| q.open) {

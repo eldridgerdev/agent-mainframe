@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Author User prompts in the desktop library.** Create, edit and confirm
+  deletion of User templates, duplicate any supported library source into User,
+  or save an unsent composer draft as a new template. Descriptions and configured
+  placeholders are kept. Conflicting external edits are refused while keeping
+  your draft; declarative source editing and export remain in the TUI.
+  Saving never sends or clears the composer. No migration is required.
 - **Feature presets for TODO launches.** Apply project or global templates when
   starting a TODO in a new feature, then edit its branch, harness, mode, review,
   Chrome and direct/Full/Quick Plan choices. Remote Control templates require

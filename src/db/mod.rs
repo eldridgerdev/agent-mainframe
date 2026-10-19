@@ -183,6 +183,22 @@ impl AmfDb {
         prompt_templates::delete(&self.conn, id)
     }
 
+    pub(crate) fn prompt_template_snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<prompt_templates::Snapshot>> {
+        prompt_templates::snapshot(&self.conn, id)
+    }
+
+    pub(crate) fn mutate_prompt_template(
+        &self,
+        id: &str,
+        revision: &str,
+        mutation: prompt_templates::Mutation,
+    ) -> Result<Option<String>> {
+        prompt_templates::mutate(&self.conn, id, revision, mutation)
+    }
+
     pub fn upsert_pr_review_draft(&self, draft: &pr_review_drafts::PrReviewDraft) -> Result<()> {
         pr_review_drafts::upsert(&self.conn, draft)
     }

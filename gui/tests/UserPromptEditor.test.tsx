@@ -62,3 +62,17 @@ it("locks pending saves against double submission, Escape and cancellation, keep
   await waitFor(() => expect(onSaved).toHaveBeenCalledWith("new-id"));
   expect(invoke).toHaveBeenCalledTimes(2);
 });
+it("does not open a reload discard overlay during the synchronous start of a save", async () => {
+  let reject!: (reason: unknown) => void;
+  vi.mocked(invoke).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+  mount();
+  fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Local name" } });
+  act(() => {
+    fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reload template" }));
+  });
+  expect(screen.queryByRole("dialog", { name: "Discard prompt edits" })).toBeNull();
+  expect(invoke).toHaveBeenCalledTimes(1);
+  await act(async () => reject({ kind: "conflict", message: "Keep draft" }));
+  await screen.findByText("Keep draft");
+});

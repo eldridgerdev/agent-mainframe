@@ -276,6 +276,12 @@ impl App {
             }
         })();
         if let Err(error) = result {
+            // Leave export-target mode so the next g/p/w acts as a normal key
+            // instead of re-running an export from the stale snapshot.
+            if let AppMode::PromptLibrary(state) = &mut self.mode {
+                state.pending_export = false;
+                state.file_export = None;
+            }
             self.message = Some(format!("Export refused; nothing was written: {error}"));
         }
         Ok(())
@@ -477,5 +483,22 @@ mod tests {
                 .unwrap()
                 .contains("nothing was written")
         );
+    }
+    #[test]
+    fn refused_export_leaves_export_target_mode() {
+        let (dir, mut app) = fixture();
+        std::fs::write(dir.path().join("amf.json"), b"{ not json").unwrap();
+        app.store
+            .prompt_templates
+            .push(PromptTemplate::new("File".into(), "User body".into()));
+        app.open_prompt_library(None);
+        app.begin_prompt_file_export();
+        app.export_selected_template(PromptExportTarget::Project)
+            .unwrap();
+        assert!(app.message.as_ref().unwrap().contains("Export refused"));
+        assert!(matches!(
+            &app.mode,
+            AppMode::PromptLibrary(state) if !state.pending_export && state.file_export.is_none()
+        ));
     }
 }

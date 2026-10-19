@@ -27,8 +27,8 @@ The repository maintainer owns these follow-ups. Exposure has not been ruled
 out; a successful audit exit does not resolve nonfatal warnings. Keep them
 visible on PR and scheduled runs, revisit on the next dependency update, and
 track separate fixes rather than bundling unrelated upgrades into this refactor.
-See [checks.md](checks.md) for audit commands and exception policy. Hosted CI
-validation is still pending publication of this branch.
+See [checks.md](checks.md) for audit commands and exception policy. Hosted
+Linux/macOS tests, lint and dependency audit passed on PR #615.
 
 ## GUI workspace extension (2026-09-23)
 
@@ -72,8 +72,7 @@ tables account for 12; the additional existing warning is ttf-parser 0.25.1,
 [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
 unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep that
 replacement follow-up separate from this TLS patch. No advisory is ignored.
-Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
-the dependency fix is considered ready to merge.
+Hosted Linux/macOS tests, lint, frontend checks and audit passed on PR #749.
 
 ## ZIP archive dependency update (2026-10-16)
 
@@ -101,7 +100,5 @@ suppressing findings or weakening archive guards.
 Local cargo-audit 0.22.2 exits 0 against advisory database commit
 `64f92cdc64401fab47baa10e2e11fe382aa57155` (1,334 advisories), with zero
 blocking vulnerabilities and the same 13 visible nonfatal warnings above.
-Archive-reader/writer compatibility and full hosted Linux/macOS, lint,
-frontend and audit checks remain required before this fix is ready for review.
-The branch also contains the separate #749 rustls patch; merge #749 first
-so this PR's effective dependency diff narrows to the ZIP update.
+The focused archive reader/writer tests and the hosted Linux/macOS tests,
+lint, frontend checks and audit passed on PR #758.

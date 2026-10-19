@@ -70,6 +70,7 @@ pub struct PrWorkspaceAiView {
     pub running: bool,
     pub stage: Option<String>,
     pub activity: Option<String>,
+    pub elapsed_seconds: u64,
     pub token_estimate: Option<usize>,
     pub findings: Vec<AiReviewFinding>,
     pub summary: Option<String>,
@@ -341,6 +342,12 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
         },
         _ => (None, None, None, false),
     };
+    let elapsed_seconds = app
+        .ai_review_run
+        .progress()
+        .as_ref()
+        .map(|progress| progress.started_at.elapsed().as_secs())
+        .unwrap_or_default();
     if swap {
         context.parked_ai = Some(Box::new(std::mem::replace(&mut app.mode, AppMode::Normal)));
         if let Some(threads) = context.parked_threads.take() {
@@ -355,6 +362,7 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
         running,
         stage,
         activity,
+        elapsed_seconds,
         token_estimate,
         findings,
         summary,
@@ -371,6 +379,63 @@ pub enum AiAction {
     Cancel,
     ConfirmPrecall,
     CancelPrecall,
+}
+
+pub fn log_ai_action_start(gui: &mut GuiHandle, action: &AiAction) {
+    gui.app_for_workflow().log_info(
+        "pr_workspace",
+        format!("AI review action started: {action:?}"),
+    );
+}
+
+pub fn log_ai_action_finish(
+    gui: &mut GuiHandle,
+    action: &str,
+    elapsed: std::time::Duration,
+    error: Option<&str>,
+) {
+    let message = format!(
+        "AI review action {action} {} in {:.1}s{}",
+        if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        },
+        elapsed.as_secs_f32(),
+        error.map(|e| format!(": {e}")).unwrap_or_default()
+    );
+    if error.is_some() {
+        gui.app_for_workflow().log_warn("pr_workspace", message);
+    } else {
+        gui.app_for_workflow().log_debug("pr_workspace", message);
+    }
+}
+
+pub fn log_slow_ai_snapshot(gui: &mut GuiHandle, elapsed: std::time::Duration) {
+    if elapsed >= std::time::Duration::from_secs(2) {
+        gui.app_for_workflow().log_warn(
+            "pr_workspace",
+            format!("AI review snapshot took {:.1}s", elapsed.as_secs_f32()),
+        );
+    }
+}
+
+pub fn log_ai_tab_switch(
+    gui: &mut GuiHandle,
+    number: u32,
+    elapsed: std::time::Duration,
+    failed: bool,
+) {
+    let message = format!(
+        "Switch to AI review for PR #{number} {} in {:.1}ms",
+        if failed { "failed" } else { "completed" },
+        elapsed.as_secs_f64() * 1000.0
+    );
+    if failed {
+        gui.app_for_workflow().log_warn("pr_workspace", message);
+    } else {
+        gui.app_for_workflow().log_debug("pr_workspace", message);
+    }
 }
 
 pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWorkspaceAiView> {

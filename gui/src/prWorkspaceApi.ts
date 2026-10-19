@@ -6,7 +6,7 @@ export interface WorkspaceFiles { workflow_id: string; pr_number: number; head_s
 export interface WorkspaceFinding { path: string | null; line: number | null; side: string | null; body: string; diff_hunk: string | null; skipped: boolean; published: boolean }
 export interface WorkspaceAi {
   workflow_id: string; pr_number: number; head_sha: string; running: boolean; stage: string | null;
-  activity: string | null; token_estimate: number | null; findings: WorkspaceFinding[]; summary: string | null;
+  activity: string | null; elapsed_seconds: number; token_estimate: number | null; findings: WorkspaceFinding[]; summary: string | null;
   error: string | null; precall: { title: string; harness: string; preview: string; viewing: boolean } | null; can_cancel: boolean;
 }
 export type WorkspaceAiAction = { kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" };

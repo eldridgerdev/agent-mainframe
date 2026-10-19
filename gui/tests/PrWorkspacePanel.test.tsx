@@ -35,7 +35,7 @@ it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a ru
       const kind = (args as { action?: { kind: string } } | undefined)?.action?.kind;
       if (kind === "start") running = true;
       if (kind === "cancel") running = false;
-      return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", running, stage: running ? "Reviewing code" : null, activity: null, token_estimate: 900, findings: [], summary: null, error: null, precall: null, can_cancel: running };
+      return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", running, stage: running ? "Reviewing code" : null, activity: "Reviewing src/lib.rs (initial)", elapsed_seconds: 15, token_estimate: 900, findings: [], summary: null, error: null, precall: null, can_cancel: running };
     }
     throw new Error(`Unexpected command ${command}`);
   });
@@ -54,7 +54,10 @@ it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a ru
   expect((await screen.findAllByText("src/lib.rs")).length).toBeGreaterThan(0);
   fireEvent.click(screen.getByRole("button", { name: "AI Review" }));
   fireEvent.click(await screen.findByRole("button", { name: "Start AI review" }));
-  expect(await screen.findByText("Reviewing code")).toBeTruthy();
+  expect(await screen.findByText("Analyze the code")).toBeTruthy();
+  expect(screen.getByText("Fetch PR changes")).toBeTruthy();
+  expect(screen.getByText("Reviewing src/lib.rs (initial)")).toBeTruthy();
+  expect(screen.getByText("15s")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel AI review" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Start AI review" })).toBeTruthy());
   expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "cancel")).toBe(true);

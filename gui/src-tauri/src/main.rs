@@ -1309,6 +1309,18 @@ async fn project_preference_blocking<T: Send + 'static>(
         .map_err(|e| GuiError::from(anyhow::anyhow!("Project harness check stopped: {e}")))
 }
 
+// PR workspace state changes are usually short, but they share a mutex with
+// the rest of the GUI and can contend with GitHub/process work. Keep that
+// blocking lock and the transition off Tauri's async runtime workers.
+async fn pr_workspace_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("PR workspace operation stopped: {e}")))
+}
+
 #[tauri::command]
 async fn project_harness_choices(
     app: tauri::AppHandle,
@@ -1521,83 +1533,133 @@ async fn pr_triage_act(
 }
 
 #[tauri::command]
-fn pr_workspace_begin(
-    state: State<'_, AppState>,
+async fn pr_workspace_begin(
+    app: tauri::AppHandle,
     target: agent_mainframe::gui_contract::FeatureTarget,
 ) -> Result<String, GuiError> {
-    gui_pr_workspace::begin(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        target,
-    )
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::begin(&mut gui.lock().expect("gui handle mutex poisoned"), target)
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_select_pr(
-    state: State<'_, AppState>,
+async fn pr_workspace_select_pr(
+    app: tauri::AppHandle,
     workflow_id: String,
     number: u32,
 ) -> Result<(), GuiError> {
-    gui_pr_workspace::select_pr(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-        number,
-    )
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::select_pr(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            number,
+        )
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_switch_ai(
-    state: State<'_, AppState>,
+async fn pr_workspace_switch_ai(
+    app: tauri::AppHandle,
     workflow_id: String,
     number: u32,
 ) -> Result<(), GuiError> {
-    gui_pr_workspace::switch_to_ai(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-        number,
-    )
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        let result = gui_pr_workspace::switch_to_ai(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            number,
+        );
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_ai_tab_switch(
+                &mut handle,
+                number,
+                started.elapsed(),
+                result.is_err(),
+            );
+        }
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_switch_threads(
-    state: State<'_, AppState>,
+async fn pr_workspace_switch_threads(
+    app: tauri::AppHandle,
     workflow_id: String,
 ) -> Result<(), GuiError> {
-    gui_pr_workspace::switch_to_threads(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-    )
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::switch_to_threads(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_close(state: State<'_, AppState>, workflow_id: String) -> Result<(), GuiError> {
-    gui_pr_workspace::close(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-    )
+async fn pr_workspace_close(app: tauri::AppHandle, workflow_id: String) -> Result<(), GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::close(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_ai_snapshot(
-    state: State<'_, AppState>,
+async fn pr_workspace_ai_snapshot(
+    app: tauri::AppHandle,
     workflow_id: String,
 ) -> Result<PrWorkspaceAiView, GuiError> {
-    gui_pr_workspace::ai_snapshot(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-    )
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        let result = gui_pr_workspace::ai_snapshot(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        );
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_slow_ai_snapshot(&mut handle, started.elapsed());
+        }
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
-fn pr_workspace_ai_act(
-    state: State<'_, AppState>,
+async fn pr_workspace_ai_act(
+    app: tauri::AppHandle,
     workflow_id: String,
     action: PrWorkspaceAiAction,
 ) -> Result<PrWorkspaceAiView, GuiError> {
-    gui_pr_workspace::ai_act(
-        &mut state.0.lock().expect("gui handle mutex poisoned"),
-        &workflow_id,
-        action,
-    )
+    let action_name = format!("{action:?}");
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        {
+            let mut handle = gui.lock().expect("gui handle mutex poisoned");
+            gui_pr_workspace::log_ai_action_start(&mut handle, &action);
+        }
+        let result = gui_pr_workspace::ai_act(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            action,
+        );
+        let elapsed = started.elapsed();
+        let error_message = result.as_ref().err().map(|error| error.message.clone());
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_ai_action_finish(
+                &mut handle,
+                &action_name,
+                elapsed,
+                error_message.as_deref(),
+            );
+        }
+        result
+    })
+    .await?
 }
 
 #[tauri::command]

@@ -2581,6 +2581,10 @@ impl App {
         loop {
             match self.ai_review_run.poll() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
+                    self.log_info(
+                        "pr_review",
+                        format!("AI review is analyzing a prompt of about {token_estimate} tokens"),
+                    );
                     if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
@@ -2593,6 +2597,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
+                    self.log_debug("pr_review", format!("AI review progress: {activity}"));
                     if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.activity = Some(activity.clone());
                     }

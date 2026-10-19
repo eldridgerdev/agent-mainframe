@@ -213,33 +213,71 @@ fn launch_config_to_args(config: toml::map::Map<String, toml::Value>) -> Vec<Str
 }
 
 fn ensure_user_config_notify_hook_for(config_path: &Path, hook_path: &Path) -> Option<()> {
-    let mut config = if config_path.exists() {
-        std::fs::read_to_string(config_path)
-            .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-            .filter(|value| value.is_table())?
-    } else {
-        toml::Value::Table(toml::map::Map::new())
-    };
+    ensure_user_config_notify_hook_at(config_path, hook_path, false).ok()
+}
 
-    let table = config.as_table_mut()?;
+pub(crate) fn ensure_user_config_notify_hook_checked(hook_path: &Path) -> anyhow::Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let config_path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot resolve Codex config home"))?
+        .join(".codex/config.toml");
+    ensure_user_config_notify_hook_at(&config_path, hook_path, true)
+}
+
+fn read_notify_config(config_path: &Path) -> anyhow::Result<toml::Value> {
+    let config = match std::fs::read_to_string(config_path) {
+        Ok(content) => toml::from_str::<toml::Value>(&content)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(Default::default())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    anyhow::ensure!(config.is_table(), "Codex config must contain a TOML table");
+    Ok(config)
+}
+
+/// Only the notify field is interpreted or replaced by this writer.
+pub(crate) fn validate_notify_config(config: &toml::Value) -> anyhow::Result<()> {
+    anyhow::ensure!(config.is_table(), "Codex config must contain a TOML table");
+    anyhow::ensure!(
+        parse_notify_entries(config.get("notify")).is_some(),
+        "Codex notify must be a string or an array of strings; existing settings were not changed"
+    );
+    Ok(())
+}
+
+fn preflight_user_config_notify_hook_at(path: &Path) -> anyhow::Result<()> {
+    validate_notify_config(&read_notify_config(path)?)
+}
+
+fn ensure_user_config_notify_hook_at(
+    config_path: &Path,
+    hook_path: &Path,
+    checked: bool,
+) -> anyhow::Result<()> {
+    let mut config = read_notify_config(config_path)?;
+    if checked {
+        validate_notify_config(&config)?;
+    }
+    let table = config
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex config must contain a TOML table"))?;
     let hook_cmd = hook_path.to_string_lossy().into_owned();
     let mut entries = parse_notify_entries(table.get("notify")).unwrap_or_default();
     if !entries.iter().any(|entry| entry == &hook_cmd) {
         entries.push(hook_cmd);
     }
-
     table.insert(
         "notify".to_string(),
         toml::Value::Array(entries.into_iter().map(toml::Value::String).collect()),
     );
-
     if let Some(parent) = config_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    let rendered = toml::to_string_pretty(&config).ok()?;
-    let _ = std::fs::write(config_path, rendered + "\n");
-    Some(())
+    std::fs::write(config_path, toml::to_string_pretty(&config)? + "\n")?;
+    Ok(())
 }
 
 /// Append launch-specific evidence guidance without writing shared configuration.
@@ -340,12 +378,65 @@ fn append_guidance_from_configs(
     Ok(args)
 }
 
+pub(crate) fn preflight_user_config_notify_hook() -> anyhow::Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let path = dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot resolve Codex config home"))?
+        .join(".codex/config.toml");
+    preflight_user_config_notify_hook_at(&path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::launch_override_args_for;
     use crate::project::VibeMode;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn checked_notify_preserves_unsupported_existing_fields() {
+        for content in [
+            "notify = false\nfuture = 42\n",
+            "notify = [\"command\", 1]\n",
+            "notify = { future = true }\n",
+        ] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, content).unwrap();
+            assert!(super::preflight_user_config_notify_hook_at(&path).is_err());
+            assert!(
+                super::ensure_user_config_notify_hook_at(
+                    &path,
+                    &dir.path().join("notify.sh"),
+                    true
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+        }
+    }
+
+    #[test]
+    fn checked_notify_keeps_valid_string_and_array_entries_and_unrelated_fields() {
+        for notify in ["\"existing\"", "[\"existing\", \"second\"]"] {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join("config.toml");
+            fs::write(&path, format!("notify = {notify}\nfuture = 42\n")).unwrap();
+            super::preflight_user_config_notify_hook_at(&path).unwrap();
+            super::ensure_user_config_notify_hook_at(&path, &dir.path().join("notify.sh"), true)
+                .unwrap();
+            let value: toml::Value = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(value["future"].as_integer(), Some(42));
+            let entries = super::parse_notify_entries(value.get("notify")).unwrap();
+            assert_eq!(entries[0], "existing");
+            assert!(entries.last().unwrap().ends_with("notify.sh"));
+            if notify.starts_with('[') {
+                assert_eq!(entries[1], "second");
+            }
+        }
+    }
 
     #[test]
     fn launch_override_args_merges_existing_user_entries() {

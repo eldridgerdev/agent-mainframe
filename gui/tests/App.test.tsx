@@ -186,13 +186,14 @@ async function openFeature(
   stoppedSessionIds: string[] = [],
   status: Feature["status"] = "idle",
   isGit = false,
+  isWorktree = false,
 ) {
   const snapshot: WorkspaceSnapshot = {
     projects: [{
       id: "project", name: "demo", repo: "/demo", is_git: isGit,
       features: [{
         id: "feature", name: "my-feat", branch: "my-feat", workdir: "/demo",
-        is_worktree: false, status, agent: "claude", mode: "vibeless", sessions,
+        is_worktree: isWorktree, status, agent: "claude", mode: "vibeless", sessions,
       }],
     }],
     snapshot_at: "2026-09-26T00:00:00Z",
@@ -1403,5 +1404,29 @@ it("saves an unsent composer as a User template while retaining the mounted draf
   expect(promptCalls()).toHaveLength(0);
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_save").at(-1)?.[1]).toEqual({ draft: { id: null, revision: null, name: "Saved composer", body: text, tags: "" } });
+  client.clear();
+});
+
+it("blocks changing harness for an unsent draft in another agent tab and preserves it on Cancel", async () => {
+  const client = await openFeature([session("Agent", "claude"), session("Other", "claude")], [], "idle", true, true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "feature_harness_load" ? Promise.resolve({
+    target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat", current_agent: "claude", running: true, agent_rows: 2, revision: "observed",
+    choices: [{ agent: "claude", name: "Claude", unavailable: null }, { agent: "opencode", name: "OpenCode", unavailable: null }],
+  }) : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent draft" } });
+  fireEvent.click(screen.getByRole("tab", { name: "Other" }));
+  expect(draftInput().value).toBe("");
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Change harness…" }));
+  await screen.findByLabelText("Replacement harness");
+  fireEvent.change(screen.getByLabelText("Replacement harness"), { target: { value: "opencode" } });
+  fireEvent.click(screen.getByLabelText("I understand and confirm this harness change"));
+  expect(screen.getByRole("button", { name: "Change harness" })).toHaveProperty("disabled", true);
+  expect(within(screen.getByRole("dialog", { name: "Change feature harness" })).getByRole("alert").textContent).toContain("unsent agent drafts");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Agent" }));
+  expect(draftInput().value).toBe("Keep this unsent draft");
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "feature_harness_apply")).toBe(false);
   client.clear();
 });

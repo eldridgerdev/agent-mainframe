@@ -81,7 +81,7 @@ it("follows system dark mode in place without reattaching or resetting history",
   const writes = term.write.mock.calls.length;
   act(() => { media.matches = false; changed(); });
   expect(term.options.theme).toEqual(LIGHT_TERMINAL_THEME);
-  expect(term.options.minimumContrastRatio).toBe(1);
+  expect(term.options.minimumContrastRatio).toBe(4.5);
   act(() => { media.matches = true; changed(); });
   expect(term.options.theme).toEqual(DARK_TERMINAL_THEME);
   expect(term.options.minimumContrastRatio).toBe(4.5);
@@ -101,6 +101,11 @@ it("switches a named palette live without attaching again or touching terminal c
   const writes = term.write.mock.calls.length;
   act(() => applyTheme({ id: "nord", name: "Nord", mode: "dark", tokens: {}, terminal: { background: "#2e3440", cyan: "#88c0d0" } }));
   expect(term.options.theme).toMatchObject({ background: "#2e3440", cyan: "#88c0d0" });
+  expect(term.options.minimumContrastRatio).toBe(4.5);
+  // A light palette puts a light background behind ANSI colours tuned for
+  // dark terminals; xterm must still correct the ones that fall short.
+  act(() => applyTheme({ id: "gruvbox-light", name: "Gruvbox Light", mode: "light", tokens: {}, terminal: { background: "#fbf1c7", yellow: "#d79921" } }));
+  expect(term.options.theme).toMatchObject({ background: "#fbf1c7", yellow: "#d79921" });
   expect(term.options.minimumContrastRatio).toBe(4.5);
   expect(term.reset).toHaveBeenCalledTimes(resets);
   expect(term.write).toHaveBeenCalledTimes(writes);

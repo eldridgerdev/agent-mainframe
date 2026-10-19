@@ -10,18 +10,18 @@
 :root {
   --sb-width: 300px;
   --sb-rail-width: 30px;
-  --sb-harness-claude: #c4643f;
-  --sb-harness-codex: #0e8a6a;
-  --sb-harness-opencode: #5562e8;
+  --sb-harness-claude: #a35334;
+  --sb-harness-codex: #0c785c;
+  --sb-harness-opencode: #4f5bd8;
   --sb-harness-pi: var(--accent);
   --sb-accent-status: var(--amber);
   --sb-accent-usage: var(--green);
   --sb-accent-plan: var(--amber);
   --sb-accent-issue: var(--text-faint);
-  --sb-accent-pr: #1d7fb8;
+  --sb-accent-pr: #196ea0;
   --sb-accent-work: var(--accent);
-  --sb-accent-summary: #1d7fb8;
-  --sb-accent-prompt: #8a4fd0;
+  --sb-accent-summary: #196ea0;
+  --sb-accent-prompt: #844cc8;
   --sb-accent-todos: var(--green);
   --sb-tone-ready: var(--green);
   --sb-tone-waiting: var(--amber);
@@ -143,7 +143,7 @@
 .sb-section-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
 .sb-section-head h3 {
   margin: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -161,7 +161,7 @@
   cursor: pointer;
 }
 .sb-action:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
-.sb-action:disabled { opacity: 0.55; cursor: default; }
+.sb-action:disabled { background: var(--disabled-bg); border-color: var(--disabled-bg); color: var(--disabled-fg); cursor: default; }
 
 .sb-lines { display: flex; flex-direction: column; gap: 2px; }
 .sb-line { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
@@ -212,11 +212,12 @@
 .ctx-fill-critical { background: var(--sb-ctx-critical); }
 .sb-context-detail { margin: 0; font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
 .sb-chip {
+  --text-faint: var(--text-muted); /* on --surface-3 */
   padding: 0 6px;
   border-radius: 999px;
   background: var(--surface-3);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.6;
 }
 .sb-chip-stale { font-style: italic; }

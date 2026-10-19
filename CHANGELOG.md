@@ -18,6 +18,11 @@ are tagged.
   placeholders are kept. Conflicting external edits are refused while keeping
   your draft; declarative source editing and export remain in the TUI.
   Saving never sends or clears the composer. No migration is required.
+- **Feature presets for TODO launches.** Apply project or global templates when
+  starting a TODO in a new feature, then edit its branch, harness, mode, review,
+  Chrome and direct/Full/Quick Plan choices. Remote Control templates require
+  explicit opt-out in desktop. Cancelling protects edited settings; planning
+  keeps the TODO available until acceptance, and agent handoffs stay unsent.
 
 - **Desktop context settings.** Set a fallback context-window token limit and
   warning/critical percentages from workspace navigation. A blank limit restores

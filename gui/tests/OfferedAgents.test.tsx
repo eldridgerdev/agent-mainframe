@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -21,6 +22,7 @@ afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear(
 /** `allowed` answers per project id; anything else has no worktree hook. */
 function mount(element: React.ReactElement, allowed: (projectId: string | null) => HarnessInfo[]) {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "project_harness_choices") return creationChoices(allowed((args as { projectId: string }).projectId).map(agent => agent.slug));
     if (command === "allowed_harnesses") return allowed((args as { projectId: string | null }).projectId);
     return command === "feature_presets_choices" ? [] : null;
   });
@@ -36,8 +38,8 @@ it("offers a new feature only the harnesses its project allows and submits one o
     isGit={false} defaultUseWorktree={false} pending={false} onCancel={vi.fn()} onSubmit={onSubmit} />,
     () => [supported[2], supported[3]]);
   await waitFor(() => expect(offered()).toEqual(["Codex", "Pi"]));
-  expect(invoke).toHaveBeenCalledWith("allowed_harnesses", { projectId: "one" });
-  // The form opened on Claude, the first supported harness; it is not sent.
+  expect(invoke).toHaveBeenCalledWith("project_harness_choices", { projectId: "one" });
+  // Shared normalization chooses the first offered harness when the stored preference is unavailable.
   fireEvent.change(screen.getByLabelText("Branch / feature name"), { target: { value: "new-work" } });
   fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "codex" }), "none");
@@ -51,17 +53,22 @@ it("follows the chosen project's own list when starting a TODO in a new feature"
   await waitFor(() => expect(offered()).toEqual(["Claude", "Codex"]));
   fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "codex" } });
   fireEvent.change(screen.getByLabelText("Project"), { target: { value: "two" } });
-  await waitFor(() => expect(offered()).toEqual(["Pi"]));
+  await waitFor(() => expect(offered()).toEqual(["codex — unavailable", "Pi"]));
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
   const button = screen.getByRole("button", { name: "Create and start" }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(true));
+  fireEvent.change(screen.getByLabelText("Harness"), { target: { value: "pi" } });
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", agent: "pi" }), "none");
 });
 
-it("keeps every supported harness on offer when the allowed list cannot be read", async () => {
+it("blocks creation with actionable error when project defaults cannot be read", async () => {
   mount(<CreateFeatureForm projectId="one" projectName="one" agents={supported} modes={modes}
     isGit={false} defaultUseWorktree={false} pending={false} onCancel={vi.fn()} onSubmit={vi.fn()} />,
     () => { throw { kind: "internal", message: "Invalid JSON" }; });
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("allowed_harnesses", { projectId: "one" }));
-  expect(offered()).toEqual(["Claude", "OpenCode", "Codex", "Pi"]);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("project_harness_choices", { projectId: "one" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Invalid JSON");
+  expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", true);
+  expect(offered()).toEqual(["Choose a harness…"]);
 });

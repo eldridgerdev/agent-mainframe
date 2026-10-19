@@ -173,6 +173,20 @@ export async function projectAgentChoices(projectId: string): Promise<AgentSlug[
   return view.effective_agents;
 }
 
+export interface ProjectHarnessChoices {
+  project_id: string;
+  project_name: string;
+  repo: string;
+  settings: { preferred_agent: AgentSlug };
+  agents: AgentSlug[];
+  default_agent: AgentSlug | null;
+  revision: string;
+}
+
+export function projectHarnessChoices(projectId: string): Promise<ProjectHarnessChoices> {
+  return invoke("project_harness_choices", { projectId });
+}
+
 export function supportedModes(): Promise<ModeInfo[]> {
   return invoke("supported_modes");
 }

@@ -42,6 +42,9 @@ use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
+use agent_mainframe::gui_project_preference::{
+    self, ProjectHarnessChoices, ProjectHarnessPreference,
+};
 use agent_mainframe::gui_project_settings::{
     self, ProjectAgentAvailability, ProjectAgentAvailabilityView,
 };
@@ -1290,6 +1293,52 @@ async fn project_agent_availability_load(
     )
 }
 
+// Harness probes spawn one `--version` process per harness. They run on a
+// blocking thread, not an async runtime worker, and (inside
+// `gui_project_preference`) outside the handle lock. A sync command would not
+// do: Tauri runs those on the main thread, which would freeze the window.
+async fn project_preference_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("Project harness check stopped: {e}")))
+}
+
+#[tauri::command]
+async fn project_harness_choices(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    project_preference_blocking(app, move |gui| {
+        gui_project_preference::load(gui, &project_id)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn project_preference_save(
+    app: tauri::AppHandle,
+    project_id: String,
+    revision: String,
+    settings: ProjectHarnessPreference,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    let emit_app = app.clone();
+    project_preference_blocking(app, move |gui| {
+        let result =
+            gui_project_preference::save(gui, &project_id, &revision, settings.preferred_agent);
+        // Take the lock again only to broadcast.
+        let snapshot = gui
+            .lock()
+            .expect("gui handle mutex poisoned")
+            .broadcast_snapshot();
+        emit_workspace_changed(&emit_app, &snapshot);
+        result
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn project_agent_availability_save(
     state: State<'_, AppState>,
@@ -1837,6 +1886,8 @@ fn main() {
             agent_availability_save,
             project_agent_availability_load,
             project_agent_availability_save,
+            project_harness_choices,
+            project_preference_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,

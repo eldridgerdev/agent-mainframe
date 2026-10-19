@@ -3655,17 +3655,20 @@ impl App {
         allowed.contains(agent)
     }
 
+    /// The preferred harness if allowed, else the first allowed one.
+    ///
+    /// With nothing allowed, returns `preferred` itself at index 0. That is
+    /// only a placeholder: callers never index the installed list with the
+    /// result, and every launch path re-checks `allows_agent_for_repo` (or
+    /// returns early on an empty list) before using the harness.
     pub(crate) fn normalize_agent_for_repo(
         &self,
         repo: &Path,
         preferred: &AgentKind,
     ) -> (AgentKind, usize) {
         let allowed = self.allowed_agents_for_repo(repo);
-        let selected = allowed
-            .iter()
-            .find(|agent| *agent == preferred)
-            .cloned()
-            .unwrap_or_else(|| allowed[0].clone());
+        let selected =
+            AgentKind::preferred_in(&allowed, preferred).unwrap_or_else(|| preferred.clone());
         let index = AgentKind::index_in(&allowed, &selected);
         (selected, index)
     }

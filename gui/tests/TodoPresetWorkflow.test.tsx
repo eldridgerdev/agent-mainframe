@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -22,6 +23,7 @@ it.each(["none", "full", "quick"] as const)("routes a TODO preset through App to
     snapshot_at: "2026-10-14T00:00:00Z", stopped_session_ids: [] };
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "get_snapshot") return snapshot;
+    if (command === "project_harness_choices") return creationChoices(["codex"]);
     if (command === "supported_harnesses" || command === "allowed_harnesses") return [{ slug: "codex", display_name: "Codex" }];
     if (command === "supported_modes") return [{ slug: "vibe", display_name: "Vibe", description: "" }];
     if (command === "feature_presets_choices") return [preset];
@@ -63,6 +65,7 @@ it("opens the agent a Quick Plan direct outcome starts during a plan poll", asyn
     if (command === "get_snapshot") return snapshot;
     if (command === "supported_harnesses" || command === "allowed_harnesses") return [{ slug: "codex", display_name: "Codex" }];
     if (command === "supported_modes") return [{ slug: "vibe", display_name: "Vibe", description: "" }];
+    if (command === "project_harness_choices") return creationChoices(["codex"]);
     if (command === "feature_presets_choices") return [preset];
     if (command === "worktree_hook_prompt") return null;
     if (command === "plan_begin_todo_new") return { active: loading, precall: null, message: null, handoff: null };

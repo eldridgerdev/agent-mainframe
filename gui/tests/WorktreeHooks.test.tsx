@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,7 +24,7 @@ const hookPrompt = vi.fn();
 beforeEach(() => {
   hookPrompt.mockResolvedValue(prompt);
   vi.mocked(invoke).mockImplementation(async (command, args) =>
-    command === "allowed_harnesses" ? agents
+    command === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : command === "allowed_harnesses" ? agents
       : command === "feature_presets_choices" ? []
         : hookPrompt(command, args));
 });
@@ -104,14 +105,16 @@ it("cancel applies neither the selected hook nor feature creation", async () => 
   expect(onCancel).toHaveBeenCalledOnce();
   expect(onSubmit).not.toHaveBeenCalled();
   expect(vi.mocked(invoke).mock.calls.every(([command]) =>
-    command === "worktree_hook_prompt" || command === "allowed_harnesses" || command === "feature_presets_choices")).toBe(true);
+    command === "project_harness_choices" || command === "worktree_hook_prompt" || command === "allowed_harnesses" || command === "feature_presets_choices")).toBe(true);
 });
 
-it("does not request or send a worktree hook for the repository checkout", () => {
+it("does not request or send a worktree hook for the repository checkout", async () => {
   const onSubmit = vi.fn();
   mount(<CreateFeatureForm projectId="one" projectName="one" agents={agents} modes={modes}
     isGit defaultUseWorktree={false} pending={false} onCancel={vi.fn()} onSubmit={onSubmit} />);
   fireEvent.change(screen.getByLabelText("Branch / feature name"), { target: { value: "new-work" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ use_worktree: false, hook_choice: null }), "none");
   expect(hookPrompt).not.toHaveBeenCalled();

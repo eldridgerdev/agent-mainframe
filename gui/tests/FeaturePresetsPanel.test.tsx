@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -77,7 +78,7 @@ it("only warns about an untouched stored Codex + Vibeless preset", async () => {
 });
 
 function creation(...selected: FeaturePreset[]) {
-  vi.mocked(invoke).mockImplementation(async (command) => command === "feature_presets_choices" ? selected : null);
+  vi.mocked(invoke).mockImplementation(async (command) => command === "project_harness_choices" ? creationChoices(["claude"]) : command === "feature_presets_choices" ? selected : null);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } }); clients.push(client);
   const onSubmit = vi.fn();
   render(<QueryClientProvider client={client}><CreateFeatureForm projectId="one" projectName="one" isGit defaultUseWorktree
@@ -113,12 +114,14 @@ it("keeps a typed branch name when presets swap the prefix", async () => {
   change("Feature preset", "1"); expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "fix/login");
   change("Feature preset", "2"); expect(screen.getByLabelText("Branch / feature name")).toHaveProperty("value", "login");
 });
-it("leaves the harness alone and warns when a preset's agent is not offered", async () => {
+it("retains an unavailable preset harness visibly and blocks until explicit opt-out", async () => {
   const onSubmit = creation({ ...preset, agent: "codex", mode: "vibe" });
   await screen.findByRole("option", { name: "Ship" }); change("Feature preset", "0");
-  expect(screen.getByRole("alert").textContent).toContain("not offered for this project");
-  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "claude");
+  expect(screen.getByText(/not offered for this project/)).toBeTruthy();
+  expect(screen.getByLabelText("Harness")).toHaveProperty("value", "codex");
   change("Branch / feature name", "feat/x");
+  expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", true);
+  change("Harness", "claude");
   await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   click("Create feature");
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ agent: "claude" }), "none");

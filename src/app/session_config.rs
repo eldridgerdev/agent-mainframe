@@ -151,6 +151,11 @@ impl App {
             .iter()
             .find(|project| project.id == project_id)
             .ok_or_else(|| anyhow::anyhow!("Project was deleted or moved"))?;
+        // Re-selecting the current preference changes nothing, so it must not
+        // spawn a probe or fail because the harness has since gone missing.
+        if project.preferred_agent == next {
+            return Ok(false);
+        }
         if !self.allows_agent_for_repo(&project.repo, &next) {
             anyhow::bail!(
                 "Harness '{}' is not allowed for this workspace",
@@ -159,9 +164,6 @@ impl App {
         }
         self.tmux.check_harness_available(&next)?;
         let previous = project.preferred_agent.clone();
-        if previous == next {
-            return Ok(false);
-        }
         let version = self.store_version;
         self.store
             .projects

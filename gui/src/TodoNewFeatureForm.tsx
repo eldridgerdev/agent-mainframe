@@ -89,6 +89,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
       {presets.isError && <p role="alert" className="callout callout-danger">Could not load presets: {asGuiError(presets.error).message} <button type="button" disabled={busy || presets.isFetching} onClick={() => void presets.refetch()}>Retry presets</button></p>}
       {notice && <p role="alert" className="callout callout-warning">{notice}</p>}
       {remoteControl && <p role="alert" className="callout callout-warning">Remote Control presets can be created in the TUI. Desktop creation does not support Remote Control yet. Choose another preset or explicitly clear Remote Control below.</p>}
+      {!selectedMode && modes.length > 0 && <p role="alert" className="callout callout-warning">The mode {mode} is not available in this workspace. Choose another mode.</p>}
       {unsupported && <p role="alert" className="callout callout-warning">{selectedMode?.display_name} is unavailable with {offered.find((candidate) => candidate.slug === selectedAgent)?.display_name ?? selectedAgent}. Choose another mode or harness.</p>}
       <fieldset disabled={busy} className="form-stack" style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         {(projects.length > 1 || !project) && <Field label="Project"><select value={projectId} disabled={busy || !projects.length} onChange={(event) => { setProjectId(event.target.value); setSelection(null); setNotice(null); }}>
@@ -121,6 +122,7 @@ export default function TodoNewFeatureForm({ kind, todoTitle, projects, agents, 
         <div className="form-row">
           <CreationHarnessField harness={harness} supported={agents} disabled={busy} />
           <Field label="Mode"><select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
+            {!selectedMode && <option value={mode} disabled>{mode} — unavailable</option>}
             {modes.map((candidate) => <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>)}
           </select></Field>
         </div>

@@ -20,7 +20,9 @@ export function useCreationHarness(projectId: string, enabled = true) {
   }, [projectId, choices.data, choices.isSuccess, choices.isFetching]);
   const agent = selection.explicit || selection.projectId === projectId ? selection.agent : null;
   const offered = choices.data?.agents ?? [];
-  return { choices, agent, offered, explicit: selection.explicit,
-    ready: choices.isSuccess && !choices.isFetching && agent !== null && offered.includes(agent),
+  // `enabled` is false when there is no destination project: the query then
+  // stays pending without fetching, which must not read as loading.
+  return { choices, agent, offered, enabled, explicit: selection.explicit,
+    ready: enabled && choices.isSuccess && !choices.isFetching && agent !== null && offered.includes(agent),
     choose: (agent: AgentSlug) => setSelection({ projectId, agent, explicit: true }) };
 }

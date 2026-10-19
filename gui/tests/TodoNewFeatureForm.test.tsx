@@ -167,3 +167,19 @@ it("blocks duplicate submission and dismissal throughout an outstanding launch",
   expect(onSubmit).toHaveBeenCalledOnce(); expect(onCancel).not.toHaveBeenCalled();
   expect(screen.getByRole("button", { name: "Cancel" })).toHaveProperty("disabled", true); complete(); await ready();
 });
+it("shows no harness loading state when no destination project is chosen", async () => {
+  mount({ projects: [] });
+  expect(screen.queryByText(/Loading project harness default/)).toBeNull();
+  expect(screen.getByRole("option", { name: "Choose a project first…" })).toBeTruthy();
+  expect(screen.getByText(/Choose an available git project/)).toBeTruthy();
+  expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("project_harness_choices", expect.anything());
+});
+it("explains and blocks a preset mode this workspace does not offer", async () => {
+  const { onSubmit } = mount({}, [{ ...preset, agent: "claude", mode: "future-mode" as FeaturePreset["mode"], plan_mode: false }]);
+  await ready(); change("Feature preset", "0");
+  expect(screen.getByText(/The mode future-mode is not available/)).toBeTruthy();
+  expect(screen.getByLabelText("Mode")).toHaveProperty("value", "future-mode");
+  expect(screen.getByRole("button", { name: "Create and start" })).toHaveProperty("disabled", true);
+  change("Mode", "vibe"); await ready(); click("Create and start");
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ mode: "vibe" }), "none");
+});

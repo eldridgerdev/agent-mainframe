@@ -2081,6 +2081,43 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
     );
 }
 
+/// Re-selecting the current preference is a no-op: it must not probe the
+/// harness (a process spawn on the key thread), nor fail if it has since been
+/// uninstalled.
+#[test]
+fn reselecting_the_current_project_harness_skips_the_probe() {
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![],
+        created_at: Utc::now(),
+        preferred_agent: AgentKind::Claude,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_check_harness_available().never();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+
+    let changed = app
+        .set_project_preferred_harness("proj-1", AgentKind::Claude)
+        .unwrap();
+
+    assert!(!changed);
+    assert_eq!(app.store.projects[0].preferred_agent, AgentKind::Claude);
+}
+
 /// Hooks are generated per harness. A start used to refresh only the
 /// feature's primary agent, leaving a secondary session's harness on whatever
 /// mode its hooks were last written for.

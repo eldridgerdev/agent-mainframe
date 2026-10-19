@@ -1215,32 +1215,50 @@ async fn project_agent_availability_load(
     )
 }
 
+// Harness probes spawn one `--version` process per harness. They run on a
+// blocking thread, not an async runtime worker, and (inside
+// `gui_project_preference`) outside the handle lock. A sync command would not
+// do: Tauri runs those on the main thread, which would freeze the window.
+async fn project_preference_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("Project harness check stopped: {e}")))
+}
+
 #[tauri::command]
 async fn project_harness_choices(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     project_id: String,
 ) -> Result<ProjectHarnessChoices, GuiError> {
-    gui_project_preference::load(&state.0, &project_id)
+    project_preference_blocking(app, move |gui| {
+        gui_project_preference::load(gui, &project_id)
+    })
+    .await?
 }
 
 #[tauri::command]
 async fn project_preference_save(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     project_id: String,
     revision: String,
     settings: ProjectHarnessPreference,
 ) -> Result<ProjectHarnessChoices, GuiError> {
-    // Harness probes run outside the lock; take it again only to broadcast.
-    let result =
-        gui_project_preference::save(&state.0, &project_id, &revision, settings.preferred_agent);
-    let snapshot = state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .broadcast_snapshot();
-    emit_workspace_changed(&app, &snapshot);
-    result
+    let emit_app = app.clone();
+    project_preference_blocking(app, move |gui| {
+        let result =
+            gui_project_preference::save(gui, &project_id, &revision, settings.preferred_agent);
+        // Take the lock again only to broadcast.
+        let snapshot = gui
+            .lock()
+            .expect("gui handle mutex poisoned")
+            .broadcast_snapshot();
+        emit_workspace_changed(&emit_app, &snapshot);
+        result
+    })
+    .await?
 }
 
 #[tauri::command]

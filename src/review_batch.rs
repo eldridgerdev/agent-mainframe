@@ -157,6 +157,7 @@ pub struct HeadlessBatchRunner {
     workdir: PathBuf,
     model: Option<String>,
     reasoning: Option<crate::headless::ReasoningLevel>,
+    cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     render_prompt: BatchPromptRenderer,
     render_hunk_prompt: HunkPromptRenderer,
 }
@@ -174,6 +175,7 @@ impl HeadlessBatchRunner {
             workdir,
             model,
             reasoning: None,
+            cancelled: None,
             render_prompt,
             render_hunk_prompt,
         }
@@ -185,7 +187,25 @@ impl HeadlessBatchRunner {
         self
     }
 
+    pub(crate) fn with_cancellation(
+        mut self,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancelled = Some(cancelled);
+        self
+    }
+
     fn run(&self, prompt: &str) -> Result<String> {
+        if let Some(cancelled) = &self.cancelled {
+            return HeadlessRunner::run_cancellable(
+                &self.harness,
+                &self.workdir,
+                prompt,
+                crate::headless::ModelSel::new(self.model.as_deref(), self.reasoning),
+                false,
+                cancelled,
+            );
+        }
         // Repo-aware (not `restricted`): per-slice prompts lose cross-file
         // context, so letting the harness read the tree back is worth more
         // than the isolation.
@@ -461,6 +481,7 @@ pub struct HeadlessSynthesisRunner {
     workdir: PathBuf,
     model: Option<String>,
     reasoning: Option<crate::headless::ReasoningLevel>,
+    cancelled: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     render_synthesis: SynthesisPromptRenderer,
     render_summary: SynthesisPromptRenderer,
 }
@@ -478,6 +499,7 @@ impl HeadlessSynthesisRunner {
             workdir,
             model,
             reasoning: None,
+            cancelled: None,
             render_synthesis,
             render_summary,
         }
@@ -489,7 +511,25 @@ impl HeadlessSynthesisRunner {
         self
     }
 
+    pub(crate) fn with_cancellation(
+        mut self,
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancelled = Some(cancelled);
+        self
+    }
+
     fn run(&self, prompt: &str) -> Result<String> {
+        if let Some(cancelled) = &self.cancelled {
+            return HeadlessRunner::run_cancellable(
+                &self.harness,
+                &self.workdir,
+                prompt,
+                crate::headless::ModelSel::new(self.model.as_deref(), self.reasoning),
+                true,
+                cancelled,
+            );
+        }
         HeadlessRunner::run(
             &self.harness,
             &self.workdir,
@@ -764,6 +804,35 @@ mod tests {
             path: path.to_string(),
             header,
             hunks,
+        }
+    }
+
+    #[test]
+    fn cancelled_review_does_not_launch_more_batches_or_synthesis() {
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let batch = HeadlessBatchRunner::new(
+            AgentKind::Claude,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Box::new(str::to_owned),
+            Box::new(|diff, _, _| diff.to_owned()),
+        )
+        .with_cancellation(cancelled.clone());
+        let synthesis = HeadlessSynthesisRunner::new(
+            AgentKind::Claude,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Box::new(|findings, _| findings.to_owned()),
+            Box::new(|_, findings| findings.to_owned()),
+        )
+        .with_cancellation(cancelled);
+        for result in [
+            batch.review("diff"),
+            batch.review_hunk("diff", "file", "hunk"),
+            synthesis.synthesize("findings", ""),
+            synthesis.summarize("batch", "findings"),
+        ] {
+            assert!(result.unwrap_err().to_string().contains("cancelled"));
         }
     }
 

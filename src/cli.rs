@@ -1289,6 +1289,8 @@ fn run_loop<B: Backend + io::Write>(
             app.show_error(e);
         }
 
+        force_redraw |= app.poll_pr_workspace_bg();
+
         if matches!(app.mode, app::AppMode::DiffReviewPrompt(_))
             && let Err(e) = app.poll_diff_review_explanation()
         {
@@ -1358,7 +1360,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.pr_review_work.fetch_pending() && app.poll_pr_review_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.pr_review_work.fetch_pending()
+            && app.poll_pr_review_bg()
+        {
             force_redraw = true;
         }
 
@@ -1370,7 +1375,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.pr_review_work.review_post_pending() && app.poll_pr_review_post_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.pr_review_work.review_post_pending()
+            && app.poll_pr_review_post_bg()
+        {
             force_redraw = true;
         }
 
@@ -1382,7 +1390,10 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.pr_review_work.investigation_pending() && app.poll_pr_investigation_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.pr_review_work.investigation_pending()
+            && app.poll_pr_investigation_bg()
+        {
             force_redraw = true;
         }
 
@@ -1422,19 +1433,31 @@ fn run_loop<B: Backend + io::Write>(
             force_redraw = true;
         }
 
-        if app.memory_ai_summary_bg.is_some() && app.poll_memory_ai_summary_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.memory_ai_summary_bg.is_some()
+            && app.poll_memory_ai_summary_bg()
+        {
             force_redraw = true;
         }
 
-        if app.ai_review_run.is_pending() && app.poll_ai_pr_review_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.ai_review_run.is_pending()
+            && app.poll_ai_pr_review_bg()
+        {
             force_redraw = true;
         }
 
-        if app.ai_review_triage_refresh_bg.is_some() && app.poll_ai_review_triage_refresh_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.ai_review_triage_refresh_bg.is_some()
+            && app.poll_ai_review_triage_refresh_bg()
+        {
             force_redraw = true;
         }
 
-        if app.codex_models_cli_bg.is_some() && app.poll_codex_models_cli_bg() {
+        if !app.pr_workspace_owns_engines()
+            && app.codex_models_cli_bg.is_some()
+            && app.poll_codex_models_cli_bg()
+        {
             force_redraw = true;
         }
 
@@ -1444,7 +1467,7 @@ fn run_loop<B: Backend + io::Write>(
         if app.poll_learning_answers_bg() {
             force_redraw = true;
         }
-        if app.poll_review_questions() {
+        if !app.pr_workspace_owns_engines() && app.poll_review_questions() {
             force_redraw = true;
         }
         force_redraw |= app.poll_markdown_diagrams();

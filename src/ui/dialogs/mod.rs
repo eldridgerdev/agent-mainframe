@@ -21,6 +21,7 @@ mod model_analysis;
 mod plan_interview;
 mod plan_interview_attach;
 mod pr_review;
+pub(crate) mod pr_workspace;
 mod precall;
 mod project;
 mod prompt_library;

@@ -10,6 +10,7 @@ mod hooks_setup;
 mod pane_input;
 mod plans;
 mod pr_triage;
+mod pr_workspace;
 mod prompts_configuration;
 mod resources;
 mod review_questions;

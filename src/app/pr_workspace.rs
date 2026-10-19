@@ -233,21 +233,30 @@ impl App {
         if self.pr_workspace.is_some() && !self.close_pr_workspace() {
             return;
         }
-        let workdir = match &self.mode {
-            AppMode::Viewing(view) => self.feature_for_view(view).map(|f| f.workdir.clone()),
+        let context = match &self.mode {
+            AppMode::Viewing(view) => self
+                .feature_for_view(view)
+                .map(|f| (f.workdir.clone(), Some(f.branch.clone()))),
             AppMode::Normal => match self.selection {
-                Selection::Project(pi) => self.store.projects.get(pi).map(|p| p.repo.clone()),
-                _ => self.selected_feature().map(|(_, f)| f.workdir.clone()),
+                Selection::Project(pi) => {
+                    self.store.projects.get(pi).map(|p| (p.repo.clone(), None))
+                }
+                _ => self
+                    .selected_feature()
+                    .map(|(_, f)| (f.workdir.clone(), Some(f.branch.clone()))),
             },
             _ => None,
         };
-        let Some(workdir) = workdir else {
+        let Some((workdir, feature_branch)) = context else {
             self.message = Some("Select a project or feature to open PR Workspace".into());
             return;
         };
         let origin = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.pr_workspace = Some(PrWorkspace::new(workdir.clone(), origin));
         self.open_pr_review_list(workdir, None);
+        if let AppMode::PrReviewList(state) = &mut self.mode {
+            state.feature_branch = feature_branch;
+        }
     }
 
     pub(crate) fn open_pr_workspace_for_workdir(&mut self, workdir: PathBuf) {

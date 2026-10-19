@@ -567,3 +567,139 @@ fn ai_fix_handoff_preserves_the_ai_view_and_reuses_the_existing_triage() {
     press(app, KeyCode::Char('2'));
     assert!(matches!(&app.mode, AppMode::PrReview(state) if state.review.comments.len() == 4));
 }
+
+fn feature_pr_list(_: &Path, _: bool) -> ReviewListLoaded {
+    let mut unrelated = reviewable();
+    unrelated.number = 8;
+    unrelated.head_ref = "another-feature".into();
+    let mut current = reviewable();
+    current.head_ref = "my-feat".into();
+    ReviewListLoaded {
+        prs: Ok(vec![unrelated, current]),
+        current_user: None,
+        repo_key: None,
+    }
+}
+
+fn ambiguous_feature_pr_list(workdir: &Path, resolve_user: bool) -> ReviewListLoaded {
+    let mut loaded = feature_pr_list(workdir, resolve_user);
+    if let Ok(prs) = &mut loaded.prs {
+        prs[0].head_ref = "my-feat".into();
+        prs[0].is_cross_repository = true;
+        prs[0].head_owner = "someone-else".into();
+    }
+    loaded
+}
+
+fn settle_workspace_picker(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.pr_review_work.review_list_pending() {
+        app.poll_pr_review_list_bg();
+        assert!(Instant::now() < deadline, "PR picker did not load");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn workspace_picker(app: &App) -> &PrReviewListState {
+    let AppMode::PrReviewList(state) = &app.mode else {
+        panic!("expected the workspace PR picker");
+    };
+    state
+}
+
+#[test]
+fn picker_selects_the_feature_pr_and_keeps_its_badge_after_browsing_and_reload() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(dir.path().to_path_buf(), ProjectStatus::Idle),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.pr_review_work
+        .set_review_list_loader_for_test(feature_pr_list);
+    press(&mut app, KeyCode::Char('G'));
+    settle_workspace_picker(&mut app);
+    assert_eq!(workspace_picker(&app).selected, 1);
+    assert_eq!(workspace_picker(&app).feature_pr_number(), Some(7));
+
+    press(&mut app, KeyCode::Char('k'));
+    assert_eq!(workspace_picker(&app).selected, 0);
+    let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let rows: Vec<String> = terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(120)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect();
+    let marked = rows
+        .iter()
+        .find(|row| row.contains("current feature"))
+        .unwrap();
+    assert!(marked.contains("#7"));
+    assert!(!marked.contains("#8"));
+
+    press(&mut app, KeyCode::Char('r'));
+    settle_workspace_picker(&mut app);
+    assert_eq!(
+        workspace_picker(&app).selected,
+        0,
+        "reload must retain the reader's selection"
+    );
+    assert_eq!(workspace_picker(&app).feature_pr_number(), Some(7));
+}
+
+#[test]
+fn session_picker_uses_the_viewed_feature_instead_of_dashboard_selection() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(dir.path().to_path_buf(), ProjectStatus::Idle),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Project(0);
+    app.mode = AppMode::Viewing(view_state_for("my-project", "my-feat"));
+    app.pr_review_work
+        .set_review_list_loader_for_test(feature_pr_list);
+    app.activate_leader();
+    press(&mut app, KeyCode::Char('G'));
+    settle_workspace_picker(&mut app);
+    assert_eq!(
+        workspace_picker(&app).feature_branch.as_deref(),
+        Some("my-feat")
+    );
+    assert_eq!(workspace_picker(&app).selected, 1);
+}
+
+#[test]
+fn picker_does_not_mark_a_project_row_or_a_missing_or_ambiguous_feature_pr() {
+    let dir = TempDir::new().unwrap();
+    for (selection, branch, ambiguous) in [
+        (Selection::Project(0), "my-feat", false),
+        (Selection::Feature(0, 0), "missing", false),
+        (Selection::Feature(0, 0), "MY-FEAT", false),
+        (Selection::Feature(0, 0), "my-feat", true),
+    ] {
+        let mut app = App::new_for_test(
+            store_with_repo(dir.path().to_path_buf(), ProjectStatus::Idle),
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.store.projects[0].features[0].branch = branch.into();
+        app.selection = selection;
+        app.pr_review_work
+            .set_review_list_loader_for_test(if ambiguous {
+                ambiguous_feature_pr_list
+            } else {
+                feature_pr_list
+            });
+        press(&mut app, KeyCode::Char('G'));
+        settle_workspace_picker(&mut app);
+        assert_eq!(workspace_picker(&app).selected, 0);
+        assert_eq!(workspace_picker(&app).feature_pr_number(), None);
+    }
+}

@@ -776,15 +776,17 @@ fn draw_review_list(
         }
         PrReviewListLoad::Loaded(prs) => {
             let current_user = state.current_user.as_deref();
+            let feature_pr = state.feature_pr_number();
             let items: Vec<ListItem> = prs
                 .iter()
                 .map(|pr| {
-                    ListItem::new(pr_review_list_row(
-                        pr,
-                        state.drafts.get(&pr.number),
-                        current_user,
-                        theme,
-                    ))
+                    let mut row =
+                        pr_review_list_row(pr, state.drafts.get(&pr.number), current_user, theme);
+                    if feature_pr == Some(pr.number) {
+                        row.spans
+                            .insert(0, chip("current feature", theme.warning.to_color()));
+                    }
+                    ListItem::new(row)
                 })
                 .collect();
             let list = List::new(items)
@@ -3321,6 +3323,7 @@ mod tests {
             workdir: std::path::PathBuf::from("/tmp/repo"),
             load,
             selected: 0,
+            feature_branch: None,
             reloading: false,
             request_id: 1,
             triage: None,

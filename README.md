@@ -438,7 +438,9 @@ From the dashboard, press `G`, or press `Ctrl+Space`, then uppercase `G`
 from the dashboard or an embedded session. Select a pull request once to open
 its files, GitHub feedback, and AI findings in a shared workspace. The old PR
 Triage / Review workflow is available through leader+`U` for comparison. `W`
-retains the existing AI Review workflow.
+retains the existing AI Review workflow. When opened from a feature or its
+session, the picker initially selects that branch's PR and labels it
+`current feature`. The label stays visible when you browse other PRs.
 
 Use `1` for Files, `2` for Threads, and `3` for AI findings. Selecting feedback
 opens its file and line in the diff alongside the discussion. `Tab` changes

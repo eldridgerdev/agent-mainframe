@@ -29,6 +29,7 @@ impl App {
             workdir,
             load: PrReviewListLoad::Loading,
             selected: 0,
+            feature_branch: None,
             reloading: false,
             request_id,
             triage,
@@ -273,10 +274,13 @@ impl App {
                     _ => None,
                 };
                 // Keep the highlight on the same PR across a reload.
-                state.selected = previous
-                    .and_then(|n| prs.iter().position(|p| p.number == n))
-                    .unwrap_or(0);
                 state.load = PrReviewListLoad::Loaded(prs);
+                let preferred = previous.or_else(|| state.feature_pr_number());
+                if let PrReviewListLoad::Loaded(prs) = &state.load {
+                    state.selected = preferred
+                        .and_then(|n| prs.iter().position(|p| p.number == n))
+                        .unwrap_or(0);
+                }
                 state.current_user = current_user;
                 state.drafts = drafts;
             }

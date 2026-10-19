@@ -21,9 +21,49 @@ const reviewing: PrTriageView = {
     comments: [{ id: 7, kind: "inline", review_state: null, author: "reviewer", is_bot: false, path: "src/lib.rs", line: 4, side: "RIGHT", outdated: false, file_level: false, body: "Check this change", snippet: "Check this change", hunk: null, resolved: false, can_resolve: true, triage: "untriaged", local_note: null, actionable: true, local_finding: false, replies: [], investigation: null }] },
 };
 
+it("posts findings only after confirmation and prepares a selected or batch fix in the agent composer", async () => {
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: { ...target, session_id: "session-1" }, label: "Claude 1", harness: "claude", stopped: false }] };
+  const finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "Handle the empty input", diff_hunk: "@@ -1 +1 @@", skipped: false, published: false };
+  const onHandoff = vi.fn();
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot") return fixes;
+    if (command === "pr_triage_act") return fixes;
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_switch_threads") return undefined;
+    if (command === "pr_workspace_ai_snapshot" || command === "pr_workspace_ai_act") {
+      const action = (args as { action?: { kind: string } } | undefined)?.action?.kind;
+      if (action === "post") return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", running: false, stage: null, activity: null, elapsed_seconds: 1, token_estimate: 100, findings: [{ ...finding, published: true }], summary: "Review summary", error: null, precall: null, can_cancel: false };
+      return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", running: false, stage: null, activity: null, elapsed_seconds: 1, token_estimate: 100, findings: [finding], summary: "Review summary", error: null, precall: null, can_cancel: false };
+    }
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} onHandoff={onHandoff} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "AI Review" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Select all" }));
+  expect((await screen.findByRole("checkbox", { name: "Batch" }) as HTMLInputElement).checked).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+  expect((screen.getByRole("checkbox", { name: "Batch" }) as HTMLInputElement).checked).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Select all" }));
+  fireEvent.click(screen.getByRole("button", { name: "Prepare batch fix (1)" }));
+  expect(onHandoff).toHaveBeenCalledWith(expect.objectContaining({
+    target: { ...target, session_id: "session-1" },
+    draft_prompt: expect.stringContaining("Handle the empty input"),
+  }));
+  expect(await screen.findByRole("button", { name: "Post to GitHub…" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Post to GitHub…" }));
+  expect(await screen.findByRole("alertdialog", { name: "Confirm post AI review to GitHub" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Post review to GitHub" }));
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "post")).toBe(true));
+  expect(await screen.findByText("Posted")).toBeTruthy();
+});
+
 it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a running review", async () => {
   let running = false;
   let picked = false;
+  const onReturnToFeature = vi.fn();
+  const onStatusChange = vi.fn();
   vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
     if (command === "pr_workspace_begin") return "workspace";
     if (command === "pr_triage_begin") return picker;
@@ -40,7 +80,7 @@ it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a ru
     throw new Error(`Unexpected command ${command}`);
   });
 
-  render(<PrWorkspacePanel target={target} onClose={vi.fn()} />);
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={onReturnToFeature} onStatusChange={onStatusChange} />);
   const collapseSidebar = await screen.findByRole("button", { name: "Collapse PR sidebar" });
   expect(collapseSidebar.getAttribute("aria-expanded")).toBe("true");
   fireEvent.click(collapseSidebar);
@@ -58,6 +98,9 @@ it("opens the feature PR in a shared Files/Threads/AI workspace and cancels a ru
   expect(screen.getByText("Fetch PR changes")).toBeTruthy();
   expect(screen.getByText("Reviewing src/lib.rs (initial)")).toBeTruthy();
   expect(screen.getByText("15s")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Back to feature" }));
+  expect(onReturnToFeature).toHaveBeenCalledOnce();
+  expect(onStatusChange).toHaveBeenLastCalledWith({ running: true, prNumber: 42, completed: false });
   fireEvent.click(screen.getByRole("button", { name: "Cancel AI review" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "Start AI review" })).toBeTruthy());
   expect(vi.mocked(invoke).mock.calls.some(([name, args]) => name === "pr_workspace_ai_act" && (args as { action: { kind: string } }).action.kind === "cancel")).toBe(true);
@@ -79,7 +122,7 @@ it("does not overlap slow PR thread snapshots", async () => {
     throw new Error(`Unexpected command ${command}`);
   });
 
-  render(<PrWorkspacePanel target={target} onClose={vi.fn()} />);
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
   await waitFor(() => expect(screen.getByText(/Loading review comments for PR #42/)).toBeTruthy());
   await waitFor(() => expect(snapshots).toBe(1), { timeout: 1500 });

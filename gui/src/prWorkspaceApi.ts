@@ -9,7 +9,7 @@ export interface WorkspaceAi {
   activity: string | null; elapsed_seconds: number; token_estimate: number | null; findings: WorkspaceFinding[]; summary: string | null;
   error: string | null; precall: { title: string; harness: string; preview: string; viewing: boolean } | null; can_cancel: boolean;
 }
-export type WorkspaceAiAction = { kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" };
+export type WorkspaceAiAction = { kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" | "post" };
 export const workspaceBegin = (target: FeatureTarget) => invoke<string>("pr_workspace_begin", { target });
 export const workspaceSelectPr = (workflowId: string, number: number) => invoke<void>("pr_workspace_select_pr", { workflowId, number });
 export const workspaceSwitchAi = (workflowId: string, number: number) => invoke<void>("pr_workspace_switch_ai", { workflowId, number });

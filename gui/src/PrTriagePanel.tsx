@@ -33,7 +33,7 @@ function hunkClass(line: string) {
 
 /** PR Triage: browse a pull request's review feedback and act on it. Every
  * GitHub write and AI call is shown first and needs an explicit confirmation. */
-export default function PrTriagePanel({ target, onClose, onHandoff, embedded = false, embeddedView, onEmbeddedViewChange, onEmbeddedBusyChange, onRequestClose }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void; embedded?: boolean; embeddedView?: PrTriageView | null; onEmbeddedViewChange?: (view: PrTriageView) => void; onEmbeddedBusyChange?: (busy: boolean) => void; onRequestClose?: (requestClose: () => void) => void }) {
+export default function PrTriagePanel({ target, onClose, onHandoff, embedded = false, embeddedActive = true, embeddedView, onEmbeddedViewChange, onEmbeddedBusyChange, onRequestClose }: { target: PrTriageTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void; embedded?: boolean; embeddedActive?: boolean; embeddedView?: PrTriageView | null; onEmbeddedViewChange?: (view: PrTriageView) => void; onEmbeddedBusyChange?: (busy: boolean) => void; onRequestClose?: (requestClose: () => void) => void }) {
   const [view, setView] = useState<PrTriageView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +70,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   // Background work (a comment fetch, a list read or an investigation) reports through polls.
   const waiting = view?.stage === "loading" || !!view?.picker?.loading || view?.review?.investigating != null;
   useEffect(() => {
-    if (!view || !waiting || busy) return;
+    if (!view || !waiting || busy || (embedded && !embeddedActive)) return;
     const workflowId = view.workflow_id;
     let live = true;
     let timer = 0;
@@ -89,7 +89,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     };
     timer = window.setTimeout(poll, 700);
     return () => { live = false; window.clearTimeout(timer); };
-  }, [view?.workflow_id, waiting, busy]);
+  }, [view?.workflow_id, waiting, busy, embedded, embeddedActive]);
 
   // Seed the local reply editor once per opened reply; later polls never
   // overwrite what the user typed.

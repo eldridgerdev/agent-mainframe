@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
-import { Modal, Spinner } from "./ui";
+import { Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import type { PrFixHandoff } from "./prTriageApi";
 import { prTriageAct, prTriageBegin, type PrTriageView } from "./prTriageApi";
-import { workspaceAiAct, workspaceAiSnapshot, workspaceBegin, workspaceClose, workspaceFiles, workspaceSelectPr, workspaceSwitchAi, workspaceSwitchThreads, type WorkspaceAi, type WorkspaceFiles } from "./prWorkspaceApi";
+import { workspaceAiAct, workspaceAiSnapshot, workspaceBegin, workspaceClose, workspaceFiles, workspaceSelectPr, workspaceSwitchAi, workspaceSwitchThreads, type WorkspaceAi, type WorkspaceFinding, type WorkspaceFiles } from "./prWorkspaceApi";
 
 type Tab = "files" | "threads" | "ai";
+
+export type PrWorkspaceStatus = { running: boolean; prNumber: number | null; completed: boolean };
 
 function elapsedLabel(seconds: number) {
   const minutes = Math.floor(seconds / 60);
@@ -17,37 +19,63 @@ function elapsedLabel(seconds: number) {
 }
 
 /** Experimental three-pane PR workspace. The legacy PR Triage modal remains a separate route. */
-export default function PrWorkspacePanel({ target, onClose, onHandoff }: { target: FeatureTarget; onClose: () => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
+export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, onStatusChange, onHandoff }: { target: FeatureTarget; onClose: () => void; onReturnToFeature: () => void; onStatusChange: (status: PrWorkspaceStatus) => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [triage, setTriage] = useState<PrTriageView | null>(null);
   const [files, setFiles] = useState<WorkspaceFiles | null>(null);
   const [ai, setAi] = useState<WorkspaceAi | null>(null);
   const [tab, setTab] = useState<Tab>("threads");
   const [path, setPath] = useState<string | null>(null);
+  const [fixTargetSession, setFixTargetSession] = useState("");
+  const [selectedFindings, setSelectedFindings] = useState<Set<number>>(new Set());
+  const [publishConfirm, setPublishConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [busy, setBusy] = useState(true);
   const [triageBusy, setTriageBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const aiLocalStartedAt = useRef<number | null>(null);
   const [clockNow, setClockNow] = useState(() => Date.now());
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
   const prIdentity = useRef<string | null>(null);
   const triageClose = useRef<(() => void) | null>(null);
+  const mountGeneration = useRef(0);
 
   useEffect(() => {
+    const generation = ++mountGeneration.current;
     let live = true;
     let id: string | null = null;
+    let initialized = false;
+    const release = () => {
+      if (!live && initialized && id && mountGeneration.current === generation) {
+        void workspaceClose(id).catch(() => undefined);
+        id = null;
+      }
+    };
     void (async () => {
       try {
         id = await workspaceBegin(target);
+        if (!live) {
+          if (mountGeneration.current === generation) { initialized = true; release(); }
+          return;
+        }
         const view = await prTriageBegin(target);
-        if (!live) return;
+        initialized = true;
+        if (!live) { release(); return; }
         setWorkflowId(id); setTriage(view);
       } catch (e) {
-        if (id) void workspaceClose(id).catch(() => undefined);
+        initialized = true;
+        if (id && mountGeneration.current === generation) {
+          void workspaceClose(id).catch(() => undefined);
+          id = null;
+        }
         if (live) setError(asGuiError(e).message);
       } finally { if (live) setBusy(false); }
     })();
-    return () => { live = false; };
+    return () => {
+      live = false;
+      queueMicrotask(release);
+    };
   }, [target.project_id, target.feature_id]);
 
   const loadFiles = useCallback(async (id: string) => {
@@ -109,12 +137,46 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
     return () => window.clearInterval(timer);
   }, [ai?.running]);
 
-  const aiAct = async (kind: "start" | "cancel" | "confirm_precall" | "cancel_precall") => {
+  useEffect(() => {
+    const hasResult = !!ai && !ai.running && (!!ai.summary || !!ai.error || ai.findings.length > 0);
+    onStatusChange({ running: !!ai?.running, prNumber: ai?.pr_number ?? null, completed: hasResult });
+  }, [ai?.running, ai?.pr_number, ai?.summary, ai?.error, ai?.findings.length, onStatusChange]);
+
+  const aiAct = async (kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" | "post") => {
     if (!workflowId || busy) return;
     setBusy(true);
-    try { setAi(await workspaceAiAct(workflowId, { kind })); setError(null); }
+    if (kind === "start") setSelectedFindings(new Set());
+    try {
+      setAi(await workspaceAiAct(workflowId, { kind }));
+      setError(null);
+      if (kind === "post") { setPublishConfirm(false); setSelectedFindings(new Set()); }
+    }
     catch (e) { setError(asGuiError(e).message); }
     finally { setBusy(false); }
+  };
+
+  const publishableFindings = ai?.findings.filter((finding) => !finding.skipped && !finding.published) ?? [];
+  const fixableFindingIndices = ai?.findings.flatMap((finding, index) => !finding.skipped && !finding.published ? [index] : []) ?? [];
+  const allFixableSelected = fixableFindingIndices.length > 0 && fixableFindingIndices.every((index) => selectedFindings.has(index));
+  const toggleAllFixableFindings = () => setSelectedFindings((current) => {
+    const next = new Set(current);
+    for (const index of fixableFindingIndices) {
+      if (allFixableSelected) next.delete(index);
+      else next.add(index);
+    }
+    return next;
+  });
+  const prepareFix = (findings: WorkspaceFinding[]) => {
+    const targets = triage?.fix_targets.filter((item) => !item.stopped) ?? [];
+    const chosen = targets.find((item) => item.target.session_id === fixTargetSession) ?? targets[0];
+    if (!chosen || !onHandoff || !findings.length) return;
+    const label = findings.length === 1 ? "AI review finding" : `${findings.length} AI review findings`;
+    const fence = String.fromCharCode(96).repeat(3);
+    const details = findings.map((finding, index) => {
+      const location = finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ""}` : "General finding";
+      return `### ${index + 1}. ${location}\n${finding.body}${finding.diff_hunk ? `\n\nRelated diff:\n\n${fence}diff\n${finding.diff_hunk}\n${fence}` : ""}`;
+    }).join("\n\n");
+    onHandoff({ target: chosen.target, draft_prompt: `Please address the following ${label} from PR #${ai?.pr_number ?? ""}. Review the relevant code and make the smallest correct changes. Do not post anything to GitHub; leave a concise summary of changes and any remaining concerns.\n\n${details}` });
   };
 
   const closeWorkspace = useCallback(async (triageAlreadyClosed = false) => {
@@ -130,25 +192,49 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
     finally { setBusy(false); }
   }, [workflowId, busy, tab, triage, onClose]);
 
-  const requestClose = useCallback(() => {
+  const requestClose = useCallback(async () => {
+    if (busy) return;
+    try {
+      if (workflowId && tab === "ai") {
+        await workspaceSwitchThreads(workflowId);
+        setTab("threads");
+      }
+    } catch (e) {
+      setError(asGuiError(e).message);
+      return;
+    }
     if (triageClose.current) triageClose.current();
     else void closeWorkspace();
-  }, [closeWorkspace]);
+  }, [workflowId, busy, tab, closeWorkspace]);
 
   useEffect(() => {
     if (!workflowId || !triage) return;
     const number = triage.review?.number ?? 0;
     const identity = triage.review ? `${triage.review.number}:${triage.review.head_sha}` : null;
+    const changedPr = prIdentity.current !== null && identity !== prIdentity.current;
+    const needsThreadRestore = changedPr && tabRef.current === "ai";
     if (identity !== prIdentity.current) {
-      if (prIdentity.current !== null) {
+      if (changedPr) {
         setFiles(null);
         setAi(null);
         setPath(null);
-        setTab("threads");
+        setSelectedFindings(new Set());
+        setPublishConfirm(false);
+        if (!needsThreadRestore) setTab("threads");
       }
       prIdentity.current = identity;
     }
-    void workspaceSelectPr(workflowId, number).catch((e) => setError(asGuiError(e).message));
+    void (async () => {
+      try {
+        if (needsThreadRestore) {
+          setBusy(true);
+          await workspaceSwitchThreads(workflowId);
+          setTab("threads");
+        }
+        await workspaceSelectPr(workflowId, number);
+      } catch (e) { setError(asGuiError(e).message); }
+      finally { if (needsThreadRestore) setBusy(false); }
+    })();
   }, [workflowId, triage?.review?.number, triage?.review?.head_sha]);
 
   const review = triage?.review;
@@ -157,8 +243,17 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
     ? Math.max(ai.elapsed_seconds, Math.floor((clockNow - aiLocalStartedAt.current) / 1000))
     : ai?.elapsed_seconds ?? 0;
 
-  return <Modal label="Experimental PR Workspace" title={`PR Workspace${triage ? ` · ${triage.feature_name}` : ""}`} size="workspace" dismissable={!busy && !triageBusy && !ai?.running && !ai?.precall} onClose={requestClose}>
-    <p className="muted small">Experimental · shared PR files, review threads and AI review</p>
+  return <section className="pr-workspace-page" aria-label="Experimental PR Workspace">
+    <header className="pr-workspace-page-header">
+      <div className="pr-workspace-page-kicker"><span>Feature workspace</span><span className="tag tag-accent">Experimental</span></div>
+      <div className="pr-workspace-page-title-row">
+        <div><h1>Pull request workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place</p></div>
+        <div className="pr-workspace-page-actions">
+          {ai?.running && <span className="pr-workspace-running-label"><Spinner /> Reviewing PR #{ai.pr_number}</span>}
+          <button type="button" className="btn btn-secondary" onClick={onReturnToFeature}>Back to feature</button>
+        </div>
+      </div>
+    </header>
     {(error || triage?.error) && <p className="callout callout-danger" role="alert">{error || triage?.error}</p>}
     <div className={`pr-workspace-layout${sidebarOpen ? "" : " pr-workspace-layout-collapsed"}`}>
       <aside className={`pr-workspace-context${sidebarOpen ? "" : " pr-workspace-context-collapsed"}`} aria-label="Pull request context">
@@ -180,7 +275,7 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
           <section className="diff-content" aria-label="PR file diff">{file ? <><strong>{file.path}</strong><div className="diff-code">{file.is_binary ? <p>Binary file changed.</p> : file.hunks.length ? file.hunks.map((hunk, i) => <Hunk key={i} hunk={hunk} split={false} />) : <pre>{file.patch || "No textual changes."}</pre>}</div></> : <p className="muted">{busy ? <><Spinner /> Loading PR files…</> : "No changed files."}</p>}</section>
         </div>}
         {workflowId && <div className="pr-workspace-threads" hidden={tab !== "threads"}>
-          <PrTriagePanel target={target} embedded embeddedView={triage} onEmbeddedViewChange={setTriage} onEmbeddedBusyChange={setTriageBusy} onRequestClose={(close) => { triageClose.current = close; }} onClose={() => void closeWorkspace(true)} onHandoff={onHandoff} />
+          <PrTriagePanel target={target} embedded embeddedActive={tab === "threads"} embeddedView={triage} onEmbeddedViewChange={setTriage} onEmbeddedBusyChange={setTriageBusy} onRequestClose={(close) => { triageClose.current = close; }} onClose={() => void closeWorkspace(true)} onHandoff={onHandoff} />
         </div>}
         {review && tab === "ai" && <section className="pr-workspace-ai" aria-label="AI PR review">
           {ai?.precall ? <div className="callout"><h3>{ai.precall.title}</h3><p>{ai.precall.harness}</p><details><summary>Review prompt</summary><pre>{ai.precall.preview}</pre></details><button className="btn btn-secondary" disabled={busy} onClick={() => void aiAct("cancel_precall")}>Cancel AI review</button><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("confirm_precall")}>Continue</button></div>
@@ -194,10 +289,17 @@ export default function PrWorkspacePanel({ target, onClose, onHandoff }: { targe
               <div className="pr-ai-metrics"><span>Elapsed <strong>{elapsedLabel(aiElapsedSeconds)}</strong></span><span>PR head <code>{ai.head_sha.slice(0, 7)}</code></span>{ai.token_estimate != null && <span>Prompt size <strong>~{ai.token_estimate.toLocaleString()} tokens</strong></span>}</div>
               <div className="pr-ai-progress-actions"><p className="muted small">Large changes can take a few minutes. If progress stops, you can cancel the run.</p><button className="btn btn-warning" disabled={busy} onClick={() => void aiAct("cancel")}>Cancel AI review</button></div>
             </section>
-              : <><div className="row"><h3>AI review of PR #{ai?.pr_number ?? review.number}</h3>{ai && ai.pr_number !== review.number && <button className="btn btn-secondary" disabled={busy} onClick={() => void switchTab("ai")}>Switch to selected PR #{review.number}</button>}<button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("start")}>{ai?.findings.length ? "Run again" : "Start AI review"}</button></div>{ai?.error && <p className="callout callout-danger">{ai.error}</p>}{ai?.summary && <Markdown source={ai.summary} />}{ai?.findings.map((finding, i) => <article className="callout" key={i}><strong>{finding.path || "General"}{finding.line ? `:${finding.line}` : ""}</strong><Markdown source={finding.body} />{finding.diff_hunk && <pre className="pr-snippet">{finding.diff_hunk}</pre>}</article>)}{ai && !ai.findings.length && !ai.error && <p className="muted">Run AI review to inspect the PR diff for findings.</p>}</>}
+            : <div className="pr-ai-results">
+              <header className="pr-ai-results-header"><div><span className="eyebrow">AI review</span><h2>PR #{ai?.pr_number ?? review.number}</h2><p className="muted">Head <code>{ai?.head_sha.slice(0, 7) ?? review.head_sha.slice(0, 7)}</code></p></div><div className="pr-ai-results-actions">{ai?.findings.length ? <span className="tag tag-accent">{ai.findings.length} {ai.findings.length === 1 ? "finding" : "findings"}</span> : ai?.summary && !ai.error ? <span className="tag tag-success">No findings</span> : null}{publishableFindings.length > 0 && <button className="btn btn-secondary" disabled={busy || ai?.running} onClick={() => setPublishConfirm(true)}>Post to GitHub…</button>}{ai && ai.pr_number !== review.number && <button className="btn btn-secondary" disabled={busy} onClick={() => void switchTab("ai")}>Switch to selected PR #{review.number}</button>}<button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("start")}>{ai?.findings.length || ai?.summary ? "Run again" : "Start AI review"}</button></div></header>
+              {publishConfirm && <section className="pr-ai-publish-confirm" role="alertdialog" aria-label="Confirm post AI review to GitHub"><div><span className="eyebrow">GitHub review</span><h3>Post {publishableFindings.length} {publishableFindings.length === 1 ? "finding" : "findings"} to PR #{ai?.pr_number}?</h3><p>This creates a comment review on GitHub as your <code>gh</code> account. The findings below will be visible to PR reviewers.</p><ul>{publishableFindings.map((finding, index) => <li key={`${finding.path}:${finding.line}:${index}`}><code>{finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ""}` : "General finding"}</code> — {finding.body.split("\n")[0]}</li>)}</ul></div><div className="pr-ai-results-actions"><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("post")}>{busy ? "Posting review…" : "Post review to GitHub"}</button><button className="btn btn-secondary" disabled={busy} onClick={() => setPublishConfirm(false)}>Cancel</button></div></section>}
+              {ai?.error && <p className="callout callout-danger" role="alert">{ai.error}</p>}
+              {ai?.summary && <section className="pr-ai-summary" aria-label="Review summary"><div className="pr-ai-summary-title"><span className="pr-ai-summary-mark">✓</span><div><span className="eyebrow">Review complete</span><h3>Summary</h3></div></div><Markdown source={ai.summary} /></section>}
+              {!!ai?.findings.length && <section className="pr-ai-findings-section" aria-label="Review findings"><div className="pr-ai-findings-heading"><h3>Findings</h3><span className="muted small">Ordered by appearance in the diff</span></div>{(triage?.fix_targets.filter((item) => !item.stopped).length ?? 0) > 0 && <div className="pr-ai-batch-toolbar"><label>Fix agent<select value={fixTargetSession || triage?.fix_targets.find((item) => !item.stopped)?.target.session_id || ""} disabled={busy} onChange={(event) => setFixTargetSession(event.target.value)}>{triage?.fix_targets.filter((item) => !item.stopped).map((item) => <option key={item.target.session_id} value={item.target.session_id}>{item.label}</option>)}</select></label><div className="pr-ai-batch-actions"><button className="btn btn-ghost btn-sm" disabled={busy || !fixableFindingIndices.length} onClick={toggleAllFixableFindings}>{allFixableSelected ? "Clear selection" : "Select all"}</button><button className="btn btn-secondary" disabled={busy || !onHandoff || !selectedFindings.size} onClick={() => prepareFix(ai!.findings.filter((_, index) => selectedFindings.has(index) && !ai!.findings[index].skipped && !ai!.findings[index].published))}>Prepare batch fix ({selectedFindings.size})</button></div></div>}<ol className="pr-ai-findings">{ai.findings.map((finding, i) => <li className="pr-ai-finding" key={`${finding.path}:${finding.line}:${i}`}><span className="pr-ai-finding-index">{String(i + 1).padStart(2, "0")}</span><article><header><code>{finding.path || "General"}{finding.line ? `:${finding.line}` : ""}</code><div className="pr-ai-finding-tools">{finding.published ? <span className="tag tag-success">Posted</span> : finding.skipped ? <span className="tag">Skipped</span> : <><span className="tag">Review finding</span>{onHandoff && triage?.fix_targets.some((item) => !item.stopped) && <><label className="pr-ai-select-finding"><input type="checkbox" checked={selectedFindings.has(i)} disabled={busy} onChange={(event) => setSelectedFindings((current) => { const next = new Set(current); if (event.target.checked) next.add(i); else next.delete(i); return next; })} />Batch</label><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => prepareFix([finding])}>Prepare fix</button></>}</>}</div></header><Markdown source={finding.body} />{finding.diff_hunk && <details className="pr-ai-finding-diff"><summary>Show related diff</summary><pre className="pr-snippet">{finding.diff_hunk}</pre></details>}</article></li>)}</ol></section>}
+              {ai && !ai.findings.length && !ai.error && !ai.summary && <div className="pr-ai-empty"><span className="pr-ai-summary-mark">✦</span><h3>Ready to review</h3><p className="muted">Run an AI review to inspect the selected PR for correctness issues.</p></div>}
+            </div>}
         </section>}
       </section>
     </div>
-    <div className="row pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head.</span><button className="btn btn-secondary" disabled={busy || triageBusy || ai?.running || !!ai?.precall} onClick={requestClose}>Close workspace</button></div>
-  </Modal>;
+    <footer className="pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head.</span><button className="btn btn-ghost btn-sm" disabled={busy || triageBusy || ai?.running || !!ai?.precall} onClick={requestClose}>Close workspace</button></footer>
+  </section>;
 }

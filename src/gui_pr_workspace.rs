@@ -99,7 +99,10 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
             // of leaving its first initialization orphaned.
             return Ok(id);
         }
-        return Err(GuiError::conflict("Close the current PR Workspace first"));
+        // A stale frontend mount can leave its context behind. Retire it when
+        // it is safe to do so before opening another feature; close still
+        // refuses while a review runner or confirmation is active.
+        close(gui, &id)?;
     }
     let app = gui.app_for_workflow();
     let (pi, fi) = app
@@ -293,9 +296,13 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
     check(gui, id)?;
     let (app, workspace) = gui.app_and_pr_workspace();
     let context = workspace.as_mut().unwrap();
-    let swap = !context.ai_active;
-    if swap && let Some(ai) = context.parked_ai.take() {
-        app.mode = *ai;
+    // A snapshot may arrive while Threads is visible (the frontend can still
+    // have an AI poll in flight). Borrow the AI mode for the snapshot, but
+    // preserve the live Threads mode in its own slot and restore it below.
+    let swap = !context.ai_active && context.parked_ai.is_some();
+    if swap {
+        let ai = *context.parked_ai.take().unwrap();
+        context.parked_threads = Some(Box::new(std::mem::replace(&mut app.mode, ai)));
     }
     app.poll_ai_pr_review_bg();
     let selected_pr = context.pr.clone();
@@ -303,10 +310,16 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
         AppMode::AiReview(state) => (
             state.findings.clone(),
             state.summary.clone(),
-            state.last_run.as_ref().and_then(|r| match &r.outcome {
-                crate::app::ai_review::AiReviewRunOutcome::Error(e) => Some(e.clone()),
-                _ => None,
-            }),
+            state
+                .post_confirm
+                .as_ref()
+                .and_then(|p| p.error.clone())
+                .or_else(|| {
+                    state.last_run.as_ref().and_then(|r| match &r.outcome {
+                        crate::app::ai_review::AiReviewRunOutcome::Error(e) => Some(e.clone()),
+                        _ => None,
+                    })
+                }),
         ),
         AppMode::AiReviewRunning(state) => (
             state.origin.findings.clone(),
@@ -326,9 +339,7 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
         },
         _ => None,
     };
-    let (pr_number, head_sha) = ai_identity
-        .or_else(|| selected_pr.map(|pr| (pr.number, pr.head_sha)))
-        .ok_or_else(|| GuiError::conflict("Select a PR in Threads first"))?;
+    let selected_identity = ai_identity.or_else(|| selected_pr.map(|pr| (pr.number, pr.head_sha)));
     let pre = match &app.mode {
         AppMode::PromptPrecall(pending)
             if matches!(pending.prior_mode.as_ref(), AppMode::AiReview(_)) =>
@@ -371,6 +382,8 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
             app.mode = *threads;
         }
     }
+    let (pr_number, head_sha) =
+        selected_identity.ok_or_else(|| GuiError::conflict("Select a PR in Threads first"))?;
     let can_cancel = running || pre.is_some();
     Ok(PrWorkspaceAiView {
         workflow_id: id.into(),
@@ -396,6 +409,7 @@ pub enum AiAction {
     Cancel,
     ConfirmPrecall,
     CancelPrecall,
+    Post,
 }
 
 pub fn log_ai_action_start(gui: &mut GuiHandle, action: &AiAction) {
@@ -457,16 +471,18 @@ pub fn log_ai_tab_switch(
 
 pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWorkspaceAiView> {
     check(gui, id)?;
-    let (ai_active, target, workdir) = {
+    let (ai_active, target, workdir, pr_number) = {
         let context = gui.pr_workspace_context.as_ref().unwrap();
         (
             context.ai_active,
             context.target.clone(),
             context.workdir.clone(),
+            context.pr.as_ref().map(|pr| pr.number),
         )
     };
     if !ai_active {
-        return Err(GuiError::conflict("Switch to AI Review first"));
+        let number = pr_number.ok_or_else(|| GuiError::conflict("Select a PR in Threads first"))?;
+        switch_to_ai(gui, id, number)?;
     }
     let app = gui.app_for_workflow();
     match action {
@@ -496,14 +512,33 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
             app.start_ai_pr_review();
         }
         AiAction::Cancel => {
-            if let Some(origin) = app.ai_review_run.cancel()
-                && matches!(app.mode, AppMode::AiReviewRunning(_))
-            {
-                app.mode = AppMode::AiReview(origin);
+            if let Some(origin) = app.ai_review_run.cancel() {
+                if matches!(app.mode, AppMode::AiReviewRunning(_)) {
+                    app.mode = AppMode::AiReview(origin);
+                } else if let Some(workspace) = gui.pr_workspace_context.as_mut() {
+                    // A run can be parked while another pane is foregrounded.
+                    // Keep its cancelled origin in the AI slot so restoring
+                    // that pane cannot resurrect a runnerless "running" view.
+                    workspace.parked_ai = Some(Box::new(AppMode::AiReview(origin)));
+                }
             }
         }
         AiAction::ConfirmPrecall => app.precall_confirm().map_err(GuiError::from)?,
         AiAction::CancelPrecall => app.precall_cancel(),
+        AiAction::Post => {
+            if !matches!(app.mode, AppMode::AiReview(_)) {
+                return Err(GuiError::conflict(
+                    "Wait for the AI review to finish before posting findings",
+                ));
+            }
+            app.ai_review_open_post_confirm();
+            if app.ai_review_post_confirm_view().is_none() {
+                return Err(GuiError::conflict(
+                    "There are no unpublished findings to post",
+                ));
+            }
+            app.ai_review_post().map_err(GuiError::from)?;
+        }
     }
     ai_snapshot(gui, id)
 }
@@ -523,11 +558,78 @@ mod tests {
     }
 
     #[test]
+    fn beginning_another_feature_retires_a_safe_stale_workspace() {
+        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let first = begin(&mut gui, target.clone()).unwrap();
+        let other = FeatureTarget {
+            project_id: target.project_id,
+            feature_id: "deleted-feature".into(),
+        };
+
+        assert!(begin(&mut gui, other).is_err());
+        assert!(gui.pr_workspace_context.is_none());
+        assert!(close(&mut gui, &first).is_err());
+    }
+
+    #[test]
     fn file_requests_require_an_opened_thread_pr() {
         let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
         let id = begin(&mut gui, target).unwrap();
         let error = files_request(&gui, &id).unwrap_err();
         assert!(error.message.contains("Select a PR in Threads first"));
+    }
+
+    fn test_pr() -> PrRef {
+        PrRef {
+            number: 42,
+            head_sha: "head-sha".into(),
+            url: "https://example.test/pull/42".into(),
+            owner: "fixture".into(),
+            repo: "repo".into(),
+            head_ref: "feature".into(),
+        }
+    }
+
+    #[test]
+    fn ai_snapshot_on_threads_without_an_ai_pane_preserves_the_live_mode() {
+        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let id = begin(&mut gui, target).unwrap();
+        gui.pr_workspace_context.as_mut().unwrap().pr = Some(test_pr());
+
+        ai_snapshot(&mut gui, &id).unwrap();
+
+        assert!(matches!(&gui.app_for_workflow().mode, AppMode::Normal));
+        let context = gui.pr_workspace_context.as_ref().unwrap();
+        assert!(!context.ai_active);
+        assert!(context.parked_ai.is_none());
+    }
+
+    #[test]
+    fn ai_snapshot_temporarily_borrows_parked_ai_without_losing_threads() {
+        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let id = begin(&mut gui, target).unwrap();
+        let pr = test_pr();
+        let workdir = gui.pr_workspace_context.as_ref().unwrap().workdir.clone();
+        gui.app_for_workflow()
+            .open_ai_review_for_pr(workdir, pr.clone());
+        let ai = Box::new(std::mem::replace(
+            &mut gui.app_for_workflow().mode,
+            AppMode::Normal,
+        ));
+        let context = gui.pr_workspace_context.as_mut().unwrap();
+        context.pr = Some(pr);
+        context.parked_ai = Some(ai);
+
+        ai_snapshot(&mut gui, &id).unwrap();
+
+        assert!(matches!(&gui.app_for_workflow().mode, AppMode::Normal));
+        let context = gui.pr_workspace_context.as_ref().unwrap();
+        assert!(!context.ai_active);
+        assert!(matches!(
+            context.parked_ai.as_deref(),
+            Some(AppMode::AiReview(_))
+        ));
+        assert!(context.parked_threads.is_none());
     }
 
     #[test]

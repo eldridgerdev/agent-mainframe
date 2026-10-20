@@ -10,7 +10,23 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Easier-to-scan projects sidebar in the desktop app.** A filter box above
+  the project tree (press `/` to jump to it) narrows the tree to matching
+  projects and features, highlights the match, and opens the first result on
+  Enter; Escape clears it. Clicking anywhere on a feature's or project's row
+  now opens it, not just the name. The workspace tool links are folded under
+  a **Tools** heading (your choice is remembered), so projects start near the
+  top. A new button collapses or expands every project at once. Collapsed
+  features keep their badges to one line, and projects are separated by a
+  divider. The Projects heading and filter stay visible while you scroll.
+- **Agents publish the screenshots they show you to Session screenshots.**
+  The screenshot note AMF gives each agent session now says the Session
+  screenshots view reads that session's folder, and that any screenshot an
+  agent takes or shows you belongs there rather than in a scratch folder.
+  Agents still take screenshots only when you ask for visual proof or ask
+  them to look at a UI.
 
 ## [v0.50.0] - 2026-10-19
 

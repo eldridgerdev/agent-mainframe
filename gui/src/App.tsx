@@ -106,7 +106,8 @@ import NewSessionDialog, { PreCheckFailure } from "./NewSessionDialog";
 import VscodePanel from "./VscodePanel";
 import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
-import SidebarTree, { byStatus, withCollapsed } from "./SidebarTree";
+import SidebarTree, { byStatus, filterTree, withCollapsed } from "./SidebarTree";
+import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
@@ -187,6 +188,22 @@ export default function App() {
   const [showAppearance, setShowAppearance] = useState(false);
   const queryClient = useQueryClient();
   const [view, setView] = useState<View | null>(null);
+  const [treeFilter, setTreeFilter] = useState("");
+  const treeFilterInput = useRef<HTMLInputElement>(null);
+  const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
+  useEffect(() => {
+    // "/" jumps to the project filter, as in most list-heavy apps; never from
+    // a terminal, a form field or a dialog.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
+          || keyIsForOtherInput(event) || !treeFilterInput.current) return;
+      event.preventDefault();
+      treeFilterInput.current.focus();
+      treeFilterInput.current.select();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
@@ -1197,6 +1214,24 @@ export default function App() {
   };
 
   const activePlan = plan.data?.active ?? null;
+  const allProjectsCollapsed = projects.length > 0 && projects.every((project) => project.collapsed);
+  const setAllProjectsCollapsed = async (collapsed: boolean) => {
+    // One write at a time: each reply is a whole snapshot, and an earlier
+    // reply landing last would undo the later rows' flags until the next poll.
+    for (const project of projects) {
+      if ((project.collapsed ?? false) !== collapsed) {
+        await toggleCollapsed({ project_id: project.id, feature_id: null }, collapsed);
+      }
+    }
+  };
+  const openFirstTreeMatch = () => {
+    const [first] = filterTree(projects, treeFilter, workspace.data?.sidebar);
+    if (!first) return;
+    const feature = first.forcedOpen ? first.features[0] : undefined;
+    setView(feature
+      ? { kind: "feature", projectId: first.project.id, featureId: feature.id }
+      : { kind: "project", projectId: first.project.id });
+  };
   const createFeatureProject = projects.find((project) => project.id === createFeatureFor);
 
   return (
@@ -1204,7 +1239,6 @@ export default function App() {
       <ProjectsSidebar>
 
         <nav className="nav" aria-label="Workspace">
-          <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
@@ -1213,41 +1247,87 @@ export default function App() {
             <Icon name="inbox" />
             <span className="nav-label">Global TODOs</span>
           </button>
-
-          <button className="nav-item" onClick={() => openPromptLibrary()}>
-            <Icon name="file" /><span className="nav-label">Prompt library</span>
-          </button>
-
-          <button className="nav-item" onClick={openPromptOverrides}>
-            <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
-          </button>
-
-          <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
-
-          <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
-          <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
-          <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
-
-          <button className="nav-item" onClick={() => setShowDormancy(true)}>
-            <Icon name="zap" /><span className="nav-label">Dormant features</span>
-          </button>
-
-          <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
-
-          <button className="nav-item" onClick={() => setShowDebugLog(true)}>
-            <Icon name="list" /><span className="nav-label">Debug log</span>
-          </button>
-
-          <div className="nav-section">
-            <span>Projects</span>
-            <button
-              className="btn btn-icon btn-ghost btn-sm"
-              aria-label="New project"
-              title="New project"
-              onClick={() => setShowCreateProject(true)}
-            >
-              <Icon name="plus" />
+          <div className="nav-section nav-section-toggle">
+            <button type="button" className="nav-section-button" aria-expanded={!toolsCollapsed}
+              aria-controls="workspace-tools" onClick={() => setToolsCollapsed(!toolsCollapsed)}>
+              <Icon name={toolsCollapsed ? "chevronRight" : "chevronDown"} size={12} />
+              <span>Tools</span>
             </button>
+          </div>
+          <div id="workspace-tools" className="nav-tools" hidden={toolsCollapsed}>
+            <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
+            <button className="nav-item" onClick={() => openPromptLibrary()}>
+              <Icon name="file" /><span className="nav-label">Prompt library</span>
+            </button>
+
+            <button className="nav-item" onClick={openPromptOverrides}>
+              <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
+            </button>
+
+            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
+
+            <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
+            <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
+            <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
+
+            <button className="nav-item" onClick={() => setShowDormancy(true)}>
+              <Icon name="zap" /><span className="nav-label">Dormant features</span>
+            </button>
+
+            <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
+
+            <button className="nav-item" onClick={() => setShowDebugLog(true)}>
+              <Icon name="list" /><span className="nav-label">Debug log</span>
+            </button>
+          </div>
+
+          <div className="nav-tree-toolbar">
+            <div className="nav-section">
+              <span>Projects</span>
+              <span className="nav-section-actions">
+                <button
+                  className="btn btn-icon btn-ghost btn-sm"
+                  aria-label={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+                  title={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+                  disabled={projects.length === 0}
+                  onClick={() => void setAllProjectsCollapsed(!allProjectsCollapsed)}
+                >
+                  <Icon name={allProjectsCollapsed ? "expandAll" : "collapseAll"} />
+                </button>
+                <button
+                  className="btn btn-icon btn-ghost btn-sm"
+                  aria-label="New project"
+                  title="New project"
+                  onClick={() => setShowCreateProject(true)}
+                >
+                  <Icon name="plus" />
+                </button>
+              </span>
+            </div>
+            {projects.length > 0 && (
+              <label className="nav-filter">
+                <Icon name="search" size={14} />
+                <input
+                  ref={treeFilterInput}
+                  type="search"
+                  aria-label="Filter projects and features"
+                  placeholder="Filter projects and features"
+                  value={treeFilter}
+                  onChange={(event) => setTreeFilter(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTreeFilter("");
+                      event.currentTarget.blur();
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      openFirstTreeMatch();
+                    }
+                  }}
+                />
+                {!treeFilter && <kbd className="nav-filter-key" aria-hidden="true">/</kbd>}
+              </label>
+            )}
           </div>
 
           {workspace.isLoading && <p className="nav-note">Loading…</p>}
@@ -1258,6 +1338,12 @@ export default function App() {
           )}
           {workspace.data && projects.length === 0 && (
             <p className="nav-note">No projects yet.</p>
+          )}
+          {treeFilter.trim() && filterTree(projects, treeFilter, workspace.data?.sidebar).length === 0 && (
+            <p className="nav-note">
+              Nothing matches “{treeFilter.trim()}”.{" "}
+              <button type="button" className="link-button" onClick={() => setTreeFilter("")}>Clear filter</button>
+            </p>
           )}
 
           <SidebarTree
@@ -1288,6 +1374,7 @@ export default function App() {
             onToggleCollapsed={toggleCollapsed}
             onResumePlan={() => setPlanMinimized(false)}
             onCreateFeature={setCreateFeatureFor}
+            filter={treeFilter}
             renderFeatureExtra={(feature) => pendingEdits[feature.id] > 0 && (
               <span className="nav-count nav-count-attention" title="Edits waiting for review">
                 {pendingEdits[feature.id]}

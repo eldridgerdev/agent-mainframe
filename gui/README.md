@@ -233,6 +233,16 @@ text inputs, editable content and dialogs, leaving their input untouched.
 The agent shortcut applies only while an agent tab is displayed. Native offline
 proof: `scripts/dev/screenshot/scenarios/gui-sidebar-visibility.txt`.
 
+To find something in a long projects sidebar, press **/** (outside terminals,
+text inputs and dialogs) or click the filter box under **Projects**. It keeps
+projects whose name or path match, plus features whose name, nickname, branch
+or issue match, opening a collapsed project to show them without changing its
+saved collapse state. **Enter** opens the first match and **Escape** clears
+the filter. The button beside **New project** collapses or expands every
+project. A whole feature or project row is clickable. Tool links such as
+Appearance, Prompt library and Debug log sit under a **Tools** heading that
+starts folded; whether it is open is a per-viewer preference.
+
 The GUI runs its own shared collectors: token/cost and context reads, account
 usage, transcript/storage prompt/model/todos, plan files, persisted summaries,
 issue and PR data, notification files and thinking markers. It does not require

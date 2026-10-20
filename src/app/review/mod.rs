@@ -15,6 +15,7 @@ pub(crate) use comments::{comment_anchor_label, local_suggestion_blocker};
 pub(crate) use headless::CheckOutcome;
 pub(crate) use history::current_review_history_markdown;
 pub(crate) use pr_drafts::{DraftSave, draft_comment_count};
+pub(crate) use pr_submit::pr_ref_for;
 pub(crate) use pr_submit::{build_pr_submission, submission_counts};
 pub(crate) use preparation::{
     FINAL_REVIEW_SESSION_LABEL, REVIEW_FEEDBACK_PROMPT, archive_review_notes,

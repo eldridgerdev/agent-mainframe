@@ -433,6 +433,12 @@ export function formatTotal(total: number): string {
             )
 
         checks = []
+        # The sidebar's tool links start folded under "Tools".
+        wait("!!document.querySelector('[aria-controls=workspace-tools]')")
+        evaluate(
+            "(()=>{const t=document.querySelector('[aria-controls=workspace-tools]');"
+            "if(t.getAttribute('aria-expanded')==='false')t.click();})()"
+        )
         wait("document.body.innerText.includes('Validation screenshots')")
         click("Validation screenshots")
         wait("document.querySelectorAll('.screenshot-card').length===2")

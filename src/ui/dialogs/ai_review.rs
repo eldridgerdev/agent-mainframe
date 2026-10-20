@@ -231,7 +231,7 @@ fn finding_list_line(
     ])
 }
 
-fn draw_finding_list(
+pub(super) fn draw_finding_list(
     frame: &mut Frame,
     area: Rect,
     state: &AiReviewState,
@@ -283,7 +283,7 @@ fn draw_finding_list(
 
 /// Render the detail pane for the selected finding; returns the content line
 /// count so the caller can clamp detail scrolling.
-fn draw_finding_detail(
+pub(super) fn draw_finding_detail(
     frame: &mut Frame,
     area: Rect,
     finding: Option<&AiReviewFinding>,

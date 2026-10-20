@@ -26,6 +26,9 @@ fn pairing_setup_open(app: &App) -> bool {
 }
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
+    if super::pr_workspace::mouse(app, mouse, visible_rows)? {
+        return Ok(());
+    }
     if app.review_questions().is_some_and(|q| q.open) {
         if let Some(q) = app.review_questions_mut() {
             match mouse.kind {

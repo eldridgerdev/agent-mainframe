@@ -21,6 +21,7 @@ pub(crate) mod feature_setup;
 pub(crate) mod fix_cost;
 pub(crate) mod github_workflow;
 mod handoff;
+mod harness_change;
 mod hooks;
 pub(crate) mod issue_fixer;
 pub(crate) mod learning;
@@ -33,9 +34,11 @@ pub(crate) mod plan;
 mod plan_interview;
 mod plan_interview_attach;
 pub(crate) mod pr_review;
+pub(crate) mod pr_workspace;
 pub(crate) mod precall;
 mod project_ops;
 mod prompt_library;
+mod prompt_library_files;
 pub(crate) mod prompt_overrides;
 pub(crate) mod remote_actions;
 pub(crate) mod remote_attention;
@@ -81,7 +84,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -1173,6 +1176,9 @@ pub struct App {
     /// agent session, the PR picker), which close straight to `Normal` —
     /// matching how `close_pr_review` already behaves for those.
     pub ai_review_return_to: Option<Box<AppMode>>,
+    /// Experimental PR workspace. The active engine remains in `mode`; the
+    /// other views are parked here so existing handlers keep their ownership.
+    pub(crate) pr_workspace: Option<pr_workspace::PrWorkspace>,
     /// Memoized result of [`Self::ai_review_finding_fix_costs`], valid only
     /// while its key still matches the open AI Review pane. Recomputed lazily
     /// (a triage DB load + a full cached-review JSON parse + a sibling query
@@ -1431,6 +1437,11 @@ impl App {
     }
 
     pub(crate) fn has_visible_animation(&self) -> bool {
+        if self.pr_workspace.as_ref().is_some_and(|workspace| {
+            workspace.owns_mode(&self.mode) && workspace.ai_running(&self.ai_review_run)
+        }) {
+            return true;
+        }
         if self
             .review_questions()
             .is_some_and(|q| q.open && q.request.is_some())
@@ -1505,6 +1516,13 @@ impl App {
         self.tmux_cursor.hash(&mut hasher);
         self.todo_project_visible.hash(&mut hasher);
         self.todo_global_visible.hash(&mut hasher);
+        if let Some(workspace) = &self.pr_workspace {
+            workspace.tab.hash(&mut hasher);
+            workspace.focus.hash(&mut hasher);
+            workspace.expanded.hash(&mut hasher);
+            workspace.help.hash(&mut hasher);
+            workspace.help_scroll.hash(&mut hasher);
+        }
 
         match &self.selection {
             Selection::Project(pi) => {
@@ -2652,6 +2670,7 @@ impl App {
             review_question_work: Default::default(),
             model_analysis_work: Default::default(),
             ai_review_return_to: None,
+            pr_workspace: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
@@ -2922,6 +2941,7 @@ impl App {
             review_question_work: Default::default(),
             model_analysis_work: Default::default(),
             ai_review_return_to: None,
+            pr_workspace: None,
             ai_review_fix_cost_cache: None,
             ai_review_triage_refresh_bg: None,
             ai_review_triage_refresh_pending: None,
@@ -3636,17 +3656,20 @@ impl App {
         allowed.contains(agent)
     }
 
+    /// The preferred harness if allowed, else the first allowed one.
+    ///
+    /// With nothing allowed, returns `preferred` itself at index 0. That is
+    /// only a placeholder: callers never index the installed list with the
+    /// result, and every launch path re-checks `allows_agent_for_repo` (or
+    /// returns early on an empty list) before using the harness.
     pub(crate) fn normalize_agent_for_repo(
         &self,
         repo: &Path,
         preferred: &AgentKind,
     ) -> (AgentKind, usize) {
         let allowed = self.allowed_agents_for_repo(repo);
-        let selected = allowed
-            .iter()
-            .find(|agent| *agent == preferred)
-            .cloned()
-            .unwrap_or_else(|| allowed[0].clone());
+        let selected =
+            AgentKind::preferred_in(&allowed, preferred).unwrap_or_else(|| preferred.clone());
         let index = AgentKind::index_in(&allowed, &selected);
         (selected, index)
     }
@@ -3688,19 +3711,8 @@ impl App {
 
     pub(crate) fn check_harness_available(kind: &AgentKind) -> Result<()> {
         match kind {
-            AgentKind::Claude => crate::claude::ClaudeLauncher::check_available(),
             AgentKind::Codex => crate::codex::CodexLauncher::check_available(),
-            AgentKind::Opencode => {
-                let output = std::process::Command::new("opencode")
-                    .arg("--version")
-                    .output()
-                    .context("opencode CLI not found - is Opencode installed?")?;
-                if !output.status.success() {
-                    anyhow::bail!("opencode CLI returned an error");
-                }
-                Ok(())
-            }
-            AgentKind::Pi => crate::pi::PiLauncher::check_available(),
+            _ => crate::headless::HeadlessRunner::check_available(kind),
         }
     }
 

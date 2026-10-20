@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { MouseEvent, ReactNode } from "react";
 import type {
   CollapseTarget,
   Feature,
@@ -139,6 +139,12 @@ export interface SidebarTreeProps {
   onCreateFeature: (projectId: string) => void;
   /** Extra compact markers a workflow adds to a feature's main line. */
   renderFeatureExtra?: (feature: Feature) => ReactNode;
+  /** Narrow the tree to projects and features matching this text. */
+  filter?: string;
+  /** Filter-opened projects the user closed again for the current filter
+   *  (view state only; see `shownCollapsed`). */
+  filterClosed?: ReadonlySet<string>;
+  onSetFilterClosed?: (projectId: string, closed: boolean) => void;
 }
 
 /** Running features first, then idle, then stopped; stable within each group
@@ -168,55 +174,140 @@ export function withCollapsed(
   };
 }
 
+/** One project as the filtered tree shows it. */
+export interface TreeEntry {
+  project: Project;
+  /** The features to list, in display order. */
+  features: Feature[];
+  /** Listed only for matching features, not for its own name or path. */
+  matchedByFeatures: boolean;
+  /** Matched by features while its stored flag says collapsed: shown open
+   *  anyway so the matches are visible, without writing the flag. */
+  forcedOpen: boolean;
+}
+
+/** Whether `entry`'s project is drawn collapsed. A filter-opened project
+ *  follows the view-local `filterClosed` set; every other project follows
+ *  its stored (shared) flag. */
+export function shownCollapsed(entry: TreeEntry, filterClosed: ReadonlySet<string> = new Set()): boolean {
+  return entry.forcedOpen ? filterClosed.has(entry.project.id) : entry.project.collapsed ?? false;
+}
+
+const normalize = (text: string) => text.trim().toLowerCase();
+
+/** The tree narrowed to `query`. A project whose name or repository matches
+ *  keeps all of its features; otherwise it appears only for the features
+ *  whose name, nickname, branch or issue match, and only those are listed.
+ *  The filter never writes collapse flags: it is a view of the store. */
+export function filterTree(
+  projects: Project[],
+  query: string,
+  sidebar?: SidebarSnapshot,
+): TreeEntry[] {
+  const q = normalize(query);
+  if (!q) {
+    return projects.map((project) => ({
+      project, features: byStatus(project.features), matchedByFeatures: false, forcedOpen: false,
+    }));
+  }
+  const entries: TreeEntry[] = [];
+  for (const project of projects) {
+    const repo = sidebar?.projects[project.id]?.repo_display ?? project.repo;
+    if (normalize(project.name).includes(q) || normalize(repo).includes(q)) {
+      entries.push({ project, features: byStatus(project.features), matchedByFeatures: false, forcedOpen: false });
+      continue;
+    }
+    const features = byStatus(project.features).filter((feature) =>
+      [feature.name, feature.nickname, feature.branch, sidebar?.features[feature.id]?.issue]
+        .some((text) => text && normalize(text).includes(q)));
+    if (features.length > 0) {
+      entries.push({ project, features, matchedByFeatures: true, forcedOpen: project.collapsed ?? false });
+    }
+  }
+  return entries;
+}
+
+/** `text` with the first case-insensitive occurrence of `query` marked. */
+function Highlight({ text, query }: { text: string; query: string | undefined }) {
+  const q = normalize(query ?? "");
+  const at = q ? text.toLowerCase().indexOf(q) : -1;
+  if (at < 0) return <>{text}</>;
+  return <>{text.slice(0, at)}<span className="tree-match">{text.slice(at, at + q.length)}</span>{text.slice(at + q.length)}</>;
+}
+
+/** A click on a row's open area, not on a control inside it. The row's own
+ *  name button stays the keyboard and screen-reader target; this only makes
+ *  the whole row a mouse target. */
+function onRowClick(select: () => void) {
+  return (event: MouseEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("button, a, input, textarea, select, .tree-sessions")) return;
+    if (window.getSelection()?.toString()) return;
+    select();
+  };
+}
+
 export default function SidebarTree(props: SidebarTreeProps) {
+  const entries = filterTree(props.projects, props.filter ?? "", props.sidebar);
   return (
     <>
-      {props.projects.map((project) => (
-        <ProjectNode key={project.id} project={project} {...props} />
+      {entries.map((entry) => (
+        <ProjectNode key={entry.project.id} entry={entry} project={entry.project} {...props} />
       ))}
     </>
   );
 }
 
-function ProjectNode({ project, ...props }: SidebarTreeProps & { project: Project }) {
-  const collapsed = project.collapsed ?? false;
+function ProjectNode({ project, entry, ...props }: SidebarTreeProps & { project: Project; entry: TreeEntry }) {
+  const filtering = normalize(props.filter ?? "") !== "";
+  const collapsed = shownCollapsed(entry, props.filterClosed);
   const active = props.selection?.kind === "project" && props.selection.projectId === project.id;
   const repo = props.sidebar?.projects[project.id]?.repo_display ?? project.repo;
   const paused = props.pausedPlan?.projectName === project.name ? props.pausedPlan : null;
   const metaId = `tree-project-${project.id}`;
   return (
     <div className="nav-group">
-      <div className={active ? "nav-item nav-item-active" : "nav-item"}>
-        <button
-          className="nav-chevron"
-          aria-label={collapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
-          aria-expanded={!collapsed}
-          onClick={() => props.onToggleCollapsed({ project_id: project.id, feature_id: null }, !collapsed)}
-        >
-          <Icon name={collapsed ? "chevronRight" : "chevronDown"} size={14} />
-        </button>
-        <button
-          className="nav-link"
-          aria-describedby={metaId}
-          title={`${project.name}\n${project.repo}`}
-          onClick={() => props.onSelectProject(project.id)}
-        >
-          <span className="nav-label">{project.name}</span>
-          <span className="nav-count">{project.features.length}</span>
-        </button>
+      <div className={active ? "tree-project-head tree-project-head-active" : "tree-project-head"}
+        onClick={onRowClick(() => props.onSelectProject(project.id))}>
+        <div className={active ? "nav-item nav-item-active" : "nav-item"}>
+          <button
+            className="nav-chevron"
+            aria-label={collapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
+            aria-expanded={!collapsed}
+            // A filter-opened project's stored flag already says collapsed,
+            // so closing it again is view state, not a store write.
+            onClick={() => entry.forcedOpen
+              ? props.onSetFilterClosed?.(project.id, !collapsed)
+              : props.onToggleCollapsed({ project_id: project.id, feature_id: null }, !collapsed)}
+          >
+            <Icon name={collapsed ? "chevronRight" : "chevronDown"} size={14} />
+          </button>
+          <button
+            className="nav-link"
+            aria-describedby={metaId}
+            title={`${project.name}\n${project.repo}`}
+            onClick={() => props.onSelectProject(project.id)}
+          >
+            <span className="nav-label"><Highlight text={project.name} query={props.filter} /></span>
+            <span className="nav-count">
+              {entry.features.length === project.features.length
+                ? project.features.length : `${entry.features.length}/${project.features.length}`}
+            </span>
+          </button>
+        </div>
+        <div className="tree-project-meta" id={metaId} title={project.repo}>{repo}</div>
       </div>
-      <div className="tree-project-meta" id={metaId} title={project.repo}>{repo}</div>
       {paused && (
         <button className="tree-chip tree-chip-warning tree-project-plan" onClick={props.onResumePlan}>
           plan paused: {paused.featureName} · Resume
         </button>
       )}
-      {project.features.length === 0 && (
+      {project.features.length === 0 && !filtering && (
         <button className="tree-empty-hint" onClick={() => props.onCreateFeature(project.id)}>
           No features yet. Add one
         </button>
       )}
-      {!collapsed && byStatus(project.features).map((feature) => (
+      {!collapsed && entry.features.map((feature) => (
         <FeatureNode key={feature.id} project={project} feature={feature} {...props} />
       ))}
     </div>
@@ -282,8 +373,10 @@ function FeatureNode({
     feature.summary ? `${feature.summary}${derived?.summary_age ? ` (${derived.summary_age})` : ""}` : null,
   ].filter(Boolean).join("\n");
 
+  const className = ["tree-feature", selected && "tree-feature-active", collapsed && !selected && "tree-feature-compact"]
+    .filter(Boolean).join(" ");
   return (
-    <div className={selected ? "tree-feature tree-feature-active" : "tree-feature"}>
+    <div className={className} onClick={onRowClick(select)}>
       <div className="tree-row">
         {hasSessions ? (
           <button
@@ -298,20 +391,22 @@ function FeatureNode({
         <FeatureGlyph kind={glyph} />
         <button
           className={deleting ? "tree-name tree-name-deleting" : "tree-name"}
+          // Explicit, so a filter's highlight span can't split the name.
+          aria-label={displayName}
           aria-describedby={metaId}
           aria-current={selected ? "page" : undefined}
           title={tooltip}
           onClick={select}
         >
-          <span className="nav-label">{displayName}</span>
+          <span className="nav-label"><Highlight text={displayName} query={props.filter} /></span>
         </button>
-        {feature.nickname && <span className="tree-branch" title={feature.branch}>({feature.branch})</span>}
+        {feature.nickname && <span className="tree-branch" title={feature.branch}>(<Highlight text={feature.branch} query={props.filter} />)</span>}
         {derived?.pending_input && (
           <span className="tree-pending" role="img" aria-label="Input requested" title="Input requested">?</span>
         )}
         {props.renderFeatureExtra?.(feature)}
       </div>
-      <div className="tree-meta" id={metaId} onClick={select}>
+      <div className="tree-meta" id={metaId}>
         {chips.map((chip) => chip.onClick ? (
           <button key={chip.key} className={`tree-chip ${chip.className ?? ""}`} title={chip.title}
             onClick={(event) => { event.stopPropagation(); chip.onClick?.(); }}>
@@ -322,7 +417,7 @@ function FeatureNode({
         ))}
       </div>
       {feature.summary && (
-        <div className="tree-summary" title={tooltip} onClick={select}>— {feature.summary}</div>
+        <div className="tree-summary" title={tooltip}>— {feature.summary}</div>
       )}
       {!collapsed && hasSessions && (
         <div className="tree-sessions">

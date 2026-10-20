@@ -70,7 +70,9 @@ use agent_mainframe::gui_settings::{
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
-use agent_mainframe::gui_syntax::{self, SyntaxInstallView};
+use agent_mainframe::gui_syntax::{
+    self, SyntaxInstallView, SyntaxLanguageRequest, SyntaxLanguagesView,
+};
 use agent_mainframe::gui_terminal::{
     TerminalFrame, TerminalHandle, TerminalHistory, WheelDirection,
 };
@@ -373,6 +375,16 @@ fn syntax_install_status() -> SyntaxInstallView {
 #[tauri::command]
 fn syntax_install(language: String) -> Result<SyntaxInstallView, GuiError> {
     gui_syntax::install(&language)
+}
+
+#[tauri::command]
+fn syntax_languages(refresh: bool) -> Result<SyntaxLanguagesView, GuiError> {
+    gui_syntax::languages_list(refresh)
+}
+
+#[tauri::command]
+fn syntax_languages_apply(request: SyntaxLanguageRequest) -> Result<SyntaxInstallView, GuiError> {
+    gui_syntax::languages_apply(request)
 }
 
 #[tauri::command]
@@ -2145,6 +2157,8 @@ fn main() {
             pr_workspace_files,
             syntax_install_status,
             syntax_install,
+            syntax_languages,
+            syntax_languages_apply,
             session_sidebar,
             session_sidebar_plan,
             fresh_context_preview,

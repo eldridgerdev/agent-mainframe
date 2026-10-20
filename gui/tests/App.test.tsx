@@ -1382,6 +1382,23 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
   expect(promptCalls()).toHaveLength(0); client.clear();
 });
 
+it("opens and closes syntax management without sending or clearing the active draft", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "syntax_languages"
+    ? Promise.resolve({ languages: [], operation: { operation_id: 0, completed: 0, running: false } })
+    : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent syntax question" } });
+  fireEvent.click(screen.getByRole("button", { name: "Syntax languages" }));
+  const manager = await screen.findByRole("dialog", { name: "Syntax languages" });
+  expect(draftInput().value).toBe("Keep this unsent syntax question");
+  fireEvent.click(within(manager).getByRole("button", { name: "Close manager" }));
+  expect(screen.queryByRole("dialog", { name: "Syntax languages" })).toBeNull();
+  expect(draftInput().value).toBe("Keep this unsent syntax question");
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
 it("saves an unsent composer as a User template while retaining the mounted draft through failure, cancellation and success", async () => {
   const client = await openFeature([session("Agent", "claude")]);
   const original = vi.mocked(invoke).getMockImplementation()!;

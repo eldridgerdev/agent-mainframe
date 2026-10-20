@@ -8,6 +8,15 @@ state, concurrent use, staged coverage and independent updates.
 For AI-driven native GUI interaction with compact JSON observations and an
 isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
 
+## Adjust text and interface size
+
+Open **Appearance** in the sidebar. **Interface size** scales the whole desktop
+interface from 80% to 200%; try 125% or 150% for a laptop display. **Terminal text
+size** independently adjusts agent and terminal text from 11px to 28px. Changes
+apply immediately, including to attached terminals, and are remembered on this
+device across launches. **Reset sizes** restores 100% and 13px. Interface zoom
+uses the desktop webview; it is not applied in the Vite browser preview.
+
 ## Install a release build
 
 Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux,

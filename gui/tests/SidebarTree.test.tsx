@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import SidebarTree, { featureGlyph, prLabel, SidebarTreeProps, withCollapsed } from "../src/SidebarTree";
+import SidebarTree, { featureGlyph, filterTree, prLabel, shownCollapsed, SidebarTreeProps, withCollapsed } from "../src/SidebarTree";
 import type { Feature, FeatureSession, Project, SidebarFeature, SidebarSnapshot, WorkspaceSnapshot } from "../src/api";
 
 afterEach(cleanup);
@@ -268,4 +269,91 @@ it("renders from the persisted snapshot alone and carries a workflow's extra mar
   expect(screen.getByRole("img", { name: "Stopped" })).toBeTruthy();
   expect(screen.getByText("f-extra")).toBeTruthy();
   expect(screen.getByText("/home/me/invoice")).toBeTruthy();
+});
+
+it("filters by project name or repo, else by feature name, nickname, branch or issue", () => {
+  const invoice = project([
+    feature("round-totals", { nickname: "Round totals" }),
+    feature("fix-auth", { status: "stopped" }),
+    feature("login", { branch: "auth-login", status: "active" }),
+  ]);
+  const docs = project([feature("landing")], { id: "p2", name: "Docs site", repo: "/home/me/docs" });
+  const sidebar = { projects: {}, features: { landing: derived({ issue: "github.com/acme/docs#9" }) }, sessions: {} };
+  const ids = (query: string) => filterTree([invoice, docs], query, sidebar)
+    .map((entry) => [entry.project.id, entry.matchedByFeatures, entry.features.map((f) => f.id)]);
+
+  expect(ids("")).toEqual([["p1", false, ["login", "round-totals", "fix-auth"]], ["p2", false, ["landing"]]]);
+  // Matching features only, running first.
+  expect(ids("AUTH")).toEqual([["p1", true, ["login", "fix-auth"]]]);
+  expect(ids("round tot")).toEqual([["p1", true, ["round-totals"]]]);
+  expect(ids("docs#9")).toEqual([["p2", true, ["landing"]]]);
+  // A project match keeps all of its features and its own collapse state.
+  expect(ids("docs")).toEqual([["p2", false, ["landing"]]]);
+  expect(ids("/home/me/invoice")).toEqual([["p1", false, ["login", "round-totals", "fix-auth"]]]);
+  expect(ids("nothing")).toEqual([]);
+
+  // Only a stored-collapsed project is forced open; an expanded one already
+  // shows its matches and keeps its ordinary, persisted chevron.
+  const [expanded] = filterTree([invoice], "auth", sidebar);
+  const [collapsed] = filterTree([{ ...invoice, collapsed: true }], "auth", sidebar);
+  expect([expanded.forcedOpen, collapsed.forcedOpen]).toEqual([false, true]);
+  expect(shownCollapsed(collapsed)).toBe(false);
+  expect(shownCollapsed(collapsed, new Set(["p1"]))).toBe(true);
+  expect(shownCollapsed({ ...collapsed, forcedOpen: false })).toBe(true);
+});
+
+it("opens a filtered project without writing its collapse flag, and closes it as view state", () => {
+  // App owns the closed set; this stands in for it.
+  function ClosedState(props: Partial<SidebarTreeProps>) {
+    const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+    return <SidebarTree {...(props as SidebarTreeProps)} filterClosed={closed}
+      onSetFilterClosed={(id, value) => setClosed(value ? new Set([id]) : new Set())} />;
+  }
+  const onToggleCollapsed = vi.fn();
+  render(<nav><ClosedState
+    projects={[project([feature("fix-auth"), feature("other")], { collapsed: true })]}
+    sidebar={{ projects: {}, features: {}, sessions: {} }} stoppedSessionIds={[]} selection={null}
+    deletingFeatureId={null} pausedPlan={null} onSelectProject={vi.fn()} onSelectFeature={vi.fn()}
+    onSelectSession={vi.fn()} onToggleCollapsed={onToggleCollapsed} onResumePlan={vi.fn()}
+    onCreateFeature={vi.fn()} filter="auth" /></nav>);
+  const handlers = { onToggleCollapsed };
+  expect(screen.getByRole("button", { name: "fix-auth" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "other" })).toBeNull();
+  expect(screen.getByText("1/2")).toBeTruthy();
+  expect(document.querySelector(".tree-match")?.textContent).toBe("auth");
+  fireEvent.click(screen.getByRole("button", { name: "Collapse Invoice API" }));
+  expect(screen.queryByRole("button", { name: "fix-auth" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Expand Invoice API" }));
+  expect(screen.getByRole("button", { name: "fix-auth" })).toBeTruthy();
+  expect(handlers.onToggleCollapsed).not.toHaveBeenCalled();
+});
+
+it("selects a feature or project from anywhere on its row, but not from its controls or sessions", () => {
+  const f = feature("round-totals", {
+    collapsed: false, summary: "Rounds totals",
+    sessions: [session("Claude 1", "claude")],
+  });
+  const handlers = renderTree([project([f])], { features: { "round-totals": derived() } });
+  const row = screen.getByRole("button", { name: "round-totals" }).closest(".tree-feature") as HTMLElement;
+  fireEvent.click(within(row).getByText("— Rounds totals"));
+  fireEvent.click(within(row).getByText("5m ago"));
+  fireEvent.click(row);
+  expect(handlers.onSelectFeature).toHaveBeenCalledTimes(3);
+  fireEvent.click(screen.getByRole("button", { name: "Hide sessions of round-totals" }));
+  fireEvent.click(within(row).getByText("~/repo/.worktrees/x"));
+  expect(handlers.onSelectFeature).toHaveBeenCalledTimes(3);
+  expect(handlers.onToggleCollapsed).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByText("/home/me/invoice"));
+  expect(handlers.onSelectProject).toHaveBeenCalledWith("p1");
+  fireEvent.click(screen.getByRole("button", { name: "Collapse Invoice API" }));
+  expect(handlers.onSelectProject).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a collapsed, unselected feature's badges to one compact line", () => {
+  renderTree([project([feature("a"), feature("b", { collapsed: false, sessions: [session("s", "terminal")] })])], {},
+    { selection: null });
+  const row = (name: string) => screen.getByRole("button", { name }).closest(".tree-feature")!;
+  expect(row("a").classList.contains("tree-feature-compact")).toBe(true);
+  expect(row("b").classList.contains("tree-feature-compact")).toBe(false);
 });

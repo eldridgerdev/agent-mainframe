@@ -108,3 +108,18 @@ it.each(["display: none", "visibility: hidden"])("ignores dialogs concealed by a
     expect(screen.getByRole("button", { name: "Show agent" })).toBeTruthy();
   } finally { wrapper.remove(); }
 });
+
+it("starts the workspace tools folded and remembers opening them", () => {
+  function Tools() {
+    const [collapsed, set] = useSidebarCollapsed("workspaceTools");
+    return <button aria-expanded={!collapsed} onClick={() => set(!collapsed)}>Tools</button>;
+  }
+  const first = render(<Tools />);
+  expect(screen.getByRole("button", { name: "Tools" }).getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+  expect(localStorage.getItem("amf.gui.collapsed.workspaceTools")).toBe("0");
+  first.unmount();
+  resetSidebarPrefsForTest();
+  render(<Tools />);
+  expect(screen.getByRole("button", { name: "Tools" }).getAttribute("aria-expanded")).toBe("true");
+});

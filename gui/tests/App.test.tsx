@@ -27,6 +27,14 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** The sidebar's tool links start folded under "Tools"; open the group
+ *  (once) and return the named link. */
+async function toolButton(name: string) {
+  const toggle = await screen.findByRole("button", { name: "Tools" });
+  if (toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
+  return screen.getByRole("button", { name, exact: true });
+}
+
 function session(id: string, kind = "terminal"): FeatureSession {
   return { id, kind, label: id, tmux_window: id };
 }
@@ -704,7 +712,7 @@ it("opens prompt overrides from navigation and from a pending review AI call wit
     return original(command, args, options);
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "Prompt overrides" }));
+  fireEvent.click(await toolButton("Prompt overrides"));
   await screen.findByRole("dialog", { name: "Prompt overrides" });
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("prompt_overrides_load",
     { context: { kind: "feature", project_id: "project", feature_id: "feature" }, harness: null }));
@@ -756,7 +764,7 @@ it("opens dormant features from navigation and hands Open to the feature page wi
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
-  fireEvent.click(await screen.findByRole("button", { name: "Dormant features" }));
+  fireEvent.click(await toolButton("Dormant features"));
   const panel = within(await screen.findByRole("dialog", { name: "Dormant features" }));
   expect(await panel.findByRole("checkbox", { name: "Select my-feat" })).toBeTruthy();
   fireEvent.click(panel.getByRole("button", { name: "Open" }));
@@ -961,7 +969,7 @@ it("opens debug history from workspace navigation and preserves the session draf
     ? Promise.resolve({ entries: [], limit: 1000, shared_history: true })
     : original(command, args, options));
   fireEvent.change(draftInput(), { target: { value: "Keep this unsent" } });
-  fireEvent.click(screen.getByRole("button", { name: "Debug log", exact: true }));
+  fireEvent.click(await toolButton("Debug log"));
   const dialog = await screen.findByRole("dialog", { name: "Debug log" });
   expect(await within(dialog).findByText("No log entries yet.")).toBeTruthy();
   fireEvent.click(within(dialog).getAllByRole("button", { name: "Close", exact: true })[0]);
@@ -1022,7 +1030,7 @@ it.each(["codex", "todos"])("refreshes a TUI-created bookmarked feature before n
     if (command === "get_snapshot") return refresh;
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await toolButton("Session bookmarks"));
   fireEvent.click(await screen.findByRole("button", { name: "1. TUI bookmark" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_snapshot"));
   expect(screen.getByRole("dialog", { name: "Session bookmarks" })).toBeTruthy();
@@ -1058,7 +1066,7 @@ it("retains the bookmark picker and current draft when workspace refresh fails, 
     if (command === "get_snapshot") return ++refreshes === 1 ? Promise.reject(new Error("Workspace unavailable")) : Promise.resolve(snapshot);
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await toolButton("Session bookmarks"));
   fireEvent.click(await screen.findByRole("button", { name: "1. Agent bookmark" }));
   const dialog = screen.getByRole("dialog", { name: "Session bookmarks" });
   expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Workspace unavailable"));
@@ -1091,14 +1099,14 @@ it("opens global agent availability from navigation and preserves the active com
   await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode", "pi"]));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   fireEvent.change(draftInput(), { target: { value: "Keep my unsent draft" } });
-  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  fireEvent.click(await toolButton("Agent availability"));
   await screen.findByRole("dialog", { name: "Agent availability" });
   fireEvent.click(await screen.findByLabelText("Pi"));
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Agent availability" })).toBeNull());
   expect(draftInput().value).toBe("Keep my unsent draft");
   expect(promptCalls()).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  fireEvent.click(await toolButton("Agent availability"));
   expect(await screen.findByLabelText("Pi")).toHaveProperty("checked", false);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   // The saved choice reaches the creation forms, not only the session picker.
@@ -1135,7 +1143,7 @@ async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktr
     if (command === "dormancy_delete") return handler(args);
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Dormant features" }));
+  fireEvent.click(await toolButton("Dormant features"));
   if (select) fireEvent.click(await screen.findByRole("checkbox", { name: "Select Quiet feature" }));
   fireEvent.click(await screen.findByRole("button", { name: "Delete Quiet feature" }));
   expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
@@ -1365,7 +1373,7 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
     return original(command, args, options);
   });
   fireEvent.change(draftInput(), { target: { value: "Unsent context draft" } });
-  fireEvent.click(screen.getByRole("button", { name: "Context settings", exact: true }));
+  fireEvent.click(await toolButton("Context settings"));
   await screen.findByRole("dialog", { name: "Context settings" });
   fireEvent.change(await screen.findByLabelText("Warning percent"), { target: { value: "60" } });
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));

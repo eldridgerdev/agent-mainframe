@@ -208,6 +208,71 @@ kbd {
 
 .nav-note { padding: 4px 10px; font-size: 12.5px; color: var(--text-faint); }
 
+/* The folding "Tools" header: styled as a section label, acts as a button. */
+.nav-section-toggle { padding: 12px 0 2px; }
+.nav-section-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+}
+.nav-section-button:hover { background: var(--surface-3); color: var(--text); }
+.nav-section-actions { display: flex; align-items: center; gap: 2px; }
+
+/* The Projects header and filter stay put while the tree scrolls under them. */
+.nav-tree-toolbar {
+  position: sticky;
+  top: -4px;
+  z-index: 3;
+  margin: 0 -8px;
+  padding: 0 8px 6px;
+  background: var(--bg-sidebar);
+}
+.nav-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding: 0 8px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-faint);
+}
+.nav-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--text-muted); }
+.nav-filter input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+.nav-filter input::placeholder { color: var(--text-faint); }
+.nav-filter input::-webkit-search-cancel-button { cursor: pointer; }
+.nav-filter-key {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-faint);
+}
+
 .nav-item {
   display: flex;
   align-items: center;
@@ -243,6 +308,14 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .nav-link { flex: 1; min-width: 0; gap: 8px; height: 30px; text-align: left; font-weight: 500; color: var(--text); }
 
 /* Workspace tree: the TUI dashboard tree's rows (SidebarTree.tsx). */
+/* A project's name line and repository line are one click target. */
+.tree-project-head { border-radius: 6px; cursor: pointer; }
+.tree-project-head:hover { background: var(--surface-3); }
+.tree-project-head .nav-item, .tree-project-head div.nav-item:hover { background: transparent !important; }
+.tree-project-head-active, .tree-project-head-active:hover { background: var(--accent-soft); }
+.tree-project-head .nav-label { font-weight: 600; }
+.nav-group + .nav-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.tree-match { background: var(--amber-soft); color: inherit; border-radius: 2px; }
 .tree-project-meta {
   padding: 0 8px 2px 32px;
   font-size: 11.5px;
@@ -261,12 +334,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   text-decoration: underline dotted;
 }
 .tree-empty-hint:hover { color: var(--accent); }
-.tree-feature { margin: 1px 0; padding: 3px 6px 4px 14px; border-radius: 6px; }
+.tree-feature { margin: 1px 0; padding: 3px 6px 4px 14px; border-radius: 6px; cursor: pointer; }
+.tree-sessions, .tree-meta .tree-chip:not(button) { cursor: default; }
 .tree-feature:hover { background: var(--surface-3); }
 .tree-feature-active, .tree-feature-active:hover { background: var(--accent-soft); }
 /* The accent tint costs faint text its margin (built-in light: 4.2:1), so
    faint text inside an active row steps up to muted. */
-.tree-feature-active, .nav-item-active { --text-faint: var(--text-muted); }
+.tree-feature-active, .nav-item-active, .tree-project-head-active { --text-faint: var(--text-muted); }
 /* Same for --surface-3 (built-in light: 4.2:1): chips, tags, pills, code and
    hover fills step faint text up to muted instead of darkening the global token.
    A stopped chip is transparent, not surface-3, and its faint text is what
@@ -318,8 +392,16 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   flex-wrap: wrap;
   gap: 3px 4px;
   padding: 2px 0 0 38px;
-  cursor: default;
 }
+/* A collapsed, unselected feature keeps its badges to one line; the rest
+   fade out at the edge and show in full once the row is expanded or open. */
+.tree-feature-compact .tree-meta {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+}
+.tree-feature-compact .tree-chip { flex-shrink: 0; }
 .tree-chip {
   display: inline-flex;
   align-items: center;

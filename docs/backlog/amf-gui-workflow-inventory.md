@@ -258,6 +258,19 @@ Completed increments and remaining work, in priority order:
   shortcuts; visible dialogs still block both chords, including when another
   hidden dialog is mounted. Hidden/CSS-concealed ancestors have regression coverage.
 
+- [x] **Projects sidebar scanning and click targets (user-requested, 2026-10-19).**
+  Whole feature and project rows are mouse targets (the name button stays the
+  keyboard/screen-reader target). A filter (`/`, Enter opens the first match,
+  Escape clears) narrows the tree by project name/path or feature
+  name/nickname/branch/issue; it opens matched projects as a view only and
+  never writes the shared `collapsed` flags. Collapse/expand-all writes them
+  one project at a time. Tool links fold under a viewer-local **Tools** group
+  (default folded; Global TODOs and the pending-edits notice stay outside it).
+  Deliberate departures from the TUI tree: collapsed, unselected feature rows
+  keep badges on one faded line (all badges show when expanded or selected),
+  and the filter has no TUI counterpart. Frontend tests cover filtering,
+  forced-open collapse, row clicks and the Tools preference.
+
 - [x] **Readable dark theme (2026-10-09).**
   Raised dark surfaces, AA secondary text, stronger borders, brighter semantic
   and syntax colors, and retuned PR/harness/rainbow badges. The terminal matches

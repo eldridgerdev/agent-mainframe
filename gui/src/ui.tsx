@@ -35,6 +35,9 @@ const ICONS = {
   check: "M5 12l5 5L20 7",
   inbox: "M22 12h-6l-2 3h-4l-2-3H2M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z",
   file: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5",
+  collapseAll: "M7 20l5-5 5 5M7 4l5 5 5-5",
+  expandAll: "M7 15l5 5 5-5M7 9l5-5 5 5",
 } as const;
 
 export type IconName = keyof typeof ICONS;

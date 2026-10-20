@@ -26,7 +26,8 @@ are tagged.
   screenshots view reads that session's folder, and that any screenshot an
   agent takes or shows you belongs there rather than in a scratch folder.
   Agents still take screenshots only when you ask for visual proof or ask
-  them to look at a UI.
+  them to look at a UI, and publish only screenshots they captured
+  themselves.
 
 ## [v0.50.0] - 2026-10-19
 

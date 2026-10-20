@@ -238,8 +238,9 @@ text inputs and dialogs) or click the filter box under **Projects**. It keeps
 projects whose name or path match, plus features whose name, nickname, branch
 or issue match, opening a collapsed project to show them without changing its
 saved collapse state. **Enter** opens the first match and **Escape** clears
-the filter. The button beside **New project** collapses or expands every
-project. A whole feature or project row is clickable. Tool links such as
+the filter (with an empty filter, Enter does nothing). The button beside
+**New project** collapses or expands every project shown; while filtering,
+projects the filter opened close for that filter only. A whole feature or project row is clickable. Tool links such as
 Appearance, Prompt library and Debug log sit under a **Tools** heading that
 starts folded; whether it is open is a per-viewer preference.
 

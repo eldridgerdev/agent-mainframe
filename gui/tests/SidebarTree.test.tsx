@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import SidebarTree, { featureGlyph, filterTree, prLabel, SidebarTreeProps, withCollapsed } from "../src/SidebarTree";
+import SidebarTree, { featureGlyph, filterTree, prLabel, shownCollapsed, SidebarTreeProps, withCollapsed } from "../src/SidebarTree";
 import type { Feature, FeatureSession, Project, SidebarFeature, SidebarSnapshot, WorkspaceSnapshot } from "../src/api";
 
 afterEach(cleanup);
@@ -279,10 +280,10 @@ it("filters by project name or repo, else by feature name, nickname, branch or i
   const docs = project([feature("landing")], { id: "p2", name: "Docs site", repo: "/home/me/docs" });
   const sidebar = { projects: {}, features: { landing: derived({ issue: "github.com/acme/docs#9" }) }, sessions: {} };
   const ids = (query: string) => filterTree([invoice, docs], query, sidebar)
-    .map((entry) => [entry.project.id, entry.forcedOpen, entry.features.map((f) => f.id)]);
+    .map((entry) => [entry.project.id, entry.matchedByFeatures, entry.features.map((f) => f.id)]);
 
   expect(ids("")).toEqual([["p1", false, ["login", "round-totals", "fix-auth"]], ["p2", false, ["landing"]]]);
-  // Matching features only, running first, and the project opened to show them.
+  // Matching features only, running first.
   expect(ids("AUTH")).toEqual([["p1", true, ["login", "fix-auth"]]]);
   expect(ids("round tot")).toEqual([["p1", true, ["round-totals"]]]);
   expect(ids("docs#9")).toEqual([["p2", true, ["landing"]]]);
@@ -290,10 +291,32 @@ it("filters by project name or repo, else by feature name, nickname, branch or i
   expect(ids("docs")).toEqual([["p2", false, ["landing"]]]);
   expect(ids("/home/me/invoice")).toEqual([["p1", false, ["login", "round-totals", "fix-auth"]]]);
   expect(ids("nothing")).toEqual([]);
+
+  // Only a stored-collapsed project is forced open; an expanded one already
+  // shows its matches and keeps its ordinary, persisted chevron.
+  const [expanded] = filterTree([invoice], "auth", sidebar);
+  const [collapsed] = filterTree([{ ...invoice, collapsed: true }], "auth", sidebar);
+  expect([expanded.forcedOpen, collapsed.forcedOpen]).toEqual([false, true]);
+  expect(shownCollapsed(collapsed)).toBe(false);
+  expect(shownCollapsed(collapsed, new Set(["p1"]))).toBe(true);
+  expect(shownCollapsed({ ...collapsed, forcedOpen: false })).toBe(true);
 });
 
-it("opens a filtered project without writing its collapse flag, and closes it for that filter only", () => {
-  const handlers = renderTree([project([feature("fix-auth"), feature("other")], { collapsed: true })], {}, { filter: "auth" });
+it("opens a filtered project without writing its collapse flag, and closes it as view state", () => {
+  // App owns the closed set; this stands in for it.
+  function ClosedState(props: Partial<SidebarTreeProps>) {
+    const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
+    return <SidebarTree {...(props as SidebarTreeProps)} filterClosed={closed}
+      onSetFilterClosed={(id, value) => setClosed(value ? new Set([id]) : new Set())} />;
+  }
+  const onToggleCollapsed = vi.fn();
+  render(<nav><ClosedState
+    projects={[project([feature("fix-auth"), feature("other")], { collapsed: true })]}
+    sidebar={{ projects: {}, features: {}, sessions: {} }} stoppedSessionIds={[]} selection={null}
+    deletingFeatureId={null} pausedPlan={null} onSelectProject={vi.fn()} onSelectFeature={vi.fn()}
+    onSelectSession={vi.fn()} onToggleCollapsed={onToggleCollapsed} onResumePlan={vi.fn()}
+    onCreateFeature={vi.fn()} filter="auth" /></nav>);
+  const handlers = { onToggleCollapsed };
   expect(screen.getByRole("button", { name: "fix-auth" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "other" })).toBeNull();
   expect(screen.getByText("1/2")).toBeTruthy();

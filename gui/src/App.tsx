@@ -106,7 +106,7 @@ import NewSessionDialog, { PreCheckFailure } from "./NewSessionDialog";
 import VscodePanel from "./VscodePanel";
 import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
-import SidebarTree, { byStatus, filterTree, withCollapsed } from "./SidebarTree";
+import SidebarTree, { byStatus, filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
 import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
@@ -189,6 +189,20 @@ export default function App() {
   const queryClient = useQueryClient();
   const [view, setView] = useState<View | null>(null);
   const [treeFilter, setTreeFilter] = useState("");
+  // Filter-opened projects closed again by hand; tied to the filter text it
+  // was set under, so any new filter starts with every match open.
+  const [filterClosedState, setFilterClosedState] = useState<{ filter: string; ids: Set<string> }>(
+    { filter: "", ids: new Set() });
+  const filterClosed = filterClosedState.filter === treeFilter ? filterClosedState.ids : new Set<string>();
+  const setFilterClosed = (projectIds: string[], closed: boolean) => {
+    const ids = new Set(filterClosed);
+    for (const id of projectIds) {
+      if (closed) ids.add(id); else ids.delete(id);
+    }
+    setFilterClosedState({ filter: treeFilter, ids });
+  };
+  const [collapsingAll, setCollapsingAll] = useState(false);
+  const collapsingAllRef = useRef(false);
   const treeFilterInput = useRef<HTMLInputElement>(null);
   const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
   useEffect(() => {
@@ -196,10 +210,15 @@ export default function App() {
     // a terminal, a form field or a dialog.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
-          || keyIsForOtherInput(event) || !treeFilterInput.current) return;
+          || keyIsForOtherInput(event)) return;
+      const input = treeFilterInput.current;
+      // A hidden sidebar keeps the input mounted; only claim the key when
+      // focus actually landed, so "/" is never swallowed with no effect.
+      if (!input || input.closest("[hidden]")) return;
+      input.focus();
+      if (document.activeElement !== input) return;
       event.preventDefault();
-      treeFilterInput.current.focus();
-      treeFilterInput.current.select();
+      input.select();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -1214,20 +1233,36 @@ export default function App() {
   };
 
   const activePlan = plan.data?.active ?? null;
-  const allProjectsCollapsed = projects.length > 0 && projects.every((project) => project.collapsed);
+  // What the tree shows, so collapse-all and Enter act on visible rows.
+  const treeEntries = filterTree(projects, treeFilter, workspace.data?.sidebar);
+  const allProjectsCollapsed = treeEntries.length > 0
+    && treeEntries.every((entry) => shownCollapsed(entry, filterClosed));
   const setAllProjectsCollapsed = async (collapsed: boolean) => {
-    // One write at a time: each reply is a whole snapshot, and an earlier
-    // reply landing last would undo the later rows' flags until the next poll.
-    for (const project of projects) {
-      if ((project.collapsed ?? false) !== collapsed) {
-        await toggleCollapsed({ project_id: project.id, feature_id: null }, collapsed);
+    // A second click would start an interleaved loop whose replies race.
+    if (collapsingAllRef.current) return;
+    collapsingAllRef.current = true;
+    setCollapsingAll(true);
+    try {
+      // Filter-opened projects are view state; the rest are stored flags.
+      setFilterClosed(treeEntries.filter((entry) => entry.forcedOpen).map((entry) => entry.project.id), collapsed);
+      // One write at a time: each reply is a whole snapshot, and an earlier
+      // reply landing last would undo the later rows' flags until the next poll.
+      for (const { project, forcedOpen } of treeEntries) {
+        if (!forcedOpen && (project.collapsed ?? false) !== collapsed) {
+          await toggleCollapsed({ project_id: project.id, feature_id: null }, collapsed);
+        }
       }
+    } finally {
+      collapsingAllRef.current = false;
+      setCollapsingAll(false);
     }
   };
   const openFirstTreeMatch = () => {
-    const [first] = filterTree(projects, treeFilter, workspace.data?.sidebar);
+    if (!treeFilter.trim()) return;
+    const [first] = treeEntries;
     if (!first) return;
-    const feature = first.forcedOpen ? first.features[0] : undefined;
+    // A feature only when its row is on screen; otherwise its project.
+    const feature = first.matchedByFeatures && !shownCollapsed(first, filterClosed) ? first.features[0] : undefined;
     setView(feature
       ? { kind: "feature", projectId: first.project.id, featureId: feature.id }
       : { kind: "project", projectId: first.project.id });
@@ -1289,7 +1324,7 @@ export default function App() {
                   className="btn btn-icon btn-ghost btn-sm"
                   aria-label={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
                   title={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
-                  disabled={projects.length === 0}
+                  disabled={treeEntries.length === 0 || collapsingAll}
                   onClick={() => void setAllProjectsCollapsed(!allProjectsCollapsed)}
                 >
                   <Icon name={allProjectsCollapsed ? "expandAll" : "collapseAll"} />
@@ -1339,7 +1374,7 @@ export default function App() {
           {workspace.data && projects.length === 0 && (
             <p className="nav-note">No projects yet.</p>
           )}
-          {treeFilter.trim() && filterTree(projects, treeFilter, workspace.data?.sidebar).length === 0 && (
+          {treeFilter.trim() && treeEntries.length === 0 && (
             <p className="nav-note">
               Nothing matches “{treeFilter.trim()}”.{" "}
               <button type="button" className="link-button" onClick={() => setTreeFilter("")}>Clear filter</button>
@@ -1375,6 +1410,8 @@ export default function App() {
             onResumePlan={() => setPlanMinimized(false)}
             onCreateFeature={setCreateFeatureFor}
             filter={treeFilter}
+            filterClosed={filterClosed}
+            onSetFilterClosed={(projectId, closed) => setFilterClosed([projectId], closed)}
             renderFeatureExtra={(feature) => pendingEdits[feature.id] > 0 && (
               <span className="nav-count nav-count-attention" title="Edits waiting for review">
                 {pendingEdits[feature.id]}

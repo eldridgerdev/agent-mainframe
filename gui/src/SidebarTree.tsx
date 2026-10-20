@@ -1,4 +1,4 @@
-import { MouseEvent, ReactNode, useState } from "react";
+import { MouseEvent, ReactNode } from "react";
 import type {
   CollapseTarget,
   Feature,
@@ -141,6 +141,10 @@ export interface SidebarTreeProps {
   renderFeatureExtra?: (feature: Feature) => ReactNode;
   /** Narrow the tree to projects and features matching this text. */
   filter?: string;
+  /** Filter-opened projects the user closed again for the current filter
+   *  (view state only; see `shownCollapsed`). */
+  filterClosed?: ReadonlySet<string>;
+  onSetFilterClosed?: (projectId: string, closed: boolean) => void;
 }
 
 /** Running features first, then idle, then stopped; stable within each group
@@ -175,9 +179,18 @@ export interface TreeEntry {
   project: Project;
   /** The features to list, in display order. */
   features: Feature[];
-  /** Matched through its features only: shown open whatever its stored
-   *  collapse flag says, so the matches are visible. */
+  /** Listed only for matching features, not for its own name or path. */
+  matchedByFeatures: boolean;
+  /** Matched by features while its stored flag says collapsed: shown open
+   *  anyway so the matches are visible, without writing the flag. */
   forcedOpen: boolean;
+}
+
+/** Whether `entry`'s project is drawn collapsed. A filter-opened project
+ *  follows the view-local `filterClosed` set; every other project follows
+ *  its stored (shared) flag. */
+export function shownCollapsed(entry: TreeEntry, filterClosed: ReadonlySet<string> = new Set()): boolean {
+  return entry.forcedOpen ? filterClosed.has(entry.project.id) : entry.project.collapsed ?? false;
 }
 
 const normalize = (text: string) => text.trim().toLowerCase();
@@ -192,18 +205,24 @@ export function filterTree(
   sidebar?: SidebarSnapshot,
 ): TreeEntry[] {
   const q = normalize(query);
-  if (!q) return projects.map((project) => ({ project, features: byStatus(project.features), forcedOpen: false }));
+  if (!q) {
+    return projects.map((project) => ({
+      project, features: byStatus(project.features), matchedByFeatures: false, forcedOpen: false,
+    }));
+  }
   const entries: TreeEntry[] = [];
   for (const project of projects) {
     const repo = sidebar?.projects[project.id]?.repo_display ?? project.repo;
     if (normalize(project.name).includes(q) || normalize(repo).includes(q)) {
-      entries.push({ project, features: byStatus(project.features), forcedOpen: false });
+      entries.push({ project, features: byStatus(project.features), matchedByFeatures: false, forcedOpen: false });
       continue;
     }
     const features = byStatus(project.features).filter((feature) =>
       [feature.name, feature.nickname, feature.branch, sidebar?.features[feature.id]?.issue]
         .some((text) => text && normalize(text).includes(q)));
-    if (features.length > 0) entries.push({ project, features, forcedOpen: true });
+    if (features.length > 0) {
+      entries.push({ project, features, matchedByFeatures: true, forcedOpen: project.collapsed ?? false });
+    }
   }
   return entries;
 }
@@ -240,12 +259,8 @@ export default function SidebarTree(props: SidebarTreeProps) {
 }
 
 function ProjectNode({ project, entry, ...props }: SidebarTreeProps & { project: Project; entry: TreeEntry }) {
-  const storedCollapsed = project.collapsed ?? false;
   const filtering = normalize(props.filter ?? "") !== "";
-  // A project the filter opened is closed again only for this filter text:
-  // its stored flag already says "collapsed", so nothing is written.
-  const [closedForFilter, setClosedForFilter] = useState<string | null>(null);
-  const collapsed = entry.forcedOpen ? closedForFilter === props.filter : storedCollapsed;
+  const collapsed = shownCollapsed(entry, props.filterClosed);
   const active = props.selection?.kind === "project" && props.selection.projectId === project.id;
   const repo = props.sidebar?.projects[project.id]?.repo_display ?? project.repo;
   const paused = props.pausedPlan?.projectName === project.name ? props.pausedPlan : null;
@@ -259,9 +274,11 @@ function ProjectNode({ project, entry, ...props }: SidebarTreeProps & { project:
             className="nav-chevron"
             aria-label={collapsed ? `Expand ${project.name}` : `Collapse ${project.name}`}
             aria-expanded={!collapsed}
+            // A filter-opened project's stored flag already says collapsed,
+            // so closing it again is view state, not a store write.
             onClick={() => entry.forcedOpen
-              ? setClosedForFilter(collapsed ? null : props.filter ?? null)
-              : props.onToggleCollapsed({ project_id: project.id, feature_id: null }, !storedCollapsed)}
+              ? props.onSetFilterClosed?.(project.id, !collapsed)
+              : props.onToggleCollapsed({ project_id: project.id, feature_id: null }, !collapsed)}
           >
             <Icon name={collapsed ? "chevronRight" : "chevronDown"} size={14} />
           </button>

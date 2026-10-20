@@ -142,6 +142,8 @@ export default function TerminalPane({ target, onReadyChange }: {
       if (!disposed) term.refresh(0, term.rows - 1);
     });
     let attached = false;
+    let latestDesiredSize = { cols: term.cols, rows: term.rows };
+    let resizedWhileAttaching = false;
     let generation: number | null = null;
     let unlisten: (() => void) | undefined;
     let newestBeforeInitial: TerminalFrame | null = null;
@@ -285,7 +287,7 @@ export default function TerminalPane({ target, onReadyChange }: {
           unlisten = undefined;
           return;
         }
-        const size = { cols: term.cols, rows: term.rows };
+        const size = { ...latestDesiredSize };
         const response = await invoke<AttachTerminalResponse>("attach_terminal", { target, size });
         if (disposed) {
           await invoke("detach_terminal", { key: response.key, generation: response.generation });
@@ -296,10 +298,13 @@ export default function TerminalPane({ target, onReadyChange }: {
         if (newestBeforeInitial !== null) renderFrame(newestBeforeInitial);
         newestBeforeInitial = null;
         attached = true;
-        // A sizing change while attach was pending could not be sent by the
-        // resize listener yet. Reconcile it now without replacing attachment.
-        if (term.cols !== size.cols || term.rows !== size.rows) {
-          void invoke("resize_terminal", { key, size: { cols: term.cols, rows: term.rows } }).catch((err) => {
+        // Reconcile the latest desired geometry after attachment. A resize
+        // can happen while attach is pending and later return to the original
+        // dimensions; comparing only the final geometry with `size` would
+        // miss that the backend may have observed an intermediate resize.
+        const desiredSize = { ...latestDesiredSize };
+        if (resizedWhileAttaching || desiredSize.cols !== size.cols || desiredSize.rows !== size.rows) {
+          void invoke("resize_terminal", { key, size: desiredSize }).catch((err) => {
             if (!disposed) setError(asGuiError(err).message);
           });
         }
@@ -322,10 +327,13 @@ export default function TerminalPane({ target, onReadyChange }: {
     });
 
     const onResize = term.onResize(({ cols, rows }) => {
+      latestDesiredSize = { cols, rows };
       if (attached) {
         void invoke("resize_terminal", { key, size: { cols, rows } }).catch((err) => {
           if (!disposed) setError(asGuiError(err).message);
         });
+      } else {
+        resizedWhileAttaching = true;
       }
     });
 

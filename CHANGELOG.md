@@ -37,6 +37,12 @@ are tagged.
   them to look at a UI, and publish only screenshots they captured
   themselves.
 
+### Fixed
+
+- **Alt+arrow shortcuts now reach agent sessions.** Use Alt+Left and Alt+Right
+  to switch Codex subagents in AMF; the same modified keys also pass through
+  the remote terminal.
+
 ## [v0.50.0] - 2026-10-19
 
 A new split PR workspace keeps files, GitHub threads and AI findings for one

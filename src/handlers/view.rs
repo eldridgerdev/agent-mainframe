@@ -32,6 +32,21 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
         return Some(TmuxKey::Named(format!("M-{}", c)));
     }
 
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        let name = match key.code {
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Left => "Left",
+            KeyCode::Right => "Right",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PPage",
+            KeyCode::PageDown => "NPage",
+            _ => return None,
+        };
+        return Some(TmuxKey::Named(format!("M-{name}")));
+    }
+
     match key.code {
         KeyCode::Char('\n' | '\r') => None,
         KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),

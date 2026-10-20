@@ -119,9 +119,10 @@ fn disk_revision(
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Parser root has no existing ancestor"))?;
     }
-    // The complete managed source tree's identities/times catch external edits;
-    // hash loaded library/query bytes as well, including same-size replacement.
+    // Hash every managed source file so same-size replacements with restored
+    // timestamps still invalidate a previously reviewed catalog revision.
     stamp_metadata(source, &mut digest, true)?;
+    stamp_tree_contents(source, &mut digest)?;
     stamp_contents(library, &mut digest)?;
     for grammar in language.package_spec().grammars {
         for query in [
@@ -135,6 +136,26 @@ fn disk_revision(
         }
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn stamp_tree_contents(path: &Path, digest: &mut Sha256) -> anyhow::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() {
+        let mut children = std::fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        children.sort();
+        for child in children {
+            stamp_tree_contents(&child, digest)?;
+        }
+    } else if metadata.is_file() {
+        stamp_contents(path, digest)?;
+    }
+    Ok(())
 }
 
 fn language_row(language: HighlightLanguage) -> GuiResult<SyntaxLanguageRow> {

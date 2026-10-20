@@ -184,6 +184,32 @@ fn fingerprint_binds_bytes_with_preserved_size_and_time_and_root_identity() {
 }
 
 #[test]
+fn fingerprint_binds_all_source_file_bytes_with_preserved_size_and_time() {
+    let temp = tempfile::tempdir().unwrap();
+    let (source, library) = fixture(temp.path());
+    let other = source.join("src/parser.c");
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&other, "source-a").unwrap();
+    let revision = || {
+        disk_revision(
+            HighlightLanguage::Json,
+            ParserState::Installed,
+            &source,
+            &library,
+        )
+        .unwrap()
+    };
+    let initial = revision();
+    let modified = std::fs::metadata(&other).unwrap().modified().unwrap();
+    std::fs::write(&other, "source-b").unwrap();
+    std::fs::File::open(&other)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_ne!(initial, revision());
+}
+
+#[test]
 fn real_external_artifact_edit_is_rechecked_before_destructive_action() {
     let temp = tempfile::tempdir().unwrap();
     let (source, library) = fixture(temp.path());

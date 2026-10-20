@@ -80,6 +80,7 @@ or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-li
 | Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. The new-session picker and the New project, New feature and TODO-to-feature forms offer only the allowed harnesses. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Limited | An already open TUI keeps the allowed-agent choices it started with, and its next settings save writes them back; restart it after a desktop change. |
 | Available | Project Agent availability from the project page: explicit global inheritance or an allowed-agent override, save/reload/cancel with unsaved protection, strict project config validation and stale-file/project/repository refusal. Saves preserve unrelated JSON and legacy config while updating tracked `amf.json`; effective future feature/session choices use the shared resolver. Existing sessions keep running. |
+| Available | **Appearance** offers saved 80–200% interface zoom and independent 11–28px terminal text sizing, with a compact **Reset sizes** control restoring 100% and 13px. Changes apply immediately and synchronize across GUI windows; attached terminals refit without reconnecting. Interface zoom uses the native desktop webview and is not applied in the Vite browser preview. Native sizing and laptop/mixed-display validation remain open. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
@@ -270,6 +271,19 @@ Completed increments and remaining work, in priority order:
   keep badges on one faded line (all badges show when expanded or selected),
   and the filter has no TUI counterpart. Frontend tests cover filtering,
   forced-open collapse, row clicks and the Tools preference.
+
+- [x] **Editable desktop sizing (user-requested, 2026-10-19).**
+  Appearance adds interface zoom (80–200%) and independent terminal text size
+  (11–28px), saved per device across launches and synchronized across GUI
+  windows. The compact secondary **Reset sizes** button restores 100% and 13px.
+  Attached terminals update their font and geometry without reconnecting or
+  resetting their buffer; a size change during connection is reconciled after
+  attachment. Automated coverage checks saved/default/invalid preferences,
+  unavailable storage, cross-window updates, native zoom failures and pending
+  requests, plus terminal continuity and connection-time resizing. All 502
+  frontend tests and the production build pass on the merged source. Native
+  interaction was blocked by an existing Vite server on port 1420; no screenshots
+  were captured. Laptop, mixed-display and macOS runtime validation remain open.
 
 - [x] **Readable dark theme (2026-10-09).**
   Raised dark surfaces, AA secondary text, stronger borders, brighter semantic

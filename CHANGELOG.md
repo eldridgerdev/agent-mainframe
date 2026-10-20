@@ -10,6 +10,14 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Adjust desktop sizing for laptop and external displays.** Appearance now
+  offers 80–200% interface zoom and a separate 11–28px terminal text size.
+  Changes apply immediately and are remembered across launches, while running
+  sessions stay connected. **Reset sizes** restores the existing 100% zoom and
+  13px terminal defaults. No migration is required.
+
 ### Changed
 
 - **Easier-to-scan projects sidebar in the desktop app.** A filter box above

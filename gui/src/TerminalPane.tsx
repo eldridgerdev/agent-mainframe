@@ -302,7 +302,8 @@ export default function TerminalPane({ target, onReadyChange }: {
         // can happen while attach is pending and later return to the original
         // dimensions; comparing only the final geometry with `size` would
         // miss that the backend may have observed an intermediate resize.
-        const desiredSize = { ...latestDesiredSize };
+        const desiredSize = { cols: term.cols, rows: term.rows };
+        latestDesiredSize = desiredSize;
         if (resizedWhileAttaching || desiredSize.cols !== size.cols || desiredSize.rows !== size.rows) {
           void invoke("resize_terminal", { key, size: desiredSize }).catch((err) => {
             if (!disposed) setError(asGuiError(err).message);

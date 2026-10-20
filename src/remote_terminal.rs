@@ -182,7 +182,11 @@ fn escape_sequence(chars: &[char]) -> (usize, Option<String>) {
                 return (chars.len(), None);
             }
             let params: String = chars[2..end].iter().collect();
-            let key = match (params.as_str(), chars[end]) {
+            let (key_params, modifier) = match params.split_once(';') {
+                Some((key_params, modifier)) => (key_params, modifier.parse::<u8>().ok()),
+                None => (params.as_str(), None),
+            };
+            let key = match (key_params, chars[end]) {
                 ("", 'A') | ("1", 'A') => named("Up"),
                 ("", 'B') | ("1", 'B') => named("Down"),
                 ("", 'C') | ("1", 'C') => named("Right"),
@@ -199,6 +203,10 @@ fn escape_sequence(chars: &[char]) -> (usize, Option<String>) {
                 ("", 'R') => named("F3"),
                 ("", 'S') => named("F4"),
                 _ => None,
+            };
+            let key = match (key, modifier) {
+                (Some(key), Some(3)) => Some(format!("M-{key}")),
+                (key, _) => key,
             };
             (end + 1, key)
         }

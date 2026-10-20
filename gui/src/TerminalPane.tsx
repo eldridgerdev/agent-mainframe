@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { asGuiError } from "./api";
 import { Icon } from "./ui";
+import { readSizingPreference, useSizingPreference } from "./sizing";
 import {
   MAX_WHEEL_STEPS, SCROLLBACK_LINES, WheelAccumulator, scrollKeyAction,
   type TerminalFrame, type TerminalHistory,
@@ -87,6 +88,9 @@ export default function TerminalPane({ target, onReadyChange }: {
   onReadyChange?: (ready: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const sizing = useSizingPreference();
+  const resizeText = useRef<(size: number) => void>(() => {});
+  useEffect(() => { resizeText.current(sizing.terminalFontSize); }, [sizing.terminalFontSize]);
   const [error, setError] = useState<string | null>(null);
   const [scroll, setScroll] = useState<ScrollView>({ mode: "live" });
   const [notice, setNotice] = useState<string | null>(null);
@@ -108,7 +112,7 @@ export default function TerminalPane({ target, onReadyChange }: {
       convertEol: false,
       cursorBlink: true,
       fontFamily: TERMINAL_FONT,
-      fontSize: 13,
+      fontSize: readSizingPreference().terminalFontSize,
       lineHeight: 1.15,
       scrollback: SCROLLBACK_LINES,
       ...terminalAppearance(darkMode?.matches),
@@ -127,6 +131,11 @@ export default function TerminalPane({ target, onReadyChange }: {
       term.open(containerRef.current);
       fit.fit();
     }
+
+    resizeText.current = (size) => {
+      term.options.fontSize = size;
+      fit.fit();
+    };
 
     let disposed = false;
     void loadSymbolFonts().then(() => {
@@ -276,10 +285,8 @@ export default function TerminalPane({ target, onReadyChange }: {
           unlisten = undefined;
           return;
         }
-        const response = await invoke<AttachTerminalResponse>("attach_terminal", {
-          target,
-          size: { cols: term.cols, rows: term.rows },
-        });
+        const size = { cols: term.cols, rows: term.rows };
+        const response = await invoke<AttachTerminalResponse>("attach_terminal", { target, size });
         if (disposed) {
           await invoke("detach_terminal", { key: response.key, generation: response.generation });
           return;
@@ -289,6 +296,13 @@ export default function TerminalPane({ target, onReadyChange }: {
         if (newestBeforeInitial !== null) renderFrame(newestBeforeInitial);
         newestBeforeInitial = null;
         attached = true;
+        // A sizing change while attach was pending could not be sent by the
+        // resize listener yet. Reconcile it now without replacing attachment.
+        if (term.cols !== size.cols || term.rows !== size.rows) {
+          void invoke("resize_terminal", { key, size: { cols: term.cols, rows: term.rows } }).catch((err) => {
+            if (!disposed) setError(asGuiError(err).message);
+          });
+        }
         onReadyChange?.(true);
       } catch (err) {
         if (!disposed) setError(asGuiError(err).message);
@@ -391,6 +405,7 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     return () => {
       disposed = true;
+      resizeText.current = () => {};
       darkMode?.removeEventListener("change", updateTheme);
       window.removeEventListener("amf-theme-change", updateTheme);
       jumpToLatest.current = () => {};

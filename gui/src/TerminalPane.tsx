@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { asGuiError } from "./api";
 import { Icon } from "./ui";
+import { readSizingPreference, useSizingPreference } from "./sizing";
 import {
   MAX_WHEEL_STEPS, SCROLLBACK_LINES, WheelAccumulator, scrollKeyAction,
   type TerminalFrame, type TerminalHistory,
@@ -87,6 +88,9 @@ export default function TerminalPane({ target, onReadyChange }: {
   onReadyChange?: (ready: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const sizing = useSizingPreference();
+  const resizeText = useRef<(size: number) => void>(() => {});
+  useEffect(() => { resizeText.current(sizing.terminalFontSize); }, [sizing.terminalFontSize]);
   const [error, setError] = useState<string | null>(null);
   const [scroll, setScroll] = useState<ScrollView>({ mode: "live" });
   const [notice, setNotice] = useState<string | null>(null);
@@ -108,7 +112,7 @@ export default function TerminalPane({ target, onReadyChange }: {
       convertEol: false,
       cursorBlink: true,
       fontFamily: TERMINAL_FONT,
-      fontSize: 13,
+      fontSize: readSizingPreference().terminalFontSize,
       lineHeight: 1.15,
       scrollback: SCROLLBACK_LINES,
       ...terminalAppearance(darkMode?.matches),
@@ -128,11 +132,18 @@ export default function TerminalPane({ target, onReadyChange }: {
       fit.fit();
     }
 
+    resizeText.current = (size) => {
+      term.options.fontSize = size;
+      fit.fit();
+    };
+
     let disposed = false;
     void loadSymbolFonts().then(() => {
       if (!disposed) term.refresh(0, term.rows - 1);
     });
     let attached = false;
+    let latestDesiredSize = { cols: term.cols, rows: term.rows };
+    let resizedWhileAttaching = false;
     let generation: number | null = null;
     let unlisten: (() => void) | undefined;
     let newestBeforeInitial: TerminalFrame | null = null;
@@ -276,10 +287,8 @@ export default function TerminalPane({ target, onReadyChange }: {
           unlisten = undefined;
           return;
         }
-        const response = await invoke<AttachTerminalResponse>("attach_terminal", {
-          target,
-          size: { cols: term.cols, rows: term.rows },
-        });
+        const size = { ...latestDesiredSize };
+        const response = await invoke<AttachTerminalResponse>("attach_terminal", { target, size });
         if (disposed) {
           await invoke("detach_terminal", { key: response.key, generation: response.generation });
           return;
@@ -289,6 +298,17 @@ export default function TerminalPane({ target, onReadyChange }: {
         if (newestBeforeInitial !== null) renderFrame(newestBeforeInitial);
         newestBeforeInitial = null;
         attached = true;
+        // Reconcile the latest desired geometry after attachment. A resize
+        // can happen while attach is pending and later return to the original
+        // dimensions; comparing only the final geometry with `size` would
+        // miss that the backend may have observed an intermediate resize.
+        const desiredSize = { cols: term.cols, rows: term.rows };
+        latestDesiredSize = desiredSize;
+        if (resizedWhileAttaching || desiredSize.cols !== size.cols || desiredSize.rows !== size.rows) {
+          void invoke("resize_terminal", { key, size: desiredSize }).catch((err) => {
+            if (!disposed) setError(asGuiError(err).message);
+          });
+        }
         onReadyChange?.(true);
       } catch (err) {
         if (!disposed) setError(asGuiError(err).message);
@@ -308,10 +328,13 @@ export default function TerminalPane({ target, onReadyChange }: {
     });
 
     const onResize = term.onResize(({ cols, rows }) => {
+      latestDesiredSize = { cols, rows };
       if (attached) {
         void invoke("resize_terminal", { key, size: { cols, rows } }).catch((err) => {
           if (!disposed) setError(asGuiError(err).message);
         });
+      } else {
+        resizedWhileAttaching = true;
       }
     });
 
@@ -391,6 +414,7 @@ export default function TerminalPane({ target, onReadyChange }: {
 
     return () => {
       disposed = true;
+      resizeText.current = () => {};
       darkMode?.removeEventListener("change", updateTheme);
       window.removeEventListener("amf-theme-change", updateTheme);
       jumpToLatest.current = () => {};

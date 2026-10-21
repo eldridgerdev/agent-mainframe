@@ -36,8 +36,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
         ("E", "Edit headless AI prompt templates (overrides)"),
-        ("G", "Open PR Triage (experimental)"),
-        ("", "(on a project row: Review a PR instead)"),
+        ("G / leader+G", "Open split PR Workspace (experimental)"),
+        ("leader+U", "Open legacy PR Triage / Review"),
         ("W", "Open AI Review for this feature (experimental)"),
         (
             "K",
@@ -289,8 +289,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
         ("P", "Back to PR Triage (if one is stashed)"),
-        ("G", "Open PR Triage for this feature"),
+        ("G", "Open split PR Workspace (experimental)"),
         ("W", "Open AI Review for this feature"),
+        ("U", "Open legacy PR Triage for this feature"),
     ];
 
     for (key, desc) in &view_keybinds {

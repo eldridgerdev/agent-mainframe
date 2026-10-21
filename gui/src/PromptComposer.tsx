@@ -2,7 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import { Icon, Spinner } from "./ui";
 
 export default function PromptComposer({
-  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary,
+  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary, onSaveTemplate,
   connectionMessage = "Waiting for terminal connection…",
 }: {
   text: string;
@@ -15,6 +15,7 @@ export default function PromptComposer({
   onClear: () => void;
   onSend: () => void;
   onLibrary: () => void;
+  onSaveTemplate?: () => void;
   connectionMessage?: string;
 }) {
   const canSend = ready && !sending && text.trim().length > 0;
@@ -40,6 +41,7 @@ export default function PromptComposer({
         <span className="muted small">Draft here, then send to the agent.</span>
         <span className="tabs-spacer" />
         <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="file" />Prompt library</button>
+        {onSaveTemplate && <button className="btn btn-sm btn-ghost" disabled={sending || !text.trim()} onClick={onSaveTemplate}>Save as template</button>}
         <button className="btn btn-sm btn-ghost" disabled={sending || !text} onClick={onClear}>
           Clear
         </button>

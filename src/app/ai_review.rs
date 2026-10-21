@@ -1187,6 +1187,7 @@ fn run_batched_ai_pr_review(
     reasoning: Option<crate::headless::ReasoningLevel>,
     templates: &BatchReviewTemplates,
     tx: &std::sync::mpsc::Sender<AiReviewProgress>,
+    cancelled: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Option<Result<AiReviewOutcome>> {
     let batch_tpl = templates.batch.clone();
     let hunk_tpl = templates.hunk_split.clone();
@@ -1209,7 +1210,8 @@ fn run_batched_ai_pr_review(
             )
         }),
     )
-    .with_reasoning(reasoning);
+    .with_reasoning(reasoning)
+    .with_cancellation(cancelled.clone());
 
     let synth_tpl = templates.synthesis.clone();
     let summary_tpl = templates.summary.clone();
@@ -1227,7 +1229,8 @@ fn run_batched_ai_pr_review(
             )
         }),
     )
-    .with_reasoning(reasoning);
+    .with_reasoning(reasoning)
+    .with_cancellation(cancelled.clone());
 
     let progress_tx = tx.clone();
     let mut on_progress = move |progress: crate::review_batch::BatchProgress| {
@@ -1326,7 +1329,11 @@ fn run_ai_pr_review(
     // the per-harness size budget, used only if `prompt` would overflow.
     batch_templates: BatchReviewTemplates,
     tx: std::sync::mpsc::Sender<AiReviewProgress>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let prompt = crate::prompts::render_template(
         &template,
         &ai_review_prompt_context(&diff, &memory, skill.as_deref()),
@@ -1358,6 +1365,7 @@ fn run_ai_pr_review(
             reasoning,
             &batch_templates,
             &tx,
+            &cancelled,
         )
     {
         let result = result.map(|mut outcome| {
@@ -1400,6 +1408,7 @@ fn run_ai_pr_review(
             };
             let _ = progress_tx.send(progress);
         },
+        &cancelled,
     )
     .and_then(|output| process_ai_review_output(output, &diff))
     .map(|mut outcome| {
@@ -1434,6 +1443,7 @@ fn run_ai_pr_review(
                 reasoning,
                 &batch_templates,
                 &tx,
+                &cancelled,
             ) {
                 Some(batched) => batched.map(|mut outcome| {
                     outcome.attribution = AiReviewAttribution::from_run(
@@ -2249,7 +2259,7 @@ impl App {
         }
 
         let (tx, rx) = std::sync::mpsc::channel();
-        self.ai_review_run.begin(rx, origin.clone());
+        let cancelled = self.ai_review_run.begin(rx, origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
             Ok(diff) => run_ai_pr_review(
@@ -2264,6 +2274,7 @@ impl App {
                 template,
                 batch_templates,
                 tx,
+                cancelled,
             ),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
@@ -2570,6 +2581,10 @@ impl App {
         loop {
             match self.ai_review_run.poll() {
                 Ok(AiReviewProgress::Reviewing { token_estimate }) => {
+                    self.log_info(
+                        "pr_review",
+                        format!("AI review is analyzing a prompt of about {token_estimate} tokens"),
+                    );
                     if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.stage = AiReviewStage::Reviewing { token_estimate };
                     }
@@ -2582,6 +2597,7 @@ impl App {
                     changed = true;
                 }
                 Ok(AiReviewProgress::Activity(activity)) => {
+                    self.log_debug("pr_review", format!("AI review progress: {activity}"));
                     if let Some(progress) = self.ai_review_run.progress_mut() {
                         progress.activity = Some(activity.clone());
                     }

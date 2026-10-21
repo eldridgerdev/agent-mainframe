@@ -8,6 +8,15 @@ state, concurrent use, staged coverage and independent updates.
 For AI-driven native GUI interaction with compact JSON observations and an
 isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
 
+## Adjust text and interface size
+
+Open **Appearance** in the sidebar. **Interface size** scales the whole desktop
+interface from 80% to 200%; try 125% or 150% for a laptop display. **Terminal text
+size** independently adjusts agent and terminal text from 11px to 28px. Changes
+apply immediately, including to attached terminals, and are remembered on this
+device across launches. **Reset sizes** restores 100% and 13px. Interface zoom
+uses the desktop webview; it is not applied in the Vite browser preview.
+
 ## Install a release build
 
 Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux,
@@ -233,6 +242,17 @@ text inputs, editable content and dialogs, leaving their input untouched.
 The agent shortcut applies only while an agent tab is displayed. Native offline
 proof: `scripts/dev/screenshot/scenarios/gui-sidebar-visibility.txt`.
 
+To find something in a long projects sidebar, press **/** (outside terminals,
+text inputs and dialogs) or click the filter box under **Projects**. It keeps
+projects whose name or path match, plus features whose name, nickname, branch
+or issue match, opening a collapsed project to show them without changing its
+saved collapse state. **Enter** opens the first match and **Escape** clears
+the filter (with an empty filter, Enter does nothing). The button beside
+**New project** collapses or expands every project shown; while filtering,
+projects the filter opened close for that filter only. A whole feature or project row is clickable. Tool links such as
+Appearance, Prompt library and Debug log sit under a **Tools** heading that
+starts folded; whether it is open is a per-viewer preference.
+
 The GUI runs its own shared collectors: token/cost and context reads, account
 usage, transcript/storage prompt/model/todos, plan files, persisted summaries,
 issue and PR data, notification files and thinking markers. It does not require
@@ -375,6 +395,19 @@ Plan, and TODO planning. Setup runs before the interview opens; cancelling the
 interview keeps the worktree and its setup changes, without saving a plan or
 launching an agent. A failed setup still allows planning to continue and shows
 a notice.
+
+The TODO new-feature form also offers effective project/global **Feature
+presets**. Apply one to fill the branch prefix, harness, mode, review, Chrome
+and **Start directly / Quick Plan / Full Plan** choices, then edit those choices
+before submitting. The final planning choice determines the route, regardless
+of which TODO action opened the form. Project templates override global ones
+with the same name; unavailable harnesses are filtered. Remote Control remains
+unsupported in desktop: explicitly clear it or select a non-remote template.
+Cancel protects edited settings, and pending launches cannot be dismissed or
+duplicated. Both planning routes prefill the TODO brief and retain its origin;
+the TODO is linked only on acceptance. Cancelling an interview retains its
+prepared worktree without reserving the TODO. Direct launches return an unsent
+composer draft.
 
 Use **Learning** on a feature page to browse its files or branch changes and
 ask about the project, a file, or a selected range (click, then Shift-click).

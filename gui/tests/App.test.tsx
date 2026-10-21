@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -25,6 +26,14 @@ afterEach(() => {
   terminal.ready = true;
   localStorage.clear();
 });
+
+/** The sidebar's tool links start folded under "Tools"; open the group
+ *  (once) and return the named link. */
+async function toolButton(name: string) {
+  const toggle = await screen.findByRole("button", { name: "Tools" });
+  if (toggle.getAttribute("aria-expanded") === "false") fireEvent.click(toggle);
+  return screen.getByRole("button", { name, exact: true });
+}
 
 function session(id: string, kind = "terminal"): FeatureSession {
   return { id, kind, label: id, tmux_window: id };
@@ -703,7 +712,7 @@ it("opens prompt overrides from navigation and from a pending review AI call wit
     return original(command, args, options);
   });
 
-  fireEvent.click(screen.getByRole("button", { name: "Prompt overrides" }));
+  fireEvent.click(await toolButton("Prompt overrides"));
   await screen.findByRole("dialog", { name: "Prompt overrides" });
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("prompt_overrides_load",
     { context: { kind: "feature", project_id: "project", feature_id: "feature" }, harness: null }));
@@ -755,7 +764,7 @@ it("opens dormant features from navigation and hands Open to the feature page wi
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
-  fireEvent.click(await screen.findByRole("button", { name: "Dormant features" }));
+  fireEvent.click(await toolButton("Dormant features"));
   const panel = within(await screen.findByRole("dialog", { name: "Dormant features" }));
   expect(await panel.findByRole("checkbox", { name: "Select my-feat" })).toBeTruthy();
   fireEvent.click(panel.getByRole("button", { name: "Open" }));
@@ -960,7 +969,7 @@ it("opens debug history from workspace navigation and preserves the session draf
     ? Promise.resolve({ entries: [], limit: 1000, shared_history: true })
     : original(command, args, options));
   fireEvent.change(draftInput(), { target: { value: "Keep this unsent" } });
-  fireEvent.click(screen.getByRole("button", { name: "Debug log", exact: true }));
+  fireEvent.click(await toolButton("Debug log"));
   const dialog = await screen.findByRole("dialog", { name: "Debug log" });
   expect(await within(dialog).findByText("No log entries yet.")).toBeTruthy();
   fireEvent.click(within(dialog).getAllByRole("button", { name: "Close", exact: true })[0]);
@@ -1021,7 +1030,7 @@ it.each(["codex", "todos"])("refreshes a TUI-created bookmarked feature before n
     if (command === "get_snapshot") return refresh;
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await toolButton("Session bookmarks"));
   fireEvent.click(await screen.findByRole("button", { name: "1. TUI bookmark" }));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("get_snapshot"));
   expect(screen.getByRole("dialog", { name: "Session bookmarks" })).toBeTruthy();
@@ -1057,7 +1066,7 @@ it("retains the bookmark picker and current draft when workspace refresh fails, 
     if (command === "get_snapshot") return ++refreshes === 1 ? Promise.reject(new Error("Workspace unavailable")) : Promise.resolve(snapshot);
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Session bookmarks", exact: true }));
+  fireEvent.click(await toolButton("Session bookmarks"));
   fireEvent.click(await screen.findByRole("button", { name: "1. Agent bookmark" }));
   const dialog = screen.getByRole("dialog", { name: "Session bookmarks" });
   expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Workspace unavailable"));
@@ -1090,14 +1099,14 @@ it("opens global agent availability from navigation and preserves the active com
   await waitFor(() => expect(preferred()).toEqual(["Default", "claude", "codex", "opencode", "pi"]));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   fireEvent.change(draftInput(), { target: { value: "Keep my unsent draft" } });
-  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  fireEvent.click(await toolButton("Agent availability"));
   await screen.findByRole("dialog", { name: "Agent availability" });
   fireEvent.click(await screen.findByLabelText("Pi"));
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Agent availability" })).toBeNull());
   expect(draftInput().value).toBe("Keep my unsent draft");
   expect(promptCalls()).toHaveLength(0);
-  fireEvent.click(screen.getByRole("button", { name: "Agent availability", exact: true }));
+  fireEvent.click(await toolButton("Agent availability"));
   expect(await screen.findByLabelText("Pi")).toHaveProperty("checked", false);
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   // The saved choice reaches the creation forms, not only the session picker.
@@ -1134,7 +1143,7 @@ async function openDormantDeletion(handler: (args: unknown) => unknown, isWorktr
     if (command === "dormancy_delete") return handler(args);
     return original(command, args, options);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Dormant features" }));
+  fireEvent.click(await toolButton("Dormant features"));
   if (select) fireEvent.click(await screen.findByRole("checkbox", { name: "Select Quiet feature" }));
   fireEvent.click(await screen.findByRole("button", { name: "Delete Quiet feature" }));
   expect(screen.getByRole("dialog", { name: "Delete feature" })).toBeTruthy();
@@ -1216,6 +1225,7 @@ it("opens project availability, keeps composer draft and refreshes later New ses
     if (command === "supported_harnesses") return Promise.resolve([
       { slug: "claude", display_name: "Claude" }, { slug: "codex", display_name: "Codex" }, { slug: "pi", display_name: "Pi" },
     ]);
+    if (command === "project_harness_choices") return Promise.resolve(creationChoices(["codex"]));
     if (command === "project_agent_availability_load") return Promise.resolve({
       revision: "project-settings-rev", settings: { allowed_agents: allowed }, inherited_agents: ["claude", "pi"], effective_agents: ["codex"],
       project_name: "demo", repo: "/demo", config_path: "/demo/amf.json", source_path: "/demo/amf.json",
@@ -1245,6 +1255,7 @@ it("opens project availability, keeps composer draft and refreshes later New ses
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
   await screen.findByRole("combobox", { name: "Harness" });
   const featureDialog = screen.getByRole("dialog", { name: "New feature" });
+  await within(featureDialog).findByRole("option", { name: "Codex" });
   expect(within(featureDialog).getAllByRole("option").filter(option => ["Claude", "Codex", "Pi"].includes(option.textContent ?? ""))
     .map(option => option.textContent)).toEqual(["Codex"]);
   fireEvent.click(within(featureDialog).getByRole("button", { name: "Cancel" }));
@@ -1269,10 +1280,11 @@ it("loads inherited project choices before feature creation, retries errors and 
     if (command === "supported_harnesses") return Promise.resolve([
       { slug: "claude", display_name: "Claude" }, { slug: "pi", display_name: "Pi" },
     ]);
-    if (command === "project_agent_availability_load") {
+    if (command === "feature_presets_choices") return Promise.resolve([]);
+    if (command === "project_harness_choices") {
       if (delayed) return new Promise(resolve => { finish = resolve; });
       return fail ? Promise.reject({ kind: "internal", message: "Project JSON is invalid" })
-        : Promise.resolve({ settings: { allowed_agents: null }, inherited_agents: ["claude"], effective_agents: ["claude"] });
+        : Promise.resolve(creationChoices(["claude"]));
     }
     return original(command, args, options);
   });
@@ -1280,24 +1292,23 @@ it("loads inherited project choices before feature creation, retries errors and 
   fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
   const dialog = await screen.findByRole("dialog", { name: "New feature" });
-  expect(await within(dialog).findByRole("alert")).toHaveProperty("textContent", "Project JSON is invalid");
-  expect(within(dialog).queryByRole("combobox", { name: "Harness" })).toBeNull();
+  expect(await within(dialog).findByText(/Project JSON is invalid/)).toBeTruthy();
+  expect(within(dialog).getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
   fail = false;
-  fireEvent.click(within(dialog).getByRole("button", { name: "Reload agent choices" }));
+  fireEvent.click(within(dialog).getByRole("button", { name: "Retry harnesses" }));
   expect(await screen.findByRole("combobox", { name: "Harness" })).toBeTruthy();
-  expect(invoke).toHaveBeenCalledWith("project_agent_availability_load", { projectId: "project" });
+  expect(invoke).toHaveBeenCalledWith("project_harness_choices", { projectId: "project" });
   fireEvent.click(screen.getByRole("button", { name: "Cancel", exact: true }));
   delayed = true;
   fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
-  expect(await screen.findByText("Loading project agent choices…")).toBeTruthy();
-  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
-  await act(async () => finish({ settings: { allowed_agents: ["pi"] }, inherited_agents: ["pi"], effective_agents: [] }));
-  expect(await screen.findByRole("alert")).toHaveProperty("textContent",
-    "No allowed agent is available for this project. Check installed agents and Agent availability.");
-  expect(screen.queryByRole("combobox", { name: "Harness" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Reload agent choices" }));
-  await screen.findByText("Loading project agent choices…");
-  await act(async () => finish({ settings: { allowed_agents: ["claude", "pi"] }, inherited_agents: ["pi"], effective_agents: ["claude"] }));
+  expect(await screen.findByText("Loading project harness default…")).toBeTruthy();
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
+  await act(async () => finish(creationChoices([])));
+  expect((await screen.findByRole("alert")).textContent).toContain("No allowed, installed harnesses");
+  expect(screen.getByRole("combobox", { name: "Harness" })).toHaveProperty("disabled", true);
+  fireEvent.click(screen.getByRole("button", { name: "Reload harnesses" }));
+  await screen.findByText("Loading project harness default…");
+  await act(async () => finish(creationChoices(["claude"])));
   const harness = await screen.findByRole("combobox", { name: "Harness" });
   expect(within(harness).getAllByRole("option").map(option => option.textContent)).toEqual(["Claude"]);
   client.clear();
@@ -1362,7 +1373,7 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
     return original(command, args, options);
   });
   fireEvent.change(draftInput(), { target: { value: "Unsent context draft" } });
-  fireEvent.click(screen.getByRole("button", { name: "Context settings", exact: true }));
+  fireEvent.click(await toolButton("Context settings"));
   await screen.findByRole("dialog", { name: "Context settings" });
   fireEvent.change(await screen.findByLabelText("Warning percent"), { target: { value: "60" } });
   fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
@@ -1371,6 +1382,58 @@ it("opens Context settings beside an agent, saves and retains its unsent compose
   expect(promptCalls()).toHaveLength(0); client.clear();
 });
 
+it("opens and closes syntax management without sending or clearing the active draft", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "syntax_languages"
+    ? Promise.resolve({ languages: [], operation: { operation_id: 0, completed: 0, running: false } })
+    : original(command, args, options));
+  fireEvent.change(draftInput(), { target: { value: "Keep this unsent syntax question" } });
+  fireEvent.click(screen.getByRole("button", { name: "Syntax languages" }));
+  const manager = await screen.findByRole("dialog", { name: "Syntax languages" });
+  expect(draftInput().value).toBe("Keep this unsent syntax question");
+  fireEvent.click(within(manager).getByRole("button", { name: "Close manager" }));
+  expect(screen.queryByRole("dialog", { name: "Syntax languages" })).toBeNull();
+  expect(draftInput().value).toBe("Keep this unsent syntax question");
+  expect(promptCalls()).toHaveLength(0);
+  client.clear();
+});
+
+it("saves an unsent composer as a User template while retaining the mounted draft through failure, cancellation and success", async () => {
+  const client = await openFeature([session("Agent", "claude")]);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let fails = true;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_save") return fails ? Promise.reject({ kind: "operation_failed", message: "Database busy" }) : Promise.resolve("new-user-template");
+    return original(command, args, options);
+  });
+  const text = "Keep this unsent 世界\n{{area}}";
+  const composer = draftInput();
+  fireEvent.change(composer, { target: { value: text } });
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  const editor = screen.getByRole("dialog", { name: "User prompt editor" });
+  fireEvent.change(within(editor).getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fireEvent.change(within(editor).getByRole("textbox", { name: /^Template body/ }), { target: { value: "Edited template only" } });
+  fireEvent.click(within(editor).getByRole("button", { name: "Save User template" }));
+  await screen.findByText("Database busy");
+  expect(composer.value).toBe(text);
+  fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull();
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  fireEvent.click(screen.getByRole("button", { name: "Save as template" }));
+  expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe(text);
+  fireEvent.change(screen.getByLabelText("Template name"), { target: { value: "Saved composer" } });
+  fails = false;
+  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "User prompt editor" })).toBeNull());
+  expect(draftInput()).toBe(composer); expect(composer.value).toBe(text);
+  expect(promptCalls()).toHaveLength(0);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "terminal_input")).toBe(false);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_save").at(-1)?.[1]).toEqual({ draft: { id: null, revision: null, name: "Saved composer", body: text, tags: "" } });
+  client.clear();
+});
 
 it("blocks changing harness for an unsent draft in another agent tab and preserves it on Cancel", async () => {
   const client = await openFeature([session("Agent", "claude"), session("Other", "claude")], [], "idle", true, true);

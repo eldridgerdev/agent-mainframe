@@ -180,7 +180,7 @@ pub(crate) fn submission_problem(
 
 /// The `PrRef` a review of `target` posts against, pinned to the reviewed
 /// head. `None` when the repository key isn't `host/owner/name`.
-fn pr_ref_for(target: &PrDiffTarget) -> Option<crate::github::PrRef> {
+pub(crate) fn pr_ref_for(target: &PrDiffTarget) -> Option<crate::github::PrRef> {
     let mut parts = target.repo.splitn(3, '/');
     let (host, owner, repo) = (parts.next()?, parts.next()?, parts.next()?);
     if host.is_empty() || owner.is_empty() || repo.is_empty() || repo.contains('/') {

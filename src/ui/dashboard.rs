@@ -23,6 +23,8 @@ const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("r", "Refresh statuses"),
     ("C", "AMF Remote server on / off"),
     ("Q", "Pair a phone (QR)"),
+    ("G", "PR Workspace (experimental)"),
+    ("U", "PR Triage / Review (legacy)"),
 ];
 
 /// The ambient `[PR #N · M open]` badge span shown in the top-right corner
@@ -300,6 +302,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Block::default().style(Style::default().bg(app.theme.effective_bg())),
         frame.area(),
     );
+
+    if super::dialogs::pr_workspace::draw(frame, app) {
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
 
     match &app.mode {
         AppMode::IssueBrowser(state) => {

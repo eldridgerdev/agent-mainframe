@@ -49,7 +49,9 @@ fn concurrent_sessions_have_distinct_guidance_and_repeated_setup_is_stable() {
         .unwrap();
     assert!(claude[2].contains(&first.scope_id));
     assert!(codex[1].contains(&second.scope_id));
-    assert!(claude[2].contains("only when the user explicitly requests visual validation"));
+    assert!(claude[2].contains("Session screenshots view shows the images published to"));
+    assert!(claude[2].contains("This guidance does not authorize capture"));
+    assert!(claude[2].contains("Publish only screenshots you captured yourself"));
     assert!(!codex[1].contains(&first.scope_id));
 }
 

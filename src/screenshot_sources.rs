@@ -940,7 +940,7 @@ pub(crate) fn archive_images(bytes: &[u8]) -> Result<ArchiveImages> {
     let mut pixels = 0u64;
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name()?.into_owned();
+        let name = file.name()?.to_string();
         let components: Vec<_> = name.trim_end_matches('/').split('/').collect();
         ensure!(
             !name.starts_with('/')

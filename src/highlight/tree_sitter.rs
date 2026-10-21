@@ -232,11 +232,9 @@ where
     }
     if library_path.exists() {
         progress(format!(
-            "Removing previous parser library at {}",
+            "Keeping previous parser library until replacement compiles: {}",
             library_path.display()
         ));
-        std::fs::remove_file(&library_path)
-            .with_context(|| format!("failed to remove {}", library_path.display()))?;
     }
 
     let source_dir_string = source_dir.to_string_lossy().into_owned();
@@ -413,20 +411,52 @@ where
         );
     }
 
-    let mut args = compiler_shared_library_args(library_path);
-    args.push("-std=c11".to_string());
+    publish_compiled_library(library_path, |temporary| {
+        let mut args = compiler_shared_library_args(temporary);
+        args.push("-std=c11".to_string());
 
-    for include_dir in include_dirs {
-        args.push("-I".to_string());
-        args.push(source_dir.join(include_dir).to_string_lossy().into_owned());
+        for include_dir in include_dirs {
+            args.push("-I".to_string());
+            args.push(source_dir.join(include_dir).to_string_lossy().into_owned());
+        }
+
+        for source_file in source_files {
+            args.push(source_dir.join(source_file).to_string_lossy().into_owned());
+        }
+
+        run_command(progress, "cc", &args, None)
+            .with_context(|| format!("failed to compile {}", language.display_name()))
+    })
+}
+
+/// A reader may poll while compilation runs. Only publish a completed library,
+/// never the linker's partially written output at the managed parser path.
+fn publish_compiled_library(
+    library_path: &Path,
+    compile: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    let previous_permissions = match std::fs::metadata(library_path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("failed to read parser permissions"),
+    };
+    let parent = library_path
+        .parent()
+        .context("parser library has no parent")?;
+    let temporary = tempfile::Builder::new()
+        .prefix(".amf-parser-")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to stage parser in {}", parent.display()))?;
+    compile(temporary.path())?;
+    if let Some(permissions) = previous_permissions {
+        std::fs::set_permissions(temporary.path(), permissions)
+            .context("failed to retain parser permissions")?;
     }
-
-    for source_file in source_files {
-        args.push(source_dir.join(source_file).to_string_lossy().into_owned());
-    }
-
-    run_command(progress, "cc", &args, None)
-        .with_context(|| format!("failed to compile {}", language.display_name()))
+    temporary
+        .persist(library_path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("failed to publish parser {}", library_path.display()))?;
+    Ok(())
 }
 
 fn validate_installed_parser(language: HighlightLanguage) -> Result<()> {
@@ -926,6 +956,106 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Skipping missing source file"))
         );
+    }
+
+    #[test]
+    fn library_is_published_only_after_compile_succeeds_and_staging_is_cleaned() {
+        let dir = TempDir::new().unwrap();
+        let library = dir.path().join("parser.so");
+        std::fs::write(&library, b"previous complete library").unwrap();
+        let error = publish_compiled_library(&library, |temporary| {
+            std::fs::write(temporary, b"partial linker output")?;
+            assert_eq!(std::fs::read(&library)?, b"previous complete library");
+            bail!("injected compiler failure")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("injected compiler failure"));
+        assert_eq!(
+            std::fs::read(&library).unwrap(),
+            b"previous complete library"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        publish_compiled_library(&library, |temporary| {
+            assert_ne!(temporary, library);
+            std::fs::write(temporary, b"partial")?;
+            assert_eq!(std::fs::read(&library)?, b"previous complete library");
+            std::fs::write(temporary, b"new complete library")?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&library).unwrap(), b"new complete library");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn failed_library_publication_cleans_staging_without_removing_destination() {
+        let dir = TempDir::new().unwrap();
+        let destination = dir.path().join("parser.so");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("keep"), b"external directory").unwrap();
+        assert!(
+            publish_compiled_library(&destination, |temporary| {
+                std::fs::write(temporary, b"complete compiler output")?;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read(destination.join("keep")).unwrap(),
+            b"external directory"
+        );
+    }
+
+    #[test]
+    fn real_failed_recompile_keeps_the_old_library_callable_and_its_permissions() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(
+            src.join("parser.c"),
+            "const char *amf_fixture_marker(void) { return \"old library still callable\"; }",
+        )
+        .unwrap();
+        let library = dir.path().join("parser.out");
+        build_shared_library(HighlightLanguage::C, dir.path(), &library, &mut |_| {}).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&library, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let previous = std::fs::read(&library).unwrap();
+        std::fs::write(src.join("parser.c"), "invalid C source, cannot compile").unwrap();
+        assert!(
+            build_shared_library(HighlightLanguage::C, dir.path(), &library, &mut |_| {}).is_err()
+        );
+        assert_eq!(std::fs::read(&library).unwrap(), previous);
+        // SAFETY: this loads only the known C fixture compiled above. Its
+        // marker returns a static NUL-terminated string with the matching ABI.
+        unsafe {
+            let loaded = DynamicLibrary::open(&library).unwrap();
+            let marker = loaded.symbol("amf_fixture_marker").unwrap();
+            assert_eq!(
+                CStr::from_ptr(marker().cast()).to_str().unwrap(),
+                "old library still callable"
+            );
+        }
+        std::fs::write(
+            src.join("parser.c"),
+            "const char *amf_fixture_marker(void) { return \"replacement\"; }",
+        )
+        .unwrap();
+        build_shared_library(HighlightLanguage::C, dir.path(), &library, &mut |_| {}).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&library).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+        }
+        assert_ne!(std::fs::read(&library).unwrap(), previous);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]

@@ -19,7 +19,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::diff::{DiffFile, DiffLineKind};
 use crate::gui_contract::{GuiError, GuiResult};
@@ -27,6 +27,30 @@ use crate::highlight::{
     self, HighlightInstallState, HighlightLanguage, HighlightRequest, HighlightedLine,
     HighlightedText,
 };
+
+mod languages;
+pub use languages::{
+    ParserState, SyntaxLanguageRequest, SyntaxLanguageRow, SyntaxLanguagesView, languages_apply,
+    languages_list,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyntaxOperationAction {
+    Install,
+    Repair,
+    Uninstall,
+}
+
+impl SyntaxOperationAction {
+    fn progress_verb(self) -> &'static str {
+        match self {
+            Self::Install => "installed",
+            Self::Repair => "repaired",
+            Self::Uninstall => "removed",
+        }
+    }
+}
 
 /// Above this many lines one side of a file is left plain. Every highlighted
 /// line becomes several DOM nodes, so a huge generated file costs more to
@@ -295,6 +319,8 @@ fn spans_matching(line: &HighlightedLine, expected: &str) -> SyntaxLine {
 /// installs are process-wide (the highlight registry is), so this is too.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SyntaxInstallView {
+    pub operation_id: u64,
+    pub action: Option<SyntaxOperationAction>,
     /// Display title of the language being, or last, installed.
     pub language: Option<String>,
     pub language_key: Option<String>,
@@ -336,8 +362,23 @@ pub fn install(language_key: &str) -> GuiResult<SyntaxInstallView> {
             }
             state => state,
         },
-        highlight::install_language,
+        install_parser,
     )
+}
+
+fn install_parser(
+    language: HighlightLanguage,
+    progress: Box<dyn FnMut(String) + Send>,
+) -> anyhow::Result<String> {
+    let message = highlight::install_language(language, progress)?;
+    highlight::reload_runtime_state();
+    if !highlight::parser_loads(language) {
+        anyhow::bail!(
+            "{} parser files were written, but the parser cannot load. Repair it before using highlighting.",
+            language.picker_title()
+        );
+    }
+    Ok(message)
 }
 
 fn start_install<S, I>(
@@ -352,6 +393,40 @@ where
         + Send
         + 'static,
 {
+    start_operation(
+        state,
+        language_key,
+        SyntaxOperationAction::Install,
+        |language| {
+            if install_state(language) == HighlightInstallState::Installed {
+                return Err(GuiError::conflict(format!(
+                    "The {} parser is already installed; refresh to see highlighting",
+                    language.picker_title()
+                )));
+            }
+            Ok(())
+        },
+        installer,
+    )
+}
+
+fn bounded_output(text: String) -> String {
+    text.chars().take(8192).collect()
+}
+
+fn start_operation<V, I>(
+    state: &InstallState,
+    language_key: &str,
+    action: SyntaxOperationAction,
+    validate: V,
+    operation: I,
+) -> GuiResult<SyntaxInstallView>
+where
+    V: FnOnce(HighlightLanguage) -> GuiResult<()>,
+    I: FnOnce(HighlightLanguage, Box<dyn FnMut(String) + Send>) -> anyhow::Result<String>
+        + Send
+        + 'static,
+{
     let language = HighlightLanguage::ALL
         .into_iter()
         .find(|language| language.package_key() == language_key)
@@ -359,17 +434,18 @@ where
     let mut view = state.lock().map_err(|_| poisoned())?;
     if view.running {
         return Err(GuiError::conflict(format!(
-            "The {} parser is already being installed; wait for it to finish",
-            view.language.as_deref().unwrap_or("syntax")
+            "The {} parser is already being {}; wait for it to finish",
+            view.language.as_deref().unwrap_or("syntax"),
+            view.action
+                .unwrap_or(SyntaxOperationAction::Install)
+                .progress_verb(),
         )));
     }
-    if install_state(language) == HighlightInstallState::Installed {
-        return Err(GuiError::conflict(format!(
-            "The {} parser is already installed; refresh to see highlighting",
-            language.picker_title()
-        )));
-    }
+    validate(language)?;
+    let operation_id = view.operation_id + 1;
     *view = SyntaxInstallView {
+        operation_id,
+        action: Some(action),
         language: Some(language.picker_title().to_string()),
         language_key: Some(language.package_key().to_string()),
         running: true,
@@ -380,26 +456,49 @@ where
     drop(view);
 
     let shared = Arc::clone(state);
-    std::thread::spawn(move || {
-        let progress_state = Arc::clone(&shared);
-        let progress = Box::new(move |line: String| {
-            if let Ok(mut view) = progress_state.lock() {
-                view.output = Some(line);
+    let spawn = std::thread::Builder::new()
+        .name("syntax-parser-operation".into())
+        .spawn(move || {
+            let progress_state = Arc::clone(&shared);
+            let progress = Box::new(move |line: String| {
+                if let Ok(mut view) = progress_state.lock()
+                    && view.operation_id == operation_id
+                    && view.running
+                {
+                    view.output = Some(bounded_output(line));
+                }
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                operation(language, progress)
+            }))
+            .unwrap_or_else(|_| {
+                Err(anyhow::anyhow!(
+                    "Parser operation panicked; inspect the parser files and retry"
+                ))
+            });
+            // Drop the loaded registry and cached highlights, as the TUI picker
+            // does, so the next projection loads the new parser.
+            highlight::reload_runtime_state();
+            if let Ok(mut view) = shared.lock()
+                && view.operation_id == operation_id
+            {
+                view.running = false;
+                view.completed += 1;
+                match result {
+                    Ok(message) => view.message = Some(bounded_output(message)),
+                    Err(error) => view.error = Some(bounded_output(format!("{error:#}"))),
+                }
             }
         });
-        let result = installer(language, progress);
-        // Drop the loaded registry and cached highlights, as the TUI picker
-        // does, so the next projection loads the new parser.
-        highlight::reload_runtime_state();
-        if let Ok(mut view) = shared.lock() {
+    if let Err(error) = spawn {
+        let mut view = state.lock().map_err(|_| poisoned())?;
+        if view.operation_id == operation_id {
             view.running = false;
             view.completed += 1;
-            match result {
-                Ok(message) => view.message = Some(message),
-                Err(error) => view.error = Some(format!("{error:#}")),
-            }
+            view.error = Some(format!("Could not start parser worker: {error}"));
         }
-    });
+        return Err(anyhow::Error::from(error).into());
+    }
     Ok(started)
 }
 
@@ -700,5 +799,94 @@ mod tests {
         .unwrap_err();
         assert!(unknown.message.contains("no parser for cobol"));
         assert!(!state.lock().unwrap().running);
+    }
+
+    #[test]
+    fn late_progress_cannot_overwrite_a_replacement_worker() {
+        let state = InstallState::default();
+        let (callback_tx, callback_rx) = mpsc::channel();
+        start_install(
+            &state,
+            "json",
+            |_| HighlightInstallState::Available,
+            move |_, progress| {
+                callback_tx.send(progress).unwrap();
+                Ok("first done".into())
+            },
+        )
+        .unwrap();
+        let mut old_progress = callback_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        wait_until(&state, |view| !view.running);
+        let (release, gate) = mpsc::channel();
+        start_operation(
+            &state,
+            "json",
+            SyntaxOperationAction::Uninstall,
+            |_| Ok(()),
+            move |_, mut progress| {
+                progress("current worker".into());
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok("removed".into())
+            },
+        )
+        .unwrap();
+        wait_until(&state, |view| {
+            view.output.as_deref() == Some("current worker")
+        });
+        old_progress("late first worker".into());
+        let current = state.lock().unwrap().clone();
+        assert_eq!(current.operation_id, 2);
+        assert_eq!(current.action, Some(SyntaxOperationAction::Uninstall));
+        assert_eq!(current.output.as_deref(), Some("current worker"));
+        assert!(current.running);
+        release.send(()).unwrap();
+        wait_until(&state, |view| !view.running);
+        assert_eq!(state.lock().unwrap().completed, 2);
+    }
+
+    #[test]
+    fn output_is_bounded_and_panics_release_the_worker() {
+        let state = InstallState::default();
+        start_install(
+            &state,
+            "json",
+            |_| HighlightInstallState::Available,
+            |_, mut progress| {
+                progress("界".repeat(20_000));
+                Ok("é".repeat(20_000))
+            },
+        )
+        .unwrap();
+        wait_until(&state, |view| !view.running);
+        let completed = state.lock().unwrap().clone();
+        assert_eq!(completed.output.unwrap().chars().count(), 8192);
+        assert_eq!(completed.message.unwrap().chars().count(), 8192);
+        start_install(
+            &state,
+            "json",
+            |_| HighlightInstallState::Broken,
+            |_, _| panic!("injected worker panic"),
+        )
+        .unwrap();
+        wait_until(&state, |view| !view.running);
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("operation panicked")
+        );
+        start_install(
+            &state,
+            "json",
+            |_| HighlightInstallState::Broken,
+            |_, _| Ok("retry succeeds".into()),
+        )
+        .unwrap();
+        wait_until(&state, |view| !view.running);
+        assert_eq!(state.lock().unwrap().completed, 3);
+        assert_eq!(state.lock().unwrap().error, None);
     }
 }

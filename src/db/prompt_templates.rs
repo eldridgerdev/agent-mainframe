@@ -15,7 +15,8 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 
 use crate::prompt_library::{PromptPlaceholder, PromptTemplate};
 
@@ -133,6 +134,154 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Raw-column revision for delayed authoring. Sort order is deliberately absent:
+/// unrelated insertions/reorders must not make an unchanged row uneditable.
+pub(crate) struct Snapshot {
+    pub template: PromptTemplate,
+    pub revision: String,
+    raw_tags: String,
+    raw_placeholders: String,
+    raw_created_at: String,
+    raw_updated_at: String,
+}
+
+impl Snapshot {
+    pub(crate) fn raw_template(&self) -> Result<serde_json::Value> {
+        Ok(
+            serde_json::json!({"id":self.template.id,"name":self.template.name,
+            "description":self.template.description,"body":self.template.body,
+            "tags":serde_json::from_str::<serde_json::Value>(&self.raw_tags)?,
+            "placeholders":serde_json::from_str::<serde_json::Value>(&self.raw_placeholders)?,
+            "created_at":self.raw_created_at,"updated_at":self.raw_updated_at}),
+        )
+    }
+}
+
+pub(crate) enum Mutation {
+    Edit {
+        name: String,
+        body: String,
+        tags: Vec<String>,
+    },
+    Delete,
+    Duplicate,
+}
+
+pub(crate) fn snapshot(conn: &Connection, id: &str) -> Result<Option<Snapshot>> {
+    let row = conn
+        .query_row(
+            "SELECT id,name,description,body,tags,placeholders,created_at,updated_at
+         FROM prompt_templates WHERE id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(raw) = row else {
+        return Ok(None);
+    };
+    let revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&raw)?));
+    // Browsing tolerates old broken rows; authoring must never replace their
+    // metadata with the browser's defaults or silently repair invalid dates.
+    let metadata: serde_json::Value = serde_json::from_str(&raw.5)?;
+    for field in metadata
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid placeholder metadata"))?
+    {
+        let mut kind = field.clone();
+        let object = kind
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("Invalid placeholder metadata"))?;
+        object
+            .entry("kind")
+            .or_insert_with(|| serde_json::Value::String("text".into()));
+        // Flattened serde defaults can hide an invalid kind or its values.
+        // Parse the enum directly while retaining the original raw document.
+        serde_json::from_value::<crate::prompt_library::PlaceholderKind>(kind)?;
+    }
+    let template = PromptTemplate {
+        id: raw.0,
+        name: raw.1,
+        description: raw.2,
+        body: raw.3,
+        tags: serde_json::from_str(&raw.4)?,
+        placeholders: serde_json::from_str(&raw.5)?,
+        created_at: raw.6.parse()?,
+        updated_at: raw.7.parse()?,
+    };
+    Ok(Some(Snapshot {
+        template,
+        revision,
+        raw_tags: raw.4,
+        raw_placeholders: raw.5,
+        raw_created_at: raw.6,
+        raw_updated_at: raw.7,
+    }))
+}
+
+/// Read + compare + mutate while owning SQLite's writer lock. None means the
+/// exact persisted row was deleted or edited elsewhere; no write took place.
+pub(crate) fn mutate(
+    conn: &Connection,
+    id: &str,
+    expected: &str,
+    mutation: Mutation,
+) -> Result<Option<String>> {
+    let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let Some(current) = snapshot(&transaction, id)? else {
+        return Ok(None);
+    };
+    if current.revision != expected {
+        return Ok(None);
+    }
+    let result_id = match mutation {
+        Mutation::Edit { name, body, tags } => {
+            transaction.execute(
+                "UPDATE prompt_templates SET name=?2,body=?3,tags=?4,updated_at=?5 WHERE id=?1",
+                params![
+                    id,
+                    name,
+                    body,
+                    serde_json::to_string(&tags)?,
+                    dt_to_str(&Utc::now())
+                ],
+            )?;
+            id.to_string()
+        }
+        Mutation::Delete => {
+            transaction.execute("DELETE FROM prompt_templates WHERE id=?1", [id])?;
+            id.to_string()
+        }
+        Mutation::Duplicate => {
+            let copy = current.template.user_copy();
+            let order: i64 = transaction.query_row(
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM prompt_templates",
+                [],
+                |row| row.get(0),
+            )?;
+            transaction.execute(
+                "INSERT INTO prompt_templates(id,name,description,body,tags,placeholders,created_at,updated_at,sort_order)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                params![copy.id,copy.name,copy.description,copy.body,current.raw_tags,current.raw_placeholders,
+                    dt_to_str(&copy.created_at),dt_to_str(&copy.updated_at),order],
+            )?;
+            copy.id
+        }
+    };
+    transaction.commit()?;
+    Ok(Some(result_id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +293,164 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let db = AmfDb::open(tmp.path()).unwrap();
         (tmp, db)
+    }
+
+    #[test]
+    fn checked_edits_and_copies_preserve_raw_metadata_and_ignore_reordering() {
+        let (_tmp, db) = open_temp_db();
+        let original = PromptTemplate::new("Original".into(), "Use {{area}}".into());
+        let sibling = PromptTemplate::new("Sibling".into(), "Kept".into());
+        insert(&db.conn, &original).unwrap();
+        insert(&db.conn, &sibling).unwrap();
+        let raw = r#"[ {"key":"area","kind":"text","default":"api","future_format":{"width":80}}, {"key":"unused","kind":"select","options":["a","b"]} ]"#;
+        db.conn.execute("UPDATE prompt_templates SET description='Original description',placeholders=?2 WHERE id=?1", params![original.id, raw]).unwrap();
+        let before = snapshot(&db.conn, &original.id).unwrap().unwrap();
+        let sibling_revision = snapshot(&db.conn, &sibling.id).unwrap().unwrap().revision;
+        db.conn
+            .execute("UPDATE prompt_templates SET sort_order=sort_order+10", [])
+            .unwrap();
+        let copy_id = mutate(
+            &db.conn,
+            &original.id,
+            &before.revision,
+            Mutation::Duplicate,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            snapshot(&db.conn, &copy_id)
+                .unwrap()
+                .unwrap()
+                .raw_placeholders,
+            raw
+        );
+        assert_eq!(
+            snapshot(&db.conn, &copy_id).unwrap().unwrap().template.name,
+            "Original (copy)"
+        );
+        mutate(
+            &db.conn,
+            &original.id,
+            &before.revision,
+            Mutation::Edit {
+                name: "Edited".into(),
+                body: "Changed".into(),
+                tags: vec!["tag".into()],
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let after = snapshot(&db.conn, &original.id).unwrap().unwrap();
+        assert_eq!(after.raw_placeholders, raw);
+        assert_eq!(after.template.description, before.template.description);
+        assert_eq!(after.template.created_at, before.template.created_at);
+        assert_eq!(
+            snapshot(&db.conn, &sibling.id).unwrap().unwrap().revision,
+            sibling_revision
+        );
+        assert!(
+            mutate(&db.conn, &original.id, &before.revision, Mutation::Delete)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mutate(
+                &db.conn,
+                &original.id,
+                &before.revision,
+                Mutation::Duplicate
+            )
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn writer_lock_external_changes_and_failed_mutation_never_clobber_a_row() {
+        let (tmp, db) = open_temp_db();
+        let original = PromptTemplate::new("Original".into(), "Kept".into());
+        insert(&db.conn, &original).unwrap();
+        let before = snapshot(&db.conn, &original.id).unwrap().unwrap();
+        let sibling = Connection::open(tmp.path()).unwrap();
+        db.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        sibling.execute_batch("BEGIN IMMEDIATE").unwrap();
+        assert!(mutate(&db.conn, &original.id, &before.revision, Mutation::Delete).is_err());
+        sibling
+            .execute(
+                "UPDATE prompt_templates SET body='Other process' WHERE id=?1",
+                [&original.id],
+            )
+            .unwrap();
+        sibling.execute_batch("COMMIT").unwrap();
+        assert!(
+            mutate(&db.conn, &original.id, &before.revision, Mutation::Delete)
+                .unwrap()
+                .is_none()
+        );
+        let fresh = snapshot(&db.conn, &original.id).unwrap().unwrap();
+        db.conn.execute_batch("CREATE TRIGGER reject_prompt_edit BEFORE UPDATE ON prompt_templates BEGIN SELECT RAISE(ABORT,'write refused'); END;").unwrap();
+        assert!(
+            mutate(
+                &db.conn,
+                &original.id,
+                &fresh.revision,
+                Mutation::Edit {
+                    name: "Lost".into(),
+                    body: "Lost".into(),
+                    tags: vec![]
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            snapshot(&db.conn, &original.id).unwrap().unwrap().revision,
+            fresh.revision
+        );
+        assert!(db.conn.is_autocommit());
+        db.conn
+            .execute_batch("DROP TRIGGER reject_prompt_edit")
+            .unwrap();
+        mutate(&db.conn, &original.id, &fresh.revision, Mutation::Delete)
+            .unwrap()
+            .unwrap();
+        assert!(
+            mutate(&db.conn, &original.id, &fresh.revision, Mutation::Delete)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authoring_refuses_malformed_or_unsupported_metadata_without_replacing_defaults() {
+        let (_tmp, db) = open_temp_db();
+        let original = PromptTemplate::new("Original".into(), "Kept".into());
+        insert(&db.conn, &original).unwrap();
+        for raw in [
+            "not json",
+            r#"[{"key":"area","kind":"future_kind"}]"#,
+            r#"{"key":"area"}"#,
+            r#"[{"key":"area","kind":"select","options":42}]"#,
+            r#"[{"key":"area","default":42}]"#,
+        ] {
+            db.conn
+                .execute(
+                    "UPDATE prompt_templates SET placeholders=?2 WHERE id=?1",
+                    params![original.id, raw],
+                )
+                .unwrap();
+            assert!(snapshot(&db.conn, &original.id).is_err());
+            assert!(mutate(&db.conn, &original.id, "any revision", Mutation::Delete).is_err());
+            let retained: String = db
+                .conn
+                .query_row(
+                    "SELECT placeholders FROM prompt_templates WHERE id=?1",
+                    [&original.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(retained, raw);
+            assert!(db.conn.is_autocommit());
+        }
     }
 
     #[test]

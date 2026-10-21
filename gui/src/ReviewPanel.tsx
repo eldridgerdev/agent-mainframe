@@ -12,12 +12,13 @@ function locationLabel(location: ReviewLocation) {
   return location.new_line !== null ? `line ${location.new_line}` : `base line ${location.old_line}`;
 }
 
-export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onEditPrompt, onSyntaxInstalled }: {
+export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onEditPrompt, onSyntaxInstalled, hidden = false }: {
   view: ReviewView; busy: boolean; error: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
   /** Opens the prompt override manager on the pending call's prompt. */
   onEditPrompt?: () => void;
   /** Re-reads the review after a parser install, so its files gain colours. */
   onSyntaxInstalled?: () => void;
+  hidden?: boolean;
 }) {
   const ai = view.ai;
   const history = view.history;
@@ -149,7 +150,7 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
     else if (summary) void onAct({ kind: "summary_close" });
     else request({ kind: "pause" });
   };
-  return <Modal label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
+  return <Modal hidden={hidden} label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
     footer={<button className="btn btn-secondary" disabled={commandBusy || !!view.finish?.completing} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Complete the review and hand off feedback from the pre-finish summary.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>

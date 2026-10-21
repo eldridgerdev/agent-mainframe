@@ -1827,8 +1827,10 @@ fn ensure_review_claude_md_with_io(io: &mut SetupIo, workdir: &Path, enabled: bo
         let claude_gitignore = claude_dir.join(".gitignore");
         ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes.md");
         ensure_gitignore_entry_with_io(io, &claude_gitignore, "review-notes-archive.md");
+        // Capping old notes is housekeeping, so it stays best-effort even
+        // under checked I/O: a running feature is already stopped by the time
+        // a harness change gets here, and this must not abort the restart.
         if let Err(err) = super::review::archive_review_notes(workdir) {
-            let _ = io.result::<()>(workdir, Err(std::io::Error::other(err.to_string())));
             crate::debug::log_to_file(
                 crate::debug::LogLevel::Warn,
                 "review",

@@ -1,5 +1,7 @@
 mod dashboard;
 mod dialogs;
+pub(crate) use dialogs::pr_workspace::cancel_button_area as pr_workspace_cancel_button_area;
+pub(crate) use dialogs::pr_workspace::pane_areas as pr_workspace_pane_areas;
 pub mod header;
 pub(crate) mod list;
 pub mod pane;

@@ -324,7 +324,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.open_prompt_library(None);
         }
         KeyCode::Char('G') => {
-            app.open_pr_review();
+            app.open_pr_workspace();
         }
         KeyCode::Char('W') => {
             app.open_ai_review();
@@ -405,6 +405,8 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
     app.deactivate_leader();
 
     match key.code {
+        KeyCode::Char('G') => app.open_pr_workspace(),
+        KeyCode::Char('U') => app.open_pr_review(),
         KeyCode::Char('i') => {
             if app.attention_rows().is_empty() {
                 app.push_toast_warning("Nothing needs attention");

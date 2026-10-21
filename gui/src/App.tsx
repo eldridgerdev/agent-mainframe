@@ -28,6 +28,7 @@ import {
   ModeSlug,
   PlanAction,
   PlanInput,
+  PlanHandoff,
   PlanStatus,
   Project,
   SavedAgentSession,
@@ -65,7 +66,6 @@ import {
   stopSession,
   allowedHarnesses,
   supportedHarnesses,
-  projectAgentChoices,
   supportedModes,
   terminalSubmitPrompt,
   todoLaunchAgent,
@@ -77,21 +77,30 @@ import TerminalPane from "./TerminalPane";
 import PromptComposer from "./PromptComposer";
 import SessionSidebar from "./SessionSidebar";
 import ProjectsSidebar from "./ProjectsSidebar";
+import UserPromptEditor from "./UserPromptEditor";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import PromptOverridesPanel from "./PromptOverridesPanel";
 import { OverrideContext, promptOverridesPrecallTarget } from "./promptOverridesApi";
 import ContextSettingsPanel from "./ContextSettingsPanel";
 import AgentAvailabilityPanel from "./AgentAvailabilityPanel";
+import ProjectPreferencePanel from "./ProjectPreferencePanel";
+import { useCreationHarness } from "./useCreationHarness";
+import CreationHarnessField from "./CreationHarnessField";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
+import SyntaxLanguagesPanel from "./SyntaxLanguagesPanel";
+import { OPEN_SYNTAX_LANGUAGES } from "./syntaxApi";
 import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
 import type { PrTriageTarget } from "./prTriageApi";
+import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import TodoNewFeatureForm from "./TodoNewFeatureForm";
+export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
 import PlanPanel from "./PlanPanel";
 import RecoveryDialog from "./RecoveryDialog";
@@ -99,7 +108,8 @@ import NewSessionDialog, { PreCheckFailure } from "./NewSessionDialog";
 import VscodePanel from "./VscodePanel";
 import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
-import SidebarTree, { byStatus, withCollapsed } from "./SidebarTree";
+import SidebarTree, { byStatus, filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
+import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
 import {
   SessionStartStopButton,
@@ -127,6 +137,7 @@ import {
 
 const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
+const PrWorkspacePanel = lazy(() => import("./PrWorkspacePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
 const TODOS_TAB = "todos";
@@ -179,6 +190,41 @@ export default function App() {
   const [showAppearance, setShowAppearance] = useState(false);
   const queryClient = useQueryClient();
   const [view, setView] = useState<View | null>(null);
+  const [treeFilter, setTreeFilter] = useState("");
+  // Filter-opened projects closed again by hand; tied to the filter text it
+  // was set under, so any new filter starts with every match open.
+  const [filterClosedState, setFilterClosedState] = useState<{ filter: string; ids: Set<string> }>(
+    { filter: "", ids: new Set() });
+  const filterClosed = filterClosedState.filter === treeFilter ? filterClosedState.ids : new Set<string>();
+  const setFilterClosed = (projectIds: string[], closed: boolean) => {
+    const ids = new Set(filterClosed);
+    for (const id of projectIds) {
+      if (closed) ids.add(id); else ids.delete(id);
+    }
+    setFilterClosedState({ filter: treeFilter, ids });
+  };
+  const [collapsingAll, setCollapsingAll] = useState(false);
+  const collapsingAllRef = useRef(false);
+  const treeFilterInput = useRef<HTMLInputElement>(null);
+  const [toolsCollapsed, setToolsCollapsed] = useSidebarCollapsed("workspaceTools");
+  useEffect(() => {
+    // "/" jumps to the project filter, as in most list-heavy apps; never from
+    // a terminal, a form field or a dialog.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey
+          || keyIsForOtherInput(event)) return;
+      const input = treeFilterInput.current;
+      // A hidden sidebar keeps the input mounted; only claim the key when
+      // focus actually landed, so "/" is never swallowed with no effect.
+      if (!input || input.closest("[hidden]")) return;
+      input.focus();
+      if (document.activeElement !== input) return;
+      event.preventDefault();
+      input.select();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [createFeatureFor, setCreateFeatureFor] = useState<string | null>(null);
   const [tabByFeature, setTabByFeature] = useState<Record<string, string>>({});
@@ -187,6 +233,7 @@ export default function App() {
   const [learningBusy, setLearningBusy] = useState(false);
   const learningActionPending = useRef(false);
   const [learningApproval, setLearningApproval] = useState<{ qaId: string; message: string } | null>(null);
+  const [savePromptBody, setSavePromptBody] = useState<string | null>(null);
   const [promptLibrary, setPromptLibrary] = useState<{ scope: LibraryScope; target: SessionTarget | null } | null>(null);
   const [promptOverrides, setPromptOverrides] = useState<{
     context: OverrideContext; promptId: string | null; harness: AgentSlug | null; fromPrecall: boolean;
@@ -194,7 +241,14 @@ export default function App() {
   } | null>(null);
   const [showFeaturePresets, setShowFeaturePresets] = useState(false);
   const [showContextSettings, setShowContextSettings] = useState(false);
+  const [showSyntaxLanguages, setShowSyntaxLanguages] = useState(false);
+  useEffect(() => {
+    const open = () => setShowSyntaxLanguages(true);
+    window.addEventListener(OPEN_SYNTAX_LANGUAGES, open);
+    return () => window.removeEventListener(OPEN_SYNTAX_LANGUAGES, open);
+  }, []);
   const [agentAvailabilityScope, setAgentAvailabilityScope] = useState<{ projectId?: string } | null>(null);
+  const [projectPreference, setProjectPreference] = useState<string | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showDebugLog, setShowDebugLog] = useState(false);
@@ -278,6 +332,9 @@ export default function App() {
   const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
   const [prReviewProject, setPrReviewProject] = useState<string | null>(null);
   const [prTriageTarget, setPrTriageTarget] = useState<PrTriageTarget | null>(null);
+  const [prWorkspaceTarget, setPrWorkspaceTarget] = useState<FeatureTarget | null>(null);
+  const [prWorkspaceVisible, setPrWorkspaceVisible] = useState(false);
+  const [prWorkspaceStatus, setPrWorkspaceStatus] = useState<PrWorkspaceStatus>({ running: false, prNumber: null, completed: false });
   const [review, setReview] = useState<ReviewView | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -309,14 +366,6 @@ export default function App() {
     queryFn: supportedHarnesses,
   });
   const modes = useQuery({ queryKey: ["supported-modes"], queryFn: supportedModes });
-  const featureAgents = useQuery({
-    queryKey: ["project-feature-agents", createFeatureFor],
-    queryFn: () => projectAgentChoices(createFeatureFor!),
-    enabled: createFeatureFor !== null,
-    retry: false,
-    // Reopening reads external edits; focus changes must not discard form drafts.
-    staleTime: 0, refetchOnWindowFocus: false, refetchOnReconnect: false,
-  });
   const workspace = useQuery({
     queryKey: SNAPSHOT_KEY,
     queryFn: getSnapshot,
@@ -324,7 +373,18 @@ export default function App() {
   });
   const plan = useQuery({
     queryKey: PLAN_KEY,
-    queryFn: planSnapshot,
+    queryFn: async () => {
+      const wasActive = !!queryClient.getQueryData<PlanStatus>(PLAN_KEY)?.active;
+      const status = await planSnapshot();
+      // A Quick Plan "direct" outcome closes the interview and starts its
+      // agent inside this poll rather than in an action. Apply the one-shot
+      // handoff here, so a poll cancelled by a later action still delivers it.
+      if (status.handoff) applyPlanHandoff(status.handoff);
+      if (wasActive && !status.active && status.message) {
+        pushToast({ tone: "info", title: "Plan", message: status.message });
+      }
+      return status;
+    },
     refetchInterval: planBusy ? false : 750,
   });
 
@@ -347,6 +407,11 @@ export default function App() {
     : undefined;
   const selectedFeature: Feature | undefined = view?.kind === "feature"
     ? selectedProject?.features.find((feature) => feature.id === view.featureId)
+    : undefined;
+  const showPrWorkspace = !!prWorkspaceTarget && prWorkspaceVisible && view?.kind === "feature"
+    && view.projectId === prWorkspaceTarget.project_id && view.featureId === prWorkspaceTarget.feature_id;
+  const prWorkspaceFeatureName = prWorkspaceTarget
+    ? projects.find((project) => project.id === prWorkspaceTarget.project_id)?.features.find((feature) => feature.id === prWorkspaceTarget.feature_id)?.name
     : undefined;
 
   // Land on the first project, and fall back gracefully when the selected
@@ -736,12 +801,14 @@ export default function App() {
     } finally { learningActionPending.current = false; setLearningBusy(false); }
   }
 
+  function applyPlanHandoff(handoff: PlanHandoff) {
+    openSession(handoff.target, handoff.draft_prompt);
+    void queryClient.invalidateQueries({ queryKey: ["todos"] });
+  }
+
   function updatePlan(status: PlanStatus) {
     queryClient.setQueryData(PLAN_KEY, status);
-    if (status.handoff) {
-      openSession(status.handoff.target, status.handoff.draft_prompt);
-      void queryClient.invalidateQueries({ queryKey: ["todos"] });
-    }
+    if (status.handoff) applyPlanHandoff(status.handoff);
     if (!status.active && status.message) {
       pushToast({ tone: "info", title: "Plan", message: status.message });
     }
@@ -1174,6 +1241,40 @@ export default function App() {
   };
 
   const activePlan = plan.data?.active ?? null;
+  // What the tree shows, so collapse-all and Enter act on visible rows.
+  const treeEntries = filterTree(projects, treeFilter, workspace.data?.sidebar);
+  const allProjectsCollapsed = treeEntries.length > 0
+    && treeEntries.every((entry) => shownCollapsed(entry, filterClosed));
+  const setAllProjectsCollapsed = async (collapsed: boolean) => {
+    // A second click would start an interleaved loop whose replies race.
+    if (collapsingAllRef.current) return;
+    collapsingAllRef.current = true;
+    setCollapsingAll(true);
+    try {
+      // Filter-opened projects are view state; the rest are stored flags.
+      setFilterClosed(treeEntries.filter((entry) => entry.forcedOpen).map((entry) => entry.project.id), collapsed);
+      // One write at a time: each reply is a whole snapshot, and an earlier
+      // reply landing last would undo the later rows' flags until the next poll.
+      for (const { project, forcedOpen } of treeEntries) {
+        if (!forcedOpen && (project.collapsed ?? false) !== collapsed) {
+          await toggleCollapsed({ project_id: project.id, feature_id: null }, collapsed);
+        }
+      }
+    } finally {
+      collapsingAllRef.current = false;
+      setCollapsingAll(false);
+    }
+  };
+  const openFirstTreeMatch = () => {
+    if (!treeFilter.trim()) return;
+    const [first] = treeEntries;
+    if (!first) return;
+    // A feature only when its row is on screen; otherwise its project.
+    const feature = first.matchedByFeatures && !shownCollapsed(first, filterClosed) ? first.features[0] : undefined;
+    setView(feature
+      ? { kind: "feature", projectId: first.project.id, featureId: feature.id }
+      : { kind: "project", projectId: first.project.id });
+  };
   const createFeatureProject = projects.find((project) => project.id === createFeatureFor);
 
   return (
@@ -1181,7 +1282,6 @@ export default function App() {
       <ProjectsSidebar>
 
         <nav className="nav" aria-label="Workspace">
-          <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
@@ -1190,41 +1290,88 @@ export default function App() {
             <Icon name="inbox" />
             <span className="nav-label">Global TODOs</span>
           </button>
-
-          <button className="nav-item" onClick={() => openPromptLibrary()}>
-            <Icon name="file" /><span className="nav-label">Prompt library</span>
-          </button>
-
-          <button className="nav-item" onClick={openPromptOverrides}>
-            <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
-          </button>
-
-          <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
-
-          <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
-          <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
-          <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
-
-          <button className="nav-item" onClick={() => setShowDormancy(true)}>
-            <Icon name="zap" /><span className="nav-label">Dormant features</span>
-          </button>
-
-          <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
-
-          <button className="nav-item" onClick={() => setShowDebugLog(true)}>
-            <Icon name="list" /><span className="nav-label">Debug log</span>
-          </button>
-
-          <div className="nav-section">
-            <span>Projects</span>
-            <button
-              className="btn btn-icon btn-ghost btn-sm"
-              aria-label="New project"
-              title="New project"
-              onClick={() => setShowCreateProject(true)}
-            >
-              <Icon name="plus" />
+          <div className="nav-section nav-section-toggle">
+            <button type="button" className="nav-section-button" aria-expanded={!toolsCollapsed}
+              aria-controls="workspace-tools" onClick={() => setToolsCollapsed(!toolsCollapsed)}>
+              <Icon name={toolsCollapsed ? "chevronRight" : "chevronDown"} size={12} />
+              <span>Tools</span>
             </button>
+          </div>
+          <div id="workspace-tools" className="nav-tools" hidden={toolsCollapsed}>
+            <button className="nav-item" onClick={() => setShowAppearance(true)}><Icon name="sparkles" /><span className="nav-label">Appearance</span></button>
+            <button className="nav-item" onClick={() => openPromptLibrary()}>
+              <Icon name="file" /><span className="nav-label">Prompt library</span>
+            </button>
+
+            <button className="nav-item" onClick={openPromptOverrides}>
+              <Icon name="sparkles" /><span className="nav-label">Prompt overrides</span>
+            </button>
+
+            <button className="nav-item" onClick={() => setScreenshotTarget({ target: null, sessionId: null })}><Icon name="file" /><span className="nav-label">Validation screenshots</span></button>
+
+            <button className="nav-item" onClick={() => setShowFeaturePresets(true)}><Icon name="list" /><span className="nav-label">Feature presets</span></button>
+            <button className="nav-item" onClick={() => setShowContextSettings(true)}><Icon name="list" /><span className="nav-label">Context settings</span></button>
+            <button className="nav-item" onClick={() => setShowSyntaxLanguages(true)}><Icon name="list" /><span className="nav-label">Syntax languages</span></button>
+            <button className="nav-item" onClick={() => setAgentAvailabilityScope({})}><Icon name="list" /><span className="nav-label">Agent availability</span></button>
+
+            <button className="nav-item" onClick={() => setShowDormancy(true)}>
+              <Icon name="zap" /><span className="nav-label">Dormant features</span>
+            </button>
+
+            <button className="nav-item" onClick={() => setShowBookmarks(true)}><Icon name="list" /><span className="nav-label">Session bookmarks</span></button>
+
+            <button className="nav-item" onClick={() => setShowDebugLog(true)}>
+              <Icon name="list" /><span className="nav-label">Debug log</span>
+            </button>
+          </div>
+
+          <div className="nav-tree-toolbar">
+            <div className="nav-section">
+              <span>Projects</span>
+              <span className="nav-section-actions">
+                <button
+                  className="btn btn-icon btn-ghost btn-sm"
+                  aria-label={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+                  title={allProjectsCollapsed ? "Expand all projects" : "Collapse all projects"}
+                  disabled={treeEntries.length === 0 || collapsingAll}
+                  onClick={() => void setAllProjectsCollapsed(!allProjectsCollapsed)}
+                >
+                  <Icon name={allProjectsCollapsed ? "expandAll" : "collapseAll"} />
+                </button>
+                <button
+                  className="btn btn-icon btn-ghost btn-sm"
+                  aria-label="New project"
+                  title="New project"
+                  onClick={() => setShowCreateProject(true)}
+                >
+                  <Icon name="plus" />
+                </button>
+              </span>
+            </div>
+            {projects.length > 0 && (
+              <label className="nav-filter">
+                <Icon name="search" size={14} />
+                <input
+                  ref={treeFilterInput}
+                  type="search"
+                  aria-label="Filter projects and features"
+                  placeholder="Filter projects and features"
+                  value={treeFilter}
+                  onChange={(event) => setTreeFilter(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTreeFilter("");
+                      event.currentTarget.blur();
+                    } else if (event.key === "Enter") {
+                      event.preventDefault();
+                      openFirstTreeMatch();
+                    }
+                  }}
+                />
+                {!treeFilter && <kbd className="nav-filter-key" aria-hidden="true">/</kbd>}
+              </label>
+            )}
           </div>
 
           {workspace.isLoading && <p className="nav-note">Loading…</p>}
@@ -1235,6 +1382,12 @@ export default function App() {
           )}
           {workspace.data && projects.length === 0 && (
             <p className="nav-note">No projects yet.</p>
+          )}
+          {treeFilter.trim() && treeEntries.length === 0 && (
+            <p className="nav-note">
+              Nothing matches “{treeFilter.trim()}”.{" "}
+              <button type="button" className="link-button" onClick={() => setTreeFilter("")}>Clear filter</button>
+            </p>
           )}
 
           <SidebarTree
@@ -1265,6 +1418,9 @@ export default function App() {
             onToggleCollapsed={toggleCollapsed}
             onResumePlan={() => setPlanMinimized(false)}
             onCreateFeature={setCreateFeatureFor}
+            filter={treeFilter}
+            filterClosed={filterClosed}
+            onSetFilterClosed={(projectId, closed) => setFilterClosed([projectId], closed)}
             renderFeatureExtra={(feature) => pendingEdits[feature.id] > 0 && (
               <span className="nav-count nav-count-attention" title="Edits waiting for review">
                 {pendingEdits[feature.id]}
@@ -1300,10 +1456,20 @@ export default function App() {
         onClose={() => setSupervisedTarget(null)} />}
       {showFeaturePresets && <FeaturePresetsPanel onClose={() => setShowFeaturePresets(false)} />}
       {showContextSettings && <ContextSettingsPanel onClose={() => setShowContextSettings(false)} onSaved={() => { setShowContextSettings(false); void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY }); }} />}
+      {showSyntaxLanguages && <SyntaxLanguagesPanel onClose={() => setShowSyntaxLanguages(false)} />}
       {agentAvailabilityScope && <AgentAvailabilityPanel key={agentAvailabilityScope.projectId ?? "global"}
         projectId={agentAvailabilityScope.projectId} onClose={() => setAgentAvailabilityScope(null)} onSaved={() => {
           setAgentAvailabilityScope(null);
           void queryClient.invalidateQueries({ queryKey: [ALLOWED_HARNESSES_KEY] });
+          void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
+        }} />}
+      {projectPreference && <ProjectPreferencePanel key={projectPreference} projectId={projectPreference}
+        supported={harnesses.data ?? []}
+        onClose={() => setProjectPreference(null)} onSaved={() => {
+          setProjectPreference(null);
+          void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+          void queryClient.invalidateQueries({ queryKey: ["project-harness-choices"] });
+          pushToast({ tone: "info", title: "Project preference saved", message: "New features use this default. Existing sessions keep their harness." });
         }} />}
       {showDormancy && <DormancyPanel suspended={!!deleteFeatureDialog} onClose={() => setShowDormancy(false)}
         onDeleteFeature={(row) => setDeleteFeatureDialog({
@@ -1327,10 +1493,10 @@ export default function App() {
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
-      {diffTarget && <DiffPanel key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
-      {review && <ReviewPanel key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
+      {diffTarget && <DiffPanel hidden={showSyntaxLanguages} key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
+      {review && <ReviewPanel hidden={showSyntaxLanguages} key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
-        <LearningPanel key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
+        <LearningPanel hidden={showSyntaxLanguages} key={learning.workflow_id} view={learning} busy={learningBusy || learningApproval !== null}
           onAct={actLearning} onLaunch={(qaId) => void launchLearning(qaId)}
           onClose={() => void actLearning({ kind: "close" })} />
       )}
@@ -1342,6 +1508,22 @@ export default function App() {
       )}
 
       <main className="main">
+        {prWorkspaceTarget && !showPrWorkspace && <section className={`pr-workspace-background-banner${prWorkspaceStatus.running ? " is-running" : ""}`} aria-live="polite">
+          {prWorkspaceStatus.running ? <Spinner /> : <span className="pr-workspace-background-check">{prWorkspaceStatus.completed ? "✓" : "↗"}</span>}
+          <div><strong>{prWorkspaceStatus.running ? `AI review running${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : prWorkspaceStatus.completed ? `AI review complete${prWorkspaceStatus.prNumber ? ` · PR #${prWorkspaceStatus.prNumber}` : ""}` : "PR Workspace is open"}</strong><p>{prWorkspaceStatus.running ? "The review continues in the background. You can keep working anywhere in AMF." : prWorkspaceStatus.completed ? `Results for ${prWorkspaceFeatureName ?? "this feature"} are ready to view.` : `Return to ${prWorkspaceFeatureName ?? "the feature"} to continue the PR review.`}</p></div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setView({ kind: "feature", projectId: prWorkspaceTarget.project_id, featureId: prWorkspaceTarget.feature_id }); setPrWorkspaceVisible(true); }}>Return to PR workspace</button>
+        </section>}
+        {prWorkspaceTarget && <div className="pr-workspace-host" hidden={!showPrWorkspace}>
+          <Suspense fallback={<div className="pr-workspace-loading"><Spinner /><span>Opening PR workspace…</span></div>}>
+            <PrWorkspacePanel key={`${prWorkspaceTarget.project_id}:${prWorkspaceTarget.feature_id}`} target={prWorkspaceTarget}
+              onClose={() => { setPrWorkspaceTarget(null); setPrWorkspaceVisible(false); setPrWorkspaceStatus({ running: false, prNumber: null, completed: false }); }}
+              onReturnToFeature={() => setPrWorkspaceVisible(false)} onStatusChange={setPrWorkspaceStatus}
+              onHandoff={(handoff) => {
+                setPrWorkspaceVisible(false);
+                openSession(handoff.target, handoff.draft_prompt);
+              }} />
+          </Suspense>
+        </div>}
         {view?.kind === "todos" && (
           <div className="page">
             <PageHeader
@@ -1376,6 +1558,7 @@ export default function App() {
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
             onPrReview={() => setPrReviewProject(selectedProject.id)}
             onAgentAvailability={() => setAgentAvailabilityScope({ projectId: selectedProject.id })}
+            onProjectPreference={() => setProjectPreference(selectedProject.id)}
             todoPanel={
               <TodoPanel
                 scope={{ kind: "project", project_id: selectedProject.id }}
@@ -1391,7 +1574,7 @@ export default function App() {
           />
         )}
 
-        {view?.kind === "feature" && selectedProject && selectedFeature && (
+        {view?.kind === "feature" && selectedProject && selectedFeature && !showPrWorkspace && (
           <FeatureView
             key={`${selectedFeature.id}:${harnessEpochs[selectedFeature.id] ?? 0}`}
             project={selectedProject}
@@ -1413,6 +1596,7 @@ export default function App() {
             onSupervisedEdits={() => openSupervisedEdits({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onScreenshots={(sessionId) => setScreenshotTarget({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onPrWorkspace={() => { const target = { project_id: selectedProject.id, feature_id: selectedFeature.id }; setPrWorkspaceTarget(target); setPrWorkspaceVisible(true); }}
             onReusePrompt={(target, prompt) => openSession(target, prompt)}
             onReview={() => void beginReview({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             reviewBusy={reviewBusy}
@@ -1472,6 +1656,7 @@ export default function App() {
             launchedMode={selectedFeature.status === "stopped" ? undefined : launchedModes[selectedFeature.id]}
             {...lifecycle(selectedProject.id, selectedFeature)}
             onPromptLibrary={openPromptLibrary}
+            onSavePrompt={setSavePromptBody}
             drafts={drafts}
             onDraftChange={changeDraft}
             sendingPrompts={sendingPrompts}
@@ -1522,23 +1707,11 @@ export default function App() {
         />
       )}
 
-      {createFeatureProject && (featureAgents.isPending || featureAgents.isFetching || featureAgents.isError ||
-        !featureAgents.data?.length || harnesses.isPending || harnesses.isError ?
-        <Modal label="New feature" title="New feature" subtitle={`in ${createFeatureProject.name}`}
-          onClose={() => setCreateFeatureFor(null)} footer={<>
-            <button className="btn btn-ghost" onClick={() => setCreateFeatureFor(null)}>Cancel</button>
-            <button className="btn btn-secondary" disabled={featureAgents.isFetching || harnesses.isFetching}
-              onClick={() => { void featureAgents.refetch(); void harnesses.refetch(); }}>Reload agent choices</button>
-          </>}>
-          {featureAgents.isPending || featureAgents.isFetching || harnesses.isPending
-            ? <p role="status"><Spinner /> Loading project agent choices…</p>
-            : <p role="alert">{featureAgents.isError ? asGuiError(featureAgents.error).message
-              : harnesses.isError ? asGuiError(harnesses.error).message : "No allowed agent is available for this project. Check installed agents and Agent availability."}</p>}
-        </Modal> :
+      {createFeatureProject && (
         <CreateFeatureForm
           projectId={createFeatureProject.id}
           projectName={createFeatureProject.name}
-          agents={(harnesses.data ?? []).filter(agent => featureAgents.data?.includes(agent.slug))}
+          agents={harnesses.data ?? []}
           modes={modes.data ?? []}
           isGit={createFeatureProject.is_git}
           defaultUseWorktree={createFeatureProject.is_git && createFeatureProject.features.length > 0}
@@ -1565,12 +1738,12 @@ export default function App() {
           modes={modes.data ?? []}
           pending={planBusy || todoNewBusy || pendingTodoNewApproval !== null}
           onCancel={() => setPendingTodoNew(null)}
-          onSubmit={(request) => {
-            if (pendingTodoNew.kind === "plan") {
-              void runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request))
+          onSubmit={(request, planKind) => {
+            if (planKind !== "none") {
+              return runPlanBegin(() => planBeginTodoNew(pendingTodoNew.todoId, request, planKind === "quick"))
                 .then((started) => { if (started) setPendingTodoNew(null); });
             } else {
-              void launchTodoNewFeature(pendingTodoNew.todoId, request, false);
+              return launchTodoNewFeature(pendingTodoNew.todoId, request, false);
             }
           }}
         />
@@ -1785,6 +1958,12 @@ export default function App() {
       )}
 
       {showAppearance && <ThemePicker appearance={appearance} onClose={() => setShowAppearance(false)} />}
+      {savePromptBody !== null && <UserPromptEditor snapshot={null} seedBody={savePromptBody}
+        onClose={() => setSavePromptBody(null)} onSaved={() => {
+          setSavePromptBody(null);
+          void queryClient.invalidateQueries({ queryKey: ["prompt-library"] });
+          pushToast({ tone: "info", title: "User template saved", message: "Your composer draft is unchanged. Sending remains explicit." });
+        }} />}
       {promptLibrary && <PromptLibraryPanel
         initialScope={promptLibrary.scope} initialTarget={promptLibrary.target} projects={projects}
         onClose={() => setPromptLibrary(null)} onInsert={insertLibraryPrompt}
@@ -1869,6 +2048,7 @@ function ProjectView({
   onPrTriage,
   onPrReview,
   onAgentAvailability,
+  onProjectPreference,
   todoPanel,
 }: {
   project: Project;
@@ -1880,6 +2060,7 @@ function ProjectView({
   onPrTriage: () => void;
   onPrReview: () => void;
   onAgentAvailability: () => void;
+  onProjectPreference: () => void;
   todoPanel: ReactNode;
 }) {
   const running = project.features.filter((feature) => feature.status !== "stopped").length;
@@ -1899,6 +2080,7 @@ function ProjectView({
             <button className="btn btn-secondary" aria-label="Project agent availability" onClick={onAgentAvailability}>
               <Icon name="list" size={12} /> Agent availability
             </button>
+            <button className="btn btn-secondary" onClick={onProjectPreference}>Preferred harness</button>
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}
@@ -1990,6 +2172,7 @@ function FeatureView({
   pendingEdits,
   onSupervisedEdits,
   onPrTriage,
+  onPrWorkspace,
   onScreenshots,
   onReusePrompt,
   onReview,
@@ -2013,6 +2196,7 @@ function FeatureView({
   onStop,
   drafts,
   onPromptLibrary,
+  onSavePrompt,
   onDraftChange,
   sendingPrompts,
   onSendDraft,
@@ -2037,6 +2221,7 @@ function FeatureView({
   pendingEdits: number;
   onSupervisedEdits: () => void;
   onPrTriage: () => void;
+  onPrWorkspace: () => void;
   onScreenshots: (sessionId: string | null) => void;
   /** The agent sidebar's prompt reuse: append to that session's draft. */
   onReusePrompt: (target: SessionTarget, prompt: string) => void;
@@ -2060,6 +2245,7 @@ function FeatureView({
   launchedMode?: ModeSlug;
   drafts: Record<string, string>;
   onPromptLibrary: (target: SessionTarget) => void;
+  onSavePrompt: (body: string) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
@@ -2103,7 +2289,8 @@ function FeatureView({
       focusRequested={composerFocusKey === sessionKey(target)} onFocusHandled={onComposerFocusHandled}
       onChange={(text) => onDraftChange(target, text)} onClear={() => onDraftChange(target, "")}
       onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
-      onLibrary={() => onPromptLibrary(target)} />
+      onLibrary={() => onPromptLibrary(target)}
+      onSaveTemplate={() => onSavePrompt(drafts[sessionKey(target)] ?? "")} />
   ) : null;
 
   return (
@@ -2156,6 +2343,9 @@ function FeatureView({
             {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
+            </button>}
+            {project.is_git && <button className="btn btn-secondary" onClick={onPrWorkspace}>
+              <Icon name="file" size={12} /> PR Workspace (experimental)
             </button>}
             <Menu
               label="Plan"
@@ -2468,7 +2658,9 @@ export function CreateFeatureForm({
   onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind) => void;
 }) {
   const [branch, setBranch] = useState("");
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
+  const harness = useCreationHarness(projectId);
+  const agent = harness.agent;
+  const setAgent = harness.choose;
   const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
   const [useWorktree, setUseWorktree] = useState(defaultUseWorktree);
   const [planKind, setPlanKind] = useState<PlanKind>("none");
@@ -2482,9 +2674,7 @@ export function CreateFeatureForm({
   const presets = useQuery({ queryKey: ["feature-presets", projectId], queryFn: () => featurePresetsChoices(projectId), retry: false, staleTime: 0, refetchOnWindowFocus: false });
   const unsupportedMode = agent === "codex" && mode === "vibeless";
   const modeInfo = modes.find((candidate) => candidate.slug === mode);
-  const offered = useOfferedAgents(projectId, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
-    ? agent : (offered[0]?.slug ?? agent);
+  const selectedAgent = agent;
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
 
   return (
@@ -2496,7 +2686,7 @@ export function CreateFeatureForm({
       onClose={onCancel}
       dismissable={!pending}
       onSubmit={() => {
-        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode) return;
+        if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
         onSubmit({
           branch: branch.trim(),
           agent: selectedAgent,
@@ -2513,7 +2703,7 @@ export function CreateFeatureForm({
       footer={
         <>
           <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode}>
+          <button type="submit" className="btn btn-primary" disabled={pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready}>
             {pending && <Spinner />}
             {pending ? "Creating…" : planKind === "none" ? "Create feature" : "Create and plan"}
           </button>
@@ -2527,8 +2717,8 @@ export function CreateFeatureForm({
             if (!value) return;
             const preset = presets.data?.[Number(value)];
             if (!preset) return;
-            if (offered.some((candidate) => candidate.slug === preset.agent)) setAgent(preset.agent);
-            else setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. The harness was left unchanged.`);
+            setAgent(preset.agent);
+            if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
             setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
             setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
             // Keep the name the user typed; only the preset's prefix changes.
@@ -2558,13 +2748,7 @@ export function CreateFeatureForm({
           />
         </Field>
         <div className="form-row">
-          <Field label="Harness">
-            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {offered.map((a) => (
-                <option key={a.slug} value={a.slug}>{a.display_name}</option>
-              ))}
-            </select>
-          </Field>
+          <CreationHarnessField harness={harness} supported={agents} disabled={pending} />
           <Field label="Mode">
             <select value={mode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
               {modes.map((m) => (
@@ -2606,115 +2790,6 @@ export function CreateFeatureForm({
           <Switch checked={chrome} onChange={setChrome} label="Chrome" />
         </div>
         {remoteControl && <Switch checked={remoteControl} onChange={setRemoteControl} label="Remote Control" hint="Clear explicitly to create without Remote Control in the desktop." />}
-        <WorktreeHookField hook={hook} disabled={pending} />
-      </div>
-    </Modal>
-  );
-}
-
-export function TodoNewFeatureForm({
-  kind,
-  todoTitle,
-  projects,
-  agents,
-  modes,
-  pending,
-  onCancel,
-  onSubmit,
-}: {
-  kind: "plan" | "launch";
-  todoTitle: string;
-  projects: Project[];
-  agents: { slug: AgentSlug; display_name: string }[];
-  modes: { slug: ModeSlug; display_name: string }[];
-  pending: boolean;
-  onCancel: () => void;
-  onSubmit: (request: CreateFeatureRequest) => void;
-}) {
-  const suggested = todoTitle.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40) || "todo-work";
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
-  const [branch, setBranch] = useState(suggested);
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
-  const [mode, setMode] = useState<ModeSlug>(modes[0]?.slug ?? "vibe");
-  const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-  // Each project can narrow the list, so it follows the chosen project.
-  const offered = useOfferedAgents(project?.id ?? null, agents);
-  const selectedAgent = offered.some((candidate) => candidate.slug === agent)
-    ? agent : (offered[0]?.slug ?? agent);
-  const selectedMode = modes.some((candidate) => candidate.slug === mode)
-    ? mode : (modes[0]?.slug ?? mode);
-  const hook = useWorktreeHookChoice(project?.id, !!project);
-
-  return (
-    <Modal
-      label={kind === "plan" ? "Plan TODO in a new feature" : "Start TODO in a new feature"}
-      title={kind === "plan" ? "Plan in a new feature" : "Start in a new feature"}
-      subtitle={todoTitle}
-      onClose={onCancel}
-      dismissable={!pending}
-      onSubmit={() => {
-        if (pending || !project || !branch.trim() || !hook.ready) return;
-        onSubmit({
-          project_name: project.name,
-          branch: branch.trim(),
-          agent: selectedAgent,
-          mode: selectedMode,
-          review: false,
-          plan_mode: kind === "plan",
-          create_terminal: false,
-          use_worktree: true,
-          enable_chrome: false,
-          hook_choice: hook.choice || null,
-          dry_run: false,
-        });
-      }}
-      footer={
-        <>
-          <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={pending}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={pending || !project || !branch.trim() || !hook.ready}>
-            {pending && <Spinner />}
-            {kind === "plan" ? "Start plan" : "Create and start"}
-          </button>
-        </>
-      }
-    >
-      <p className="muted small modal-lead">
-        {kind === "plan"
-          ? "Creates the worktree and runs its setup before the interview. The agent starts after you accept the plan."
-          : "Creates a worktree and starts its agent. The TODO prompt opens as an editable draft."}
-      </p>
-      <div className="form-stack">
-        {projects.length > 1 && (
-          <Field label="Project">
-            <select value={project?.id ?? ""} onChange={(event) => setProjectId(event.target.value)}>
-              {projects.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <Field label="Branch">
-          <input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} required autoFocus />
-        </Field>
-        <div className="form-row">
-          <Field label="Harness">
-            <select value={selectedAgent} onChange={(event) => setAgent(event.target.value as AgentSlug)}>
-              {offered.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Mode">
-            <select value={selectedMode} onChange={(event) => setMode(event.target.value as ModeSlug)}>
-              {modes.map((candidate) => (
-                <option key={candidate.slug} value={candidate.slug}>{candidate.display_name}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
         <WorktreeHookField hook={hook} disabled={pending} />
       </div>
     </Modal>

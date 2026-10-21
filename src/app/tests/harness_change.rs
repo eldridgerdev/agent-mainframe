@@ -590,11 +590,15 @@ fn harness_change_cas_after_launch_handles_external_target_move_or_deletion() {
         assert!(format!("{error:#}").contains("final process state could not be saved"));
         assert!(exists.load(Ordering::SeqCst));
         assert!(format!("{error:#}").contains("Replacement tmux session exists"));
-        assert!(format!("{error:#}").contains("Replacement tmux session exists"));
         assert!(format!("{error:#}").contains("no workspace row was reconciled or overwritten"));
         assert!(fixture.app.store.projects[0].features.is_empty());
         let persisted = fixture.app.db.as_ref().unwrap().load_store().unwrap();
         assert!(persisted.projects[0].features.is_empty());
+        // A deletion must not resurrect the row anywhere; a move keeps it,
+        // under the other project only.
+        let expected_projects = if deletion { 1 } else { 2 };
+        assert_eq!(fixture.app.store.projects.len(), expected_projects);
+        assert_eq!(persisted.projects.len(), expected_projects);
         if !deletion {
             assert_eq!(
                 fixture.app.store.projects[1].features[0].agent,
@@ -613,7 +617,16 @@ fn harness_change_gui_refreshes_real_external_sqlite_writer_before_confirming() 
     let target = fixture.target();
     let mut gui = GuiHandle::from_app(fixture.app);
     let view = gui_harness_change::load(&mut gui, target.clone()).unwrap();
-    external_nickname(database.path(), "Other AMF window");
+    // A bound field (a session stopped elsewhere) must invalidate the
+    // confirmation; the nickname proves the GUI adopted the external row.
+    {
+        let db = crate::db::AmfDb::open(database.path()).unwrap();
+        let mut store = db.load_store().unwrap();
+        let feature = &mut store.projects[0].features[0];
+        feature.nickname = Some("Other AMF window".into());
+        feature.sessions[0].stopped = true;
+        db.save_store(&store).unwrap();
+    }
     let error = gui_harness_change::apply(
         &mut gui,
         HarnessChangeRequest {
@@ -627,6 +640,29 @@ fn harness_change_gui_refreshes_real_external_sqlite_writer_before_confirming() 
     let feature = &gui.app_for_workflow().store.projects[0].features[0];
     assert_eq!(feature.nickname.as_deref(), Some("Other AMF window"));
     assert_eq!(feature.agent, AgentKind::Claude);
+}
+
+#[test]
+fn harness_change_gui_revision_ignores_routine_feature_updates() {
+    let database = tempfile::NamedTempFile::new().unwrap();
+    let mut fixture = Fixture::new(stopped_tmux(), ProjectStatus::Stopped);
+    attach_db(&mut fixture.app, database.path());
+    let target = fixture.target();
+    let mut gui = GuiHandle::from_app(fixture.app);
+    let before = gui_harness_change::load(&mut gui, target.clone()).unwrap();
+    // Hook IPC, status sync and renames rewrite these on a live feature; none
+    // of them changes what a harness change acts on.
+    {
+        let db = crate::db::AmfDb::open(database.path()).unwrap();
+        let mut store = db.load_store().unwrap();
+        let feature = &mut store.projects[0].features[0];
+        feature.nickname = Some("Renamed elsewhere".into());
+        feature.last_accessed += chrono::Duration::minutes(5);
+        feature.summary = Some("Fresh summary".into());
+        db.save_store(&store).unwrap();
+    }
+    let after = gui_harness_change::load(&mut gui, target).unwrap();
+    assert_eq!(before.revision, after.revision);
 }
 
 #[test]

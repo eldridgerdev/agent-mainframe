@@ -41,6 +41,20 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
         return Ok(());
     }
 
+    if matches!(&app.mode, AppMode::PromptLibrary(state) if state.replacement.is_some()) {
+        match key {
+            KeyCode::Char('y') => app.confirm_prompt_file_export()?,
+            KeyCode::Esc => {
+                if let AppMode::PromptLibrary(state) = &mut app.mode {
+                    state.replacement = None;
+                    state.file_export = None;
+                }
+                app.message = Some("Export cancelled".into());
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
     // A pending export choice (after `x`) intercepts its target keys.
     let pending_export = matches!(&app.mode, AppMode::PromptLibrary(state) if state.pending_export);
     if pending_export {
@@ -51,6 +65,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Esc => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
+                    state.file_export = None;
                 }
                 app.message = Some("Export cancelled".into());
             }
@@ -58,6 +73,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
+                    state.file_export = None;
                 }
                 app.message = None;
                 app.prompt_library_select_next();
@@ -65,6 +81,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Char('k') | KeyCode::Up => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
+                    state.file_export = None;
                 }
                 app.message = None;
                 app.prompt_library_select_prev();
@@ -72,6 +89,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             _ => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
+                    state.file_export = None;
                 }
                 app.message = None;
             }
@@ -116,18 +134,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('e') => app.start_edit_selected_template(),
         KeyCode::Char('y') => app.duplicate_selected_template_to_user()?,
         KeyCode::Char('x') => {
-            let has_selection = matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
-            if has_selection {
-                let from_view = match &app.mode {
-                    AppMode::PromptLibrary(state) => state.from_view.clone(),
-                    _ => None,
-                };
-                if let AppMode::PromptLibrary(state) = &mut app.mode {
-                    state.pending_export = true;
-                    state.confirm_delete = false;
-                }
-                app.message = Some(app.build_export_menu_message(from_view.as_ref()));
-            }
+            app.begin_prompt_file_export();
         }
         KeyCode::Char('d') => {
             let selected = matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
@@ -167,6 +174,33 @@ fn active_single_line_field(state: &mut crate::app::PromptEditorState) -> &mut S
 
 /// Prompt-template editor: name field + multi-line body editor.
 pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if let AppMode::PromptEditor(state) = &app.mode
+        && let Some(reload) = state.file_discard
+    {
+        match key.code {
+            KeyCode::Char('y') => {
+                if reload {
+                    app.finish_reload_prompt_file_editor()
+                } else {
+                    app.finish_cancel_prompt_editor()
+                }
+            }
+            KeyCode::Esc => {
+                if let AppMode::PromptEditor(state) = &mut app.mode {
+                    state.file_discard = None;
+                }
+                app.message = None;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+    if key.code == KeyCode::F(5)
+        && matches!(&app.mode,AppMode::PromptEditor(state) if state.file_edit.is_some())
+    {
+        app.reload_prompt_file_editor();
+        return Ok(());
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         app.submit_prompt_editor()?;
         return Ok(());

@@ -208,3 +208,121 @@ it("keeps a selection the search only hides, and clears one changed outside the 
   expect(screen.queryByText(/was changed or removed/)).toBeNull();
   expect(onInsert).not.toHaveBeenCalled();
 });
+
+it("edits User prompts through a fresh identity and preserves unsaved fields while the library changes", async () => {
+  const snapshot = { id: "user-id", revision: "row-revision", name: "Fix a bug", body: entry.body, tags: "bug", description: entry.description, configured_fields: 5 };
+  mock(); const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_edit") return Promise.resolve(snapshot);
+    if (command === "prompt_user_save") return Promise.reject({ kind: "conflict", message: "Row changed; draft kept" });
+    return original(command, args, options);
+  });
+  const { client, onClose } = mount(); await choose();
+  fireEvent.click(screen.getByRole("button", { name: "Edit User template" }));
+  await screen.findByRole("dialog", { name: "User prompt editor" });
+  expect(invoke).toHaveBeenCalledWith("prompt_user_edit", { scope, entryKey: "template" });
+  fireEvent.change(screen.getByRole("textbox", { name: /^Template body/ }), { target: { value: "Local edited prompt" } });
+  act(() => client.setQueryData(["prompt-library", scope, ""], { ...view, entries: [], available_keys: [] }));
+  expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe("Local edited prompt");
+  fireEvent.click(screen.getByRole("button", { name: "Save User template" }));
+  await screen.findByText("Row changed; draft kept");
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.getByRole("dialog", { name: "Discard prompt edits" })).toBeTruthy();
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+  expect((screen.getByRole("textbox", { name: /^Template body/ }) as HTMLTextAreaElement).value).toBe("Local edited prompt");
+});
+
+it("confirms User deletion, refuses stale rows and locks a retry while pending", async () => {
+  const snapshot = { id: "user-id", revision: "row-revision", name: "Fix a bug", body: entry.body, tags: "bug", description: null, configured_fields: 0 };
+  mock(); const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: () => void; let stale = true;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_edit") return Promise.resolve(snapshot);
+    if (command === "prompt_user_delete") return stale ? Promise.reject({ kind: "conflict", message: "Template was changed" }) : new Promise<void>(resolve => { finish = resolve; });
+    return original(command, args, options);
+  });
+  const { onClose } = mount(); await choose();
+  fireEvent.click(screen.getByRole("button", { name: "Delete User template…" }));
+  await screen.findByRole("dialog", { name: "Delete User template" });
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_delete")).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+  await screen.findByText("Template was changed");
+  expect(screen.getByRole("dialog", { name: "Delete User template" })).toBeTruthy();
+  stale = false;
+  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(onClose).not.toHaveBeenCalled();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_delete")).toHaveLength(2);
+  expect(invoke).toHaveBeenCalledWith("prompt_user_delete", { id: "user-id", revision: "row-revision" });
+  await act(async () => finish());
+  await screen.findByText("Deleted from your User library.");
+});
+
+it("duplicates declarative sources into User while never offering edit or deletion of them", async () => {
+  mock(); const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: () => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_user_duplicate" ? new Promise<string>(resolve => { finish = () => resolve("copied"); }) : original(command, args, options));
+  mount();
+  fireEvent.click(await screen.findByRole("button", { name: /Project prompt/ }));
+  expect(screen.queryByRole("button", { name: "Edit User template" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete User template…" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
+  fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "prompt_user_duplicate")).toHaveLength(1);
+  expect(invoke).toHaveBeenCalledWith("prompt_user_duplicate", { scope, entryKey: "project-template" });
+  const copied = { ...entry, key: "copied-template", name: "Project prompt (copy)", user_id: "copied", slots: [], body: "Plain prompt" };
+  vi.mocked(invoke).mockImplementation((command, args, options) => command === "prompt_library_load"
+    ? Promise.resolve({ ...view, entries: [...view.entries, copied], available_keys: [...view.available_keys, copied.key] })
+    : original(command, args, options));
+  await act(async () => finish());
+  await screen.findByText("Duplicated to your User library.");
+  // The new copy is selected, so it can be edited or inserted straight away.
+  await waitFor(() => expect(screen.getByRole("button", { name: /Project prompt \(copy\)/ }).getAttribute("aria-pressed")).toBe("true"));
+  expect(screen.getByRole("button", { name: "Edit User template" })).toBeTruthy();
+});
+
+it.each(["duplicate", "delete"])("protects a pending %s even if Escape arrives before React commits the busy state", async (action) => {
+  mock(); const original = vi.mocked(invoke).getMockImplementation()!;
+  let finish!: () => void;
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "prompt_user_edit") return Promise.resolve({ id: "user-id", revision: "row-revision", name: "Fix a bug", body: entry.body, tags: "bug", description: null, configured_fields: 0 });
+    if (command === `prompt_user_${action}`) return new Promise(resolve => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      finish = () => resolve(action === "duplicate" ? "new-id" : undefined);
+    });
+    return original(command, args, options);
+  });
+  const { onClose } = mount(); await choose();
+  if (action === "delete") {
+    fireEvent.click(screen.getByRole("button", { name: "Delete User template…" }));
+    await screen.findByRole("dialog", { name: "Delete User template" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete User template" }));
+    expect(screen.getByRole("dialog", { name: "Delete User template" })).toBeTruthy();
+  } else {
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate to User" }));
+    expect(screen.getByRole("dialog", { name: "Prompt library" })).toBeTruthy();
+  }
+  expect(onClose).not.toHaveBeenCalled();
+  await act(async () => finish());
+  await screen.findByText(action === "duplicate" ? "Duplicated to your User library." : "Deleted from your User library.");
+});
+it("opens the owned declarative editor and export destination flow while preserving insertion state",async()=>{
+ const snapshot={selection:{scope,source:"Project",ordinal:0},context_revision:"checkout",revision:"file",name:"Project prompt",body:"Plain prompt",tags:"",description:"kept",configured_fields:1,original_id:null,original_name:"Project prompt",source_path:"/repo/amf.json",destination_path:"/repo/amf.json"};
+ vi.mocked(invoke).mockImplementation(async(command)=>{
+  if(command==="prompt_library_load")return view;
+  if(command==="prompt_file_edit")return snapshot;
+  throw new Error(`Unexpected command ${command}`);
+ });
+ const {onInsert,onClose}=mount();fireEvent.click(await screen.findByRole("button",{name:/Project prompt/}));
+ fireEvent.click(screen.getByRole("button",{name:"Edit declarative template"}));await screen.findByRole("dialog",{name:"Declarative prompt editor"});
+ expect(invoke).toHaveBeenCalledWith("prompt_file_edit",{scope,entryKey:"project-template"});
+ fireEvent.change(screen.getByLabelText("Template name"),{target:{value:"Local draft"}});fireEvent.keyDown(document,{key:"Escape"});
+ expect(screen.getByRole("dialog",{name:"Discard prompt edits"})).toBeTruthy();expect(onClose).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole("button",{name:"Keep editing"}));expect((screen.getByLabelText("Template name") as HTMLInputElement).value).toBe("Local draft");
+ fireEvent.click(screen.getByRole("button",{name:"Cancel"}));fireEvent.click(screen.getByRole("button",{name:"Discard changes"}));
+ expect(screen.getByLabelText("Resolved prompt").textContent).toBe("Plain prompt");
+ fireEvent.click(screen.getByRole("button",{name:"Export template…"}));expect(screen.getByRole("dialog",{name:"Export prompt template"})).toBeTruthy();
+ fireEvent.click(screen.getByRole("button",{name:"Cancel"}));expect(onInsert).not.toHaveBeenCalled();expect(onClose).not.toHaveBeenCalled();
+});

@@ -393,6 +393,9 @@ impl WorktreeManager {
         let _ = Self::exclude_locally_checked(workdir, probe, pattern);
     }
 
+    /// Like [`Self::exclude_locally`], but reports a failure to read or write
+    /// the exclude file of a real work tree. A workdir that is not a Git work
+    /// tree, or a probe already ignored, is still `Ok(())`.
     pub(crate) fn exclude_locally_checked(
         workdir: &Path,
         probe: &str,
@@ -407,6 +410,18 @@ impl WorktreeManager {
             .map(|status| status.success())
             .unwrap_or(false);
         if already_ignored {
+            return Ok(());
+        }
+
+        // A workdir outside Git has no exclude file to maintain; that is not
+        // a setup failure. Errors are reserved for a real work tree.
+        let inside = Command::new("git")
+            .arg("-C")
+            .arg(workdir)
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .stderr(Stdio::null())
+            .output()?;
+        if !inside.status.success() || inside.stdout.trim_ascii() != b"true" {
             return Ok(());
         }
 

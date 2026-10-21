@@ -27,8 +27,8 @@ The repository maintainer owns these follow-ups. Exposure has not been ruled
 out; a successful audit exit does not resolve nonfatal warnings. Keep them
 visible on PR and scheduled runs, revisit on the next dependency update, and
 track separate fixes rather than bundling unrelated upgrades into this refactor.
-See [checks.md](checks.md) for audit commands and exception policy. Hosted CI
-validation is still pending publication of this branch.
+See [checks.md](checks.md) for audit commands and exception policy. Hosted
+Linux/macOS tests, lint and dependency audit passed on PR #615.
 
 ## GUI workspace extension (2026-09-23)
 
@@ -72,36 +72,31 @@ tables account for 12; the additional existing warning is ttf-parser 0.25.1,
 [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192),
 unmaintained, through selkie-rs → fontdue in AMF's diagram rendering. Keep that
 replacement follow-up separate from this TLS patch. No advisory is ignored.
-Hosted Linux/macOS tests, lint, frontend checks and audit must pass before
-the dependency fix is considered ready to merge.
+Hosted Linux/macOS tests, lint, frontend checks and audit passed on PR #749.
 
 ## ZIP archive dependency update (2026-10-16)
 
-PR #756's unchanged zip 6.0.0 dependency fails the current audit database on
+The previously locked zip 6.0.0 fails the current audit database on
 [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367),
 [RUSTSEC-2026-0368](https://rustsec.org/advisories/RUSTSEC-2026-0368) and
 [RUSTSEC-2026-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369). These
 cover privileged permission bits and symlink handling in archive extraction.
 The database lists zip >=9.0.0 as patched.
 
-The direct requirement moves to zip 9, locked at 9.0.4, retaining
+PR #748 moved the direct requirement to zip 9, locked at 9.0.5, retaining
 `default-features = false` and the existing `deflate` feature. The lockfile
 adds zip's nix/cfg_aliases and typed-path dependencies and removes its former
-arbitrary/derive_arbitrary edge. nix 0.31.3 requires libc >=0.2.186, so the
-compatible libc patch update to 0.2.191 is required; attempting to retain the
-old 0.2.183 is rejected by the resolver. Other existing packages stay locked.
+arbitrary/derive_arbitrary edge. nix 0.31.3 requires libc >=0.2.186, so libc
+moves from 0.2.183 to the compatible 0.2.191.
 
 AMF uses ZipArchive to read bounded screenshot-artifact entries, checking
 paths, member types and size limits, and uses ZipWriter in its test fixtures.
 It does not call the extraction APIs named by these advisories. The reader
-propagates the new fallible filename API and retains UTF-8 and legacy CP437
-names; the regression tests both encodings. The dependency is updated without
-suppressing findings or weakening archive guards.
+propagates zip 9's fallible filename API and retains UTF-8 and legacy CP437
+names; `archives_preserve_unicode_and_legacy_cp437_names` covers both
+encodings. No finding is suppressed and no archive guard is weakened.
 
-Local cargo-audit 0.22.2 exits 0 against advisory database commit
-`64f92cdc64401fab47baa10e2e11fe382aa57155` (1,334 advisories), with zero
-blocking vulnerabilities and the same 13 visible nonfatal warnings above.
-Archive-reader/writer compatibility and full hosted Linux/macOS, lint,
-frontend and audit checks remain required before this fix is ready for review.
-The branch also contains the separate #749 rustls patch; merge #749 first
-so this PR's effective dependency diff narrows to the ZIP update.
+Local cargo-audit 0.22.2 exits 0 on the zip 9.0.5 lockfile against advisory
+database commit `999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b` (1,338 advisories),
+with zero blocking vulnerabilities and the same 13 visible nonfatal warnings
+above.

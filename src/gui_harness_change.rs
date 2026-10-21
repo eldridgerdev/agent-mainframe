@@ -156,9 +156,39 @@ pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<HarnessChan
             unavailable,
         });
     }
+    // Bind only what the change acts on. Status sync, hook IPC (last access,
+    // token-source bindings) and summaries rewrite other fields on a running
+    // feature, and hashing those would make confirmation fail over and over.
+    let sessions: Vec<_> = feature
+        .sessions
+        .iter()
+        .map(|session| {
+            (
+                &session.id,
+                &session.kind,
+                &session.tmux_window,
+                &session.claude_session_id,
+                session.stopped,
+                &session.command,
+                &session.on_stop,
+                &session.pre_check,
+            )
+        })
+        .collect();
+    let feature_binding = (
+        &feature.id,
+        &feature.workdir,
+        &feature.tmux_session,
+        &feature.agent,
+        &feature.mode,
+        feature.is_worktree,
+        feature.pending_worktree_script,
+        feature.status == ProjectStatus::Stopped,
+        &sessions,
+    );
     let bytes = serde_json::to_vec(&(
         &target,
-        feature,
+        &feature_binding,
         &repo_identity,
         &checkout_identity,
         &git_file,

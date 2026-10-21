@@ -1,0 +1,5 @@
+# Explicit desktop Final Review destinations, private offline receivers and runtime mount.
+note:The isolated TUI confirms the screenshot harness is ready before native destination proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 python3 "$SCRIPT_DIR/capture-gui-review-destinations.py" "$OUT_DIR"

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReviewAction, ReviewView } from "./api";
+import ReviewFeedbackDestinationDialog from "./ReviewFeedbackDestinationDialog";
 
-export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
-  view: ReviewView; busy: boolean; dirty: boolean; onAct: (action: ReviewAction) => Promise<boolean>;
+export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = null }: {
+  view: ReviewView; busy: boolean; dirty: boolean; error?: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
 }) {
   const summary = view.summary!;
+  const [destinationOpen, setDestinationOpen] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [checkConfirm, setCheckConfirm] = useState<string | null>(null);
   const [completeConfirm, setCompleteConfirm] = useState(false);
@@ -15,7 +17,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
   const finish = view.finish;
   const completing = finish?.completing ?? false;
   const generated = view.ai.comment_draft !== null || view.ai.ready_comment !== null;
-  const blocked = busy || submitting || dirty || checkRunning || view.ai.running || view.save_error !== null || view.error !== null;
+  const blocked = busy || submitting || dirty || !!view.preparation || checkRunning || view.ai.running || view.save_error !== null || view.error !== null;
   async function apply() {
     if (blocked || inFlight.current) return;
     inFlight.current = true;
@@ -46,16 +48,14 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
       // Every expectation this confirmation showed is checked again before
       // anything is written, so a changed check, batch or target is refused.
       if (await onAct({ kind: "complete", check_command: view.check_command, apply_suggestions: finish.apply_suggestions,
-        handoff_session: finish.handoff?.session_id ?? null, deliver })) setCompleteConfirm(false);
+        handoff_session: finish.handoff?.session_id ?? null, handoff_revision: finish.handoff?.revision ?? null, deliver })) setCompleteConfirm(false);
     } finally {
       inFlight.current = false;
       setSubmitting(false);
     }
   }
   const target = finish?.handoff;
-  const delivery = target && (finish.submit_prompt && !target.stopped
-    ? `sends the "address the feedback" prompt to ${target.label}`
-    : `opens the "address the feedback" prompt as an unsent draft in ${target.label}${finish.submit_prompt ? " (stopped, so it cannot be sent yet)" : ""}`);
+  const delivery = target && `opens the "address the feedback" prompt as an unsent draft in ${target.label}`;
   return <section className="review-summary" aria-label="Pre-finish review summary">
     <p>Every file verdict and open kept thread is shown below, including files hidden by your filter. Run your configured project check here, then complete the review and choose whether to hand feedback to an agent.</p>
     {summary.undecided > 0 && <p role="status">{summary.undecided} file(s) have no verdict. Return to review to decide them before finishing.</p>}
@@ -94,6 +94,16 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct }: {
       <h3>Complete review</h3>
       <p>{finish.approved} approved · {finish.needs_work} need work · {finish.skipped} skipped · {finish.file_comments} file comment(s) · {finish.line_comments} line comment(s){finish.general_feedback ? " · overall feedback" : ""}</p>
       {generated && <p role="status">Transfer or discard the generated comment draft before completing.</p>}
+      <p>{target ? `Feedback destination: ${target.label}` : "No valid feedback destination is selected."}</p>
+      {target?.destination_path && <p>Destination checkout: {target.destination_path}</p>}
+      {target?.warning && <p role="alert">{target.warning}</p>}
+      {finish.handoff_error && <p role="alert">{finish.handoff_error}</p>}
+      {view.preparation_error && <p role="alert">{view.preparation_error}</p>}
+      <button className="btn btn-secondary" disabled={blocked || generated} onClick={() => { if (!inFlight.current) setDestinationOpen(true); }}>Choose feedback destination…</button>
+      {view.preparation && <div role="status"><p>Preparing {view.preparation.label}. {view.preparation.cancelled ? "Launch cancelled; waiting for setup to settle. Any created resources are retained." : "Worktree creation or its confirmed hook is running in the background."}</p>
+        <button className="btn btn-secondary" disabled={busy || view.preparation.cancelled} onClick={() => void onAct({ kind: "cancel_preparation", operation_id: view.preparation!.operation_id })}>Cancel pending launch</button></div>}
+      {destinationOpen && <ReviewFeedbackDestinationDialog view={view} error={error} onAct={onAct} onClose={() => setDestinationOpen(false)} />}
+
       {completing
         ? <><p role="status">Completing: the configured check is running. The feedback round is recorded when it finishes. Any suggestions applied before the check remain in source files if you cancel.</p>
           <button className="btn btn-secondary" disabled={busy || submitting} onClick={() => void onAct({ kind: "cancel_check" })}>Cancel completion</button></>

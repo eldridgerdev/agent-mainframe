@@ -276,7 +276,7 @@ try:
     summary_ready()
 
     open_confirmation()
-    capture("003-explicit-completion-confirmation.png", "Completion is explicitly confirmed: it reruns the configured check, records the round, and offers handing the feedback prompt to the stopped Claude session as an unsent draft, or completing without handoff.", ["Record this round in .claude/final-review-feedback.md", "Runs the configured check first", "earlier results shown here are not reused", "unsent draft in Claude 1 (stopped, so it cannot be sent yet)", "Complete and hand off to Claude 1", "Complete without handoff", "Keep reviewing"])
+    capture("003-explicit-completion-confirmation.png", "Completion is explicitly confirmed: it reruns the configured check, records the round, and offers handing the feedback prompt to the stopped Claude session as an unsent draft, or completing without handoff.", ["Record this round in .claude/final-review-feedback.md", "Runs the configured check first", "earlier results shown here are not reused", "unsent draft in Claude 1", "Complete and hand off to Claude 1", "Complete without handoff", "Keep reviewing"])
     assert runs() == 0 and not feedback_path.exists()
 
     # A patch changed after the confirmation opened is refused before any write.

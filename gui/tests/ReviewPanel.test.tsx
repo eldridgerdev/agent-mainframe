@@ -860,7 +860,7 @@ it("shows what completing records and hands off, and cancelling or closing sends
   for (const text of [/1 file\(s\) have no verdict and are recorded as skipped/, /2 saved replacement\(s\) are written to source before the check/,
     /Cancelling completion during the check leaves those source changes in place/,
     /Runs the configured check first/, /earlier results shown here are not reused/, /GitHub pull request/,
-    /sends the "address the feedback" prompt to Claude 1/]) {
+    /opens the "address the feedback" prompt as an unsent draft in Claude 1/]) {
     expect(within(confirm).getByText(text)).toBeTruthy();
   }
   expect(within(confirm).getByText("cargo test")).toBeTruthy();
@@ -877,19 +877,19 @@ it("sends one completion with the confirmed expectations and offers completing w
   fireEvent.click(screen.getByRole("button", { name: "Complete without handoff" }));
   fireEvent.click(screen.getByRole("button", { name: "Complete and hand off to Claude 1" }));
   expect(onAct).toHaveBeenCalledTimes(1);
-  expect(onAct).toHaveBeenCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", deliver: false });
+  expect(onAct).toHaveBeenCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", handoff_revision: null, deliver: false });
   // A refused completion keeps the confirmation for another decision.
   resolve(false);
   await waitFor(() => expect((screen.getByRole("button", { name: "Complete and hand off to Claude 1" }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Complete and hand off to Claude 1" }));
-  expect(onAct).toHaveBeenLastCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", deliver: true });
+  expect(onAct).toHaveBeenLastCalledWith({ kind: "complete", check_command: "cargo test", apply_suggestions: 2, handoff_session: "agent-1", handoff_revision: null, deliver: true });
 });
 
 it("explains stopped and missing handoff targets", () => {
   const stopped = { ...finish, handoff: { session_id: "agent-1", label: "Claude 1", stopped: true } };
   const { update } = mount({ ...view, summary, finish: stopped });
   fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));
-  expect(screen.getByText(/unsent draft in Claude 1 \(stopped, so it cannot be sent yet\)/)).toBeTruthy();
+  expect(screen.getByText(/unsent draft in Claude 1/)).toBeTruthy();
   expect(screen.getByText("No project check is configured.")).toBeTruthy();
   update({ view: { ...view, summary, finish: { ...finish, handoff: null }, revision: 9 } });
   fireEvent.click(screen.getByRole("button", { name: "Complete review…" }));

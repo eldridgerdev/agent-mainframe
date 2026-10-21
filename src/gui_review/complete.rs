@@ -7,10 +7,7 @@
 use serde::Serialize;
 
 use super::*;
-use crate::app::pr_review::{FixTarget, fix_session_index};
-use crate::app::review::{
-    CheckOutcome, FINAL_REVIEW_SESSION_LABEL, REVIEW_FEEDBACK_PROMPT, ReviewCheckRun,
-};
+use crate::app::review::{CheckOutcome, ReviewCheckRun, feedback_prompt_for_checkouts};
 use crate::gui_contract::SessionTarget;
 
 /// The agent session an actionable round's prompt goes to.
@@ -21,6 +18,12 @@ pub struct ReviewHandoffTarget {
     /// The session (or its feature) is not running, so a submitted prompt
     /// cannot be delivered; it is kept as an unsent draft instead.
     pub stopped: bool,
+    pub revision: String,
+    pub target: SessionTarget,
+    pub kind: String,
+    pub source_path: String,
+    pub destination_path: String,
+    pub warning: Option<String>,
 }
 
 /// What completing would record and do, for the explicit confirmation.
@@ -40,6 +43,7 @@ pub struct ReviewFinishView {
     /// (Enter) or left unsent for the reviewer to edit.
     pub submit_prompt: bool,
     pub handoff: Option<ReviewHandoffTarget>,
+    pub handoff_error: Option<String>,
     /// The configured check is running as part of a confirmed completion.
     pub completing: bool,
 }
@@ -63,45 +67,35 @@ pub struct ReviewHandoff {
 pub(super) struct PendingCompletion {
     deliver: bool,
     handoff_session: Option<String>,
+    handoff_revision: Option<String>,
 }
 
-struct Handoff {
-    view: ReviewHandoffTarget,
-    target: SessionTarget,
-    tmux_session: String,
-    window: String,
+fn handoff(gui: &mut GuiHandle) -> GuiResult<Option<super::destinations::ResolvedDestination>> {
+    super::destinations::resolved(gui)
 }
-
-/// Resolve the TUI's default destination by stable id against the current
-/// store: the reviewed feature's first agent session.
-fn handoff(gui: &mut GuiHandle) -> Option<Handoff> {
-    let target = gui.review_context.as_ref()?.target.clone();
-    let app = gui.app_for_workflow();
-    let (pi, fi) = app
-        .store
-        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)?;
-    let feature = &app.store.projects[pi].features[fi];
-    let si = fix_session_index(feature, FixTarget::ExistingLive, FINAL_REVIEW_SESSION_LABEL)?;
-    let session = &feature.sessions[si];
-    Some(Handoff {
-        view: ReviewHandoffTarget {
-            session_id: session.id.clone(),
-            label: session.label.clone(),
-            stopped: session.stopped || feature.status == crate::project::ProjectStatus::Stopped,
-        },
-        target: SessionTarget {
-            project_id: target.project_id,
-            feature_id: target.feature_id,
-            session_id: session.id.clone(),
-        },
-        tmux_session: feature.tmux_session.clone(),
-        window: session.tmux_window.clone(),
-    })
+fn handoff_view(h: super::destinations::ResolvedDestination) -> ReviewHandoffTarget {
+    ReviewHandoffTarget {
+        session_id: h.target.session_id.clone(),
+        label: h.label,
+        stopped: h.stopped,
+        revision: h.revision,
+        target: h.target,
+        kind: h.kind,
+        source_path: h.source_path.display().to_string(),
+        destination_path: h.workdir.display().to_string(),
+        warning: h.warning,
+    }
 }
 
 pub(super) fn preview(gui: &mut GuiHandle) -> Option<ReviewFinishView> {
+    if !ai::state(&gui.app_for_workflow().mode).ok()?.summary_open {
+        return None;
+    }
     let completing = gui.review_context.as_ref()?.completion.is_some();
-    let handoff = handoff(gui).map(|h| h.view);
+    let (handoff, handoff_error) = match handoff(gui) {
+        Ok(target) => (target.map(handoff_view), None),
+        Err(error) => (None, Some(error.message)),
+    };
     let app = gui.app_for_workflow();
     let s = ai::state(&app.mode).ok()?;
     if !s.summary_open {
@@ -145,8 +139,9 @@ pub(super) fn preview(gui: &mut GuiHandle) -> Option<ReviewFinishView> {
             0
         },
         post_to_pr: app.config.final_review_post_to_pr,
-        submit_prompt: app.config.final_review_submit_prompt,
+        submit_prompt: false,
         handoff,
+        handoff_error,
         completing,
     })
 }
@@ -168,6 +163,7 @@ pub(super) fn start(
     apply_suggestions: usize,
     handoff_session: Option<String>,
     deliver: bool,
+    handoff_revision: Option<String>,
 ) -> GuiResult<Started> {
     let context = gui.review_context.as_ref().unwrap();
     if context.save_error.is_some() {
@@ -180,16 +176,20 @@ pub(super) fn start(
             "Project check command changed; review the completion again",
         ));
     }
-    let current = handoff(gui).map(|h| h.view.session_id);
-    if current != handoff_session {
-        return Err(GuiError::conflict(
-            "Feedback target changed; review the handoff again",
-        ));
-    }
-    if deliver && current.is_none() {
-        return Err(GuiError::conflict(
-            "This feature has no agent session to hand feedback to",
-        ));
+    if deliver {
+        let current = handoff(gui)?
+            .ok_or_else(|| GuiError::conflict("Choose a valid feedback destination first"))?;
+        if Some(&current.target.session_id) != handoff_session.as_ref()
+            || handoff_revision
+                .as_ref()
+                .is_some_and(|expected| expected != &current.revision)
+            || (gui.review_context.as_ref().unwrap().destination.is_some()
+                && handoff_revision.is_none())
+        {
+            return Err(GuiError::conflict(
+                "Feedback destination changed; review its confirmation again",
+            ));
+        }
     }
     let app = gui.app_for_workflow();
     let s = ai::state(&app.mode)?;
@@ -258,6 +258,7 @@ pub(super) fn start(
             context.completion = Some(PendingCompletion {
                 deliver,
                 handoff_session,
+                handoff_revision,
             });
             Ok(Started::Checking)
         }
@@ -286,17 +287,27 @@ pub(super) fn start(
 /// freshness checks. Returns an error, without recording, when the handoff
 /// target changed while it ran.
 pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResult<bool> {
-    let expected = gui
+    let pending = gui
         .review_context
         .as_ref()
-        .and_then(|c| c.completion.as_ref())
-        .expect("completion pending")
-        .handoff_session
-        .clone();
-    if handoff(gui).map(|h| h.view.session_id) != expected {
-        return Err(GuiError::conflict(
-            "the feedback target changed while it ran",
-        ));
+        .unwrap()
+        .completion
+        .as_ref()
+        .expect("completion pending");
+    let deliver = pending.deliver;
+    let expected = pending.handoff_session.clone();
+    let expected_revision = pending.handoff_revision.clone();
+    if deliver {
+        let current = handoff(gui)?.ok_or_else(|| {
+            GuiError::conflict("the feedback target disappeared while the check ran")
+        })?;
+        if Some(current.target.session_id) != expected
+            || expected_revision.is_some_and(|revision| revision != current.revision)
+        {
+            return Err(GuiError::conflict(
+                "the feedback destination changed while the check ran",
+            ));
+        }
     }
     let pending = gui.review_context.as_mut().unwrap().completion.take();
     Ok(finish(
@@ -310,7 +321,14 @@ pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResu
 /// prompt to the target when the reviewer chose to. Closes the review.
 fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bool {
     let workflow_id = gui.review_context.as_ref().unwrap().id.clone();
-    let handoff = handoff(gui);
+    let handoff = if deliver {
+        match handoff(gui) {
+            Ok(target) => target,
+            Err(_) => return false,
+        }
+    } else {
+        None
+    };
     let app = gui.app_for_workflow();
     app.message = None;
     let dispatch = app.record_final_review_round(check);
@@ -332,52 +350,22 @@ fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bo
                 .unwrap_or_else(|| "Final review complete".into()),
             None,
         ),
-        (Some(d), Some(h)) if deliver => {
-            let draft = || ReviewHandoff {
-                target: h.target.clone(),
-                draft_prompt: Some(REVIEW_FEEDBACK_PROMPT.to_string()),
-            };
-            if !app.config.final_review_submit_prompt {
-                (
-                    format!(
-                        "{} — the feedback prompt is an unsent draft in {}",
-                        d.summary, h.view.label
-                    ),
-                    Some(draft()),
-                )
-            } else if h.view.stopped {
-                (
-                    format!(
-                        "{} — {} is stopped; the feedback prompt is waiting as an unsent draft",
-                        d.summary, h.view.label
-                    ),
-                    Some(draft()),
-                )
-            } else {
-                match app.deliver_review_prompt(&h.tmux_session, &h.window, true) {
-                    Ok(_) => (
-                        format!("{} — sent to {}", d.summary, h.view.label),
-                        Some(ReviewHandoff {
-                            target: h.target.clone(),
-                            draft_prompt: None,
-                        }),
-                    ),
-                    Err(e) => (
-                        format!(
-                            "{} (couldn't prompt agent: {e}; the prompt is waiting as an unsent draft)",
-                            d.summary
-                        ),
-                        Some(draft()),
-                    ),
-                }
-            }
-        }
+        (Some(d), Some(h)) if deliver => (
+            format!(
+                "{} — the feedback prompt is an unsent draft in {}",
+                d.summary, h.label
+            ),
+            Some(ReviewHandoff {
+                target: h.target,
+                draft_prompt: Some(feedback_prompt_for_checkouts(&h.source_path, &h.workdir)),
+            }),
+        ),
         (Some(d), Some(_)) => (
             format!("{} (feedback saved; no agent prompted)", d.summary),
             None,
         ),
         (Some(d), None) => (
-            format!("{} (feedback saved; no agent session to prompt)", d.summary),
+            format!("{} (feedback saved; no agent prompted)", d.summary),
             None,
         ),
     };
@@ -411,7 +399,6 @@ mod tests {
     use crate::gui_contract::GuiErrorKind;
     use crate::gui_diff::tests::fixture;
     use crate::project::{ProjectStatus, ProjectStore};
-    use crate::traits::MockTmuxOps;
     use std::time::{Duration, Instant};
 
     fn act(
@@ -471,6 +458,7 @@ mod tests {
             check_command: view.check_command.clone(),
             apply_suggestions: finish.apply_suggestions,
             handoff_session: finish.handoff.as_ref().map(|h| h.session_id.clone()),
+            handoff_revision: finish.handoff.as_ref().map(|h| h.revision.clone()),
             deliver,
         }
     }
@@ -490,6 +478,26 @@ mod tests {
                 other => return other,
             }
         }
+    }
+
+    #[test]
+    fn ordinary_review_projection_and_polling_do_not_probe_destinations() {
+        let (_dir, mut gui, target) = fixture();
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].add_session(SessionKind::Claude);
+        app.save().unwrap();
+        // No tmux calls are configured: any destination probe would panic.
+        app.tmux = Box::new(crate::traits::MockTmuxOps::new());
+        let view = begin(&mut gui, target).unwrap();
+        assert!(view.finish.is_none());
+        assert!(snapshot(&mut gui).unwrap().finish.is_none());
+        assert!(
+            poll_open(&mut gui, &view.workflow_id)
+                .unwrap()
+                .unwrap()
+                .finish
+                .is_none()
+        );
     }
 
     #[test]
@@ -582,32 +590,15 @@ mod tests {
     }
 
     #[test]
-    fn submitted_handoff_uses_the_tui_prompt_delivery_and_declined_handoff_prompts_nobody() {
+    fn gui_handoff_stays_unsent_even_when_tui_auto_submit_is_enabled() {
         let (dir, mut gui, _) = rejected(ProjectStatus::Active, None);
-        let mut tmux = MockTmuxOps::new();
-        tmux.expect_paste_text()
-            .withf(|_, window, text| {
-                window == "claude" && text == crate::app::review::REVIEW_FEEDBACK_PROMPT
-            })
-            .times(1)
-            .returning(|_, _, _| Ok(()));
-        tmux.expect_send_key_name()
-            .withf(|_, _, key| key == "Enter")
-            .times(1)
-            .returning(|_, _, _| Ok(()));
-        let app = gui.app_for_workflow();
-        app.tmux = Box::new(tmux);
-        app.config.final_review_submit_prompt = true;
+        gui.app_for_workflow().config.final_review_submit_prompt = true;
         let view = snapshot(&mut gui).unwrap();
-        assert!(view.finish.as_ref().unwrap().submit_prompt);
-        assert!(
-            act(&mut gui, &view, complete(&view, true))
-                .unwrap()
-                .is_none()
-        );
+        assert!(!view.finish.as_ref().unwrap().submit_prompt);
+        act(&mut gui, &view, complete(&view, true)).unwrap();
         let done = take_completion(&mut gui, &view.workflow_id).unwrap();
-        assert!(done.handoff.unwrap().draft_prompt.is_none());
-        assert!(done.message.contains("sent to Claude 1"));
+        assert!(done.handoff.unwrap().draft_prompt.is_some());
+        assert!(done.message.contains("unsent draft in Claude 1"));
         assert!(feedback(&dir).is_some());
 
         // Declining delivers nothing (the default mock panics on any call).
@@ -641,7 +632,7 @@ mod tests {
         act(&mut gui, &view, complete(&view, true)).unwrap();
         let done = take_completion(&mut gui, &view.workflow_id).unwrap();
         assert!(done.handoff.unwrap().draft_prompt.is_some());
-        assert!(done.message.contains("is stopped"));
+        assert!(done.message.contains("unsent draft"));
 
         let (dir, mut gui, view) = rejected(ProjectStatus::Active, None);
         let view = open(

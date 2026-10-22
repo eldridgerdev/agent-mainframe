@@ -2025,7 +2025,7 @@ pub(super) fn draw_file_list(
                     files,
                 } => {
                     let mut spans = vec![
-                        Span::raw(" ".repeat(depth + 1)),
+                        Span::raw(" ".repeat(*depth)),
                         Span::styled(
                             if *collapsed { "▸ " } else { "▾ " },
                             Style::default().fg(theme.text_muted.to_color()),
@@ -2061,12 +2061,12 @@ pub(super) fn draw_file_list(
                     None => ("·", theme.text_muted.to_color()),
                 };
                 spans.push(Span::styled(
-                    format!(" {symbol} "),
+                    format!("{symbol} "),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
             spans.push(Span::styled(
-                format!(" {} ", status_label(&file.status)),
+                format!("{} ", status_label(&file.status)),
                 status_style,
             ));
             // Flag files that changed since the last finished review round so
@@ -6081,7 +6081,14 @@ index 0000000..1111111
         let rendered = render(&mut state);
         // Directory headers replace the repeated path prefixes, and file rows
         // show only their basename.
-        assert!(rendered.contains("▾ src/"), "expected a src directory row");
+        assert!(
+            rendered.contains("│ ▾ src/"),
+            "top-level directories should only reserve the selection gutter: {rendered}"
+        );
+        assert!(
+            rendered.contains("│>  · M mod.rs"),
+            "file marks should follow nesting without extra leading padding: {rendered}"
+        );
         assert!(
             rendered.contains("  ▾ app/"),
             "expected a nested, indented app directory row: {rendered}"

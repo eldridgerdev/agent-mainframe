@@ -12,15 +12,15 @@ key:1
 key:n
 wait:400
 expect:One-space file tree indentation
-expect:▾ src/
-expect:│   ▾ components/
+expect:│ ▾ src/
+expect:│  ▾ components/
 expect:Button.tsx
-expect:│     ▾ widgets/
+expect:│    ▾ widgets/
 note:The original tree retains separate directory rows, with one space of additional indentation at each nesting level.
 shot:one-space-tree
 text:nnn
 wait:500
-expect:│>     ·  A Badge.rs
+expect:│>    · A Badge.rs
 expect:src/ui/dialogs/widgets/Badge.rs
 note:The deeply nested Badge.rs row uses four indentation spaces for four directory levels, leaving more room for the filename and badges.
 shot:one-space-deep-file

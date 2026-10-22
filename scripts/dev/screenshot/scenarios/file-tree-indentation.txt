@@ -1,0 +1,26 @@
+# Self-seeding offline fixture. Capture at 132x40 for a ~32-column navigator.
+shim:gh:file-tree-indentation-fixture.py
+shim:git:file-tree-indentation-fixture.py
+run:python3 "$REPO_ROOT/scripts/dev/screenshot/scenarios/file-tree-indentation-fixture.py" --setup "$AMF_BIN"
+wait:1000
+key:C-Space
+key:G
+wait:2000
+key:Enter
+wait:12000
+key:1
+key:n
+wait:400
+expect:One-space file tree indentation
+expect:▾ src/
+expect:│   ▾ components/
+expect:Button.tsx
+expect:│     ▾ widgets/
+note:The original tree retains separate directory rows, with one space of additional indentation at each nesting level.
+shot:one-space-tree
+text:nnn
+wait:500
+expect:│>     ·  A Badge.rs
+expect:src/ui/dialogs/widgets/Badge.rs
+note:The deeply nested Badge.rs row uses four indentation spaces for four directory levels, leaving more room for the filename and badges.
+shot:one-space-deep-file

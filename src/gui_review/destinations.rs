@@ -168,6 +168,7 @@ fn validate_agent(
     bound: &BoundFeature,
     agent: &AgentKind,
     mode: &VibeMode,
+    primary: bool,
 ) -> GuiResult<()> {
     let app = gui.app_for_workflow();
     if !app
@@ -178,7 +179,11 @@ fn validate_agent(
             "This harness is no longer allowed or installed for the project",
         ));
     }
-    if !mode.supports_agent(agent) {
+    if !(if primary {
+        mode.supports_agent(agent)
+    } else {
+        bound.feature.mode.supports_agent(&bound.feature.agent)
+    }) {
         return Err(GuiError::conflict(
             "The selected harness does not support this mode",
         ));
@@ -196,7 +201,7 @@ fn session(gui: &mut GuiHandle, bound: &BoundFeature, id: &str) -> GuiResult<Fea
         .clone();
     let agent = crate::app::session_ops::agent_for_session_kind(&row.kind)
         .ok_or_else(|| GuiError::conflict("Choose an agent session"))?;
-    validate_agent(gui, bound, &agent, &bound.feature.mode)?;
+    validate_agent(gui, bound, &agent, &bound.feature.mode, false)?;
     Ok(row)
 }
 fn target_bound(
@@ -328,6 +333,7 @@ struct Plan {
     source: BoundFeature,
     target: Option<SessionTarget>,
     hook: Option<crate::extension::HookConfig>,
+    copy_revision: Option<String>,
 }
 fn plan(
     gui: &mut GuiHandle,
@@ -341,6 +347,7 @@ fn plan(
     let mut target_stamp = None;
     let mut base_sha = None;
     let mut hook = None;
+    let mut copy_revision = None;
     let (label, destination_path, creates_session, creates_companion) = match choice {
         DestinationChoice::Existing { target: chosen } => {
             let (stamp, bound, row) = target_revision(gui, &source, chosen)?;
@@ -357,7 +364,7 @@ fn plan(
             )
         }
         DestinationChoice::Dedicated { agent } => {
-            validate_agent(gui, &source, agent, &source.feature.mode)?;
+            validate_agent(gui, &source, agent, &source.feature.mode, false)?;
             let rows = source
                 .feature
                 .sessions
@@ -399,7 +406,7 @@ fn plan(
             )
         }
         DestinationChoice::Companion { settings, .. } => {
-            validate_agent(gui, &source, &settings.agent, &settings.mode)?;
+            validate_agent(gui, &source, &settings.agent, &settings.mode, true)?;
             let branch = settings.branch.trim();
             if branch.is_empty() {
                 return Err(GuiError::conflict("Choose a companion branch name"));
@@ -433,6 +440,13 @@ fn plan(
                     "The feature's recorded branch is not its checked-out branch. Refresh its identity before creating a companion.",
                 ));
             }
+            copy_revision = Some(
+                crate::app::review_destination::companion_copy_revision(
+                    &source.project.repo,
+                    &head,
+                )
+                .map_err(conflict)?,
+            );
             base_sha = Some(head);
             hook = crate::extension::merge_project_extension_config(
                 &app.config.extension,
@@ -470,6 +484,7 @@ fn plan(
             target_stamp,
             &base_sha,
             &hook,
+            &copy_revision,
             resource_warning.is_some(),
         ))
         .map_err(conflict)?,
@@ -493,6 +508,7 @@ fn plan(
         source,
         target,
         hook,
+        copy_revision,
     })
 }
 pub fn catalog(
@@ -732,8 +748,17 @@ pub(super) fn prepare(
         .unwrap()
         .destination
         .clone()
-        .filter(|previous| previous.request_key == request_key)
+        .filter(|previous| {
+            previous.request_key == request_key
+                && matches!(choice, DestinationChoice::Companion { .. })
+        })
     {
+        let current_source = source(gui)?;
+        if target_revision(gui, &current_source, &previous.target)?.0 != previous.revision {
+            return Err(GuiError::conflict(
+                "The retained companion changed. Select its existing session explicitly before continuing.",
+            ));
+        }
         remember(
             gui,
             previous.target,
@@ -787,9 +812,21 @@ pub(super) fn prepare(
                 true,
                 plan.view.base_sha.as_deref(),
             )?;
+            if plan.copy_revision.as_ref() != Some(&registration.copy_revision) {
+                return Err(GuiError::conflict(
+                    "Repository settings changed. Refresh the companion preview before creating it.",
+                ));
+            }
             let worktree = gui.app_for_workflow().worktree.clone();
             let worker_plan = registration.clone();
             let receiver = spawn_job(move || {
+                ensure!(
+                    crate::app::review_destination::companion_copy_revision(
+                        &worker_plan.repo,
+                        &worker_plan.base_sha
+                    )? == worker_plan.copy_revision,
+                    "Repository settings changed before companion creation. Refresh its preview."
+                );
                 worktree
                     .create_from(
                         &worker_plan.repo,
@@ -831,7 +868,9 @@ pub(super) fn prepare(
         request_key,
         warning,
     )?;
-    gui.review_context.as_mut().unwrap().revision += 1;
+    let context = gui.review_context.as_mut().unwrap();
+    context.preparation_error = None;
+    context.revision += 1;
     snapshot(gui)
 }
 
@@ -867,6 +906,11 @@ pub(super) struct Preparation {
     label: String,
     request_key: String,
     expected_revision: u64,
+}
+impl Preparation {
+    pub(super) fn matches_id(&self, id: &str) -> bool {
+        self.id == id
+    }
 }
 #[derive(Debug, Serialize)]
 pub struct PreparationView {
@@ -918,6 +962,17 @@ fn validate_continuation(gui: &mut GuiHandle, operation: &Preparation) -> GuiRes
     if progress_bytes(&state.workdir)? != gui.review_context.as_ref().unwrap().progress {
         return Err(GuiError::conflict(
             "Saved review changed during destination setup",
+        ));
+    }
+    if crate::app::review_destination::companion_copy_revision(
+        &operation.registration.repo,
+        &operation.registration.base_sha,
+    )
+    .map_err(conflict)?
+        != operation.registration.copy_revision
+    {
+        return Err(GuiError::conflict(
+            "Repository settings copy inputs changed during companion setup",
         ));
     }
     if let Some(target) = &operation.target {
@@ -1032,7 +1087,12 @@ pub(super) fn poll_preparation(gui: &mut GuiHandle) -> GuiResult<bool> {
         Ok(false)
     })();
     match continuation {
-        Ok(true) => gui.review_context.as_mut().unwrap().preparation = Some(operation),
+        Ok(true) => {
+            let context = gui.review_context.as_mut().unwrap();
+            context.revision += 1;
+            operation.expected_revision = context.revision;
+            context.preparation = Some(operation);
+        }
         outcome => {
             let warning = outcome.err().map(|error| format!("{}: {}. Any created companion checkout/feature is retained for recovery; launch was not completed.", operation.label, error.message));
             if let Some(target) = operation.target {
@@ -1066,6 +1126,16 @@ mod tests {
         app.store.projects[0].features[0].add_session(SessionKind::Claude);
         app.save().unwrap();
         let view = begin(&mut gui, target).unwrap();
+        let view = act(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            ReviewAction::General {
+                text: "Fix invoice rounding.".into(),
+            },
+        )
+        .unwrap()
+        .unwrap();
         let view = act(
             &mut gui,
             &view.workflow_id,
@@ -1321,91 +1391,115 @@ mod tests {
     }
     #[test]
     fn slow_confirmed_hook_allows_polling_and_stale_source_never_starts_agent() {
-        let (dir, mut gui, view) = review();
-        let checkout = dir.path().join("hook-companion");
-        let repo = dir.path().join("repo");
-        let gate = dir.path().join("release");
-        let marker = dir.path().join("hook-ready");
-        gui.app_for_workflow()
-            .config
-            .extension
-            .lifecycle_hooks
-            .on_worktree_created = Some(crate::extension::HookConfig::WithPrompt {
-            script: format!(
-                "printf '%s' \"$AMF_HOOK_CHOICE\" > '{}'; n=0; while [ ! -e '{}' ] && [ $n -lt 250 ]; do n=$((n+1)); sleep 0.02; done; test -e '{}'",
-                marker.display(),
-                gate.display(),
-                gate.display()
-            ),
-            prompt: crate::extension::HookPrompt {
-                title: "Setup".into(),
-                options: vec!["offline".into(), "full".into()],
-            },
-        });
-        let mut worktree = MockWorktreeOps::new();
-        worktree
-            .expect_create_from()
-            .times(1)
-            .returning(move |_, _, branch, base| {
-                let output = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&repo)
-                    .args(["worktree", "add", "-b", branch])
-                    .arg(&checkout)
-                    .arg(base)
-                    .output()?;
-                ensure!(output.status.success(), "private fixture checkout failed");
-                Ok(checkout.clone())
+        for scenario in ["source_edit", "stale_view_cancel"] {
+            let (dir, mut gui, view) = review();
+            let checkout = dir.path().join("hook-companion");
+            let repo = dir.path().join("repo");
+            let gate = dir.path().join("release");
+            let marker = dir.path().join("hook-ready");
+            gui.app_for_workflow()
+                .config
+                .extension
+                .lifecycle_hooks
+                .on_worktree_created = Some(crate::extension::HookConfig::WithPrompt {
+                script: format!(
+                    "printf '%s' \"$AMF_HOOK_CHOICE\" > '{}'; n=0; while [ ! -e '{}' ] && [ $n -lt 250 ]; do n=$((n+1)); sleep 0.02; done; test -e '{}'",
+                    marker.display(),
+                    gate.display(),
+                    gate.display()
+                ),
+                prompt: crate::extension::HookPrompt {
+                    title: "Setup".into(),
+                    options: vec!["offline".into(), "full".into()],
+                },
             });
-        gui.app_for_workflow().worktree = std::sync::Arc::new(worktree);
-        let refused = prepare_choice(&mut gui, &view, companion("hook-fixes")).unwrap_err();
-        assert!(refused.message.contains("choice"));
-        assert!(gui.review_context.as_ref().unwrap().preparation.is_none());
-        let mut choice = companion("hook-fixes");
-        if let DestinationChoice::Companion { hook_choice, .. } = &mut choice {
-            *hook_choice = Some("offline".into());
-        }
-        let started = prepare_choice(&mut gui, &view, choice).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !marker.exists() {
-            poll_open(&mut gui, &view.workflow_id).unwrap();
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "offline");
-        let now = Instant::now();
-        assert!(
-            poll_open(&mut gui, &view.workflow_id)
+            let mut worktree = MockWorktreeOps::new();
+            worktree
+                .expect_create_from()
+                .times(1)
+                .returning(move |_, _, branch, base| {
+                    let output = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&repo)
+                        .args(["worktree", "add", "-b", branch])
+                        .arg(&checkout)
+                        .arg(base)
+                        .output()?;
+                    ensure!(output.status.success(), "private fixture checkout failed");
+                    Ok(checkout.clone())
+                });
+            gui.app_for_workflow().worktree = std::sync::Arc::new(worktree);
+            let refused = prepare_choice(&mut gui, &view, companion("hook-fixes")).unwrap_err();
+            assert!(refused.message.contains("choice"));
+            assert!(gui.review_context.as_ref().unwrap().preparation.is_none());
+            let mut choice = companion("hook-fixes");
+            if let DestinationChoice::Companion { hook_choice, .. } = &mut choice {
+                *hook_choice = Some("offline".into());
+            }
+            let started = prepare_choice(&mut gui, &view, choice).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() {
+                poll_open(&mut gui, &view.workflow_id).unwrap();
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "offline");
+            let now = Instant::now();
+            assert!(
+                poll_open(&mut gui, &view.workflow_id)
+                    .unwrap()
+                    .unwrap()
+                    .preparation
+                    .is_some()
+            );
+            assert!(now.elapsed() < Duration::from_secs(1));
+            // An external settings writer invalidates the confirmed launch, even
+            // though it does not affect the reviewed source patch.
+            if scenario == "source_edit" {
+                std::fs::write(dir.path().join("repo/amf.json"), "{\"future\":true}").unwrap();
+            } else {
+                // Hook-stage polling advanced the view revision; cancelling still
+                // addresses this exact operation rather than unrelated state.
+                let operation_id = started.preparation.as_ref().unwrap().operation_id.clone();
+                assert!(gui.review_context.as_ref().unwrap().revision > started.revision);
+                act(
+                    &mut gui,
+                    &started.workflow_id,
+                    started.revision,
+                    ReviewAction::CancelPreparation { operation_id },
+                )
+                .unwrap();
+            }
+            std::fs::write(gate, "").unwrap();
+            let done = wait_setup(&mut gui, &started.workflow_id);
+            assert!(
+                done.preparation_error
+                    .unwrap()
+                    .contains(if scenario == "source_edit" {
+                        "changed"
+                    } else {
+                        "cancelled"
+                    })
+            );
+            let retained = gui
+                .review_context
+                .as_ref()
                 .unwrap()
+                .destination
+                .as_ref()
                 .unwrap()
-                .preparation
-                .is_some()
-        );
-        assert!(now.elapsed() < Duration::from_secs(1));
-        // An external settings writer invalidates the confirmed launch, even
-        // though it does not affect the reviewed source patch.
-        std::fs::write(dir.path().join("repo/amf.json"), "{\"future\":true}").unwrap();
-        std::fs::write(gate, "").unwrap();
-        let done = wait_setup(&mut gui, &started.workflow_id);
-        assert!(done.preparation_error.unwrap().contains("changed"));
-        let retained = gui
-            .review_context
-            .as_ref()
-            .unwrap()
-            .destination
-            .as_ref()
-            .unwrap()
-            .target
-            .clone();
-        let app = gui.app_for_workflow();
-        let (pi, fi) = app
-            .store
-            .locate_feature_by_id(None, &retained.feature_id)
-            .unwrap();
-        assert_eq!(
-            app.store.projects[pi].features[fi].status,
-            crate::project::ProjectStatus::Stopped
-        );
+                .target
+                .clone();
+            let app = gui.app_for_workflow();
+            let (pi, fi) = app
+                .store
+                .locate_feature_by_id(None, &retained.feature_id)
+                .unwrap();
+            assert_eq!(
+                app.store.projects[pi].features[fi].status,
+                crate::project::ProjectStatus::Stopped
+            );
+        }
     }
     #[test]
     fn worker_panic_reaches_a_terminal_recoverable_review() {
@@ -1429,6 +1523,231 @@ mod tests {
             )
             .unwrap()
             .is_none()
+        );
+    }
+    #[test]
+    fn another_feature_handoff_uses_original_feedback_file_and_never_submits() {
+        let (dir, mut gui, view) = review();
+        let checkout = dir.path().join("other");
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path().join("repo"))
+            .args(["worktree", "add", "-b", "other"])
+            .arg(&checkout)
+            .arg("HEAD")
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        let app = gui.app_for_workflow();
+        let mut feature = crate::project::Feature::new_for_project(
+            "Demo",
+            "Other".into(),
+            "other".into(),
+            checkout.clone(),
+            true,
+            VibeMode::SuperVibe,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = crate::project::ProjectStatus::Stopped;
+        let session_id = feature.add_session(SessionKind::Claude).id.clone();
+        let target = SessionTarget {
+            project_id: app.store.projects[0].id.clone(),
+            feature_id: feature.id.clone(),
+            session_id,
+        };
+        app.store.projects[0].features.push(feature);
+        app.save().unwrap();
+        app.config.final_review_submit_prompt = true;
+        let selected = prepare_choice(
+            &mut gui,
+            &view,
+            DestinationChoice::Existing {
+                target: target.clone(),
+            },
+        )
+        .unwrap();
+        let shown = selected.finish.as_ref().unwrap().handoff.as_ref().unwrap();
+        assert!(
+            act(
+                &mut gui,
+                &selected.workflow_id,
+                selected.revision,
+                ReviewAction::Complete {
+                    check_command: None,
+                    apply_suggestions: 0,
+                    handoff_session: Some(shown.session_id.clone()),
+                    handoff_revision: Some(shown.revision.clone()),
+                    deliver: true
+                }
+            )
+            .unwrap()
+            .is_none()
+        );
+        let done = take_completion(&mut gui, &selected.workflow_id).unwrap();
+        let handoff = done.handoff.unwrap();
+        assert_eq!(handoff.target.feature_id, target.feature_id);
+        let draft = handoff.draft_prompt.unwrap();
+        assert!(
+            draft.contains(
+                &dir.path()
+                    .join("repo/.claude/final-review-feedback.md")
+                    .display()
+                    .to_string()
+            )
+        );
+        assert!(draft.contains(&checkout.display().to_string()));
+        assert!(
+            dir.path()
+                .join("repo/.claude/final-review-feedback.md")
+                .exists()
+        );
+        assert!(!checkout.join(".claude/final-review-feedback.md").exists());
+        assert!(gui.review_context.is_none());
+    }
+
+    #[test]
+    fn mode_restrictions_apply_to_companion_primary_not_existing_secondary_agents() {
+        let (_dir, mut gui, view) = review();
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].mode = VibeMode::Vibeless;
+        app.save().unwrap();
+        assert!(
+            preview(
+                &mut gui,
+                &view.workflow_id,
+                view.revision,
+                DestinationChoice::Dedicated {
+                    agent: AgentKind::Codex
+                }
+            )
+            .is_ok()
+        );
+        let mut choice = companion("primary-codex");
+        if let DestinationChoice::Companion { settings, .. } = &mut choice {
+            settings.agent = AgentKind::Codex;
+            settings.mode = VibeMode::Vibeless;
+        }
+        assert!(
+            preview(&mut gui, &view.workflow_id, view.revision, choice)
+                .unwrap_err()
+                .message
+                .contains("mode")
+        );
+    }
+
+    #[test]
+    fn reselecting_prepared_existing_target_still_checks_its_new_preview() {
+        let (dir, mut gui, view) = review();
+        let choice = selected(&view);
+        let selected_view = prepare_choice(&mut gui, &view, choice.clone()).unwrap();
+        let shown = preview(
+            &mut gui,
+            &selected_view.workflow_id,
+            selected_view.revision,
+            choice.clone(),
+        )
+        .unwrap();
+        refresh_store(&dir, |store| {
+            store.projects[0].features[0].sessions[0].label = "Externally renamed".into()
+        });
+        assert!(
+            prepare(
+                &mut gui,
+                &selected_view.workflow_id,
+                selected_view.revision,
+                choice.clone(),
+                &shown.revision,
+                false
+            )
+            .unwrap_err()
+            .message
+            .contains("changed")
+        );
+        // An explicit new preview can accept that same stable ID's new state.
+        assert!(prepare_choice(&mut gui, &selected_view, choice).is_ok());
+    }
+    #[test]
+    fn malformed_pinned_base_refuses_creation_despite_a_valid_working_copy() {
+        let (dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let repo = dir.path().join("repo");
+        let source = dir.path().join("separate-source-checkout");
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["worktree", "add", "-b", "source-feature"])
+                .arg(&source)
+                .arg("HEAD")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        std::fs::create_dir(repo.join(".claude")).unwrap();
+        let repository_settings = repo.join(".claude/settings.local.json");
+        std::fs::write(&repository_settings, "{\"repo_only\":true}").unwrap();
+        std::fs::create_dir(source.join(".claude")).unwrap();
+        let settings = source.join(".claude/settings.local.json");
+        std::fs::write(&settings, "{bad base").unwrap();
+        for args in [
+            vec!["add", "-f", ".claude/settings.local.json"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "commit",
+                "-m",
+                "malformed base",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&source)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        std::fs::write(&settings, "{\"fixed_locally\":true}").unwrap();
+        let app = gui.app_for_workflow();
+        let feature = &mut app.store.projects[0].features[0];
+        feature.workdir = source;
+        feature.branch = "source-feature".into();
+        feature.is_worktree = true;
+        app.save().unwrap();
+        let opened = begin(&mut gui, target).unwrap();
+        let view = act(
+            &mut gui,
+            &opened.workflow_id,
+            opened.revision,
+            ReviewAction::SummaryOpen,
+        )
+        .unwrap()
+        .unwrap();
+        let error = prepare_choice(&mut gui, &view, companion("must-not-create")).unwrap_err();
+        assert!(
+            error.message.contains("pinned companion base"),
+            "{}",
+            error.message
+        );
+        assert!(!repo.join(".worktrees").exists());
+        assert!(gui.review_context.as_ref().unwrap().preparation.is_none());
+        assert_eq!(gui.app_for_workflow().store.projects[0].features.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(settings).unwrap(),
+            "{\"fixed_locally\":true}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repository_settings).unwrap(),
+            "{\"repo_only\":true}"
         );
     }
 }

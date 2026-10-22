@@ -24,6 +24,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
   const pending = useRef(false);
   const available = useRef(true);
   const request = useRef(0);
+  const closeCurrent = useRef<() => void>(() => {});
   const currentView = useRef(view);
   currentView.current = view;
   async function load(initial = false) {
@@ -65,6 +66,41 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
     if (pending.current) return;
     if (dirty) setDiscard(true); else onClose();
   }
+  closeCurrent.current = close;
+  useEffect(() => {
+    const node = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Feedback destination"]');
+    if (!node) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    function root() { return node!.querySelector<HTMLElement>('[role="alertdialog"]') ?? node!; }
+    function controls() { return Array.from(root().querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')); }
+    function focusInside() { (controls()[0] ?? node!).focus(); }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault(); event.stopImmediatePropagation(); closeCurrent.current();
+      } else if (event.key === "Tab") {
+        const items = controls();
+        const index = items.indexOf(document.activeElement as HTMLElement);
+        if (!items.length || index < 0 || (event.shiftKey ? index === 0 : index === items.length - 1)) {
+          event.preventDefault(); (event.shiftKey ? items[items.length - 1] ?? node! : items[0] ?? node!).focus();
+        }
+      }
+    }
+    function onFocus(event: FocusEvent) { if (event.target instanceof Node && !root().contains(event.target)) focusInside(); }
+    window.addEventListener("keydown", onKey, true);
+    document.addEventListener("focusin", onFocus);
+    node.focus();
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("focusin", onFocus);
+      if (previous?.isConnected && !(previous instanceof HTMLButtonElement && previous.disabled)) previous.focus();
+      else document.querySelector<HTMLElement>('[role="dialog"][aria-label="Final Review"]')?.focus();
+    };
+  }, []);
+  useEffect(() => {
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-label="Feedback destination"]');
+    if (discard) dialog?.querySelector<HTMLElement>('[aria-label="Discard destination choices"] button')?.focus();
+    else if (dialog && !dialog.contains(document.activeElement)) dialog.querySelector<HTMLElement>('select:not([disabled])')?.focus();
+  }, [discard]);
   async function inspect() {
     if (!choice || pending.current) return;
     pending.current = true; setBusy(true); setNotice(null); setPreview(null); setApproved(false);

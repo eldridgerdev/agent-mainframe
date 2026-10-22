@@ -18,6 +18,9 @@
 //!    target, minus the PR: integration targets the source feature's own
 //!    branch, recorded on [`crate::project::ReviewSource`].
 
+mod copy_inputs;
+pub(crate) use copy_inputs::revision as companion_copy_revision;
+
 use anyhow::Result;
 
 use crate::app::pr_review::FixTarget;
@@ -69,6 +72,7 @@ pub(crate) struct ReviewCompanionRegistration {
     pub source_branch: String,
     pub source_workdir: std::path::PathBuf,
     pub base_sha: String,
+    pub copy_revision: String,
     pub spec: ReviewCompanionSpec,
 }
 
@@ -518,6 +522,7 @@ impl App {
                 "The reviewed branch head changed. Refresh the companion preview before creating it"
             );
         }
+        let copy_revision = companion_copy_revision(&repo, &base_sha)?;
         Ok(ReviewCompanionRegistration {
             project_id,
             project_name,
@@ -526,6 +531,7 @@ impl App {
             source_branch,
             source_workdir,
             base_sha,
+            copy_revision,
             spec: ReviewCompanionSpec {
                 branch: branch.into(),
                 ..spec.clone()
@@ -559,7 +565,7 @@ impl App {
                 )
             })?;
         let mut feature = Feature::new_for_project(
-            &project_name,
+            project_name,
             branch.to_string(),
             branch.to_string(),
             workdir.clone(),
@@ -587,7 +593,7 @@ impl App {
         let feature_id = feature.id.clone();
         self.store.projects[pi].features.push(feature.clone());
         let saved = self.save_reapplying(|store| {
-            let Some((pi, fi)) = store.locate_feature_by_id(Some(&project_id), source_id) else {
+            let Some((pi, fi)) = store.locate_feature_by_id(Some(project_id), source_id) else {
                 return false;
             };
             let project = &mut store.projects[pi];
@@ -1015,7 +1021,7 @@ mod tests {
             app.toasts
                 .iter()
                 .any(|toast| toast.message.contains("offline setup failed")
-                    && matches!(toast.kind, crate::app::ToastKind::Warning))
+                    && matches!(toast.kind, crate::app::toast::ToastKind::Warning))
         );
         let (pi, fi) = app
             .store

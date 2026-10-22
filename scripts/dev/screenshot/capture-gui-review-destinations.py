@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='amf-gui-review-destinations-') as tempo
     for name in ['CONFIG', 'STATE', 'DATA', 'CACHE']:
         folder = scratch/name.lower(); folder.mkdir(); env[f'XDG_{name}_HOME'] = str(folder)
     config = scratch/'config/amf'; config.mkdir()
-    (config/'config.json').write_text(json.dumps({'config_version':1, 'low_memory_warn_mb':0, 'dormant_idle_minutes':0,
+    (config/'config.json').write_text(json.dumps({'config_version':1, 'max_concurrent_agents':0, 'low_memory_warn_mb':0, 'dormant_idle_minutes':0,
                                                 'extension':{'allowed_agents':['claude','opencode']}}))
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0)); inspector = f'127.0.0.1:{listener.getsockname()[1]}'
@@ -113,6 +113,13 @@ for line in sys.stdin:
         subprocess.run(tmux+['new-session','-d','-s','amf-other-proof','-n','opencode',str(fixture_bin/'opencode')],env=env,check=True)
         for window in ['terminal']:
             subprocess.run(tmux+['new-window','-t','amf-harness-proof','-n',window,'sleep 3600'],env=env,check=True)
+        for session, harness in [('amf-harness-proof','claude'),('amf-other-proof','opencode')]:
+            for _ in range(100):
+                pane = subprocess.check_output(tmux+['capture-pane','-p','-t',session+':'+harness],text=True)
+                identity = subprocess.check_output(tmux+['display-message','-p','-t',session+':'+harness,'#{pane_pid}'],text=True).strip()
+                if identity.isdigit() and 'Offline '+harness+' session · ready' in pane: break
+                time.sleep(.1)
+            else: raise AssertionError('Private offline receiver did not become ready: '+harness)
         with (out/'vite.log').open('w') as log:
             vite = subprocess.Popen(['npm','run','dev','--','--port',str(port)],cwd=workspace/'gui',stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         for _ in range(100):

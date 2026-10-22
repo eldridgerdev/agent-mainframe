@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Choose where desktop Final Review feedback goes.** Select the current
+  session, a dedicated review agent, another feature session or a new companion
+  worktree. New resources and worktree setup require confirmation; cancelling
+  their pending launch keeps created resources available for recovery. Feedback
+  opens as an unsent draft and preserves the destination's existing composer
+  text, including when the TUI is configured to submit prompts automatically.
+
 - **Adjust desktop sizing for laptop and external displays.** Appearance now
   offers 80–200% interface zoom and a separate 11–28px terminal text size.
   Changes apply immediately and are remembered across launches, while running
@@ -36,6 +43,11 @@ are tagged.
   Agents still take screenshots only when you ask for visual proof or ask
   them to look at a UI, and publish only screenshots they captured
   themselves.
+
+### Fixed
+
+- Final Review prompts sent to another checkout now point to the original
+  reviewed source's feedback file, keeping replies with the correct review.
 
 ## [v0.50.0] - 2026-10-19
 

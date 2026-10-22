@@ -64,7 +64,9 @@ with GuiFrames.from_argv() as frames:
         select('Agent session',json.dumps(target,separators=(',',':')))
     def capture(name,note,texts,**kwargs):
         dismiss_toasts(); frames.capture(name,note,texts,**kwargs)
-    frames.window.configure(width=1280,height=1000)
+    frames.window.configure(x=0,y=0,width=1280,height=1000)
+    frames._x.sync()
+    time.sleep(.2)
     action('wait',text='Invoice tests',scope='nav[aria-label=Workspace]')
     click('Invoice tests','nav[aria-label=Workspace]')
     action('wait',expression='!!document.querySelector(`textarea[aria-label="Draft prompt"]`)')
@@ -82,7 +84,7 @@ with GuiFrames.from_argv() as frames:
     settings(low_memory_warn_mb=18446744073709551615)
     open_picker(); select('Destination type','dedicated'); select('Agent harness','opencode')
     click('Preview destination',dialog); wait('Proceed despite this resource warning')
-    capture('002-resource-confirmation.png','A fresh dedicated OpenCode session requires explicit approval of the private fixture memory warning before any launch.', ['Dedicated Final Review','resource warning','Proceed despite this resource warning','Creates and starts a dedicated Final Review session.'],allow_alert=True,
+    capture('002-resource-confirmation.png','A fresh dedicated OpenCode session requires explicit approval of the private fixture memory warning before any launch.', ['Invoice rounding / Final Review (Opencode)','resource warning','Proceed despite this resource warning','Creates and starts a dedicated Final Review session.'],allow_alert=True,
             expression='Array.from(document.querySelectorAll(`[aria-label="Feedback destination"] button`)).find(b=>b.textContent==="Prepare destination").disabled')
     before=launch_count(); assert len(query("SELECT id FROM feature_sessions WHERE label='Final Review'"))==0
     click('Proceed despite this resource warning',dialog)
@@ -99,7 +101,7 @@ with GuiFrames.from_argv() as frames:
     edit("UPDATE feature_sessions SET claude_session_id='external-conversation' WHERE id='proof-other-agent'")
     click('Prepare destination',dialog)
     wait('changed. Refresh its preview')
-    capture('004-stale-destination.png','An external session-row change refuses the delayed destination confirmation; the chosen fields remain visible and no receiver starts.', ['Preparation was refused','changed. Refresh its preview','Another feature session'],allow_alert=True)
+    capture('004-stale-destination.png','An external session-row change refuses the delayed destination confirmation; the chosen fields remain visible and no receiver starts.', ['Preparation was refused','changed. Refresh its preview','Agent session'],allow_alert=True)
     assert launch_count()==before and not feedback.exists()
     preview(); prepare()
     wait('Feedback destination: Billing API / Invoice tests / Test agent')
@@ -144,5 +146,12 @@ with GuiFrames.from_argv() as frames:
     assert not (source/'.claude/final-review-progress.json').exists()
     assert not (scratch/'unexpected-prompt').exists()
     assert launch_count()==before
-    capture('010-source-aware-unsent.png','Completion opens the original source feedback path in the selected other checkout, appending it to the existing Unicode/multiline unsent composer without sending it—even with TUI auto-submit configured.', ['Invoice tests','Test agent'],expression='document.querySelector(`textarea[aria-label="Draft prompt"]`).value.includes("original feedback file")')
+    frames.evaluate('document.querySelector(`textarea[aria-label="Draft prompt"]`).scrollTop=0')
+    capture('010-source-aware-unsent.png','Completion appends source-aware feedback to the existing Unicode/multiline unsent draft in the selected other checkout; no input is sent even with TUI auto-submit configured.', ['Invoice tests','Test agent'],expression='document.querySelector(`textarea[aria-label="Draft prompt"]`).value.includes("original feedback file")')
+    # Scroll the real composer to expose the original path without editing its
+    # value or applying presentation-only styles. The preceding frame proves
+    # the retained draft at the start; this one proves the cross-checkout path.
+    frames.evaluate('''(() => { const field=document.querySelector(`textarea[aria-label="Draft prompt"]`); field.scrollTop=6*parseFloat(getComputedStyle(field).lineHeight); })()''')
+    capture('011-original-feedback-path.png','The scrolled unsent composer names the original reviewed checkout feedback file, rather than a different review in the destination checkout.', ['Invoice tests','Test agent'],expression='document.querySelector(`textarea[aria-label="Draft prompt"]`).value.includes('+json.dumps(str(feedback))+')')
     (out/'destination-proof.json').write_text(json.dumps({'source_feedback':str(feedback),'existing_draft_preserved':True,'gui_auto_submit_ignored':True,'no_receiver_input':True,'companion_retained_stopped':True,'single_companion':True,'hook_choice':'offline'},indent=2)+'\n')
+    frames.write_notes()

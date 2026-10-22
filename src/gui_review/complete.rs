@@ -1,9 +1,8 @@
 //! Explicitly confirmed review completion and feedback handoff over the TUI's
 //! finish engine: the saved suggestion opt-in, the configured check (rerun,
 //! like the TUI, rather than trusting an earlier transient result), and
-//! `record_final_review_round`. Only the agent handoff differs: it targets the
-//! reviewed feature's first agent session, as the TUI's default destination
-//! does, and is delivered only when the reviewer chose it.
+//! `record_final_review_round`. An explicitly selected, fresh destination
+//! receives an unsent composer draft only when the reviewer chooses handoff.
 use serde::Serialize;
 
 use super::*;
@@ -15,8 +14,7 @@ use crate::gui_contract::SessionTarget;
 pub struct ReviewHandoffTarget {
     pub session_id: String,
     pub label: String,
-    /// The session (or its feature) is not running, so a submitted prompt
-    /// cannot be delivered; it is kept as an unsent draft instead.
+    /// A stopped destination can still receive an unsent composer draft.
     pub stopped: bool,
     pub revision: String,
     pub target: SessionTarget,
@@ -39,8 +37,7 @@ pub struct ReviewFinishView {
     /// to source before the round is recorded (0 without the opt-in).
     pub apply_suggestions: usize,
     pub post_to_pr: bool,
-    /// The TUI setting deciding whether a handed-off prompt is submitted
-    /// (Enter) or left unsent for the reviewer to edit.
+    /// Always false for desktop completion. The TUI retains its own setting.
     pub submit_prompt: bool,
     pub handoff: Option<ReviewHandoffTarget>,
     pub handoff_error: Option<String>,

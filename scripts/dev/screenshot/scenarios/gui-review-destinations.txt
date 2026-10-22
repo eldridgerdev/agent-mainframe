@@ -2,4 +2,4 @@
 note:The isolated TUI confirms the screenshot harness is ready before native destination proof.
 expect:0 projects, 0 features
 shot:gui-capture-ready
-run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 python3 "$SCRIPT_DIR/capture-gui-review-destinations.py" "$OUT_DIR"
+run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 AMF_GUI_CAPTURE_PORT=1420 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-review-destinations.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

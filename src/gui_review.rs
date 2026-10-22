@@ -499,7 +499,9 @@ pub fn act(
     let context = gui
         .review_context
         .as_ref()
-        .filter(|c| c.id == workflow_id && c.revision == revision)
+        .filter(|context| context.id == workflow_id && (context.revision == revision
+            || matches!(&action, ReviewAction::CancelPreparation { operation_id }
+                if context.preparation.as_ref().is_some_and(|operation| operation.matches_id(operation_id)))))
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
     if context.preparation.is_some() {
         if let ReviewAction::CancelPreparation { operation_id } = &action {

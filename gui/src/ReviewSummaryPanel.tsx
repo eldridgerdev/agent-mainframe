@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import type { ReviewAction, ReviewView } from "./api";
 import ReviewFeedbackDestinationDialog from "./ReviewFeedbackDestinationDialog";
 
-export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = null }: {
-  view: ReviewView; busy: boolean; dirty: boolean; error?: string | null; onAct: (action: ReviewAction) => Promise<boolean>;
+export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = null, onDestinationOpenChange }: {
+  view: ReviewView; busy: boolean; dirty: boolean; error?: string | null; onDestinationOpenChange?: (open: boolean) => void; onAct: (action: ReviewAction) => Promise<boolean>;
 }) {
   const summary = view.summary!;
   const [destinationOpen, setDestinationOpen] = useState(false);
+  function destinationChanged(open: boolean) { setDestinationOpen(open); onDestinationOpenChange?.(open); }
+  useEffect(() => () => onDestinationOpenChange?.(false), [onDestinationOpenChange]);
   const [confirm, setConfirm] = useState(false);
   const [checkConfirm, setCheckConfirm] = useState<string | null>(null);
   const [completeConfirm, setCompleteConfirm] = useState(false);
@@ -99,10 +101,10 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
       {target?.warning && <p role="alert">{target.warning}</p>}
       {finish.handoff_error && <p role="alert">{finish.handoff_error}</p>}
       {view.preparation_error && <p role="alert">{view.preparation_error}</p>}
-      <button className="btn btn-secondary" disabled={blocked || generated} onClick={() => { if (!inFlight.current) setDestinationOpen(true); }}>Choose feedback destination…</button>
+      <button className="btn btn-secondary" disabled={blocked || generated} onClick={() => { if (!inFlight.current) destinationChanged(true); }}>Choose feedback destination…</button>
       {view.preparation && <div role="status"><p>Preparing {view.preparation.label}. {view.preparation.cancelled ? "Launch cancelled; waiting for setup to settle. Any created resources are retained." : "Worktree creation or its confirmed hook is running in the background."}</p>
         <button className="btn btn-secondary" disabled={busy || view.preparation.cancelled} onClick={() => void onAct({ kind: "cancel_preparation", operation_id: view.preparation!.operation_id })}>Cancel pending launch</button></div>}
-      {destinationOpen && <ReviewFeedbackDestinationDialog view={view} error={error} onAct={onAct} onClose={() => setDestinationOpen(false)} />}
+      {destinationOpen && <ReviewFeedbackDestinationDialog view={view} error={error} onAct={onAct} onClose={() => destinationChanged(false)} />}
 
       {completing
         ? <><p role="status">Completing: the configured check is running. The feedback round is recorded when it finishes. Any suggestions applied before the check remain in source files if you cancel.</p>

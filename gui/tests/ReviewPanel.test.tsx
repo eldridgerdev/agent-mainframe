@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import ReviewPanel from "../src/ReviewPanel";
 import type { ReviewView } from "../src/api";
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 const view: ReviewView = {
   workflow_id: "review", revision: 4, target: { project_id: "project", feature_id: "feature" },
   feature_name: "Feature", branch: "feature", base_ref: "main", selected_path: "code.rs",
@@ -921,4 +921,29 @@ it("cancels a completion while its check runs and cannot leave the summary meanw
   expect(screen.getByText(/Any suggestions applied before the check remain in source files if you cancel/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel completion" }));
   await waitFor(() => expect(onAct).toHaveBeenCalledWith({ kind: "cancel_check" }));
+});
+
+it("keeps the parent review closed to Escape while destination choices need discard protection", async () => {
+  const api = await import("../src/api");
+  vi.spyOn(api,"reviewDestinationCatalog").mockResolvedValue({ sessions: [], agents: [{agent:"claude",label:"Claude",unavailable:null}], source_path:"/source",source_branch:"feature",source_head:"abc",default_branch:"review-fixes",companion_available:true,hook_prompt:null,selected:null });
+  const { onAct }=mount({ ...view,summary,finish });
+  const opener=screen.getByRole("button",{name:"Choose feedback destination…"});
+  opener.focus(); fireEvent.click(opener);
+  const type=await screen.findByRole("combobox",{name:"Destination type"});
+  expect(screen.getByRole("dialog",{name:"Feedback destination"}).contains(document.activeElement)).toBe(true);
+  fireEvent.change(type,{target:{value:"companion"}});
+  fireEvent.change(screen.getByRole("textbox",{name:"Companion branch"}),{target:{value:"keep-my-draft"}});
+  fireEvent.keyDown(window,{key:"Escape"});
+  expect(screen.getByRole("alertdialog",{name:"Discard destination choices"})).toBeTruthy();
+  expect(screen.getByRole("dialog",{name:"Feedback destination"})).toBeTruthy();
+  expect(onAct).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button",{name:"Keep editing"}));
+  expect((screen.getByRole("textbox",{name:"Companion branch"}) as HTMLInputElement).value).toBe("keep-my-draft");
+  const cancel=screen.getByRole("button",{name:"Cancel destination selection"});
+  cancel.focus(); fireEvent.keyDown(window,{key:"Tab"});
+  expect(document.activeElement).toBe(screen.getByRole("dialog",{name:"Feedback destination"}).querySelector("button"));
+  fireEvent.click(cancel); fireEvent.click(screen.getByRole("button",{name:"Discard choices"}));
+  await waitFor(()=>expect(screen.queryByRole("dialog",{name:"Feedback destination"})).toBeNull());
+  expect(document.activeElement).toBe(opener);
+  expect(onAct).not.toHaveBeenCalled();
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentSlug, DiffLine, ReviewAction, ReviewLocation, ReviewSeverity, ReviewSpan, ReviewView } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
@@ -20,6 +20,9 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
   onSyntaxInstalled?: () => void;
   hidden?: boolean;
 }) {
+  const [destinationOpen, setDestinationOpen] = useState(false);
+  const destinationOpenRef = useRef(false);
+  const destinationChanged = useCallback((open: boolean) => { destinationOpenRef.current = open; setDestinationOpen(open); }, []);
   const ai = view.ai;
   const history = view.history;
   const summary = view.summary;
@@ -145,18 +148,18 @@ export default function ReviewPanel({ view, busy: commandBusy, error, onAct, onE
     if (await onAct(action)) setEditor(null);
   }
   const close = () => {
-    if (commandBusy) return;
+    if (commandBusy || view.preparation || destinationOpenRef.current) return;
     if (history) void onAct({ kind: "history_close" });
     else if (summary) void onAct({ kind: "summary_close" });
     else request({ kind: "pause" });
   };
-  return <Modal hidden={hidden} label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close}
-    footer={<button className="btn btn-secondary" disabled={commandBusy || !!view.finish?.completing} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
+  return <Modal hidden={hidden} label="Final Review" title={`Final Review · ${view.feature_name}`} size="xl" onClose={close} dismissable={!commandBusy && !view.preparation && !destinationOpen}
+    footer={<button className="btn btn-secondary" disabled={commandBusy || !!view.finish?.completing || !!view.preparation || destinationOpen} onClick={close}>{history || summary ? "Return to review" : "Pause review"}</button>}>
     <p>Review progress is shared with the TUI. Pause and reopen to resume. Complete the review and hand off feedback from the pre-finish summary.</p>
     <p className="diff-summary">{view.branch} · {view.base_ref} · {approved} approved · {rejected} rejected · {view.files.length - approved - rejected} undecided</p>
     {commandBusy && <p role="status"><Spinner /> Updating review…</p>}
     {(error || view.error) && <p role="alert">{error || view.error}</p>}
-    {summary ? <ReviewSummaryPanel view={view} busy={commandBusy || ai.precall !== null} dirty={dirty} onAct={onAct} error={error} /> : history ? <section className="review-history" aria-label="Review round history">
+    {summary ? <ReviewSummaryPanel view={view} busy={commandBusy || ai.precall !== null} dirty={dirty} onAct={onAct} error={error} onDestinationOpenChange={destinationChanged} /> : history ? <section className="review-history" aria-label="Review round history">
       <p className="muted small">Read-only history. Current reflects this open review; local unsaved drafts stay in their editors. Completed rounds include feedback, suggestions, checks and agent replies.</p>
       {history.error && <p role="alert">{history.error}</p>}
       <div className="review-history-reader">

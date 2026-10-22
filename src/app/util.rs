@@ -300,7 +300,7 @@ fn read_prompts_from_opencode_storage(
 ///
 /// No task store means no tasks. This runs on every sidebar draw, so it
 /// must never fall back to parsing the session transcript: transcripts
-/// reach hundreds of MB, and a full parse per frame made typing lag.
+/// can reach 100 MB or more, and a full parse per frame made typing lag.
 pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Option<ClaudeTaskState> {
     let tasks_root = claude_tasks_root();
     let session_id = session_id
@@ -309,13 +309,9 @@ pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Optio
         .map(ToOwned::to_owned)
         .or_else(|| latest_claude_session_id(workdir));
 
-    if let Some(session_id) = session_id.as_deref()
-        && let Some(state) = read_claude_task_state_from_task_store(&tasks_root, session_id)
-    {
-        return Some(state);
-    }
-
-    None
+    session_id
+        .as_deref()
+        .and_then(|session_id| read_claude_task_state_from_task_store(&tasks_root, session_id))
 }
 
 // Read only the last 64 KB of a session file — avoids loading multi-MB

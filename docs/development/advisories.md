@@ -100,3 +100,42 @@ Local cargo-audit 0.22.2 exits 0 on the zip 9.0.5 lockfile against advisory
 database commit `999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b` (1,338 advisories),
 with zero blocking vulnerabilities and the same 13 visible nonfatal warnings
 above.
+
+## TLS and development-tool patches (2026-10-22)
+
+The unchanged main lockfiles failed PR #766's Rust and frontend audits on
+newly published or updated advisories. The targeted patches are:
+
+| Dependency | Previous | Patched | Advisories |
+| --- | --- | --- | --- |
+| rustls-webpki | 0.103.15 | 0.103.16 | [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382) |
+| webpki-root-certs | 1.0.6 | 1.0.10 | [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383) |
+| webpki-roots | 1.0.6 | 1.0.10 | [RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381) |
+| vite | 7.3.6 | 7.3.7 | [GHSA-9jrq-w75r-8gcw](https://github.com/advisories/GHSA-9jrq-w75r-8gcw), [GHSA-rq7h-c2jc-7f22](https://github.com/advisories/GHSA-rq7h-c2jc-7f22), plus the bundled launch-editor findings below |
+| vitest / @vitest/mocker | 5.0.1 | 5.0.3 | [GHSA-qxg6-89mg-rqv8](https://github.com/advisories/GHSA-qxg6-89mg-rqv8), [GHSA-xp26-3454-mjgp](https://github.com/advisories/GHSA-xp26-3454-mjgp) |
+
+The TLS patches reject distrusted emSign intermediates and remove the affected
+bundled root. These packages are reachable through ureq/rustls and the GUI's
+TLS platform-verifier/root-store dependencies; no exposure exemption is assumed.
+Only these three Rust package versions and checksums change. Rust manifest
+requirements and all other locked Rust packages remain unchanged.
+
+Vite's development-server patch also clears the launch-editor findings
+[GHSA-698v-4r3x-3vcv](https://github.com/advisories/GHSA-698v-4r3x-3vcv),
+[GHSA-r825-w8mm-5pxw](https://github.com/advisories/GHSA-r825-w8mm-5pxw) and
+[GHSA-587h-7wmj-h5pm](https://github.com/advisories/GHSA-587h-7wmj-h5pm).
+The Vitest patch updates its matching mocker/spy packages and runtime diagnostics;
+the lockfile also refreshes the compatible magic-string patch. Vitest 5.0.3
+pins `why-is-node-running` to 3.2.1, a dev-only major bump from 2.3.0 that
+requires Node 20.11 or newer (CI uses Node 22). The direct
+development requirements now start at the patched Vite/Vitest versions. No
+application UI or workflow behavior changes.
+
+Local cargo-audit 0.22.2 compares both Rust lockfiles against advisory database
+commit `640bf5a9f06e66d8721e8772766531fe77c8630d` (1,349 advisories): three
+blocking findings become zero, with the same 13 nonfatal warnings still visible.
+The updated scan uses `--no-fetch` and the database checkout remains at that
+commit. Local `npm audit --package-lock-only` changes from three vulnerable
+package entries (two moderate, one high) to zero. No advisory is ignored or
+suppressed. Full Linux/macOS tests, strict lint and frontend checks remain
+required for the published commit.

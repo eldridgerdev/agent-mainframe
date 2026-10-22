@@ -450,6 +450,7 @@ static SPECS: [PromptSpec; 25] = [
         placeholders: &[
             "file_path",
             "hunk_label",
+            "recurring_findings",
             "annotated_diff",
             "finding_heading_prefix",
         ],

@@ -494,11 +494,11 @@ Output ONLY findings, no summary and no prose outside them. If you find nothing 
 /// was still too large after file-level batching. The rest of the file is not
 /// shown.
 ///
-/// Placeholders: `{{file_path}}`, `{{hunk_label}}`, `{{annotated_diff}}`,
-/// `{{finding_heading_prefix}}`.
-pub const REVIEW_HUNK_SPLIT: &str = r#"You are reviewing {{hunk_label}} of `{{file_path}}`. This file's change was too large to review whole, so you are seeing only these hunks — the rest of the file, its imports, and its other hunks are not shown. Only raise an issue you are confident about from the lines here; when a concern depends on code you cannot see (a type definition, an import, an earlier guard), say so instead of asserting a bug. Skip praise and style nitpicks.
+/// Placeholders: `{{file_path}}`, `{{hunk_label}}`, `{{recurring_findings}}`,
+/// `{{annotated_diff}}`, `{{finding_heading_prefix}}`.
+pub const REVIEW_HUNK_SPLIT: &str = r#"You are reviewing {{hunk_label}} of `{{file_path}}`. This file's change was too large to review whole, so you are seeing only these hunks — the rest of the file, its imports, and its other hunks are not shown. Only raise an issue you are confident about from the lines here; when a concern depends on code you cannot see (a type definition, an import, an earlier guard), say so instead of asserting a bug. Check especially for issues matching the team's known recurring findings below, if any. Skip praise and style nitpicks.
 
-Diff:
+{{recurring_findings}}Diff:
 
 {{annotated_diff}}
 

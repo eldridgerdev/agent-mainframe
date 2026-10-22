@@ -606,7 +606,16 @@ mod tests {
 
     #[test]
     fn ai_snapshot_temporarily_borrows_parked_ai_without_losing_threads() {
-        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let (dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        // Opening AI Review resolves its memory docs even before a run starts.
+        let mut worktree = crate::traits::MockWorktreeOps::new();
+        worktree
+            .expect_repo_root()
+            .returning(crate::worktree::WorktreeManager::repo_root);
+        let app = gui.app_for_workflow();
+        app.worktree = Box::new(worktree);
+        app.config.global_review_memory_path =
+            Some(dir.path().join("absent-memory.md").display().to_string());
         let id = begin(&mut gui, target).unwrap();
         let pr = test_pr();
         let workdir = gui.pr_workspace_context.as_ref().unwrap().workdir.clone();

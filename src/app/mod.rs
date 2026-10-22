@@ -3630,19 +3630,24 @@ impl App {
             .or_else(|| self.config.review_memory_path.clone())
     }
 
-    /// Both review-memory doc paths for `repo`: its own committed doc (via
+    /// Both review-memory doc paths for `repo`: its own doc (via
     /// [`Self::configured_review_memory_path`]) and the user's cross-project
     /// one. Every review-memory flow resolves through this, so a scope toggle
-    /// is just a lookup rather than a second round of config plumbing.
+    /// is just a lookup rather than a second round of config plumbing, and
+    /// the reviewer reads the same file the add/bootstrap/compact flows write.
+    /// An ignored project doc in a linked worktree resolves to the main
+    /// checkout's copy ([`review_memory::resolve_project_memory_path`]).
     pub(crate) fn review_memory_paths(&self, repo: &Path) -> review_memory::ReviewMemoryPaths {
+        let (project, worktree_local) = review_memory::resolve_project_memory_path(
+            repo,
+            self.configured_review_memory_path(repo).as_deref(),
+        );
         review_memory::ReviewMemoryPaths {
-            project: review_memory::review_memory_path(
-                repo,
-                self.configured_review_memory_path(repo).as_deref(),
-            ),
+            project,
             global: review_memory::global_review_memory_path(
                 self.config.global_review_memory_path.as_deref(),
             ),
+            worktree_local,
         }
     }
 

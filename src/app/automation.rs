@@ -6,7 +6,8 @@ use super::*;
 use crate::automation::{
     AutomationHookPrompt, BatchFeatureAutomationResult, CreateBatchFeaturesRequest,
     CreateBatchFeaturesResponse, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
-    CreateProjectResponse, SeedAiReviewRequest, SeedAiReviewResponse,
+    CreateProjectResponse, CreateSessionRequest, CreateSessionResponse, SeedAiReviewRequest,
+    SeedAiReviewResponse,
 };
 use crate::extension::{HookPrompt, merge_project_extension_config};
 use crate::project::{normalized_feature_name, tmux_session_name, worktree_name};
@@ -48,7 +49,303 @@ fn checked_hook_choice<'a>(
     Ok(Some(choice))
 }
 
+pub(crate) struct PendingAutomationPrompt {
+    session_id: String,
+    tmux_session: String,
+    window: String,
+    text: String,
+    submit: bool,
+    queued_at: std::time::Instant,
+}
+
+fn automation_prompt_ready(kind: &SessionKind, screen: &str) -> bool {
+    // Startup selectors can use the same cursor glyph as an editor. Do not
+    // mistake their highlighted choice for an input prompt.
+    let lower = screen.to_lowercase();
+    if [
+        "do you trust",
+        "trust this folder",
+        "trust the files",
+        "sign in with",
+        "select login",
+        "choose the text style",
+        "select the text style",
+    ]
+    .iter()
+    .any(|blocker| lower.contains(blocker))
+    {
+        return false;
+    }
+    let editor_marker = |line: &str, marker: char| {
+        line.strip_prefix(marker).is_some_and(|rest| {
+            !rest
+                .trim_start()
+                .starts_with(|ch: char| ch.is_ascii_digit())
+        })
+    };
+    let lines: Vec<_> = screen.lines().rev().take(12).map(str::trim).collect();
+    match kind {
+        SessionKind::Claude => lines
+            .iter()
+            .any(|line| editor_marker(line, '❯') || *line == ">" || line.starts_with("> Try ")),
+        SessionKind::Codex => lines.iter().any(|line| editor_marker(line, '›')),
+        SessionKind::Opencode => screen.contains("Ask anything"),
+        SessionKind::Pi => screen.contains("%/") && lines.iter().any(|line| line.contains("───")),
+        _ => false,
+    }
+}
+
 impl App {
+    pub fn create_session_from_request(
+        &mut self,
+        request: &CreateSessionRequest,
+    ) -> Result<CreateSessionResponse> {
+        if request.project_name.trim().is_empty() || request.feature.trim().is_empty() {
+            bail!("project_name and feature are required");
+        }
+        if request
+            .label
+            .as_ref()
+            .is_some_and(|label| label.trim().is_empty())
+        {
+            bail!("Session label cannot be empty");
+        }
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == request.project_name)
+            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", request.project_name))?;
+        let fi = self.store.projects[pi]
+            .features
+            .iter()
+            .position(|f| f.name == request.feature)
+            .ok_or_else(|| anyhow::anyhow!("Feature '{}' not found", request.feature))?;
+        let agent = match request.kind.as_str() {
+            "claude" => Some(AgentKind::Claude),
+            "codex" => Some(AgentKind::Codex),
+            "opencode" => Some(AgentKind::Opencode),
+            "pi" => Some(AgentKind::Pi),
+            _ => None,
+        };
+        let repo = &self.store.projects[pi].repo;
+        let custom = if agent.is_none() && request.kind != "terminal" {
+            Some(
+                merge_project_extension_config(&self.config.extension, repo)
+                    .custom_sessions
+                    .into_iter()
+                    .find(|config| config.name == request.kind)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown session kind '{}'", request.kind))?,
+            )
+        } else {
+            None
+        };
+        Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
+        if request.initial_prompt.is_some() && agent.is_none() {
+            bail!("initial_prompt requires an agent harness session");
+        }
+        if let Some(agent) = &agent
+            && !self.allows_agent_for_repo(repo, agent)
+        {
+            bail!(
+                "Harness '{}' is not allowed for this workspace",
+                agent.display_name()
+            );
+        }
+        let label = request
+            .label
+            .clone()
+            .unwrap_or_else(|| request.kind.clone());
+        let feature_id = self.store.projects[pi].features[fi].id.clone();
+        let mut response = CreateSessionResponse {
+            msg_type: crate::automation::AUTOMATION_RESULT_TYPE,
+            action: crate::automation::CREATE_SESSION_ACTION,
+            ok: true,
+            dry_run: request.dry_run,
+            tmux_session: self.store.projects[pi].features[fi].tmux_session.clone(),
+            tmux_window: None,
+            session_id: None,
+            message: format!(
+                "Dry run: would create '{}' session in '{}'",
+                label, request.feature
+            ),
+        };
+        if request.dry_run {
+            return Ok(response);
+        }
+        let kind = agent
+            .as_ref()
+            .map(session_kind_for_agent)
+            .unwrap_or(SessionKind::Terminal);
+        if (agent.is_some() || self.add_would_start_feature(pi, fi, &kind))
+            && !matches!(
+                self.check_start_preconditions(),
+                super::resource_gate::StartPreconditions::Ok
+            )
+        {
+            bail!("Session not created: the machine is at its agent/memory limit");
+        }
+        if let Some(config) = &custom {
+            let workdir = &self.store.projects[pi].features[fi].workdir;
+            let check_dir = config
+                .working_dir
+                .as_ref()
+                .map(|dir| workdir.join(dir))
+                .unwrap_or_else(|| workdir.clone());
+            config
+                .run_pre_check(&check_dir)
+                .map_err(anyhow::Error::msg)?;
+        }
+        if let Some(agent) = &agent {
+            self.tmux.check_harness_available(agent)?;
+        }
+        let id = if let Some(agent) = agent {
+            self.with_feature_started_for_add(pi, fi, |app| {
+                app.create_agent_session_labeled_identified(
+                    pi,
+                    fi,
+                    &label,
+                    Some(agent),
+                    StartIntent::Approved,
+                )
+                .map(|(_, id, _)| id)
+            })?
+        } else if let Some(config) = custom {
+            self.add_custom_session_identified(pi, fi, &config, label)?
+        } else {
+            self.add_builtin_tmux_session_identified(pi, fi, SessionKind::Terminal, label)?
+        };
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(None, &feature_id)
+            .ok_or_else(|| anyhow::anyhow!("Feature removed while creating session"))?;
+        let feature = &self.store.projects[pi].features[fi];
+        let session = feature
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session removed while creating it"))?;
+        response.tmux_session = feature.tmux_session.clone();
+        response.tmux_window = Some(session.tmux_window.clone());
+        response.session_id = Some(id.clone());
+        response.message = if request.initial_prompt.is_some() {
+            if request.submit_prompt {
+                "Created session; initial prompt queued for submission".to_string()
+            } else {
+                "Created session; initial prompt queued as an unsent draft".to_string()
+            }
+        } else {
+            "Created session".to_string()
+        };
+        self.queue_automation_prompt(
+            &id,
+            request.initial_prompt.as_deref(),
+            request.submit_prompt,
+        );
+        Ok(response)
+    }
+
+    fn validate_automation_prompt(prompt: Option<&str>, submit: bool) -> Result<()> {
+        if submit && prompt.is_none() {
+            bail!("submit_prompt requires initial_prompt");
+        }
+        if prompt.is_some_and(|text| text.trim().is_empty() || text.contains('\0')) {
+            bail!("initial_prompt must be nonempty and contain no NUL bytes");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn queue_automation_prompt(
+        &mut self,
+        session_id: &str,
+        prompt: Option<&str>,
+        submit: bool,
+    ) {
+        let Some(text) = prompt else {
+            return;
+        };
+        for project in &self.store.projects {
+            for feature in &project.features {
+                if let Some(session) = feature.sessions.iter().find(|s| s.id == session_id) {
+                    self.pending_automation_prompts
+                        .push(PendingAutomationPrompt {
+                            session_id: session_id.to_string(),
+                            tmux_session: feature.tmux_session.clone(),
+                            window: session.tmux_window.clone(),
+                            text: text.to_string(),
+                            submit,
+                            queued_at: std::time::Instant::now(),
+                        });
+                    return;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn poll_automation_prompts(&mut self) {
+        for pending in std::mem::take(&mut self.pending_automation_prompts) {
+            // The persisted identity must still own this exact target. Never deliver
+            // into a window recreated for a different session.
+            let kind = self
+                .store
+                .projects
+                .iter()
+                .flat_map(|p| &p.features)
+                .filter(|f| {
+                    f.tmux_session == pending.tmux_session && f.status != ProjectStatus::Stopped
+                })
+                .flat_map(|f| &f.sessions)
+                .find(|s| {
+                    s.id == pending.session_id && s.tmux_window == pending.window && !s.stopped
+                })
+                .map(|s| s.kind.clone());
+            let Some(kind) = kind else {
+                continue;
+            };
+            if pending.queued_at.elapsed() > std::time::Duration::from_secs(120) {
+                self.log_warn(
+                    "automation",
+                    format!(
+                        "Initial prompt for session {} timed out waiting for agent input",
+                        pending.session_id
+                    ),
+                );
+                continue;
+            }
+            let ready = self
+                .tmux
+                .window_exists(&pending.tmux_session, &pending.window)
+                && self
+                    .tmux
+                    .capture_pane(&pending.tmux_session, &pending.window)
+                    .is_ok_and(|screen| automation_prompt_ready(&kind, &screen));
+            if !ready {
+                self.pending_automation_prompts.push(pending);
+                continue;
+            }
+            let result = self
+                .tmux
+                .paste_text(&pending.tmux_session, &pending.window, &pending.text)
+                .and_then(|()| {
+                    if pending.submit {
+                        self.tmux
+                            .send_key_name(&pending.tmux_session, &pending.window, "Enter")
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(err) = result {
+                self.log_error(
+                    "automation",
+                    format!(
+                        "Could not deliver initial prompt to {}: {err}",
+                        pending.session_id
+                    ),
+                );
+            }
+        }
+    }
+
     fn planned_batch_feature_results(
         request: &CreateBatchFeaturesRequest,
         project_repo: &Path,
@@ -209,6 +506,7 @@ impl App {
         &mut self,
         request: &CreateFeatureRequest,
     ) -> Result<CreateFeatureResponse> {
+        Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
         if request.project_name.trim().is_empty() {
             bail!("Project name cannot be empty");
         }
@@ -399,6 +697,18 @@ impl App {
         let started = self.autostart_allowed(&request.branch);
         if started {
             self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+            if let Some(id) = self.store.projects[pi].features[fi]
+                .sessions
+                .iter()
+                .find(|s| s.kind.is_agent_harness())
+                .map(|s| s.id.clone())
+            {
+                self.queue_automation_prompt(
+                    &id,
+                    request.initial_prompt.as_deref(),
+                    request.submit_prompt,
+                );
+            }
         }
         self.save()?;
 
@@ -436,6 +746,7 @@ impl App {
         &mut self,
         request: &CreateBatchFeaturesRequest,
     ) -> Result<CreateBatchFeaturesResponse> {
+        Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
         if request.workspace_path.as_os_str().is_empty() || !request.workspace_path.exists() {
             bail!("Workspace path is invalid");
         }
@@ -572,6 +883,18 @@ impl App {
             let started = self.autostart_allowed(branch);
             if started {
                 self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+                if let Some(id) = self.store.projects[pi].features[fi]
+                    .sessions
+                    .iter()
+                    .find(|s| s.kind.is_agent_harness())
+                    .map(|s| s.id.clone())
+                {
+                    self.queue_automation_prompt(
+                        &id,
+                        request.initial_prompt.as_deref(),
+                        request.submit_prompt,
+                    );
+                }
             }
             if let Some(result) = response_features
                 .iter_mut()
@@ -693,5 +1016,48 @@ impl App {
             opened: request.open,
             message: format!("Seeded {count} deterministic AI-review finding(s)"),
         })
+    }
+}
+
+#[cfg(test)]
+mod prompt_readiness_tests {
+    use super::*;
+
+    #[test]
+    fn only_default_harness_input_surfaces_are_ready() {
+        for (kind, screen) in [
+            (
+                SessionKind::Claude,
+                "Claude Code\n❯ Try fixing a bug\n? for shortcuts",
+            ),
+            (
+                SessionKind::Codex,
+                "OpenAI Codex\n› Describe a task\n100% context left",
+            ),
+            (
+                SessionKind::Opencode,
+                "OpenCode\nAsk anything...\ntab switch agent",
+            ),
+            (
+                SessionKind::Pi,
+                "────────────────────\n\n────────────────────\n/project\n0.0%/200k (auto)",
+            ),
+        ] {
+            assert!(automation_prompt_ready(&kind, screen), "{kind:?}");
+            for not_ready in [
+                "",
+                "Starting…",
+                "Do you trust this folder?",
+                "Sign in to continue",
+                "Do you trust this folder?\n❯ Yes",
+                "Sign in with ChatGPT\n› Continue",
+                "› 1. Yes, continue",
+            ] {
+                assert!(
+                    !automation_prompt_ready(&kind, not_ready),
+                    "{kind:?}: {not_ready}"
+                );
+            }
+        }
     }
 }

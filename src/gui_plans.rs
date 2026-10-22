@@ -1164,6 +1164,8 @@ mod tests {
         app.store_version = Some(db.current_store_version().unwrap());
         app.db = Some(db);
         let request = CreateFeatureRequest {
+            initial_prompt: None,
+            submit_prompt: false,
             project_name: "demo".into(),
             branch: "todo-work".into(),
             agent: AgentKind::default(),
@@ -1694,6 +1696,8 @@ mod tests {
                 Box::new(MockWorktreeOps::new()),
             ));
             let request = CreateFeatureRequest {
+                initial_prompt: None,
+                submit_prompt: false,
                 project_name: "demo".into(),
                 branch: "planned-work".into(),
                 agent: AgentKind::default(),
@@ -1725,6 +1729,8 @@ mod tests {
 
     fn worktree_plan_request() -> CreateFeatureRequest {
         CreateFeatureRequest {
+            initial_prompt: None,
+            submit_prompt: false,
             project_name: "demo".into(),
             branch: "planned-work".into(),
             agent: AgentKind::default(),
@@ -1987,6 +1993,8 @@ mod tests {
         gui.app_for_workflow().config.max_concurrent_agents = 8;
         gui.app_for_workflow().config.low_memory_warn_mb = 0;
         let request = CreateFeatureRequest {
+            initial_prompt: None,
+            submit_prompt: false,
             project_name: "demo".into(),
             branch: "planned-work".into(),
             agent: AgentKind::default(),
@@ -2267,6 +2275,8 @@ mod tests {
         gui.app_for_workflow().config.max_concurrent_agents = 1;
         gui.app_for_workflow().config.low_memory_warn_mb = 0;
         let request = CreateFeatureRequest {
+            initial_prompt: None,
+            submit_prompt: false,
             project_name: "demo".into(),
             branch: "planned-work".into(),
             agent: AgentKind::default(),

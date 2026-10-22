@@ -2565,6 +2565,8 @@ impl App {
         };
 
         let request = CreateBatchFeaturesRequest {
+            initial_prompt: None,
+            submit_prompt: false,
             workspace_path: PathBuf::from(&state.workspace_path),
             project_name: state.project_name.clone(),
             feature_count: state.feature_count,

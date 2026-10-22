@@ -1021,6 +1021,7 @@ pub struct App {
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
+    pub(crate) pending_automation_prompts: Vec<automation::PendingAutomationPrompt>,
     /// Feature IDs stopped from the dashboard (`x`) during this run. Their
     /// missing tmux session is expected, so opening a saved agent pane
     /// restarts and resumes directly instead of asking (see
@@ -2614,6 +2615,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            pending_automation_prompts: Vec::new(),
             user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
@@ -2885,6 +2887,7 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            pending_automation_prompts: Vec::new(),
             user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),

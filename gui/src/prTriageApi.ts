@@ -8,6 +8,7 @@ export interface PrTriageTarget { project_id: string; feature_id?: string | null
 
 export interface PrEntry {
   number: number;
+  selected_for_feature: boolean;
   title: string;
   author: string;
   head_ref: string;

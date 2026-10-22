@@ -330,6 +330,8 @@ enum PendingWrite {
 #[derive(Debug, Clone, Serialize)]
 pub struct PrEntryView {
     pub number: u32,
+    /// The PR selected by the feature's current branch, when present.
+    pub selected_for_feature: bool,
     pub title: String,
     pub author: String,
     pub head_ref: String,
@@ -671,6 +673,20 @@ enum Opening {
 
 fn opening(gui: &mut GuiHandle, target: &PrTriageTarget) -> GuiResult<Opening> {
     gui.refresh_snapshot()?;
+    // PR Workspace keeps its Threads workflow parked while the AI Review tab
+    // owns AppMode. Re-expose that same feature's thread workflow when a
+    // second PR Triage entry point is opened (for example from an agent
+    // composer after preparing a fix), instead of rejecting it as an
+    // unfinished workflow.
+    let workspace_threads = gui.pr_workspace_context.as_ref().and_then(|workspace| {
+        (workspace.ai_active
+            && workspace.target.project_id == target.project_id
+            && target.feature_id.as_ref() == Some(&workspace.target.feature_id))
+        .then(|| workspace.id.clone())
+    });
+    if let Some(workflow_id) = workspace_threads {
+        crate::gui_pr_workspace::switch_to_threads(gui, &workflow_id)?;
+    }
     let open_target = gui.pr_triage_context.as_ref().map(|c| c.target.clone());
     if let Some(open) = open_target {
         if is_triage_mode(&gui.app_for_workflow().mode) {
@@ -984,6 +1000,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
                 .iter()
                 .map(|e| PrEntryView {
                     number: e.number,
+                    selected_for_feature: branch_pr == Some(e.number),
                     title: e.title.clone(),
                     author: e.author.clone(),
                     head_ref: e.head_ref.clone(),
@@ -2489,6 +2506,32 @@ mod tests {
         (dir, gui, fake, view)
     }
 
+    #[test]
+    fn reopening_triage_during_the_workspace_ai_tab_restores_its_threads_workflow() {
+        let (_dir, mut gui, _fake, view) = opened();
+        let workspace_target = crate::gui_contract::FeatureTarget {
+            project_id: view.target.project_id.clone(),
+            feature_id: view.target.feature_id.clone().unwrap(),
+        };
+        let workspace_id = crate::gui_pr_workspace::begin(&mut gui, workspace_target).unwrap();
+        let threads = Box::new(std::mem::replace(
+            &mut gui.app_for_workflow().mode,
+            AppMode::Normal,
+        ));
+        let workspace = gui.pr_workspace_context.as_mut().unwrap();
+        workspace.pr = Some(fake_pr());
+        workspace.parked_threads = Some(threads);
+        workspace.ai_active = true;
+
+        let reopened = begin(&mut gui, view.target.clone()).unwrap();
+        assert_eq!(reopened.workflow_id, view.workflow_id);
+        assert!(!gui.pr_workspace_context.as_ref().unwrap().ai_active);
+        assert!(matches!(&gui.app_for_workflow().mode, AppMode::PrReview(_)));
+
+        crate::gui_pr_workspace::switch_to_ai(&mut gui, &workspace_id, 7).unwrap();
+        assert!(gui.pr_workspace_context.as_ref().unwrap().ai_active);
+    }
+
     fn act(gui: &mut GuiHandle, view: &PrTriageView, action: PrTriageAction) -> PrTriageView {
         super::act(gui, &view.workflow_id, view.revision, action)
             .unwrap()
@@ -3006,6 +3049,7 @@ mod tests {
         let picked = begin(&mut gui, target.clone()).unwrap();
         let picker = picked.picker.as_ref().unwrap();
         assert_eq!(picker.branch_pr, Some(7));
+        assert!(picker.entries[0].selected_for_feature);
         assert_eq!(
             picker.entries.len(),
             1,

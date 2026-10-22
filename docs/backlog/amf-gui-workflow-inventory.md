@@ -28,6 +28,7 @@ or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-li
 
 | Status | GUI workflow |
 | --- | --- |
+| Available | Change a worktree feature's primary harness from **More feature actions → Change harness…**, using the TUI's shared replacement operation. Explicit confirmation switches all agent rows and clears conversations/token bindings; session IDs, TODO links, individual stopped choices and nonagent definitions survive. Current-window unsent agent drafts and sends block replacement. Availability/settings preflight runs before shutdown; running features restart previously runnable sessions, stopped/all-individually-stopped features remain stopped. Delayed confirmations bind saved rows, checkout/Git HEAD and branch, pane PIDs and current choices; changed targets require reload. Partial hook/save/restart failures report their phase and refresh process state. Seven asserted offline native frames use `gui-harness-change.txt`; [proof details](../development/gui-harness-change-proof.md). Project preferred-harness editing remains separate. |
 | Available | Change an existing feature's vibe mode from **More feature actions** in desktop or the TUI's AMF commands (`a` on a feature). Both interfaces save through the same operation and refresh the generated hooks of every harness the feature has a session for (a feature start does the same); restart agent sessions to apply the saved mode. Vibeless is unavailable when the feature's primary agent is Codex, the same rule every other launch path applies; a Codex session beside another primary agent is allowed in any mode. Desktop takes each mode's unavailable agents from `supported_modes` rather than restating the rule. While a changed feature keeps running, the TUI session header and the desktop feature subtitle show the launched mode followed by the saved one (`Vibeless → Vibe on restart`). That marker is local to the view or window that made the change: a view re-entered later, the other interface and a restarted AMF show only the saved mode, because the mode a session was launched with is not persisted. Regression tests cover persistence after another process reorders projects, a Codex primary agent, a secondary Codex session, per-harness hook refresh on change and on start, the picker omitting the current mode, the restart marker and rollback after a failed save. Native visual validation remains open. |
 | Available | Project and feature creation, feature start/stop, feature deletion (tmux session, worktree and record, with the TUI's unfinished-TODO disposition), additional allowed-agent, terminal and Neovim sessions with optional names, the rest of the TUI `s` picker (VS Code, the per-feature TODOs session and the effective `amf.json` custom sessions with icon, description, command, working directory, pre-check, on-stop and autolaunch), stopping, starting and closing a single session (a stopped session stays listed and stays stopped when its feature starts; starting an agent session offers to resume, pick or clear its saved conversation), session navigation and live tmux terminal attachment/reconnection. |
 | Available | VS Code uses the TUI picker's launch (`code --new-window`, a tracked `launched_editors` row and background window attribution), so feature stop and dormancy cleanup apply unchanged. It has no tmux pane: a **VS Code** tab and a sidebar chip list the feature's tracked windows (opening, AMF's, not AMF's) and close AMF's after confirmation through the shared editor cleanup (the TUI dormant list's `e`). A window opened after the list loaded is refused rather than closed unseen. Custom sessions run their `pre_check` without holding the GUI lock, show a failure with its output in the dialog, and refuse an entry changed or removed in `amf.json` since the dialog listed it. Duplicate custom adds are refused while their pre-check is running. A non-autolaunch session is added without switching tabs, as the TUI stays on its dashboard. Like every GUI add, a session that would start a stopped feature asks for resource approval (the TUI only warns for custom sessions). An unreadable project `amf.json` is reported rather than silently treated as empty. Six asserted native WSLg frames cover the picker, the pre-check failure, custom-session attachment and the VS Code open/close flow with stand-in `code`, `docker` and `npm` executables. |
@@ -57,9 +58,11 @@ or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-li
 | Limited | PR Review inline/range comment authoring, suggestion editing, advanced review tools and layout controls remain in the TUI. Existing saved inline comments are preserved and included in the submission preview. Three native WSLg frames validate the project buttons and both PR pickers with no features and an offline GitHub fixture; live GitHub posting and macOS runtime validation remain open. |
 | Limited | PR Triage dedicated/companion fix destinations, batch fixes, integration, review memory, AI Review and keep-as-TODO remain in the TUI. Existing feature agents can receive unsent fix drafts through the GUI; PR head and session identity are rechecked and edited drafts survive refusals. Seven asserted native WSLg frames use an offline `gh` that refuses writes and offline harness fixtures; real GitHub writes, paid-harness runs and macOS validation remain unvalidated. |
 | Available | Code syntax highlighting in unified/side-by-side diffs, Final Review, supervised edits and the Learning reader, using the TUI's tree-sitter service: the same language detection, parsers and token classes, with whole-file context for multi-line strings and comments. File headers name the language or explain plain text (unknown language, parser missing or broken, too large, binary), and a missing or broken parser can be installed after explicit confirmation with the TUI picker's installer. Colours come from `--syn-*` tokens for light and dark. |
-| Limited | The GUI installs only the shown file's parser; uninstalling and the full language list stay in the TUI's syntax picker. Twelve asserted native WSLg frames cover the install, five languages, a review line comment and the Learning reader in light and dark; macOS validation remains open. |
+| Available | Workspace **Syntax languages** lists all sixteen shared languages, with explicit install/repair/uninstall confirmation, fresh disk revisions and one shared background worker. Refresh distinguishes missing, installed and unloadable parsers. Open Diff, Final Review and Learning views stay mounted with their drafts. See the [native manager proof](../development/gui-syntax-languages-proof.md) for fixture and validation boundaries; manual macOS validation remains open. |
 | Available | Prompt library browsing from workspace navigation or an agent composer, with shared user/global/project/worktree sources, fuzzy name/body and `#tag` search, original/resolved previews, required text/multiline fields and configured/inline choices. Add to draft targets an allowed Claude, Codex, OpenCode or Pi session, appends existing text and leaves sending explicit. Stopped agent drafts are editable before start. Template/checkout changes and stale/deleted/disallowed targets are rechecked before insertion. |
-| Limited | Six asserted native Linux frames cover all four source scopes, tag search, required/multiline/choice fields, cancellation, external template edits and append-only unsent Codex handoff through real Rust IPC. Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`; paid-harness and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Template authoring and deletion/export remain in the TUI. |
+| Available | User prompt authoring from the library: create/edit name, body and tags; confirmed User-only delete; duplicate any supported visible source into User while keeping descriptions and all configured placeholder definitions. Save as template copies an unsent composer into a new User editor without clearing or sending it. Unsaved close/reload protection and transaction-locked exact-row freshness refuse stale edits/deletes while keeping local fields; malformed or unsupported metadata is refused. Declarative authoring has its own scoped editor and export preview. Ten asserted native Linux/WSLg frames (`gui-prompt-authoring.txt`) verify all four source copies, metadata preservation, stale save/delete refusal, unsaved protection and unchanged unsent composer through real Rust IPC; both offline receivers and original pane identities remain unchanged. macOS authoring interactions remain unvalidated. |
+| Available | Declarative prompt editing and export: edit name/body/tags in the original Global, Project or Worktree destination; export any visible source to an explicit scope, with same-name replacement confirmation and explicit no-op/self-export. Raw unknown fields, descriptions, all configured placeholders, siblings and permissions are preserved. Legacy sources copy to canonical amf.json without deleting or changing legacy bytes. File/context/SQLite-source freshness, unsaved-close/reload protection and pending-write guards refuse stale or malformed writes while preserving drafts. TUI edits/exports share the same engine; F5 reload preserves Ctrl+R redo. Ten asserted native Linux/WSLg frames (`gui-declarative-prompts.txt`) verify all three editing scopes, stale refusal, legacy bytes/permissions, metadata-preserving replacement, explicit no-op and unchanged unsent composer/receivers/panes; macOS interactions remain unvalidated. |
+| Limited | Six asserted native Linux frames cover all four source scopes, tag search, required/multiline/choice fields, cancellation, external template edits and append-only unsent Codex handoff through real Rust IPC. Both offline receivers stay empty. Reproduce with `gui-prompt-library.txt`; paid-harness and macOS interactions remain unvalidated. Command/component regressions cover cancellation, delayed responses, duplicate insertion, external edits and draft preservation. Declarative editing/export is available through the shared raw-preserving file engine. |
 | Available | Headless prompt override manager from workspace navigation, with every registry prompt, its effective layer (and per-harness winner), placeholders, effective and built-in templates. Save feature, project (`amf.json`) or global overrides, shared or per harness. Clear one stored override with confirmation. Unsaved-edit protection is included. Stale saves after TUI, other-window or hand edits of `amf.json` are refused until reloaded, and malformed `amf.json` is reported without being overwritten. Pending Final Review and planning AI calls link to the manager through **Edit prompt**. |
 | Limited | Prompt-override macOS interactions remain unvalidated. A pre-call notice's preview is not re-rendered after an edit; continuing the call re-resolves the saved override. |
 | Available | Dormant features: running features idle and unopened past the configured thresholds, with ages and timestamps, and an explicitly confirmed stop of a selection through the shared TUI stop, including tracked-editor cleanup and its closed/left-running/still-opening report. Each feature is re-checked at confirm time; deleted, already stopped, restarted, shared-session, opened, newly active and duplicate selections are refused with a reason. Showing a session in the GUI counts as opening its feature, as in the TUI. |
@@ -67,14 +70,17 @@ or [`gui-linux-appimage-pair.txt`](../../scripts/dev/screenshot/scenarios/gui-li
 | Available | Dormant-list **Delete** opens the shared feature-deletion confirmation without marking the feature opened. Each step rechecks the listed dormancy readings, current thresholds, session identity, name and checkout before shared TODO disposition/host choices or deletion. Worktrees are removed with the branch kept; ordinary checkouts remain. Cancel, success and refusal return to a refreshed dormant list. Command/component regressions cover cancellation, stale/external changes, TODO preservation, duplicate clicks and dismissal during deletion. Seven asserted native WSLg frames (`gui-dormant-delete.txt`) verify cancellation through both TODO prompts, external-open refusal, TODO destination/host preservation, worktree removal with the branch kept and ordinary checkout preservation. |
 | Limited | Dormant-list deletion macOS validation remains open. Four asserted native WSLg frames verify the original list, stop confirmation, confirm-time refusal and editor ownership through real Rust IPC with stand-in editors. |
 | Available | Per-session agent sidebar: shared TUI section assembly/order for Claude, Codex, OpenCode and Pi; status tokens/cost/model, usage meters, context bands and estimated/stale labels, plan opening, issue/PR state and Triage, work and supervised-edit Review, summary (last for OpenCode), clamped prompt with View/Reuse into the draft, agent TODO progress and linked AMF TODO completion. Per-viewer collapse preference; terminal resize preserves scrollback and draft. Works without a TUI. Sources and TUI-only fields are recorded individually in `src/gui_contract/session_sidebar.rs`. |
-| Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Context fresh-start remains a TUI action. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
+| Available | Session sidebar **Fresh context** opens the shared explicit-confirmation flow and leaves its kickoff as an unsent composer draft. Native offline proof uses `gui-fresh-context.txt`; paid-harness and macOS interactions remain unvalidated. |
+| Limited | Session sidebar omits TUI-only attention reasons, tool-call IPC, Codex live events and other-process worker activity. Both GUI sidebars now have independent viewer-local hide/restore preferences and shortcuts outside terminals, form inputs and dialogs. Four asserted native frames cover all visibility combinations; independent preferences survive a frontend reload. Native offline proof uses `gui-session-sidebar.txt`; macOS validation remains open. |
 | Available | Debug log: latest 1,000 shared database/pending entries, level and text filters, explicit refresh and load errors. File-only background messages remain in debug.log. |
 | Available | Global Feature presets manager: add/edit/delete templates, every stored field including Full/Quick Plan, review, Chrome and Remote Control, explicit Save/reload/cancel and unsaved-change protection. Revisioned atomic writes preserve unknown outer/extension and retained preset-row keys. Ordinary new-feature creation applies effective project-over-global presets filtered by current harness availability; filled fields remain editable. Saving templates leaves existing features and processes unchanged. Eight asserted native frames use `gui-feature-presets.txt`. |
-| Limited | Remote Control templates remain usable in the TUI; desktop creation blocks Remote Control until explicitly cleared. Preset selection for TODO creation and native macOS preset interactions remain unvalidated/deferred. |
+| Available | TODO-to-new-feature creation applies the same project/global preset resolver, with editable branch, harness, mode, review, Chrome and direct/Full/Quick planning. The final planning choice controls routing independently of the entry action. Fresh allowed/installed choices, lookup errors, empty lists, deleted projects, unsaved settings and pending launches are guarded. Both interviews preserve the TODO brief/origin and reserve nothing until acceptance; direct handoff remains an unsent composer draft. Nine asserted native Linux/WSLg frames use `gui-todo-presets.txt`; paid-harness and macOS interactions remain unvalidated. |
+| Limited | Remote Control templates remain usable in the TUI; desktop creation blocks Remote Control until explicitly cleared. Native macOS preset interactions remain unvalidated. |
 | Available | Global context settings: positive token-limit override or blank for harness defaults, ordered warning/critical percentages, unsaved-edit protection and stale-save refusal. Desktop indicators apply saved/external policy updates; old fallback-limit collections cannot publish fresh context after a policy change. |
 | Available | Global agent availability from workspace navigation, using the TUI config wizard’s allowed-agent choices. Project overrides and installed availability keep precedence; existing sessions keep running. The new-session picker and the New project, New feature and TODO-to-feature forms offer only the allowed harnesses. Save/reload/cancel protect unsaved choices and stale saves preserve external edits. |
 | Limited | An already open TUI keeps the allowed-agent choices it started with, and its next settings save writes them back; restart it after a desktop change. |
 | Available | Project Agent availability from the project page: explicit global inheritance or an allowed-agent override, save/reload/cancel with unsaved protection, strict project config validation and stale-file/project/repository refusal. Saves preserve unrelated JSON and legacy config while updating tracked `amf.json`; effective future feature/session choices use the shared resolver. Existing sessions keep running. |
+| Available | **Appearance** offers saved 80–200% interface zoom and independent 11–28px terminal text sizing, with a compact **Reset sizes** control restoring 100% and 13px. Changes apply immediately and synchronize across GUI windows; attached terminals refit without reconnecting. Interface zoom uses the native desktop webview and is not applied in the Vite browser preview. Native sizing and laptop/mixed-display validation remain open. |
 | Planned | Broader settings and the other workflows listed below, after code syntax highlighting. |
 
 Terminal input reliability (2026-10-09): the shared tmux command encoder
@@ -252,6 +258,32 @@ Completed increments and remaining work, in priority order:
   Review follow-up: minimized planning dialogs stay mounted without blocking
   shortcuts; visible dialogs still block both chords, including when another
   hidden dialog is mounted. Hidden/CSS-concealed ancestors have regression coverage.
+
+- [x] **Projects sidebar scanning and click targets (user-requested, 2026-10-19).**
+  Whole feature and project rows are mouse targets (the name button stays the
+  keyboard/screen-reader target). A filter (`/`, Enter opens the first match,
+  Escape clears) narrows the tree by project name/path or feature
+  name/nickname/branch/issue; it opens matched projects as a view only and
+  never writes the shared `collapsed` flags. Collapse/expand-all writes them
+  one project at a time. Tool links fold under a viewer-local **Tools** group
+  (default folded; Global TODOs and the pending-edits notice stay outside it).
+  Deliberate departures from the TUI tree: collapsed, unselected feature rows
+  keep badges on one faded line (all badges show when expanded or selected),
+  and the filter has no TUI counterpart. Frontend tests cover filtering,
+  forced-open collapse, row clicks and the Tools preference.
+
+- [x] **Editable desktop sizing (user-requested, 2026-10-19).**
+  Appearance adds interface zoom (80–200%) and independent terminal text size
+  (11–28px), saved per device across launches and synchronized across GUI
+  windows. The compact secondary **Reset sizes** button restores 100% and 13px.
+  Attached terminals update their font and geometry without reconnecting or
+  resetting their buffer; a size change during connection is reconciled after
+  attachment. Automated coverage checks saved/default/invalid preferences,
+  unavailable storage, cross-window updates, native zoom failures and pending
+  requests, plus terminal continuity and connection-time resizing. All 502
+  frontend tests and the production build pass on the merged source. Native
+  interaction was blocked by an existing Vite server on port 1420; no screenshots
+  were captured. Laptop, mixed-display and macOS runtime validation remain open.
 
 - [x] **Readable dark theme (2026-10-09).**
   Raised dark surfaces, AA secondary text, stronger borders, brighter semantic
@@ -601,6 +633,18 @@ Completed increments and remaining work, in priority order:
   re-captured.
   Native proof scenario: [`gui-agent-availability.txt`](../../scripts/dev/screenshot/scenarios/gui-agent-availability.txt).
 
+- [x] **Desktop project preferred harness (2026-10-16).** A separate project
+  preference dialog shares the TUI validation/save operation, with explicit
+  save/reload/cancel and stale SQLite/config/repository/choice guards. Saving
+  changes no existing feature/session binding and launches no process. Ordinary
+  and TODO creation initialize from the shared normalized project preference;
+  explicit/manual/preset choices survive async loads, refresh and destination
+  changes, and unavailable intent blocks rather than silently falling back.
+  The offline native scenario exercises actual ordinary/TODO launches and an
+  unsent TODO draft while preserving original panes. Reproduction and bounds:
+  [project preference proof](../development/gui-project-preference-proof.md).
+  Paid-harness and native macOS behavior remain unvalidated.
+
 - [x] **Desktop project agent availability (2026-10-11).** Project-page entry
   offers explicit inheritance and project override choices, with guarded
   save/reload/cancel and no harness setup side effects. The shared JSON writer
@@ -639,6 +683,35 @@ Completed increments and remaining work, in priority order:
   the existing `w` entry, rendering and Enter save. macOS validation remains
   open. Native proof scenario:
   [`gui-context-settings.txt`](../../scripts/dev/screenshot/scenarios/gui-context-settings.txt).
+
+- [x] **TODO-to-new-feature presets (2026-10-15).** The owned TODO form uses
+  the existing effective project/global preset resolver and retains editable
+  branch, harness, mode, review, Chrome and direct/Full/Quick planning choices.
+  Applying a preset changes the route explicitly; later edits remain
+  authoritative. Prefix replacement preserves typed branch suffixes. Remote
+  Control remains blocked through field edits, Custom settings and project
+  switches until explicit opt-out. Fresh allowed/installed lookup failures,
+  empty choices, missing projects, unsaved settings and pending submissions
+  are guarded; a deleted destination can be explicitly replaced without
+  discarding the draft. Switching projects clears preset identity without
+  reapplying refreshed rows.
+  The shared Quick Plan entry now consumes/prefills the TODO brief like Full
+  Plan, without adding Quick draft/transcript persistence. GUI plan creation
+  clears the unsupported TUI Remote Control default, matching direct creation.
+  Two new Rust regressions and the existing Full/Quick cancellation/acceptance
+  cases preserve TODO origin, explicit settings, no reservation during the
+  interview, acceptance linking and unrelated-brief isolation. Sixteen new
+  frontend cases include actual App routing and an unsent direct handoff.
+  The normal parallel workspace passes 3,557 library + seven GUI tests
+  (one existing opt-in GitHub ignore), all 434 frontend tests, production build,
+  formatting, strict workspace/all-target Clippy and both executable builds.
+  Nine native frames assert project precedence/filtering, SuperVibe and editable
+  fields, Remote Control refusal/opt-out, discard protection, Quick/Full
+  cancellation and the linked unsent receiver. Private Git/SQLite/tmux and
+  offline Claude/OpenCode fixtures preserve config bytes, existing pane
+  identity and real user harness config; all owned resources close. Reproduce
+  with [`gui-todo-presets.txt`](../../scripts/dev/screenshot/scenarios/gui-todo-presets.txt).
+  Paid-harness and native macOS validation remain open.
 
 - [ ] **Other GUI parity.** Continue settings and the remaining workflow
   inventory.

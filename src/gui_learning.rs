@@ -75,6 +75,8 @@ pub struct LearningView {
     pub scope: String,
     pub is_git: bool,
     pub entries: Vec<LearningEntry>,
+    /// Key of the highlighted file-list entry, matching `entries[].key`.
+    pub selected_key: Option<String>,
     pub content_path: Option<String>,
     pub content: Vec<String>,
     pub content_line_labels: Vec<String>,
@@ -335,6 +337,7 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<Option<LearningView>> {
                 expanded: matches!(e, LearningListEntry::Dir { expanded: true, .. }),
             })
             .collect(),
+        selected_key: s.selected_entry().map(entry_key),
         content_path: s.content_path.clone(),
         content: if s.scope == BrowseScope::BranchChanges {
             s.selected_diff_file()
@@ -911,6 +914,26 @@ mod tests {
                 result: Ok("An explanation.".into()),
             })
             .unwrap();
+    }
+
+    #[test]
+    fn selecting_an_entry_reports_its_key() {
+        let (_dir, mut gui, target) = fixture(MockTmuxOps::new());
+        let view = begin(&mut gui, target).unwrap();
+        assert!(view.entries.iter().any(|e| e.key == "file:other.rs"));
+        let view = apply(
+            &mut gui,
+            &view,
+            LearningAction::SelectEntry {
+                key: "file:other.rs".into(),
+            },
+        );
+        assert_eq!(view.selected_key.as_deref(), Some("file:other.rs"));
+        assert!(
+            view.entries
+                .iter()
+                .any(|e| Some(&e.key) == view.selected_key.as_ref())
+        );
     }
 
     #[test]

@@ -690,10 +690,10 @@ fn remove_directory_contents(
 
 pub(crate) fn guidance(owner: &EvidenceOwner) -> String {
     format!(
-        "AMF screenshot evidence: Capture only when the user explicitly requests visual validation. This guidance does not authorize capture. Your producing AMF session is {} (feature {}). Use only {}. Do not modify owner.json or recreate this directory after cleanup. Write a completed PNG/JPEG/WebP/GIF as <image-id>.<extension>, then atomically publish <image-id>.json LAST with version:1, scope_id:{}, image_id, file, sha256 (lowercase SHA-256 of final image), caption and captured_at (RFC3339). IDs use ASCII letters/digits/hyphens/underscores. Close/rename the image before writing metadata. For replacement keep image_id and publish the new hash. Maximum image 20 MiB, 16384 pixels per axis and 40 million pixels. Check original owner.json still exists before publishing. Do not write another session's destination.",
+        "AMF screenshot evidence: AMF's Session screenshots view shows the images published to {}. Capture only when the user explicitly requests visual validation or explicitly asks you to look at a UI yourself. This guidance does not authorize capture. Publish every screenshot you capture for this session there, including any you show or describe to the user, never only in a scratch or temp folder, or the user cannot see it in AMF. Publish only screenshots you captured yourself, never images the user gave you or other existing images. Your producing AMF session is {} (feature {}). Write only to that directory. Do not modify owner.json or recreate this directory after cleanup. Write a completed PNG/JPEG/WebP/GIF as <image-id>.<extension>, then atomically publish <image-id>.json LAST with version:1, scope_id:{}, image_id, file, sha256 (lowercase SHA-256 of final image), caption and captured_at (RFC3339). IDs use ASCII letters/digits/hyphens/underscores. Close/rename the image before writing metadata. For replacement keep image_id and publish the new hash. Maximum image 20 MiB, 16384 pixels per axis and 40 million pixels. Check original owner.json still exists before publishing. Do not write another session's destination.",
+        owner.directory().display(),
         owner.session_id,
         owner.feature_id,
-        owner.directory().display(),
         owner.scope_id
     )
 }

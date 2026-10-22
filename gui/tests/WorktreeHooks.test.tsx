@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { creationChoices } from "./creationChoices";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,7 +24,7 @@ const hookPrompt = vi.fn();
 beforeEach(() => {
   hookPrompt.mockResolvedValue(prompt);
   vi.mocked(invoke).mockImplementation(async (command, args) =>
-    command === "allowed_harnesses" ? agents
+    command === "project_harness_choices" ? creationChoices(agents.map(agent => agent.slug)) : command === "allowed_harnesses" ? agents
       : command === "feature_presets_choices" ? []
         : hookPrompt(command, args));
 });
@@ -58,7 +59,7 @@ it.each(["plan", "launch"] as const)("includes the choice for a TODO %s", async 
   const select = await screen.findByLabelText("Choose stack");
   fireEvent.change(select, { target: { value: "rust & tools" } });
   fireEvent.click(screen.getByRole("button", { name: kind === "plan" ? "Start plan" : "Create and start" }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: "rust & tools", project_name: "one" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: "rust & tools", project_name: "one" }), kind === "plan" ? "full" : "none");
 });
 
 it("requires a new choice when the TODO destination project changes", async () => {
@@ -74,7 +75,7 @@ it("requires a new choice when the TODO destination project changes", async () =
   fireEvent.change(screen.getByLabelText("Choose stack"), { target: { value: "node" } });
   await waitFor(() => expect((screen.getByRole("button", { name: "Create and start" }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole("button", { name: "Create and start" }));
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", hook_choice: "node" }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ project_name: "two", hook_choice: "node" }), "none");
 });
 
 it("blocks a failed prompt lookup until retry succeeds", async () => {
@@ -89,7 +90,7 @@ it("blocks a failed prompt lookup until retry succeeds", async () => {
   const button = screen.getByRole("button", { name: "Create and start" });
   await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(button);
-  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: null }));
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ hook_choice: null }), "none");
 });
 
 it("cancel applies neither the selected hook nor feature creation", async () => {
@@ -99,17 +100,21 @@ it("cancel applies neither the selected hook nor feature creation", async () => 
     pending={false} onCancel={onCancel} onSubmit={onSubmit} />);
   fireEvent.change(await screen.findByLabelText("Choose stack"), { target: { value: "node" } });
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onCancel).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
   expect(onCancel).toHaveBeenCalledOnce();
   expect(onSubmit).not.toHaveBeenCalled();
   expect(vi.mocked(invoke).mock.calls.every(([command]) =>
-    command === "worktree_hook_prompt" || command === "allowed_harnesses")).toBe(true);
+    command === "project_harness_choices" || command === "worktree_hook_prompt" || command === "allowed_harnesses" || command === "feature_presets_choices")).toBe(true);
 });
 
-it("does not request or send a worktree hook for the repository checkout", () => {
+it("does not request or send a worktree hook for the repository checkout", async () => {
   const onSubmit = vi.fn();
   mount(<CreateFeatureForm projectId="one" projectName="one" agents={agents} modes={modes}
     isGit defaultUseWorktree={false} pending={false} onCancel={vi.fn()} onSubmit={onSubmit} />);
   fireEvent.change(screen.getByLabelText("Branch / feature name"), { target: { value: "new-work" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Create feature" })).toHaveProperty("disabled", false));
   fireEvent.click(screen.getByRole("button", { name: "Create feature" }));
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ use_worktree: false, hook_choice: null }), "none");
   expect(hookPrompt).not.toHaveBeenCalled();

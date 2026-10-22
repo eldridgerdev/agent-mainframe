@@ -8,6 +8,15 @@ state, concurrent use, staged coverage and independent updates.
 For AI-driven native GUI interaction with compact JSON observations and an
 isolated database, see the [GUI driver guide](../docs/development/gui-ai-driver.md).
 
+## Adjust text and interface size
+
+Open **Appearance** in the sidebar. **Interface size** scales the whole desktop
+interface from 80% to 200%; try 125% or 150% for a laptop display. **Terminal text
+size** independently adjusts agent and terminal text from 11px to 28px. Changes
+apply immediately, including to attached terminals, and are remembered on this
+device across launches. **Reset sizes** restores 100% and 13px. Interface zoom
+uses the desktop webview; it is not applied in the Vite browser preview.
+
 ## Install a release build
 
 Each AMF release on GitHub includes GUI builds for x86_64 and aarch64 Linux,
@@ -233,6 +242,17 @@ text inputs, editable content and dialogs, leaving their input untouched.
 The agent shortcut applies only while an agent tab is displayed. Native offline
 proof: `scripts/dev/screenshot/scenarios/gui-sidebar-visibility.txt`.
 
+To find something in a long projects sidebar, press **/** (outside terminals,
+text inputs and dialogs) or click the filter box under **Projects**. It keeps
+projects whose name or path match, plus features whose name, nickname, branch
+or issue match, opening a collapsed project to show them without changing its
+saved collapse state. **Enter** opens the first match and **Escape** clears
+the filter (with an empty filter, Enter does nothing). The button beside
+**New project** collapses or expands every project shown; while filtering,
+projects the filter opened close for that filter only. A whole feature or project row is clickable. Tool links such as
+Appearance, Prompt library and Debug log sit under a **Tools** heading that
+starts folded; whether it is open is a per-viewer preference.
+
 The GUI runs its own shared collectors: token/cost and context reads, account
 usage, transcript/storage prompt/model/todos, plan files, persisted summaries,
 issue and PR data, notification files and thinking markers. It does not require
@@ -375,6 +395,19 @@ Plan, and TODO planning. Setup runs before the interview opens; cancelling the
 interview keeps the worktree and its setup changes, without saving a plan or
 launching an agent. A failed setup still allows planning to continue and shows
 a notice.
+
+The TODO new-feature form also offers effective project/global **Feature
+presets**. Apply one to fill the branch prefix, harness, mode, review, Chrome
+and **Start directly / Quick Plan / Full Plan** choices, then edit those choices
+before submitting. The final planning choice determines the route, regardless
+of which TODO action opened the form. Project templates override global ones
+with the same name; unavailable harnesses are filtered. Remote Control remains
+unsupported in desktop: explicitly clear it or select a non-remote template.
+Cancel protects edited settings, and pending launches cannot be dismissed or
+duplicated. Both planning routes prefill the TODO brief and retain its origin;
+the TODO is linked only on acceptance. Cancelling an interview retains its
+prepared worktree without reserving the TODO. Direct launches return an unsent
+composer draft.
 
 Use **Learning** on a feature page to browse its files or branch changes and
 ask about the project, a file, or a selected range (click, then Shift-click).
@@ -581,9 +614,13 @@ raised slate surfaces, stronger borders and brighter secondary text, status
 badges and syntax colors. The terminal shares the dark page background and
 updates its palette live when system appearance changes, keeping its attachment
 and history. ANSI black and bright black remain dark enough for backgrounds;
-xterm adjusts low-contrast foreground text per cell in dark mode. Light
-appearance retains its existing colors. Catalog themes map the TUI palette
-onto desktop surfaces, syntax roles and terminal ANSI colors. Switching applies
+xterm adjusts low-contrast foreground text per cell (to 4.5:1) in every
+appearance, so ANSI colors tuned for dark terminals stay readable on a light
+one. Catalog themes derive desktop roles from the TUI palette rather than
+copying it: neutral raised surfaces are mixed from the theme's surface and text
+colors, and text, status, border and syntax colors keep their hue but are
+lightened or darkened until they meet WCAG AA on every surface they are drawn
+on (a test checks every catalog theme). Switching applies
 live without resetting terminal history, attachments or composer drafts.
 
 Custom themes are JSON files in `gui-themes/` inside AMF’s configuration
@@ -609,8 +646,11 @@ properties fall back to the selected built-in light/dark palette (or system
 appearance), rather than a catalog theme. Colors accept `#RRGGBB` or
 `#RRGGBBAA`. Token names omit the leading `--`: supported colors are `bg`,
 `bg-sidebar`, `surface`, `surface-2`, `surface-3`, `border`, `border-strong`,
-`text`, `text-muted`, `text-faint`, `accent`, `accent-hover`, `accent-fg`,
-`accent-soft`, `green`, `amber`, `red`, their `*-soft` variants, `backdrop`,
+`border-control`, `text`, `text-muted`, `text-faint`, `accent`,
+`accent-hover`, `accent-fg`, `accent-soft`, `green`, `amber`, `red`, `purple`,
+their `*-soft` variants, `danger-fg`, `warning-fg`, `success-fg`,
+`disabled-fg`, `disabled-bg`, the `kind-*` session-type colors (`kind-claude`,
+`kind-codex`, `kind-opencode`, `kind-pi`, `kind-nvim`, `kind-vscode`), `backdrop`,
 `terminal-bg`, and the `syn-*` and `sb-*` color roles declared in
 `src/syntax.css` and `src/sessionSidebar.css` (excluding widths and `sb-accent`,
 which belongs to each panel). Terminal keys are `background`, `foreground`,
@@ -623,8 +663,12 @@ eight ANSI names (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
 Unknown fields, keys and invalid colors are reported in Appearance; a broken
 file never prevents startup. A selected file that is removed or becomes invalid
 falls back to system appearance while retaining its preference, so fixing the
-file restores the theme automatically. Custom and catalog colors are not
-guaranteed to meet the built-in palette’s contrast checks. `gui-custom-themes.txt` captures five asserted native WSLg frames of Nord,
+file restores the theme automatically. Custom colors are used exactly as
+written. Roles a file leaves out that are computed from others (text on
+filled buttons, control borders, disabled colors) get the same contrast floor
+as catalog themes, and Appearance lists any pair the file sets itself that
+falls short of AA, such as `text-muted on surface is 2.1:1 (needs 4.5:1)`.
+`gui-custom-themes.txt` captures five asserted native WSLg frames of Nord,
 Dracula, Catppuccin Latte and a custom Ocean palette. It checks live terminal/
 draft continuity, preference restoration after reload, override precedence and
 Follow TUI clearing, using isolated data and offline agents. macOS runtime

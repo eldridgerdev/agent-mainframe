@@ -338,6 +338,7 @@ pub struct GuiHandle {
     pub(crate) review_completion: Option<crate::gui_review::ReviewCompletion>,
     pub(crate) pr_review_context: Option<crate::gui_pr_review::PrReviewContext>,
     pub(crate) pr_triage_context: Option<crate::gui_pr_triage::PrTriageContext>,
+    pub(crate) pr_workspace_context: Option<crate::gui_pr_workspace::PrWorkspaceContext>,
 }
 
 impl GuiHandle {
@@ -349,6 +350,7 @@ impl GuiHandle {
             review_context: None,
             review_completion: None,
             pr_triage_context: None,
+            pr_workspace_context: None,
             pr_review_context: None,
         })
     }
@@ -367,6 +369,7 @@ impl GuiHandle {
             review_context: None,
             review_completion: None,
             pr_triage_context: None,
+            pr_workspace_context: None,
             pr_review_context: None,
         }
     }
@@ -954,6 +957,15 @@ impl GuiHandle {
     /// remains absent from every public GUI contract signature.
     pub(crate) fn app_for_workflow(&mut self) -> &mut App {
         &mut self.app
+    }
+
+    pub(crate) fn app_and_pr_workspace(
+        &mut self,
+    ) -> (
+        &mut App,
+        &mut Option<crate::gui_pr_workspace::PrWorkspaceContext>,
+    ) {
+        (&mut self.app, &mut self.pr_workspace_context)
     }
 
     pub fn start_feature(&mut self, target: FeatureTarget) -> GuiResult<StartFeatureResponse> {
@@ -2117,6 +2129,7 @@ mod tests {
             review_context: None,
             review_completion: None,
             pr_triage_context: None,
+            pr_workspace_context: None,
             pr_review_context: None,
         }
     }
@@ -2142,6 +2155,7 @@ mod tests {
             review_context: None,
             review_completion: None,
             pr_triage_context: None,
+            pr_workspace_context: None,
             pr_review_context: None,
         }
     }
@@ -4284,6 +4298,7 @@ mod tests {
             review_context: None,
             review_completion: None,
             pr_triage_context: None,
+            pr_workspace_context: None,
             pr_review_context: None,
         }
     }
@@ -4483,6 +4498,7 @@ mod tests {
                 review_context: None,
                 review_completion: None,
                 pr_triage_context: None,
+                pr_workspace_context: None,
                 pr_review_context: None,
             },
             CreateFeatureRequest {

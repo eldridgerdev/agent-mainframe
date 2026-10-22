@@ -15,8 +15,8 @@ const base: PrTriageView = {
   fix_targets: [], fix_draft: null, handoff: null,
   harnesses: ["claude", "codex"], default_harness: "claude", error: null, notice: null,
   picker: { include_closed: false, error: null, branch_pr: 12, loading: false, entries: [
-    { number: 12, title: "Round invoice totals", author: "dev", head_ref: "round-totals", updated_at: "", is_draft: false, state: "OPEN", mine: true },
-    { number: 9, title: "Currency formatting", author: "aria", head_ref: "currency", updated_at: "", is_draft: true, state: "OPEN", mine: false },
+    { number: 12, title: "Round invoice totals", author: "dev", head_ref: "round-totals", updated_at: "", is_draft: false, state: "OPEN", mine: true, selected_for_feature: true },
+    { number: 9, title: "Currency formatting", author: "aria", head_ref: "currency", updated_at: "", is_draft: true, state: "OPEN", mine: false, selected_for_feature: false },
   ] },
 };
 const comment = (over: Partial<PrComment>): PrComment => ({
@@ -57,7 +57,7 @@ it("lists pull requests, opens one, polls the comment fetch and browses threads"
   backend(base, (action) => action.kind === "open" ? loading : base, () => ++snapshots < 2 ? loading : review);
   render(<PrTriagePanel target={target} onClose={vi.fn()} />);
   const branchPr = await screen.findByRole("button", { name: /Open PR #12 Round invoice totals/ });
-  expect(within(branchPr).getByText("This branch")).toBeTruthy();
+  expect(within(branchPr).getByText("Selected for this feature")).toBeTruthy();
   expect(screen.getByText("Draft")).toBeTruthy();
   fireEvent.click(branchPr);
   expect(await screen.findByText(/Loading review comments for PR #12/)).toBeTruthy();

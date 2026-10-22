@@ -254,7 +254,7 @@ impl App {
     }
 
     /// Open PR Triage for the feature behind the current `Viewing` session —
-    /// the leader-key entry point (`leader+G`), peer to the dashboard's `G`.
+    /// the legacy leader-key entry point (`leader+U`).
     /// Lets the user jump straight into triage without first exiting to the
     /// dashboard and re-entering.
     pub fn open_pr_review_from_view(&mut self) {

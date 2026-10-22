@@ -9,7 +9,7 @@ const view: LearningView = {
   workflow_id: "reader-1", revision: 0, target: { project_id: "p", feature_id: "f" },
   feature_name: "Feature", scope: "repo_tree", is_git: true,
   entries: [{ key: "file:README.md", label: "README.md", kind: "file", depth: 0, expanded: false }],
-  content_path: "README.md", content: ["first", "second", "third"], content_line_labels: ["1", "2", "3"],
+  selected_key: "file:README.md", content_path: "README.md", content: ["first", "second", "third"], content_line_labels: ["1", "2", "3"],
   content_error: null, anchor: "all of README.md", selection: null, hunks: [], starters: [], can_keep_todo: true,
   harness: "claude", harnesses: ["claude", "codex", "opencode", "pi"],
   level: "newcomer", history_saved: true, error: null, notice: null,
@@ -135,4 +135,19 @@ it("hands a failed question to an agent and offers to return to a linked one", (
   const linked = { ...view, qa: [{ ...view.qa[0], spawned_session_id: "agent" }] };
   rerender(<LearningPanel view={linked} busy={false} onAct={vi.fn(async () => true)} onClose={vi.fn()} onLaunch={onLaunch} />);
   expect(screen.getByRole("button", { name: "Return to editing agent" })).toBeTruthy();
+});
+
+it("marks only the open file in the list as current", () => {
+  const entries = [
+    ...view.entries,
+    { key: "file:other.rs", label: "other.rs", kind: "file" as const, depth: 0, expanded: false },
+  ];
+  const props = { busy: false, onAct: vi.fn(async () => true), onClose: vi.fn(), onLaunch: vi.fn() };
+  const { rerender } = render(<LearningPanel {...props} view={{ ...view, entries }} />);
+  const readme = screen.getByRole("button", { name: "README.md" });
+  expect(readme.getAttribute("aria-current")).toBe("true");
+  expect(readme.className).toContain("learning-file-selected");
+  expect(screen.getByRole("button", { name: "other.rs" }).hasAttribute("aria-current")).toBe(false);
+  rerender(<LearningPanel {...props} view={{ ...view, entries, selected_key: null }} />);
+  expect(screen.getByRole("button", { name: "README.md" }).hasAttribute("aria-current")).toBe(false);
 });

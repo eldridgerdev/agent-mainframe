@@ -13,6 +13,8 @@ export interface ThemeCatalog {
   tui_theme: string;
   themes: GuiTheme[];
   errors: string[];
+  /** Low-contrast pairs a custom theme sets itself; its colours are kept. */
+  warnings?: string[];
   directory: string;
 }
 const key = "amf.gui.theme";
@@ -55,7 +57,10 @@ export function terminalAppearance(systemDark = window.matchMedia?.("(prefers-co
   const dark = active?.mode === "dark" || ((!active || active.mode === "system") && systemDark);
   return {
     theme: { ...(dark ? DARK_TERMINAL_THEME : LIGHT_TERMINAL_THEME), ...active?.terminal },
-    minimumContrastRatio: dark ? 4.5 : 1,
+    // Always on: light TUI themes give the terminal a light background, and
+    // their ANSI colours fall well short there (gruvbox-light yellow 2.2:1).
+    // xterm only adjusts cells below the ratio, so passing colours are kept.
+    minimumContrastRatio: 4.5,
   };
 }
 export function applyTheme(theme: GuiTheme | undefined) {

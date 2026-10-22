@@ -35,6 +35,9 @@ const ICONS = {
   check: "M5 12l5 5L20 7",
   inbox: "M22 12h-6l-2 3h-4l-2-3H2M5.5 5h13L22 12v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6z",
   file: "M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9zM14 3v6h6",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-5-5",
+  collapseAll: "M7 20l5-5 5 5M7 4l5 5 5-5",
+  expandAll: "M7 15l5 5 5-5M7 9l5-5 5 5",
 } as const;
 
 export type IconName = keyof typeof ICONS;
@@ -116,6 +119,7 @@ export function Modal({
   hidden = false,
   headerActions,
   onSubmit,
+  inline = false,
 }: {
   label: string;
   title: ReactNode;
@@ -123,7 +127,7 @@ export function Modal({
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
-  size?: "sm" | "md" | "lg" | "xl";
+  size?: "sm" | "md" | "lg" | "xl" | "workspace";
   dismissable?: boolean;
   /** Keeps the modal mounted, with its state, while another dialog is in
    * front: not drawn, not in the accessibility tree, and deaf to Escape. */
@@ -131,15 +135,17 @@ export function Modal({
   headerActions?: ReactNode;
   /** Makes the body and footer one form, so Enter submits. */
   onSubmit?: () => void;
+  /** Render a modal's titled content inside an existing workspace pane. */
+  inline?: boolean;
 }) {
   useEffect(() => {
-    if (!dismissable || hidden) return;
+    if (!dismissable || hidden || inline) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismissable, hidden, onClose]);
+  }, [dismissable, hidden, inline, onClose]);
 
   const content = (
     <>
@@ -147,6 +153,13 @@ export function Modal({
       {footer && <footer className="modal-footer">{footer}</footer>}
     </>
   );
+
+  if (inline) return <section className="modal-inline" aria-label={label}>
+    <header className="modal-header"><div><h2>{title}</h2>{subtitle && <p className="modal-subtitle">{subtitle}</p>}</div>
+      <div className="modal-header-actions">{headerActions}{dismissable && <button type="button" className="btn btn-icon btn-ghost" aria-label="Close" onClick={onClose}><Icon name="x" /></button>}</div>
+    </header>
+    {content}
+  </section>;
 
   return (
     <div

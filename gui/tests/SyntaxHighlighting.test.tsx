@@ -181,7 +181,7 @@ it("comments on a highlighted review line through the existing span anchors", as
 const learning: LearningView = {
   workflow_id: "reader", revision: 0, target: { project_id: "p", feature_id: "f" }, feature_name: "Feature", scope: "repo_tree", is_git: true,
   entries: [{ key: "file:src/lib.rs", label: "src/lib.rs", kind: "file", depth: 0, expanded: false }],
-  content_path: "src/lib.rs", content: ["/* opens", "   closes */", "", "fn main() {}"], content_line_labels: ["1", "2", "3", "4"],
+  selected_key: null, content_path: "src/lib.rs", content: ["/* opens", "   closes */", "", "fn main() {}"], content_line_labels: ["1", "2", "3", "4"],
   content_syntax: [[["comment", "/* opens"]], [["comment", "   closes */"]], null, [["keyword", "fn"], ["", " "], ["function", "main"], ["punctuation-bracket", "() {}"]]],
   syntax: rust, content_error: null, anchor: "all of src/lib.rs", selection: [2, 2], hunks: [], starters: [], can_keep_todo: true,
   harness: "claude", harnesses: ["claude"], level: "newcomer", history_saved: true, error: null, notice: null, qa: [],
@@ -198,4 +198,20 @@ it("colours the Learning reader and keeps its line selection", () => {
   expect(screen.getByRole("button", { name: "Select line 4" }).querySelector(".syn-function")?.textContent).toBe("main");
   fireEvent.click(screen.getByRole("button", { name: "Select line 4" }));
   expect(onAct).toHaveBeenLastCalledWith({ kind: "lines_anchor", start: 4, end: 4 });
+});
+
+it("keeps a Learning question mounted while the language manager owns Escape", async () => {
+  const close = vi.fn();
+  const props = { view: learning, busy: false, onAct: vi.fn(async () => true), onClose: close, onLaunch: vi.fn() };
+  const { rerender } = render(<LearningPanel {...props} />);
+  const question = screen.getByRole("textbox", { name: "Question" });
+  fireEvent.change(question, { target: { value: "Keep my unsent parser question" } });
+  rerender(<LearningPanel {...props} hidden />);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.keyDown(window, { key: "Escape" });
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  rerender(<LearningPanel {...props} />);
+  expect(screen.getByRole("textbox", { name: "Question" })).toBe(question);
+  expect(question).toHaveProperty("value", "Keep my unsent parser question");
 });

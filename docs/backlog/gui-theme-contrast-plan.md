@@ -1,6 +1,6 @@
 # GUI theme contrast and readability
 
-- **Status:** Partial (E1–E3 landed; E4–E7 open)
+- **Status:** Done (all epics E1–E7 shipped: #753, #754, #755)
 - **Owner:** unassigned
 - **Relates to:** `src/gui_themes.rs` (TUI → GUI theme projection),
   `gui/src/styles.css`, `gui/src/sessionSidebar.css`, `gui/src/sessions.css`,
@@ -191,7 +191,9 @@ judged on corrected colors.
       backgrounds.
 - [x] Project the missing `sb-*` tones and accents, `sb-harness-pi`,
       `sb-ctx-*` from the floored roles.
-- [ ] Project `kind-*` tokens (blocked on E4 defining them in CSS).
+- [x] Project `kind-nvim`/`kind-vscode` (from the TUI's session icons) and
+      `purple`/`purple-soft` (from `pr_merged`); `kind-claude/codex/opencode/pi`
+      alias the `sb-harness-*` tokens in CSS.
 - [x] Custom theme files: `fill_derived_tokens` derives `accent-fg`,
       `danger-fg`, `warning-fg`, `success-fg`, `border-control`,
       `disabled-bg` and `disabled-fg` from the colors a file sets, when it
@@ -222,8 +224,9 @@ judged on corrected colors.
       "Create feature" and "Send prompt" look broken.
 - [x] Move chip text off `text-faint` on `surface-3` (`.tree-chip`
       `:286`, `.tag`, `.sb-chip`) to `text-muted` (they already used it).
-- [ ] Audit the remaining `text-faint` uses that may sit on `surface-3`
-      (built-in light, about 4.16:1).
+- [x] Audit the remaining `text-faint` uses that may sit on `surface-3`
+      (built-in light, about 4.16:1): chips, tags, segmented controls,
+      code, and hover states scope `--text-faint` to `--text-muted`.
 - [x] Add `gui/tests/lightContrast.test.ts`, which mirrors
       `darkContrast.test.ts` for the light block: body/hint/faint text on
       every surface, status colors on soft tints, on-color buttons, and
@@ -235,64 +238,69 @@ judged on corrected colors.
       row tint (`accent-soft` over sidebar/surface) in the projection;
       `.nav-count` uses `--text-muted`; light `--sb-harness-*`/`--sb-accent-*`
       raised to AA; the Debug log search box uses `--border-control`.
-- [ ] Learning file list: highlight the open file (needs a selected flag
-      from the backend view).
+- [x] Learning file list: highlight the open file (`LearningView.selected_key`,
+      `aria-current`, accent edge).
 
 ### E4 — Tokenize hard-coded colors and opacity dimming (P1)
 
-- [ ] Add `--kind-claude/codex/opencode/nvim/vscode` (light + dark) and use
+- [x] Add `--kind-claude/codex/opencode/nvim/vscode` (light + dark) and use
       them in `.kind-*` (`styles.css:364-369`), `.vscode-editor-glyph` and
       `.tree-chip-vscode` (`sessions.css:66,72`). Fold in the dark overrides
       at `styles.css:1389-1392,1439-1442` and `sessions.css:74-79`. Reuse
       the `--sb-harness-*` values where they already exist.
-- [ ] Add `--purple` / `--purple-soft` for `.tree-pr.pr-merged` (`:318`).
-- [ ] SuperVibe chip (`:311-312`): keep the gradient but put the label on a
+- [x] Add `--purple` / `--purple-soft` for `.tree-pr.pr-merged` (`:318`).
+- [x] SuperVibe chip (`:311-312`): keep the gradient but put the label on a
       solid `--surface` pill inside it, or use a darker gradient with
       `--accent-fg`. White on the yellow stop is about 2:1.
-- [ ] `.term-error` (`:663-664`): use `--red`/`--red-soft` with `--surface`
+- [x] `.term-error` (`:663-664`): use `--red`/`--red-soft` with `--surface`
       underneath so that it works on light terminals.
-- [ ] `.term-scrollback*` (`:1348-1357`): use the token form (currently
+- [x] `.term-scrollback*` (`:1348-1357`): use the token form (currently
       dark-only) in light mode too, and delete the literal block.
 - [x] `.learning-line-number`: opacity dimming replaced with `--text-faint`
       (dark-only overrides dropped).
-- [ ] Replace opacity-dimmed text with colors: `.ctx-stale` (`:378`),
+- [x] Replace opacity-dimmed text with colors: `.ctx-stale` (`:378`),
       `.tab-stopped` (`:860`), then drop their dark-only `opacity: 1`
       overrides.
-- [ ] Add a lint-style test that fails on a new hex/rgb literal in
+- [x] Add a lint-style test that fails on a new hex/rgb literal in
       `gui/src/*.css` outside token blocks (allow-list `.screenshot-canvas`
       and shadows).
+- [x] Faint text inside an active row (`.tree-feature-active`,
+      `.nav-item-active`) steps up to `--text-muted`; built-in light was
+      4.2:1 on the accent tint.
 
 ### E5 — Terminal contrast in light themes (P1)
 
-- [ ] In `terminalAppearance()` (`gui/src/themes.ts:54-60`), set
+- [x] In `terminalAppearance()` (`gui/src/themes.ts:54-60`), set
       `minimumContrastRatio` to 4.5 everywhere. If preserving exact colors on
       the built-in light-mode terminal matters, decide from the *terminal
       background's* luminance, not `theme.mode`. xterm only adjusts cells
       that fail, so passing colors don't change.
-- [ ] Extend the terminal test in `darkContrast.test.ts` (or `Themes.test.tsx`)
+- [x] Extend the terminal test in `darkContrast.test.ts` (or `Themes.test.tsx`)
       so that a light catalog theme gets a nonzero minimum contrast.
 
 ### E6 — Live audit tooling + docs (P2)
 
-- [ ] Commit the audit script used for this plan as
+- [x] Commit the audit script used for this plan as
       `scripts/dev/gui-driver/contrast-audit.js`. It walks visible text,
       composites backgrounds and opacity, reports WCAG ratios, checks control
       boundaries, and loops over themes by applying catalog tokens in place.
       Freeze transitions while measuring; otherwise `getComputedStyle` reads
       mid-transition colors.
-- [ ] Add an `audit-contrast [--scope] [--themes]` driver subcommand, or
+- [x] Add an `audit-contrast [--scope] [--themes]` driver subcommand, or
       document the `eval` recipe in `docs/development/gui-ai-driver.md`.
-- [ ] Note in `themes/README.md` / the custom-theme docs that the GUI floors
-      derived roles and warns about explicit low-contrast pairs.
+- [x] Note in the custom-theme docs (`gui/README.md`) that the GUI floors
+      derived roles and warns about explicit low-contrast pairs, and implement
+      the warnings (`ThemeCatalog.warnings`, listed in Appearance).
 
 ### E7 — Size/weight polish for small faint text (P2)
 
-- [ ] Raise the floor of 10.5px text (`.tree-chip`, `.tree-detail`,
+- [x] Raise the floor of 10.5px text (`.tree-chip`, `.tree-detail`,
       `.tree-context`, `.tree-chip-detail` at 10px) to 11px. Raise 11px
       section labels (`.nav-section`, `.sb-section-head h3`, `.syntax-chip`)
       to 11.5px, or give them weight 600.
-- [ ] Re-run the E6 audit across all 28 themes and both built-ins, with zero
-      non-disabled failures.
+- [x] Re-run the E6 audit across all 28 themes and both built-ins, with zero
+      non-disabled failures: 36 screens and states, 29 themes, 0 findings.
+      The last one fixed was the TODO entry box border in built-in light.
 
 ## Verification
 

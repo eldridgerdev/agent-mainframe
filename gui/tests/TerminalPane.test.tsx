@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { applyTheme, resetThemesForTest } from "../src/themes";
 import TerminalPane from "../src/TerminalPane";
+import { resetSizingForTest, setSizingPreference } from "../src/sizing";
 
 const term = vi.hoisted(() => ({
   cols: 80, rows: 24, options: { theme: {}, minimumContrastRatio: 1 },
@@ -21,6 +22,8 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => vi.fn()) }))
 
 beforeEach(() => {
   resetThemesForTest();
+  term.cols = 80; term.rows = 24;
+  window.localStorage.clear(); resetSizingForTest();
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
 });
 afterEach(() => { cleanup(); resetThemesForTest(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
@@ -81,7 +84,7 @@ it("follows system dark mode in place without reattaching or resetting history",
   const writes = term.write.mock.calls.length;
   act(() => { media.matches = false; changed(); });
   expect(term.options.theme).toEqual(LIGHT_TERMINAL_THEME);
-  expect(term.options.minimumContrastRatio).toBe(1);
+  expect(term.options.minimumContrastRatio).toBe(4.5);
   act(() => { media.matches = true; changed(); });
   expect(term.options.theme).toEqual(DARK_TERMINAL_THEME);
   expect(term.options.minimumContrastRatio).toBe(4.5);
@@ -102,7 +105,44 @@ it("switches a named palette live without attaching again or touching terminal c
   act(() => applyTheme({ id: "nord", name: "Nord", mode: "dark", tokens: {}, terminal: { background: "#2e3440", cyan: "#88c0d0" } }));
   expect(term.options.theme).toMatchObject({ background: "#2e3440", cyan: "#88c0d0" });
   expect(term.options.minimumContrastRatio).toBe(4.5);
+  // A light palette puts a light background behind ANSI colours tuned for
+  // dark terminals; xterm must still correct the ones that fall short.
+  act(() => applyTheme({ id: "gruvbox-light", name: "Gruvbox Light", mode: "light", tokens: {}, terminal: { background: "#fbf1c7", yellow: "#d79921" } }));
+  expect(term.options.theme).toMatchObject({ background: "#fbf1c7", yellow: "#d79921" });
+  expect(term.options.minimumContrastRatio).toBe(4.5);
   expect(term.reset).toHaveBeenCalledTimes(resets);
   expect(term.write).toHaveBeenCalledTimes(writes);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
+});
+
+it("changes terminal font size in place without detaching or resetting its buffer", async () => {
+  vi.mocked(invoke).mockImplementation((command) => command === "attach_terminal"
+    ? Promise.resolve({ key: "feature:agent", generation: 42, initial: frame("Agent ready") }) : Promise.resolve());
+  setSizingPreference({ interfaceScale: 100, terminalFontSize: 17 });
+  render(<TerminalPane target={target} />);
+  await waitFor(() => expect(term.write).toHaveBeenCalledWith("Agent ready", expect.any(Function)));
+  expect(term.options).toHaveProperty("fontSize", 17);
+  term.reset.mockClear();
+  act(() => setSizingPreference({ interfaceScale: 100, terminalFontSize: 22 }));
+  expect(term.options).toHaveProperty("fontSize", 22);
+  expect(term.reset).not.toHaveBeenCalled();
+  expect(term.dispose).not.toHaveBeenCalled();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "detach_terminal")).toBe(false);
+});
+
+it("sends the current geometry when sizing changes during a pending attachment", async () => {
+  let finishAttach!: (response: unknown) => void;
+  vi.mocked(invoke).mockImplementation((command) => command === "attach_terminal"
+    ? new Promise((resolve) => { finishAttach = resolve; }) : Promise.resolve());
+  render(<TerminalPane target={target} />);
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("attach_terminal", { target, size: { cols: 80, rows: 24 } }));
+  act(() => {
+    setSizingPreference({ interfaceScale: 100, terminalFontSize: 22 });
+    // xterm's resulting cell geometry after the larger font is fitted.
+    term.cols = 60; term.rows = 18;
+  });
+  await act(async () => finishAttach({ key: "feature:agent", generation: 42, initial: frame("Ready") }));
+  expect(invoke).toHaveBeenCalledWith("resize_terminal", { key: "feature:agent", size: { cols: 60, rows: 18 } });
   expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "attach_terminal")).toHaveLength(1);
 });

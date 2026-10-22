@@ -173,6 +173,20 @@ export async function projectAgentChoices(projectId: string): Promise<AgentSlug[
   return view.effective_agents;
 }
 
+export interface ProjectHarnessChoices {
+  project_id: string;
+  project_name: string;
+  repo: string;
+  settings: { preferred_agent: AgentSlug };
+  agents: AgentSlug[];
+  default_agent: AgentSlug | null;
+  revision: string;
+}
+
+export function projectHarnessChoices(projectId: string): Promise<ProjectHarnessChoices> {
+  return invoke("project_harness_choices", { projectId });
+}
+
 export function supportedModes(): Promise<ModeInfo[]> {
   return invoke("supported_modes");
 }
@@ -590,8 +604,8 @@ export function planBeginCreation(request: CreateFeatureRequest, quick: boolean)
   return invoke("plan_begin_creation", { request, quick });
 }
 
-export function planBeginTodoNew(todoId: string, request: CreateFeatureRequest): Promise<PlanStatus> {
-  return invoke("plan_begin_todo_new", { todoId, request });
+export function planBeginTodoNew(todoId: string, request: CreateFeatureRequest, quick = false): Promise<PlanStatus> {
+  return invoke("plan_begin_todo_new", { todoId, request, quick });
 }
 
 export function planSnapshot(): Promise<PlanStatus> {
@@ -640,6 +654,8 @@ export interface LearningView {
   scope: "repo_tree" | "branch_changes";
   is_git: boolean;
   entries: LearningEntry[];
+  /** Key of the highlighted file-list entry, or null when none. */
+  selected_key: string | null;
   content_path: string | null;
   content: string[];
   content_line_labels: string[];
@@ -858,7 +874,7 @@ export type LibrarySlot = {
 } & ({ kind: "text" | "multi_line"; default: string | null } | { kind: "select"; options: string[] });
 export interface LibraryEntry {
   key: string; name: string; description: string | null; body: string; tags: string[];
-  source: string; slots: LibrarySlot[];
+  source: string; slots: LibrarySlot[]; user_id?: string | null;
 }
 export interface LibraryTarget { target: SessionTarget; label: string; stopped: boolean }
 export interface LibraryView {
@@ -876,6 +892,21 @@ export function promptLibraryLoad(scope: LibraryScope, query: string): Promise<L
 export function promptLibraryResolve(request: ResolvePrompt): Promise<string> {
   return invoke("prompt_library_resolve", { request });
 }
+
+export interface UserPromptEditorData {
+  id: string; revision: string; name: string; body: string; tags: string;
+  description: string | null; configured_fields: number;
+}
+export interface UserPromptDraft {
+  id: string | null; revision: string | null; name: string; body: string; tags: string;
+}
+export const promptUserEdit = (scope: LibraryScope, entryKey: string): Promise<UserPromptEditorData> =>
+  invoke("prompt_user_edit", { scope, entryKey });
+export const promptUserReload = (id: string): Promise<UserPromptEditorData> => invoke("prompt_user_reload", { id });
+export const promptUserSave = (draft: UserPromptDraft): Promise<string> => invoke("prompt_user_save", { draft });
+export const promptUserDelete = (id: string, revision: string): Promise<void> => invoke("prompt_user_delete", { id, revision });
+export const promptUserDuplicate = (scope: LibraryScope, entryKey: string): Promise<string> =>
+  invoke("prompt_user_duplicate", { scope, entryKey });
 
 // Mirrors src/gui_dormancy.rs.
 /** The readings a dormant row was listed on; sent back verbatim to stop it. */

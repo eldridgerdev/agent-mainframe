@@ -12,7 +12,7 @@ impl PiLauncher {
             .context("pi CLI not found - is Pi installed?")?;
 
         if !output.status.success() {
-            anyhow::bail!("pi CLI returned an error");
+            return Err(crate::headless::version_check_error("pi", "pi", &output));
         }
         Ok(())
     }

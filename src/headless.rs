@@ -357,6 +357,30 @@ const PI_PROGRESS_REQUIRED_FLAGS: [ProgressFlag; 1] = [ProgressFlag {
     value: Some("json"),
 }];
 
+/// Describe a failed `<cli> --version` probe with the binary, exit status and
+/// whatever the CLI printed, so a broken install is diagnosable from the toast.
+pub(crate) fn version_check_error(
+    cli: &str,
+    binary: &str,
+    output: &std::process::Output,
+) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let printed = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    let detail: String = printed.lines().take(3).collect::<Vec<_>>().join(" | ");
+    let detail: String = detail.chars().take(300).collect();
+    anyhow::anyhow!(
+        "{cli} CLI failed its version check (`{binary} --version`, {}){}{}",
+        output.status,
+        if detail.is_empty() { "" } else { ": " },
+        detail
+    )
+}
+
 impl HeadlessRunner {
     pub fn check_available(harness: &AgentKind) -> Result<()> {
         match harness {
@@ -368,7 +392,7 @@ impl HeadlessRunner {
                     .output()
                     .context("opencode CLI not found - is Opencode installed?")?;
                 if !output.status.success() {
-                    anyhow::bail!("opencode CLI returned an error");
+                    return Err(version_check_error("opencode", "opencode", &output));
                 }
                 Ok(())
             }
@@ -553,9 +577,37 @@ impl HeadlessRunner {
         prompt: &str,
         model: impl Into<ModelSel<'a>>,
         on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<String> {
         let spec = command_for(harness, false);
-        run_jsonl_command(harness, &spec, workdir, prompt, model.into(), on_progress)
+        run_jsonl_command(
+            harness,
+            &spec,
+            workdir,
+            prompt,
+            model.into(),
+            on_progress,
+            Some(cancelled),
+        )
+    }
+
+    pub(crate) fn run_cancellable<'a>(
+        harness: &AgentKind,
+        workdir: &Path,
+        prompt: &str,
+        model: impl Into<ModelSel<'a>>,
+        restricted: bool,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<String> {
+        run_cancellable_command(
+            harness,
+            &command_for(harness, restricted),
+            workdir,
+            prompt,
+            model.into(),
+            cancelled,
+            std::time::Duration::MAX,
+        )
     }
 
     /// Pick the engine for a plan interview.
@@ -965,6 +1017,12 @@ fn run_cancellable_command(
     let stderr = errors
         .join()
         .map_err(|_| anyhow::anyhow!("Question stderr reader stopped"))??;
+    if !status.success() && is_prompt_too_long_message(&String::from_utf8_lossy(&stderr)) {
+        return Err(prompt_too_long_error(
+            harness,
+            String::from_utf8_lossy(&stderr).trim(),
+        ));
+    }
     anyhow::ensure!(
         status.success(),
         "{} question failed: {}",
@@ -1102,19 +1160,27 @@ fn run_jsonl_command(
     prompt: &str,
     sel: ModelSel<'_>,
     on_progress: impl Fn(HeadlessProgress) + Send + 'static,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<String> {
-    // See `run_command`: one lease per in-flight headless run, released on
-    // every exit path including cancellation.
-    let _lease = crate::resources::limits::HeadlessLease::acquire();
+    use std::os::unix::process::CommandExt;
+    let check_cancelled = || -> Result<()> {
+        anyhow::ensure!(
+            !cancelled.is_some_and(|token| token.load(std::sync::atomic::Ordering::Relaxed)),
+            "AI review cancelled"
+        );
+        Ok(())
+    };
+    check_cancelled()?;
     let args = assemble_jsonl_args(harness, spec, sel);
 
-    let mut child = Command::new(&spec.binary)
+    let child = Command::new(&spec.binary)
         .args(&args)
         .envs(spec.envs.iter().copied())
         .current_dir(workdir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .spawn()
         .with_context(|| {
             format!(
@@ -1123,6 +1189,17 @@ fn run_jsonl_command(
             )
         })?;
 
+    let mut run = ReviewRunChild {
+        child: Some(LeasedChild::new(child)),
+        armed: true,
+    };
+    let child = run
+        .child
+        .as_mut()
+        .expect("new run")
+        .child
+        .as_mut()
+        .expect("new child");
     let mut stdin = child
         .stdin
         .take()
@@ -1167,9 +1244,20 @@ fn run_jsonl_command(
         stderr.read_to_end(&mut bytes).map(|_| bytes)
     });
 
-    let status = child
-        .wait()
-        .with_context(|| format!("Failed to run {} headlessly", harness.display_name()))?;
+    let status = loop {
+        check_cancelled()?;
+        // Reserve the process-group identity until all pipes have drained,
+        // including when the parent exits before its descendants.
+        if writer.is_finished()
+            && stdout_reader.is_finished()
+            && stderr_reader.is_finished()
+            && let Some(status) = child.try_wait()?
+        {
+            run.armed = false;
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     let write_result = writer
         .join()
         .map_err(|_| anyhow::anyhow!("{} prompt writer panicked", harness.display_name()))?;
@@ -2435,6 +2523,153 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_jsonl_review_reaps_its_process_group_and_releases_the_lease() {
+        let _guard = lock_lease_tests();
+        let baseline = wait_for_in_flight(0);
+        let dir = tempfile::TempDir::new().unwrap();
+        let spec = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec![
+                "-c",
+                "cat > prompt; trap 'wait; exit 0' TERM; sleep 30 & echo $! > descendant; echo $$ > parent; wait",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = cancelled.clone();
+        let ready = dir.path().join("parent");
+        let canceller = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !ready.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            token.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let result = run_jsonl_command(
+            &AgentKind::Claude,
+            &spec,
+            dir.path(),
+            "review input",
+            ModelSel::default(),
+            |_| {},
+            Some(&cancelled),
+        );
+        canceller.join().unwrap();
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(6));
+        for file in ["parent", "descendant"] {
+            let pid: i64 = std::fs::read_to_string(dir.path().join(file))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(wait_for_exit(pid, 5), "{file} survived cancellation");
+        }
+        assert_eq!(wait_for_in_flight(baseline), baseline);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
+            "review input"
+        );
+        // A cancelled request never starts a new process, even when the next
+        // batch's executable would fail to launch.
+        let missing = HeadlessCommand {
+            binary: "amf-no-such-review-harness".into(),
+            ..spec
+        };
+        let error = run_jsonl_command(
+            &AgentKind::Claude,
+            &missing,
+            dir.path(),
+            "",
+            ModelSel::default(),
+            |_| {},
+            Some(&cancelled),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn cancellable_review_keeps_prompt_budget_errors_and_successful_jsonl_output() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let too_large = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec![
+                "-c",
+                "cat >/dev/null; echo 'prompt is too long' >&2; exit 7",
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let error = run_cancellable_command(
+            &AgentKind::Claude,
+            &too_large,
+            dir.path(),
+            "review",
+            ModelSel::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::MAX,
+        )
+        .unwrap_err();
+        assert!(
+            as_prompt_too_long(&error).is_some(),
+            "adaptive batching must still recognize budget refusals: {error}"
+        );
+        let success = HeadlessCommand {
+            binary: "sh".into(),
+            args: vec![
+                "-c",
+                r#"cat > prompt; printf '%s\n' '{"type":"result","is_error":false,"result":"reviewed"}'"#,
+            ],
+            trailing: vec![],
+            envs: vec![],
+        };
+        let output = run_jsonl_command(
+            &AgentKind::Claude,
+            &success,
+            dir.path(),
+            "review",
+            ModelSel::default(),
+            |_| {},
+            Some(&std::sync::atomic::AtomicBool::new(false)),
+        )
+        .unwrap();
+        assert_eq!(output, "reviewed");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
+            "review"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn version_check_error_names_binary_status_and_output() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"error: config is corrupt\nsecond line\n".to_vec(),
+        };
+        let message = version_check_error("claude", "/opt/claude", &output).to_string();
+        assert!(message.contains("/opt/claude --version"), "{message}");
+        assert!(message.contains("exit status: 1"), "{message}");
+        assert!(
+            message.contains("error: config is corrupt | second line"),
+            "{message}"
+        );
+
+        let silent = std::process::Output {
+            status: std::process::ExitStatus::from_raw(9),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        let message = version_check_error("pi", "pi", &silent).to_string();
+        assert!(message.ends_with(')'), "{message}");
+    }
+
+    #[test]
     fn failed_claude_run_preserves_json_error_without_stderr() {
         for script in [
             r#"printf '%s\n' '{"type":"result","is_error":true,"result":"context window exceeded"}'; exit 7"#,
@@ -2453,6 +2688,7 @@ mod tests {
                 "hello",
                 ModelSel::default(),
                 |_| {},
+                None,
             )
             .unwrap_err();
             assert!(as_prompt_too_long(&error).is_some(), "{error}");

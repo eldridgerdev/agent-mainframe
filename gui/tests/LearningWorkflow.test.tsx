@@ -30,7 +30,7 @@ it.each([false, true])("gates the Learning handoff and preserves an existing uns
   });
   const learning: LearningView = {
     workflow_id: "workflow", revision: 3, target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
-    scope: "repo_tree", is_git: false, entries: [], content_path: null, content: [], content_line_labels: [], content_error: null,
+    scope: "repo_tree", is_git: false, entries: [], selected_key: null, content_path: null, content: [], content_line_labels: [], content_error: null,
     anchor: "this whole project", selection: null, hunks: [], starters: [], can_keep_todo: true, harness: "claude", harnesses: ["claude"], level: "newcomer", history_saved: true,
     error: null, notice: null, qa: [{ id: "answer", parent_id: null, question: "Explain the project", answer: "An answer", anchor: "this whole project",
       status: "answered", intent: "explain", harness: "claude", run_mode: "this file only", error: null, drift: null, spawned_session_id: null,
@@ -89,7 +89,7 @@ it("starts a stopped linked editing session through the tab's own start instead 
   };
   const learning: LearningView = {
     workflow_id: "workflow", revision: 3, target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
-    scope: "repo_tree", is_git: false, entries: [], content_path: null, content: [], content_line_labels: [], content_error: null,
+    scope: "repo_tree", is_git: false, entries: [], selected_key: null, content_path: null, content: [], content_line_labels: [], content_error: null,
     anchor: "this whole project", selection: null, hunks: [], starters: [], can_keep_todo: true, harness: "claude",
     harnesses: ["claude"], level: "newcomer", history_saved: true, error: null, notice: null,
     qa: [{ id: "answer", parent_id: null, question: "Explain the project", answer: "An answer", anchor: "this whole project",
@@ -136,7 +136,7 @@ it("keeps only a handoff's seed when it lands while the earlier draft is still s
   };
   const learning: LearningView = {
     workflow_id: "workflow", revision: 3, target: { project_id: "project", feature_id: "feature" }, feature_name: "my-feat",
-    scope: "repo_tree", is_git: false, entries: [], content_path: null, content: [], content_line_labels: [], content_error: null,
+    scope: "repo_tree", is_git: false, entries: [], selected_key: null, content_path: null, content: [], content_line_labels: [], content_error: null,
     anchor: "this whole project", selection: null, hunks: [], starters: [], can_keep_todo: true, harness: "claude",
     harnesses: ["claude"], level: "newcomer", history_saved: true, error: null, notice: null,
     qa: [{ id: "answer", parent_id: null, question: "Explain the project", answer: "An answer", anchor: "this whole project",

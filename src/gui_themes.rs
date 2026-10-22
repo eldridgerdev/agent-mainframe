@@ -33,6 +33,10 @@ pub struct ThemeCatalog {
     pub tui_theme: String,
     pub themes: Vec<GuiTheme>,
     pub errors: Vec<String>,
+    /// Low-contrast pairs a custom theme sets explicitly. Its colours are
+    /// kept as written; these explain why it may read poorly.
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub directory: String,
 }
 
@@ -172,6 +176,8 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
     let green = with_tint(rgb(&theme.success));
     let amber = with_tint(rgb(&theme.warning));
     let red = with_tint(rgb(&theme.danger));
+    // Merged-PR chips use the TUI's own merged-PR colour.
+    let purple = with_tint(rgb(&theme.pr_merged));
     let on_fill = |fill: Rgb| best_on(fill, &[text, bg, BLACK, WHITE]);
     let accent_fg = on_fill(accent);
     // The primary button's hover fill: still text-safe, and still carries
@@ -240,6 +246,11 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
             on_chrome(rgb(&theme.session_icon_opencode)),
         ),
         ("sb-harness-pi", accent),
+        // `--kind-claude/codex/opencode/pi` alias the `sb-harness-*` tokens in
+        // CSS; only the session kinds the sidebar has no token for are new.
+        ("kind-nvim", on_chrome(rgb(&theme.session_icon_nvim))),
+        ("kind-vscode", on_chrome(rgb(&theme.session_icon_vscode))),
+        ("purple", purple),
         ("sb-accent-pr", on_chrome(rgb(&theme.info))),
         ("sb-accent-summary", on_chrome(rgb(&theme.info))),
         ("sb-accent-prompt", on_chrome(rgb(&theme.secondary))),
@@ -284,6 +295,7 @@ fn project_tokens(theme: &Theme) -> BTreeMap<String, String> {
         ("red-soft", "red"),
         ("amber-soft", "amber"),
         ("green-soft", "green"),
+        ("purple-soft", "purple"),
     ] {
         tokens.insert(key.into(), format!("{}20", tokens[role]));
     }
@@ -413,6 +425,14 @@ const CUSTOM_TOKENS: &[&str] = &[
     "green",
     "amber",
     "red",
+    "purple",
+    "purple-soft",
+    "kind-claude",
+    "kind-codex",
+    "kind-opencode",
+    "kind-pi",
+    "kind-nvim",
+    "kind-vscode",
     "green-soft",
     "amber-soft",
     "red-soft",
@@ -531,7 +551,71 @@ fn fill_derived_tokens(tokens: &mut BTreeMap<String, String>) {
     }
 }
 
+#[cfg(test)]
 fn parse_custom(contents: &str) -> Result<GuiTheme, String> {
+    parse_custom_with_warnings(contents).map(|(theme, _)| theme)
+}
+
+/// Most warnings listed per custom theme; the rest are summarised in one line.
+const MAX_WARNINGS_PER_THEME: usize = 4;
+
+/// Text, status and boundary pairs that fall below the floors the built-in
+/// themes meet, among those a custom file sets itself (either side of the
+/// pair). Derived tokens are already floored, and translucent tokens depend
+/// on what they sit on, so neither is judged here.
+fn contrast_warnings(theme: &GuiTheme, explicit: &[String]) -> Vec<String> {
+    let get = |key: &str| match theme.tokens.get(key).and_then(|v| Rgb::parse(v)) {
+        Some((rgb, 1.0)) => Some(rgb),
+        _ => None,
+    };
+    let mut pairs: Vec<(&str, &str, f64)> = vec![];
+    for fg in ["text", "text-muted", "text-faint"] {
+        for bg in ["bg", "bg-sidebar", "surface", "surface-2", "surface-3"] {
+            pairs.push((fg, bg, TEXT_MIN));
+        }
+    }
+    for fg in ["accent", "green", "amber", "red", "purple"] {
+        for bg in ["bg", "bg-sidebar", "surface"] {
+            pairs.push((fg, bg, TEXT_MIN));
+        }
+    }
+    pairs.extend([
+        ("accent-fg", "accent", TEXT_MIN),
+        ("danger-fg", "red", TEXT_MIN),
+        ("warning-fg", "amber", TEXT_MIN),
+        ("success-fg", "green", TEXT_MIN),
+        ("border-control", "surface", NON_TEXT_MIN),
+        ("border-control", "bg", NON_TEXT_MIN),
+    ]);
+    let mut found = vec![];
+    for (fg, bg, min) in pairs {
+        if !explicit.iter().any(|key| key == fg || key == bg) {
+            continue;
+        }
+        if let (Some(f), Some(b)) = (get(fg), get(bg)) {
+            let ratio = contrast(f, b);
+            if ratio < min {
+                found.push(format!("{fg} on {bg} is {ratio:.1}:1 (needs {min}:1)"));
+            }
+        }
+    }
+    let total = found.len();
+    let mut warnings: Vec<String> = found
+        .into_iter()
+        .take(MAX_WARNINGS_PER_THEME)
+        .map(|w| format!("{}: {w}", theme.name))
+        .collect();
+    if total > MAX_WARNINGS_PER_THEME {
+        warnings.push(format!(
+            "{}: and {} more low-contrast pairs",
+            theme.name,
+            total - MAX_WARNINGS_PER_THEME
+        ));
+    }
+    warnings
+}
+
+fn parse_custom_with_warnings(contents: &str) -> Result<(GuiTheme, Vec<String>), String> {
     let mut theme: GuiTheme = serde_json::from_str(contents).map_err(|e| e.to_string())?;
     if theme.id.is_empty()
         || !theme
@@ -565,8 +649,10 @@ fn parse_custom(contents: &str) -> Result<GuiTheme, String> {
             ));
         }
     }
+    let explicit: Vec<String> = theme.tokens.keys().cloned().collect();
     fill_derived_tokens(&mut theme.tokens);
-    Ok(theme)
+    let warnings = contrast_warnings(&theme, &explicit);
+    Ok((theme, warnings))
 }
 
 fn load_at(directory: &Path, tui_theme: ThemeName) -> ThemeCatalog {
@@ -578,6 +664,7 @@ fn load_at(directory: &Path, tui_theme: ThemeName) -> ThemeCatalog {
             .into(),
         themes: Theme::list().into_iter().map(project).collect(),
         errors: vec![],
+        warnings: vec![],
         directory: directory.display().to_string(),
     };
     let entries = match fs::read_dir(directory) {
@@ -602,9 +689,9 @@ fn load_at(directory: &Path, tui_theme: ThemeName) -> ThemeCatalog {
     {
         let result = fs::read_to_string(&path)
             .map_err(|e| e.to_string())
-            .and_then(|s| parse_custom(&s));
+            .and_then(|s| parse_custom_with_warnings(&s));
         match result {
-            Ok(mut theme) => {
+            Ok((mut theme, warnings)) => {
                 theme.id = format!("custom:{}", theme.id);
                 if catalog.themes.iter().any(|t| t.id == theme.id) {
                     catalog.errors.push(format!(
@@ -614,6 +701,7 @@ fn load_at(directory: &Path, tui_theme: ThemeName) -> ThemeCatalog {
                     ));
                 } else {
                     catalog.themes.push(theme);
+                    catalog.warnings.extend(warnings);
                 }
             }
             Err(e) => catalog.errors.push(format!("{}: {e}", path.display())),
@@ -712,6 +800,32 @@ mod tests {
         assert_eq!(catalog.themes.len(), Theme::list().len() + 1);
         assert_eq!(catalog.errors.len(), 2);
         assert!(catalog.themes.last().unwrap().terminal.is_empty());
+        assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
+    }
+    #[test]
+    fn custom_low_contrast_pairs_are_kept_but_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("murky.json"),
+            r##"{"id":"murky","name":"Murky","mode":"dark","tokens":{"surface":"#333333","surface-2":"#3a3a3a","text":"#f0f0f0","text-muted":"#555555","accent":"#3a3aff"}}"##,
+        )
+        .unwrap();
+        let catalog = load_at(dir.path(), ThemeName::Nord);
+        let murky = catalog.themes.last().unwrap();
+        // Colours are respected as written…
+        assert_eq!(murky.tokens["text-muted"], "#555555");
+        // …and each explicit low-contrast pair is explained.
+        assert!(catalog.warnings.iter().all(|w| w.starts_with("Murky: ")));
+        for expected in ["text-muted on surface is", "accent on surface is"] {
+            assert!(
+                catalog.warnings.iter().any(|w| w.contains(expected)),
+                "{expected}: {:?}",
+                catalog.warnings
+            );
+        }
+        // `text` passes everywhere it was paired, so it is not mentioned.
+        assert!(!catalog.warnings.iter().any(|w| w.contains(": text on ")));
+        assert!(catalog.warnings.len() <= MAX_WARNINGS_PER_THEME + 1);
     }
     #[test]
     fn every_declared_colour_role_is_a_supported_custom_token() {
@@ -874,7 +988,12 @@ mod tests {
                     check(key, tok(key), bg_name, bg, 4.5);
                 }
             }
-            for key in ["accent", "green", "amber", "red"] {
+            for key in ["kind-nvim", "kind-vscode"] {
+                for (bg_name, bg) in surfaces.into_iter().take(4).chain(active) {
+                    check(key, tok(key), bg_name, bg, 4.5);
+                }
+            }
+            for key in ["accent", "green", "amber", "red", "purple"] {
                 let fg = tok(key);
                 let tint = format!("{key}-soft");
                 check(key, fg, "surface", surface, 4.5);

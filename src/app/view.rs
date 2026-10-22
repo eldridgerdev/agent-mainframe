@@ -574,6 +574,8 @@ impl App {
             editing_id: None,
             editing_source: crate::prompt_library::PromptSource::User,
             original_template: None,
+            file_edit: None,
+            file_discard: None,
             name: String::new(),
             tags: String::new(),
             focus: crate::app::PromptEditorFocus::Name,

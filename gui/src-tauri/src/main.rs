@@ -42,6 +42,12 @@ use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
 use agent_mainframe::gui_pr_triage::{
     self, PrTriageAction, PrTriagePrefetch, PrTriageReads, PrTriageTarget, PrTriageView,
 };
+use agent_mainframe::gui_pr_workspace::{
+    self, AiAction as PrWorkspaceAiAction, PrWorkspaceAiView, PrWorkspaceFiles,
+};
+use agent_mainframe::gui_project_preference::{
+    self, ProjectHarnessChoices, ProjectHarnessPreference,
+};
 use agent_mainframe::gui_project_settings::{
     self, ProjectAgentAvailability, ProjectAgentAvailabilityView,
 };
@@ -64,7 +70,9 @@ use agent_mainframe::gui_settings::{
 use agent_mainframe::gui_supervised_edits::{
     self, PendingEditCount, SupervisedEditDecision, SupervisedEditOutcome, SupervisedEditsView,
 };
-use agent_mainframe::gui_syntax::{self, SyntaxInstallView};
+use agent_mainframe::gui_syntax::{
+    self, SyntaxInstallView, SyntaxLanguageRequest, SyntaxLanguagesView,
+};
 use agent_mainframe::gui_terminal::{
     TerminalFrame, TerminalHandle, TerminalHistory, WheelDirection,
 };
@@ -136,6 +144,117 @@ fn prompt_library_resolve(
     request: ResolvePrompt,
 ) -> Result<String, GuiError> {
     gui_prompts::resolve(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_user_edit(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<gui_prompts::authoring::UserPromptEditor, GuiError> {
+    gui_prompts::authoring::edit(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &scope,
+        &entry_key,
+    )
+}
+#[tauri::command]
+fn prompt_user_reload(
+    state: State<AppState>,
+    id: String,
+) -> Result<gui_prompts::authoring::UserPromptEditor, GuiError> {
+    gui_prompts::authoring::reload(&state.0.lock().expect("gui handle mutex poisoned"), &id)
+}
+#[tauri::command]
+fn prompt_user_save(
+    state: State<AppState>,
+    draft: gui_prompts::authoring::UserPromptDraft,
+) -> Result<String, GuiError> {
+    gui_prompts::authoring::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        draft,
+    )
+}
+#[tauri::command]
+fn prompt_user_delete(
+    state: State<AppState>,
+    id: String,
+    revision: String,
+) -> Result<(), GuiError> {
+    gui_prompts::authoring::delete(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &id,
+        &revision,
+    )
+}
+#[tauri::command]
+fn prompt_user_duplicate(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<String, GuiError> {
+    gui_prompts::authoring::duplicate(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &scope,
+        &entry_key,
+    )
+}
+
+#[tauri::command]
+fn prompt_file_edit(
+    state: State<AppState>,
+    scope: LibraryScope,
+    entry_key: String,
+) -> Result<gui_prompts::declarative::DeclarativeEditor, GuiError> {
+    gui_prompts::declarative::edit(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        scope,
+        &entry_key,
+    )
+}
+
+#[tauri::command]
+fn prompt_file_reload(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ReloadRequest,
+) -> Result<gui_prompts::declarative::DeclarativeEditor, GuiError> {
+    gui_prompts::declarative::reload(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_file_save(
+    state: State<AppState>,
+    request: gui_prompts::declarative::SaveRequest,
+) -> Result<(), GuiError> {
+    gui_prompts::declarative::save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_export_preview(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ExportRequest,
+) -> Result<gui_prompts::declarative::ExportPreview, GuiError> {
+    gui_prompts::declarative::export_preview(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        request,
+    )
+}
+
+#[tauri::command]
+fn prompt_export_commit(
+    state: State<AppState>,
+    request: gui_prompts::declarative::ExportCommit,
+) -> Result<(), GuiError> {
+    gui_prompts::declarative::export_commit(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         request,
     )
@@ -256,6 +375,16 @@ fn syntax_install_status() -> SyntaxInstallView {
 #[tauri::command]
 fn syntax_install(language: String) -> Result<SyntaxInstallView, GuiError> {
     gui_syntax::install(&language)
+}
+
+#[tauri::command]
+fn syntax_languages(refresh: bool) -> Result<SyntaxLanguagesView, GuiError> {
+    gui_syntax::languages_list(refresh)
+}
+
+#[tauri::command]
+fn syntax_languages_apply(request: SyntaxLanguageRequest) -> Result<SyntaxInstallView, GuiError> {
+    gui_syntax::languages_apply(request)
 }
 
 #[tauri::command]
@@ -706,6 +835,30 @@ fn set_feature_vibe_mode(
     Ok(())
 }
 
+#[tauri::command]
+fn feature_harness_load(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<agent_mainframe::gui_harness_change::HarnessChangeView, GuiError> {
+    agent_mainframe::gui_harness_change::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+
+#[tauri::command]
+fn feature_harness_apply(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    request: agent_mainframe::gui_harness_change::HarnessChangeRequest,
+) -> Result<(), GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let result = agent_mainframe::gui_harness_change::apply(&mut gui, request);
+    // Shutdown, hooks or restart may have partially completed even on error.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    result
+}
+
 #[derive(Serialize)]
 struct AttachTerminalResponse {
     key: String,
@@ -1059,11 +1212,13 @@ fn plan_begin_todo_new(
     state: State<AppState>,
     todo_id: String,
     request: CreateFeatureRequest,
+    quick: Option<bool>,
 ) -> Result<PlanStatus, GuiError> {
     gui_plans::begin_todo_in_new_feature(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &todo_id,
         &request,
+        quick.unwrap_or(false),
     )
 }
 
@@ -1208,6 +1363,64 @@ async fn project_agent_availability_load(
         &mut state.0.lock().expect("gui handle mutex poisoned"),
         &project_id,
     )
+}
+
+// Harness probes spawn one `--version` process per harness. They run on a
+// blocking thread, not an async runtime worker, and (inside
+// `gui_project_preference`) outside the handle lock. A sync command would not
+// do: Tauri runs those on the main thread, which would freeze the window.
+async fn project_preference_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("Project harness check stopped: {e}")))
+}
+
+// PR workspace state changes are usually short, but they share a mutex with
+// the rest of the GUI and can contend with GitHub/process work. Keep that
+// blocking lock and the transition off Tauri's async runtime workers.
+async fn pr_workspace_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("PR workspace operation stopped: {e}")))
+}
+
+#[tauri::command]
+async fn project_harness_choices(
+    app: tauri::AppHandle,
+    project_id: String,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    project_preference_blocking(app, move |gui| {
+        gui_project_preference::load(gui, &project_id)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn project_preference_save(
+    app: tauri::AppHandle,
+    project_id: String,
+    revision: String,
+    settings: ProjectHarnessPreference,
+) -> Result<ProjectHarnessChoices, GuiError> {
+    let emit_app = app.clone();
+    project_preference_blocking(app, move |gui| {
+        let result =
+            gui_project_preference::save(gui, &project_id, &revision, settings.preferred_agent);
+        // Take the lock again only to broadcast.
+        let snapshot = gui
+            .lock()
+            .expect("gui handle mutex poisoned")
+            .broadcast_snapshot();
+        emit_workspace_changed(&emit_app, &snapshot);
+        result
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -1386,6 +1599,164 @@ async fn pr_triage_act(
         action,
         prefetch,
     )
+}
+
+#[tauri::command]
+async fn pr_workspace_begin(
+    app: tauri::AppHandle,
+    target: agent_mainframe::gui_contract::FeatureTarget,
+) -> Result<String, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::begin(&mut gui.lock().expect("gui handle mutex poisoned"), target)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_select_pr(
+    app: tauri::AppHandle,
+    workflow_id: String,
+    number: u32,
+) -> Result<(), GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::select_pr(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            number,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_switch_ai(
+    app: tauri::AppHandle,
+    workflow_id: String,
+    number: u32,
+) -> Result<(), GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        let result = gui_pr_workspace::switch_to_ai(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            number,
+        );
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_ai_tab_switch(
+                &mut handle,
+                number,
+                started.elapsed(),
+                result.is_err(),
+            );
+        }
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_switch_threads(
+    app: tauri::AppHandle,
+    workflow_id: String,
+) -> Result<(), GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::switch_to_threads(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_close(app: tauri::AppHandle, workflow_id: String) -> Result<(), GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::close(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_ai_snapshot(
+    app: tauri::AppHandle,
+    workflow_id: String,
+) -> Result<PrWorkspaceAiView, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        let result = gui_pr_workspace::ai_snapshot(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        );
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_slow_ai_snapshot(&mut handle, started.elapsed());
+        }
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_ai_act(
+    app: tauri::AppHandle,
+    workflow_id: String,
+    action: PrWorkspaceAiAction,
+) -> Result<PrWorkspaceAiView, GuiError> {
+    let action_name = format!("{action:?}");
+    pr_workspace_blocking(app, move |gui| {
+        let started = std::time::Instant::now();
+        {
+            let mut handle = gui.lock().expect("gui handle mutex poisoned");
+            gui_pr_workspace::log_ai_action_start(&mut handle, &action);
+        }
+        let result = gui_pr_workspace::ai_act(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+            action,
+        );
+        let elapsed = started.elapsed();
+        let error_message = result.as_ref().err().map(|error| error.message.clone());
+        if let Ok(mut handle) = gui.lock() {
+            gui_pr_workspace::log_ai_action_finish(
+                &mut handle,
+                &action_name,
+                elapsed,
+                error_message.as_deref(),
+            );
+        }
+        result
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_files(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<PrWorkspaceFiles, GuiError> {
+    let (workdir, number, sha) = gui_pr_workspace::files_request(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )?;
+    let read_workdir = workdir.clone();
+    let patch = tauri::async_runtime::spawn_blocking(move || {
+        gui_pr_workspace::read_pr_diff(&read_workdir, number)
+    })
+    .await
+    .map_err(|e| GuiError::from(anyhow::anyhow!("PR diff read stopped: {e}")))?
+    .map_err(GuiError::from)?;
+    let (current_dir, current_number, current_sha) = gui_pr_workspace::files_request(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )?;
+    if current_dir != workdir || current_number != number || current_sha != sha {
+        return Err(GuiError::from(anyhow::anyhow!(
+            "The selected PR changed while files were loading; retry"
+        )));
+    }
+    gui_pr_workspace::files_result(&workflow_id, number, sha, patch)
 }
 
 #[tauri::command]
@@ -1682,6 +2053,16 @@ fn main() {
             screenshots_cleanup,
             prompt_library_load,
             prompt_library_resolve,
+            prompt_user_edit,
+            prompt_user_reload,
+            prompt_user_save,
+            prompt_user_delete,
+            prompt_user_duplicate,
+            prompt_file_edit,
+            prompt_file_reload,
+            prompt_file_save,
+            prompt_export_preview,
+            prompt_export_commit,
             prompt_overrides_load,
             prompt_overrides_save,
             prompt_overrides_clear,
@@ -1707,6 +2088,8 @@ fn main() {
             remove_session,
             delete_feature,
             set_feature_vibe_mode,
+            feature_harness_load,
+            feature_harness_apply,
             session_recovery_option,
             saved_agent_sessions,
             recover_session,
@@ -1750,6 +2133,8 @@ fn main() {
             agent_availability_save,
             project_agent_availability_load,
             project_agent_availability_save,
+            project_harness_choices,
+            project_preference_save,
             dormancy_settings_load,
             dormancy_settings_save,
             dormancy_load,
@@ -1762,8 +2147,18 @@ fn main() {
             pr_triage_begin,
             pr_triage_snapshot,
             pr_triage_act,
+            pr_workspace_begin,
+            pr_workspace_select_pr,
+            pr_workspace_switch_ai,
+            pr_workspace_switch_threads,
+            pr_workspace_close,
+            pr_workspace_ai_snapshot,
+            pr_workspace_ai_act,
+            pr_workspace_files,
             syntax_install_status,
             syntax_install,
+            syntax_languages,
+            syntax_languages_apply,
             session_sidebar,
             session_sidebar_plan,
             fresh_context_preview,

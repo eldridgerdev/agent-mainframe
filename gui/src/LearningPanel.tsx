@@ -5,12 +5,13 @@ import { Field, Icon, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 
 /** The question draft stays local across backend polls and navigation. */
-export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: {
+export default function LearningPanel({ view, busy, onAct, onLaunch, onClose, hidden = false }: {
   view: LearningView;
   busy: boolean;
   onAct: (action: LearningAction) => Promise<boolean>;
   onLaunch: (qaId: string) => void;
   onClose: () => void;
+  hidden?: boolean;
 }) {
   const [question, setQuestion] = useState("");
   const [intent, setIntent] = useState("explain");
@@ -36,7 +37,7 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: 
     }
   }
   return (
-    <Modal label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
+    <Modal hidden={hidden} label="Learning" title={`Learning · ${view.feature_name}`} size="lg"
       subtitle="Read code and ask questions. Opening an editing agent is a separate action."
       dismissable={!busy} onClose={() => question.trim() ? setConfirmClose(true) : onClose()}>
       {confirmClose && <div className="callout callout-warning" role="alert">
@@ -67,7 +68,9 @@ export default function LearningPanel({ view, busy, onAct, onLaunch, onClose }: 
       <div className="learning-reader">
         <nav className="learning-files" aria-label="Learning files">
           {view.entries.map((entry) => (
-            <button key={entry.key} className="learning-file" disabled={busy}
+            <button key={entry.key} disabled={busy}
+              className={entry.key === view.selected_key ? "learning-file learning-file-selected" : "learning-file"}
+              aria-current={entry.key === view.selected_key ? "true" : undefined}
               style={{ paddingLeft: 8 + entry.depth * 14 }}
               onClick={() => { setRangeStart(null); void onAct({ kind: "select_entry", key: entry.key }); }}>
               <Icon name={entry.kind === "dir" ? (entry.expanded ? "chevronDown" : "chevronRight") : "file"} size={12} />

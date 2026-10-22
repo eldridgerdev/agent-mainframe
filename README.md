@@ -241,7 +241,8 @@ and so on), see [Issue trackers in plan interviews](#issue-trackers-in-plan-inte
 | `i` | Show agents needing attention: questions first, then finished work |
 | `I` | On a TODOs session row: start an agent on the next TODO in priority order, across the lists currently showing |
 | `z` | Show dormant features: idle and unattended |
-| `G` | Open GitHub PR triage; on a project row, review a PR yourself |
+| `G` | Open the split PR Workspace (experimental) |
+| `Ctrl+Space`, then `U` | Open the legacy PR Triage / Review workflow |
 | `W` | Run AMF's AI review of a PR diff |
 | `K` | Open Learning Mode: read the code and ask about it |
 | `L` | Open the prompt library |
@@ -265,6 +266,8 @@ Most keys go directly to the active session. These controls belong to AMF:
 | `Ctrl+Space`, then `w` | Switch sessions |
 | `Ctrl+Space`, then `i` | Jump to an agent needing attention |
 | `Ctrl+Space`, then `f` | Start final diff review |
+| `Ctrl+Space`, then `G` | Open PR Workspace (experimental split view) |
+| `Ctrl+Space`, then `U` | Open legacy PR Triage / Review |
 | `Ctrl+Space`, then `p` | Open the prompt library |
 | `Ctrl+Space`, then `E` | Edit headless AI prompt templates (overrides) |
 | `Ctrl+Space`, then `N` | Add a TODO to this worktree's list |
@@ -375,7 +378,7 @@ feature stays visually distinct from one that never had a PR. A branch
 without `gh`, without a GitHub remote, or without any PR shows no badge at
 all.
 
-Select a feature and press `G` to open PR Triage. You can inspect review
+Select a feature and press leader+`U` to open legacy PR Triage. You can inspect review
 threads, send an individual or batched fix prompt to an agent, reply, and mark
 threads done. Press `W` to have AMF run its own review of the PR diff. GitHub
 actions are presented for confirmation before AMF writes to the pull request.
@@ -429,10 +432,42 @@ does not use agent tokens; AMF then makes one agent pass to distill recurring
 findings and appends only new ones. You can press `Esc` while it runs to return
 to the picker without cancelling the background job.
 
+### Try the experimental PR workspace
+
+From the dashboard, press `G`, or press `Ctrl+Space`, then uppercase `G`
+from the dashboard or an embedded session. Select a pull request once to open
+its files, GitHub feedback, and AI findings in a shared workspace. The old PR
+Triage / Review workflow is available through leader+`U` for comparison. `W`
+retains the existing AI Review workflow. When opened from a feature or its
+session, the picker initially selects that branch's PR and labels it
+`current feature`. The label stays visible when you browse other PRs.
+
+Use `1` for Files, `2` for Threads, and `3` for AI findings. Selecting feedback
+opens its file and line in the diff alongside the discussion. `Tab` changes
+pane focus; `j` / `k` navigate or scroll the focused pane; `z` expands that pane.
+Wide terminals show three panes. Below 125 columns the navigator becomes a
+drawer; below 85 columns only the focused pane is shown.
+
+`A` starts an AI review using the existing harness/model choices. You can read
+files while it runs. A spinner in the left navigator shows the current stage
+and elapsed time until the run finishes. Click `[Ctrl+X Cancel]` or press
+`Ctrl+X` to stop the AI review; existing findings and human drafts are kept.
+`p` previews your human review, while `W` in AI previews
+kept AI findings; both keep the existing explicit posting confirmations and
+authorship. Triage's fix, investigation, reply, and resolution actions use the
+same engines as before. Editors and confirmation dialogs retain their existing
+controls. Press `?` for the workspace's full key list.
+
+`F5` reopens the same PR at fresh revisions, saving your draft first. `Esc` or
+`q` closes the workspace and saves the human draft. If you visit a fix session,
+its existing leader+`P` return still works, and leader+`G` can return to the
+workspace's Files view. This workflow is experimental and is currently a TUI
+feature.
+
 ### Review a teammate's pull request
 
 To review a pull request yourself, rather than triage the comments on your own,
-press `G` on a project row, or press `G` on a feature and then `Tab`. The
+press leader+`U` on a project row, or press leader+`U` on a feature and then `Tab`. The
 **Review** tab lists every open pull request in the repository, including your
 own and drafts, with its number, title, author, and branch (`owner:branch` for
 a fork). The list loads in the background; if `gh` isn't installed or signed

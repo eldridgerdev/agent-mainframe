@@ -1,6 +1,7 @@
 import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
-import { SyntaxInfo, SyntaxInstallView, SyntaxSpan, syntaxInstall, syntaxInstallStatus } from "./syntaxApi";
+import { SyntaxInfo, SyntaxInstallView, SyntaxSpan, syntaxInstall, syntaxInstallStatus,
+  openSyntaxLanguages, syntaxOperationStarted, SYNTAX_OPERATION_STARTED, SYNTAX_LANGUAGES_CHANGED } from "./syntaxApi";
 import { Spinner } from "./ui";
 import "./syntax.css";
 
@@ -40,6 +41,23 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
   const seen = useRef<number | null>(null);
   const installed = useRef(onInstalled);
   installed.current = onInstalled;
+  function adopt(next: SyntaxInstallView) {
+    setInstall(current => current && ((next.operation_id ?? 0) < (current.operation_id ?? 0) || next.completed < current.completed) ? current : next);
+  }
+  useEffect(() => {
+    const started = (event: Event) => adopt((event as CustomEvent<SyntaxInstallView>).detail);
+    const changed = (event: Event) => {
+      const next = (event as CustomEvent<SyntaxInstallView | undefined>).detail;
+      if (next) {
+        if (seen.current !== null && next.completed <= seen.current) return;
+        seen.current = next.completed; adopt(next);
+      }
+      installed.current?.();
+    };
+    window.addEventListener(SYNTAX_OPERATION_STARTED, started);
+    window.addEventListener(SYNTAX_LANGUAGES_CHANGED, changed);
+    return () => { window.removeEventListener(SYNTAX_OPERATION_STARTED, started); window.removeEventListener(SYNTAX_LANGUAGES_CHANGED, changed); };
+  }, []);
 
   useEffect(() => { setNotice(null); }, [info?.language_key]);
 
@@ -47,16 +65,17 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
   useEffect(() => {
     if (!installable) return;
     let cancelled = false;
-    void syntaxInstallStatus().then((view) => { if (!cancelled) setInstall(view); }).catch(() => { /* No install state. */ });
+    void syntaxInstallStatus().then((view) => { if (!cancelled) adopt(view); }).catch(() => { /* No install state. */ });
     return () => { cancelled = true; };
   }, [installable, info?.language_key]);
 
   useEffect(() => {
     if (!install?.running) return;
+    let cancelled = false;
     const timer = window.setInterval(() => {
-      void syntaxInstallStatus().then(setInstall).catch(() => { /* Keep the last progress. */ });
+      void syntaxInstallStatus().then(view => { if (!cancelled) adopt(view); }).catch(() => { /* Keep the last progress. */ });
     }, 500);
-    return () => window.clearInterval(timer);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [install?.running]);
 
   useEffect(() => {
@@ -76,7 +95,7 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
     try {
       const view = await syntaxInstall(info.language_key);
       setConfirming(false);
-      setInstall(view);
+      adopt(view); syntaxOperationStarted(view);
     } catch (err) {
       setError(asGuiError(err).message);
     } finally {
@@ -90,6 +109,7 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
     {info.status === "highlighted"
       ? <span className="syntax-chip syntax-chip-on" title="Syntax highlighting uses the parser the TUI installed">{info.language}</span>
       : <span className="syntax-chip" title={reason ? `Shown as plain text: ${reason}` : undefined}>Plain text{reason ? ` · ${reason}` : ""}</span>}
+    <button type="button" className="btn btn-ghost btn-sm" onClick={openSyntaxLanguages}>Manage syntax languages</button>
     {installable && !running && !confirming && <button type="button" className="btn btn-ghost btn-sm"
       onClick={() => { setError(null); setConfirming(true); }}>{verb} {info.language} parser…</button>}
     {installable && confirming && !running && <span className="syntax-install callout callout-warning" role="group" aria-label={`${verb} ${info.language} parser`}>
@@ -98,11 +118,11 @@ export function SyntaxBadge({ info, onInstalled }: { info: SyntaxInfo | null | u
       <button type="button" className="btn btn-primary btn-sm" disabled={requesting} onClick={() => void start()}>{requesting && <Spinner />} {verb} parser</button>
     </span>}
     {running && <span className="syntax-install" role="status">
-      <Spinner /> Installing the {install?.language} parser…
+      <Spinner /> {install?.action === "uninstall" ? "Removing" : install?.action === "repair" ? "Repairing" : "Installing"} the {install?.language} parser…
       {install?.output && <span className="syntax-install-output">{install.output}</span>}
     </span>}
     {installable && !running && install?.error && install.language_key === info.language_key && <span className="syntax-install" role="alert">
-      {install.language} parser install failed: {install.error}
+      {install.language} parser {install.action === "uninstall" ? "removal" : "install"} failed: {install.error}
     </span>}
     {error && <span className="syntax-install" role="alert">{error}</span>}
     {notice && !running && <span className="syntax-install" role="status">{notice}</span>}

@@ -148,7 +148,12 @@ impl AiReviewMemoryUsage {
             format!(" ({sources})")
         };
         let plural = if findings == 1 { "" } else { "s" };
-        if self.prompts > 0 && self.prompts_with_memory == self.prompts {
+        if self.prompts == 0 {
+            (
+                "last run read memory but generated no review prompts".to_string(),
+                false,
+            )
+        } else if self.prompts_with_memory == self.prompts {
             (
                 format!("last run sent {findings} memory finding{plural}{sources} to the agent"),
                 false,
@@ -3755,6 +3760,19 @@ diff --git a/src/boundary.rs b/src/boundary.rs\n\
             sent.label(),
             (
                 "last run sent 5 memory findings (project 3 + global 2) to the agent".to_string(),
+                false
+            )
+        );
+
+        let no_prompts = AiReviewMemoryUsage {
+            prompts: 0,
+            prompts_with_memory: 0,
+            ..sent.clone()
+        };
+        assert_eq!(
+            no_prompts.label(),
+            (
+                "last run read memory but generated no review prompts".to_string(),
                 false
             )
         );

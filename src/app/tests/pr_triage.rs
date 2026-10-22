@@ -6013,6 +6013,70 @@ fn open_ai_review_for_pr_reads_the_memory_docs_the_next_run_would_use() {
 }
 
 #[test]
+fn ai_review_from_linked_worktree_reads_shared_memory_instead_of_local_copy() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("main");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_out(&repo, &["init", "--initial-branch=main"]);
+    std::fs::write(repo.join(".gitignore"), ".amf/\n").unwrap();
+    git_out(&repo, &["add", ".gitignore"]);
+    git_out(
+        &repo,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    );
+    let workdir = tmp.path().join("feature");
+    git_out(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            workdir.to_str().unwrap(),
+        ],
+    );
+    for (root, text) in [
+        (&repo, "- Shared one\n- Shared two\n"),
+        (&workdir, "- Stray local finding\n"),
+    ] {
+        std::fs::create_dir_all(root.join(".amf")).unwrap();
+        std::fs::write(root.join(".amf/review-memory.md"), text).unwrap();
+    }
+    let mut app = ai_review_test_app();
+    // Exercise the production git-root lookup rather than an identity mock.
+    app.worktree = Box::new(crate::worktree::WorktreeManager);
+    app.config.global_review_memory_path = Some(tmp.path().join("absent.md").display().to_string());
+    app.open_ai_review_for_pr(workdir.clone(), pr_review_with_comments(1).pr);
+    let AppMode::AiReview(state) = &app.mode else {
+        panic!("expected AiReview")
+    };
+    let status = state.memory_status.as_ref().unwrap();
+    let shared = repo.canonicalize().unwrap().join(".amf/review-memory.md");
+    assert_eq!(status.docs[0].path, shared);
+    assert_eq!(status.docs[0].findings, 2);
+    // The run resolves its input through this same path, keeping display and delivery aligned.
+    let paths = app.review_memory_paths(&app.repo_for_project_path(&workdir));
+    assert_eq!(paths.project, shared);
+    assert_eq!(
+        paths.worktree_local,
+        Some(workdir.join(".amf/review-memory.md"))
+    );
+    let loaded = crate::app::review_memory::load_review_memory(&paths);
+    assert!(loaded.context.contains("Shared one"));
+    assert!(!loaded.context.contains("Stray local"));
+}
+
+#[test]
 fn open_ai_review_for_pr_starts_empty_with_no_stashed_return() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(

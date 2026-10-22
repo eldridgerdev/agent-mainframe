@@ -1,0 +1,37 @@
+# Offline 123-file PR; self-seeding, so no --seed inputs are required.
+# Use --geometry 132x40 for a roughly 32-column Files navigator.
+shim:gh:file-tree-proof-fixture.py
+shim:git:file-tree-proof-fixture.py
+run:python3 "$REPO_ROOT/scripts/dev/screenshot/scenarios/file-tree-proof-fixture.py" --setup "$AMF_BIN"
+wait:1000
+key:C-Space
+key:G
+wait:2000
+key:Enter
+wait:12000
+key:1
+wait:500
+expect:1 Files
+expect:Button.tsx
+expect:(120)
+note:The narrow Files pane keeps Button.tsx visible, compresses directory chains, and folds other groups in this 123-file PR.
+shot:narrow-files
+key:j
+wait:300
+expect:Button.tsx
+note:A long component filename keeps its useful Button.tsx tail beside the patch for that file.
+shot:long-filename-tail
+key:Z
+wait:300
+key:Z
+wait:300
+expect:1 Files
+expect:(120)
+note:Folding the tree shows file counts and undecided review counts on directory rows.
+shot:folded-progress
+
+text:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
+wait:1200
+expect:Widget119.tsx
+note:File-order navigation reveals and scrolls to the last file in the large PR, keeping its filename visible in the narrow navigator.
+shot:last-file-visible

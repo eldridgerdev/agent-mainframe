@@ -3049,13 +3049,21 @@ fn enter_on_a_stopped_session_of_a_running_feature_restarts_and_opens_it() {
     tmux.expect_window_exists()
         .withf(|_, window| window == "Claude-2")
         .returning(|_, _| false);
+    let mut sequence = mockall::Sequence::new();
     tmux.expect_create_window()
         .withf(|_, window, _| window == "Claude-2")
         .times(1)
+        .in_sequence(&mut sequence)
         .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .withf(|_, window, cols, rows| window == "Claude-2" && *cols == 120 && *rows == 39)
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _, _| Ok(()));
     tmux.expect_launch_claude()
         .withf(|_, window, _, _, _| window == "Claude-2")
         .times(1)
+        .in_sequence(&mut sequence)
         .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
 
@@ -3065,6 +3073,8 @@ fn enter_on_a_stopped_session_of_a_running_feature_restarts_and_opens_it() {
         &["Claude-2"],
     );
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
     app.selection = Selection::Session(0, 0, 1);
 
     crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -3683,4 +3693,67 @@ fn usability_failed_project_cleanup_preserves_records_for_retry() {
         assert_eq!(app.store.projects.len(), 1);
         assert_eq!(app.store.projects[0].features.len(), 1);
     }
+}
+
+#[test]
+fn new_terminal_session_is_sized_before_it_is_opened() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    let mut sequence = mockall::Sequence::new();
+    tmux.expect_create_window()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .withf(|_, _, cols, rows| *cols == 120 && *rows == 39)
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
+
+    app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+        .unwrap();
+
+    assert!(
+        app.store.projects[0].features[0]
+            .sessions
+            .iter()
+            .any(|session| session.label == "Shell")
+    );
+}
+
+#[test]
+fn new_terminal_session_resize_failure_removes_window_and_record() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let original_sessions = store.projects[0].features[0].sessions.len();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    let mut sequence = mockall::Sequence::new();
+    tmux.expect_create_window()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _, _| anyhow::bail!("resize failed"));
+    tmux.expect_kill_window()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
+
+    assert!(
+        app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+            .is_err()
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions.len(),
+        original_sessions
+    );
 }

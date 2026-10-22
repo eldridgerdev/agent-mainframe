@@ -194,6 +194,35 @@ pub(crate) fn saved_sessions_for_kind(
 }
 
 impl App {
+    /// Size a new window before launching its program or exposing it in a view.
+    ///
+    /// Only `create_window` failing is an error. Sizing is cosmetic: when it
+    /// fails the failure is logged and the window is kept, because attaching
+    /// to it sizes it anyway (the same fallback used when the viewport is
+    /// unknown), and dropping the user's new session over it would be worse.
+    fn create_session_window_for_viewport(
+        tmux: &dyn crate::traits::TmuxOps,
+        viewport: Option<(u16, u16)>,
+        tmux_session: &str,
+        window: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        tmux.create_window(tmux_session, window, workdir)?;
+        if let Err(error) = App::resize_session_windows_for_viewport(
+            tmux,
+            viewport,
+            tmux_session,
+            &[window.to_string()],
+        ) {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Info,
+                "session_window",
+                &format!("Could not size new window '{window}' in {tmux_session}: {error}"),
+            );
+        }
+        Ok(())
+    }
+
     /// Intercept opening a persisted agent pane whose tmux session has
     /// disappeared *and* that AMF can offer a real choice about. Returns `true`
     /// when the stopped-session dialog was opened, allowing callers to preserve
@@ -813,7 +842,13 @@ impl App {
         session_id: &str,
         command: Option<&str>,
     ) -> Result<()> {
-        self.tmux.create_window(tmux_session, window, workdir)?;
+        Self::create_session_window_for_viewport(
+            self.tmux.as_ref(),
+            self.view_pane_viewport(),
+            tmux_session,
+            window,
+            workdir,
+        )?;
 
         let status_dir = crate::extension::generated_amf_subdir(workdir, "session-status");
         let status_dir_str = status_dir.to_string_lossy().into_owned();
@@ -1106,6 +1141,7 @@ impl App {
         fi: usize,
         label: Option<String>,
     ) -> Result<String> {
+        let viewport = self.view_pane_viewport();
         let feature = match self
             .store
             .projects
@@ -1126,7 +1162,13 @@ impl App {
         let window = session_record.tmux_window.clone();
         let label = session.label.clone();
 
-        if let Err(error) = self.tmux.create_window(&tmux_session, &window, &workdir) {
+        if let Err(error) = Self::create_session_window_for_viewport(
+            self.tmux.as_ref(),
+            viewport,
+            &tmux_session,
+            &window,
+            &workdir,
+        ) {
             feature
                 .sessions
                 .retain(|session| session.id != session_record.id);
@@ -1159,6 +1201,7 @@ impl App {
             anyhow::bail!("nvim is not installed");
         }
 
+        let viewport = self.view_pane_viewport();
         let feature = match self
             .store
             .projects
@@ -1179,7 +1222,13 @@ impl App {
         let window = session_record.tmux_window.clone();
         let label = session.label.clone();
 
-        if let Err(error) = self.tmux.create_window(&tmux_session, &window, &workdir) {
+        if let Err(error) = Self::create_session_window_for_viewport(
+            self.tmux.as_ref(),
+            viewport,
+            &tmux_session,
+            &window,
+            &workdir,
+        ) {
             feature
                 .sessions
                 .retain(|session| session.id != session_record.id);
@@ -1469,7 +1518,23 @@ impl App {
         } else {
             extra_args
         };
-        self.tmux.create_window(&tmux_session, &window, &workdir)?;
+        if let Err(error) = Self::create_session_window_for_viewport(
+            self.tmux.as_ref(),
+            self.view_pane_viewport(),
+            &tmux_session,
+            &window,
+            &workdir,
+        ) {
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|p| p.features.get_mut(fi))
+            {
+                feature.sessions.retain(|session| session.id != session_id);
+            }
+            return Err(error);
+        }
         match agent {
             AgentKind::Claude => {
                 self.tmux
@@ -1712,7 +1777,13 @@ impl App {
         extra_args: Vec<String>,
         resume_id: Option<String>,
     ) -> Result<()> {
-        self.tmux.create_window(tmux_session, window, workdir)?;
+        Self::create_session_window_for_viewport(
+            self.tmux.as_ref(),
+            self.view_pane_viewport(),
+            tmux_session,
+            window,
+            workdir,
+        )?;
         match agent {
             AgentKind::Claude => {
                 self.tmux.launch_claude(
@@ -2181,8 +2252,13 @@ impl App {
                 resume_override.unwrap_or_else(|| session.claude_session_id.clone()),
             )?;
         } else {
-            self.tmux
-                .create_window(&tmux_session, &session.tmux_window, &workdir)?;
+            Self::create_session_window_for_viewport(
+                self.tmux.as_ref(),
+                self.view_pane_viewport(),
+                &tmux_session,
+                &session.tmux_window,
+                &workdir,
+            )?;
             match session.kind {
                 SessionKind::Nvim => {
                     self.tmux

@@ -26,6 +26,13 @@ impl WorkspaceTab {
             Self::Ai => 2,
         }
     }
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Files => "Files",
+            Self::Threads => "Threads",
+            Self::Ai => "AI",
+        }
+    }
     pub(crate) fn for_mode(mode: &AppMode) -> Option<Self> {
         match mode {
             AppMode::DiffViewer(_) | AppMode::DiffViewerLoading(_) => Some(Self::Files),

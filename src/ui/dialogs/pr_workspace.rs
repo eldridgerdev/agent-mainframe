@@ -24,7 +24,7 @@ pub(crate) fn pane_areas(
     expanded: bool,
 ) -> Vec<(WorkspacePane, Rect)> {
     let rows = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
@@ -113,7 +113,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
         area,
     );
     let rows = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(5),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
@@ -182,31 +182,58 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
     } else {
         workspace.tab
     };
-    let actions = match action_tab {
-        WorkspaceTab::Files => {
-            "c line cursor · Enter comment · m file comment · f summary · a approve · s skip"
-        }
-        WorkspaceTab::Threads => {
-            "f fix · v investigate · R reply · m mark/resolve · r refresh · P fix session"
-        }
-        WorkspaceTab::Ai => {
-            "s skip · e edit · f fix · Space mark · B fix marked · W preview/post AI review"
-        }
+    let actions: &[(&str, &str)] = match action_tab {
+        WorkspaceTab::Files => &[
+            ("c", "line cursor"),
+            ("Enter", "comment"),
+            ("m", "file comment"),
+            ("f", "summary"),
+            ("a", "approve"),
+            ("s", "skip"),
+        ],
+        WorkspaceTab::Threads => &[
+            ("f", "fix"),
+            ("v", "investigate"),
+            ("R", "reply"),
+            ("m", "mark/resolve"),
+            ("r", "refresh"),
+            ("P", "fix session"),
+        ],
+        WorkspaceTab::Ai => &[
+            ("s", "skip"),
+            ("e", "edit"),
+            ("f", "fix"),
+            ("Space", "mark"),
+            ("B", "fix marked"),
+            ("W", "preview/post AI review"),
+        ],
     };
-    let navigation = if ai_running {
-        "1 Files · 2 Threads · 3 AI · Tab focus · z expand · Ctrl+X cancel AI · p submit human review · ? help · q close"
+    let ai_hint = if ai_running {
+        ("Ctrl+X", "cancel AI")
     } else {
-        "1 Files · 2 Threads · 3 AI · Tab focus · z expand · A run AI · p submit human review · ? help · q close"
+        ("A", "run AI")
     };
+    let navigation = [
+        ("1/2/3", "tabs"),
+        ("Tab", "focus"),
+        ("z", "expand"),
+        ai_hint,
+        ("p", "submit review"),
+        ("?", "help"),
+        ("q", "close"),
+    ];
     let message = workspace.errors[workspace.tab.index()]
         .as_deref()
         .or(app.message.as_deref())
         .unwrap_or("F5 reopen this PR at its latest head · leader+U / W open the legacy workflows");
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(navigation, Style::default().fg(theme.primary.to_color())),
-            Line::from(actions),
-            Line::styled(message, Style::default().fg(theme.text_muted.to_color())),
+            hint_line("Go", theme.primary.to_color(), &navigation, theme),
+            hint_line(action_tab.label(), theme.warning.to_color(), actions, theme),
+            Line::styled(
+                format!(" {message}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
         ]),
         rows[2],
     );
@@ -215,6 +242,37 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
     }
     app.pr_workspace = Some(workspace);
     true
+}
+
+/// One footer row: a coloured group label, then `key label` pairs with the
+/// key as a badge and a dim divider between pairs.
+fn hint_line(
+    group: &str,
+    group_color: ratatui::style::Color,
+    hints: &[(&str, &str)],
+    theme: &Theme,
+) -> Line<'static> {
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let mut spans = vec![Span::styled(
+        format!(" {group:<6}"),
+        Style::default()
+            .fg(group_color)
+            .add_modifier(Modifier::BOLD),
+    )];
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" │ ", muted));
+        }
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default()
+                .fg(theme.shortcut_text.to_color())
+                .bg(theme.shortcut_background.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(format!(" {label}")));
+    }
+    Line::from(spans)
 }
 
 fn ai_state(mode: Option<&AppMode>) -> Option<&AiReviewState> {
@@ -348,46 +406,67 @@ fn draw_header(
     } else {
         progress
     };
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let sep = || Span::styled("  │  ", muted);
     let tabs = [
-        (WorkspaceTab::Files, " 1 Files "),
-        (WorkspaceTab::Threads, " 2 Threads "),
-        (WorkspaceTab::Ai, " 3 AI "),
+        (WorkspaceTab::Files, "1 Files"),
+        (WorkspaceTab::Threads, "2 Threads"),
+        (WorkspaceTab::Ai, "3 AI"),
     ]
     .into_iter()
-    .map(|(tab, label)| {
-        Span::styled(
-            label,
+    .flat_map(|(tab, label)| {
+        let style = if workspace.tab == tab {
             Style::default()
-                .fg(if workspace.tab == tab {
-                    theme.warning.to_color()
-                } else {
-                    theme.text_muted.to_color()
-                })
-                .add_modifier(if workspace.tab == tab {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
-        )
+                .fg(theme.shortcut_text.to_color())
+                .bg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            muted
+        };
+        [Span::styled(format!(" {label} "), style), Span::raw("   ")]
     })
     .collect::<Vec<_>>();
+    let ai_color = if ai_running {
+        theme.warning.to_color()
+    } else {
+        theme.info.to_color()
+    };
+    let status_color = if workspace.observed_head_moved(active) {
+        theme.danger.to_color()
+    } else {
+        theme.text_muted.to_color()
+    };
     frame.render_widget(
         Paragraph::new(vec![
-            Line::styled(
-                format!(" PR Workspace (experimental) · #{} · {title}", pr.number),
-                Style::default()
-                    .fg(theme.primary.to_color())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Line::from(format!(
-                " {} · head {} · {threads} · {ai}",
-                pr.head_ref,
-                pr.head_sha.get(..8).unwrap_or(&pr.head_sha)
-            )),
-            Line::styled(
-                format!(" {status}"),
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
+            Line::from(vec![
+                Span::styled(
+                    format!(" #{} ", pr.number),
+                    Style::default()
+                        .fg(theme.shortcut_text.to_color())
+                        .bg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {title}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    format!(" {}", pr.head_ref),
+                    Style::default().fg(theme.secondary.to_color()),
+                ),
+                Span::styled(
+                    format!(" @ {}", pr.head_sha.get(..8).unwrap_or(&pr.head_sha)),
+                    muted,
+                ),
+                sep(),
+                Span::styled(threads, Style::default().fg(theme.success.to_color())),
+                sep(),
+                Span::styled(ai, Style::default().fg(ai_color)),
+            ]),
+            Line::styled(format!(" {status}"), Style::default().fg(status_color)),
+            Line::raw(""),
             Line::from(tabs),
         ]),
         area,
@@ -421,7 +500,15 @@ fn draw_pane(
                     theme,
                 );
             } else {
+                // Side-by-side halves an already narrow pane and clips long
+                // lines; the unified layout wraps them, so nothing runs off
+                // the edge.
+                let layout = files.layout.clone();
+                if area.width < 110 {
+                    files.layout = crate::app::DiffViewerLayout::Unified;
+                }
                 super::diff::draw_patch(frame, area, files, theme);
+                files.layout = layout;
             }
         }
         return;
@@ -543,15 +630,37 @@ fn draw_manual_context(
     if detached > 0 {
         text.push_str(&format!("{detached} removed file(s) have comments kept for the submission summary. Press p to preview them.\n\n"));
     }
-    text.push_str(
-        "c line cursor · Enter comment\nm file comment · f summary\np preview and submit",
-    );
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Your review ");
     let inner = block.inner(area);
-    let rendered =
+    let mut rendered =
         crate::markdown::render_markdown(&text, theme, inner.width.max(1) as usize, None);
+    rendered.lines.push(Line::raw(""));
+    rendered.lines.push(Line::styled(
+        "Keys",
+        Style::default()
+            .fg(theme.warning.to_color())
+            .add_modifier(Modifier::BOLD),
+    ));
+    for (key, label) in [
+        ("c", "line cursor"),
+        ("Enter", "comment on line"),
+        ("m", "file comment"),
+        ("f", "review summary"),
+        ("p", "preview and submit"),
+    ] {
+        rendered.lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {key:<5} "),
+                Style::default()
+                    .fg(theme.shortcut_text.to_color())
+                    .bg(theme.shortcut_background.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" {label}")),
+        ]));
+    }
     state.notes_rendered_lines = rendered.lines.len();
     state.notes_view_height = inner.height as usize;
     state.notes_scroll = state.notes_scroll.min(

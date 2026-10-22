@@ -589,6 +589,9 @@ pub struct DiffViewerState {
     pub patch_scroll: usize,
     pub focus: DiffViewerFocus,
     pub layout: DiffViewerLayout,
+    /// Set while a host pane is too narrow for side-by-side and has forced
+    /// `layout` to unified; holds the layout to restore when it widens.
+    pub narrow_layout_restore: Option<DiffViewerLayout>,
     pub error: Option<String>,
     /// When true the viewer is a final-review session: each file can be
     /// approved/rejected/skipped and feedback is collected on finish.
@@ -911,6 +914,7 @@ impl DiffViewerState {
             patch_scroll: 0,
             focus: DiffViewerFocus::FileList,
             layout: DiffViewerLayout::Unified,
+            narrow_layout_restore: None,
             error: None,
             review: false,
             decisions: std::collections::HashMap::new(),

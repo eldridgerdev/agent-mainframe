@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Explain waiting edits in the desktop app.** Read saved review notes without
+  an AI call, or review the exact prompt before asking Claude for an explanation.
+  Calls can be cancelled, changed edits discard old results, and unsent rejection
+  feedback stays in place. Explanations never answer the waiting agent. No
+  migration is required.
 - **Adjust desktop sizing for laptop and external displays.** Appearance now
   offers 80–200% interface zoom and a separate 11–28px terminal text size.
   Changes apply immediately and are remembered across launches, while running
@@ -36,6 +41,11 @@ are tagged.
   Agents still take screenshots only when you ask for visual proof or ask
   them to look at a UI, and publish only screenshots they captured
   themselves.
+
+### Fixed
+
+- **Empty saved review notes no longer trigger an AI explanation call.** Both
+  interfaces now show an explicitly empty note instead of silently asking Claude.
 
 ## [v0.50.0] - 2026-10-19
 

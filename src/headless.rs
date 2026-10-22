@@ -517,6 +517,38 @@ impl HeadlessRunner {
         )
     }
 
+    /// Admission checks executable candidates only. Version readiness belongs
+    /// to the owned worker, never a GUI-lock-held subprocess.
+    pub(crate) fn edit_explanation_available() -> bool {
+        let binary = crate::claude::ClaudeLauncher::resolve_binary_with(executable_candidate);
+        if binary != "claude" {
+            return true;
+        }
+        claude_on_path().is_some()
+    }
+
+    /// A supervised-edit explanation receives no repository tools and cannot
+    /// retain a conversation. One budget covers version discovery and the run.
+    pub(crate) fn run_edit_explanation(
+        workdir: &Path,
+        prompt: &str,
+        model: ModelSel<'_>,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<String> {
+        run_edit_explanation_resolving(
+            workdir,
+            prompt,
+            model,
+            cancelled,
+            std::time::Duration::from_secs(180),
+            |check| {
+                let selected = crate::claude::ClaudeLauncher::resolve_binary_with(check);
+                let fallback = (selected == "claude").then(claude_on_path).flatten();
+                ExplanationBinary { selected, fallback }
+            },
+        )
+    }
+
     /// [`Self::run_read_only`], plus the user's MCP tools when `mcp` is set
     /// and the harness is Claude — the only harness with an isolation mode
     /// that can still load MCP servers and claude.ai connectors (see
@@ -950,6 +982,64 @@ fn run_cancellable_command(
     cancelled: &std::sync::atomic::AtomicBool,
     timeout: std::time::Duration,
 ) -> Result<String> {
+    run_cancellable_command_with_options(
+        harness,
+        spec,
+        workdir,
+        prompt,
+        sel,
+        CancellableOptions {
+            cancelled,
+            timeout,
+            limits: None,
+        },
+    )
+}
+
+struct CancellableOptions<'a> {
+    cancelled: &'a std::sync::atomic::AtomicBool,
+    timeout: std::time::Duration,
+    limits: Option<(usize, usize)>,
+}
+
+fn read_bounded_pipe(
+    mut pipe: impl Read,
+    limit: usize,
+    overflow: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = match pipe.read(&mut buffer) {
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if count == 0 {
+            return Ok(bytes);
+        }
+        let retained = count.min(limit.saturating_sub(bytes.len()));
+        bytes.extend_from_slice(&buffer[..retained]);
+        if retained < count {
+            overflow.store(true, std::sync::atomic::Ordering::Relaxed);
+            // Keep draining until the owner terminates the process group.
+        }
+    }
+}
+
+fn run_cancellable_command_with_options(
+    harness: &AgentKind,
+    spec: &HeadlessCommand,
+    workdir: &Path,
+    prompt: &str,
+    sel: ModelSel<'_>,
+    options: CancellableOptions<'_>,
+) -> Result<String> {
+    let CancellableOptions {
+        cancelled,
+        timeout,
+        limits,
+    } = options;
     use std::os::unix::process::CommandExt;
     use std::sync::atomic::Ordering;
     anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
@@ -976,26 +1066,28 @@ fn run_cancellable_command(
     let child = run.child.as_mut().expect("new run");
     let process = child.child.as_mut().expect("new child");
     let mut stdin = process.stdin.take().context("Question stdin unavailable")?;
-    let mut stdout = process
+    let stdout = process
         .stdout
         .take()
         .context("Question stdout unavailable")?;
-    let mut stderr = process
+    let stderr = process
         .stderr
         .take()
         .context("Question stderr unavailable")?;
     let prompt = prompt.to_owned();
     let writer = std::thread::spawn(move || stdin.write_all(prompt.as_bytes()));
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let errors = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).map(|_| bytes)
-    });
+    let overflow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let out_overflow = overflow.clone();
+    let err_overflow = overflow.clone();
+    let (out_limit, err_limit) = limits.unwrap_or((usize::MAX, usize::MAX));
+    let reader = std::thread::spawn(move || read_bounded_pipe(stdout, out_limit, &out_overflow));
+    let errors = std::thread::spawn(move || read_bounded_pipe(stderr, err_limit, &err_overflow));
     let started = std::time::Instant::now();
     let status = loop {
+        anyhow::ensure!(
+            !overflow.load(Ordering::Relaxed),
+            "Explanation output exceeded its display limit"
+        );
         anyhow::ensure!(!cancelled.load(Ordering::Relaxed), "Question cancelled");
         anyhow::ensure!(
             started.elapsed() < timeout,
@@ -1014,6 +1106,10 @@ fn run_cancellable_command(
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
+    anyhow::ensure!(
+        !overflow.load(Ordering::Relaxed),
+        "Explanation output exceeded its display limit"
+    );
     let stderr = errors
         .join()
         .map_err(|_| anyhow::anyhow!("Question stderr reader stopped"))??;
@@ -1697,24 +1793,149 @@ fn json_error_message(error: Option<&serde_json::Value>) -> Option<String> {
         .or_else(|| error.as_str().map(str::to_string))
 }
 
+fn executable_candidate(path: &Path) -> bool {
+    path.metadata().is_ok_and(|metadata| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            metadata.is_file()
+        }
+    })
+}
+
+fn claude_on_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|path| path.join("claude"))
+            .find(|path| executable_candidate(path))
+            .and_then(|path| path.canonicalize().ok())
+    })
+}
+
+/// A private resolver result keeps tests wholly on owned executable paths.
+struct ExplanationBinary {
+    selected: String,
+    fallback: Option<std::path::PathBuf>,
+}
+
+fn explanation_budget(
+    cancelled: &std::sync::atomic::AtomicBool,
+    deadline: std::time::Instant,
+) -> Result<std::time::Duration> {
+    anyhow::ensure!(
+        !cancelled.load(std::sync::atomic::Ordering::Relaxed),
+        "Explanation cancelled"
+    );
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    anyhow::ensure!(
+        !remaining.is_zero(),
+        "Explanation timed out; retry when ready"
+    );
+    Ok(remaining)
+}
+
+fn ready_explanation_binary(
+    workdir: &Path,
+    cancelled: &std::sync::atomic::AtomicBool,
+    deadline: std::time::Instant,
+    resolve: impl FnOnce(&mut dyn FnMut(&Path) -> bool) -> ExplanationBinary,
+) -> Result<String> {
+    let mut available = |path: &Path| {
+        let Ok(remaining) = explanation_budget(cancelled, deadline) else {
+            return false;
+        };
+        let version = HeadlessCommand {
+            binary: path.to_string_lossy().into_owned(),
+            args: vec!["--version"],
+            trailing: vec![],
+            envs: vec![],
+        };
+        run_cancellable_command_with_options(
+            &AgentKind::Claude,
+            &version,
+            workdir,
+            "",
+            ModelSel::default(),
+            CancellableOptions {
+                cancelled,
+                timeout: remaining.min(std::time::Duration::from_secs(2)),
+                limits: Some((16 * 1024, 16 * 1024)),
+            },
+        )
+        .is_ok()
+    };
+    let binary = resolve(&mut available);
+    // A timed out/cancelled candidate must never cause a PATH fallback launch.
+    explanation_budget(cancelled, deadline)?;
+    if binary.selected == "claude" {
+        let fallback = binary
+            .fallback
+            .context("Claude is not installed or executable")?;
+        let found = available(&fallback);
+        explanation_budget(cancelled, deadline)?;
+        anyhow::ensure!(
+            found,
+            "Claude version readiness failed; check the installed executable and retry"
+        );
+        return Ok(fallback.to_string_lossy().into_owned());
+    }
+    Ok(binary.selected)
+}
+
+fn run_edit_explanation_resolving(
+    workdir: &Path,
+    prompt: &str,
+    model: ModelSel<'_>,
+    cancelled: &std::sync::atomic::AtomicBool,
+    timeout: std::time::Duration,
+    resolve: impl FnOnce(&mut dyn FnMut(&Path) -> bool) -> ExplanationBinary,
+) -> Result<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    explanation_budget(cancelled, deadline)?;
+    let binary = ready_explanation_binary(workdir, cancelled, deadline, resolve)?;
+    let mut spec = claude_command(binary, true);
+    spec.args.push("--no-session-persistence");
+    anyhow::ensure!(
+        headless_command_is_read_only(&AgentKind::Claude, &spec),
+        "Unsupported explanation harness"
+    );
+    run_cancellable_command_with_options(
+        &AgentKind::Claude,
+        &spec,
+        workdir,
+        prompt,
+        model,
+        CancellableOptions {
+            cancelled,
+            timeout: explanation_budget(cancelled, deadline)?,
+            limits: Some((1024 * 1024, 64 * 1024)),
+        },
+    )
+}
+
+fn claude_command(binary: String, restricted: bool) -> HeadlessCommand {
+    let mut args = vec!["-p", "--output-format", "text"];
+    if restricted {
+        // Safe mode drops repo hooks/MCP/plugins without dropping auth;
+        // an empty whitelist cannot inherit a repository settings allow rule.
+        args.extend(["--safe-mode", "--tools", ""]);
+    }
+    HeadlessCommand {
+        binary,
+        args,
+        trailing: vec![],
+        envs: vec![],
+    }
+}
+
 fn command_for(harness: &AgentKind, restricted: bool) -> HeadlessCommand {
     match harness {
         AgentKind::Claude => {
-            let mut args = vec!["-p", "--output-format", "text"];
-            if restricted {
-                // Verified against the installed `claude --help`: --safe-mode
-                // drops repo-configured hooks/MCP servers/plugins without
-                // touching auth (unlike --bare, which also disables OAuth),
-                // and --tools "" empties the tool whitelist outright so no
-                // settings-file allow rule can grant Bash/Edit/Read.
-                args.extend(["--safe-mode", "--tools", ""]);
-            }
-            HeadlessCommand {
-                binary: crate::claude::ClaudeLauncher::resolve_binary(),
-                args,
-                trailing: vec![],
-                envs: vec![],
-            }
+            claude_command(crate::claude::ClaudeLauncher::resolve_binary(), restricted)
         }
         AgentKind::Codex => HeadlessCommand {
             binary: "codex".into(),
@@ -2040,6 +2261,380 @@ fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
 mod tests {
     use super::*;
     use crate::resources::limits::{in_flight_headless_runs, lock_lease_tests, wait_for_in_flight};
+
+    #[test]
+    fn bounded_explanation_uses_the_exact_ready_binary_and_restricted_arguments() {
+        let _guard = lock_lease_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = dir.path().join("selected");
+        let fallback = dir.path().join("fallback");
+        crate::resources::test_support::write_executable_script(
+            &candidate,
+            r#"#!/bin/sh
+printf '%s\n' "$1" >> calls
+if [ "$1" = --version ]; then echo fixture-version; exit; fi
+printf '%s\n' "$@" > args
+cat > prompt
+printf 'ready answer'
+"#,
+        );
+        crate::resources::test_support::write_executable_script(
+            &fallback,
+            r#"#!/bin/sh
+touch unexpected-fallback
+exit 1
+"#,
+        );
+        assert!(executable_candidate(&candidate));
+        assert!(
+            !dir.path().join("calls").exists(),
+            "Metadata admission must launch no process"
+        );
+        let answer = run_edit_explanation_resolving(
+            dir.path(),
+            "exact approved prompt",
+            ModelSel::new(Some("configured-model"), Some(ReasoningLevel::High)),
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::from_secs(5),
+            |available| {
+                assert!(available(&candidate));
+                ExplanationBinary {
+                    selected: candidate.to_string_lossy().into_owned(),
+                    fallback: Some(fallback),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(answer, "ready answer");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+            "--version
+-p
+"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("prompt")).unwrap(),
+            "exact approved prompt"
+        );
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        assert!(args.contains(
+            "--safe-mode
+--tools
+
+"
+        ));
+        assert!(args.contains("--no-session-persistence"));
+        assert!(args.contains(
+            "--model
+configured-model
+--effort
+high"
+        ));
+        assert!(!dir.path().join("unexpected-fallback").exists());
+        assert_eq!(
+            claude_command("owned".into(), false).args,
+            ["-p", "--output-format", "text"]
+        );
+    }
+
+    #[test]
+    fn bounded_explanation_version_timeout_keeps_lease_until_reap_and_never_falls_back() {
+        let _guard = lock_lease_tests();
+        let baseline = wait_for_in_flight(0);
+        let unrelated = crate::resources::test_support::TestChild::new(
+            Command::new("sleep").arg("30").spawn().unwrap(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let stalled = dir.path().join("stalled-version");
+        let fallback = dir.path().join("fallback");
+        crate::resources::test_support::write_executable_script(
+            &stalled,
+            r#"#!/bin/sh
+trap '' TERM
+echo $$ > version.pid
+sleep 30 & wait
+"#,
+        );
+        crate::resources::test_support::write_executable_script(
+            &fallback,
+            r#"#!/bin/sh
+touch unexpected-fallback
+echo fallback-version
+"#,
+        );
+        let error = run_edit_explanation_resolving(
+            dir.path(),
+            "never sent",
+            ModelSel::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::from_millis(120),
+            |available| {
+                assert!(!available(&stalled));
+                ExplanationBinary {
+                    selected: "claude".into(),
+                    fallback: Some(fallback),
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(!dir.path().join("unexpected-fallback").exists());
+        let pid: i64 = std::fs::read_to_string(dir.path().join("version.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            in_flight_headless_runs() >= baseline + 1,
+            "The ignored SIGTERM still owns a lease"
+        );
+        assert!(wait_for_exit(pid, 5));
+        assert_eq!(wait_for_in_flight(baseline), baseline);
+        assert!(crate::resources::procs::pid_alive(unrelated.id() as i64));
+    }
+
+    #[test]
+    fn bounded_explanation_cancels_version_parent_with_descendant_held_pipes() {
+        let _guard = lock_lease_tests();
+        let baseline = wait_for_in_flight(0);
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = dir.path().join("version-descendant");
+        let fallback = dir.path().join("fallback");
+        crate::resources::test_support::write_executable_script(
+            &candidate,
+            r#"#!/bin/sh
+echo $$ > version.pid
+sleep 30 &
+echo $! > descendant.pid
+exit 0
+"#,
+        );
+        crate::resources::test_support::write_executable_script(
+            &fallback,
+            r#"#!/bin/sh
+touch unexpected-fallback
+echo fallback-version
+"#,
+        );
+        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = cancelled.clone();
+        let marker = dir.path().join("descendant.pid");
+        let canceller = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !marker.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            token.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let error = run_edit_explanation_resolving(
+            dir.path(),
+            "never sent",
+            ModelSel::default(),
+            &cancelled,
+            std::time::Duration::from_secs(5),
+            |available| {
+                assert!(!available(&candidate));
+                ExplanationBinary {
+                    selected: "claude".into(),
+                    fallback: Some(fallback),
+                }
+            },
+        )
+        .unwrap_err();
+        canceller.join().unwrap();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(!dir.path().join("unexpected-fallback").exists());
+        let pid: i64 = std::fs::read_to_string(dir.path().join("version.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(wait_for_exit(pid, 5));
+        assert_eq!(wait_for_in_flight(baseline), baseline);
+    }
+
+    #[test]
+    fn bounded_explanation_version_output_limits_try_only_the_owned_fallback() {
+        let _guard = lock_lease_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let fallback = dir.path().join("fallback");
+        crate::resources::test_support::write_executable_script(
+            &fallback,
+            r#"#!/bin/sh
+printf '%s\n' "$1" >> fallback-calls
+if [ "$1" = --version ]; then echo fixture-version; else cat >/dev/null; echo fallback-answer; fi
+"#,
+        );
+        for stream in ["", " >&2"] {
+            let candidate = dir.path().join("noisy-version");
+            crate::resources::test_support::write_executable_script(
+                &candidate,
+                &format!(
+                    r#"#!/bin/sh
+head -c 32768 /dev/zero | tr '\000' x{stream}
+"#
+                ),
+            );
+            let answer = run_edit_explanation_resolving(
+                dir.path(),
+                "exact",
+                ModelSel::default(),
+                &std::sync::atomic::AtomicBool::new(false),
+                std::time::Duration::from_secs(5),
+                |available| {
+                    assert!(!available(&candidate));
+                    ExplanationBinary {
+                        selected: "claude".into(),
+                        fallback: Some(fallback.clone()),
+                    }
+                },
+            )
+            .unwrap();
+            assert_eq!(answer, "fallback-answer");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("fallback-calls")).unwrap(),
+            "--version
+-p
+--version
+-p
+"
+        );
+    }
+
+    #[test]
+    fn bounded_explanation_discovers_and_runs_with_one_total_budget() {
+        let _guard = lock_lease_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let candidate = dir.path().join("shared-budget");
+        crate::resources::test_support::write_executable_script(
+            &candidate,
+            r#"#!/bin/sh
+if [ "$1" = --version ]; then sleep 1; echo version; else touch ai-started; cat >/dev/null; sleep 2.5; echo late-answer; fi
+"#,
+        );
+        let result = run_edit_explanation_resolving(
+            dir.path(),
+            "approved",
+            ModelSel::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+            std::time::Duration::from_secs(3),
+            |available| {
+                assert!(available(&candidate));
+                ExplanationBinary {
+                    selected: candidate.to_string_lossy().into_owned(),
+                    fallback: None,
+                }
+            },
+        );
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(dir.path().join("ai-started").exists());
+        // Each phase fits three seconds alone; their combined time does not.
+        // A fresh execution budget would incorrectly return late-answer.
+    }
+
+    #[test]
+    fn bounded_pipe_retries_interrupted_reads_and_retains_only_the_limit() {
+        struct InterruptedOnce {
+            interrupted: bool,
+            bytes: std::io::Cursor<Vec<u8>>,
+        }
+        impl Read for InterruptedOnce {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.bytes.read(buffer)
+            }
+        }
+        let overflow = std::sync::atomic::AtomicBool::new(false);
+        let bytes = read_bounded_pipe(
+            InterruptedOnce {
+                interrupted: false,
+                bytes: std::io::Cursor::new(b"abcdef".to_vec()),
+            },
+            4,
+            &overflow,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"abcd");
+        assert!(overflow.load(std::sync::atomic::Ordering::Relaxed));
+        let overflow = std::sync::atomic::AtomicBool::new(false);
+        assert_eq!(
+            read_bounded_pipe(&b"abcd"[..], 4, &overflow).unwrap(),
+            b"abcd"
+        );
+        assert!(!overflow.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn bounded_explanation_drains_both_streams_and_reports_each_overflow() {
+        let _guard = lock_lease_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("receiver");
+        for (stdout_bytes, stderr_bytes, expected) in [
+            (80000, 80000, None),
+            (160000, 80000, Some("limit")),
+            (80000, 160000, Some("limit")),
+        ] {
+            crate::resources::test_support::write_executable_script(
+                &executable,
+                &format!(
+                    "#!/bin/sh\n(head -c {stdout_bytes} /dev/zero | tr '\\000' x) &\n(head -c {stderr_bytes} /dev/zero | tr '\\000' e >&2) &\ncat >/dev/null\nwait\n"
+                ),
+            );
+            let spec = HeadlessCommand {
+                binary: executable.to_string_lossy().into_owned(),
+                args: vec![],
+                trailing: vec![],
+                envs: vec![],
+            };
+            let result = run_cancellable_command_with_options(
+                &AgentKind::Claude,
+                &spec,
+                dir.path(),
+                &"prompt".repeat(50000),
+                ModelSel::default(),
+                CancellableOptions {
+                    cancelled: &std::sync::atomic::AtomicBool::new(false),
+                    timeout: std::time::Duration::from_secs(5),
+                    limits: Some((100000, 100000)),
+                },
+            );
+            if let Some(message) = expected {
+                assert!(result.unwrap_err().to_string().contains(message));
+            } else {
+                assert_eq!(result.unwrap().len(), stdout_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_explanation_deadline_covers_blocked_stdin_and_descendant_pipes() {
+        let _guard = lock_lease_tests();
+        for script in ["sleep 30", "sleep 30 & exit 0"] {
+            let spec = HeadlessCommand {
+                binary: "sh".into(),
+                args: vec!["-c", script],
+                trailing: vec![],
+                envs: vec![],
+            };
+            let result = run_cancellable_command_with_options(
+                &AgentKind::Claude,
+                &spec,
+                Path::new("/tmp"),
+                &"blocked prompt".repeat(50000),
+                ModelSel::default(),
+                CancellableOptions {
+                    cancelled: &std::sync::atomic::AtomicBool::new(false),
+                    timeout: std::time::Duration::from_millis(70),
+                    limits: Some((1000, 1000)),
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("timed out"));
+        }
+    }
 
     #[test]
     fn review_question_commands_keep_each_harness_read_only_and_pipe_the_prompt() {

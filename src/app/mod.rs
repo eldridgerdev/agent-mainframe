@@ -15,6 +15,7 @@ mod context_hints;
 mod context_settings;
 mod diff;
 pub(crate) mod dormant;
+pub(crate) mod edit_explanation;
 pub(crate) mod editor_ops;
 pub(crate) mod feature_ops;
 pub(crate) mod feature_setup;

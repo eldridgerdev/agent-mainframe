@@ -235,26 +235,17 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
         _ => return,
     };
 
-    if let Some(explanation) = find_review_note(&workdir, &relative_path) {
-        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
-            state.explanation = Some(explanation.trim().to_string());
-        }
-        return;
-    }
-
-    let repo =
-        crate::worktree::WorktreeManager::repo_root(&workdir).unwrap_or_else(|_| workdir.clone());
-    let ctx = crate::prompts::PromptContext::new()
-        .with("file_path", relative_path)
-        .with("old_snippet", old_snippet)
-        .with("new_snippet", new_snippet);
-    let prompt = app.resolve_headless_prompt(
-        crate::prompts::PromptId::ReviewDiffExplain,
-        &crate::project::AgentKind::Claude,
-        &repo,
-        &workdir,
-        &ctx,
-    );
+    let call =
+        match app.prepare_edit_explanation(&workdir, &relative_path, &old_snippet, &new_snippet) {
+            crate::app::edit_explanation::ExplanationPreparation::SavedNote(explanation) => {
+                if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+                    state.explanation = Some(explanation);
+                }
+                return;
+            }
+            crate::app::edit_explanation::ExplanationPreparation::Call(call) => call,
+        };
+    let prompt = call.prompt;
     if !app.precall_gate(
         crate::app::precall::PrecallAction::ReviewDiffExplain,
         &crate::project::AgentKind::Claude,
@@ -263,16 +254,10 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
         return;
     }
 
-    let model = app
-        .config
-        .review_model_for(crate::app::ReviewAction::DiffExplain);
-    let reasoning = app
-        .config
-        .review_reasoning_for(crate::app::ReviewAction::DiffExplain);
     match ClaudeLauncher::spawn_headless(
         &workdir,
         &prompt,
-        crate::headless::ModelSel::new(model.as_deref(), reasoning),
+        crate::headless::ModelSel::new(call.model.as_deref(), call.reasoning),
     ) {
         Ok(child) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
@@ -288,14 +273,11 @@ pub(crate) fn generate_diff_review_explanation(app: &mut App) {
     }
 }
 
-fn find_review_note(workdir: &std::path::Path, relative_path: &str) -> Option<String> {
-    crate::app::review::load_review_notes(workdir).remove(relative_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::DiffReviewState;
+    use crate::app::edit_explanation::find_review_note;
     use crate::diff::{DiffFile, DiffFileStatus};
     use crate::project::ProjectStore;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -357,6 +339,40 @@ mod tests {
             patch: String::new(),
             hunks: vec![],
         }
+    }
+
+    #[test]
+    fn saved_and_explicitly_empty_review_notes_do_not_open_a_call() {
+        for body in ["Saved rationale", ""] {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir(dir.path().join(".claude")).unwrap();
+            std::fs::write(
+                dir.path().join(".claude/review-notes.md"),
+                format!("## src/main.rs\n\n{body}\n"),
+            )
+            .unwrap();
+            let mut app = make_app_with_prompt(dir.path());
+            generate_diff_review_explanation(&mut app);
+            let AppMode::DiffReviewPrompt(state) = &app.mode else {
+                panic!("Saved notes must not open a pre-call notice")
+            };
+            assert_eq!(state.explanation.as_deref(), Some(body));
+            assert!(state.explanation_child.is_none());
+            // Other review consumers continue ignoring empty sections.
+            if body.is_empty() {
+                assert!(crate::app::review::load_review_notes(dir.path()).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn explanation_without_saved_note_still_requires_the_tui_precall_gate() {
+        let dir = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(dir.path());
+        generate_diff_review_explanation(&mut app);
+        assert!(matches!(app.mode, AppMode::PromptPrecall(_)));
+        assert!(!dir.path().join("response.json").exists());
+        assert!(!dir.path().join("proceed").exists());
     }
 
     #[test]

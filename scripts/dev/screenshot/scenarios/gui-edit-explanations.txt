@@ -1,0 +1,5 @@
+# Supervised-edit explanations: real waiting hook, offline restricted receiver.
+note:The private dashboard confirms readiness before the native explanation proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-edit-explanations.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

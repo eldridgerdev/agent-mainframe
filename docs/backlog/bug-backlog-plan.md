@@ -650,7 +650,9 @@ uppercase-key problem.
 - **Reported:** 2026-06-24
 - **Root cause:** AMF only looked for Claude tasks under
   `~/.claude/tasks/<session_id>` or reconstructed them from transcript
-  `TaskCreate` / `TaskUpdate` events. Claude can persist the visible
+  `TaskCreate` / `TaskUpdate` events (the transcript fallback was later
+  removed: parsing large transcripts on every sidebar draw made typing lag).
+  Claude can persist the visible
   checklist under a separate task-store ID, leaving the sidebar with no
   `Todos` section even while Claude shows tasks in the pane.
 - **Fix:** Keep the exact session task directory as the first choice, then

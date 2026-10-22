@@ -27,7 +27,7 @@ impl std::error::Error for WorktreeHookChoiceError {}
 
 /// The one place the hook-choice rule lives: a prompted hook needs one of its
 /// options; an unprompted hook (or none) takes no choice, so `None`.
-fn checked_hook_choice<'a>(
+pub(super) fn checked_hook_choice<'a>(
     prompt: Option<&HookPrompt>,
     choice: Option<&'a str>,
 ) -> std::result::Result<Option<&'a str>, WorktreeHookChoiceError> {

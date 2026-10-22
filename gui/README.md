@@ -879,3 +879,19 @@ Opening keeps unsent composer drafts and never starts a stopped session.
 Native Linux proof uses private SQLite/Git/tmux fixtures and offline harnesses:
 `scripts/dev/screenshot/scenarios/gui-bookmarks.txt`. macOS runtime validation
 remains open.
+
+
+### Final Review feedback destinations
+
+From **Pre-finish summary**, choose **Choose feedback destination…**. Existing
+sessions are selected without starting them. Dedicated review agents and companion
+worktrees have a separate preview and **Prepare destination** confirmation,
+including any resource warning or worktree setup choice. Cancelling a pending
+launch waits for setup to settle and retains created resources for recovery.
+
+Completion always opens feedback as an unsent composer draft, preserving existing
+text. Another checkout receives the original reviewed source's feedback path;
+its own feedback file is not replaced. Companion worktrees branch from the
+confirmed committed HEAD, so uncommitted reviewed changes are not copied.
+Companion commit integration remains a terminal workflow. See
+[validation and limitations](../docs/development/gui-review-feedback-destinations.md).

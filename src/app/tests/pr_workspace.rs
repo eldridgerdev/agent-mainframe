@@ -549,7 +549,7 @@ fn ai_fix_handoff_preserves_the_ai_view_and_reuses_the_existing_triage() {
     worktree
         .expect_repo_root()
         .returning(move |_| Ok(root.clone()));
-    app.worktree = Box::new(worktree);
+    app.worktree = std::sync::Arc::new(worktree);
     app.selection = Selection::Feature(0, 0);
     press(app, KeyCode::Char('3'));
     press(app, KeyCode::Char('f'));

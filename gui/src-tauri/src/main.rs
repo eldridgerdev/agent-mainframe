@@ -325,6 +325,33 @@ async fn review_snapshot(
 }
 
 #[tauri::command]
+async fn review_destination_catalog(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision: u64,
+) -> Result<gui_review::destinations::DestinationCatalog, GuiError> {
+    gui_review::destinations::catalog(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+    )
+}
+#[tauri::command]
+async fn review_destination_preview(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision: u64,
+    choice: gui_review::destinations::DestinationChoice,
+) -> Result<gui_review::destinations::DestinationPreview, GuiError> {
+    gui_review::destinations::preview(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        revision,
+        choice,
+    )
+}
+
+#[tauri::command]
 fn review_take_completion(
     state: State<AppState>,
     workflow_id: String,
@@ -2069,6 +2096,8 @@ fn main() {
             prompt_overrides_precall_target,
             review_begin,
             review_snapshot,
+            review_destination_catalog,
+            review_destination_preview,
             review_act,
             review_take_completion,
             load_diff,

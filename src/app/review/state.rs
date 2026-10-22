@@ -384,7 +384,7 @@ pub enum FileTreeRow {
         /// Full directory path from the repo root, e.g. `src/app`. Also the key
         /// used in `collapsed_dirs` / `tree_cursor_dir`.
         path: String,
-        /// Just this level's segment, e.g. `app` — what the row displays.
+        /// Display path, e.g. `app` or a compressed chain like `ui/dialogs`.
         label: String,
         depth: usize,
         collapsed: bool,
@@ -1297,7 +1297,82 @@ impl DiffViewerState {
                 });
             }
         }
-        rows
+        // Merge a directory with its sole directory child. Keep the deepest
+        // path as its identity so folding and revealing use real ancestors.
+        let mut compact = Vec::new();
+        let mut ancestors: Vec<usize> = Vec::new();
+        let mut iter = rows.into_iter().peekable();
+        while let Some(mut row) = iter.next() {
+            let original_depth = match &row {
+                FileTreeRow::Dir { depth, .. } | FileTreeRow::File { depth, .. } => *depth,
+            };
+            while ancestors
+                .last()
+                .is_some_and(|depth| *depth >= original_depth)
+            {
+                ancestors.pop();
+            }
+            match &mut row {
+                FileTreeRow::Dir {
+                    path,
+                    label,
+                    depth,
+                    collapsed,
+                    files,
+                } => {
+                    let mut last_depth = original_depth;
+                    while !*collapsed {
+                        let Some(FileTreeRow::Dir {
+                            depth: child_depth,
+                            files: child_files,
+                            ..
+                        }) = iter.peek()
+                        else {
+                            break;
+                        };
+                        if *child_depth != last_depth + 1 || child_files != files {
+                            break;
+                        }
+                        let Some(FileTreeRow::Dir {
+                            path: child_path,
+                            label: child_label,
+                            depth: child_depth,
+                            collapsed: child_collapsed,
+                            ..
+                        }) = iter.next()
+                        else {
+                            unreachable!()
+                        };
+                        label.push('/');
+                        label.push_str(&child_label);
+                        *path = child_path;
+                        *collapsed = child_collapsed;
+                        last_depth = child_depth;
+                    }
+                    *depth = ancestors.len();
+                    ancestors.push(last_depth);
+                }
+                FileTreeRow::File { depth, .. } => *depth = ancestors.len(),
+            }
+            compact.push(row);
+        }
+        compact
+    }
+
+    /// Fold large changesets initially, opening only the selected file's ancestors.
+    /// The loader calls this once so refreshes preserve manual fold choices.
+    pub fn initialize_file_tree(&mut self) {
+        if self.files.len() >= 100 {
+            self.collapsed_dirs = self
+                .file_tree_rows()
+                .into_iter()
+                .filter_map(|row| match row {
+                    FileTreeRow::Dir { path, .. } => Some(path),
+                    _ => None,
+                })
+                .collect();
+            self.reveal_selected_file();
+        }
     }
 
     /// Expand every collapsed ancestor of the selected file so the selection is

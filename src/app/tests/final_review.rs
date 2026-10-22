@@ -1340,6 +1340,34 @@ fn file_tree_rows_group_by_directory_without_reordering_the_file_list() {
 }
 
 #[test]
+fn compact_tree_navigation_uses_visible_parents() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_review_with_paths(&mut app, &["src/core/deep/a.rs", "src/ui/b.rs"]);
+    let rows = tree_rows(&app);
+    assert!(
+        matches!(&rows[1], FileTreeRow::Dir { path, label, depth: 1, .. }
+        if path == "src/core/deep" && label == "core/deep")
+    );
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.tree_cursor_dir = Some("src/core/deep".into());
+    }
+    app.diff_viewer_tree_collapse_or_parent();
+    assert!(viewer_state(&app).collapsed_dirs.contains("src/core/deep"));
+    app.diff_viewer_tree_collapse_or_parent();
+    assert_eq!(viewer_state(&app).tree_cursor_dir.as_deref(), Some("src"));
+    app.diff_viewer_tree_move(1);
+    app.diff_viewer_tree_expand();
+    app.diff_viewer_tree_move(1);
+    assert_eq!(viewer_state(&app).selected_file, 0);
+    assert!(viewer_state(&app).tree_cursor_dir.is_none());
+}
+
+#[test]
 fn collapsing_a_directory_hides_its_files_but_not_from_filters() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(

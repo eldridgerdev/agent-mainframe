@@ -164,6 +164,7 @@ impl App {
                 state.base_ref = snapshot.base_ref;
                 state.base_commit = snapshot.base_commit;
                 state.error = None;
+                let initial_tree = state.files.is_empty();
                 state.files = snapshot.files;
                 if state.review && !state.is_pr_review() {
                     // Review bookkeeping generated during the round must not
@@ -175,6 +176,9 @@ impl App {
                 state.selected_file = selected_path
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
+                if initial_tree {
+                    state.initialize_file_tree();
+                }
                 state.patch_scroll = 0;
                 state.reapply_context_expansion();
                 // A PR review's workdir is just where git runs: its notes,
@@ -394,11 +398,18 @@ impl App {
                         return;
                     }
                     // Already folded: move up a level, if there is one.
-                    if let Some(sep) = dir.rfind('/') {
-                        state.tree_cursor_dir = Some(dir[..sep].to_string());
-                    } else {
-                        state.tree_cursor_dir = Some(dir);
-                    }
+                    state.tree_cursor_dir = rows[..pos]
+                        .iter()
+                        .rev()
+                        .find_map(|row| match row {
+                            FileTreeRow::Dir { path, .. }
+                                if dir.starts_with(&format!("{path}/")) =>
+                            {
+                                Some(path.clone())
+                            }
+                            _ => None,
+                        })
+                        .or(Some(dir));
                 }
                 // On a file: step to its directory row rather than folding
                 // straight away, mirroring how a file explorer's left arrow

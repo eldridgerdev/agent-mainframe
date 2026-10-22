@@ -2004,6 +2004,82 @@ fn dir_row_summary(
     spans
 }
 
+/// Keep the useful tail in terminal columns, including for wide Unicode names.
+fn file_tree_tail(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut tail = String::new();
+    let mut used = 1;
+    for ch in text.chars().rev() {
+        let columns = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + columns > width {
+            break;
+        }
+        tail.insert(0, ch);
+        used += columns;
+    }
+    format!("…{tail}")
+}
+
+/// Budget the name first; optional decorations only use spare columns.
+fn fit_file_tree_row(
+    mut spans: Vec<Span<'static>>,
+    name: usize,
+    width: usize,
+    summary: bool,
+) -> Line<'static> {
+    let reserved = if summary {
+        spans
+            .iter()
+            .skip(name + 1)
+            .map(|span| span.content.width())
+            .sum::<usize>()
+            .min(width / 2)
+    } else {
+        0
+    };
+    let marks = spans
+        .iter()
+        .take(name)
+        .filter(|span| !span.content.trim().is_empty())
+        .map(|span| span.content.width())
+        .sum::<usize>()
+        .min(width / 3);
+    let name_width = spans[name]
+        .content
+        .width()
+        .min(width.saturating_sub(marks + reserved));
+    let mut spare = width.saturating_sub(name_width + reserved);
+    // Indentation yields before marks, and marks yield before the name.
+    for index in (0..name).rev() {
+        let available = spans[index].content.width().min(spare);
+        spans[index].content = if spans[index].content.trim().is_empty() {
+            " ".repeat(available)
+        } else if available == spans[index].content.width() {
+            spans[index].content.to_string()
+        } else {
+            String::new()
+        }
+        .into();
+        spare -= available;
+    }
+    spans[name].content = file_tree_tail(&spans[name].content, name_width).into();
+    spare += reserved;
+    for span in spans.iter_mut().skip(name + 1) {
+        let columns = span.content.width();
+        if columns <= spare {
+            spare -= columns;
+        } else {
+            span.content = "".into();
+        }
+    }
+    Line::from(spans)
+}
+
 pub(super) fn draw_file_list(
     frame: &mut Frame,
     area: Rect,
@@ -2013,6 +2089,7 @@ pub(super) fn draw_file_list(
     let visible = state.visible_file_indices();
     let rows = state.file_tree_rows();
     let changeset_has_tests = changeset_has_test_changes(&state.files);
+    let row_width = area.width.saturating_sub(3) as usize;
     let mut items: Vec<ListItem<'static>> = rows
         .iter()
         .map(|row| {
@@ -2025,7 +2102,7 @@ pub(super) fn draw_file_list(
                     files,
                 } => {
                     let mut spans = vec![
-                        Span::raw(" ".repeat(depth * 2 + 1)),
+                        Span::raw(" ".repeat((*depth).min(3) * 2 + 1)),
                         Span::styled(
                             if *collapsed { "▸ " } else { "▾ " },
                             Style::default().fg(theme.text_muted.to_color()),
@@ -2040,7 +2117,7 @@ pub(super) fn draw_file_list(
                     if *collapsed {
                         spans.extend(dir_row_summary(path, *files, &visible, state, theme));
                     }
-                    return ListItem::new(Line::from(spans));
+                    return ListItem::new(fit_file_tree_row(spans, 2, row_width, *collapsed));
                 }
                 crate::app::FileTreeRow::File { index, depth, .. } => (*index, *depth),
             };
@@ -2050,7 +2127,7 @@ pub(super) fn draw_file_list(
                 .add_modifier(Modifier::BOLD);
             let mut spans = Vec::new();
             if depth > 0 {
-                spans.push(Span::raw(" ".repeat(depth * 2)));
+                spans.push(Span::raw(" ".repeat(depth.min(3) * 2)));
             }
             if state.review {
                 let (symbol, color) = match state.decisions.get(&file.path) {
@@ -2069,11 +2146,12 @@ pub(super) fn draw_file_list(
                 format!(" {} ", status_label(&file.status)),
                 status_style,
             ));
+            let mut badges = Vec::new();
             // Flag files that changed since the last finished review round so
             // they stand out when re-reviewing.
             if state.review && state.changed_since_last.contains(&file.path) {
-                spans.push(Span::styled(
-                    "Δ ",
+                badges.push(Span::styled(
+                    " Δ",
                     Style::default()
                         .fg(theme.warning.to_color())
                         .add_modifier(Modifier::BOLD),
@@ -2083,15 +2161,16 @@ pub(super) fn draw_file_list(
                 && let Some(comment) = state.file_comments.get(&file.path)
             {
                 let (marker, color) = if comment.resolved {
-                    ("◇ ", theme.text_muted.to_color())
+                    (" ◇", theme.text_muted.to_color())
                 } else {
-                    ("◆ ", theme.info.to_color())
+                    (" ◆", theme.info.to_color())
                 };
-                spans.push(Span::styled(
+                badges.push(Span::styled(
                     marker,
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
+            let name_span = spans.len();
             // Only the basename: the directories are the rows above it.
             spans.push(Span::styled(
                 match row {
@@ -2100,6 +2179,7 @@ pub(super) fn draw_file_list(
                 },
                 Style::default().fg(theme.text.to_color()),
             ));
+            spans.extend(badges);
             spans.push(Span::styled(
                 format!("  +{} -{}", file.additions, file.deletions),
                 Style::default().fg(theme.text_muted.to_color()),
@@ -2107,7 +2187,7 @@ pub(super) fn draw_file_list(
             if let Some(marker) = file_risk_marker(file, state, changeset_has_tests, theme) {
                 spans.push(marker);
             }
-            ListItem::new(Line::from(spans))
+            ListItem::new(fit_file_tree_row(spans, name_span, row_width, false))
         })
         .collect();
 
@@ -6032,6 +6112,134 @@ index 0000000..1111111
         assert!(changeset_has_tests);
         assert!(file_risk_marker(&state.files[0], &state, changeset_has_tests, &theme).is_none());
     }
+    fn render_file_tree(state: &DiffViewerState, width: u16, height: u16) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw_file_list(frame, frame.area(), state, &Theme::default()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn narrow_file_tree_preserves_filename_tails_and_folded_counts() {
+        let (mut state, _) = single_added_line_review_state();
+        let mut file = state.files[0].clone();
+        file.path = "界面/very-long-directory/components/deep/nested/Button.tsx".into();
+        file.additions = 123456;
+        file.status = DiffFileStatus::Modified;
+        state.files = vec![file.clone()];
+        state.changed_since_last.insert(file.path.clone());
+        state.file_comments.insert(
+            file.path.clone(),
+            crate::app::FileComment {
+                text: "comment".into(),
+                severity: Default::default(),
+                resolved: false,
+                carried: false,
+            },
+        );
+        for width in [24, 32, 40] {
+            let rendered = render_file_tree(&state, width, 8);
+            assert!(rendered.contains("Button.tsx"), "{width}: {rendered}");
+            let selected = rendered
+                .lines()
+                .find(|line| line.contains("Button.tsx"))
+                .unwrap();
+            assert!(
+                selected.contains(" M ") && selected.contains(" · "),
+                "marks should fit: {selected}"
+            );
+            assert!(
+                rendered.contains("…"),
+                "compressed directory tail: {rendered}"
+            );
+            state.toggle_dir_collapsed("界面/very-long-directory/components/deep/nested");
+            let folded = render_file_tree(&state, width, 8);
+            assert!(folded.contains("(1)"), "{width}: {folded}");
+            assert!(folded.contains("·1"), "{width}: {folded}");
+            state.collapsed_dirs.clear();
+        }
+        state.files[0].path = "src/界面/very-long-component-name-Button.tsx".into();
+        for width in [24, 32, 40] {
+            let rendered = render_file_tree(&state, width, 8);
+            assert!(rendered.contains("Button.tsx"), "{width}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn narrow_file_tree_caps_indent_in_branching_deep_trees() {
+        let (mut state, _) = single_added_line_review_state();
+        let template = state.files[0].clone();
+        state.files = (1..=9)
+            .map(|depth| {
+                let mut file = template.clone();
+                file.path = format!("{}sibling.rs", "nested/".repeat(depth));
+                file
+            })
+            .collect();
+        let mut target = template;
+        target.path = format!("{}Button.tsx", "nested/".repeat(10));
+        state.files.push(target);
+        state.files.sort_by(|a, b| a.path.cmp(&b.path));
+        state.selected_file = state
+            .files
+            .iter()
+            .position(|file| file.path.ends_with("Button.tsx"))
+            .unwrap();
+        assert!(
+            state.file_tree_rows().iter().any(
+                |row| matches!(row, crate::app::FileTreeRow::File { depth, .. } if *depth >= 9)
+            )
+        );
+        for review in [false, true] {
+            state.review = review;
+            for width in [24, 32, 40] {
+                let rendered = render_file_tree(&state, width, 6);
+                assert!(rendered.contains("Button.tsx"), "{width}: {rendered}");
+            }
+        }
+    }
+
+    #[test]
+    fn compact_file_tree_folds_large_changesets_and_reveals_selection() {
+        let (mut state, _) = single_added_line_review_state();
+        let template = state.files[0].clone();
+        state.files = (0..120)
+            .map(|index| {
+                let mut file = template.clone();
+                file.path = format!("src/group{:02}/ui/dialogs/file{index:03}.rs", index / 10);
+                file
+            })
+            .collect();
+        state.initialize_file_tree();
+        let rows = state.file_tree_rows();
+        assert_eq!(rows.len(), 23); // Root + selected group with ten files + eleven folded groups.
+        assert!(
+            matches!(&rows[1], crate::app::FileTreeRow::Dir { label, depth: 1, .. } if label == "group00/ui/dialogs")
+        );
+        state.selected_file = 119;
+        state.reveal_selected_file();
+        let rendered = render_file_tree(&state, 24, 6);
+        assert!(
+            rendered.contains("file119.rs"),
+            "selected row must scroll into view: {rendered}"
+        );
+        state.toggle_dir_collapsed("src/group11/ui/dialogs");
+        let rendered = render_file_tree(&state, 32, 6);
+        assert!(
+            rendered.contains("▸"),
+            "folded selection must highlight its ancestor: {rendered}"
+        );
+    }
+
     #[test]
     fn file_list_renders_a_directory_tree_and_folds_it() {
         use ratatui::{Terminal, backend::TestBackend};

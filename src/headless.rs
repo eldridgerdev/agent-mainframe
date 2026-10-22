@@ -1808,11 +1808,17 @@ fn executable_candidate(path: &Path) -> bool {
 }
 
 fn claude_on_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|path| path.join("claude"))
-            .find(|path| executable_candidate(path))
-            .and_then(|path| path.canonicalize().ok())
+    std::env::var_os("PATH").and_then(|paths| claude_in_paths(std::env::split_paths(&paths)))
+}
+
+fn claude_in_paths(
+    paths: impl IntoIterator<Item = std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    paths.into_iter().find_map(|path| {
+        let candidate = path.join("claude");
+        executable_candidate(&candidate)
+            .then(|| candidate.canonicalize().ok())
+            .flatten()
     })
 }
 
@@ -2261,6 +2267,25 @@ fn read_only_command_for(harness: &AgentKind) -> Result<HeadlessCommand> {
 mod tests {
     use super::*;
     use crate::resources::limits::{in_flight_headless_runs, lock_lease_tests, wait_for_in_flight};
+
+    #[test]
+    fn explanation_path_admission_returns_an_absolute_executable_without_launching() {
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let binary = dir.path().join("claude");
+        crate::resources::test_support::write_executable_script(
+            &binary,
+            "#!/bin/sh\ntouch must-not-run\n",
+        );
+        let relative = dir
+            .path()
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+        let selected = claude_in_paths([relative.to_path_buf()]).unwrap();
+        assert!(selected.is_absolute());
+        assert_eq!(selected, binary.canonicalize().unwrap());
+        assert!(!dir.path().join("must-not-run").exists());
+        assert_eq!(claude_in_paths([dir.path().join("missing")]), None);
+    }
 
     #[test]
     fn bounded_explanation_uses_the_exact_ready_binary_and_restricted_arguments() {

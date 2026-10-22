@@ -170,7 +170,7 @@ fn filesystem(
     ))
 }
 
-fn validate_project_configuration(repo: &Path) -> GuiResult<()> {
+fn project_configuration(repo: &Path) -> GuiResult<crate::extension::ExtensionConfig> {
     // Validate only the effective file. Missing optional config keeps shared
     // defaults; malformed/unreadable config must not enable a paid fallback.
     let (mut value, revision) =
@@ -181,9 +181,19 @@ fn validate_project_configuration(repo: &Path) -> GuiResult<()> {
         )?
         .0;
     }
-    serde_json::from_value::<crate::extension::ExtensionConfig>(value)
-        .map_err(anyhow::Error::from)?;
-    Ok(())
+    Ok(serde_json::from_value(value).map_err(anyhow::Error::from)?)
+}
+
+fn allowed_explanation_agents(
+    project: &crate::extension::ExtensionConfig,
+    global: &crate::extension::ExtensionConfig,
+) -> Vec<crate::project::AgentKind> {
+    crate::project::AgentKind::allowed_list(
+        project
+            .allowed_agents
+            .as_deref()
+            .or(global.allowed_agents.as_deref()),
+    )
 }
 
 struct Observed {
@@ -297,13 +307,9 @@ fn observe(
             })
         }
         ExplanationPreparation::Call(call) => {
-            validate_project_configuration(&project.repo)?;
+            let project_config = project_configuration(&project.repo)?;
             let claude = crate::project::AgentKind::Claude;
-            if !app
-                .extension_for_repo(&project.repo)
-                .allowed_agents()
-                .contains(&claude)
-            {
+            if !allowed_explanation_agents(&project_config, &config.extension).contains(&claude) {
                 return Err(GuiError::conflict(
                     "Claude is not allowed for this project. Saved review notes remain available.",
                 ));
@@ -854,6 +860,55 @@ mod tests {
                 .prepare(&mut gui, target, &edit, &revision)
                 .unwrap(),
             ExplanationView::SavedNote { .. }
+        ));
+        assert!(!dir.path().join("repo/called").exists());
+    }
+
+    #[test]
+    fn project_policy_uses_the_strict_snapshot_and_fresh_global_precedence() {
+        use crate::project::AgentKind;
+        let (dir, mut gui, target, mut controller, edit, revision) = fixture_edit();
+        let config = dir.path().join("repo/amf.json");
+        std::fs::write(
+            &controller.config_path,
+            r#"{"extension":{"allowed_agents":["codex"]}}"#,
+        )
+        .unwrap();
+        // The startup App configuration still permits Claude, but the current
+        // global snapshot must refuse it when the project inherits choices.
+        assert!(
+            controller
+                .prepare(&mut gui, target.clone(), &edit, &revision)
+                .unwrap_err()
+                .message
+                .contains("not allowed")
+        );
+        std::fs::write(&config, r#"{"allowed_agents":["claude","claude"]}"#).unwrap();
+        assert!(matches!(
+            controller
+                .prepare(&mut gui, target.clone(), &edit, &revision)
+                .unwrap(),
+            ExplanationView::Precall { .. }
+        ));
+        let project = project_configuration(&dir.path().join("repo")).unwrap();
+        let (_, global, _) = crate::gui_settings::read_document(&controller.config_path).unwrap();
+        std::fs::write(&config, "{no permissive second read").unwrap();
+        assert_eq!(
+            allowed_explanation_agents(&project, &global.extension),
+            vec![AgentKind::Claude]
+        );
+        assert!(
+            controller
+                .prepare(&mut gui, target.clone(), &edit, &revision)
+                .is_err()
+        );
+        // A present empty project list keeps shared normalization: allow all.
+        std::fs::write(&config, r#"{"allowed_agents":[]}"#).unwrap();
+        assert!(matches!(
+            controller
+                .prepare(&mut gui, target, &edit, &revision)
+                .unwrap(),
+            ExplanationView::Precall { .. }
         ));
         assert!(!dir.path().join("repo/called").exists());
     }

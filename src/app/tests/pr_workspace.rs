@@ -356,7 +356,10 @@ fn responsive_layout_uses_real_code_and_feedback_at_every_width() {
                         .iter()
                         .map(|cell| cell.symbol())
                         .collect();
-                    assert!(text.contains("Threads"));
+                    assert!(
+                        text.contains("A real review workspace"),
+                        "header should render"
+                    );
                     assert!(text.contains("after"), "real diff should stay visible");
                 }
                 press(app, KeyCode::Tab);

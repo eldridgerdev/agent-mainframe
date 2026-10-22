@@ -120,7 +120,7 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App) -> bool {
     .split(area);
     draw_header(frame, rows[0], &workspace, &app.mode, theme, ai_running);
     for (pane, rect) in pane_areas(area, workspace.focus, workspace.expanded) {
-        frame.render_widget(Clear, rect);
+        clear_with_bg(frame, rect, theme);
         let content = if pane == WorkspacePane::Navigator && ai_running && rect.height >= 8 {
             let sections =
                 Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).split(rect);
@@ -254,7 +254,7 @@ fn hint_line(
 ) -> Line<'static> {
     let muted = Style::default().fg(theme.text_muted.to_color());
     let mut spans = vec![Span::styled(
-        format!(" {group:<6}"),
+        format!(" {group:<7}"),
         Style::default()
             .fg(group_color)
             .add_modifier(Modifier::BOLD),
@@ -273,6 +273,16 @@ fn hint_line(
         spans.push(Span::raw(format!(" {label}")));
     }
     Line::from(spans)
+}
+
+/// `Clear` resets cells to the terminal default, which drops the theme
+/// background; repaint it so cleared panes and overlays keep their backdrop.
+fn clear_with_bg(frame: &mut Frame, area: Rect, theme: &Theme) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.effective_bg())),
+        area,
+    );
 }
 
 fn ai_state(mode: Option<&AppMode>) -> Option<&AiReviewState> {
@@ -503,12 +513,17 @@ fn draw_pane(
                 // Side-by-side halves an already narrow pane and clips long
                 // lines; the unified layout wraps them, so nothing runs off
                 // the edge.
-                let layout = files.layout.clone();
+                // Switch once per width change (not per frame) so scroll limits
+                // and input handling see the layout actually drawn.
                 if area.width < 110 {
-                    files.layout = crate::app::DiffViewerLayout::Unified;
+                    if files.narrow_layout_restore.is_none() {
+                        files.narrow_layout_restore = Some(files.layout.clone());
+                        files.layout = crate::app::DiffViewerLayout::Unified;
+                    }
+                } else if let Some(layout) = files.narrow_layout_restore.take() {
+                    files.layout = layout;
                 }
                 super::diff::draw_patch(frame, area, files, theme);
-                files.layout = layout;
             }
         }
         return;
@@ -740,7 +755,7 @@ fn placeholder_scrolled(
 
 fn draw_help(frame: &mut Frame, theme: &Theme, scroll: u16) {
     let area = super::super::dashboard::centered_rect(88, 90, frame.area());
-    frame.render_widget(Clear, area);
+    clear_with_bg(frame, area, theme);
     placeholder_scrolled(
         frame,
         area,

@@ -852,6 +852,16 @@ const finish: NonNullable<ReviewView["finish"]> = {
   post_to_pr: true, submit_prompt: true, handoff: { session_id: "agent-1", label: "Claude 1", stopped: false }, completing: false,
 };
 
+it("shows a shared destination cancellation warning once and keeps a distinct preparation error", () => {
+  const warning = "Pending launch was cancelled; created resources are retained";
+  const selected = { ...finish, handoff: { ...finish.handoff!, warning } };
+  const { update } = mount({ ...view, summary, finish: selected, preparation_error: warning });
+  expect(screen.getAllByText(warning)).toHaveLength(1);
+  update({ view: { ...view, summary, finish: selected, preparation_error: "Another setup could not finish" } });
+  expect(screen.getAllByText(warning)).toHaveLength(1);
+  expect(screen.getByText("Another setup could not finish")).toBeTruthy();
+});
+
 it("shows what completing records and hands off, and cancelling or closing sends nothing", () => {
   const { onAct } = mount({ ...view, summary, finish, check_command: "cargo test" });
   expect(screen.getByText(/1 approved · 1 need work · 1 skipped/)).toBeTruthy();

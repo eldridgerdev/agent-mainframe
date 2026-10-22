@@ -65,7 +65,8 @@ pre-guard and are not final-source evidence.
 The final normal Rust milestone passed 3,696 library tests and seven GUI tests
 with one existing ignored test; formatting, strict all-target workspace Clippy
 and both default/capture-config builds passed. Five shared destination tests and
-95 GUI review tests passed separately. The unchanged final frontend passed 521
-tests in 60 files and its production build before the final backend-only
-settings-copy guards. Real paid-harness delivery and macOS runtime validation
+95 GUI review tests passed separately. The full frontend passed 521 tests in 60 files and its production build.
+After the final display-only cancellation-warning deduplication, 74 focused
+component tests and the production build passed again; the regenerated native
+proof covers that final UI. Real paid-harness delivery and macOS runtime validation
 remain open.

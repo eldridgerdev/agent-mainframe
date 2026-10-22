@@ -100,7 +100,7 @@ export default function ReviewSummaryPanel({ view, busy, dirty, onAct, error = n
       {target?.destination_path && <p>Destination checkout: {target.destination_path}</p>}
       {target?.warning && <p role="alert">{target.warning}</p>}
       {finish.handoff_error && <p role="alert">{finish.handoff_error}</p>}
-      {view.preparation_error && <p role="alert">{view.preparation_error}</p>}
+      {view.preparation_error && view.preparation_error !== target?.warning && <p role="alert">{view.preparation_error}</p>}
       <button className="btn btn-secondary" disabled={blocked || generated} onClick={() => { if (!inFlight.current) destinationChanged(true); }}>Choose feedback destination…</button>
       {view.preparation && <div role="status"><p>Preparing {view.preparation.label}. {view.preparation.cancelled ? "Launch cancelled; waiting for setup to settle. Any created resources are retained." : "Worktree creation or its confirmed hook is running in the background."}</p>
         <button className="btn btn-secondary" disabled={busy || view.preparation.cancelled} onClick={() => void onAct({ kind: "cancel_preparation", operation_id: view.preparation!.operation_id })}>Cancel pending launch</button></div>}

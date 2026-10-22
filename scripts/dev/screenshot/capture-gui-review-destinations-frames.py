@@ -81,6 +81,11 @@ with GuiFrames.from_argv() as frames:
     original_progress=(source/'.claude/final-review-progress.json').read_bytes()
     assert not feedback.exists()
 
+    # Change the global hook after GUI startup. The later catalog and preview
+    # must show this current title/options, rather than the startup snapshot.
+    current=json.loads(config.read_text())
+    current['extension']['lifecycle_hooks']['on_worktree_created']['prompt']={'title':'Companion setup','options':['offline','full']}
+    config.write_text(json.dumps(current))
     settings(low_memory_warn_mb=18446744073709551615)
     open_picker(); select('Destination type','dedicated'); select('Agent harness','opencode')
     click('Preview destination',dialog); wait('Proceed despite this resource warning')
@@ -110,7 +115,7 @@ with GuiFrames.from_argv() as frames:
     open_picker(); select('Destination type','companion')
     action('fill',name='Companion branch',value='invoice-rounding-review-fixes',scope=dialog)
     select('Mode','supervibe'); select('Companion setup','offline'); preview()
-    capture('006-companion-preview.png','A companion preview confirms its exact branch HEAD basis, SuperVibe mode and chosen offline worktree setup; uncommitted reviewed changes are explicitly excluded.', ['Branch basis: invoice-rounding at','Uncommitted reviewed changes are not copied','Creates a companion checkout and stopped feature'],
+    capture('006-companion-preview.png','After the global hook changes on disk, a fresh companion preview shows its current offline setup choice, exact branch HEAD and SuperVibe mode; uncommitted reviewed changes are explicitly excluded.', ['Branch basis: invoice-rounding at','Uncommitted reviewed changes are not copied','Creates a companion checkout and stopped feature'],
             expression='document.querySelector(`[aria-label="Feedback destination"] select`).value==="companion" && Array.from(document.querySelectorAll(`[aria-label="Feedback destination"] select`)).some(s=>s.value==="supervibe")')
     prepare(); wait('Worktree creation or its confirmed hook is running in the background.')
     wait_for(lambda:(scratch/'hook-choice').exists(),'Confirmed hook did not start')

@@ -84,7 +84,7 @@ for line in sys.stdin:
         stream.write('\n.claude/\n.amf/\n.opencode/\nAGENTS.md\nCLAUDE.local.md\n.gitignore\n')
     (host/'.claude').mkdir()
     (host/'.claude/final-review-progress.json').write_text(json.dumps({'general_feedback':'Cover negative invoice totals before shipping.', 'decisions':{'invoice.ts':{'Reject':{'feedback':'Add negative rounding coverage.','severity':'blocker'}}}}))
-    hook = {'script': 'printf \"%s\" \"$AMF_HOOK_CHOICE\" > '+shlex.quote(str(scratch/'hook-choice'))+'; while [ ! -e '+shlex.quote(str(scratch/'hook-release'))+' ]; do sleep 0.05; done', 'prompt':{'title':'Companion setup','options':['offline','full']}}
+    hook = {'script': 'printf \"%s\" \"$AMF_HOOK_CHOICE\" > '+shlex.quote(str(scratch/'hook-choice'))+'; while [ ! -e '+shlex.quote(str(scratch/'hook-release'))+' ]; do sleep 0.05; done', 'prompt':{'title':'Startup setup','options':['startup']}}
     config_value=json.loads((config/'config.json').read_text())
     config_value['final_review_submit_prompt']=True
     config_value['extension']['lifecycle_hooks']={'on_worktree_created':hook}

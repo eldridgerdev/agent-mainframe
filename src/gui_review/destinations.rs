@@ -46,17 +46,28 @@ fn git(path: &Path, args: &[&str]) -> Result<String> {
     );
     Ok(String::from_utf8(output.stdout)?.trim().into())
 }
-fn global_revision(gui: &mut GuiHandle) -> GuiResult<String> {
-    if gui.app_for_workflow().store_path.as_os_str().is_empty() {
-        return hash(&gui.app_for_workflow().config).map_err(conflict);
+#[cfg(test)]
+thread_local! {
+    // Scoped test documents avoid changing process-global XDG variables or
+    // reading/writing the operator's actual configuration in parallel tests.
+    static TEST_GLOBAL_DOCUMENT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+fn global_snapshot(gui: &mut GuiHandle) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
+    #[cfg(test)]
+    let path = TEST_GLOBAL_DOCUMENT.with(|path| path.borrow().clone());
+    #[cfg(not(test))]
+    let path: Option<PathBuf> = None;
+    if path.is_none() && gui.app_for_workflow().store_path.as_os_str().is_empty() {
+        let config = &gui.app_for_workflow().config;
+        return Ok((hash(config).map_err(conflict)?, config.extension.clone()));
     }
-    let (_, config, revision) =
-        crate::gui_settings::read_document(&crate::project::amf_config_dir().join("config.json"))?;
+    let path = path.unwrap_or_else(|| crate::project::amf_config_dir().join("config.json"));
+    let (_, config, revision) = crate::gui_settings::read_document(&path)?;
     // Read the current soft-gate policy before an explicit preparation; no
     // settings file is written and no other runtime setting is changed.
     gui.app_for_workflow().config.max_concurrent_agents = config.max_concurrent_agents;
     gui.app_for_workflow().config.low_memory_warn_mb = config.low_memory_warn_mb;
-    Ok(revision)
+    Ok((revision, config.extension))
 }
 #[derive(Clone)]
 struct BoundFeature {
@@ -64,10 +75,11 @@ struct BoundFeature {
     feature: Feature,
     identity: Value,
     config: String,
+    global_extension: crate::extension::ExtensionConfig,
 }
 fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<BoundFeature> {
     gui.refresh_store()?;
-    let global = global_revision(gui)?;
+    let (global, global_extension) = global_snapshot(gui)?;
     let settings = crate::gui_project_settings::load(gui, &target.project_id)?;
     let app = gui.app_for_workflow();
     let (pi, fi) = app
@@ -123,7 +135,22 @@ fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<BoundFeature> 
         feature,
         identity,
         config: hash(&(global, settings.revision)).map_err(conflict)?,
+        global_extension,
     })
+}
+fn companion_hook(source: &BoundFeature) -> Option<crate::extension::HookConfig> {
+    crate::extension::merge_project_extension_config(&source.global_extension, &source.project.repo)
+        .lifecycle_hooks
+        .on_worktree_created
+}
+fn present_hook(
+    hook: Option<&crate::extension::HookConfig>,
+) -> Option<crate::automation::AutomationHookPrompt> {
+    hook.and_then(|hook| hook.prompt())
+        .map(|prompt| crate::automation::AutomationHookPrompt {
+            title: prompt.title.clone(),
+            options: prompt.options.clone(),
+        })
 }
 fn review_target(
     gui: &mut GuiHandle,
@@ -448,12 +475,7 @@ fn plan(
                 .map_err(conflict)?,
             );
             base_sha = Some(head);
-            hook = crate::extension::merge_project_extension_config(
-                &app.config.extension,
-                &source.project.repo,
-            )
-            .lifecycle_hooks
-            .on_worktree_created;
+            hook = companion_hook(&source);
             (
                 format!(
                     "New companion {} ({}, {})",
@@ -496,12 +518,7 @@ fn plan(
         resource_warning,
         creates_session,
         creates_companion,
-        hook_prompt: hook.as_ref().and_then(|hook| hook.prompt()).map(|prompt| {
-            crate::automation::AutomationHookPrompt {
-                title: prompt.title.clone(),
-                options: prompt.options.clone(),
-            }
-        }),
+        hook_prompt: present_hook(hook.as_ref()),
     };
     Ok(Plan {
         view,
@@ -565,9 +582,7 @@ pub fn catalog(
     let default_branch = gui
         .app_for_workflow()
         .unique_review_branch(&source.feature.workdir, &source.feature.branch);
-    let hook_prompt = gui
-        .app_for_workflow()
-        .worktree_hook_prompt_for_repo(&source.project.repo);
+    let hook_prompt = present_hook(companion_hook(&source).as_ref());
     Ok(DestinationCatalog {
         sessions,
         agents,
@@ -1670,6 +1685,68 @@ mod tests {
         // An explicit new preview can accept that same stable ID's new state.
         assert!(prepare_choice(&mut gui, &selected_view, choice).is_ok());
     }
+    #[test]
+    fn companion_preview_uses_the_current_strict_global_hook_without_mutating_startup_settings() {
+        struct DocumentGuard(Option<PathBuf>);
+        impl Drop for DocumentGuard {
+            fn drop(&mut self) {
+                TEST_GLOBAL_DOCUMENT.with(|path| *path.borrow_mut() = self.0.take());
+            }
+        }
+        fn config(title: &str) -> crate::app::AppConfig {
+            let mut config = crate::app::AppConfig::default();
+            config.extension.lifecycle_hooks.on_worktree_created =
+                Some(crate::extension::HookConfig::WithPrompt {
+                    script: "exit 0".into(),
+                    prompt: crate::extension::HookPrompt {
+                        title: title.into(),
+                        options: vec!["offline".into()],
+                    },
+                });
+            config
+        }
+        let (dir, mut gui, view) = review();
+        gui.app_for_workflow().config.extension = config("Startup setup").extension;
+        let startup = serde_json::to_value(&gui.app_for_workflow().config.extension).unwrap();
+        let path = dir.path().join("private-global-config.json");
+        std::fs::write(&path, serde_json::to_vec(&config("Current setup")).unwrap()).unwrap();
+        let _guard =
+            DocumentGuard(TEST_GLOBAL_DOCUMENT.with(|slot| slot.replace(Some(path.clone()))));
+        let mut choice = companion("fresh-hook");
+        if let DestinationChoice::Companion { hook_choice, .. } = &mut choice {
+            *hook_choice = Some("offline".into());
+        }
+        let catalog = catalog(&mut gui, &view.workflow_id, view.revision).unwrap();
+        assert_eq!(catalog.hook_prompt.unwrap().title, "Current setup");
+        let shown = preview(&mut gui, &view.workflow_id, view.revision, choice.clone()).unwrap();
+        assert_eq!(shown.hook_prompt.unwrap().title, "Current setup");
+        assert_eq!(
+            serde_json::to_value(&gui.app_for_workflow().config.extension).unwrap(),
+            startup
+        );
+        std::fs::write(&path, serde_json::to_vec(&config("Updated setup")).unwrap()).unwrap();
+        let error = prepare(
+            &mut gui,
+            &view.workflow_id,
+            view.revision,
+            choice.clone(),
+            &shown.revision,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("changed"), "{}", error.message);
+        assert!(gui.review_context.as_ref().unwrap().preparation.is_none());
+        let refreshed =
+            preview(&mut gui, &view.workflow_id, view.revision, choice.clone()).unwrap();
+        assert_eq!(refreshed.hook_prompt.unwrap().title, "Updated setup");
+        std::fs::write(&path, "{malformed global settings").unwrap();
+        assert!(preview(&mut gui, &view.workflow_id, view.revision, choice).is_err());
+        assert_eq!(
+            serde_json::to_value(&gui.app_for_workflow().config.extension).unwrap(),
+            startup
+        );
+    }
+
     #[test]
     fn malformed_pinned_base_refuses_creation_despite_a_valid_working_copy() {
         let (dir, mut gui, target) = crate::gui_diff::tests::fixture();

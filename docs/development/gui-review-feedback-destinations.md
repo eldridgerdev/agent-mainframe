@@ -17,7 +17,10 @@ creating a second companion. The user can select a retained companion as an
 existing destination, or manage it from the workspace after pausing the review.
 
 Preparation and completion recheck the source, target, checkout identities,
-configuration and exact agent session/pane identity. Another session never
+configuration and exact agent session/pane identity. Global hook choices come
+from the same strictly parsed settings snapshot as their revision, so a hook
+changed after desktop startup is reflected in the next catalog/preview without
+mutating unrelated runtime settings. Another session never
 silently replaces a removed target. Companion creation checks both the recorded
 branch name and its resolved HEAD; it creates from that confirmed SHA. It does
 not copy uncommitted changes. Before creating a companion, it validates the

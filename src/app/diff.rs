@@ -528,6 +528,12 @@ impl App {
     }
 
     pub fn diff_viewer_toggle_layout(&mut self) {
+        if matches!(&self.mode, AppMode::DiffViewer(state) if state.narrow_layout_restore.is_some())
+        {
+            self.message =
+                Some("Side-by-side needs a wider pane; widen it or expand the diff".to_string());
+            return;
+        }
         if self.diff_viewer_selected_file_is_new() {
             self.message =
                 Some("Side-by-side isn't available for a new/untracked file".to_string());

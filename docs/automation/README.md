@@ -31,7 +31,9 @@ Use [`seed-ai-review.template.json`](seed-ai-review.template.json) as the
 field reference. With `open: true`, `workdir` and `repository` (`owner/name`)
 are required and AMF opens the fixture pane immediately. Screenshot CI uses
 this mode so a scenario can prove review presentation and the post disclosure
-without any authenticated Claude/Codex harness.
+without any authenticated Claude/Codex harness. An optional `attribution`
+object (the same shape AI Review caches: `harness`, `model`, token counts,
+`memory`) adds the attribution and last-run memory lines; `null` omits them.
 
 For a local visual check, the repository scenario supplies those fields from
 the environment and opens the fixture in the isolated screenshot harness:

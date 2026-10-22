@@ -889,6 +889,7 @@ mod tests {
                 finding_editor: None,
                 post_confirm: None,
                 marked: Default::default(),
+                memory_status: None,
             }));
     }
 

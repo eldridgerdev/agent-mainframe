@@ -14,6 +14,36 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~New individual sessions start with a small terminal size~~ (Fixed)
+
+- **Status:** Fixed (2026-10-22)
+- **Reported:** 2026-10-22
+- **Relates to:** individual session creation and restart (`src/app/session_ops.rs`)
+- **Root cause:** Whole-feature startup sized its windows before launching
+  programs, but individual session creation and restart skipped that step.
+  New windows could retain tmux's initial geometry until the view resized them.
+- **Fix:** Apply the known terminal viewport immediately after creating an
+  individual window and before opening it or launching its program. This covers
+  terminals, editors, custom commands, and agents. Close the new window if
+  resizing fails. When the viewport is unknown, attachment retains ownership
+  of sizing. Regression tests cover terminal sizing, resize-failure cleanup,
+  and resizing before a restarted agent launches.
+
+### Repro
+
+1. In the TUI, add a terminal session to a running feature.
+2. Open it immediately, or restart an individually stopped agent session.
+
+### Expected
+
+The window uses the current terminal viewport before it opens or launches its
+program.
+
+### Actual before the fix
+
+The new window can start small and produce cramped output before the view
+resizes it.
+
 ## ~~Docs site fails to build: Tera v1 macro syntax under Tera v2~~ (Fixed)
 
 - **Status:** Fixed (2026-09-13)

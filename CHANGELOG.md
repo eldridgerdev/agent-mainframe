@@ -43,6 +43,12 @@ are tagged.
   them to look at a UI, and publish only screenshots they captured
   themselves.
 
+### Fixed
+
+- New and restarted individual sessions now resize to the current terminal
+  viewport before opening or launching their program, reducing small panes
+  and cramped startup output when adding terminals, editors, or agents.
+
 ## [v0.50.0] - 2026-10-19
 
 A new split PR workspace keeps files, GitHub threads and AI findings for one
@@ -249,6 +255,21 @@ diagrams, and several paste, upgrade and PR-triage problems are fixed.
 
 ### Changed
 
+- **Add to Memory asks where the finding goes.** In PR Triage (`M`), the
+  dialog no longer preselects the project doc. It lists both destinations
+  with their full paths, and `⏎` does nothing until you press `p` (this repo)
+  or `g` (every repo), so a finding can't land in the wrong doc unnoticed.
+  `g` used to toggle between the two; `p` and `g` now each choose one. The
+  confirmation toast names the file written. No migration is required.
+
+- **AI Review shows its review memory.** The AI Review pane lists the
+  project and cross-project memory docs the next `A` run will read, with each
+  one's path and finding count, or whether it is missing, empty or
+  unreadable. After a run it says how many findings were sent to the agent,
+  and warns when memory was read but not sent, for example because a custom
+  prompt template is missing `{{recurring_findings}}`. No migration is
+  required.
+
 - **`G` now opens the PR workspace.** The previous PR Triage / Review flow is
   still available on leader+`U`, and `W` still opens AI Review.
 - **Readable desktop colours under every TUI theme.** Dialogs, selected rows,
@@ -274,6 +295,16 @@ diagrams, and several paste, upgrade and PR-triage problems are fixed.
   ignored. No migration is required.
 
 ### Fixed
+
+- **Review memory is shared across a repo's worktrees.** The default memory
+  doc (`.amf/review-memory.md`) is gitignored, so each feature worktree used
+  to read and write its own private copy. Findings added while triaging in
+  one worktree never reached an AI review run from another, and they were
+  deleted with the worktree. Every worktree now uses the main checkout's
+  copy. A memory doc that git tracks still stays with its branch. Large files
+  reviewed hunk by hunk now get the memory too. If an old worktree still has
+  its own copy, the AI Review pane says it is no longer read; move its
+  findings into the main checkout's doc to keep them.
 
 - **Large pastes.** Pasting 128 KiB or more into a session no longer fails
   with "Failed to set tmux buffer".

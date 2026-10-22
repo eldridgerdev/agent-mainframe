@@ -28,6 +28,10 @@ pub struct SeedAiReviewRequest {
     pub workdir: Option<PathBuf>,
     pub repository: Option<String>,
     pub head_ref: Option<String>,
+    /// Optional run attribution (harness/model/usage and the review memory the
+    /// run read and sent), so a visual test can show the attribution and
+    /// memory lines without running a review. Omitted, the row has none.
+    pub attribution: Option<crate::app::ai_review::AiReviewAttribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -55,6 +59,7 @@ impl SeedAiReviewRequest {
             "workdir": self.workdir,
             "repository": self.repository,
             "head_ref": self.head_ref,
+            "attribution": self.attribution,
         })
     }
 }
@@ -426,5 +431,34 @@ mod tests {
         let default: CreateSessionRequest = serde_json::from_str("{}").unwrap();
         assert!(!default.submit_prompt);
         assert!(default.initial_prompt.is_none());
+    }
+}
+
+#[cfg(test)]
+mod seed_ai_review_tests {
+    use super::*;
+
+    #[test]
+    fn seed_ai_review_payload_carries_the_fixture_attribution() {
+        // The CLI forwards `ipc_payload()` to the running dashboard, so a
+        // field missing here never reaches the seeded cache row.
+        let request = SeedAiReviewRequest {
+            pr_number: 1,
+            attribution: Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("Claude".to_string()),
+                memory: Some(crate::app::ai_review::AiReviewMemoryUsage {
+                    context_chars: 12,
+                    prompts: 1,
+                    prompts_with_memory: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let received: SeedAiReviewRequest = serde_json::from_value(request.ipc_payload()).unwrap();
+
+        assert_eq!(received.attribution, request.attribution);
     }
 }

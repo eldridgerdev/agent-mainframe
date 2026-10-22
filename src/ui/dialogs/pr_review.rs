@@ -1332,13 +1332,7 @@ pub fn draw_pr_review(
             .find(|c| c.id == memory_add.comment_id)
             .map(|c| c.author.as_str())
             .unwrap_or("reviewer");
-        draw_memory_add_dialog(
-            frame,
-            memory_add,
-            author,
-            memory_paths.map(|paths| paths.for_scope(memory_add.scope)),
-            theme,
-        );
+        draw_memory_add_dialog(frame, memory_add, author, memory_paths, theme);
         // The per-use "summarize with AI" harness picker (`s`) stacks on top
         // of the memory-add dialog while it's open, same as the investigation
         // harness picker stacks on top of the pane.
@@ -1439,31 +1433,35 @@ fn draw_reply_dialog(
 }
 
 /// "Add to memory" dialog: the selected comment's distilled finding, editable,
-/// awaiting approval before it's appended to the review-memory doc. `Tab`
-/// cycles the category in the confirm view and `g` toggles which doc it lands
-/// in — this repo's, or the user's cross-project one.
+/// awaiting approval before it's appended to a review-memory doc. Both
+/// destinations are always listed with their full paths and neither is
+/// preselected: `p` / `g` choose this repo's doc or the user's cross-project
+/// one, and `⏎` refuses until a choice is made. `Tab` cycles the category.
 fn draw_memory_add_dialog(
     frame: &mut Frame,
     memory_add: &crate::app::MemoryAddState,
     author: &str,
-    memory_path: Option<&Path>,
+    memory_paths: Option<&crate::app::review_memory::ReviewMemoryPaths>,
     theme: &Theme,
 ) {
+    use crate::app::review_memory::MemoryScope;
+
     let area = super::super::dashboard::centered_rect(70, 50, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let category = crate::app::pr_review::MEMORY_CATEGORIES[memory_add.category];
-    let scope = memory_add.scope.label();
+    let title = match memory_add.scope {
+        Some(scope) => format!(" Add to {} memory · {category} · @{author} ", scope.label()),
+        None => format!(" Add to memory · {category} · @{author} "),
+    };
     let block = Block::default()
-        .title(format!(" Add to {scope} memory · {category} · @{author} "))
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // The AI-summary status/error takes the destination-doc line's spot when
-    // there's something to say; otherwise that line just names the doc.
     let status_line = match &memory_add.ai_summary {
         Some(crate::app::MemoryAiSummaryState::Generating { harness }) => {
             Some(Line::from(Span::styled(
@@ -1478,9 +1476,69 @@ fn draw_memory_add_dialog(
         Some(crate::app::MemoryAiSummaryState::PickingHarness(_)) | None => None,
     };
 
-    // The full confirm-view hint set is two rows wide (the "summarize with
-    // AI" addition no longer fits one line alongside the rest); editing and
-    // generating each collapse back to one.
+    // The destination picker: a heading that says whether a choice is still
+    // owed, then one row per doc with its full path.
+    let destination_heading = match (memory_add.scope, memory_add.scope_required) {
+        (Some(_), _) => Line::from(Span::styled(
+            "Save to:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        (None, true) => Line::from(Span::styled(
+            "⚠ Choose where to save first: press p for project or g for global",
+            Style::default()
+                .fg(theme.danger.to_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        (None, false) => Line::from(Span::styled(
+            "Save to (required, nothing is selected yet):",
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+    };
+    let width = inner.width as usize;
+    let destination_row = |key: char, scope: MemoryScope, note: &str| {
+        let selected = memory_add.scope == Some(scope);
+        let marker = if selected { "●" } else { "○" };
+        let head = format!("  [{key}] {marker} {:<8}", scope.label());
+        let path = memory_paths
+            .map(|paths| crate::ui::list::shorten_path(paths.for_scope(scope)))
+            .unwrap_or_default();
+        let room = width.saturating_sub(head.chars().count() + note.chars().count() + 1);
+        let style = if selected {
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        Line::from(vec![
+            Span::styled(head, style),
+            Span::styled(
+                truncate_left(&path, room.max(8)),
+                if selected {
+                    style
+                } else {
+                    Style::default().fg(theme.text_muted.to_color())
+                },
+            ),
+            Span::styled(
+                format!(" {note}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ])
+    };
+    let project_note = if memory_paths.is_some_and(|paths| paths.worktree_local.is_some()) {
+        "(main checkout, shared by every worktree)"
+    } else {
+        "(this repo)"
+    };
+    let destination = vec![
+        destination_heading,
+        destination_row('p', MemoryScope::Project, project_note),
+        destination_row('g', MemoryScope::Global, "(every repo)"),
+    ];
+
     let hints: Vec<&str> = if memory_add.editing {
         vec!["[esc] done editing"]
     } else if matches!(
@@ -1491,16 +1549,17 @@ fn draw_memory_add_dialog(
     } else {
         vec![
             "[⏎] add   [e] edit   [s] summarize with AI",
-            "[Tab] category   [g] project/global   [esc] cancel",
+            "[p] project   [g] global   [Tab] category   [esc] cancel",
         ]
     };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),                     // finding text
-            Constraint::Length(1),                  // destination doc / AI-summary status
-            Constraint::Length(hints.len() as u16), // key hints
+            Constraint::Min(1),                                   // finding text
+            Constraint::Length(u16::from(status_line.is_some())), // AI-summary status
+            Constraint::Length(destination.len() as u16),         // destination picker
+            Constraint::Length(hints.len() as u16),               // key hints
         ])
         .split(inner);
 
@@ -1510,20 +1569,10 @@ fn draw_memory_add_dialog(
         Paragraph::new(body_lines).wrap(Wrap { trim: false }),
         chunks[0],
     );
-
     if let Some(status_line) = status_line {
         frame.render_widget(Paragraph::new(status_line), chunks[1]);
-    } else if let Some(memory_path) = memory_path {
-        // The title names the scope; this names the exact file, so "global" is
-        // never a guess about where the finding actually went.
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("→ {}", memory_path.display()),
-                Style::default().fg(theme.text_muted.to_color()),
-            ))),
-            chunks[1],
-        );
     }
+    frame.render_widget(Paragraph::new(destination), chunks[2]);
 
     let hint_lines: Vec<Line> = hints
         .into_iter()
@@ -1534,7 +1583,7 @@ fn draw_memory_add_dialog(
             ))
         })
         .collect();
-    frame.render_widget(Paragraph::new(hint_lines), chunks[2]);
+    frame.render_widget(Paragraph::new(hint_lines), chunks[3]);
 }
 
 /// The memory-add dialog's per-use "summarize with AI" harness picker (`s`),
@@ -3697,34 +3746,31 @@ mod tests {
         );
     }
 
-    fn render_memory_add(scope: crate::app::review_memory::MemoryScope) -> String {
+    fn render_memory_add(
+        scope: Option<crate::app::review_memory::MemoryScope>,
+        scope_required: bool,
+    ) -> String {
         use ratatui::{Terminal, backend::TestBackend};
 
         let memory_add = crate::app::MemoryAddState {
             comment_id: 1,
             category: 0,
             scope,
+            scope_required,
             editor: crate::editor::TextEditor::new("Guard shared state".to_string()),
             editing: false,
             ai_summary: None,
         };
         let paths = crate::app::review_memory::ReviewMemoryPaths {
             project: std::path::PathBuf::from("/repo/.amf/review-memory.md"),
-            global: std::path::PathBuf::from("/home/u/.config/amf/review-memory.md"),
+            global: std::path::PathBuf::from("/srv/u/.config/amf/review-memory.md"),
+            worktree_local: None,
         };
         let theme = Theme::default();
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| {
-                draw_memory_add_dialog(
-                    frame,
-                    &memory_add,
-                    "alice",
-                    Some(paths.for_scope(scope)),
-                    &theme,
-                )
-            })
+            .draw(|frame| draw_memory_add_dialog(frame, &memory_add, "alice", Some(&paths), &theme))
             .unwrap();
         terminal
             .backend()
@@ -3736,22 +3782,37 @@ mod tests {
     }
 
     #[test]
-    fn memory_add_dialog_names_the_project_doc_by_default() {
-        let rendered = render_memory_add(crate::app::review_memory::MemoryScope::Project);
-        assert!(rendered.contains("Add to project memory"));
+    fn memory_add_dialog_preselects_no_destination_and_lists_both_docs() {
+        let rendered = render_memory_add(None, false);
+        assert!(rendered.contains("Add to memory"));
+        assert!(!rendered.contains("Add to project memory"));
+        assert!(rendered.contains("nothing is selected yet"));
+        assert!(rendered.contains("[p] ○ project"));
+        assert!(rendered.contains("[g] ○ global"));
         assert!(rendered.contains("/repo/.amf/review-memory.md"));
-        assert!(rendered.contains("[g] project/global"));
+        assert!(rendered.contains("/srv/u/.config/amf/review-memory.md"));
     }
 
     #[test]
-    fn memory_add_dialog_names_the_global_doc_under_global_scope() {
-        let rendered = render_memory_add(crate::app::review_memory::MemoryScope::Global);
-        assert!(rendered.contains("Add to global memory"));
-        assert!(rendered.contains("/home/u/.config/amf/review-memory.md"));
-        assert!(
-            !rendered.contains("/repo/.amf/review-memory.md"),
-            "the project path shouldn't linger once the scope is global"
-        );
+    fn memory_add_dialog_says_why_enter_did_nothing() {
+        let rendered = render_memory_add(None, true);
+        assert!(rendered.contains("Choose where to save first"));
+    }
+
+    #[test]
+    fn memory_add_dialog_marks_the_chosen_destination() {
+        use crate::app::review_memory::MemoryScope;
+
+        let project = render_memory_add(Some(MemoryScope::Project), false);
+        assert!(project.contains("Add to project memory"));
+        assert!(project.contains("[p] ● project"));
+        assert!(project.contains("[g] ○ global"));
+
+        let global = render_memory_add(Some(MemoryScope::Global), false);
+        assert!(global.contains("Add to global memory"));
+        assert!(global.contains("[g] ● global"));
+        // Both paths stay visible, so the one not chosen is never a guess.
+        assert!(global.contains("/repo/.amf/review-memory.md"));
     }
 
     fn render_bootstrap_pick(scope: crate::app::review_memory::MemoryScope) -> String {

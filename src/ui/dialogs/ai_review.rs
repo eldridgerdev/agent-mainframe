@@ -388,11 +388,13 @@ pub fn draw_ai_review(
             Style::default().fg(theme.text_muted.to_color()),
         ))
     });
+    let memory_lines = memory_lines(state, theme, area.width as usize);
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),                                     // header
             Constraint::Length(u16::from(attribution_line.is_some())), // attribution
+            Constraint::Length(memory_lines.len() as u16),             // review memory
             Constraint::Min(1),                                        // body
             Constraint::Length(1),                                     // footer
         ])
@@ -441,11 +443,12 @@ pub fn draw_ai_review(
     if let Some(attribution_line) = attribution_line {
         frame.render_widget(Paragraph::new(attribution_line), outer[1]);
     }
+    frame.render_widget(Paragraph::new(memory_lines), outer[2]);
 
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(outer[2]);
+        .split(outer[3]);
     draw_finding_list(frame, body[0], state, theme, finding_fix_costs);
     let detail_lines = draw_finding_detail(
         frame,
@@ -470,7 +473,7 @@ pub fn draw_ai_review(
         ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
-    frame.render_widget(keys, outer[3]);
+    frame.render_widget(keys, outer[4]);
 
     if let Some(pick) = &state.harness_pick {
         draw_ai_harness_pick(frame, pick, theme);
@@ -489,6 +492,114 @@ pub fn draw_ai_review(
             .count();
         draw_ai_review_post_dialog(frame, post, eligible, theme);
     }
+}
+
+/// Width of the label column in the Memory block, so the doc rows and the
+/// last-run row line up under one heading.
+const MEMORY_LABEL: &str = "  Memory  ";
+
+/// The pane's Memory block: one row per doc the next `A` run would read (with
+/// its state and path), one row for what the last completed run actually sent,
+/// and a warning row for a stray worktree-only doc. Empty until the status has
+/// been read.
+fn memory_lines(state: &AiReviewState, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+    use crate::app::review_memory::MemoryDocState;
+
+    let Some(status) = &state.memory_status else {
+        return Vec::new();
+    };
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let indent = " ".repeat(MEMORY_LABEL.len());
+    let mut lines = Vec::new();
+
+    for (index, doc) in status.docs.iter().enumerate() {
+        let (marker, detail, color) = match doc.state {
+            MemoryDocState::Loaded if doc.findings > 0 => {
+                let mut detail = format!(
+                    "{} finding{}",
+                    doc.findings,
+                    if doc.findings == 1 { "" } else { "s" }
+                );
+                if doc.duplicates > 0 {
+                    detail.push_str(&format!(" (+{} already in project)", doc.duplicates));
+                }
+                ("●", detail, theme.success.to_color())
+            }
+            // Read whole, so its prose still reaches the agent, but there is
+            // no `- ` finding in it.
+            MemoryDocState::Loaded if doc.duplicates > 0 => (
+                "○",
+                format!("all {} already in project", doc.duplicates),
+                theme.text_muted.to_color(),
+            ),
+            MemoryDocState::Loaded => {
+                ("●", "no findings yet".to_string(), theme.warning.to_color())
+            }
+            MemoryDocState::Empty => ("○", "empty".to_string(), theme.text_muted.to_color()),
+            MemoryDocState::Missing => ("○", "not found".to_string(), theme.text_muted.to_color()),
+            MemoryDocState::Unreadable => (
+                "✗",
+                format!(
+                    "unreadable: {}",
+                    doc.error.as_deref().unwrap_or("unknown error")
+                ),
+                theme.danger.to_color(),
+            ),
+        };
+        let lead = if index == 0 {
+            MEMORY_LABEL.to_string()
+        } else {
+            indent.clone()
+        };
+        let head = format!("{marker} {:<7} {detail}  ", doc.scope.label());
+        let used = lead.chars().count() + head.chars().count();
+        let path = super::pr_review::truncate_left(
+            &crate::ui::list::shorten_path(&doc.path),
+            width.saturating_sub(used).max(8),
+        );
+        lines.push(Line::from(vec![
+            Span::styled(lead, muted.add_modifier(Modifier::BOLD)),
+            Span::styled(head, Style::default().fg(color)),
+            Span::styled(path, muted),
+        ]));
+    }
+
+    let last_run = state
+        .attribution
+        .as_ref()
+        .map(|attribution| match &attribution.memory {
+            Some(usage) => usage.label(),
+            None => ("last run: memory use was not recorded".to_string(), false),
+        });
+    if let Some((text, warn)) = last_run {
+        let style = if warn {
+            Style::default().fg(theme.warning.to_color())
+        } else {
+            muted
+        };
+        lines.push(Line::from(vec![
+            Span::raw(indent.clone()),
+            Span::styled(
+                truncate_right(&text, width.saturating_sub(indent.len())),
+                style,
+            ),
+        ]));
+    }
+
+    if let Some(stray) = &status.stray_worktree_doc {
+        let text = format!(
+            "⚠ {} is this worktree's own copy and is not read; move its findings into the project doc above",
+            crate::ui::list::shorten_path(stray)
+        );
+        lines.push(Line::from(vec![
+            Span::raw(indent),
+            Span::styled(
+                truncate_right(&text, width.saturating_sub(MEMORY_LABEL.len())),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+        ]));
+    }
+    lines
 }
 
 fn draw_finding_editor(frame: &mut Frame, editor: &crate::editor::TextEditor, theme: &Theme) {
@@ -885,6 +996,7 @@ mod tests {
                 finding_editor: None,
                 post_confirm: None,
                 marked: Default::default(),
+                memory_status: None,
             },
             progress: crate::app::AiReviewRunProgress {
                 stage: crate::app::ai_review::AiReviewStage::Reviewing {
@@ -968,6 +1080,7 @@ mod tests {
             finding_editor: None,
             post_confirm: None,
             marked: Default::default(),
+            memory_status: None,
         }
     }
 
@@ -1019,6 +1132,84 @@ mod tests {
         let rendered = render_pane(&mut state);
         assert!(rendered.contains("harness codex · model harness default · usage not reported"));
         assert!(!rendered.contains("est. $"));
+    }
+
+    fn memory_doc(
+        scope: crate::app::review_memory::MemoryScope,
+        path: &str,
+        state: crate::app::review_memory::MemoryDocState,
+        findings: usize,
+    ) -> crate::app::review_memory::MemoryDocStatus {
+        crate::app::review_memory::MemoryDocStatus {
+            scope,
+            path: PathBuf::from(path),
+            state,
+            findings,
+            duplicates: 0,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn pane_lists_the_memory_docs_the_next_run_would_read() {
+        use crate::app::review_memory::{MemoryDocState, MemoryScope, ReviewMemoryStatus};
+
+        let mut state = pane_state_with_attribution(None);
+        state.memory_status = Some(ReviewMemoryStatus {
+            docs: vec![
+                memory_doc(
+                    MemoryScope::Project,
+                    "/repo/.amf/review-memory.md",
+                    MemoryDocState::Loaded,
+                    4,
+                ),
+                memory_doc(
+                    MemoryScope::Global,
+                    "/cfg/review-memory.md",
+                    MemoryDocState::Missing,
+                    0,
+                ),
+            ],
+            stray_worktree_doc: Some(PathBuf::from("/repo/.worktrees/f/.amf/review-memory.md")),
+        });
+        let rendered = render_pane(&mut state);
+        assert!(rendered.contains("Memory"));
+        assert!(rendered.contains("● project 4 findings"), "{rendered}");
+        assert!(rendered.contains("/repo/.amf/review-memory.md"));
+        assert!(rendered.contains("○ global  not found"), "{rendered}");
+        assert!(rendered.contains("is this worktree's own copy and is not read"));
+    }
+
+    #[test]
+    fn pane_says_what_the_last_run_actually_sent() {
+        use crate::app::review_memory::{MemoryDocState, MemoryScope, ReviewMemoryStatus};
+
+        let docs = vec![memory_doc(
+            MemoryScope::Project,
+            "/repo/.amf/review-memory.md",
+            MemoryDocState::Loaded,
+            2,
+        )];
+        let mut state =
+            pane_state_with_attribution(Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("claude".to_string()),
+                memory: Some(crate::app::ai_review::AiReviewMemoryUsage {
+                    docs: docs.clone(),
+                    context_chars: 30,
+                    prompts: 1,
+                    prompts_with_memory: 0,
+                }),
+                ..Default::default()
+            }));
+        state.memory_status = Some(ReviewMemoryStatus {
+            docs,
+            stray_worktree_doc: None,
+        });
+        let rendered = render_pane(&mut state);
+        assert!(
+            rendered.contains("last run read memory but did not send it"),
+            "{rendered}"
+        );
     }
 
     #[test]

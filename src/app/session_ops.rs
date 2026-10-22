@@ -195,6 +195,11 @@ pub(crate) fn saved_sessions_for_kind(
 
 impl App {
     /// Size a new window before launching its program or exposing it in a view.
+    ///
+    /// Only `create_window` failing is an error. Sizing is cosmetic: when it
+    /// fails the failure is logged and the window is kept, because attaching
+    /// to it sizes it anyway (the same fallback used when the viewport is
+    /// unknown), and dropping the user's new session over it would be worse.
     fn create_session_window_for_viewport(
         tmux: &dyn crate::traits::TmuxOps,
         viewport: Option<(u16, u16)>,
@@ -203,15 +208,19 @@ impl App {
         workdir: &Path,
     ) -> Result<()> {
         tmux.create_window(tmux_session, window, workdir)?;
-        App::resize_session_windows_for_viewport(
+        if let Err(error) = App::resize_session_windows_for_viewport(
             tmux,
             viewport,
             tmux_session,
             &[window.to_string()],
-        )
-        .inspect_err(|_| {
-            let _ = tmux.kill_window(tmux_session, window);
-        })
+        ) {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Info,
+                "session_window",
+                &format!("Could not size new window '{window}' in {tmux_session}: {error}"),
+            );
+        }
+        Ok(())
     }
 
     /// Intercept opening a persisted agent pane whose tmux session has
@@ -1509,13 +1518,23 @@ impl App {
         } else {
             extra_args
         };
-        Self::create_session_window_for_viewport(
+        if let Err(error) = Self::create_session_window_for_viewport(
             self.tmux.as_ref(),
             self.view_pane_viewport(),
             &tmux_session,
             &window,
             &workdir,
-        )?;
+        ) {
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|p| p.features.get_mut(fi))
+            {
+                feature.sessions.retain(|session| session.id != session_id);
+            }
+            return Err(error);
+        }
         match agent {
             AgentKind::Claude => {
                 self.tmux

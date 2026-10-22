@@ -3726,30 +3726,45 @@ fn new_terminal_session_is_sized_before_it_is_opened() {
 }
 
 #[test]
-fn new_terminal_session_resize_failure_removes_window_and_record() {
+fn new_terminal_session_resize_failure_keeps_session() {
     let store = store_with_feature(ProjectStatus::Idle);
-    let original_sessions = store.projects[0].features[0].sessions.len();
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().return_const(true);
-    let mut sequence = mockall::Sequence::new();
     tmux.expect_create_window()
         .times(1)
-        .in_sequence(&mut sequence)
         .returning(|_, _, _| Ok(()));
     tmux.expect_resize_pane()
         .times(1)
-        .in_sequence(&mut sequence)
         .returning(|_, _, _, _| anyhow::bail!("resize failed"));
-    tmux.expect_kill_window()
-        .times(1)
-        .in_sequence(&mut sequence)
-        .returning(|_, _| Ok(()));
+    tmux.expect_kill_window().never();
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.viewport_cols = 120;
     app.viewport_total_rows = 40;
 
+    app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+        .unwrap();
+
     assert!(
-        app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+        app.store.projects[0].features[0]
+            .sessions
+            .iter()
+            .any(|session| session.label == "Shell")
+    );
+}
+
+#[test]
+fn new_agent_session_window_failure_removes_record() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let original_sessions = store.projects[0].features[0].sessions.len();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| anyhow::bail!("create failed"));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    assert!(
+        app.add_builtin_session_unchecked(0, 0, SessionKind::Codex, Some("Agent".into()))
             .is_err()
     );
     assert_eq!(

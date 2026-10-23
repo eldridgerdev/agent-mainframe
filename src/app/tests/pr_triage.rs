@@ -6069,7 +6069,12 @@ fn ai_review_from_linked_worktree_reads_shared_memory_instead_of_local_copy() {
     assert_eq!(paths.project, shared);
     assert_eq!(
         paths.worktree_local,
-        Some(workdir.join(".amf/review-memory.md"))
+        Some(
+            workdir
+                .canonicalize()
+                .unwrap()
+                .join(".amf/review-memory.md")
+        )
     );
     let loaded = crate::app::review_memory::load_review_memory(&paths);
     assert!(loaded.context.contains("Shared one"));

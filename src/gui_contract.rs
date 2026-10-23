@@ -4502,6 +4502,8 @@ mod tests {
                 pr_review_context: None,
             },
             CreateFeatureRequest {
+                initial_prompt: None,
+                submit_prompt: false,
                 project_name: "demo".into(),
                 branch: "todo-work".into(),
                 agent: AgentKind::default(),

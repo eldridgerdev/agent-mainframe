@@ -9,5 +9,7 @@
   "use_worktree": true,
   "enable_chrome": false,
   "hook_choice": null,
-  "dry_run": false
+  "dry_run": false,
+  "initial_prompt": null,
+  "submit_prompt": false
 }

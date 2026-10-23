@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Start tracked sessions and tasks from external tools.** `amf automation
+  create-session` adds an agent, terminal or configured custom session to an
+  existing feature, including in non-git projects, and supports dry-run
+  validation. Session, feature and batch creation can give new agents an
+  initial prompt; it stays unsent for review unless `submit_prompt` is enabled.
+  No migration is required.
 - **Adjust desktop sizing for laptop and external displays.** Appearance now
   offers 80–200% interface zoom and a separate 11–28px terminal text size.
   Changes apply immediately and are remembered across launches, while running

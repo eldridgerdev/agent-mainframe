@@ -7,6 +7,7 @@ use crate::project::{AgentKind, VibeMode};
 pub const AUTOMATION_REQUEST_TYPE: &str = "automation";
 pub const AUTOMATION_RESULT_TYPE: &str = "automation-result";
 pub const CREATE_PROJECT_ACTION: &str = "create_project";
+pub const CREATE_SESSION_ACTION: &str = "create_session";
 pub const CREATE_FEATURE_ACTION: &str = "create_feature";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
 pub const SEED_AI_REVIEW_ACTION: &str = "seed_ai_review";
@@ -111,6 +112,40 @@ impl CreateProjectRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct CreateSessionRequest {
+    pub project_name: String,
+    pub feature: String,
+    pub kind: String,
+    pub label: Option<String>,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
+    pub dry_run: bool,
+}
+
+impl CreateSessionRequest {
+    pub fn ipc_payload(&self) -> serde_json::Value {
+        let mut payload = serde_json::to_value(self).expect("serializable request");
+        payload["type"] = AUTOMATION_REQUEST_TYPE.into();
+        payload["action"] = CREATE_SESSION_ACTION.into();
+        payload
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateSessionResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub dry_run: bool,
+    pub tmux_session: String,
+    pub tmux_window: Option<String>,
+    pub session_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct CreateFeatureRequest {
     pub project_name: String,
     pub branch: String,
@@ -123,6 +158,8 @@ pub struct CreateFeatureRequest {
     pub enable_chrome: bool,
     pub hook_choice: Option<String>,
     pub dry_run: bool,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
 }
 
 impl CreateFeatureRequest {
@@ -140,6 +177,8 @@ impl CreateFeatureRequest {
             "use_worktree": self.use_worktree,
             "enable_chrome": self.enable_chrome,
             "hook_choice": self.hook_choice,
+            "initial_prompt": self.initial_prompt,
+            "submit_prompt": self.submit_prompt,
             "dry_run": self.dry_run,
         })
     }
@@ -157,6 +196,8 @@ pub struct CreateBatchFeaturesRequest {
     pub review: bool,
     pub enable_chrome: bool,
     pub dry_run: bool,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
 }
 
 impl Default for CreateBatchFeaturesRequest {
@@ -166,6 +207,8 @@ impl Default for CreateBatchFeaturesRequest {
             project_name: String::new(),
             feature_count: 3,
             feature_prefix: "feature".to_string(),
+            initial_prompt: None,
+            submit_prompt: false,
             agent: AgentKind::default(),
             mode: VibeMode::default(),
             review: false,
@@ -188,6 +231,8 @@ impl CreateBatchFeaturesRequest {
             "mode": self.mode,
             "review": self.review,
             "enable_chrome": self.enable_chrome,
+            "initial_prompt": self.initial_prompt,
+            "submit_prompt": self.submit_prompt,
             "dry_run": self.dry_run,
         })
     }
@@ -358,6 +403,35 @@ pub fn automation_error_response(action: &str, error: impl Into<String>) -> serd
         "ok": false,
         "error": error.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_prompt_and_submission_survive_cli_ipc_requests() {
+        let input = serde_json::json!({
+            "initial_prompt": "First line\nSecond line",
+            "submit_prompt": true,
+        });
+        let feature: CreateFeatureRequest = serde_json::from_value(input.clone()).unwrap();
+        let batch: CreateBatchFeaturesRequest = serde_json::from_value(input.clone()).unwrap();
+        let session: CreateSessionRequest = serde_json::from_value(input.clone()).unwrap();
+        for payload in [
+            feature.ipc_payload(),
+            batch.ipc_payload(),
+            session.ipc_payload(),
+        ] {
+            assert_eq!(payload["initial_prompt"], input["initial_prompt"]);
+            assert_eq!(payload["submit_prompt"], true);
+            assert_eq!(payload["type"], AUTOMATION_REQUEST_TYPE);
+        }
+        assert_eq!(session.ipc_payload()["action"], CREATE_SESSION_ACTION);
+        let default: CreateSessionRequest = serde_json::from_str("{}").unwrap();
+        assert!(!default.submit_prompt);
+        assert!(default.initial_prompt.is_none());
+    }
 }
 
 #[cfg(test)]

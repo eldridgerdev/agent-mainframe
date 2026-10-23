@@ -1,0 +1,36 @@
+shim:codex:../automation-codex-fixture.py
+run:python3 "$REPO_ROOT/scripts/dev/screenshot/seed-automation-sessions.py" "$AMF_BIN" "$SHOT_ROOT"
+wait:5000
+note:Automation adds two tracked Codex sessions to the existing main feature of a non-git project. The dry-run preview creates no row. Offline fixtures make no model calls.
+expect:non-git-demo
+expect:Docs draft
+expect:Run task
+expect_not:Preview only
+shot:automation-tracked-sessions
+key:j
+key:j
+key:j
+wait:300
+key:Enter
+wait:1500
+key:Escape
+wait:300
+note:The new Docs draft session receives its initial prompt through AMF bracketed paste and leaves it unsent by default. The labeled offline fixture is waiting for Enter.
+expect:Offline agent fixture
+expect:UNSENT DRAFT
+expect:Write a concise README for this project.
+expect_not:SUBMITTED TASK
+shot:automation-unsent-prompt
+key:C-q
+wait:350
+key:j
+wait:300
+key:Enter
+wait:1500
+key:Escape
+wait:300
+note:The new Run task session receives and submits its initial prompt when submit_prompt is true. The offline fixture confirms that Enter was received; no model is invoked.
+expect:Offline agent fixture
+expect:SUBMITTED TASK
+expect:Summarize the documentation gaps.
+shot:automation-submitted-prompt

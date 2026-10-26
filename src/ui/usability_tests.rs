@@ -230,3 +230,163 @@ fn usability_error_messages_are_never_prefixed_twice() {
     assert!(!crate::app::App::logged_error_message("Could not save; retry").contains("debug log"));
     assert!(crate::app::App::logged_error_message("Boom").ends_with("Press D for the debug log."));
 }
+
+fn rendered_rows(width: u16, height: u16, mut draw: impl FnMut(&mut Frame)) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| draw(frame)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn project_form_path_hint_keeps_its_own_row_under_a_long_path() {
+    let long_path = format!("/home/someone/{}/my-app", "nested-folder/".repeat(10));
+    let state = CreateProjectState {
+        step: CreateProjectStep::Path,
+        name: "example".into(),
+        path: long_path.clone(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git: None,
+    };
+    let rows = rendered_rows(100, 30, |frame| {
+        dialogs::draw_create_project_dialog(
+            frame,
+            &state,
+            &[AgentKind::Claude],
+            None,
+            &Theme::default(),
+        )
+    });
+    let hint = rows
+        .iter()
+        .position(|row| row.contains("Ctrl+B browse folders"))
+        .expect("browse hint shown");
+    assert!(rows[hint].contains("Ctrl+U clear field"));
+    assert!(
+        !rows[hint].contains("nested-folder"),
+        "hint not on a path row"
+    );
+    assert!(
+        rows[..hint].concat().contains("my-app"),
+        "path ends above it"
+    );
+
+    let blank = CreateProjectState {
+        path: String::new(),
+        ..state
+    };
+    let screen = rendered(100, 30, |frame| {
+        dialogs::draw_create_project_dialog(
+            frame,
+            &blank,
+            &[AgentKind::Claude],
+            None,
+            &Theme::default(),
+        )
+    });
+    assert!(
+        screen.contains("type the folder's full path"),
+        "placeholder"
+    );
+}
+
+fn feature_form_state() -> crate::app::CreateFeatureState {
+    let mut state = crate::app::CreateFeatureState::new(
+        "demo".into(),
+        std::path::PathBuf::from("/tmp/demo"),
+        Vec::new(),
+        true,
+    );
+    state.branch = "login".into();
+    state.step = crate::app::CreateFeatureStep::Mode;
+    state
+}
+
+fn draw_feature_form(state: &crate::app::CreateFeatureState) -> Vec<String> {
+    rendered_rows(120, 40, |frame| {
+        dialogs::draw_create_feature_dialog(
+            frame,
+            state,
+            &[],
+            &[AgentKind::Claude, AgentKind::Codex],
+            &crate::usage::UsageData::default(),
+            &Theme::default(),
+        )
+    })
+}
+
+#[test]
+fn feature_form_marks_the_focused_row_and_says_what_enter_does() {
+    let mut state = feature_form_state();
+    state.mode_focus = 1;
+    let rows = draw_feature_form(&state);
+    let screen = rows.concat();
+    assert!(screen.contains("\u{25b8}Mode:"), "focused row is marked");
+    assert!(!screen.contains("\u{25b8}Review:"));
+    for text in [
+        "Enter next field",
+        "Ctrl+S create",
+        "Tab/Shift+Tab",
+        "Session: Claude 1",
+    ] {
+        assert!(screen.contains(text), "missing {text}");
+    }
+    // One plain line per mode on what the agent may do without asking.
+    for mode in crate::project::VibeMode::ALL {
+        assert!(
+            screen.contains(mode.permission_summary()),
+            "missing {}",
+            mode.display_name()
+        );
+    }
+
+    state.mode_focus = 2;
+    let screen = draw_feature_form(&state).concat();
+    assert!(screen.contains("\u{25b8}Review:"));
+    assert!(screen.contains("Space or j/k toggle [x]"));
+
+    state.step = crate::app::CreateFeatureStep::SessionName;
+    let screen = draw_feature_form(&state).concat();
+    assert!(screen.contains("\u{25b8}Session:"));
+    assert!(screen.contains("Enter create"));
+    assert!(!screen.contains("Name Session"), "no separate prompt");
+}
+
+#[test]
+fn harness_manager_header_and_footer_name_the_same_keys() {
+    let state = crate::app::HarnessSetupState::new(false, &[AgentKind::Claude]);
+    let screen = rendered(120, 40, |frame| {
+        dialogs::draw_harness_setup_dialog(
+            frame,
+            &state,
+            &throbber_widgets_tui::ThrobberState::default(),
+            &Theme::default(),
+        )
+    });
+    for text in ["Enter/Space", "toggle", "c saves", "c save", "Esc cancel"] {
+        assert!(screen.contains(text), "missing {text}");
+    }
+    assert!(!screen.contains("q exit"));
+    assert!(!screen.contains("Enter to check & enable"));
+}
+
+#[test]
+fn feature_form_footer_fits_at_80_columns() {
+    let state = feature_form_state();
+    let screen = rendered(80, 24, |frame| {
+        dialogs::draw_create_feature_dialog(
+            frame,
+            &state,
+            &[],
+            &[AgentKind::Claude],
+            &crate::usage::UsageData::default(),
+            &Theme::default(),
+        )
+    });
+    for text in ["Ctrl+S create", "Esc back", "Enter next"] {
+        assert!(screen.contains(text), "missing {text}");
+    }
+}

@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, AppMode, ConfigWizardStep, DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
+    App, AppMode, ConfigWizardStep, CreateFeatureState, CreateFeatureStep,
+    DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
 };
 use crate::editor::VimMode;
 use crate::project::SessionKind;
@@ -264,8 +265,29 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+Q", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::CreatingFeature(state) => {
+            if CreateFeatureState::is_form_step(&state.step) {
+                let last = state.step == CreateFeatureStep::SessionName;
+                Line::from(vec![
+                    Span::styled("Tab", key_style()),
+                    Span::raw(" field  "),
+                    Span::styled("Enter", key_style()),
+                    Span::raw(if last { " create  " } else { " next field  " }),
+                    Span::styled("Ctrl+S", key_style()),
+                    Span::raw(" create  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" select  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back"),
+                ])
+            }
+        }
         AppMode::CreatingProject(_)
-        | AppMode::CreatingFeature(_)
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
@@ -927,13 +949,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::HarnessSetup(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
-            Span::raw(" navigate  "),
-            Span::styled("Enter", key_style()),
+            Span::raw(" move  "),
+            Span::styled("Enter/Space", key_style()),
             Span::raw(" toggle  "),
             Span::styled("c", key_style()),
-            Span::raw(" confirm  "),
+            Span::raw(" save  "),
             Span::styled("Esc", key_style()),
-            Span::raw(" close"),
+            Span::raw(" cancel"),
         ]),
         AppMode::ReviewHarnessPick(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),

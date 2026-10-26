@@ -2765,7 +2765,7 @@ pub struct CreateProjectState {
     pub path_is_git: Option<bool>,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,
@@ -2773,18 +2773,17 @@ pub enum CreateProjectStep {
 }
 
 impl CreateProjectState {
-    pub fn auto_detect() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let root = crate::worktree::WorktreeManager::repo_root(&cwd);
-        let path_is_git = Some(root.is_ok());
-        let repo_path = root.unwrap_or(cwd).to_string_lossy().into_owned();
+    /// An empty form. The repo path starts blank (the dialog shows a
+    /// placeholder) rather than AMF's launch directory, which is rarely the
+    /// project being added and used to be prefilled without saying so.
+    pub fn blank() -> Self {
         Self {
             step: CreateProjectStep::Name,
             name: String::new(),
-            path: repo_path,
+            path: String::new(),
             agent: AgentKind::default(),
             agent_index: 0,
-            path_is_git,
+            path_is_git: None,
         }
     }
 }
@@ -2879,6 +2878,12 @@ pub struct CreateFeatureState {
     pub prepared_launch: Option<PreparedFeatureLaunch>,
 }
 
+/// The name a feature's first agent session gets unless the user types one:
+/// "Claude 1", "Codex 1", ...
+pub fn default_session_name(agent: &AgentKind) -> String {
+    format!("{} 1", agent.display_name())
+}
+
 impl CreateFeatureState {
     pub fn new(
         project_name: String,
@@ -2886,11 +2891,18 @@ impl CreateFeatureState {
         worktrees: Vec<WorktreeInfo>,
         is_first_feature: bool,
     ) -> Self {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let branch = crate::worktree::WorktreeManager::current_branch(&cwd)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        // A project's first feature runs in the repo folder itself, so it is
+        // named after the branch checked out there (the project's, not AMF's
+        // launch directory's). Later features get new worktrees and start
+        // blank: reusing that branch name would only collide with it.
+        let branch = if is_first_feature {
+            crate::worktree::WorktreeManager::current_branch(&project_repo)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
 
         let step = if worktrees.is_empty() {
             CreateFeatureStep::Branch
@@ -2936,6 +2948,96 @@ impl CreateFeatureState {
             task_prompt: String::new(),
             prompt_analysis: crate::app::analyze_prompt(""),
             prepared_launch: None,
+        }
+    }
+
+    /// The last `mode_focus` index on the options step. Claude has two more
+    /// rows (Chrome, Remote Control) than the other harnesses:
+    /// Claude: 0=harness 1=mode 2=review 3=plan 4=chrome 5=remote 6=steering;
+    /// others: 0=harness 1=mode 2=review 3=plan 4=steering.
+    pub fn mode_max_focus(&self) -> usize {
+        if self.agent == AgentKind::Claude {
+            6
+        } else {
+            4
+        }
+    }
+
+    /// The feature reuses a worktree picked on the Source step, so its name
+    /// and worktree rows are fixed and not part of the editable form.
+    pub fn uses_existing_worktree(&self) -> bool {
+        self.source_index == 1 && !self.worktrees.is_empty()
+    }
+
+    /// Whether `step` is one of the rows of the single-page form (name,
+    /// worktree, options, session name), as opposed to the pickers in front
+    /// of it or the SuperVibe confirmation after it.
+    pub fn is_form_step(step: &CreateFeatureStep) -> bool {
+        matches!(
+            step,
+            CreateFeatureStep::Branch
+                | CreateFeatureStep::Worktree
+                | CreateFeatureStep::Mode
+                | CreateFeatureStep::SessionName
+        )
+    }
+
+    /// Move to the next (`forward`) or previous form row, wrapping at either
+    /// end — the same Tab/Shift+Tab behaviour as the New Project dialog.
+    /// Does nothing outside the form.
+    pub fn move_form_focus(&mut self, forward: bool) {
+        if !Self::is_form_step(&self.step) {
+            return;
+        }
+        let mut rows: Vec<(CreateFeatureStep, usize)> = Vec::new();
+        if !self.uses_existing_worktree() {
+            rows.push((CreateFeatureStep::Branch, 0));
+            rows.push((CreateFeatureStep::Worktree, 0));
+        }
+        for focus in 0..=self.mode_max_focus() {
+            rows.push((CreateFeatureStep::Mode, focus));
+        }
+        rows.push((CreateFeatureStep::SessionName, 0));
+
+        let current_focus = if self.step == CreateFeatureStep::Mode {
+            self.mode_focus
+        } else {
+            0
+        };
+        let current = rows
+            .iter()
+            .position(|(step, focus)| *step == self.step && *focus == current_focus)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % rows.len()
+        } else {
+            (current + rows.len() - 1) % rows.len()
+        };
+        let (step, focus) = rows[next].clone();
+        self.step = step;
+        if self.step == CreateFeatureStep::Mode {
+            self.mode_focus = focus;
+        }
+    }
+
+    /// Select the harness at `index`. The session name follows the harness
+    /// ("Claude 1" → "Codex 1") until the user has typed their own.
+    pub fn select_agent(&mut self, index: usize) {
+        let Some(agent) = self.allowed_agents.get(index).cloned() else {
+            return;
+        };
+        self.set_agent(agent);
+        self.agent_index = index;
+    }
+
+    /// Set the harness, keeping an untouched default session name in step.
+    pub fn set_agent(&mut self, agent: AgentKind) {
+        if self.session_name.trim() == default_session_name(&self.agent) {
+            self.session_name = default_session_name(&agent);
+        }
+        self.agent = agent;
+        if self.step == CreateFeatureStep::Mode && self.mode_focus > self.mode_max_focus() {
+            self.mode_focus = self.mode_max_focus();
         }
     }
 
@@ -4842,30 +4944,25 @@ pub struct CreateBatchFeaturesState {
     pub review: bool,
     pub enable_chrome: bool,
     pub step: CreateBatchFeaturesStep,
+    /// The batch adds features to an existing project (the one selected when
+    /// `B` was pressed) instead of creating a new project. The path and name
+    /// steps are skipped: they would only re-ask what the selection says.
+    pub existing_project: bool,
 }
 
 impl CreateBatchFeaturesState {
+    /// A batch that also creates its project. `workspace_path` prefills the
+    /// path; `None` leaves it blank rather than guessing AMF's launch
+    /// directory.
     pub fn with_workspace(workspace_path: Option<String>) -> Self {
-        let repo_path = if let Some(ws) = workspace_path {
-            ws
-        } else {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            crate::worktree::WorktreeManager::repo_root(&cwd)
-                .unwrap_or(cwd)
-                .to_string_lossy()
-                .into_owned()
-        };
-        let workspace_name = std::path::Path::new(&repo_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace")
-            .to_string();
+        let repo_path = workspace_path.unwrap_or_default();
+        let workspace_name = Self::name_from_path(&repo_path);
 
         Self {
             workspace_path: repo_path,
             project_name: workspace_name,
             feature_count: 3,
-            feature_prefix: "feature".to_string(),
+            feature_prefix: "feature-".to_string(),
             agent: AgentKind::default(),
             agent_index: 0,
             mode: VibeMode::default(),
@@ -4874,7 +4971,39 @@ impl CreateBatchFeaturesState {
             review: false,
             enable_chrome: false,
             step: CreateBatchFeaturesStep::WorkspacePath,
+            existing_project: false,
         }
+    }
+
+    /// The most features one batch creates (typed digits are capped too).
+    pub const MAX_FEATURES: usize = 50;
+
+    /// A batch of features added to the existing project `project_name`,
+    /// starting at the feature count.
+    pub fn for_project(project_name: String, repo: &std::path::Path) -> Self {
+        let mut state = Self::with_workspace(Some(repo.to_string_lossy().into_owned()));
+        state.project_name = project_name;
+        state.existing_project = true;
+        state.step = CreateBatchFeaturesStep::FeatureCount;
+        state
+    }
+
+    /// The folder name of `path`, used as the default project name.
+    pub fn name_from_path(path: &str) -> String {
+        std::path::Path::new(path.trim())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The feature (and branch) names the batch will create, in order. Must
+    /// match `App::planned_batch_feature_results`: prefix then number, with
+    /// no separator added (`feature-` → `feature-1`).
+    pub fn planned_names(&self) -> Vec<String> {
+        (1..=self.feature_count)
+            .map(|i| format!("{}{}", self.feature_prefix, i))
+            .collect()
     }
 }
 

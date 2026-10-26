@@ -38,6 +38,28 @@ are tagged.
   "Check debug log" tail, and the rest now say "Press D for the debug log".
   Toasts stack above the status bar instead of over it, and at most three
   show at once. The `S` hint on a project explains what to select.
+- **Creation forms behave the same way and say what their keys do.**
+  - **New Project (`N`)** starts with an empty path and a hint, instead of
+    AMF's launch folder. `Ctrl+B` browses from beside the selected project.
+    `Ctrl+U` clears the focused field (it used to type a `u`), and the key
+    hint no longer runs into a long path.
+  - **New Feature (`n`)** is one form. `Tab` / `Shift+Tab` move between
+    rows, and the focused row is marked `▸`. `Space` toggles a checkbox.
+    `Enter` goes to the next row, and `Ctrl+S` creates from any row. The
+    session name is the form's last row instead of a separate prompt, and it
+    follows the harness (`Codex 1`) until you type your own name. The Mode
+    row says in one line what Vibeless, Vibe and SuperVibe let the agent do
+    without asking. After creating, the feature's agent session opens.
+  - **Batch (`B`)** adds features to the selected project instead of asking
+    for its path and name again, which used to fail without an error.
+    The first screen says what a batch creates (`feature-1` ... `feature-N`,
+    each in a worktree) and that it has no plan interview and no per-feature
+    names or prompts. Failures show in the dialog. Default names now match
+    the preview (`feature-1`, not `feature1`).
+  - **Harness manager (`A`)**: the header and footer use the same keys
+    (`Enter`/`Space` toggle, `c` save, `Esc` cancel). `q` no longer closes it
+    from the dashboard; on first run it still quits AMF.
+  - `Ctrl+U` also clears the rename prompts. No migration is required.
 - **Esc and `d` no longer act instantly on the dashboard.** Esc now asks
   "Quit AMF?" (`q` still quits directly), and `d` on a session asks before
   removing it, saying whether an agent is running. No migration is required.

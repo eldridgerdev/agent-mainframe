@@ -867,3 +867,64 @@ fn create_feature_automation_no_start_rejects_prompt_before_side_effects() {
     );
     assert!(app.store.projects[0].features.is_empty());
 }
+
+/// `B` on a selected project adds the batch to it. The automation API keeps
+/// treating an existing project name as an error.
+#[test]
+fn a_batch_can_join_an_existing_project_but_not_reuse_its_feature_names() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .returning(move |_| Ok(repo_clone.clone()));
+    let mut store = store_with_empty_project(repo.clone(), true);
+    let existing = crate::project::Feature::new_for_project(
+        "automation-project",
+        "feature-1".into(),
+        "feature-1".into(),
+        repo.join(".worktrees").join("elsewhere"),
+        true,
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+    );
+    store.projects[0].features.push(existing);
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+
+    let mut request = CreateBatchFeaturesRequest {
+        workspace_path: repo.clone(),
+        project_name: "automation-project".into(),
+        feature_count: 2,
+        feature_prefix: "feature-".into(),
+        agent: AgentKind::Claude,
+        dry_run: true,
+        ..Default::default()
+    };
+
+    let err = app
+        .create_batch_features_from_request(&request)
+        .unwrap_err();
+    assert!(err.to_string().contains("already exists"), "{err}");
+
+    let err = app.add_batch_features_to_project(&request).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Feature 'feature-1' already exists in 'automation-project'"),
+        "{err}"
+    );
+
+    request.feature_prefix = "batch-".into();
+    let response = app.add_batch_features_to_project(&request).unwrap();
+    assert_eq!(response.features[0].name, "batch-1");
+    assert_eq!(app.store.projects.len(), 1, "no second project");
+
+    request.project_name = "missing".into();
+    let err = app.add_batch_features_to_project(&request).unwrap_err();
+    assert!(err.to_string().contains("not found"), "{err}");
+}

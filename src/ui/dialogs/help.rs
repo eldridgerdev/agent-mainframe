@@ -28,7 +28,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("N", "Create new project"),
         ("n", "Create new feature"),
         ("g", "Browse GitHub issues for the selected project"),
-        ("B", "Create batch features"),
+        ("B", "Batch features into the selected project"),
         ("O", "Open AMF settings project"),
         ("A", "Manage agent harnesses"),
         ("d", "Delete project/feature/session (asks first)"),

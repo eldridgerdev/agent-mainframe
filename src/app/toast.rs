@@ -3,6 +3,9 @@ use std::time::{Duration, Instant};
 use crate::app::App;
 use crate::app::PendingInput;
 
+/// Most toasts shown at once.
+pub const MAX_TOASTS: usize = 3;
+
 pub enum ToastKind {
     Success,
     Info,
@@ -53,6 +56,11 @@ impl Toast {
 
 impl App {
     pub fn push_toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
+        // Cap the stack: the oldest toast makes room, so a burst of messages
+        // cannot grow past what the renderer can show above the status bar.
+        while self.toasts.len() >= MAX_TOASTS {
+            self.toasts.remove(0);
+        }
         self.toasts.push(Toast::new(msg, kind));
     }
 
@@ -68,7 +76,11 @@ impl App {
         self.push_toast(msg, ToastKind::Warning);
     }
 
+    /// Error toasts carry their own marker (red border and the ✕ title), so a
+    /// leading "Error:" is dropped rather than doubled up with it.
     pub fn push_toast_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        let msg = crate::app::strip_error_prefix(&msg).to_string();
         self.push_toast(msg, ToastKind::Error);
     }
 

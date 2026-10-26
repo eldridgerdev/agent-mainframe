@@ -26,6 +26,11 @@ are tagged.
 
 ### Changed
 
+- **Cleaner errors and toasts in the terminal UI.** Errors no longer read
+  "Error: Error: ...", messages that already say what to do drop the generic
+  "Check debug log" tail, and the rest now say "Press D for the debug log".
+  Toasts stack above the status bar instead of over it, and at most three
+  show at once. The `S` hint on a project explains what to select.
 - **Easier-to-scan projects sidebar in the desktop app.** A filter box above
   the project tree (press `/` to jump to it) narrows the tree to matching
   projects and features, highlights the match, and opens the first result on

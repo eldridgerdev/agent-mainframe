@@ -192,7 +192,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if is_codex.unwrap_or(false) {
                 app.pick_codex_session();
             } else {
-                app.push_toast_warning("S only works for opencode, claude, or codex sessions");
+                app.push_toast_warning("S opens saved transcripts: select a claude, codex or opencode feature or session first");
             }
         }
         KeyCode::Char('u') => match &app.selection {

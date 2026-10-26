@@ -121,19 +121,19 @@ sweep was an accident of my fixture; the missing warning is the finding.)
 
 ## Epic 4 — Error and toast hygiene (P1)
 
-- [ ] **Doubled prefix.** `handlers/picker.rs` (`push_toast_error(format!("Error: {}", e))`
+- [x] **Doubled prefix.** `handlers/picker.rs` (`push_toast_error(format!("Error: {}", e))`
       at three sites, plus the toast renderer's own prefix) produces
       "Error: Error: …". Pick one place to add the prefix; grep every
       `push_toast_error(format!("Error:` and `self.message = Some(format!("Error:`
       (`app/feature_ops.rs`).
-- [ ] Drop the trailing "Check debug log for details." when the message is already
+- [x] Drop the trailing "Check debug log for details." when the message is already
       actionable; otherwise name the key to open the log (`D`).
-- [ ] **Stacked toasts overlap the bottom status line** (`┌ ! ──` fragments across
+- [x] **Stacked toasts overlap the bottom status line** (`┌ ! ──` fragments across
       rows 35–38). Reserve toast space above the status bar, or clear the
       status line while a toast is up, and cap simultaneous toasts.
-- [ ] `S` on a project with no transcripts/remotes shows a garbled popup; reproduce
+- [x] `S` on a project with no transcripts/remotes shows a garbled popup; reproduce
       and fix the border drawing at the bottom-right corner.
-- [ ] Render tests (`ui/usability_tests.rs`): no row contains both a toast border
+- [x] Render tests (`ui/usability_tests.rs`): no row contains both a toast border
       and the status message; no doubled "Error:".
 
 ## Epic 5 — Leader menu clipping (P1)

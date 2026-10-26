@@ -135,3 +135,66 @@ fn usability_status_feedback_is_not_overwritten_by_usage() {
     let screen = rendered(80, 4, |frame| status::draw(frame, &app, frame.area()));
     assert!(screen.contains(message));
 }
+
+fn screen_rows(app: &mut crate::app::App, width: u16, height: u16) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal.draw(|frame| dashboard::draw(frame, app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..height)
+        .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+        .collect()
+}
+
+fn test_app() -> crate::app::App {
+    crate::app::App::new_for_test(
+        crate::project::ProjectStore::empty(),
+        Box::new(crate::traits::MockTmuxOps::new()),
+        Box::new(crate::traits::MockWorktreeOps::new()),
+    )
+}
+
+#[test]
+fn usability_stacked_toasts_never_share_a_row_with_the_status_bar() {
+    for (w, h) in [(80, 24), (120, 40)] {
+        let mut app = test_app();
+        app.message = Some("Error: Could not start feature; retry".into());
+        for i in 0..6 {
+            app.push_toast_error(format!("Failure number {i} with a fairly long explanation"));
+            app.push_toast_warning("S opens saved transcripts: select a claude, codex or opencode feature or session first");
+        }
+        assert!(app.toasts.len() <= crate::app::toast::MAX_TOASTS);
+        let rows = screen_rows(&mut app, w, h);
+        let status_top = (h - 3) as usize;
+        for (y, row) in rows.iter().enumerate() {
+            if row.contains("Could not start feature") {
+                assert!(
+                    !row.contains('┌') && !row.contains('┐') && row.matches('│').count() <= 2,
+                    "toast border shares status row {y}: {row:?}"
+                );
+            }
+            if y >= status_top {
+                assert!(
+                    !row.contains("──") || !row.contains('!'),
+                    "toast fragment in status area row {y}: {row:?}"
+                );
+            }
+        }
+        assert!(rows.iter().any(|r| r.contains("Failure number 5")));
+    }
+}
+
+#[test]
+fn usability_error_messages_are_never_prefixed_twice() {
+    let mut app = test_app();
+    app.show_error(anyhow::anyhow!("Error: disk is full"));
+    let message = app.message.clone().unwrap();
+    assert_eq!(message.matches("Error:").count(), 1, "{message}");
+    app.push_toast_error("Error: nope");
+    app.push_toast_error("Error: Error: still nope");
+    let rows = screen_rows(&mut app, 100, 30).join("\n");
+    assert!(!rows.contains("Error: Error:"));
+    assert!(!rows.contains("Error: nope"));
+    // Actionable messages drop the generic log pointer; others name the key.
+    assert!(!crate::app::App::logged_error_message("Could not save; retry").contains("debug log"));
+    assert!(crate::app::App::logged_error_message("Boom").ends_with("Press D for the debug log."));
+}

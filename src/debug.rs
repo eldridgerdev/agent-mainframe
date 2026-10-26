@@ -260,7 +260,7 @@ pub fn install_panic_hook() {
                 &format!("thread `{thread}` panicked at {location}: {payload}"),
             );
             flush_log_writer();
-            set_user_alert("Error: AMF hit an internal error. Check debug log for details.".into());
+            set_user_alert("Error: AMF hit an internal error. Press D for the debug log.".into());
         }));
     });
 }

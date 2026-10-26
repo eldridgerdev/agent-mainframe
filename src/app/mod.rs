@@ -4096,10 +4096,29 @@ impl App {
     }
 
     pub fn set_debug_log_error_message(&mut self, message: impl Into<String>) {
-        self.message = Some(format!(
-            "Error: {} Check debug log for details.",
-            message.into()
-        ));
+        self.message = Some(Self::logged_error_message(&message.into()));
+    }
+
+    /// The one place the status-line "Error: " prefix and the debug-log
+    /// pointer are added. A prefix already on `detail` is dropped first so
+    /// callers that pre-prefix cannot produce "Error: Error: ...", and the
+    /// pointer is omitted when the message already says what to do next.
+    pub(crate) fn logged_error_message(detail: &str) -> String {
+        let detail = strip_error_prefix(detail);
+        let lower = detail.to_lowercase();
+        let actionable = ["retry", "press ", "is written to", "debug log"]
+            .iter()
+            .any(|needle| lower.contains(needle));
+        if actionable {
+            format!("Error: {detail}")
+        } else {
+            let sep = if detail.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            format!("Error: {detail}{sep} Press D for the debug log.")
+        }
     }
 
     pub fn flush_token_cache_to_db(&mut self) {
@@ -4440,4 +4459,14 @@ mod sidebar_load_executor_tests {
         assert!(!third_started_while_blocked);
         assert_eq!(max_active.load(Ordering::SeqCst), 2);
     }
+}
+
+/// Strip a leading `Error:` (any case, with its spacing) so a message is never
+/// prefixed twice.
+pub(crate) fn strip_error_prefix(message: &str) -> &str {
+    let mut rest = message.trim_start();
+    while rest.len() >= 6 && rest[..6].eq_ignore_ascii_case("error:") {
+        rest = rest[6..].trim_start();
+    }
+    rest
 }

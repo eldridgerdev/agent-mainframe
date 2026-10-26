@@ -53,7 +53,8 @@ fn muted(theme: &Theme, s: &str) -> Span<'static> {
 
 fn source_badge(theme: &Theme, source: PromptSource) -> Span<'static> {
     let (text, color) = match source {
-        PromptSource::BuiltIn => ("built-in", theme.text_muted.to_color()),
+        // The default is not worth a repeated tag on every row.
+        PromptSource::BuiltIn => ("", theme.text_muted.to_color()),
         PromptSource::Feature => ("feature", theme.info.to_color()),
         PromptSource::Project => ("project", theme.success.to_color()),
         PromptSource::Global => ("global", theme.warning.to_color()),
@@ -71,23 +72,52 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
         ])
         .split(area);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(muted(
-            theme,
-            " Effective source per prompt · [F]eature [P]roject [G]lobal override present",
-        ))),
-        chunks[0],
-    );
+    let visible = state.visible_indices();
+    let header = if state.show_all {
+        format!(
+            " All {} prompts · [F]eature [P]roject [G]lobal override present",
+            state.rows.len()
+        )
+    } else {
+        format!(
+            " {} of {} prompts overridden · [F]eature [P]roject [G]lobal override present",
+            visible.len(),
+            state.rows.len()
+        )
+    };
+    frame.render_widget(Paragraph::new(Line::from(muted(theme, &header))), chunks[0]);
 
     let height = chunks[1].height as usize;
-    let start = state.scroll.min(state.rows.len().saturating_sub(1));
-    let rows: Vec<Line> = state
+    if visible.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::raw(""),
+                Line::from(muted(
+                    theme,
+                    "  No prompts are overridden; all use the built-in default.",
+                )),
+                Line::from(vec![
+                    muted(theme, "  Press "),
+                    key(theme, "a"),
+                    muted(theme, " to list every prompt, then Enter to edit one."),
+                ]),
+            ]),
+            chunks[1],
+        );
+    }
+    let title_width = state
         .rows
         .iter()
-        .enumerate()
+        .map(|r| r.id.spec().title.chars().count())
+        .max()
+        .unwrap_or(30);
+    let start = state.scroll.min(visible.len().saturating_sub(1));
+    let rows: Vec<Line> = visible
+        .iter()
         .skip(start)
         .take(height)
-        .map(|(i, row)| {
+        .map(|&i| {
+            let row = &state.rows[i];
             let selected = i == state.selected;
             let marker = if selected { "› " } else { "  " };
             let name_style = if selected {
@@ -99,16 +129,19 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
             };
             let flags = format!(
                 "{}{}{}",
-                if row.has_feature { "F" } else { "·" },
-                if row.has_project { "P" } else { "·" },
-                if row.has_global { "G" } else { "·" },
+                if row.has_feature { "F" } else { " " },
+                if row.has_project { "P" } else { " " },
+                if row.has_global { "G" } else { " " },
             );
             Line::from(vec![
                 Span::styled(marker.to_string(), name_style),
                 source_badge(theme, row.source),
                 Span::raw("  "),
-                Span::styled(format!("{:<30}", row.id.spec().title), name_style),
-                muted(theme, &format!(" {flags}  ")),
+                Span::styled(
+                    format!("{:<width$}", row.id.spec().title, width = title_width),
+                    name_style,
+                ),
+                muted(theme, &format!("  {flags}  ")),
                 muted(theme, row.id.as_str()),
             ])
         })
@@ -122,12 +155,24 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
         muted(theme, " edit  "),
         key(theme, "d"),
         muted(theme, " clear override  "),
+        key(theme, "a"),
+        muted(
+            theme,
+            if state.show_all {
+                " overridden only  "
+            } else {
+                " show all  "
+            },
+        ),
         key(theme, "?"),
         muted(theme, " help  "),
         key(theme, "Esc"),
         muted(theme, " close"),
     ]);
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+    frame.render_widget(
+        Paragraph::new(footer).wrap(Wrap { trim: false }),
+        chunks[2],
+    );
 }
 
 fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {
@@ -376,6 +421,10 @@ fn draw_help(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from(vec![
             key(theme, " Enter / e"),
             muted(theme, "  edit the effective template"),
+        ]),
+        Line::from(vec![
+            key(theme, " a"),
+            muted(theme, "         show every prompt / only overridden ones"),
         ]),
         Line::from(vec![
             key(theme, " d, d"),

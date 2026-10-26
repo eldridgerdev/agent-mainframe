@@ -568,7 +568,9 @@ fn wrapped_rows(text: &str, width: usize) -> usize {
 }
 
 fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
-    let total = state.questions.len() + 1;
+    // Brief + every question + one closing step (optional AI and everything
+    // after it), so the last question is never also "the last step".
+    let total = state.questions.len() + 2;
     let (position, stage) = match state.phase {
         PlanInterviewPhase::ResumePrompt => (1, "Saved draft".to_string()),
         PlanInterviewPhase::Brief => (1, "Feature brief".to_string()),
@@ -576,17 +578,17 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             let source = state
                 .current_question()
                 .map(|question| match question.source {
-                    QuestionSource::Builtin => "Built-in".to_string(),
-                    QuestionSource::GlobalTemplate => "Global template".to_string(),
-                    QuestionSource::Template => "Project template".to_string(),
                     QuestionSource::Ai { round } => format!("AI round {round}"),
+                    QuestionSource::Builtin
+                    | QuestionSource::GlobalTemplate
+                    | QuestionSource::Template => question.section_name(),
                 })
                 .unwrap_or_default();
             (state.question_index + 2, source)
         }
         PlanInterviewPhase::AiConsent => (total, "Optional AI".to_string()),
         PlanInterviewPhase::AiLoading => (
-            state.questions.len() + 1,
+            total,
             format!("AI round {}", state.ai_rounds_completed + 1),
         ),
         PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),

@@ -1740,6 +1740,17 @@ impl PlanQuestion {
         }
     }
 
+    /// A short human section name for the progress header, derived from the
+    /// question's stable slug (`users-entry-points` -> `Users entry points`).
+    pub fn section_name(&self) -> String {
+        let spaced = self.id.replace(['-', '_'], " ");
+        let mut chars = spaced.trim().chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().chain(chars).collect(),
+            None => String::new(),
+        }
+    }
+
     fn builtin(id: &str, text: &str) -> Self {
         Self {
             id: id.to_string(),
@@ -2060,6 +2071,24 @@ mod tests {
             ]
         );
         assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    fn section_name_humanizes_the_question_slug() {
+        let names: Vec<String> = builtin_questions()
+            .iter()
+            .map(PlanQuestion::section_name)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Scope",
+                "Users entry points",
+                "Data persistence",
+                "Risks unknowns",
+                "Definition of done"
+            ]
+        );
     }
 
     #[test]

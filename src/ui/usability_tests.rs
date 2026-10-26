@@ -173,8 +173,10 @@ fn usability_stacked_toasts_never_share_a_row_with_the_status_bar() {
                 );
             }
             if y >= status_top {
+                // The status bar's own box owns the first and last column.
+                let inner: String = row.chars().skip(1).take(w as usize - 2).collect();
                 assert!(
-                    !row.contains("──") || !row.contains('!'),
+                    !inner.contains(['┌', '┐', '└', '┘']),
                     "toast fragment in status area row {y}: {row:?}"
                 );
             }

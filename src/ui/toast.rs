@@ -15,11 +15,10 @@ use crate::theme::Theme;
 /// bound would push the others off the screen.
 const MAX_TOAST_LINES: usize = 5;
 
-/// Rows the dashboard status bar occupies at the bottom (border, message,
-/// keybinds). Toasts stack above them rather than over them.
-const STATUS_BAR_ROWS: u16 = 3;
-
-pub(crate) fn draw_toasts(frame: &mut Frame, toasts: &[Toast], theme: &Theme) {
+/// Stack `toasts` above the bottom `reserved_rows` of the screen: the height
+/// of whatever the caller draws there (the dashboard passes its status bar's
+/// layout height; full-screen modes with no status bar pass 1).
+pub(crate) fn draw_toasts(frame: &mut Frame, toasts: &[Toast], theme: &Theme, reserved_rows: u16) {
     if toasts.is_empty() {
         return;
     }
@@ -32,7 +31,7 @@ pub(crate) fn draw_toasts(frame: &mut Frame, toasts: &[Toast], theme: &Theme) {
 
     // Stack upwards from the bottom. Heights vary with the message, so the
     // cursor walks rather than multiplying by a fixed step.
-    let mut bottom = area.bottom().saturating_sub(STATUS_BAR_ROWS);
+    let mut bottom = area.bottom().saturating_sub(reserved_rows);
 
     let shown = toasts.len().saturating_sub(crate::app::toast::MAX_TOASTS);
     for toast in &toasts[shown..] {

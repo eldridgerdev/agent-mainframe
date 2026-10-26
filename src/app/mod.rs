@@ -4106,9 +4106,15 @@ impl App {
     pub(crate) fn logged_error_message(detail: &str) -> String {
         let detail = strip_error_prefix(detail);
         let lower = detail.to_lowercase();
-        let actionable = ["retry", "press ", "is written to", "debug log"]
-            .iter()
-            .any(|needle| lower.contains(needle));
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let has_word = |w: &str| words.contains(&w);
+        let actionable = has_word("retry")
+            || has_word("press")
+            || lower.contains("is written to")
+            || lower.contains("debug log");
         if actionable {
             format!("Error: {detail}")
         } else {
@@ -4413,6 +4419,20 @@ fn hash_path_metadata(hasher: &mut impl Hasher, path: PathBuf) {
     }
 }
 
+/// Strip a leading `Error:` (any case, with its spacing) so a message is never
+/// prefixed twice.
+pub(crate) fn strip_error_prefix(message: &str) -> &str {
+    let mut rest = message.trim_start();
+    while let Some(tail) = rest
+        .get(..6)
+        .filter(|p| p.eq_ignore_ascii_case("error:"))
+        .map(|_| &rest[6..])
+    {
+        rest = tail.trim_start();
+    }
+    rest
+}
+
 #[cfg(test)]
 mod sidebar_load_executor_tests {
     use super::SidebarLoadExecutor;
@@ -4459,14 +4479,4 @@ mod sidebar_load_executor_tests {
         assert!(!third_started_while_blocked);
         assert_eq!(max_active.load(Ordering::SeqCst), 2);
     }
-}
-
-/// Strip a leading `Error:` (any case, with its spacing) so a message is never
-/// prefixed twice.
-pub(crate) fn strip_error_prefix(message: &str) -> &str {
-    let mut rest = message.trim_start();
-    while rest.len() >= 6 && rest[..6].eq_ignore_ascii_case("error:") {
-        rest = rest[6..].trim_start();
-    }
-    rest
 }

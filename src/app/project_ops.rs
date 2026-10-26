@@ -191,6 +191,8 @@ impl App {
             );
             state.create_state.agent = agent;
             state.create_state.agent_index = agent_index;
+            state.create_state.path_is_git =
+                self.probe_path_is_git(&PathBuf::from(&state.create_state.path));
             self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
@@ -230,6 +232,34 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Run `git init` in the New Project dialog's path so the project can use
+    /// worktrees, diffs, issues and PRs. Reports the outcome in the dialog.
+    pub fn init_git_for_create_project(&mut self) {
+        let path = match &self.mode {
+            AppMode::CreatingProject(state) if state.path_is_git == Some(false) => {
+                PathBuf::from(&state.path)
+            }
+            _ => return,
+        };
+        let result = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&path)
+            .output();
+        let outcome = match result {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        let path_is_git = self.probe_path_is_git(&path);
+        if let AppMode::CreatingProject(state) = &mut self.mode {
+            state.path_is_git = path_is_git;
+        }
+        self.message = Some(match outcome {
+            Ok(()) => format!("Initialized a git repository in {}", path.display()),
+            Err(err) => format!("git init failed: {err}"),
+        });
     }
 
     pub fn create_project(&mut self) -> Result<()> {
@@ -273,7 +303,14 @@ impl App {
         let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
         self.mode = AppMode::Normal;
-        self.message = Some(response.message);
+        self.message = Some(if response.is_git {
+            response.message
+        } else {
+            format!(
+                "{} (no git repository: worktrees, diffs, issues and PRs are unavailable)",
+                response.message
+            )
+        });
 
         Ok(())
     }

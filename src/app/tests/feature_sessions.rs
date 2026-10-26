@@ -551,6 +551,7 @@ fn app_in_creating_feature_mode(
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -857,7 +858,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -903,7 +904,7 @@ fn create_feature_default_remote_control_matches_availability() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -927,7 +928,7 @@ fn create_feature_default_remote_control_blocked_by_zai() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -1066,6 +1067,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree: true,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -1659,6 +1661,7 @@ fn create_project_persists_selected_preferred_agent() {
         path: repo.path().to_string_lossy().into_owned(),
         agent: AgentKind::Codex,
         agent_index: 0,
+        path_is_git: None,
     });
 
     app.create_project().unwrap();
@@ -1691,7 +1694,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -2025,6 +2028,7 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree: false,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -3596,6 +3600,7 @@ fn usability_project_form_can_move_back_without_losing_input() {
         path: "/tmp/my-project".into(),
         agent: AgentKind::Claude,
         agent_index: 0,
+        path_is_git: None,
     });
     crate::handlers::handle_create_project_key(
         &mut app,
@@ -3621,6 +3626,7 @@ fn usability_project_rejects_file_path_and_focuses_preserved_input() {
         path: file.path().to_string_lossy().into_owned(),
         agent: AgentKind::Claude,
         agent_index: 0,
+        path_is_git: None,
     });
     app.create_project().unwrap();
     assert!(app.store.projects.is_empty());
@@ -3771,6 +3777,147 @@ fn new_agent_session_window_failure_removes_record() {
         app.store.projects[0].features[0].sessions.len(),
         original_sessions
     );
+}
+
+fn non_git_probe_worktree() -> MockWorktreeOps {
+    let mut worktree = MockWorktreeOps::new();
+    worktree.expect_repo_root().returning(|path| {
+        if path.join(".git").exists() {
+            Ok(path.to_path_buf())
+        } else {
+            Err(anyhow::anyhow!("not a repository"))
+        }
+    });
+    worktree
+}
+
+fn project_store_with_repo(repo: &std::path::Path, is_git: bool) -> ProjectStore {
+    let mut store = ProjectStore::empty();
+    store.projects.push(crate::project::Project::new(
+        "plain".to_string(),
+        repo.to_path_buf(),
+        is_git,
+        AgentKind::Claude,
+    ));
+    store
+}
+
+#[test]
+fn non_git_project_dialog_warns_and_git_init_clears_the_warning() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Path,
+        name: "plain".into(),
+        path: dir.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git: None,
+    });
+    app.refresh_create_project_agent_selection();
+    assert!(matches!(&app.mode, AppMode::CreatingProject(s) if s.path_is_git == Some(false)));
+
+    crate::handlers::handle_create_project_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(dir.path().join(".git").exists(), "git init should run");
+    assert!(matches!(&app.mode, AppMode::CreatingProject(s)
+        if s.path_is_git == Some(true) && s.path.ends_with(dir.path().file_name().unwrap().to_str().unwrap())));
+}
+
+#[test]
+fn creating_a_non_git_project_continues_and_says_what_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.store_path = dir.path().join("store.json");
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "plain".into(),
+        path: dir.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git: Some(false),
+    });
+    app.create_project().unwrap();
+    assert_eq!(app.store.projects.len(), 1);
+    assert!(!app.store.projects[0].is_git);
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains("no git repository")
+    );
+}
+
+#[test]
+fn issue_browser_on_non_git_project_gives_guidance_not_the_generic_error() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        project_store_with_repo(dir.path(), false),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_issue_browser_for_project(0);
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.message.is_none());
+    let toast = &app.toasts.last().expect("a guidance toast").message;
+    assert!(toast.contains("git init"), "{toast}");
+    assert!(!toast.contains("Error"), "{toast}");
+}
+
+#[test]
+fn issue_browser_on_repo_without_remotes_says_to_add_a_github_remote() {
+    let dir = TempDir::new().unwrap();
+    let status = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+        .status;
+    assert!(status.success());
+    let mut app = App::new_for_test(
+        project_store_with_repo(dir.path(), true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_issue_browser_for_project(0);
+    let toast = &app.toasts.last().expect("a guidance toast").message;
+    assert!(toast.contains("add a GitHub remote"), "{toast}");
+    assert!(!toast.contains("Error"), "{toast}");
+}
+
+#[test]
+fn feature_wizard_for_non_git_project_disables_the_worktree_choice() {
+    let dir = TempDir::new().unwrap();
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].repo = dir.path().to_path_buf();
+    store.projects[0].is_git = false;
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.selection = Selection::Project(0);
+    // A second feature normally defaults to a worktree.
+    app.start_create_feature();
+    let AppMode::CreatingFeature(state) = &mut app.mode else {
+        panic!("wizard should open");
+    };
+    assert!(!state.git_available);
+    assert!(!state.use_worktree);
+    state.step = crate::app::state::CreateFeatureStep::Worktree;
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Down).unwrap();
+    assert!(matches!(&app.mode, AppMode::CreatingFeature(s) if !s.use_worktree));
 }
 
 fn press(app: &mut App, code: KeyCode) {

@@ -2759,6 +2759,10 @@ pub struct CreateProjectState {
     pub path: String,
     pub agent: AgentKind,
     pub agent_index: usize,
+    /// Whether `path` is inside a git repository: `None` when the path does
+    /// not name an existing directory (nothing to say yet). Refreshed when
+    /// the path changes so the dialog never shells out while drawing.
+    pub path_is_git: Option<bool>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -2771,16 +2775,16 @@ pub enum CreateProjectStep {
 impl CreateProjectState {
     pub fn auto_detect() -> Self {
         let cwd = std::env::current_dir().unwrap_or_default();
-        let repo_path = crate::worktree::WorktreeManager::repo_root(&cwd)
-            .unwrap_or(cwd)
-            .to_string_lossy()
-            .into_owned();
+        let root = crate::worktree::WorktreeManager::repo_root(&cwd);
+        let path_is_git = Some(root.is_ok());
+        let repo_path = root.unwrap_or(cwd).to_string_lossy().into_owned();
         Self {
             step: CreateProjectStep::Name,
             name: String::new(),
             path: repo_path,
             agent: AgentKind::default(),
             agent_index: 0,
+            path_is_git,
         }
     }
 }
@@ -2851,6 +2855,10 @@ pub struct CreateFeatureState {
     pub worktree_search_active: bool,
     pub worktree_query: String,
     pub use_worktree: bool,
+    /// False when the project folder is not a git repository. Worktrees,
+    /// branches and diffs need git, so the wizard disables the worktree
+    /// "Yes" choice and explains why instead of failing at launch.
+    pub git_available: bool,
     pub enable_chrome: bool,
     pub remote_control: bool,
     /// Whether Remote Control can be enabled for this feature. False when
@@ -2916,6 +2924,7 @@ impl CreateFeatureState {
             worktree_search_active: false,
             worktree_query: String::new(),
             use_worktree: !is_first_feature,
+            git_available: true,
             enable_chrome: false,
             remote_control: false,
             // Assume available; the caller refines this from the resolved

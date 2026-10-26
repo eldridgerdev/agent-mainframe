@@ -556,9 +556,19 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
 
+    let yes_text = if state.git_available {
+        format!("   {} Yes", yes_marker)
+    } else {
+        "     Yes (unavailable: this folder is not a git repository; run git init)".to_string()
+    };
+    let yes_style = if state.git_available {
+        yes_style
+    } else {
+        Style::default().fg(theme.warning.to_color())
+    };
     let wt_lines = vec![
         Line::from(Span::styled(" Worktree:", wt_label_style)),
-        Line::from(Span::styled(format!("   {} Yes", yes_marker), yes_style)),
+        Line::from(Span::styled(yes_text, yes_style)),
         Line::from(Span::styled(
             format!("   {} No (use repo dir)", no_marker),
             no_style,

@@ -108,15 +108,15 @@ A folder that is not a git repository is accepted as a project without comment.
 garbled error popup at the bottom of the screen. (The non-git state in the
 sweep was an artifact of the sweep's fixture; the missing warning is the finding.)
 
-- [ ] On project creation (`app/project_ops.rs`), detect "not a git repo" and warn
+- [x] On project creation (`app/project_ops.rs`), detect "not a git repo" and warn
       in the dialog: what still works, what needs git (worktrees, diffs, issues,
       PRs), and offer `git init`.
-- [ ] Mark such projects in the tree (e.g. a `[no git]` tag), consistent with the
+- [x] Mark such projects in the tree (e.g. a `[no git]` tag), consistent with the
       existing `[repo]` / `[vibeless]` tags.
-- [ ] Features that need git (worktree choice, diff, GitHub issues) say so and why
+- [x] Features that need git (worktree choice, diff, GitHub issues) say so and why
       instead of failing late; hide or disable the worktree "Yes" option.
-- [ ] Same for "has no remotes" (`g`): say "add a GitHub remote to browse issues".
-- [ ] Tests: project creation on a non-git path produces the warning; `g` on it
+- [x] Same for "has no remotes" (`g`): say "add a GitHub remote to browse issues".
+- [x] Tests: project creation on a non-git path produces the warning; `g` on it
       does not raise the generic error.
 
 ## Epic 4 — Error and toast hygiene (P1)

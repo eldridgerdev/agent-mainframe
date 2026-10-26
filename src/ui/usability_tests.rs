@@ -45,6 +45,7 @@ fn usability_project_form_shows_errors_and_cancel_at_standard_size() {
         path: "/missing".into(),
         agent: AgentKind::Claude,
         agent_index: 0,
+        path_is_git: None,
     };
     let screen = rendered(80, 24, |frame| {
         dialogs::draw_create_project_dialog(
@@ -134,6 +135,35 @@ fn usability_status_feedback_is_not_overwritten_by_usage() {
     app.message = Some(message.into());
     let screen = rendered(80, 4, |frame| status::draw(frame, &app, frame.area()));
     assert!(screen.contains(message));
+}
+
+#[test]
+fn project_form_warns_when_the_folder_is_not_a_git_repository() {
+    let state = |path_is_git| CreateProjectState {
+        step: CreateProjectStep::Path,
+        name: "example".into(),
+        path: "/plain".into(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git,
+    };
+    let draw = |state: &CreateProjectState| {
+        rendered(100, 30, |frame| {
+            dialogs::draw_create_project_dialog(
+                frame,
+                state,
+                &[AgentKind::Claude],
+                None,
+                &Theme::default(),
+            )
+        })
+    };
+    let warned = draw(&state(Some(false)));
+    for text in ["not a git repository", "worktrees", "Ctrl+G", "git init"] {
+        assert!(warned.contains(text), "missing {text}");
+    }
+    assert!(!draw(&state(Some(true))).contains("not a git repository"));
+    assert!(!draw(&state(None)).contains("not a git repository"));
 }
 
 fn screen_rows(app: &mut crate::app::App, width: u16, height: u16) -> Vec<String> {

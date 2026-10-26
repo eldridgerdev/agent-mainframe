@@ -213,6 +213,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         ),
                     ];
 
+                    if !project.is_git {
+                        spans.push(Span::styled(
+                            " [no git]",
+                            Style::default()
+                                .fg(theme.warning.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+
                     if project.features.is_empty() {
                         spans.push(Span::styled(
                             "  (press n to add a feature)",

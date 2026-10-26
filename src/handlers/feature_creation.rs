@@ -274,7 +274,8 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
             KeyCode::Down | KeyCode::Up | KeyCode::Char('j') | KeyCode::Char('k') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.use_worktree = !state.use_worktree;
+                    // Without git there is no worktree to create; keep "No".
+                    state.use_worktree = state.git_available && !state.use_worktree;
                 }
             }
             _ => {}

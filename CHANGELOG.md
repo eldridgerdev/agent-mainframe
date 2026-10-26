@@ -53,6 +53,12 @@ are tagged.
 
 ### Fixed
 
+- **Non-git folders are flagged instead of failing late.** The New Project
+  dialog warns when the folder is not a git repository, says what still works
+  and what needs git, and offers `Ctrl+G` to run `git init`. Such projects show
+  a `[no git]` tag, the worktree "Yes" choice is disabled with the reason, and
+  `g` explains how to fix a missing git repository or GitHub remote rather than
+  showing a generic error.
 - New and restarted individual sessions now resize to the current terminal
   viewport before opening or launching their program, reducing small panes
   and cramped startup output when adding terminals, editors, or agents.

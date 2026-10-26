@@ -332,6 +332,8 @@ fn handle_click(
             | AppMode::CreatingFeature(_)
             | AppMode::DeletingProject(_)
             | AppMode::DeletingFeature(_, _)
+            | AppMode::ConfirmingQuit
+            | AppMode::ConfirmingRemoveSession(_)
             | AppMode::BrowsingPath(_)
             | AppMode::PlanInterviewAttachDoc(_)
             | AppMode::CommandPicker(_)

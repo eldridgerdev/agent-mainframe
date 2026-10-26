@@ -276,7 +276,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::DeletingProject(_) | AppMode::DeletingFeature(_, _) => Line::from(vec![
+        AppMode::DeletingProject(_)
+        | AppMode::DeletingFeature(_, _)
+        | AppMode::ConfirmingQuit
+        | AppMode::ConfirmingRemoveSession(_) => Line::from(vec![
             Span::styled("y", key_style()),
             Span::raw(" confirm  "),
             Span::styled("n/Esc", key_style()),

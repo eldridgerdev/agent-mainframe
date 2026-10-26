@@ -26,6 +26,9 @@ are tagged.
 
 ### Changed
 
+- **Esc and `d` no longer act instantly on the dashboard.** Esc now asks
+  "Quit AMF?" (`q` still quits directly), and `d` on a session asks before
+  removing it, saying whether an agent is running. No migration is required.
 - **Easier-to-scan projects sidebar in the desktop app.** A filter box above
   the project tree (press `/` to jump to it) narrows the tree to matching
   projects and features, highlights the match, and opens the first result on

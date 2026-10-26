@@ -1822,6 +1822,30 @@ impl App {
         Ok(())
     }
 
+    /// Open the confirm for `d` on a session. Always asks, even for a stopped
+    /// session; the prompt says whether an agent is running.
+    pub fn open_remove_session_confirm(&mut self) {
+        let Selection::Session(pi, fi, si) = self.selection else {
+            return;
+        };
+        let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) else {
+            return;
+        };
+        let Some(session) = feature.sessions.get(si) else {
+            return;
+        };
+        let agent_running = session.kind.is_agent_harness()
+            && session.runs_with_feature()
+            && self.tmux.session_exists(&feature.tmux_session)
+            && self
+                .tmux
+                .window_exists(&feature.tmux_session, &session.tmux_window);
+        self.mode = AppMode::ConfirmingRemoveSession(RemoveSessionConfirm {
+            label: session.label.clone(),
+            agent_running,
+        });
+    }
+
     /// Permanently delete a session: kill its tmux window and drop it from
     /// `feature.sessions` for good. This is `d`'s behavior on a
     /// `Selection::Session` — for a lighter-weight stop that keeps the

@@ -51,8 +51,13 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
     };
     let key = remapped_key;
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             app.request_dashboard_quit();
+        }
+        KeyCode::Esc => {
+            // Esc is how people dismiss toasts and popups; quitting on it
+            // loses the whole session, so ask first.
+            app.mode = AppMode::ConfirmingQuit;
         }
         KeyCode::Char('N') => {
             app.start_create_project();
@@ -139,7 +144,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
             Selection::Session(_, _, _) => {
-                app.remove_session()?;
+                app.open_remove_session_confirm();
             }
         },
         KeyCode::Char('s') => {

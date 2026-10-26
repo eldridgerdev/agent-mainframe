@@ -40,7 +40,8 @@ for the complete, current keybinding reference built into that version of AMF.
 | `T` | Choose a theme |
 | `A` | Manage installed agent harnesses |
 | `?` | Show all keybindings |
-| `q` / `Esc` | Quit |
+| `q` | Quit |
+| `Esc` | Ask "Quit AMF?" (`y` quits, `n`/`Esc` cancels) |
 
 Search (`/`) accepts every letter, including `j` and `k`. Use arrow keys or
 `Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.

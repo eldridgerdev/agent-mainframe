@@ -1306,6 +1306,101 @@ pub fn draw_steering_prompt_dialog(
     frame.render_widget(hints, chunks[6]);
 }
 
+fn confirm_prompt_line(theme: &Theme) -> Line<'static> {
+    let key = |k: &'static str| {
+        Span::styled(
+            k,
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    Line::from(vec![
+        Span::raw(" Press "),
+        key("y"),
+        Span::raw(" to confirm, "),
+        key("n"),
+        Span::raw(" or "),
+        key("Esc"),
+        Span::raw(" to cancel"),
+    ])
+}
+
+fn draw_small_confirm(
+    frame: &mut Frame,
+    title: &'static str,
+    lines: Vec<Line<'static>>,
+    theme: &Theme,
+) {
+    let width = frame.area().width.min(76);
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let height = text.line_count(width.saturating_sub(2)).saturating_add(2);
+    let area = crate::ui::dialog_rect(frame.area(), width, height.min(u16::MAX as usize) as u16);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let text = text.block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.danger.to_color())),
+    );
+    frame.render_widget(text, area);
+}
+
+pub fn draw_confirm_quit(frame: &mut Frame, theme: &Theme) {
+    draw_small_confirm(
+        frame,
+        " Confirm Quit ",
+        vec![
+            Line::from(""),
+            Line::from(" Quit AMF?"),
+            Line::from(""),
+            confirm_prompt_line(theme),
+        ],
+        theme,
+    );
+}
+
+pub fn draw_confirm_remove_session(
+    frame: &mut Frame,
+    state: &crate::app::RemoveSessionConfirm,
+    theme: &Theme,
+) {
+    let (detail, color) = if state.agent_running {
+        (
+            " An agent is running in this session; removing it will stop the agent.",
+            theme.warning.to_color(),
+        )
+    } else {
+        (
+            " This session is not running; its record will be removed.",
+            theme.text_muted.to_color(),
+        )
+    };
+    draw_small_confirm(
+        frame,
+        " Confirm Remove Session ",
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw(" Remove session "),
+                Span::styled(
+                    state.label.clone(),
+                    Style::default()
+                        .fg(theme.danger.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("?"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(detail, Style::default().fg(color))),
+            Line::from(""),
+            confirm_prompt_line(theme),
+        ],
+        theme,
+    );
+}
+
 pub fn draw_delete_feature_confirm(
     frame: &mut Frame,
     project_name: &str,

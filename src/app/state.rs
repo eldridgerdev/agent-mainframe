@@ -1783,6 +1783,10 @@ pub enum AppMode {
     ModelAnalysis(Box<super::model_analysis::State>),
     DeletingProject(String),
     DeletingFeature(String, String),
+    /// Dashboard `Esc`: ask before quitting AMF.
+    ConfirmingQuit,
+    /// Dashboard `d` on a session: ask before removing it for good.
+    ConfirmingRemoveSession(RemoveSessionConfirm),
     DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
     Help(HelpState),
@@ -2591,6 +2595,13 @@ impl RunningHookState {
     pub fn key(&self) -> String {
         format!("{}/{}", self.workdir.display(), self.script)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveSessionConfirm {
+    pub label: String,
+    /// A live agent window exists, so removing kills a running agent.
+    pub agent_running: bool,
 }
 
 pub struct DeletingFeatureState {

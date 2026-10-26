@@ -390,3 +390,181 @@ fn feature_form_footer_fits_at_80_columns() {
         assert!(screen.contains(text), "missing {text}");
     }
 }
+
+fn hint(key: &'static str, label: &'static str, priority: u8) -> Hint {
+    Hint {
+        key,
+        label,
+        priority,
+    }
+}
+
+fn line_text(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+#[test]
+fn fit_hints_drops_low_priority_hints_whole_instead_of_clipping() {
+    let hints = [
+        hint("Enter", "send", 0),
+        hint("Ctrl+T", "vim", 1),
+        hint("Esc", "close", 0),
+        hint("Ctrl+S", "save", 6),
+    ];
+    let full = line_text(&fit_hints(&hints, 200, Style::default(), Style::default()));
+    assert_eq!(full, " Enter send  Ctrl+T vim  Esc close  Ctrl+S save");
+    let narrow = line_text(&fit_hints(&hints, 36, Style::default(), Style::default()));
+    assert_eq!(narrow, " Enter send  Ctrl+T vim  Esc close");
+    // Priority 0 survives even when nothing fits.
+    let tiny = line_text(&fit_hints(&hints, 5, Style::default(), Style::default()));
+    assert_eq!(tiny, " Enter send  Esc close");
+}
+
+fn compose_state() -> crate::app::ComposeState {
+    let view = crate::app::ViewState::new(
+        "proj".into(),
+        "feat".into(),
+        "amf-feat".into(),
+        "claude".into(),
+        "Claude 1".into(),
+        crate::project::SessionKind::Claude,
+        crate::project::VibeMode::Vibeless,
+        false,
+    );
+    crate::app::ComposeState::new(
+        view,
+        std::path::PathBuf::from("/tmp"),
+        String::new(),
+        vec![],
+    )
+}
+
+#[test]
+fn compose_bar_hints_are_whole_words_at_80_and_120_columns() {
+    for (width, height) in [(80, 24), (120, 40)] {
+        let mut state = compose_state();
+        let screen = rendered(width, height, |frame| {
+            dialogs::draw_compose_dialog(frame, &mut state, &Theme::default())
+        });
+        for text in ["Enter send", "Esc close", "Ctrl+T vim"] {
+            assert!(screen.contains(text), "missing {text} at {width}x{height}");
+        }
+        // Whatever is shown is complete: no hint key is cut after its key.
+        for partial in ["Ctrl+E dir ", "Ctrl+S sa ", "Ctrl+Space lea"] {
+            assert!(!screen.contains(partial), "{partial} at {width}");
+        }
+    }
+}
+
+#[test]
+fn session_switcher_footer_wraps_and_keeps_new_and_rename_at_80_and_120() {
+    for (width, height) in [(80, 24), (120, 40)] {
+        let state = crate::app::SessionSwitcherState {
+            project_name: "proj".into(),
+            feature_name: "feat".into(),
+            tmux_session: "amf-feat".into(),
+            sessions: vec![crate::app::SwitcherEntry {
+                tmux_window: "claude".into(),
+                kind: crate::project::SessionKind::Claude,
+                label: "Claude 1".into(),
+                icon: None,
+                icon_nerd: None,
+            }],
+            selected: 0,
+            return_window: "claude".into(),
+            return_label: "Claude 1".into(),
+            vibe_mode: crate::project::VibeMode::Vibeless,
+            review: false,
+        };
+        // Key and label are joined by a non-breaking space so a wrap never
+        // strands "r" from "rename".
+        let screen = rendered(width, height, |frame| {
+            picker::draw_session_switcher(frame, &state, false, &Theme::default())
+        })
+        .replace('\u{a0}', " ");
+        for text in ["s new", "r rename", "Esc cancel", "Enter select"] {
+            assert!(screen.contains(text), "missing {text} at {width}x{height}");
+        }
+    }
+}
+
+#[test]
+fn new_feature_mode_step_fits_or_scrolls_at_80x24() {
+    let mut state = feature_form_state();
+    state.agent = AgentKind::Claude;
+    let agents = [AgentKind::Claude, AgentKind::Codex];
+    let draw = |state: &crate::app::CreateFeatureState| {
+        rendered(80, 24, |frame| {
+            dialogs::draw_create_feature_dialog(
+                frame,
+                state,
+                &[],
+                &agents,
+                &crate::usage::UsageData::default(),
+                &Theme::default(),
+            )
+        })
+    };
+    for focus in 0..=6 {
+        state.mode_focus = focus;
+        let screen = draw(&state);
+        // The focused row is on screen and the footer is never pushed off.
+        let label = match focus {
+            0 => "Harness:",
+            1 => "Mode:",
+            2 => "Review:",
+            3 => "Plan:",
+            4 => "Chrome:",
+            5 => "Remote Control:",
+            _ => "Steering:",
+        };
+        assert!(screen.contains(label), "focus {focus}: {label} off screen");
+        assert!(screen.contains("Ctrl+S create"), "focus {focus}: footer");
+    }
+    state.mode_focus = 1;
+    let screen = draw(&state);
+    for mode in crate::project::VibeMode::ALL {
+        assert!(screen.contains(mode.display_name()), "mode list clipped");
+    }
+    state.step = crate::app::CreateFeatureStep::SessionName;
+    assert!(draw(&state).contains("Session:"));
+}
+
+#[test]
+fn syntax_parser_rows_have_no_repeated_available_badge() {
+    use crate::highlight::{HighlightInstallState, HighlightLanguage};
+    let state = crate::app::SyntaxLanguagePickerState {
+        languages: HighlightLanguage::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, language)| crate::app::SyntaxLanguageRow {
+                language: *language,
+                status: if i == 0 {
+                    HighlightInstallState::Installed
+                } else {
+                    HighlightInstallState::Available
+                },
+            })
+            .collect(),
+        selected: 0,
+        notice: None,
+        operation: None,
+        return_to: None,
+        auto_return_on_success: false,
+        return_language: None,
+    };
+    let total = state.languages.len();
+    for (width, height) in [(80, 24), (120, 40)] {
+        let screen = rendered(width, height, |frame| {
+            picker::draw_syntax_language_picker(
+                frame,
+                &state,
+                &throbber_widgets_tui::ThrobberState::default(),
+                &Theme::default(),
+            )
+        });
+        assert!(!screen.contains("AVAILABLE"), "{width}x{height}");
+        assert!(screen.contains("INSTALLED"));
+        assert!(screen.contains(&format!("1/{total} installed")));
+    }
+}

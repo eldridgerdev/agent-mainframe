@@ -169,10 +169,7 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
         key(theme, "Esc"),
         muted(theme, " close"),
     ]);
-    frame.render_widget(
-        Paragraph::new(footer).wrap(Wrap { trim: false }),
-        chunks[2],
-    );
+    frame.render_widget(Paragraph::new(footer).wrap(Wrap { trim: false }), chunks[2]);
 }
 
 fn draw_editor(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {

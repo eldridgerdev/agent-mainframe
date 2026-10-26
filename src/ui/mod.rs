@@ -54,6 +54,63 @@ pub(crate) fn draw_modal_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Clear, area);
 }
 
+/// One footer hint for [`fit_hints`]. A lower `priority` survives a narrower
+/// width; priority 0 is never dropped.
+#[derive(Clone, Copy)]
+pub(crate) struct Hint {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub priority: u8,
+}
+
+/// Compose a single-line hint row that fits `width` columns by dropping the
+/// highest-priority-number hints first (ties: the later one), so a narrow main
+/// pane never clips a hint mid-word. Order of the survivors is preserved.
+pub(crate) fn fit_hints(
+    hints: &[Hint],
+    width: usize,
+    key_style: Style,
+    label_style: Style,
+) -> ratatui::text::Line<'static> {
+    use ratatui::text::{Line, Span};
+    use unicode_width::UnicodeWidthStr;
+
+    let cost = |h: &Hint| 2 + UnicodeWidthStr::width(h.key) + 1 + UnicodeWidthStr::width(h.label);
+    let mut keep = vec![true; hints.len()];
+    // " " lead, items separated by two spaces.
+    let total = |keep: &[bool]| -> usize {
+        1 + hints
+            .iter()
+            .zip(keep)
+            .filter(|(_, k)| **k)
+            .map(|(h, _)| cost(h))
+            .sum::<usize>()
+    };
+    while total(&keep) > width {
+        let drop = hints
+            .iter()
+            .enumerate()
+            .filter(|(i, h)| keep[*i] && h.priority > 0)
+            .max_by_key(|(i, h)| (h.priority, *i))
+            .map(|(i, _)| i);
+        match drop {
+            Some(i) => keep[i] = false,
+            None => break,
+        }
+    }
+    let mut spans = vec![Span::raw(" ")];
+    let mut first = true;
+    for (h, _) in hints.iter().zip(&keep).filter(|(_, k)| **k) {
+        if !first {
+            spans.push(Span::styled("  ", label_style));
+        }
+        first = false;
+        spans.push(Span::styled(h.key, key_style));
+        spans.push(Span::styled(format!(" {}", h.label), label_style));
+    }
+    Line::from(spans)
+}
+
 /// Center a content-sized dialog, clamping it to the current terminal.
 pub(crate) fn dialog_rect(viewport: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(viewport.width);

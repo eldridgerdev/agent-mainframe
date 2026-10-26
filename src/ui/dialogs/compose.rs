@@ -90,28 +90,28 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
             state.view.session_label
         ),
     };
-    let hints = Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" send  "),
-        Span::styled("Shift+Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" newline  "),
-        Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" paste  "),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" close  "),
-        Span::styled("Ctrl+L", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" clear  "),
-        Span::styled("Ctrl+T", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" vim  "),
-        Span::styled("Ctrl+E", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" direct  "),
-        Span::styled("Ctrl+P", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" library  "),
-        Span::styled("Ctrl+S", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" save  "),
-        Span::styled("Ctrl+Space", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" leader "),
-    ]);
+    let hint = |key, label, priority| crate::ui::Hint {
+        key,
+        label,
+        priority,
+    };
+    let hints = crate::ui::fit_hints(
+        &[
+            hint("Enter", "send", 0),
+            hint("Shift+Enter", "newline", 1),
+            hint("Ctrl+V", "paste", 2),
+            hint("Esc", "close", 0),
+            hint("Ctrl+L", "clear", 4),
+            hint("Ctrl+T", "vim", 1),
+            hint("Ctrl+E", "direct", 5),
+            hint("Ctrl+P", "library", 3),
+            hint("Ctrl+S", "save", 6),
+            hint("Ctrl+Space", "leader", 2),
+        ],
+        input_area.width.saturating_sub(2) as usize,
+        Style::default().fg(theme.warning.to_color()),
+        Style::default(),
+    );
 
     let block = Block::default()
         .title(title)

@@ -486,6 +486,9 @@ pub struct DiffPickerState {
     /// No base branch resolved, so "All current changes" is the working tree
     /// against `HEAD` and there are no branch commits to list.
     pub no_base_branch: bool,
+    /// Listing failed because no base branch could be determined, the one
+    /// failure that choosing a base ref with `b` can fix.
+    pub base_unresolved: bool,
 }
 
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough

@@ -5,8 +5,8 @@ use super::*;
 /// One line for the scope picker explaining why branch commits are missing.
 fn diff_picker_error_summary(err: &anyhow::Error) -> String {
     let message = err.to_string();
-    if message.starts_with("Could not determine a base branch") {
-        "No base branch shares history with this one, so commits can't be listed; \
+    if message.starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX) {
+        "No base branch found for this one, so commits can't be listed; \
          choose a base ref with b in the viewer."
             .to_string()
     } else if message.contains("not on a named branch") {
@@ -46,13 +46,21 @@ impl App {
             crate::diff::list_diff_commits_since(&workdir, &base)
                 .map(|commits| (commits, base.no_base_branch))
         });
-        let (commits, no_base_branch, error) = match listed {
-            Ok((commits, no_base_branch)) => (commits, no_base_branch, None),
+        let (commits, no_base_branch, error, base_unresolved) = match listed {
+            Ok((commits, no_base_branch)) => (commits, no_base_branch, None, false),
             Err(err) => {
                 // The full git message is long and technical; the picker
                 // gets one line and the details stay in the debug log.
                 self.log_warn("diff", format!("could not list feature commits: {err:#}"));
-                (Vec::new(), false, Some(diff_picker_error_summary(&err)))
+                let base_unresolved = err
+                    .to_string()
+                    .starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX);
+                (
+                    Vec::new(),
+                    false,
+                    Some(diff_picker_error_summary(&err)),
+                    base_unresolved,
+                )
             }
         };
         self.mode = AppMode::DiffPicker(DiffPickerState {
@@ -62,6 +70,7 @@ impl App {
             selected: 0,
             error,
             no_base_branch,
+            base_unresolved,
         });
         Ok(())
     }

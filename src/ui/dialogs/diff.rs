@@ -125,7 +125,7 @@ pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Them
     list_state.select(Some(state.selected.min(state.commits.len())));
     frame.render_stateful_widget(list, rows[1], &mut list_state);
 
-    if state.no_base_branch || state.error.is_some() {
+    if state.no_base_branch || state.base_unresolved {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 " Press b in the viewer to compare against another ref.",
@@ -5758,6 +5758,7 @@ index 0000000..1111111
             selected: 0,
             error: None,
             no_base_branch: true,
+            base_unresolved: false,
         };
         let render = |picker: &DiffPickerState| {
             let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();

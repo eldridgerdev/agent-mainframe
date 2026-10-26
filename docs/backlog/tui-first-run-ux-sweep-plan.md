@@ -55,12 +55,13 @@ capturing keys, and AMF exited with status 0.
 
 - [ ] Confirm every path that reaches the dashboard handler with Esc (dismissed
       toast, closed non-modal popup, overlay that returned without consuming it).
-- [ ] Decide: Esc becomes a no-op on the dashboard, **or** prompts
-      "Quit AMF? y/n". Default recommendation: Esc is a no-op, `q` still quits.
+- [x] Decided (see Decisions): Esc on the dashboard prompts "Quit AMF? y/n";
+      `q` behaviour is unchanged.
 - [ ] Keep the parked-plan-interview behaviour of `request_dashboard_quit()`.
 - [ ] Update the `?` help line ("q / Esc  Quit") and any docs/README/site text
       that says Esc quits (`grep -rn "Esc" site/content/docs/keybindings.md`).
-- [ ] Unit test: Esc on the dashboard does not set `should_quit`; `q` does.
+- [ ] Unit test: Esc on the dashboard opens the "Quit AMF? y/n" prompt and does
+      not set `should_quit`; `y` quits, `n` cancels; `q` behaves as before.
 
 **1b. `d` on a session removes it immediately.** The `Selection::Session` arm of
 `KeyCode::Char('d')` calls `app.remove_session()` directly. On a live agent
@@ -69,7 +70,7 @@ project deletes already confirm.
 
 - [ ] Confirm what `remove_session()` does to a running tmux window.
 - [ ] Add a confirm step (reuse the `DeletingFeature` dialog shape) that names the
-      session and says whether an agent is running. Skip the prompt only for an
+      session and says whether an agent is running. Always ask, including for an
       already-stopped session.
 - [ ] Decide whether the confirm applies to the GUI path in `gui_contract.rs`
       (`Removed '{label}'`) too, or only the TUI. Record the decision here.
@@ -106,7 +107,7 @@ A folder that is not a git repository is accepted as a project without comment.
 `g` then fails with "Error: Error: Selected project is not a git repository"
 (`github.rs` `GithubRepositoryError::NotGitRepository`), and `S` showed a
 garbled error popup at the bottom of the screen. (The non-git state in the
-sweep was an accident of my fixture; the missing warning is the finding.)
+sweep was an artifact of the sweep's fixture; the missing warning is the finding.)
 
 - [ ] On project creation (`app/project_ops.rs`), detect "not a git repo" and warn
       in the dialog: what still works, what needs git (worktrees, diffs, issues,

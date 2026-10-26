@@ -133,6 +133,7 @@ impl App {
         };
 
         let mut load_error: Option<String> = None;
+        let mut base_notice: Option<&str> = None;
         let mut unreadable: Vec<String> = Vec::new();
         let mut diff_files: Vec<DiffFile> = Vec::new();
         let mut repo_files: Vec<String> = Vec::new();
@@ -143,10 +144,9 @@ impl App {
                     // No base branch: the list is the uncommitted work against
                     // HEAD, not "this branch's changes". Say which it is.
                     if snapshot.no_base_branch {
-                        load_error = Some(
+                        base_notice = Some(
                             "No base branch found, so this lists uncommitted changes \
-                             against HEAD. Press s to browse all files instead."
-                                .to_string(),
+                             against HEAD. Press s to browse all files instead.",
                         );
                     }
                     diff_files = snapshot.files;
@@ -227,6 +227,10 @@ impl App {
                 state.selected_entry = state.entries.len().saturating_sub(1);
             }
             state.error = load_error.clone();
+            if let Some(note) = base_notice {
+                state.notice = Some(note.to_string());
+                state.notice_qa_id = None;
+            }
         }
         // Repo-tree rows come from the cached listing, so building them is the
         // same step a collapse takes — one function, not two that have to be

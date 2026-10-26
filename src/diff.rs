@@ -968,6 +968,10 @@ fn hydrate_commit_file_contents(
     Ok(())
 }
 
+/// Start of the error `resolve_base_ref` returns when no base can be found;
+/// callers classify that error by this prefix.
+pub const NO_BASE_BRANCH_ERROR_PREFIX: &str = "Could not determine a base branch";
+
 pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<ResolvedBase> {
     let branch = WorktreeManager::current_branch(workdir)?
         .filter(|branch| !branch.is_empty())
@@ -1050,9 +1054,15 @@ pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<Re
     // Nothing to compare against at all — typically a fresh repository on its
     // only branch with no remote. Diff the working tree against `HEAD` so the
     // uncommitted work still shows. When a candidate *does* exist but shares no
-    // history with this branch, a base was expected and could not be found:
-    // that stays an error rather than quietly hiding the branch's commits.
-    if !any_candidate_exists {
+    // history with this branch, or another local branch exists that this one
+    // may have been cut from, a base was expected and could not be found: that
+    // stays an error rather than quietly hiding the branch's commits.
+    let has_other_branch = git_optional_trimmed(
+        workdir,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?
+    .is_some_and(|refs| refs.lines().any(|name| name != branch));
+    if !any_candidate_exists && !has_other_branch {
         let head = git_optional_trimmed(workdir, &["rev-parse", "--verify", "HEAD^{commit}"])?
             .ok_or_else(|| anyhow!("'{branch}' has no commits yet, so there is nothing to diff"))?;
         return Ok(ResolvedBase {
@@ -1064,7 +1074,7 @@ pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<Re
     }
 
     bail!(
-        "Could not determine a base branch for '{}'; tried origin/HEAD, origin/main, main, origin/master, and master",
+        "{NO_BASE_BRANCH_ERROR_PREFIX} for '{}'; tried origin/HEAD, origin/main, main, origin/master, and master",
         branch
     );
 }

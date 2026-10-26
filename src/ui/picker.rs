@@ -283,7 +283,11 @@ pub fn draw_syntax_language_picker(
     let area = centered_rect(68, 58, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let title = format!(" Syntax Parsers ({}/{}) ", installed, state.languages.len());
+    let title = format!(
+        " Syntax Parsers: {}/{} installed ",
+        installed,
+        state.languages.len()
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -391,11 +395,10 @@ pub fn draw_syntax_language_picker(
                             .add_modifier(Modifier::BOLD),
                     ),
                     crate::highlight::HighlightInstallState::Available => (
-                        " AVAILABLE ",
-                        Style::default()
-                            .fg(theme.effective_bg())
-                            .bg(theme.text_muted.to_color())
-                            .add_modifier(Modifier::BOLD),
+                        // Not installed is the default; a repeated badge on
+                        // every row is noise. Keep the width so names align.
+                        "           ",
+                        Style::default(),
                     ),
                     crate::highlight::HighlightInstallState::Broken => (
                         " BROKEN ",

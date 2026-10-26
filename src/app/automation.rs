@@ -755,6 +755,24 @@ impl App {
         &mut self,
         request: &CreateBatchFeaturesRequest,
     ) -> Result<CreateBatchFeaturesResponse> {
+        self.create_batch_features_inner(request, false)
+    }
+
+    /// The dashboard's `B` on a selected project: the same batch, added to
+    /// that existing project instead of a new one. Kept off the automation
+    /// API, whose callers rely on "project already exists" being an error.
+    pub(crate) fn add_batch_features_to_project(
+        &mut self,
+        request: &CreateBatchFeaturesRequest,
+    ) -> Result<CreateBatchFeaturesResponse> {
+        self.create_batch_features_inner(request, true)
+    }
+
+    fn create_batch_features_inner(
+        &mut self,
+        request: &CreateBatchFeaturesRequest,
+        into_existing: bool,
+    ) -> Result<CreateBatchFeaturesResponse> {
         Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
         if request.workspace_path.as_os_str().is_empty() || !request.workspace_path.exists() {
             bail!("Workspace path is invalid");
@@ -764,8 +782,11 @@ impl App {
             bail!("Project name cannot be empty");
         }
 
-        if self.store.find_project(&request.project_name).is_some() {
-            bail!("Project '{}' already exists", request.project_name);
+        let existing = self.store.find_project(&request.project_name);
+        match (existing, into_existing) {
+            (Some(_), false) => bail!("Project '{}' already exists", request.project_name),
+            (None, true) => bail!("Project '{}' not found", request.project_name),
+            _ => {}
         }
 
         if request.feature_count == 0 {
@@ -794,6 +815,30 @@ impl App {
         self.ensure_agent_mode_supported(&request.agent, &request.mode)?;
 
         let planned_features = Self::planned_batch_feature_results(request, &project_repo);
+        if into_existing && let Some(project) = self.store.find_project(&request.project_name) {
+            if project.repo != project_repo {
+                bail!(
+                    "Project '{}' is at {}, not {}",
+                    request.project_name,
+                    project.repo.display(),
+                    project_repo.display()
+                );
+            }
+            for feature in &planned_features {
+                let normalized = normalized_feature_name(&feature.name);
+                if project
+                    .features
+                    .iter()
+                    .any(|f| normalized_feature_name(&f.name) == normalized)
+                {
+                    bail!(
+                        "Feature '{}' already exists in '{}'; choose another base name",
+                        feature.name,
+                        request.project_name
+                    );
+                }
+            }
+        }
         for feature in &planned_features {
             if feature.workdir.exists() {
                 bail!(
@@ -816,16 +861,23 @@ impl App {
             ));
         }
 
-        let project = Project::new(
-            request.project_name.clone(),
-            project_repo.clone(),
-            is_git,
-            request.agent.clone(),
-        );
-        self.store.add_project(project);
-        self.save()?;
-
-        let pi = self.store.projects.len().saturating_sub(1);
+        let pi = if into_existing {
+            self.store
+                .projects
+                .iter()
+                .position(|p| p.name == request.project_name)
+                .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", request.project_name))?
+        } else {
+            let project = Project::new(
+                request.project_name.clone(),
+                project_repo.clone(),
+                is_git,
+                request.agent.clone(),
+            );
+            self.store.add_project(project);
+            self.save()?;
+            self.store.projects.len().saturating_sub(1)
+        };
         let mut created_feature_names = Vec::new();
         let mut response_features = Vec::new();
 
@@ -914,10 +966,17 @@ impl App {
             self.save()?;
         }
 
-        let message = format!(
-            "Created project '{}' with {} features",
-            request.project_name, request.feature_count
-        );
+        let message = if into_existing {
+            format!(
+                "Added {} features to project '{}'",
+                request.feature_count, request.project_name
+            )
+        } else {
+            format!(
+                "Created project '{}' with {} features",
+                request.project_name, request.feature_count
+            )
+        };
 
         Ok(CreateBatchFeaturesResponse::success(
             request,

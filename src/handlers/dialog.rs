@@ -28,6 +28,21 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    if super::text_field::is_clear_key(&key) {
+        if let AppMode::CreatingProject(state) = &mut app.mode {
+            match state.step {
+                CreateProjectStep::Name => state.name.clear(),
+                CreateProjectStep::Path => state.path.clear(),
+                CreateProjectStep::Agent => {}
+            }
+        }
+        app.refresh_create_project_agent_selection();
+        return Ok(());
+    }
+    if super::text_field::is_unbound_ctrl_chord(&key) {
+        return Ok(());
+    }
+
     let is_agent_step = matches!(
         &app.mode,
         AppMode::CreatingProject(state)

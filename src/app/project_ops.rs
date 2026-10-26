@@ -44,7 +44,7 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        let mut state = CreateProjectState::auto_detect();
+        let mut state = CreateProjectState::blank();
         state.agent = self.default_project_preferred_agent();
         let path = PathBuf::from(&state.path);
         let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &state.agent);
@@ -55,37 +55,24 @@ impl App {
     }
 
     pub fn start_create_batch_features(&mut self) {
-        let workspace_path = match &self.selection {
-            Selection::Project(pi) => self
-                .store
-                .projects
-                .get(*pi)
-                .map(|p| p.repo.to_string_lossy().into_owned()),
-            Selection::Feature(pi, fi) => {
-                if let Some(p) = self.store.projects.get(*pi) {
-                    if p.features.get(*fi).is_some() {
-                        Some(p.repo.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+        // With a project selected, the batch goes into that project; asking
+        // for its path and name again would only invite a mismatch (and
+        // naming an existing project used to fail with no visible error).
+        let selected = self
+            .selected_project()
+            .map(|p| (p.name.clone(), p.repo.clone(), p.is_git));
+        let mut state = match selected {
+            Some((name, repo, is_git)) => {
+                if !is_git && self.worktree.repo_root(&repo).is_err() {
+                    self.push_toast_warning(format!(
+                        "Batch features need git worktrees; '{name}' is not a git repository"
+                    ));
+                    return;
                 }
+                CreateBatchFeaturesState::for_project(name, &repo)
             }
-            Selection::Session(pi, fi, _) => {
-                if let Some(p) = self.store.projects.get(*pi) {
-                    if p.features.get(*fi).is_some() {
-                        Some(p.repo.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
+            None => CreateBatchFeaturesState::with_workspace(None),
         };
-
-        let mut state = CreateBatchFeaturesState::with_workspace(workspace_path);
         let repo = PathBuf::from(&state.workspace_path);
         self.active_extension = self.extension_for_repo(&repo);
         let (agent, agent_index) = self.normalize_agent_for_repo(&repo, &state.agent);
@@ -157,9 +144,17 @@ impl App {
             }
         };
 
-        let start_dir = PathBuf::from(&create_state.path);
-        let start_dir = if start_dir.is_dir() {
-            start_dir
+        // Start where the typed path points; with nothing typed, beside the
+        // selected project (new projects tend to live next to old ones).
+        let typed = PathBuf::from(&create_state.path);
+        let start_dir = if !create_state.path.trim().is_empty() && typed.is_dir() {
+            typed
+        } else if let Some(parent) = self
+            .selected_project()
+            .and_then(|p| p.repo.parent().map(PathBuf::from))
+            .filter(|parent| parent.is_dir())
+        {
+            parent
         } else {
             dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
         };

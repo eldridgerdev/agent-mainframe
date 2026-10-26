@@ -22,6 +22,7 @@ for the complete, current keybinding reference built into that version of AMF.
 | `h` / `l` | Collapse or expand the selected item |
 | `Enter` | Open the selected session or expand/collapse an item |
 | `N` / `n` | Create a project / feature |
+| `B` | Create several features at once in the selected project |
 | `s` | Add a session to a feature |
 | `c` | Start the selected feature |
 | `x` | Stop a feature, or remove the selected session |
@@ -42,6 +43,13 @@ for the complete, current keybinding reference built into that version of AMF.
 | `?` | Show all keybindings |
 | `q` | Quit |
 | `Esc` | Ask "Quit AMF?" (`y` quits, `n`/`Esc` cancels) |
+
+In the New Project, New Feature and batch forms, `Tab` / `Shift+Tab` move
+between fields, `Ctrl+U` clears the focused text field, and `Space` toggles a
+checkbox. In New Feature, `Enter` moves to the next field and creates on the
+last one (the session name); `Ctrl+S` creates from any field. In the harness
+manager (`A`), `Enter` / `Space` checks a harness and turns it on or off, `c`
+saves, and `Esc` closes without saving.
 
 Search (`/`) accepts every letter, including `j` and `k`. Use arrow keys or
 `Tab` / `Shift+Tab` to select a result, `Enter` to jump, and `Esc` to cancel.

@@ -1,8 +1,8 @@
 use anyhow::Result;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, CreateFeatureStep};
-use crate::project::{AgentKind, VibeMode, normalized_feature_name};
+use crate::app::{App, AppMode, CreateFeatureState, CreateFeatureStep, Selection};
+use crate::project::{ProjectStatus, VibeMode, normalized_feature_name};
 
 fn branch_error(app: &App) -> Option<String> {
     let state = match &app.mode {
@@ -29,6 +29,130 @@ fn branch_error(app: &App) -> Option<String> {
     }
 
     None
+}
+
+/// Key entry point with modifiers: `Ctrl+S` creates from any form row,
+/// `Ctrl+U` clears the focused text field, and other `Ctrl` chords are ignored
+/// instead of typing their letter. Everything else goes to
+/// [`handle_create_feature_key`].
+pub fn handle_create_feature_event(app: &mut App, key: KeyEvent) -> Result<()> {
+    let step = match &app.mode {
+        AppMode::CreatingFeature(state) => state.step.clone(),
+        _ => return Ok(()),
+    };
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('s') | KeyCode::Char('S'))
+    {
+        if CreateFeatureState::is_form_step(&step) {
+            submit_create_feature(app)?;
+        }
+        return Ok(());
+    }
+    if super::text_field::is_clear_key(&key) {
+        if let AppMode::CreatingFeature(state) = &mut app.mode {
+            match step {
+                CreateFeatureStep::Branch => {
+                    state.branch.clear();
+                    state.branch_error = None;
+                }
+                CreateFeatureStep::SessionName => state.session_name.clear(),
+                CreateFeatureStep::ExistingWorktree if state.worktree_search_active => {
+                    state.worktree_query.clear();
+                    state.clamp_worktree_selection();
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+    if super::text_field::is_unbound_ctrl_chord(&key) {
+        return Ok(());
+    }
+    handle_create_feature_key(app, key.code)
+}
+
+/// Create from the form: check the name, ask about SuperVibe if it is
+/// chosen, then create. Shared by `Enter` on the last row and `Ctrl+S`.
+fn submit_create_feature(app: &mut App) -> Result<()> {
+    let (name_editable, supervibe) = match &app.mode {
+        AppMode::CreatingFeature(state) => (
+            !state.uses_existing_worktree(),
+            matches!(state.mode, VibeMode::SuperVibe),
+        ),
+        _ => return Ok(()),
+    };
+    if name_editable && let Some(error) = branch_error(app) {
+        if let AppMode::CreatingFeature(state) = &mut app.mode {
+            state.branch_error = Some(error.clone());
+            state.step = CreateFeatureStep::Branch;
+        }
+        app.push_toast_warning(error);
+        return Ok(());
+    }
+    if supervibe {
+        if let AppMode::CreatingFeature(state) = &mut app.mode {
+            state.step = CreateFeatureStep::ConfirmSuperVibe;
+        }
+        return Ok(());
+    }
+    create_and_open(app)
+}
+
+/// Create the feature, then open its session so the user lands in the agent
+/// they just asked for rather than on the dashboard with a toast.
+fn create_and_open(app: &mut App) -> Result<()> {
+    let (project_name, feature_name) = match &app.mode {
+        AppMode::CreatingFeature(state) => (
+            state.project_name.clone(),
+            state
+                .feature_name
+                .clone()
+                .unwrap_or_else(|| state.branch.clone()),
+        ),
+        _ => return Ok(()),
+    };
+    let previous_message = app.message.clone();
+    app.create_feature()?;
+
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        // Not created: the form (not the SuperVibe prompt) shows the problem.
+        if state.step == CreateFeatureStep::ConfirmSuperVibe {
+            state.step = CreateFeatureStep::SessionName;
+        }
+        if app.message != previous_message
+            && let Some(message) = app.message.clone()
+        {
+            app.push_toast_warning(message);
+        }
+        return Ok(());
+    }
+
+    // Only a plain, synchronous creation that left the feature running opens
+    // it. A plan interview, startup prompt or hook prompt already owns the
+    // screen (mode is not Normal); a feature still waiting on its worktree
+    // hook, or one the resource gate left stopped, has nothing to show yet
+    // and its message says what to do.
+    if !matches!(app.mode, AppMode::Normal) {
+        return Ok(());
+    }
+    let Selection::Feature(pi, fi) = app.selection else {
+        return Ok(());
+    };
+    let ready = app
+        .store
+        .projects
+        .get(pi)
+        .filter(|project| project.name == project_name)
+        .and_then(|project| project.features.get(fi))
+        .is_some_and(|feature| {
+            feature.name == feature_name
+                && !feature.pending_worktree_script
+                && feature.status != ProjectStatus::Stopped
+        });
+    if ready {
+        app.enter_view()?;
+    }
+    Ok(())
 }
 
 pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
@@ -207,8 +331,15 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     && let AppMode::CreatingFeature(state) = &mut app.mode
                 {
                     // Pre-fill fields from preset.
+                    state.mode_index = VibeMode::ALL
+                        .iter()
+                        .position(|mode| *mode == preset.mode)
+                        .unwrap_or(0);
                     state.mode = preset.mode;
-                    state.agent = preset.agent.clone();
+                    match state.allowed_agents.iter().position(|a| *a == preset.agent) {
+                        Some(index) => state.select_agent(index),
+                        None => state.set_agent(preset.agent.clone()),
+                    }
                     state.review = preset.review;
                     state.plan_mode = preset.plan_mode;
                     state.quick_plan = preset.quick_plan;
@@ -247,6 +378,11 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.step = CreateFeatureStep::Worktree;
                 }
             }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.move_form_focus(key == KeyCode::Tab);
+                }
+            }
             KeyCode::Backspace => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.branch.pop();
@@ -269,10 +405,19 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
             KeyCode::Tab | KeyCode::Enter | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.step = CreateFeatureStep::Mode;
+                    state.move_form_focus(true);
                 }
             }
-            KeyCode::Down | KeyCode::Up | KeyCode::Char('j') | KeyCode::Char('k') => {
+            KeyCode::BackTab | KeyCode::Char('h') => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.move_form_focus(false);
+                }
+            }
+            KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::Char(' ') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     // Without git there is no worktree to create; keep "No".
                     state.use_worktree = state.git_available && !state.use_worktree;
@@ -285,7 +430,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     if state.mode_focus > 0 {
                         state.mode_focus -= 1;
-                    } else if state.source_index == 1 && !state.worktrees.is_empty() {
+                    } else if state.uses_existing_worktree() {
                         state.step = CreateFeatureStep::ExistingWorktree;
                     } else {
                         state.step = CreateFeatureStep::Worktree;
@@ -294,129 +439,33 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    // For Claude: 0=agent 1=mode 2=review 3=plan
-                    //   4=chrome 5=remote_control 6=steering
-                    // For others: 0=agent 1=mode 2=review 3=plan
-                    //   4=steering
-                    let max_focus = if state.agent == AgentKind::Claude {
-                        6
-                    } else {
-                        4
-                    };
-                    if state.mode_focus < max_focus {
-                        state.mode_focus += 1;
-                    }
+                    state.move_form_focus(true);
                 }
             }
             KeyCode::BackTab | KeyCode::Char('h') => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode
-                    && state.mode_focus > 0
-                {
-                    state.mode_focus -= 1;
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.move_form_focus(false);
                 }
             }
             KeyCode::Enter => {
+                // Enter moves to the next field; the last option row leads to
+                // the session name, whose Enter creates.
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    let max_focus = if state.agent == AgentKind::Claude {
-                        6
-                    } else {
-                        4
-                    };
-                    if state.mode_focus < max_focus {
+                    if state.mode_focus < state.mode_max_focus() {
                         state.mode_focus += 1;
                     } else {
-                        let is_supervibe = matches!(state.mode, VibeMode::SuperVibe);
-                        if is_supervibe {
-                            state.step = CreateFeatureStep::ConfirmSuperVibe;
-                        } else {
-                            state.session_name = App::default_session_name_for_agent(&state.agent);
-                            state.step = CreateFeatureStep::SessionName;
-                        }
+                        state.step = CreateFeatureStep::SessionName;
                     }
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(' ') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    match state.mode_focus {
-                        0 => {
-                            state.agent_index =
-                                (state.agent_index + 1) % state.allowed_agents.len();
-                            state.agent = state.allowed_agents[state.agent_index].clone();
-                        }
-                        1 => {
-                            state.mode_index = (state.mode_index + 1) % VibeMode::ALL.len();
-                            state.mode = VibeMode::ALL[state.mode_index].clone();
-                        }
-                        2 => {
-                            state.review = !state.review;
-                        }
-                        3 => {
-                            state.cycle_plan_choice(true);
-                        }
-                        4 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_chrome = !state.enable_chrome;
-                            } else {
-                                state.steering_enabled = !state.steering_enabled;
-                            }
-                        }
-                        5 if state.agent == AgentKind::Claude => {
-                            // Remote Control requires claude.ai OAuth; it is
-                            // unavailable for z.ai / third-party provider
-                            // sessions, in which case the toggle is inert.
-                            if state.remote_control_available {
-                                state.remote_control = !state.remote_control;
-                            }
-                        }
-                        6 | 5 => {
-                            state.steering_enabled = !state.steering_enabled;
-                        }
-                        _ => {}
-                    }
+                    cycle_mode_field(state, true);
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    match state.mode_focus {
-                        0 => {
-                            state.agent_index = if state.agent_index == 0 {
-                                state.allowed_agents.len() - 1
-                            } else {
-                                state.agent_index - 1
-                            };
-                            state.agent = state.allowed_agents[state.agent_index].clone();
-                        }
-                        1 => {
-                            state.mode_index = if state.mode_index == 0 {
-                                VibeMode::ALL.len() - 1
-                            } else {
-                                state.mode_index - 1
-                            };
-                            state.mode = VibeMode::ALL[state.mode_index].clone();
-                        }
-                        2 => {
-                            state.review = !state.review;
-                        }
-                        3 => {
-                            state.cycle_plan_choice(false);
-                        }
-                        4 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_chrome = !state.enable_chrome;
-                            } else {
-                                state.steering_enabled = !state.steering_enabled;
-                            }
-                        }
-                        5 if state.agent == AgentKind::Claude => {
-                            if state.remote_control_available {
-                                state.remote_control = !state.remote_control;
-                            }
-                        }
-                        6 | 5 => {
-                            state.steering_enabled = !state.steering_enabled;
-                        }
-                        _ => {}
-                    }
+                    cycle_mode_field(state, false);
                 }
             }
             _ => {}
@@ -425,19 +474,15 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.step = CreateFeatureStep::Mode;
+                    state.mode_focus = state.mode_max_focus();
                 }
             }
             KeyCode::Enter => {
-                let previous_message = app.message.clone();
-                app.create_feature()?;
-                if matches!(
-                    app.mode,
-                    AppMode::CreatingFeature(ref state)
-                        if state.step == CreateFeatureStep::SessionName
-                ) && app.message != previous_message
-                    && let Some(message) = app.message.clone()
-                {
-                    app.push_toast_warning(message);
+                submit_create_feature(app)?;
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.move_form_focus(key == KeyCode::Tab);
                 }
             }
             KeyCode::Backspace => {
@@ -483,10 +528,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         },
         CreateFeatureStep::ConfirmSuperVibe => match key {
             KeyCode::Enter | KeyCode::Char('y') => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.session_name = App::default_session_name_for_agent(&state.agent);
-                    state.step = CreateFeatureStep::SessionName;
-                }
+                create_and_open(app)?;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
@@ -497,4 +539,44 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// Change the value of the focused options row: the next/previous harness or
+/// mode, or flip a checkbox (the Plan row cycles None → Quick → Full).
+fn cycle_mode_field(state: &mut CreateFeatureState, forward: bool) {
+    let claude = state.agent == crate::project::AgentKind::Claude;
+    match state.mode_focus {
+        0 => {
+            let len = state.allowed_agents.len();
+            if len > 0 {
+                let index = if forward {
+                    (state.agent_index + 1) % len
+                } else {
+                    (state.agent_index + len - 1) % len
+                };
+                state.select_agent(index);
+            }
+        }
+        1 => {
+            let len = VibeMode::ALL.len();
+            state.mode_index = if forward {
+                (state.mode_index + 1) % len
+            } else {
+                (state.mode_index + len - 1) % len
+            };
+            state.mode = VibeMode::ALL[state.mode_index].clone();
+        }
+        2 => state.review = !state.review,
+        3 => state.cycle_plan_choice(forward),
+        4 if claude => state.enable_chrome = !state.enable_chrome,
+        // Remote Control requires claude.ai OAuth; it is unavailable for
+        // z.ai / third-party provider sessions, where the toggle is inert.
+        5 if claude => {
+            if state.remote_control_available {
+                state.remote_control = !state.remote_control;
+            }
+        }
+        4 | 6 => state.steering_enabled = !state.steering_enabled,
+        _ => {}
+    }
 }

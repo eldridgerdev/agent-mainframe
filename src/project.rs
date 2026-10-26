@@ -314,6 +314,16 @@ impl VibeMode {
         }
     }
 
+    /// One plain sentence on what the agent may do without asking you first,
+    /// for a reader who does not know the harnesses' permission flags.
+    pub fn permission_summary(&self) -> &'static str {
+        match self {
+            VibeMode::Vibeless => "Asks before it edits a file or runs a command.",
+            VibeMode::Vibe => "Edits files without asking; asks before commands.",
+            VibeMode::SuperVibe => "Edits files and runs commands without asking.",
+        }
+    }
+
     pub fn cli_flags(&self, opts: LaunchOpts) -> Vec<String> {
         let mut flags = match self {
             VibeMode::Vibeless => vec![],

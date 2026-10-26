@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use super::super::dashboard::centered_rect;
@@ -40,22 +40,38 @@ pub fn draw_harness_setup_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(4),
             Constraint::Length(2),
         ])
         .split(inner);
 
-    // Header
-    let header_text = if state.is_startup {
-        "Select which agent harnesses to enable:"
+    // Header: says what the keys in the footer do, in the same words.
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let header_lines = if state.is_startup {
+        vec![
+            Line::from(Span::styled(
+                "  Choose the agent harnesses AMF may start.",
+                muted,
+            )),
+            Line::from(Span::styled(
+                "  Enter/Space checks a harness and turns it on or off.",
+                muted,
+            )),
+        ]
     } else {
-        "Toggle harnesses (Enter to check & enable):"
+        vec![
+            Line::from(Span::styled(
+                "  Enter/Space checks a harness and turns it on or off.",
+                muted,
+            )),
+            Line::from(Span::styled(
+                "  c saves the list; Esc closes without saving.",
+                muted,
+            )),
+        ]
     };
-    let header = Paragraph::new(Line::from(Span::styled(
-        format!("  {}", header_text),
-        Style::default().fg(theme.text_muted.to_color()),
-    )));
+    let header = Paragraph::new(header_lines).wrap(Wrap { trim: false });
     frame.render_widget(header, chunks[0]);
 
     // Harness list
@@ -131,31 +147,32 @@ pub fn draw_harness_setup_dialog(
         .fg(theme.warning.to_color())
         .add_modifier(Modifier::BOLD);
     let hints = if state.is_startup {
-        // c and Esc both confirm here (there's nothing to cancel back
-        // to on first run), so label them together instead of both
-        // claiming "confirm" separately.
+        // c and Esc both finish here (there's nothing to cancel back to on
+        // first run), so label them together; q is the way out of AMF.
         Line::from(vec![
-            Span::styled("  Enter/Space", key_style),
+            Span::styled("  j/k", key_style),
+            Span::raw(" move  "),
+            Span::styled("Enter/Space", key_style),
             Span::raw(" toggle  "),
             Span::styled("c", key_style),
             Span::raw("/"),
             Span::styled("Esc", key_style),
             Span::raw(" done  "),
             Span::styled("q", key_style),
-            Span::raw(" quit"),
+            Span::raw(" quit AMF"),
         ])
     } else {
         Line::from(vec![
-            Span::styled("  Enter/Space", key_style),
+            Span::styled("  j/k", key_style),
+            Span::raw(" move  "),
+            Span::styled("Enter/Space", key_style),
             Span::raw(" toggle  "),
             Span::styled("c", key_style),
-            Span::raw(" confirm  "),
+            Span::raw(" save  "),
             Span::styled("Esc", key_style),
-            Span::raw(" cancel  "),
-            Span::styled("q", key_style),
-            Span::raw(" exit"),
+            Span::raw(" cancel"),
         ])
     };
-    let hints_widget = Paragraph::new(hints);
+    let hints_widget = Paragraph::new(hints).wrap(Wrap { trim: false });
     frame.render_widget(hints_widget, chunks[2]);
 }

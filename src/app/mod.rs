@@ -3611,6 +3611,10 @@ impl App {
     }
 
     pub(crate) fn repo_for_project_path(&self, path: &Path) -> PathBuf {
+        // A blank form field names no folder; don't ask git about one.
+        if path.as_os_str().is_empty() {
+            return PathBuf::new();
+        }
         self.worktree
             .repo_root(path)
             .unwrap_or_else(|_| path.to_path_buf())

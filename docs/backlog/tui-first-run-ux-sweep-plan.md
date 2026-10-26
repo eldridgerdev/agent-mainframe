@@ -160,44 +160,52 @@ leak through to the agent.
 
 **New Project** (`N`)
 
-- [ ] Repo path is prefilled with AMF's working directory (the launch directory),
+- [x] Repo path is prefilled with AMF's working directory (the launch directory),
       which is rarely the right project. Prefill from the selected project's
       parent, or leave blank with a placeholder; never the cwd silently.
-- [ ] Add a clear-field key (Ctrl+U) that works. Currently `Ctrl+U` inserted a
+- [x] Add a clear-field key (Ctrl+U) that works. Currently `Ctrl+U` inserted a
       literal `u`. Check what the other text fields (feature name, compose)
       do and make them agree.
-- [ ] Path field wraps across lines with the hint overlapping; keep the hint on
+- [x] Path field wraps across lines with the hint overlapping; keep the hint on
       its own row.
 
 **New Feature** (`n`)
 
-- [ ] Footer says "Enter confirm"/"Enter next" but Enter only advances one field
+- [x] Footer says "Enter confirm"/"Enter next" but Enter only advances one field
       at a time (about ten presses to reach the end). Say "Enter next field"
       and show "Ctrl+Enter create" (or make a final Create row).
-- [ ] Tab does not move between fields here but does in New Project. Pick one.
-- [ ] Checkboxes toggle with `j/k` only; accept Space and show `[x]` state change
+- [x] Tab does not move between fields here but does in New Project. Pick one.
+- [x] Checkboxes toggle with `j/k` only; accept Space and show `[x]` state change
       clearly. Footer: "Space toggle".
-- [ ] Show which field is focused with a highlight, not only by footer text.
-- [ ] Explain Vibeless / Vibe / SuperVibe in one plain line each in the wizard
+- [x] Show which field is focused with a highlight, not only by footer text.
+- [x] Explain Vibeless / Vibe / SuperVibe in one plain line each in the wizard
       (what the agent may do without asking), not only the short phrase.
-- [ ] The extra "Name Session" prompt after the wizard defaults to "Claude 1";
+- [x] The extra "Name Session" prompt after the wizard defaults to "Claude 1";
       fold it into the wizard as an optional field or skip it when unchanged.
-- [ ] After creating a feature, open its session (or offer "Enter to open") instead
+- [x] After creating a feature, open its session (or offer "Enter to open") instead
       of leaving the user on the dashboard with a toast.
 
 **Batch features** (`B`)
 
-- [ ] Use the selected project instead of asking for workspace path and project
+- [x] Use the selected project instead of asking for workspace path and project
       name again.
-- [ ] Explain on the first screen what a batch is and what it creates
+- [x] Explain on the first screen what a batch is and what it creates
       (`feature-1..N`, worktrees, no plan interview, no prompt per feature).
-- [ ] Offer a per-feature prompt or name list, or state that none is supported.
+- [x] Offer a per-feature prompt or name list, or state that none is supported.
 
 **Harness manager** (`A`)
 
-- [ ] Header ("Enter to check & enable") and footer ("Enter/Space toggle  c confirm
+- [x] Header ("Enter to check & enable") and footer ("Enter/Space toggle  c confirm
       Esc cancel  q exit") disagree; write one set of keys.
-- [ ] Drop the redundant `q exit` or define it versus Esc.
+- [x] Drop the redundant `q exit` or define it versus Esc.
+
+Done: blank path with placeholder (Ctrl+B browses beside the selected project);
+`Ctrl+U` clears every single-line form field and the rename prompts (compose
+keeps `Ctrl+L`); New Feature is one form with `Tab`/`Shift+Tab`, `Space`,
+a `▸` focus marker, `Enter` next field and `Ctrl+S` create (`Ctrl+Enter` is
+not delivered by most terminals); the session name is the last row; creating
+opens the session; `B` on a selected project adds to it; the manager's `q`
+only quits on first run.
 
 ## Epic 7 — Discoverability (P1)
 

@@ -861,7 +861,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
-            super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
+            super::dialogs::draw_create_batch_features_dialog(
+                frame,
+                state,
+                app.message.as_deref(),
+                &app.theme,
+            );
         }
         AppMode::DeletingProject(name) => {
             super::dialogs::draw_delete_project_confirm(frame, name, &app.theme);

@@ -1934,7 +1934,14 @@ fn create_feature_final_enter_opens_session_name_step() {
     let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
     if let AppMode::CreatingFeature(state) = &mut app.mode {
         state.step = CreateFeatureStep::Mode;
-        state.agent = AgentKind::Codex;
+        state.session_name = "Claude 1".to_string();
+        // Choosing a harness renames an untouched default session name.
+        let codex = state
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+        state.select_agent(codex);
         state.mode_focus = 4;
     }
 
@@ -1955,10 +1962,12 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
 
     let repo = TempDir::new().unwrap();
     let mut tmux = MockTmuxOps::new();
+    // Absent when the feature is created; present when its view opens.
+    let mut created = false;
     tmux.expect_session_exists()
         .withf(|session| session == "amf-automation-project-feature-1")
-        .times(1)
-        .return_const(false);
+        .times(2..)
+        .returning(move |_| std::mem::replace(&mut created, true));
     let expected_repo = repo.path().to_path_buf();
     tmux.expect_create_session_with_window()
         .withf(move |session, window, workdir| {
@@ -2042,7 +2051,15 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
 
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
 
-    assert!(matches!(app.mode, AppMode::Normal));
+    // The new feature's session opens instead of leaving the dashboard, the
+    // same as pressing Enter on it (which may open the compose box over it).
+    let view = match &app.mode {
+        AppMode::Viewing(view) => view,
+        AppMode::Compose(state) => &state.view,
+        _ => panic!("expected the new feature's session to open"),
+    };
+    assert_eq!(view.feature_name, "feature-1");
+    assert_eq!(view.session_label, "Pairing Claude");
     let feature = &app.store.projects[0].features[0];
     assert_eq!(feature.name, "feature-1");
     assert_eq!(feature.sessions[0].label, "Pairing Claude");

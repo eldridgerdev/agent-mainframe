@@ -1,10 +1,31 @@
 use anyhow::Result;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::{App, AppMode, CreateBatchFeaturesStep};
+use crate::app::{App, AppMode, CreateBatchFeaturesState, CreateBatchFeaturesStep};
 use crate::project::{AgentKind, VibeMode};
 
-pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<()> {
+/// Key entry point with modifiers: `Ctrl+U` clears the focused text field and
+/// other `Ctrl` chords are ignored instead of typing their letter.
+pub fn handle_create_batch_features_event(app: &mut App, key: KeyEvent) -> Result<()> {
+    if super::text_field::is_clear_key(&key) {
+        if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
+            match state.step {
+                CreateBatchFeaturesStep::WorkspacePath => state.workspace_path.clear(),
+                CreateBatchFeaturesStep::ProjectName => state.project_name.clear(),
+                CreateBatchFeaturesStep::FeatureCount => state.feature_count = 1,
+                CreateBatchFeaturesStep::FeatureBaseName => state.feature_prefix.clear(),
+                CreateBatchFeaturesStep::FeatureSettings => {}
+            }
+        }
+        return Ok(());
+    }
+    if super::text_field::is_unbound_ctrl_chord(&key) {
+        return Ok(());
+    }
+    handle_create_batch_features_key(app, key.code)
+}
+
+fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<()> {
     let step = match &app.mode {
         AppMode::CreatingBatchFeatures(state) => state.step.clone(),
         _ => return Ok(()),
@@ -16,8 +37,20 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 app.cancel_create();
             }
             KeyCode::Enter => {
+                let mut missing = false;
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
-                    state.step = CreateBatchFeaturesStep::ProjectName;
+                    if state.workspace_path.trim().is_empty() {
+                        missing = true;
+                    } else {
+                        if state.project_name.trim().is_empty() {
+                            state.project_name =
+                                CreateBatchFeaturesState::name_from_path(&state.workspace_path);
+                        }
+                        state.step = CreateBatchFeaturesStep::ProjectName;
+                    }
+                }
+                if missing {
+                    app.push_toast_warning("Type the git repository's folder path first");
                 }
             }
             KeyCode::Backspace => {
@@ -57,7 +90,15 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
         },
         CreateBatchFeaturesStep::FeatureCount => match key {
             KeyCode::Esc => {
-                if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
+                // A batch into the selected project starts here, so there is
+                // nothing earlier to go back to.
+                let existing = matches!(
+                    &app.mode,
+                    AppMode::CreatingBatchFeatures(state) if state.existing_project
+                );
+                if existing {
+                    app.cancel_create();
+                } else if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     state.step = CreateBatchFeaturesStep::ProjectName;
                 }
             }
@@ -67,7 +108,9 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
+                if let AppMode::CreatingBatchFeatures(state) = &mut app.mode
+                    && state.feature_count < CreateBatchFeaturesState::MAX_FEATURES
+                {
                     state.feature_count += 1;
                 }
             }
@@ -92,8 +135,8 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     let digit = c.to_digit(10).unwrap() as usize;
                     state.feature_count = state.feature_count * 10 + digit;
-                    if state.feature_count > 50 {
-                        state.feature_count = 50;
+                    if state.feature_count > CreateBatchFeaturesState::MAX_FEATURES {
+                        state.feature_count = CreateBatchFeaturesState::MAX_FEATURES;
                     }
                 }
             }
@@ -124,6 +167,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
         },
         CreateBatchFeaturesStep::FeatureSettings => match key {
             KeyCode::Esc => {
+                app.message = None;
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     if state.mode_focus > 0 {
                         state.mode_focus -= 1;
@@ -165,7 +209,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                     }
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(' ') => {
                 let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     match state.mode_focus {

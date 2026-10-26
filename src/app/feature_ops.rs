@@ -177,12 +177,7 @@ impl App {
     }
 
     pub(crate) fn default_session_name_for_agent(agent: &AgentKind) -> String {
-        match agent {
-            AgentKind::Claude => "Claude 1".to_string(),
-            AgentKind::Opencode => "Opencode 1".to_string(),
-            AgentKind::Codex => "Codex 1".to_string(),
-            AgentKind::Pi => "Pi 1".to_string(),
-        }
+        crate::app::state::default_session_name(agent)
     }
 
     fn set_create_feature_branch_error(&mut self, error: impl Into<String>) {
@@ -2586,7 +2581,12 @@ impl App {
             dry_run: false,
         };
 
-        let response = match self.create_batch_features_from_request(&request) {
+        let result = if state.existing_project {
+            self.add_batch_features_to_project(&request)
+        } else {
+            self.create_batch_features_from_request(&request)
+        };
+        let response = match result {
             Ok(response) => response,
             Err(err) => {
                 self.message = Some(format!("Error: {err}"));
@@ -2600,6 +2600,7 @@ impl App {
             .position(|p| p.name == response.project_name)
         {
             self.selection = Selection::Project(pi);
+            self.store.projects[pi].collapsed = false;
         }
         self.mode = AppMode::Normal;
         self.message = Some(response.message);

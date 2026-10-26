@@ -42,16 +42,20 @@ pub struct VapidKey {
     signing: SigningKey,
 }
 
-/// A fresh P-256 scalar. It comes from two v4 UUIDs — the same
-/// `getrandom`-backed source `remote_server::generate_device_token` uses —
-/// rather than a new RNG dependency; the loop only repeats in the
-/// astronomically unlikely case the bytes aren't a valid scalar.
+/// `N` bytes from the operating system's CSPRNG.
+fn random_bytes<const N: usize>() -> [u8; N] {
+    use aes_gcm::aead::OsRng;
+    use aes_gcm::aead::rand_core::RngCore;
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+/// A fresh P-256 scalar; the loop only repeats in the astronomically
+/// unlikely case the bytes aren't a valid one.
 fn random_secret_key() -> SecretKey {
     loop {
-        let mut bytes = [0u8; 32];
-        bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        if let Ok(secret) = SecretKey::from_slice(&bytes) {
+        if let Ok(secret) = SecretKey::from_slice(&random_bytes::<32>()) {
             return secret;
         }
     }
@@ -237,9 +241,13 @@ pub fn build_request(
         .context("push endpoint is not a URI")?;
     let body = serde_json::to_vec(message)?;
     let authorization = key.authorization(&endpoint)?;
-    let mut salt = [0u8; 16];
-    salt.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    let body = encrypt_aes128gcm(&body, &public, &auth, &random_secret_key(), &salt)?;
+    let body = encrypt_aes128gcm(
+        &body,
+        &public,
+        &auth,
+        &random_secret_key(),
+        &random_bytes::<16>(),
+    )?;
     ureq::http::Request::post(endpoint)
         .header(ureq::http::header::CONTENT_ENCODING, "aes128gcm")
         .header(ureq::http::header::CONTENT_TYPE, "application/octet-stream")

@@ -26,6 +26,11 @@ are tagged.
 
 ### Changed
 
+- **Cleaner errors and toasts in the terminal UI.** Errors no longer read
+  "Error: Error: ...", messages that already say what to do drop the generic
+  "Check debug log" tail, and the rest now say "Press D for the debug log".
+  Toasts stack above the status bar instead of over it, and at most three
+  show at once. The `S` hint on a project explains what to select.
 - **Esc and `d` no longer act instantly on the dashboard.** Esc now asks
   "Quit AMF?" (`q` still quits directly), and `d` on a session asks before
   removing it, saying whether an agent is running. No migration is required.

@@ -4096,10 +4096,35 @@ impl App {
     }
 
     pub fn set_debug_log_error_message(&mut self, message: impl Into<String>) {
-        self.message = Some(format!(
-            "Error: {} Check debug log for details.",
-            message.into()
-        ));
+        self.message = Some(Self::logged_error_message(&message.into()));
+    }
+
+    /// The one place the status-line "Error: " prefix and the debug-log
+    /// pointer are added. A prefix already on `detail` is dropped first so
+    /// callers that pre-prefix cannot produce "Error: Error: ...", and the
+    /// pointer is omitted when the message already says what to do next.
+    pub(crate) fn logged_error_message(detail: &str) -> String {
+        let detail = strip_error_prefix(detail);
+        let lower = detail.to_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let has_word = |w: &str| words.contains(&w);
+        let actionable = has_word("retry")
+            || has_word("press")
+            || lower.contains("is written to")
+            || lower.contains("debug log");
+        if actionable {
+            format!("Error: {detail}")
+        } else {
+            let sep = if detail.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            format!("Error: {detail}{sep} Press D for the debug log.")
+        }
     }
 
     pub fn flush_token_cache_to_db(&mut self) {
@@ -4392,6 +4417,20 @@ fn hash_path_metadata(hasher: &mut impl Hasher, path: PathBuf) {
         }
         Err(_) => false.hash(hasher),
     }
+}
+
+/// Strip a leading `Error:` (any case, with its spacing) so a message is never
+/// prefixed twice.
+pub(crate) fn strip_error_prefix(message: &str) -> &str {
+    let mut rest = message.trim_start();
+    while let Some(tail) = rest
+        .get(..6)
+        .filter(|p| p.eq_ignore_ascii_case("error:"))
+        .map(|_| &rest[6..])
+    {
+        rest = tail.trim_start();
+    }
+    rest
 }
 
 #[cfg(test)]

@@ -2318,7 +2318,7 @@ fn adding_session_start_failure_shows_error_toast() {
 
     assert_eq!(
         app.toasts.last().map(|toast| toast.message.as_str()),
-        Some("Error: tmux failed")
+        Some("tmux failed")
     );
     assert_eq!(
         app.store.projects[0].features[0].status,

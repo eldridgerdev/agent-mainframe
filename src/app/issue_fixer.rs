@@ -1849,9 +1849,9 @@ mod tests {
 
         assert!(matches!(app.mode, crate::app::AppMode::Normal));
         assert!(
-            app.message
-                .as_deref()
-                .is_some_and(|message| message.starts_with("Error:")),
+            app.toasts
+                .last()
+                .is_some_and(|toast| toast.message.contains("git init")),
             "the g binding should attempt project-scoped repository resolution"
         );
         assert!(app.store.projects[0].features.is_empty());

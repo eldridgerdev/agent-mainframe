@@ -333,10 +333,9 @@ impl App {
             return;
         }
 
-        let project_is_git = self
-            .selected_project()
-            .is_some_and(|project| project.is_git)
-            || self.worktree.repo_root(&project_repo).is_ok();
+        // The stored flag, not a fresh probe: it is set at project creation
+        // and refreshed when a feature is created in a repo that gained git.
+        let project_is_git = self.selected_project().is_none_or(|project| project.is_git);
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);

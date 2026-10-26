@@ -480,7 +480,12 @@ pub struct DiffPickerState {
     pub commits: Vec<crate::diff::DiffCommit>,
     /// Zero is "all current changes"; commit rows start at one.
     pub selected: usize,
+    /// Why commits are unavailable, in one line (the raw git error goes to
+    /// the debug log). `None` when commits listed normally.
     pub error: Option<String>,
+    /// No base branch resolved, so "All current changes" is the working tree
+    /// against `HEAD` and there are no branch commits to list.
+    pub no_base_branch: bool,
 }
 
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough

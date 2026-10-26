@@ -140,6 +140,15 @@ impl App {
         let entries = match scope {
             BrowseScope::BranchChanges => match crate::diff::load_snapshot(&workdir, None, false) {
                 Ok(snapshot) => {
+                    // No base branch: the list is the uncommitted work against
+                    // HEAD, not "this branch's changes". Say which it is.
+                    if snapshot.no_base_branch {
+                        load_error = Some(
+                            "No base branch found, so this lists uncommitted changes \
+                             against HEAD. Press s to browse all files instead."
+                                .to_string(),
+                        );
+                    }
                     diff_files = snapshot.files;
                     build_changed_entries(&diff_files)
                 }

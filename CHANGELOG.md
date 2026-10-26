@@ -48,6 +48,15 @@ are tagged.
 - New and restarted individual sessions now resize to the current terminal
   viewport before opening or launching their program, reducing small panes
   and cramped startup output when adding terminals, editors, or agents.
+- **Diffs work in a repository with only one branch.** In a repo on its only
+  branch with no remote (for example a fresh `git init -b main`), the diff
+  viewer, Final Review and Learning Mode's branch-changes list now show your
+  staged, unstaged and untracked changes against `HEAD` instead of failing with
+  "Could not determine a base branch". The viewer header reads
+  "vs HEAD (no base branch found)" and the body says to press `b` to choose a
+  base ref. Choose Diff Scope explains in one line why it has no commits
+  instead of printing the raw git error. A branch that shares no history with
+  an existing base branch is still reported as an error.
 
 ## [v0.50.0] - 2026-10-19
 

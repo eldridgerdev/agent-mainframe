@@ -57,13 +57,28 @@ pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Them
         ])
         .split(inner);
 
+    // One line under the intro: the commit count, or why there are none.
+    // The raw git error is in the debug log, not here.
+    let status_line = if let Some(error) = &state.error {
+        Span::styled(
+            format!(" {error}"),
+            Style::default().fg(theme.warning.to_color()),
+        )
+    } else if state.no_base_branch {
+        Span::styled(
+            " No base branch found: showing uncommitted changes against HEAD.",
+            Style::default().fg(theme.warning.to_color()),
+        )
+    } else {
+        Span::styled(
+            format!(" {} commit(s) on this feature branch", state.commits.len()),
+            Style::default().fg(theme.text_muted.to_color()),
+        )
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(" View the whole branch and worktree, or isolate one commit."),
-            Line::from(Span::styled(
-                format!(" {} commit(s) on this feature branch", state.commits.len()),
-                Style::default().fg(theme.text_muted.to_color()),
-            )),
+            Line::from(status_line),
         ]),
         rows[0],
     );
@@ -76,7 +91,11 @@ pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Them
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  commits + staged + unstaged + untracked",
+            if state.no_base_branch {
+                "  staged + unstaged + untracked vs HEAD"
+            } else {
+                "  commits + staged + unstaged + untracked"
+            },
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ]))];
@@ -106,11 +125,11 @@ pub fn draw_diff_picker(frame: &mut Frame, state: &DiffPickerState, theme: &Them
     list_state.select(Some(state.selected.min(state.commits.len())));
     frame.render_stateful_widget(list, rows[1], &mut list_state);
 
-    if let Some(error) = &state.error {
+    if state.no_base_branch || state.error.is_some() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!(" Could not list feature commits: {error}"),
-                Style::default().fg(theme.danger.to_color()),
+                " Press b in the viewer to compare against another ref.",
+                Style::default().fg(theme.text_muted.to_color()),
             )))
             .wrap(Wrap { trim: false }),
             rows[2],
@@ -1348,12 +1367,15 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
     } else {
         &state.branch
     };
-    let base = if state.base_ref.is_empty() {
+    let no_base_fallback = state.no_base_branch && matches!(state.scope, DiffScope::CurrentChanges);
+    let base = if no_base_fallback {
+        crate::diff::NO_BASE_BRANCH_LABEL
+    } else if state.base_ref.is_empty() {
         "(no base)"
     } else {
         &state.base_ref
     };
-    let commit = if state.base_commit.is_empty() {
+    let commit = if state.base_commit.is_empty() || no_base_fallback {
         String::new()
     } else {
         let short = state.base_commit.chars().take(12).collect::<String>();
@@ -1513,8 +1535,22 @@ fn review_counts(state: &DiffViewerState) -> (usize, usize) {
     (approved, rejected)
 }
 
+/// Body notice for a current-changes view with no real base: either the load
+/// failed or it fell back to `HEAD`. Either way the reviewer can pick a base
+/// with `b`, and the footer alone is too easy to miss.
+const CHOOSE_BASE_HINT: &str = "Press b to choose a base ref.";
+
 fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
+    let current_changes = matches!(state.scope, DiffScope::CurrentChanges);
     if let Some(error) = &state.error {
+        let hint = if current_changes {
+            Line::from(Span::styled(
+                format!(" {CHOOSE_BASE_HINT} Press r to retry."),
+                Style::default().fg(theme.warning.to_color()),
+            ))
+        } else {
+            Line::from("")
+        };
         let error_widget = Paragraph::new(vec![
             Line::from(""),
             Line::from(Span::styled(
@@ -1532,11 +1568,57 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: 
                 error.as_str(),
                 Style::default().fg(theme.text.to_color()),
             )),
+            Line::from(""),
+            hint,
         ])
         .wrap(Wrap { trim: false });
         frame.render_widget(error_widget, area);
         return;
     }
+
+    let no_base_fallback =
+        current_changes && state.no_base_branch && state.override_base_ref.is_none();
+
+    if state.files.is_empty() && no_base_fallback {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                " No uncommitted changes ",
+                Style::default()
+                    .fg(theme.success.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    " No base branch was found, so this compares the working tree with HEAD. \
+                     {CHOOSE_BASE_HINT} Press r to refresh after editing."
+                ),
+                Style::default().fg(theme.text.to_color()),
+            )),
+        ])
+        .wrap(Wrap { trim: false });
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let area = if no_base_fallback && area.height > 3 {
+        let [notice, rest] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    " No base branch found: showing staged, unstaged and untracked changes \
+                     against HEAD. {CHOOSE_BASE_HINT}"
+                ),
+                Style::default().fg(theme.warning.to_color()),
+            ))),
+            notice,
+        );
+        rest
+    } else {
+        area
+    };
 
     if state.files.is_empty() {
         let empty = Paragraph::new(vec![
@@ -5599,6 +5681,102 @@ index 0000000..1111111
         state.files = vec![file];
         state.selected_file = 0;
         (state, loc)
+    }
+
+    fn render_viewer(state: &mut DiffViewerState) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(160, 36)).unwrap();
+        terminal
+            .draw(|frame| draw_diff_viewer(frame, state, &Theme::default()))
+            .unwrap();
+        normalized_screen(&terminal)
+    }
+
+    #[test]
+    fn head_fallback_is_labelled_and_the_body_offers_b() {
+        for review in [false, true] {
+            let (mut state, _) = single_added_line_review_state();
+            state.review = review;
+            state.branch = "main".into();
+            state.base_ref = "HEAD".into();
+            state.base_commit = "0123456789abcdef".into();
+            state.no_base_branch = true;
+            let screen = render_viewer(&mut state);
+            assert!(
+                screen.contains("vs HEAD (no base branch found)"),
+                "review={review}: {screen}"
+            );
+            assert!(
+                screen.contains("Press b to choose a base ref."),
+                "review={review}"
+            );
+            assert!(!screen.contains("(unknown branch)"));
+        }
+
+        // Nothing to show yet: the empty state carries the same hint.
+        let (mut state, _) = single_added_line_review_state();
+        state.review = false;
+        state.files.clear();
+        state.no_base_branch = true;
+        let screen = render_viewer(&mut state);
+        assert!(screen.contains("No uncommitted changes"), "{screen}");
+        assert!(screen.contains("Press b to choose a base ref."));
+    }
+
+    #[test]
+    fn a_resolved_base_shows_no_fallback_notice() {
+        let (mut state, _) = single_added_line_review_state();
+        state.branch = "feature".into();
+        state.base_ref = "main".into();
+        let screen = render_viewer(&mut state);
+        assert!(screen.contains("vs main"), "{screen}");
+        assert!(!screen.contains("no base branch found"));
+    }
+
+    #[test]
+    fn a_failed_current_changes_load_offers_b_in_the_body() {
+        let (mut state, _) = single_added_line_review_state();
+        state.review = false;
+        state.files.clear();
+        state.error = Some("Could not determine a base branch for 'x'".into());
+        let screen = render_viewer(&mut state);
+        assert!(
+            screen.contains("Could not load current changes"),
+            "{screen}"
+        );
+        assert!(screen.contains("Press b to choose a base ref. Press r to retry."));
+    }
+
+    #[test]
+    fn scope_picker_explains_missing_commits_in_one_line() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (viewer, _) = single_added_line_review_state();
+        let mut picker = DiffPickerState {
+            from_view: viewer.from_view.clone(),
+            workdir: "/tmp".into(),
+            commits: Vec::new(),
+            selected: 0,
+            error: None,
+            no_base_branch: true,
+        };
+        let render = |picker: &DiffPickerState| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            terminal
+                .draw(|frame| draw_diff_picker(frame, picker, &Theme::default()))
+                .unwrap();
+            normalized_screen(&terminal)
+        };
+        let screen = render(&picker);
+        assert!(screen.contains("No base branch found"), "{screen}");
+        assert!(screen.contains("vs HEAD"));
+        assert!(!screen.contains("0 commit(s)"));
+
+        picker.no_base_branch = false;
+        picker.error = Some("Detached HEAD: commits are listed only on a named branch.".into());
+        let screen = render(&picker);
+        assert!(screen.contains("Detached HEAD"), "{screen}");
+        assert!(!screen.contains("Could not list feature commits"));
+        assert!(!screen.contains("0 commit(s)"));
     }
 
     #[test]

@@ -23,6 +23,11 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('g') {
+        app.init_git_for_create_project();
+        return Ok(());
+    }
+
     let is_agent_step = matches!(
         &app.mode,
         AppMode::CreatingProject(state)

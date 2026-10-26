@@ -333,9 +333,17 @@ impl App {
             return;
         }
 
+        let project_is_git = self
+            .selected_project()
+            .is_some_and(|project| project.is_git)
+            || self.worktree.repo_root(&project_repo).is_ok();
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
+        state.git_available = project_is_git;
+        if !project_is_git {
+            state.use_worktree = false;
+        }
         state.agent = agent;
         state.agent_index = agent_index;
         state.session_name = Self::default_session_name_for_agent(&state.agent);

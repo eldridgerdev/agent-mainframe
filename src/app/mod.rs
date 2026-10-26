@@ -3741,10 +3741,17 @@ impl App {
             _ => return,
         };
         let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &preferred);
+        let path_is_git = self.probe_path_is_git(&path);
         if let AppMode::CreatingProject(state) = &mut self.mode {
             state.agent = agent;
             state.agent_index = agent_index;
+            state.path_is_git = path_is_git;
         }
+    }
+
+    /// `Some(is_git)` for an existing directory, `None` otherwise.
+    pub(crate) fn probe_path_is_git(&self, path: &std::path::Path) -> Option<bool> {
+        path.is_dir().then(|| self.worktree.repo_root(path).is_ok())
     }
 
     pub(crate) fn default_project_preferred_agent(&self) -> AgentKind {

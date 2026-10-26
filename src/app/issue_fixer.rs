@@ -495,7 +495,7 @@ impl App {
         let repository = match self.github_repository_for_project(project_index) {
             Ok(repository) => repository,
             Err(error) => {
-                self.show_error(error.into());
+                self.push_toast_warning(error.guidance());
                 return;
             }
         };

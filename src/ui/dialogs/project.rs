@@ -98,12 +98,49 @@ pub fn draw_create_project_dialog(
     }
     frame.render_widget(Paragraph::new(agent_lines), chunks[2]);
 
+    let mut message_area = chunks[3];
+    if state.path_is_git == Some(false) {
+        let warning_height = message_area.height.min(5);
+        let warning = vec![
+            Line::from(Span::styled(
+                " This folder is not a git repository.",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "   Still works: agent and terminal sessions in the folder.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(Span::styled(
+                "   Needs git: worktrees, branches, diffs, GitHub issues and PRs.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(vec![
+                Span::styled("   Ctrl+G", Style::default().fg(theme.warning.to_color())),
+                Span::raw(" runs git init here, or "),
+                Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+                Span::raw(" on the last field to continue without git."),
+            ]),
+        ];
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(warning_height), Constraint::Min(0)])
+            .split(message_area);
+        frame.render_widget(Paragraph::new(warning).wrap(Wrap { trim: false }), split[0]);
+        message_area = split[1];
+    }
     if let Some(message) = message {
+        let style = if message.starts_with("Error") || message.contains("failed") {
+            Style::default().fg(theme.danger.to_color())
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
         frame.render_widget(
             Paragraph::new(message)
-                .style(Style::default().fg(theme.danger.to_color()))
+                .style(style)
                 .wrap(Wrap { trim: false }),
-            chunks[3],
+            message_area,
         );
     }
 
@@ -139,6 +176,13 @@ pub fn draw_create_project_dialog(
             hints.push(Span::raw(" choose harness"));
         }
         CreateProjectStep::Name => {}
+    }
+    if state.path_is_git == Some(false) {
+        hints.push(Span::styled(
+            "  Ctrl+G",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hints.push(Span::raw(" git init"));
     }
     let hints = Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false });
     frame.render_widget(hints, chunks[4]);

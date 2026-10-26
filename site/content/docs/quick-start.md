@@ -14,7 +14,7 @@ weight = 20
    each selected CLI is installed. You can reopen this setup later with `A`.
 
 3. Press `N` to add a project, then enter its name and directory. The
-   directory may be a git repository or an ordinary folder.
+   directory may be a git repository or an ordinary folder. A plain folder gets a warning and a `Ctrl+G` shortcut to run `git init`, and shows a `[no git]` tag; worktrees, diffs, issues and PRs need git.
 
 4. Press `n` to create a feature. Choose a branch name, agent, permission
    mode, and whether to use the guided plan interview. The feature starts

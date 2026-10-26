@@ -1202,9 +1202,9 @@ fn draw_menu_rows(
         .max()
         .unwrap_or(24)
         .max(title.chars().count());
-    let max_width = content_area.width.saturating_sub(2).max(30);
+    let max_width = content_area.width.saturating_sub(2).max(1);
     // +2 borders, +1 right padding.
-    let width = ((natural + 3) as u16).clamp(30, max_width);
+    let width = ((natural + 3) as u16).clamp(30.min(max_width), max_width);
     let inner_width = width.saturating_sub(3) as usize;
     let desc_width = inner_width.saturating_sub(MENU_KEY_COL + MENU_GAP).max(8);
 

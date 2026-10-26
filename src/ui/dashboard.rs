@@ -16,6 +16,7 @@ const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("a", "Local commands"),
     ("A", "Manage harnesses"),
     ("c", "Config wizard"),
+    ("m", "Compact review memory"),
     ("h", "Bookmarks"),
     ("H", "Bookmark current session"),
     ("M", "Remove bookmark"),

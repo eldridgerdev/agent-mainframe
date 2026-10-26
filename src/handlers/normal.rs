@@ -439,6 +439,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') => {
             app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
         }
+        KeyCode::Char('A') => {
+            app.open_harness_setup(false);
+        }
         KeyCode::Char('c') => {
             app.start_config_wizard();
         }

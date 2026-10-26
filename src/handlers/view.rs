@@ -261,7 +261,11 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 }
 
 fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
-    if app.handle_leader_menu_nav(&key) {
+    // A configured next/prev binding on a scroll key must stay reachable.
+    let bound = matches!(key.code, KeyCode::Char(c)
+        if app.active_extension.keybindings.get("next_feature") == Some(&c)
+            || app.active_extension.keybindings.get("prev_feature") == Some(&c));
+    if !bound && app.handle_leader_menu_nav(&key) {
         return Ok(());
     }
     app.deactivate_leader();

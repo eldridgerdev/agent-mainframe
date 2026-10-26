@@ -161,7 +161,7 @@ fn draw_view_pane(
             .copied(),
     );
 
-    super::pane::draw_with_lines(
+    let leader_max = super::pane::draw_with_lines(
         frame,
         view,
         &app.pane_content,
@@ -174,7 +174,9 @@ fn draw_view_pane(
         next_prev_feature,
         &app.throbber_state,
         &app.theme,
+        app.leader_scroll,
     );
+    app.leader_max_scroll.set(leader_max);
 }
 
 fn draw_view_context_bar(
@@ -792,13 +794,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     super::status::draw(frame, app, chunks[2]);
 
     if app.leader_active {
-        super::pane::draw_command_menu(
+        let max = super::pane::draw_command_menu(
             frame,
             frame.area(),
             " Ctrl+Space commands ",
             DASHBOARD_LEADER_COMMANDS,
             &app.theme,
+            app.leader_scroll,
         );
+        app.leader_max_scroll.set(max);
     }
 
     if let AppMode::ModelAnalysis(state) = &app.mode {

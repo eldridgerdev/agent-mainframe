@@ -144,16 +144,16 @@ and `c …` are partly or wholly hidden, descriptions are truncated ("Diff viewe
 hint. A taller terminal (50 rows) did not help. Arrow keys and `j` close it and
 leak through to the agent.
 
-- [ ] Find why the box height is capped (`draw_leader_menu` in `ui/pane.rs`,
+- [x] Find why the box height is capped (`draw_leader_menu` in `ui/pane.rs`,
       `LEADER_COMMANDS`) and size it to content, bounded by the terminal.
-- [ ] If it can't fit, make it scrollable with `j/k`/arrows and show a
+- [x] If it can't fit, make it scrollable with `j/k`/arrows and show a
       "more ▼" indicator and a bottom border.
-- [ ] Wrap or shorten descriptions instead of cutting mid-word.
-- [ ] Group entries (sessions, review, plan, settings) with dim headings, so ~35
+- [x] Wrap or shorten descriptions instead of cutting mid-word.
+- [x] Group entries (sessions, review, plan, settings) with dim headings, so ~35
       single keys are scannable.
-- [ ] Unrecognised keys: show "no command on `j`" and keep the menu open (or close
+- [x] Unrecognised keys: show "no command on `j`" and keep the menu open (or close
       it **without** forwarding the key to the agent).
-- [ ] Render tests at 80×24, 120×40 and 120×50: last `LEADER_COMMANDS` entry is
+- [x] Render tests at 80×24, 120×40 and 120×50: last `LEADER_COMMANDS` entry is
       visible or reachable by scroll; no truncated descriptions.
 
 ## Epic 6 — Wizard consistency (P1)

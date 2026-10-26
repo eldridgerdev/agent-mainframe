@@ -1020,6 +1020,10 @@ pub struct App {
     pub viewport_total_rows: u16,
     pub tmux_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
+    /// Line offset into the Ctrl+Space menu when it is taller than the pane.
+    pub leader_scroll: usize,
+    /// Largest useful `leader_scroll` as of the last draw (draw is `&App`).
+    pub leader_max_scroll: std::cell::Cell<usize>,
     pub leader_activated_at: Option<Instant>,
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
@@ -1514,6 +1518,7 @@ impl App {
         std::mem::discriminant(&self.selection).hash(&mut hasher);
         self.should_quit.hash(&mut hasher);
         self.leader_active.hash(&mut hasher);
+        self.leader_scroll.hash(&mut hasher);
         self.message.hash(&mut hasher);
         self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
@@ -2615,6 +2620,8 @@ impl App {
             viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
+            leader_scroll: 0,
+            leader_max_scroll: std::cell::Cell::new(0),
             leader_activated_at: None,
             last_view_activity_at: None,
             view_input_batch: None,
@@ -2888,6 +2895,8 @@ impl App {
             viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
+            leader_scroll: 0,
+            leader_max_scroll: std::cell::Cell::new(0),
             leader_activated_at: None,
             last_view_activity_at: None,
             view_input_batch: None,

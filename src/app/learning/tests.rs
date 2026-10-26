@@ -4451,7 +4451,7 @@ fn branch_changes_on_a_single_branch_repo_lists_uncommitted_work() {
         .filter_map(|entry| entry.path())
         .collect();
     assert_eq!(paths, ["README.md"]);
-    let note = state.error.as_deref().unwrap_or_default();
+    let note = state.notice.as_deref().unwrap_or_default();
     assert!(note.contains("No base branch found"), "{note}");
-    assert!(!note.contains("Couldn't list"), "{note}");
+    assert!(state.error.is_none(), "{:?}", state.error);
 }

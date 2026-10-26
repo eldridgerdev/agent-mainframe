@@ -1128,6 +1128,21 @@ impl PromptOverridesState {
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
+    /// Filter typed after `/`; rows that don't match are hidden.
+    pub query: String,
+    /// `/` was pressed and keys are being typed into `query`.
+    pub searching: bool,
+}
+
+impl HelpState {
+    pub fn new(from_view: Option<ViewState>) -> Self {
+        Self {
+            from_view,
+            scroll_offset: 0,
+            query: String::new(),
+            searching: false,
+        }
+    }
 }
 
 /// A search-as-you-type picker over the workspace's agent skills, launched

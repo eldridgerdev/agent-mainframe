@@ -4502,6 +4502,7 @@ mod tests {
                 pr_review_context: None,
             },
             CreateFeatureRequest {
+                no_start: false,
                 initial_prompt: None,
                 submit_prompt: false,
                 project_name: "demo".into(),

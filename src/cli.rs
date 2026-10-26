@@ -254,6 +254,7 @@ Request JSON (all fields optional unless marked required):
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
     \"plan_mode\":       bool    default false
+    \"no_start\":        bool    default false
     \"create_terminal\": bool    default false
     \"use_worktree\":    bool | null   null = project default
     \"enable_chrome\":   bool    default false
@@ -331,6 +332,9 @@ enum AutomationCommands {
         /// Override the JSON payload and perform validation only.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Create the feature without starting live sessions.
+        #[arg(long)]
+        no_start: bool,
         /// Timeout in milliseconds while waiting for AMF to reply.
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
@@ -962,6 +966,7 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
         AutomationCommands::CreateFeature {
             file,
             dry_run,
+            no_start,
             timeout_ms,
         } => {
             let payload = read_json_input(file.as_ref())?;
@@ -970,6 +975,8 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             if dry_run {
                 request.dry_run = true;
             }
+
+            request.no_start |= no_start;
 
             let socket = ipc::socket_path();
             let outbound = serde_json::to_string(&request.ipc_payload())?;

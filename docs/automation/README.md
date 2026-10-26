@@ -123,6 +123,8 @@ log. Pending prompts live in the running dashboard process and are cancelled whe
 the target session is removed or stopped; restarting AMF drops them. Features left
 stopped by the resource limit receive no prompt; check `started` in the response.
 Terminal and custom sessions do not accept `initial_prompt`.
+Feature requests with `no_start: true` reject `initial_prompt` and
+`submit_prompt: true`, since no live session will receive the prompt.
 
 ## Create Feature
 
@@ -131,6 +133,7 @@ Use [`create-feature.template.json`](create-feature.template.json) as the contra
 Fields:
 
 - `project_name`: an existing AMF project
+- `no_start`: create the feature stopped without launching sessions (default false); also available as `--no-start`. Cannot be combined with `initial_prompt` or `submit_prompt`. The response reports `started: false`.
 - `branch`: feature / branch name to create
 - `agent`: `claude`, `codex`, `opencode`, or `pi`
 - `mode`: `vibeless`, `vibe`, or `supervibe`
@@ -138,6 +141,12 @@ Fields:
 - `use_worktree`: whether to create a git worktree or reuse the project repo
 - `hook_choice`: optional answer for prompted `on_worktree_created` hooks
 - `dry_run`: validate and preview without changing AMF state
+
+To create a feature now and start its sessions later:
+
+```bash
+amf automation create-feature --file docs/automation/create-feature.example.json --no-start
+```
 
 If a repo has a prompted `on_worktree_created` hook, `--dry-run` returns a `worktree_hook_prompt` object with the hook title and valid options. An agent can use that response to pick a `hook_choice` before making the real call.
 

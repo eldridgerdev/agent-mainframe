@@ -147,6 +147,8 @@ pub struct CreateSessionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct CreateFeatureRequest {
+    /// Create the feature stopped, without launching sessions.
+    pub no_start: bool,
     pub project_name: String,
     pub branch: String,
     pub agent: AgentKind,
@@ -167,6 +169,7 @@ impl CreateFeatureRequest {
         serde_json::json!({
             "type": AUTOMATION_REQUEST_TYPE,
             "action": CREATE_FEATURE_ACTION,
+            "no_start": self.no_start,
             "project_name": self.project_name,
             "branch": self.branch,
             "agent": self.agent,
@@ -408,6 +411,14 @@ pub fn automation_error_response(action: &str, error: impl Into<String>) -> serd
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_no_start_defaults_off_and_survives_ipc() {
+        let default: CreateFeatureRequest = serde_json::from_str("{}").unwrap();
+        assert!(!default.no_start);
+        let request: CreateFeatureRequest = serde_json::from_str(r#"{"no_start": true}"#).unwrap();
+        assert_eq!(request.ipc_payload()["no_start"], true);
+    }
 
     #[test]
     fn initial_prompt_and_submission_survive_cli_ipc_requests() {

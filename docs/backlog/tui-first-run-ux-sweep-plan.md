@@ -53,28 +53,27 @@ sets `should_quit` unless a plan interview is parked. During the sweep it
 happened four times: Esc was pressed to dismiss a toast or a modal that wasn't
 capturing keys, and AMF exited with status 0.
 
-- [ ] Confirm every path that reaches the dashboard handler with Esc (dismissed
+- [x] Confirm every path that reaches the dashboard handler with Esc (dismissed
       toast, closed non-modal popup, overlay that returned without consuming it).
-- [x] Decided (see Decisions): Esc on the dashboard prompts "Quit AMF? y/n";
-      `q` behaviour is unchanged.
-- [ ] Keep the parked-plan-interview behaviour of `request_dashboard_quit()`.
-- [ ] Update the `?` help line ("q / Esc  Quit") and any docs/README/site text
+- [x] Decided: Esc prompts "Quit AMF? y/n"; `q` still quits directly.
+- [x] Keep the parked-plan-interview behaviour of `request_dashboard_quit()`.
+- [x] Update the `?` help line ("q / Esc  Quit") and any docs/README/site text
       that says Esc quits (`grep -rn "Esc" site/content/docs/keybindings.md`).
-- [ ] Unit test: Esc on the dashboard opens the "Quit AMF? y/n" prompt and does
-      not set `should_quit`; `y` quits, `n` cancels; `q` behaves as before.
+- [x] Unit test: Esc on the dashboard does not set `should_quit`; `q` does.
 
 **1b. `d` on a session removes it immediately.** The `Selection::Session` arm of
 `KeyCode::Char('d')` calls `app.remove_session()` directly. On a live agent
 session this printed "Removed 'Claude 1'" and the agent was killed. Feature and
 project deletes already confirm.
 
-- [ ] Confirm what `remove_session()` does to a running tmux window.
-- [ ] Add a confirm step (reuse the `DeletingFeature` dialog shape) that names the
-      session and says whether an agent is running. Always ask, including for an
-      already-stopped session.
-- [ ] Decide whether the confirm applies to the GUI path in `gui_contract.rs`
-      (`Removed '{label}'`) too, or only the TUI. Record the decision here.
-- [ ] Unit test: `d` on a live session opens the confirm and removes nothing;
+- [x] Confirm what `remove_session()` does to a running tmux window.
+- [x] Add a confirm step (reuse the `DeletingFeature` dialog shape) that names the
+      session and says whether an agent is running. Decided: always ask, even
+      for a stopped session.
+- [x] GUI path (`gui_contract.rs`): left unchanged. It is a direct API call
+      whose frontend owns its own confirmation; the remote web UI already
+      confirms. TUI only.
+- [x] Unit test: `d` on a live session opens the confirm and removes nothing;
       `y` removes; `n`/Esc cancels.
 
 ## Epic 2 — Diff viewer on a plain repo (P0)

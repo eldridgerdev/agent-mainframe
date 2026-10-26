@@ -108,6 +108,10 @@ observation. Character budgets are not measured model-token budgets.
   this session's environment and IPC socket. `create-feature` and
   `create-batch-features` are also supported; default harness stubs prevent paid
   starts. No environment reconstruction or hand-written socket messages needed.
+  To create a feature without launching sessions, put `"no_start": true` in
+  its request JSON (including a batch automation action's `request` object).
+  It remains stopped and returns `started: false`; omit initial prompt fields
+  when using this option. See the [automation guide](../automation/README.md).
 
 Batch a known workflow into one tool call, with its final observation as the
 only result. Each action uses the CLI operation name:

@@ -26,6 +26,14 @@ are tagged.
 
 ### Changed
 
+- **Cleaner errors and toasts in the terminal UI.** Errors no longer read
+  "Error: Error: ...", messages that already say what to do drop the generic
+  "Check debug log" tail, and the rest now say "Press D for the debug log".
+  Toasts stack above the status bar instead of over it, and at most three
+  show at once. The `S` hint on a project explains what to select.
+- **Esc and `d` no longer act instantly on the dashboard.** Esc now asks
+  "Quit AMF?" (`q` still quits directly), and `d` on a session asks before
+  removing it, saying whether an agent is running. No migration is required.
 - **Easier-to-scan projects sidebar in the desktop app.** A filter box above
   the project tree (press `/` to jump to it) narrows the tree to matching
   projects and features, highlights the match, and opens the first result on
@@ -54,6 +62,15 @@ are tagged.
 - New and restarted individual sessions now resize to the current terminal
   viewport before opening or launching their program, reducing small panes
   and cramped startup output when adding terminals, editors, or agents.
+- **Diffs work in a repository with only one branch.** In a repo on its only
+  branch with no remote (for example a fresh `git init -b main`), the diff
+  viewer, Final Review and Learning Mode's branch-changes list now show your
+  staged, unstaged and untracked changes against `HEAD` instead of failing with
+  "Could not determine a base branch". The viewer header reads
+  "vs HEAD (no base branch found)" and the body says to press `b` to choose a
+  base ref. Choose Diff Scope explains in one line why it has no commits
+  instead of printing the raw git error. A branch that shares no history with
+  an existing base branch is still reported as an error.
 
 ## [v0.50.0] - 2026-10-19
 

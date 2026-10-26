@@ -366,6 +366,7 @@ mod tests {
             branch: "feature".into(),
             base_ref: "main".into(),
             base_commit: "abc123".into(),
+            no_base_branch: false,
             files,
             total_additions: 0,
             total_deletions: 0,

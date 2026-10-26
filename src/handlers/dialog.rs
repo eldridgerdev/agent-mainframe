@@ -418,6 +418,34 @@ pub fn handle_delete_project_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_confirm_quit_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('y') => {
+            app.mode = AppMode::Normal;
+            app.request_dashboard_quit();
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_confirm_remove_session_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('y') => {
+            app.mode = AppMode::Normal;
+            app.remove_session()?;
+        }
+        KeyCode::Char('n') | KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('y') => {

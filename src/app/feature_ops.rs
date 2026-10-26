@@ -2057,7 +2057,7 @@ impl App {
             self.report_logged_error(
                 "feature_delete",
                 format!(
-                    "Error deleting feature '{}': {}",
+                    "Could not delete feature '{}': {}",
                     feature_name,
                     error_msg.unwrap_or_else(|| "Unknown error".to_string())
                 ),
@@ -2214,7 +2214,7 @@ impl App {
                     self.report_logged_error(
                         "feature_delete",
                         format!(
-                            "Error deleting feature '{}': {}",
+                            "Could not delete feature '{}': {}",
                             deletion.feature_name,
                             deletion
                                 .error

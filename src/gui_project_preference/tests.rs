@@ -20,6 +20,9 @@ struct Fixture {
     /// Version probes for the offered choices, outside the GUI lock.
     probes: AtomicUsize,
     probed_while_locked: AtomicBool,
+    /// Probes run on concurrent threads; each one's `try_lock` would hold the
+    /// GUI lock just long enough to make a sibling's check look "locked".
+    lock_check: Mutex<()>,
     conflict_at: Arc<AtomicUsize>,
 }
 impl Drop for Fixture {
@@ -39,8 +42,11 @@ impl Fixture {
     }
     fn probe(&self, agent: &AgentKind) -> bool {
         self.probes.fetch_add(1, Ordering::SeqCst);
-        if self.gui.try_lock().is_err() {
-            self.probed_while_locked.store(true, Ordering::SeqCst);
+        {
+            let _one_at_a_time = self.lock_check.lock().unwrap();
+            if self.gui.try_lock().is_err() {
+                self.probed_while_locked.store(true, Ordering::SeqCst);
+            }
         }
         let index = AgentKind::ALL
             .iter()
@@ -134,6 +140,7 @@ fn fixture() -> Fixture {
         calls,
         probes: AtomicUsize::new(0),
         probed_while_locked: AtomicBool::new(false),
+        lock_check: Mutex::new(()),
         conflict_at,
     }
 }

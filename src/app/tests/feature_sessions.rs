@@ -858,7 +858,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -904,7 +904,7 @@ fn create_feature_default_remote_control_matches_availability() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -928,7 +928,7 @@ fn create_feature_default_remote_control_blocked_by_zai() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -1694,7 +1694,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -2322,7 +2322,7 @@ fn adding_session_start_failure_shows_error_toast() {
 
     assert_eq!(
         app.toasts.last().map(|toast| toast.message.as_str()),
-        Some("Error: tmux failed")
+        Some("tmux failed")
     );
     assert_eq!(
         app.store.projects[0].features[0].status,
@@ -3918,4 +3918,102 @@ fn feature_wizard_for_non_git_project_disables_the_worktree_choice() {
     state.step = crate::app::state::CreateFeatureStep::Worktree;
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Down).unwrap();
     assert!(matches!(&app.mode, AppMode::CreatingFeature(s) if !s.use_worktree));
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 40).unwrap();
+}
+
+fn dashboard_app_with_claude_session(window_live: bool) -> App {
+    dashboard_app_with_claude_session_kills(window_live, 0)
+}
+
+/// `kills` is how many tmux kills (session or window) the test expects.
+fn dashboard_app_with_claude_session_kills(window_live: bool, kills: usize) -> App {
+    let mut store = store_with_feature(ProjectStatus::Idle);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Claude 1".into());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(window_live);
+    tmux.expect_window_exists().return_const(window_live);
+    tmux.expect_kill_session()
+        .times(kills)
+        .returning(|_| Ok(()));
+    tmux.expect_kill_window().times(0).returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app
+}
+
+#[test]
+fn esc_on_dashboard_asks_before_quitting() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.should_quit);
+    assert!(matches!(app.mode, AppMode::ConfirmingQuit));
+}
+
+#[test]
+fn confirming_quit_with_y_quits() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn quit_confirm_is_cancelled_by_n_and_esc() {
+    for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+        let mut app = dashboard_app_with_claude_session(false);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, cancel);
+        assert!(!app.should_quit);
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+}
+
+#[test]
+fn q_on_dashboard_still_quits_directly() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn d_on_a_session_asks_and_removes_nothing() {
+    for live in [true, false] {
+        let mut app = dashboard_app_with_claude_session(live);
+        press(&mut app, KeyCode::Char('d'));
+        match &app.mode {
+            AppMode::ConfirmingRemoveSession(state) => {
+                assert_eq!(state.label, "Claude 1");
+                assert_eq!(state.agent_running, live);
+                assert_eq!(state.window_live, live);
+                assert_eq!(state.closes_tmux_session, live);
+            }
+            _ => panic!("expected the remove-session confirm"),
+        }
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+}
+
+#[test]
+fn confirming_session_removal_with_y_removes_it() {
+    // The only session: removing it closes the feature's tmux session.
+    let mut app = dashboard_app_with_claude_session_kills(true, 1);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn session_removal_confirm_is_cancelled_by_n_and_esc() {
+    for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+        let mut app = dashboard_app_with_claude_session(true);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, cancel);
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+        assert!(!app.should_quit);
+    }
 }

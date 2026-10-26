@@ -51,8 +51,18 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
     };
     let key = remapped_key;
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             app.request_dashboard_quit();
+        }
+        KeyCode::Esc => {
+            // Esc is how people dismiss toasts and popups; quitting on it
+            // loses the whole session, so ask first. A parked plan interview
+            // already has its own abort gate, which `q` reopens; Esc does too.
+            if app.paused_plan_interview.is_some() {
+                app.request_dashboard_quit();
+            } else {
+                app.mode = AppMode::ConfirmingQuit;
+            }
         }
         KeyCode::Char('N') => {
             app.start_create_project();
@@ -139,7 +149,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
             Selection::Session(_, _, _) => {
-                app.remove_session()?;
+                app.open_remove_session_confirm();
             }
         },
         KeyCode::Char('s') => {
@@ -192,7 +202,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if is_codex.unwrap_or(false) {
                 app.pick_codex_session();
             } else {
-                app.push_toast_warning("S only works for opencode, claude, or codex sessions");
+                app.push_toast_warning("S opens saved transcripts: select a claude, codex or opencode feature or session first");
             }
         }
         KeyCode::Char('u') => match &app.selection {

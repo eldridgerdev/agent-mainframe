@@ -480,7 +480,15 @@ pub struct DiffPickerState {
     pub commits: Vec<crate::diff::DiffCommit>,
     /// Zero is "all current changes"; commit rows start at one.
     pub selected: usize,
+    /// Why commits are unavailable, in one line (the raw git error goes to
+    /// the debug log). `None` when commits listed normally.
     pub error: Option<String>,
+    /// No base branch resolved, so "All current changes" is the working tree
+    /// against `HEAD` and there are no branch commits to list.
+    pub no_base_branch: bool,
+    /// Listing failed because no base branch could be determined, the one
+    /// failure that choosing a base ref with `b` can fix.
+    pub base_unresolved: bool,
 }
 
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
@@ -1783,6 +1791,10 @@ pub enum AppMode {
     ModelAnalysis(Box<super::model_analysis::State>),
     DeletingProject(String),
     DeletingFeature(String, String),
+    /// Dashboard `Esc`: ask before quitting AMF.
+    ConfirmingQuit,
+    /// Dashboard `d` on a session: ask before removing it for good.
+    ConfirmingRemoveSession(RemoveSessionConfirm),
     DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
     Help(HelpState),
@@ -2591,6 +2603,18 @@ impl RunningHookState {
     pub fn key(&self) -> String {
         format!("{}/{}", self.workdir.display(), self.script)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveSessionConfirm {
+    pub label: String,
+    /// A live agent window exists, so removing kills a running agent.
+    pub agent_running: bool,
+    /// The session's tmux window is live (agent or not: terminals, dev
+    /// servers and watchers too), so removing kills its process.
+    pub window_live: bool,
+    /// Removing the feature's only session kills the whole tmux session.
+    pub closes_tmux_session: bool,
 }
 
 pub struct DeletingFeatureState {

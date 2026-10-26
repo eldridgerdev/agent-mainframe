@@ -31,7 +31,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("B", "Create batch features"),
         ("O", "Open AMF settings project"),
         ("A", "Manage agent harnesses"),
-        ("d", "Delete project/feature/session"),
+        ("d", "Delete project/feature/session (asks first)"),
         ("D", "View debug log"),
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
@@ -75,7 +75,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ),
         ("Ctrl+Space m", "Compact review memory"),
         ("?", "Toggle this help"),
-        ("q / Esc", "Quit"),
+        ("q", "Quit"),
+        ("Esc", "Ask to quit (y/n)"),
     ];
 
     let mut lines: Vec<Line> = vec![

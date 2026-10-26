@@ -63,6 +63,12 @@ doc always says exactly what remains.
 
 ## Index
 
+- [TUI first-run UX sweep](tui-first-run-ux-sweep-plan.md) — _Ready._ A
+  new-user sweep of the TUI found four P0 problems (Esc on the dashboard quits
+  AMF unconfirmed, `d` removes a live session unconfirmed, the diff viewer
+  fails on a single-branch repo, non-git projects are accepted silently) plus
+  leader-menu clipping, inconsistent wizards, a flat 70-key help and a set of
+  polish items. Nine epics with checklists, priorities and parallelization.
 - [Docs site feature coverage](docs-site-coverage-plan.md) — _All 7 epics
   shipped._ Audit of `site/content/docs/` against `src/` and `CLAUDE.md`
   turned up shipped features with no site coverage: two (`amf doctor`, the

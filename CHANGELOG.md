@@ -26,6 +26,13 @@ are tagged.
 
 ### Changed
 
+- **The Ctrl+Space menu no longer clips.** It sizes to its content, groups
+  commands under Sessions, Bookmarks, Agent, Review & plan and Remote & help,
+  wraps long descriptions at word boundaries, and keeps a bottom border. When
+  the terminal is too short, `j`/`k`, the arrow keys, PageUp/PageDown and
+  Home/End scroll it, with a "more" hint. A key with no command now shows "No
+  command on `x`" and leaves the menu open instead of closing it; Esc closes
+  it. Nothing is forwarded to the agent. No migration is required.
 - **Cleaner errors and toasts in the terminal UI.** Errors no longer read
   "Error: Error: ...", messages that already say what to do drop the generic
   "Check debug log" tail, and the rest now say "Press D for the debug log".

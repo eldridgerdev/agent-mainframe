@@ -261,6 +261,13 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 }
 
 fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
+    // A configured next/prev binding on a scroll key must stay reachable.
+    let bound = matches!(key.code, KeyCode::Char(c)
+        if app.active_extension.keybindings.get("next_feature") == Some(&c)
+            || app.active_extension.keybindings.get("prev_feature") == Some(&c));
+    if !bound && app.handle_leader_menu_nav(&key) {
+        return Ok(());
+    }
     app.deactivate_leader();
 
     // Next/prev feature navigation has no default binding. Dispatch it only
@@ -491,7 +498,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('W') => {
             app.open_ai_review_from_view();
         }
-        _ => {}
+        _ => app.leader_unrecognised(&key),
     }
 
     Ok(())
@@ -1298,6 +1305,36 @@ mod tests {
             AppMode::Compose(state) => assert_eq!(state.editor.text(), "hi"),
             _ => panic!("expected Compose mode"),
         }
+    }
+
+    #[test]
+    fn leader_menu_unrecognised_key_stays_open_and_scroll_keys_do_not_close_it() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        app.leader_max_scroll.set(5);
+        handle_view_key(&mut app, key(KeyCode::Char('j')), 20).unwrap();
+        assert!(app.leader_active);
+        assert_eq!(app.leader_scroll, 1);
+        handle_view_key(&mut app, key(KeyCode::Down), 20).unwrap();
+        assert_eq!(app.leader_scroll, 2);
+        handle_view_key(&mut app, key(KeyCode::Up), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Char('k')), 20).unwrap();
+        assert_eq!(app.leader_scroll, 0);
+        handle_view_key(&mut app, key(KeyCode::End), 20).unwrap();
+        assert_eq!(app.leader_scroll, 5);
+
+        // A key with no command is not forwarded and the menu stays open.
+        handle_view_key(&mut app, key(KeyCode::Char('Z')), 20).unwrap();
+        assert!(app.leader_active);
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.leader_scroll, 5);
+
+        // Esc dismisses without running anything.
+        handle_view_key(&mut app, key(KeyCode::Esc), 20).unwrap();
+        assert!(!app.leader_active);
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
     }
 
     #[test]

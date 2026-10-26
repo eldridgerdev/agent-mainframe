@@ -412,6 +412,9 @@ pub(crate) fn default_key_for_action(action: &str) -> Option<char> {
 }
 
 fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.handle_leader_menu_nav(&key) {
+        return Ok(());
+    }
     app.deactivate_leader();
 
     match key.code {
@@ -435,6 +438,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('a') => {
             app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
+        }
+        KeyCode::Char('A') => {
+            app.open_harness_setup(false);
         }
         KeyCode::Char('c') => {
             app.start_config_wizard();
@@ -464,7 +470,7 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('Q') => {
             app.start_pairing();
         }
-        _ => {}
+        _ => app.leader_unrecognised(&key),
     }
 
     Ok(())

@@ -26,6 +26,24 @@ are tagged.
 
 ### Changed
 
+- **Footers and forms stay readable at 80 and 120 columns.** The compose
+  bar keeps whole hints (`Enter send`, `Esc close`, `Ctrl+T vim`) and drops the
+  least important ones when the pane is narrow instead of cutting one mid-word.
+  The session switcher's footer wraps (`s new`, `r rename`), and Learning Mode
+  shortens "Tour this whole project" to fit its list. The New Feature form is
+  taller than an 80x24 terminal, so it now scrolls to follow the focused field,
+  with a marker on the border when more is above or below. No migration is
+  required.
+- **Tidier list screens.** Syntax Parsers (`p`) no longer repeats an
+  "AVAILABLE" badge on every row and titles itself "N/16 installed". Headless
+  Prompt Overrides (`E`) lists only prompts you have overridden by default; press
+  `a` to show every prompt. It also drops the repeated "built-in" tag and `···`
+  filler, and hides the prompt id column when it would be clipped. `O` explains
+  the "amf-settings" project it adds. No migration is required.
+- **Plan interview steps read as sections.** The header now says "Step 2/7
+  Scope" (the question's section) instead of "Built-in", and the last question
+  is no longer numbered the same as the closing "Optional AI" step. No
+  migration is required.
 - **The Ctrl+Space menu no longer clips.** It sizes to its content, groups
   commands under Sessions, Bookmarks, Agent, Review & plan and Remote & help,
   wraps long descriptions at word boundaries, and keeps a bottom border. When

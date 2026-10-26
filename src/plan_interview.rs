@@ -1741,8 +1741,14 @@ impl PlanQuestion {
     }
 
     /// A short human section name for the progress header, derived from the
-    /// question's stable slug (`users-entry-points` -> `Users entry points`).
+    /// question's stable slug (`definition-of-done` -> `Definition of done`).
     pub fn section_name(&self) -> String {
+        match self.id.as_str() {
+            "users-entry-points" => return "Users and entry points".into(),
+            "data-persistence" => return "Data and persistence".into(),
+            "risks-unknowns" => return "Risks and unknowns".into(),
+            _ => {}
+        }
         let spaced = self.id.replace(['-', '_'], " ");
         let mut chars = spaced.trim().chars();
         match chars.next() {
@@ -2083,9 +2089,9 @@ mod tests {
             names,
             [
                 "Scope",
-                "Users entry points",
-                "Data persistence",
-                "Risks unknowns",
+                "Users and entry points",
+                "Data and persistence",
+                "Risks and unknowns",
                 "Definition of done"
             ]
         );

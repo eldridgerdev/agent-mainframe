@@ -878,15 +878,16 @@ fn draw_create_feature_branch_mode(
             .min(form_height.saturating_sub(viewport));
         for row in 0..viewport.min(form_height) {
             for col in 0..inner.width {
-                if let Some(cell) = scratch.cell((col, row + offset)) {
-                    if let Some(dst) = frame_buf_cell(frame, inner.x + col, inner.y + row) {
-                        *dst = cell.clone();
-                    }
+                if let Some(cell) = scratch.cell((col, row + offset))
+                    && let Some(dst) = frame_buf_cell(frame, inner.x + col, inner.y + row)
+                {
+                    *dst = cell.clone();
                 }
             }
         }
+        // Drawn on the right border, so it never covers form text.
         let more = |frame: &mut Frame, y: u16, symbol: &str| {
-            if let Some(cell) = frame_buf_cell(frame, inner.x + inner.width - 1, y) {
+            if let Some(cell) = frame_buf_cell(frame, inner.x + inner.width, y) {
                 cell.set_symbol(symbol)
                     .set_style(Style::default().fg(theme.warning.to_color()));
             }

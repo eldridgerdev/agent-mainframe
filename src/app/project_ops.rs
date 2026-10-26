@@ -116,10 +116,8 @@ impl App {
         self.selection = Selection::Project(pi);
         // `O` registers the config folder as an ordinary project so an agent
         // can edit it; say so, since a new tree row is otherwise unexplained.
-        self.message = Some(format!(
-            "Added 'amf-settings' project: your AMF config folder ({}). Press d on it to remove.",
-            settings_dir.display()
-        ));
+        self.message =
+            Some("Added 'amf-settings' (your AMF config folder). Press d on it to remove.".into());
 
         Ok(())
     }

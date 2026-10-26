@@ -59,7 +59,7 @@ fn source_badge(theme: &Theme, source: PromptSource) -> Span<'static> {
         PromptSource::Project => ("project", theme.success.to_color()),
         PromptSource::Global => ("global", theme.warning.to_color()),
     };
-    Span::styled(format!("{text:>8}"), Style::default().fg(color))
+    Span::styled(format!("{text:>7}"), Style::default().fg(color))
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme: &Theme) {
@@ -75,12 +75,12 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
     let visible = state.visible_indices();
     let header = if state.show_all {
         format!(
-            " All {} prompts · [F]eature [P]roject [G]lobal override present",
+            " All {} prompts · F feature, P project, G global override",
             state.rows.len()
         )
     } else {
         format!(
-            " {} of {} prompts overridden · [F]eature [P]roject [G]lobal override present",
+            " {} of {} overridden · F feature, P project, G global override",
             visible.len(),
             state.rows.len()
         )
@@ -111,6 +111,15 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
         .map(|r| r.id.spec().title.chars().count())
         .max()
         .unwrap_or(30);
+    // The stable id is a second column only when it fits whole; a clipped id
+    // is worse than none, and the title already names the prompt.
+    let id_width = state
+        .rows
+        .iter()
+        .map(|r| r.id.as_str().chars().count())
+        .max()
+        .unwrap_or(0);
+    let show_id = chunks[1].width as usize >= 2 + 7 + 2 + title_width + 7 + id_width;
     let start = state.scroll.min(visible.len().saturating_sub(1));
     let rows: Vec<Line> = visible
         .iter()
@@ -141,8 +150,15 @@ fn draw_list(frame: &mut Frame, area: Rect, state: &PromptOverridesState, theme:
                     format!("{:<width$}", row.id.spec().title, width = title_width),
                     name_style,
                 ),
-                muted(theme, &format!("  {flags}  ")),
-                muted(theme, row.id.as_str()),
+                muted(theme, &format!("  {flags}")),
+                muted(
+                    theme,
+                    &if show_id {
+                        format!("  {}", row.id.as_str())
+                    } else {
+                        String::new()
+                    },
+                ),
             ])
         })
         .collect();

@@ -360,7 +360,7 @@ pub fn draw_syntax_language_picker(
             Style::default().fg(theme.text_muted.to_color()),
         )))
     };
-    frame.render_widget(status_line, chunks[0]);
+    frame.render_widget(status_line.wrap(Wrap { trim: false }), chunks[0]);
 
     let items: Vec<ListItem> = state
         .languages
@@ -483,6 +483,7 @@ pub fn draw_syntax_language_picker(
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
         ]))
+        .wrap(Wrap { trim: false })
     };
     frame.render_widget(hints, chunks[2]);
 }

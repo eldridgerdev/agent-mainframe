@@ -2,6 +2,23 @@ use anyhow::Result;
 
 use super::*;
 
+/// One line for the scope picker explaining why branch commits are missing.
+fn diff_picker_error_summary(err: &anyhow::Error) -> String {
+    let message = err.to_string();
+    if message.starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX) {
+        "No base branch found for this one, so commits can't be listed; \
+         choose a base ref with b in the viewer."
+            .to_string()
+    } else if message.contains("not on a named branch") {
+        "Detached HEAD: commits are listed only on a named branch.".to_string()
+    } else {
+        format!(
+            "Commits unavailable: {}",
+            message.lines().next().unwrap_or_default()
+        )
+    }
+}
+
 impl App {
     pub fn preferred_diff_viewer_layout(&self) -> DiffViewerLayout {
         self.config.diff_viewer_layout.clone()
@@ -25,9 +42,26 @@ impl App {
             return Ok(());
         };
 
-        let (commits, error) = match crate::diff::list_diff_commits(&workdir) {
-            Ok(commits) => (commits, None),
-            Err(err) => (Vec::new(), Some(err.to_string())),
+        let listed = crate::diff::resolve_base_ref(&workdir, None).and_then(|base| {
+            crate::diff::list_diff_commits_since(&workdir, &base)
+                .map(|commits| (commits, base.no_base_branch))
+        });
+        let (commits, no_base_branch, error, base_unresolved) = match listed {
+            Ok((commits, no_base_branch)) => (commits, no_base_branch, None, false),
+            Err(err) => {
+                // The full git message is long and technical; the picker
+                // gets one line and the details stay in the debug log.
+                self.log_warn("diff", format!("could not list feature commits: {err:#}"));
+                let base_unresolved = err
+                    .to_string()
+                    .starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX);
+                (
+                    Vec::new(),
+                    false,
+                    Some(diff_picker_error_summary(&err)),
+                    base_unresolved,
+                )
+            }
         };
         self.mode = AppMode::DiffPicker(DiffPickerState {
             from_view: view,
@@ -35,6 +69,8 @@ impl App {
             commits,
             selected: 0,
             error,
+            no_base_branch,
+            base_unresolved,
         });
         Ok(())
     }
@@ -163,6 +199,7 @@ impl App {
                 state.branch = snapshot.branch;
                 state.base_ref = snapshot.base_ref;
                 state.base_commit = snapshot.base_commit;
+                state.no_base_branch = snapshot.no_base_branch;
                 state.error = None;
                 state.files = snapshot.files;
                 if state.review && !state.is_pr_review() {
@@ -187,6 +224,7 @@ impl App {
                 state.branch.clear();
                 state.base_ref.clear();
                 state.base_commit.clear();
+                state.no_base_branch = false;
                 state.files.clear();
                 state.selected_file = 0;
                 state.patch_scroll = 0;
@@ -225,10 +263,13 @@ impl App {
         if let AppMode::DiffViewer(state) = &mut self.mode
             && matches!(&state.scope, DiffScope::CurrentChanges)
         {
-            state.base_ref_input = state
-                .override_base_ref
-                .clone()
-                .unwrap_or_else(|| state.base_ref.clone());
+            // A `HEAD` fallback is not a base the reviewer chose; start blank.
+            let resolved = if state.no_base_branch {
+                String::new()
+            } else {
+                state.base_ref.clone()
+            };
+            state.base_ref_input = state.override_base_ref.clone().unwrap_or(resolved);
             state.editing_base_ref = true;
         }
     }

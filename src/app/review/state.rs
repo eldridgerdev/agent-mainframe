@@ -577,6 +577,9 @@ pub struct DiffViewerState {
     pub branch: String,
     pub base_ref: String,
     pub base_commit: String,
+    /// The loaded current-changes diff fell back to `HEAD` because no base
+    /// branch resolved (`diff::ResolvedBase::no_base_branch`).
+    pub no_base_branch: bool,
     /// Reviewer-chosen base ref override. When set, the loader compares against
     /// this ref/commit instead of the auto-resolved base. Kept across refreshes.
     pub override_base_ref: Option<String>,
@@ -906,6 +909,7 @@ impl DiffViewerState {
             branch: String::new(),
             base_ref: String::new(),
             base_commit: String::new(),
+            no_base_branch: false,
             override_base_ref: None,
             editing_base_ref: false,
             base_ref_input: String::new(),

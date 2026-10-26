@@ -874,6 +874,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
             );
         }
+        AppMode::ConfirmingQuit => {
+            super::dialogs::draw_confirm_quit(frame, &app.theme);
+        }
+        AppMode::ConfirmingRemoveSession(state) => {
+            super::dialogs::draw_confirm_remove_session(frame, state, &app.theme);
+        }
         AppMode::BrowsingPath(state) => {
             super::dialogs::draw_browse_path_dialog(frame, state, &app.theme);
         }

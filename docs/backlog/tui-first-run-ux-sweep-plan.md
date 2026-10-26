@@ -53,27 +53,27 @@ sets `should_quit` unless a plan interview is parked. During the sweep it
 happened four times: Esc was pressed to dismiss a toast or a modal that wasn't
 capturing keys, and AMF exited with status 0.
 
-- [ ] Confirm every path that reaches the dashboard handler with Esc (dismissed
+- [x] Confirm every path that reaches the dashboard handler with Esc (dismissed
       toast, closed non-modal popup, overlay that returned without consuming it).
-- [ ] Decide: Esc becomes a no-op on the dashboard, **or** prompts
-      "Quit AMF? y/n". Default recommendation: Esc is a no-op, `q` still quits.
-- [ ] Keep the parked-plan-interview behaviour of `request_dashboard_quit()`.
-- [ ] Update the `?` help line ("q / Esc  Quit") and any docs/README/site text
+- [x] Decided: Esc prompts "Quit AMF? y/n"; `q` still quits directly.
+- [x] Keep the parked-plan-interview behaviour of `request_dashboard_quit()`.
+- [x] Update the `?` help line ("q / Esc  Quit") and any docs/README/site text
       that says Esc quits (`grep -rn "Esc" site/content/docs/keybindings.md`).
-- [ ] Unit test: Esc on the dashboard does not set `should_quit`; `q` does.
+- [x] Unit test: Esc on the dashboard does not set `should_quit`; `q` does.
 
 **1b. `d` on a session removes it immediately.** The `Selection::Session` arm of
 `KeyCode::Char('d')` calls `app.remove_session()` directly. On a live agent
 session this printed "Removed 'Claude 1'" and the agent was killed. Feature and
 project deletes already confirm.
 
-- [ ] Confirm what `remove_session()` does to a running tmux window.
-- [ ] Add a confirm step (reuse the `DeletingFeature` dialog shape) that names the
-      session and says whether an agent is running. Skip the prompt only for an
-      already-stopped session.
-- [ ] Decide whether the confirm applies to the GUI path in `gui_contract.rs`
-      (`Removed '{label}'`) too, or only the TUI. Record the decision here.
-- [ ] Unit test: `d` on a live session opens the confirm and removes nothing;
+- [x] Confirm what `remove_session()` does to a running tmux window.
+- [x] Add a confirm step (reuse the `DeletingFeature` dialog shape) that names the
+      session and says whether an agent is running. Decided: always ask, even
+      for a stopped session.
+- [x] GUI path (`gui_contract.rs`): left unchanged. It is a direct API call
+      whose frontend owns its own confirmation; the remote web UI already
+      confirms. TUI only.
+- [x] Unit test: `d` on a live session opens the confirm and removes nothing;
       `y` removes; `n`/Esc cancels.
 
 ## Epic 2 — Diff viewer on a plain repo (P0)
@@ -85,19 +85,19 @@ resolution). The viewer renders "Could not load current changes" with
 "(unknown branch) vs (no base)" and 0 files, even though the working tree has an
 uncommitted edit.
 
-- [ ] Reproduce with a fresh `git init -b main` repo, one commit, one edited file.
-- [ ] When no base branch resolves, fall back to `HEAD` as the base so staged,
+- [x] Reproduce with a fresh `git init -b main` repo, one commit, one edited file.
+- [x] When no base branch resolves, fall back to `HEAD` as the base so staged,
       unstaged and untracked changes still show, and label the header
       "vs HEAD (no base branch found)".
-- [ ] Keep the strict behaviour (and its message) for the case where a base is
+- [x] Keep the strict behaviour (and its message) for the case where a base is
       expected, e.g. a feature branch that has diverged from nothing.
-- [ ] Make the base-ref override discoverable: when resolution falls back or
+- [x] Make the base-ref override discoverable: when resolution falls back or
       fails, say "press `b` to choose a base ref" in the body, not only the footer.
-- [ ] Choose Diff Scope: stop printing the raw error under "0 commit(s)"; show
+- [x] Choose Diff Scope: stop printing the raw error under "0 commit(s)"; show
       a one-line explanation instead.
-- [ ] Tests in `diff.rs`: single-branch repo returns the working-tree diff; repo
+- [x] Tests in `diff.rs`: single-branch repo returns the working-tree diff; repo
       with `main` + feature branch is unchanged.
-- [ ] Check the Final Review viewer and Learning Mode's branch-changes scope for
+- [x] Check the Final Review viewer and Learning Mode's branch-changes scope for
       the same failure (both call `load_snapshot`).
 
 ## Epic 3 — Non-git projects (P0)
@@ -106,7 +106,7 @@ A folder that is not a git repository is accepted as a project without comment.
 `g` then fails with "Error: Error: Selected project is not a git repository"
 (`github.rs` `GithubRepositoryError::NotGitRepository`), and `S` showed a
 garbled error popup at the bottom of the screen. (The non-git state in the
-sweep was an accident of my fixture; the missing warning is the finding.)
+sweep was an artifact of the sweep's fixture; the missing warning is the finding.)
 
 - [ ] On project creation (`app/project_ops.rs`), detect "not a git repo" and warn
       in the dialog: what still works, what needs git (worktrees, diffs, issues,

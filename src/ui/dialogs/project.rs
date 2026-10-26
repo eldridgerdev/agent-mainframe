@@ -100,7 +100,13 @@ pub fn draw_create_project_dialog(
 
     let mut message_area = chunks[3];
     if state.path_is_git == Some(false) {
-        let warning_height = message_area.height.min(5);
+        // The message (git init result, errors) outranks the warning.
+        let message_height = message.map_or(0, |m| {
+            Paragraph::new(m.to_string())
+                .wrap(Wrap { trim: false })
+                .line_count(message_area.width) as u16
+        });
+        let warning_height = message_area.height.saturating_sub(message_height).min(5);
         let warning = vec![
             Line::from(Span::styled(
                 " This folder is not a git repository.",
@@ -131,7 +137,7 @@ pub fn draw_create_project_dialog(
         message_area = split[1];
     }
     if let Some(message) = message {
-        let style = if message.starts_with("Error") || message.contains("failed") {
+        let style = if message.starts_with("Error") || message.starts_with("git init failed") {
             Style::default().fg(theme.danger.to_color())
         } else {
             Style::default().fg(theme.text.to_color())

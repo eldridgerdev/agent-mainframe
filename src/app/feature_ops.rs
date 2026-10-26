@@ -333,9 +333,10 @@ impl App {
             return;
         }
 
-        // The stored flag, not a fresh probe: it is set at project creation
-        // and refreshed when a feature is created in a repo that gained git.
-        let project_is_git = self.selected_project().is_none_or(|project| project.is_git);
+        // The stored flag OR a fresh probe, so a `git init` run outside AMF
+        // unlocks worktrees without creating a feature first.
+        let project_is_git = self.selected_project().is_none_or(|project| project.is_git)
+            || self.worktree.repo_root(&project_repo).is_ok();
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);

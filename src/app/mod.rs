@@ -958,6 +958,9 @@ pub struct App {
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
+    /// Last path probed for git by the create-project dialog, so typing in
+    /// the Name field does not re-run `git rev-parse` for an unchanged path.
+    pub(crate) create_project_git_probe: Option<(PathBuf, Option<bool>)>,
     /// Set while an interface that saves review progress itself (and must
     /// report whether the save succeeded) drives the shared review actions, so
     /// their best-effort `persist_review_progress` does not write a second time.
@@ -2585,6 +2588,7 @@ impl App {
             db: Some(db),
             store_version: Some(store_version),
             precall_cleared: None,
+            create_project_git_probe: None,
             defer_review_progress_persist: false,
             precall_return: None,
             saved_config: config.clone(),
@@ -2850,6 +2854,7 @@ impl App {
             db: None,
             store_version: None,
             precall_cleared: None,
+            create_project_git_probe: None,
             defer_review_progress_persist: false,
             precall_return: None,
             saved_config: AppConfig::default(),
@@ -3741,7 +3746,14 @@ impl App {
             _ => return,
         };
         let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &preferred);
-        let path_is_git = self.probe_path_is_git(&path);
+        let path_is_git = match &self.create_project_git_probe {
+            Some((cached, result)) if *cached == path => *result,
+            _ => {
+                let result = self.probe_path_is_git(&path);
+                self.create_project_git_probe = Some((path.clone(), result));
+                result
+            }
+        };
         if let AppMode::CreatingProject(state) = &mut self.mode {
             state.agent = agent;
             state.agent_index = agent_index;

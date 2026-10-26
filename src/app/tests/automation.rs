@@ -65,6 +65,7 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
     );
 
     let request = CreateFeatureRequest {
+        no_start: false,
         initial_prompt: None,
         submit_prompt: false,
         project_name: "automation-project".to_string(),
@@ -122,6 +123,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
     };
 
     let request = CreateFeatureRequest {
+        no_start: false,
         initial_prompt: None,
         submit_prompt: false,
         project_name: "automation-project".to_string(),
@@ -157,6 +159,7 @@ fn create_feature_automation_rejects_codex_vibeless_mode() {
     );
 
     let request = CreateFeatureRequest {
+        no_start: false,
         initial_prompt: None,
         submit_prompt: false,
         project_name: "automation-project".to_string(),
@@ -272,6 +275,7 @@ fn create_feature_automation_creates_and_starts_feature() {
     app.store_path = store_file.path().to_path_buf();
 
     let request = CreateFeatureRequest {
+        no_start: false,
         initial_prompt: Some("Review this feature".into()),
         submit_prompt: false,
         project_name: "automation-project".to_string(),
@@ -804,4 +808,62 @@ fn custom_session_dry_run_skips_precheck_and_real_failure_creates_nothing() {
             .contains("23")
     );
     assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn create_feature_automation_no_start_creates_stopped_worktree_without_tmux() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let workdir = workspace.path().join("feature");
+    let expected = workdir.clone();
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_create()
+        .once()
+        .returning(move |_, _, _| Ok(expected.clone()));
+    let mut app = App::new_for_test(
+        store_with_empty_project(repo, true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    let request = CreateFeatureRequest {
+        project_name: "automation-project".into(),
+        branch: "later".into(),
+        use_worktree: Some(true),
+        no_start: true,
+        ..Default::default()
+    };
+    let response = app.create_feature_from_request(&request).unwrap();
+    assert!(!response.started);
+    assert_eq!(response.workdir, workdir);
+    assert!(response.message.contains("without starting"));
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.status, ProjectStatus::Stopped);
+    assert_eq!(feature.sessions.len(), 1);
+    assert!(app.pending_automation_prompts.is_empty());
+    assert!(response.feature_id.is_some());
+}
+
+#[test]
+fn create_feature_automation_no_start_rejects_prompt_before_side_effects() {
+    let mut app = App::new_for_test(
+        store_with_empty_project(std::path::PathBuf::from("/unused"), true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let request = CreateFeatureRequest {
+        no_start: true,
+        initial_prompt: Some("Do work".into()),
+        ..Default::default()
+    };
+    assert!(
+        app.create_feature_from_request(&request)
+            .unwrap_err()
+            .to_string()
+            .contains("require starting")
+    );
+    assert!(app.store.projects[0].features.is_empty());
 }

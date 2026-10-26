@@ -85,19 +85,19 @@ resolution). The viewer renders "Could not load current changes" with
 "(unknown branch) vs (no base)" and 0 files, even though the working tree has an
 uncommitted edit.
 
-- [ ] Reproduce with a fresh `git init -b main` repo, one commit, one edited file.
-- [ ] When no base branch resolves, fall back to `HEAD` as the base so staged,
+- [x] Reproduce with a fresh `git init -b main` repo, one commit, one edited file.
+- [x] When no base branch resolves, fall back to `HEAD` as the base so staged,
       unstaged and untracked changes still show, and label the header
       "vs HEAD (no base branch found)".
-- [ ] Keep the strict behaviour (and its message) for the case where a base is
+- [x] Keep the strict behaviour (and its message) for the case where a base is
       expected, e.g. a feature branch that has diverged from nothing.
-- [ ] Make the base-ref override discoverable: when resolution falls back or
+- [x] Make the base-ref override discoverable: when resolution falls back or
       fails, say "press `b` to choose a base ref" in the body, not only the footer.
-- [ ] Choose Diff Scope: stop printing the raw error under "0 commit(s)"; show
+- [x] Choose Diff Scope: stop printing the raw error under "0 commit(s)"; show
       a one-line explanation instead.
-- [ ] Tests in `diff.rs`: single-branch repo returns the working-tree diff; repo
+- [x] Tests in `diff.rs`: single-branch repo returns the working-tree diff; repo
       with `main` + feature branch is unchanged.
-- [ ] Check the Final Review viewer and Learning Mode's branch-changes scope for
+- [x] Check the Final Review viewer and Learning Mode's branch-changes scope for
       the same failure (both call `load_snapshot`).
 
 ## Epic 3 — Non-git projects (P0)
@@ -106,7 +106,7 @@ A folder that is not a git repository is accepted as a project without comment.
 `g` then fails with "Error: Error: Selected project is not a git repository"
 (`github.rs` `GithubRepositoryError::NotGitRepository`), and `S` showed a
 garbled error popup at the bottom of the screen. (The non-git state in the
-sweep was an accident of my fixture; the missing warning is the finding.)
+sweep was an artifact of the sweep's fixture; the missing warning is the finding.)
 
 - [ ] On project creation (`app/project_ops.rs`), detect "not a git repo" and warn
       in the dialog: what still works, what needs git (worktrees, diffs, issues,

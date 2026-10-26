@@ -4425,3 +4425,33 @@ fn escalating_with_nothing_asked_says_so() {
     let error = learning(&app).error.clone().unwrap_or_default();
     assert!(error.contains("Ask something first"), "{error}");
 }
+
+/// A plain repo on its only branch has no base to compare to. Branch-changes
+/// scope lists the uncommitted work against `HEAD` and says that is what it
+/// is, rather than failing with "couldn't list this branch's changes".
+#[test]
+fn branch_changes_on_a_single_branch_repo_lists_uncommitted_work() {
+    let repo = TempDir::new().unwrap();
+    git(repo.path(), &["init", "--initial-branch=main"]);
+    git(repo.path(), &["config", "user.name", "AMF Test"]);
+    git(repo.path(), &["config", "user.email", "amf@example.com"]);
+    std::fs::write(repo.path().join("README.md"), "# my-project\n").unwrap();
+    git(repo.path(), &["add", "."]);
+    git(repo.path(), &["commit", "-m", "initial"]);
+    std::fs::write(repo.path().join("README.md"), "# my-project\nedited\n").unwrap();
+
+    let mut app = app_at(repo.path(), true);
+    app.open_learning_mode(0, 0).unwrap();
+    app.learning_toggle_scope();
+    let state = learning(&app);
+    assert_eq!(state.scope, BrowseScope::BranchChanges);
+    let paths: Vec<_> = state
+        .entries
+        .iter()
+        .filter_map(|entry| entry.path())
+        .collect();
+    assert_eq!(paths, ["README.md"]);
+    let note = state.notice.as_deref().unwrap_or_default();
+    assert!(note.contains("No base branch found"), "{note}");
+    assert!(state.error.is_none(), "{:?}", state.error);
+}

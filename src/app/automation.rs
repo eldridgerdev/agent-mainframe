@@ -507,6 +507,9 @@ impl App {
         request: &CreateFeatureRequest,
     ) -> Result<CreateFeatureResponse> {
         Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
+        if request.no_start && (request.initial_prompt.is_some() || request.submit_prompt) {
+            bail!("initial_prompt and submit_prompt require starting the feature");
+        }
         if request.project_name.trim().is_empty() {
             bail!("Project name cannot be empty");
         }
@@ -694,7 +697,7 @@ impl App {
         // No caller to answer a confirmation dialog here, so a tripped gate
         // creates the feature and leaves it stopped; `started: false` in the
         // response says so.
-        let started = self.autostart_allowed(&request.branch);
+        let started = !request.no_start && self.autostart_allowed(&request.branch);
         if started {
             self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             if let Some(id) = self.store.projects[pi].features[fi]
@@ -713,6 +716,12 @@ impl App {
         self.save()?;
 
         let message = match (started, hook_succeeded) {
+            (false, _) if request.no_start => {
+                format!(
+                    "Created feature '{}' without starting sessions",
+                    request.branch
+                )
+            }
             (false, _) => format!(
                 "Created feature '{}' but did not start it: the machine is at its agent/memory limit",
                 request.branch

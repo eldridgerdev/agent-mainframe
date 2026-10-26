@@ -3,6 +3,7 @@
   "branch": "feature-1",
   "agent": "codex",
   "mode": "vibe",
+  "no_start": false,
   "review": false,
   "plan_mode": false,
   "create_terminal": false,

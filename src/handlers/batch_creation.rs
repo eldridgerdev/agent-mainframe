@@ -210,6 +210,7 @@ fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') | KeyCode::Char(' ') => {
+                app.message = None;
                 let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     match state.mode_focus {
@@ -232,6 +233,7 @@ fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                app.message = None;
                 let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     match state.mode_focus {

@@ -44,8 +44,10 @@ for the complete, current keybinding reference built into that version of AMF.
 | `q` | Quit |
 | `Esc` | Ask "Quit AMF?" (`y` quits, `n`/`Esc` cancels) |
 
-In the New Project, New Feature and batch forms, `Tab` / `Shift+Tab` move
-between fields, `Ctrl+U` clears the focused text field, and `Space` toggles a
+In the New Project and New Feature forms, `Tab` / `Shift+Tab` move
+between fields. The batch dialog is a step-by-step wizard: `Enter` advances,
+`Esc` goes back, and `Tab` / `Shift+Tab` move between rows only on its final
+settings step. In these forms `Ctrl+U` clears the focused text field, and `Space` toggles a
 checkbox. In New Feature, `Enter` moves to the next field and creates on the
 last one (the session name); `Ctrl+S` creates from any field. In the harness
 manager (`A`), `Enter` / `Space` checks a harness and turns it on or off, `c`

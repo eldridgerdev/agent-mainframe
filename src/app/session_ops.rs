@@ -1834,15 +1834,19 @@ impl App {
         let Some(session) = feature.sessions.get(si) else {
             return;
         };
-        let agent_running = session.kind.is_agent_harness()
-            && session.runs_with_feature()
-            && self.tmux.session_exists(&feature.tmux_session)
+        let tmux_session_live = self.tmux.session_exists(&feature.tmux_session);
+        let window_live = tmux_session_live
             && self
                 .tmux
                 .window_exists(&feature.tmux_session, &session.tmux_window);
+        let agent_running =
+            session.kind.is_agent_harness() && session.runs_with_feature() && window_live;
+        let closes_tmux_session = tmux_session_live && feature.sessions.len() == 1;
         self.mode = AppMode::ConfirmingRemoveSession(RemoveSessionConfirm {
             label: session.label.clone(),
             agent_running,
+            window_live,
+            closes_tmux_session,
         });
     }
 

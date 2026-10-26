@@ -1371,11 +1371,24 @@ pub fn draw_confirm_remove_session(
             " An agent is running in this session; removing it will stop the agent.",
             theme.warning.to_color(),
         )
+    } else if state.window_live {
+        (
+            " This session is running; removing it will stop its process.",
+            theme.warning.to_color(),
+        )
     } else {
         (
             " This session is not running; its record will be removed.",
             theme.text_muted.to_color(),
         )
+    };
+    let closes_line = if state.closes_tmux_session {
+        Line::from(Span::styled(
+            " It is the last session, so the feature's tmux session will be closed.",
+            Style::default().fg(theme.warning.to_color()),
+        ))
+    } else {
+        Line::from("")
     };
     draw_small_confirm(
         frame,
@@ -1394,6 +1407,7 @@ pub fn draw_confirm_remove_session(
             ]),
             Line::from(""),
             Line::from(Span::styled(detail, Style::default().fg(color))),
+            closes_line,
             Line::from(""),
             confirm_prompt_line(theme),
         ],

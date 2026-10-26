@@ -3774,17 +3774,24 @@ fn new_agent_session_window_failure_removes_record() {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+    crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 40).unwrap();
 }
 
 fn dashboard_app_with_claude_session(window_live: bool) -> App {
+    dashboard_app_with_claude_session_kills(window_live, 0)
+}
+
+/// `kills` is how many tmux kills (session or window) the test expects.
+fn dashboard_app_with_claude_session_kills(window_live: bool, kills: usize) -> App {
     let mut store = store_with_feature(ProjectStatus::Idle);
     store.projects[0].features[0].add_session_named(SessionKind::Claude, "Claude 1".into());
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().return_const(window_live);
     tmux.expect_window_exists().return_const(window_live);
-    tmux.expect_kill_session().returning(|_| Ok(()));
-    tmux.expect_kill_window().returning(|_, _| Ok(()));
+    tmux.expect_kill_session()
+        .times(kills)
+        .returning(|_| Ok(()));
+    tmux.expect_kill_window().times(0).returning(|_, _| Ok(()));
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
     app
@@ -3833,6 +3840,8 @@ fn d_on_a_session_asks_and_removes_nothing() {
             AppMode::ConfirmingRemoveSession(state) => {
                 assert_eq!(state.label, "Claude 1");
                 assert_eq!(state.agent_running, live);
+                assert_eq!(state.window_live, live);
+                assert_eq!(state.closes_tmux_session, live);
             }
             _ => panic!("expected the remove-session confirm"),
         }
@@ -3842,7 +3851,8 @@ fn d_on_a_session_asks_and_removes_nothing() {
 
 #[test]
 fn confirming_session_removal_with_y_removes_it() {
-    let mut app = dashboard_app_with_claude_session(false);
+    // The only session: removing it closes the feature's tmux session.
+    let mut app = dashboard_app_with_claude_session_kills(true, 1);
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Char('y'));
     assert!(matches!(app.mode, AppMode::Normal));

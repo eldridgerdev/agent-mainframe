@@ -2602,6 +2602,11 @@ pub struct RemoveSessionConfirm {
     pub label: String,
     /// A live agent window exists, so removing kills a running agent.
     pub agent_running: bool,
+    /// The session's tmux window is live (agent or not: terminals, dev
+    /// servers and watchers too), so removing kills its process.
+    pub window_live: bool,
+    /// Removing the feature's only session kills the whole tmux session.
+    pub closes_tmux_session: bool,
 }
 
 pub struct DeletingFeatureState {

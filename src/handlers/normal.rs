@@ -56,8 +56,13 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Esc => {
             // Esc is how people dismiss toasts and popups; quitting on it
-            // loses the whole session, so ask first.
-            app.mode = AppMode::ConfirmingQuit;
+            // loses the whole session, so ask first. A parked plan interview
+            // already has its own abort gate, which `q` reopens; Esc does too.
+            if app.paused_plan_interview.is_some() {
+                app.request_dashboard_quit();
+            } else {
+                app.mode = AppMode::ConfirmingQuit;
+            }
         }
         KeyCode::Char('N') => {
             app.start_create_project();

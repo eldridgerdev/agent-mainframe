@@ -148,6 +148,10 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
+        AppMode::ConfirmingQuit => dialog::handle_confirm_quit_key(app, key.code),
+        AppMode::ConfirmingRemoveSession(_) => {
+            dialog::handle_confirm_remove_session_key(app, key.code)
+        }
         AppMode::ConfirmResourceStart(_) => handle_resource_confirm_key(app, key.code),
         AppMode::Dormant(_) => handle_dormant_key(app, key),
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),

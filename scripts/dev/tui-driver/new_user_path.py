@@ -117,6 +117,7 @@ def main():
                                 {"op": "paste", "text": "add-todos"}])
             text = run("wizard footer", [snap])
             require("Ctrl+S create" in text, text)
+            require("First feature" in text, text)  # the first-feature note
             run("create feature", [keys("C-s"), wait("Compose")])
 
             # Session leader menu: grouped, unknown keys stay inside it.
@@ -131,6 +132,9 @@ def main():
             run("diff scope", [keys("C-Space", "d"), wait("Choose Diff Scope")])
             text = run("diff viewer", [keys("Enter"), wait("no base branch found"), snap])
             require("README.md" in text, text)
+            # AMF's own generated files sit in a folded row, after the user's.
+            require("AMF files" in text and "not yours" in text, text)
+            require(text.index("README.md") < text.index("AMF files"), text)
             run("diff close", [keys("Escape"), wait("Current Changes", absent=True)])
 
             # Back to the dashboard; removing a live session asks first.

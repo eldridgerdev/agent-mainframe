@@ -197,110 +197,96 @@ fn draw_error(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: &
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, state: &LearningViewState, theme: &Theme) {
-    let key = Style::default().fg(theme.warning.to_color());
-    let word = Style::default().fg(theme.text_muted.to_color());
+    // Two leading spaces; every line is fitted to what is left so a narrow
+    // terminal drops whole hints (lowest value first) instead of cutting one
+    // mid-word. Everything dropped stays in the `?` overlay.
+    let width = (area.width as usize).saturating_sub(2);
+    let hint = |key, label, drop_rank| AnswerHint {
+        key,
+        label,
+        drop_rank,
+    };
 
+    let enter_label = match state.focus {
+        LearningFocus::Qa => "read the answer",
+        // On a folder Enter opens or closes it. Saying so costs
+        // nothing and it is the discovery path for the tree for anyone who
+        // never finds h/l.
+        _ if state
+            .selected_entry()
+            .is_some_and(|e| e.dir_path().is_some()) =>
+        {
+            "open/close folder"
+        }
+        _ => "open",
+    };
     let mut first = vec![
-        Span::raw("  "),
-        Span::styled("Tab", key),
-        Span::styled(" next pane  ", word),
-        Span::styled("j/k", key),
-        Span::styled(" move  ", word),
-        Span::styled("Enter", key),
-        Span::styled(
-            match state.focus {
-                LearningFocus::Qa => " read the answer  ",
-                // On a folder Enter opens or closes it. Saying so costs
-                // nothing — the hint is on the line either way — and it is the
-                // discovery path for the tree for anyone who never finds h/l.
-                _ if state
-                    .selected_entry()
-                    .is_some_and(|e| e.dir_path().is_some()) =>
-                {
-                    " open/close folder  "
-                }
-                _ => " open  ",
-            },
-            word,
-        ),
-        Span::styled("e", key),
-        Span::styled(" explain this to me  ", word),
-        Span::styled("c", key),
-        Span::styled(" ask for a change  ", word),
-        Span::styled("t", key),
-        Span::styled(" starter questions", word),
+        hint("Tab", "next pane", Some(3)),
+        hint("j/k", "move", Some(4)),
+        hint("Enter", enter_label, None),
+        hint("e", "explain this to me", None),
+        hint("c", "ask for a change", None),
+        hint("t", "starter questions", Some(2)),
     ];
     // Only offered once there is an answer to continue from, so the key isn't
     // advertised before it can do anything.
     let has_answer = state.qa.iter().any(|qa| qa.answer.is_some());
     if has_answer {
-        first.push(Span::styled("  F", key));
-        first.push(Span::styled(" ask a follow-up", word));
+        first.push(hint("F", "ask a follow-up", Some(1)));
     }
+    let mut first = hint_line(fit_hints(first, width), theme);
     if state.question.is_none() && !state.qa.is_empty() {
-        first.push(Span::styled(
-            format!("   ({} asked)", state.qa.len()),
-            Style::default().fg(theme.text_muted.to_color()),
-        ));
+        let asked = format!("   ({} asked)", state.qa.len());
+        // Nice to have: only shown when it fits whole.
+        let used: usize = first.spans.iter().map(|s| s.content.chars().count()).sum();
+        if used + asked.chars().count() <= width {
+            first.spans.push(Span::styled(
+                asked,
+                Style::default().fg(theme.text_muted.to_color()),
+            ));
+        }
     }
 
     let mut second = vec![
-        Span::raw("  "),
         // The two range keys share a hint: spelling both out cost more of the
-        // line than the pair is worth, and what the second one does is legible
-        // from what the first one does.
-        Span::styled("v/V", key),
-        Span::styled(" line range on/off  ", word),
-        Span::styled("f", key),
-        Span::styled(" whole file  ", word),
-        Span::styled("P", key),
-        Span::styled(" whole project  ", word),
+        // line than the pair is worth.
+        hint("v/V", "line range on/off", Some(6)),
+        hint("f", "whole file", Some(5)),
+        hint("P", "whole project", Some(4)),
     ];
-    // `x` needs a diff, so in repo-tree scope it can only ever refuse. It used
-    // to be advertised there anyway; dropping it is both more honest and where
-    // the 14 columns for the tree hint came from.
+    // `x` needs a diff, so in repo-tree scope it can only ever refuse; don't
+    // advertise it there.
     if state.scope == BrowseScope::BranchChanges {
-        second.push(Span::styled("x", key));
-        second.push(Span::styled(" this change  ", word));
+        second.push(hint("x", "this change", Some(3)));
     } else if state
         .entries
         .iter()
         .any(|e| matches!(e, LearningListEntry::Dir { .. }))
     {
-        second.push(Span::styled("h/l", key));
-        second.push(Span::styled(" folders  ", word));
+        second.push(hint("h/l", "folders", Some(3)));
     }
-    // The footer truncates from the right, so what goes here is rationed
-    // against `q close` surviving at 140 columns. The two answer keys travel
-    // together — both act on the selected entry, and offering one without the
-    // other reads as the other not existing. `z` takes the slot only before
-    // there is an answer: the Start here group is built for a project with no
-    // history, so by then it is a leftover the next reload drops. It stays in
-    // the `?` overlay either way.
+    // The two answer keys travel together; `z` takes the slot only before
+    // there is an answer (the Start here group is for a project with no
+    // history).
     if has_answer {
-        second.push(Span::styled("D", key));
-        second.push(Span::styled(" ask again, reading the repo  ", word));
-        second.push(Span::styled("a", key));
-        second.push(Span::styled(" keep as a to-do  ", word));
+        second.push(hint("D", "ask again, reading the repo", Some(2)));
+        second.push(hint("a", "keep as a to-do", Some(1)));
     } else if state
         .entries
         .iter()
         .any(|e| matches!(e, LearningListEntry::StartHereHeader))
     {
-        second.push(Span::styled("z", key));
-        second.push(Span::styled(" fold Start here  ", word));
+        second.push(hint("z", "fold Start here", Some(2)));
     }
-    second.extend([
-        Span::styled("?", key),
-        Span::styled(" help  ", word),
-        Span::styled("q", key),
-        Span::styled(" close", word),
-    ]);
+    second.push(hint("?", "help", None));
+    second.push(hint("q", "close", None));
+    let second = hint_line(fit_hints(second, width), theme);
 
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(first), Line::from(second)]),
-        area,
-    );
+    let indent = |mut line: Line<'static>| {
+        line.spans.insert(0, Span::raw("  "));
+        line
+    };
+    frame.render_widget(Paragraph::new(vec![indent(first), indent(second)]), area);
 }
 
 // ── file list ────────────────────────────────────────────────
@@ -2086,6 +2072,43 @@ let files = list_repo_files(workdir)?;
         assert!(rendered.contains("x this change"), "{rendered}");
         assert!(!rendered.contains("h/l folders"), "{rendered}");
         assert!(rendered.contains("q close"), "{rendered}");
+    }
+
+    #[test]
+    fn the_footer_drops_whole_hints_at_80_columns_and_keeps_the_way_out() {
+        let mut state = state();
+        state.entries = vec![dir_row("src", 0, true, 3), tree_file_row("src/main.rs", 1)];
+        state.qa.push(answered_qa());
+        for (width, wide) in [(80u16, false), (120, true)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 40)).unwrap();
+            terminal
+                .draw(|f| draw_learning_view(f, &mut state, &Theme::default()))
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let rows: Vec<String> = (0..40)
+                .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
+                .collect();
+            let footer = rows[38..].join("\n");
+            assert!(footer.contains("q close"), "{width}: {footer}");
+            assert!(footer.contains("? help"), "{width}: {footer}");
+            assert!(footer.contains("e explain this to me"), "{width}: {footer}");
+            // No hint is cut: every label that appears appears whole.
+            for (stem, label) in [
+                ("starter", "starter questions"),
+                ("follow", "ask a follow-up"),
+                ("to-do", "keep as a to-do"),
+            ] {
+                assert!(
+                    !footer.contains(stem) || footer.contains(label),
+                    "{width}: {label} cut mid-word: {footer}"
+                );
+            }
+            if wide {
+                assert!(footer.contains("t starter questions"), "{footer}");
+                assert!(footer.contains("a keep as a to-do"), "{footer}");
+            }
+        }
     }
 
     /// Enter is the key someone who never finds `h`/`l` will press, so on a

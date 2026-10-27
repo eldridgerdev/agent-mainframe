@@ -314,6 +314,15 @@ impl VibeMode {
         }
     }
 
+    /// A shorter `description` for narrow dialogs; same meaning, fewer words.
+    pub fn short_description(&self) -> &str {
+        match self {
+            VibeMode::Vibeless => "asks before every change",
+            VibeMode::Vibe => "auto-accepts edits",
+            VibeMode::SuperVibe => "skips permission prompts",
+        }
+    }
+
     /// One plain sentence on what the agent may do without asking you first,
     /// for a reader who does not know the harnesses' permission flags.
     pub fn permission_summary(&self) -> &'static str {

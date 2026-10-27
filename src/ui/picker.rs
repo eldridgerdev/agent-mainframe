@@ -396,8 +396,8 @@ pub fn draw_syntax_language_picker(
                     ),
                     crate::highlight::HighlightInstallState::Available => (
                         // Not installed is the default; a repeated badge on
-                        // every row is noise. Keep the width so names align.
-                        "           ",
+                        // every row is noise, and so is the gap it left.
+                        "",
                         Style::default(),
                     ),
                     crate::highlight::HighlightInstallState::Broken => (
@@ -416,7 +416,10 @@ pub fn draw_syntax_language_picker(
                     Style::default().fg(theme.warning.to_color()),
                 ),
                 Span::styled(badge_label, badge_style),
-                Span::styled(" ", Style::default()),
+                Span::styled(
+                    if badge_label.is_empty() { "" } else { " " },
+                    Style::default(),
+                ),
                 Span::styled(
                     row.language.picker_title(),
                     if is_selected {

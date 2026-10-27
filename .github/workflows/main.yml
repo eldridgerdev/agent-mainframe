@@ -91,6 +91,7 @@ jobs:
         run: |
           cargo build --locked --bin amf
           python3 scripts/dev/tui-driver/smoke.py
+          python3 scripts/dev/tui-driver/new_user_path.py
 
   lint:
     name: Lint

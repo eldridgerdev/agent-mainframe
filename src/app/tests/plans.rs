@@ -172,8 +172,29 @@ fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
     assert!(matches!(&app.mode, AppMode::PlanInterview(state) if !state.abort_confirmation));
 
+    // `n` declines exactly like Esc; and the prompt says so.
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(text.contains("cancel feature creation"), "{w}x{h}");
+        assert!(text.contains("keep going"), "{w}x{h}");
+    }
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if !state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('c'))).unwrap();
     assert!(matches!(app.mode, AppMode::Normal));
     assert!(
         app.message
@@ -625,10 +646,15 @@ fn aborting_an_on_demand_interview_has_no_feature_to_cancel() {
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
     assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
 
-    // `n` cancels feature creation, which an on-demand interview never started;
+    // `c` cancels feature creation, which an on-demand interview never started;
     // the dialog does not offer it, so it must not exit the interview either.
-    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('c'))).unwrap();
     assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+
+    // `n` declines like Esc: back to the interview, nothing left.
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if !state.abort_confirmation));
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
 
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
     assert!(matches!(app.mode, AppMode::Normal));
@@ -2486,7 +2512,7 @@ fn re_entering_an_abandoned_plan_interview_offers_to_resume_it() {
 
     // Abandon: abort, then cancel the feature entirely.
     crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
-    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('c'))).unwrap();
     assert!(matches!(app.mode, AppMode::Normal));
 
     app.finish_feature_launch(PreparedFeatureLaunch {

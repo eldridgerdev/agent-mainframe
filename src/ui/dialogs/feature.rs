@@ -534,6 +534,19 @@ fn draw_create_feature_branch_mode(
             Style::default().fg(theme.danger.to_color()),
         )));
     }
+    // The first feature's defaults differ from later ones (name = the repo's
+    // branch, no worktree); say why while that default is still in effect.
+    if state.first_feature && !state.use_worktree && state.git_available {
+        let muted = Style::default().fg(theme.text_muted.to_color());
+        branch_lines.push(Line::from(Span::styled(
+            " First feature: works in the repo folder.",
+            muted,
+        )));
+        branch_lines.push(Line::from(Span::styled(
+            " Pick Worktree Yes for a separate copy.",
+            muted,
+        )));
+    }
     let branch_field = Paragraph::new(branch_lines);
     put(buf, branch_field, chunks[0]);
 

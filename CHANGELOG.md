@@ -10,6 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- **Plan interview "leave?" prompt matches every other confirm.** `y` leaves the
+  interview, and `n` or `Esc` keeps going, so pressing `Esc` twice no longer
+  looks like it should leave. When the interview is deferring a new feature,
+  cancelling the feature is now `c` (it was `n`). The New Feature form also
+  explains, for a project's first feature, that it works in the repo folder
+  and how to get a separate worktree. No migration is required.
+
 ### Added
 
 - **Start tracked sessions and tasks from external tools.** `amf automation

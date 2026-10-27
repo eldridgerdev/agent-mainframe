@@ -2897,6 +2897,9 @@ pub struct CreateFeatureState {
     pub worktree_search_active: bool,
     pub worktree_query: String,
     pub use_worktree: bool,
+    /// This is the project's first feature, whose defaults (name = current
+    /// branch, no worktree) differ from later ones. The form says so.
+    pub first_feature: bool,
     /// False when the project folder is not a git repository. Worktrees,
     /// branches and diffs need git, so the wizard disables the worktree
     /// "Yes" choice and explains why instead of failing at launch.
@@ -2979,6 +2982,7 @@ impl CreateFeatureState {
             worktree_search_active: false,
             worktree_query: String::new(),
             use_worktree: !is_first_feature,
+            first_feature: is_first_feature,
             git_available: true,
             enable_chrome: false,
             remote_control: false,

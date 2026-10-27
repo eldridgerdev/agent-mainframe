@@ -296,3 +296,16 @@ fn rename_prompts_clear_with_ctrl_u_like_the_wizards() {
         _ => panic!("expected the rename prompt"),
     }
 }
+
+#[test]
+fn only_a_projects_first_feature_gets_the_repo_dir_defaults() {
+    let first =
+        CreateFeatureState::new("p".into(), PathBuf::from("/nonexistent"), Vec::new(), true);
+    assert!(first.first_feature);
+    assert!(!first.use_worktree);
+    let later =
+        CreateFeatureState::new("p".into(), PathBuf::from("/nonexistent"), Vec::new(), false);
+    assert!(!later.first_feature);
+    assert!(later.use_worktree);
+    assert!(later.branch.is_empty());
+}

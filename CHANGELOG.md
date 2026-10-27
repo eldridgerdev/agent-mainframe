@@ -32,7 +32,6 @@ are tagged.
   cancelling the feature is now `c` (it was `n`). The New Feature form also
   explains, for a project's first feature, that it works in the repo folder
   and how to get a separate worktree. No migration is required.
-
 - **Fewer clipped hints and tighter parser rows.** Learning Mode's two-line
   footer now drops whole low-priority hints at 80 columns instead of cutting
   one mid-word (`? help` and `q close` always stay), the New Feature Mode rows

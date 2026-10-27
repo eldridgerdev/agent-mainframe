@@ -100,17 +100,21 @@ pub fn draw_plan_interview_dialog(
             vec![
                 hint("y", theme),
                 Span::raw(" launch without a plan  "),
-                hint("n", theme),
+                hint("c", theme),
                 Span::raw(" cancel feature creation  "),
+                hint("n", theme),
+                Span::raw("/"),
                 hint("Esc", theme),
-                Span::raw(" resume interview"),
+                Span::raw(" keep going"),
             ]
         } else {
             vec![
                 hint("y", theme),
-                Span::raw(" leave the plan unchanged  "),
+                Span::raw(" leave interview, plan unchanged  "),
+                hint("n", theme),
+                Span::raw("/"),
                 hint("Esc", theme),
-                Span::raw(" resume interview"),
+                Span::raw(" keep going"),
             ]
         };
         let confirm = Paragraph::new(vec![

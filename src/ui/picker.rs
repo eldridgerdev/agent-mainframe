@@ -280,7 +280,14 @@ pub fn draw_syntax_language_picker(
             )
         })
         .count();
-    let area = centered_rect(68, 58, frame.area());
+    // 68% x 58% is 54 columns by 14 rows at 80x24: too narrow for a row and
+    // only six rows tall. Use most of a small terminal instead.
+    let screen = frame.area();
+    let area = centered_rect(
+        if screen.width < 100 { 96 } else { 68 },
+        if screen.height < 30 { 84 } else { 58 },
+        screen,
+    );
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(
@@ -396,8 +403,8 @@ pub fn draw_syntax_language_picker(
                     ),
                     crate::highlight::HighlightInstallState::Available => (
                         // Not installed is the default; a repeated badge on
-                        // every row is noise. Keep the width so names align.
-                        "           ",
+                        // every row is noise, and so is the gap it left.
+                        "",
                         Style::default(),
                     ),
                     crate::highlight::HighlightInstallState::Broken => (
@@ -410,15 +417,33 @@ pub fn draw_syntax_language_picker(
                 }
             };
 
+            // Fit the row to the list: the description is the part that gives
+            // way (with an ellipsis, or not at all), so no word is cut mid-row.
+            let name = row.language.picker_title();
+            let marker = if is_selected { "  > " } else { "    " };
+            let separator = if badge_label.is_empty() { "" } else { " " };
+            let list_width = chunks[1].width as usize;
+            let fixed = marker.chars().count()
+                + badge_label.chars().count()
+                + separator.len()
+                + name.chars().count();
+            let extensions = truncate_text(
+                &format!("  {}  ", row.language.extension_summary()),
+                list_width.saturating_sub(fixed),
+            );
+            let remaining = list_width.saturating_sub(fixed + extensions.chars().count());
+            let description = if remaining >= 6 {
+                truncate_text(row.language.picker_description(), remaining)
+            } else {
+                String::new()
+            };
+
             let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(theme.warning.to_color()),
-                ),
+                Span::styled(marker, Style::default().fg(theme.warning.to_color())),
                 Span::styled(badge_label, badge_style),
-                Span::styled(" ", Style::default()),
+                Span::styled(separator, Style::default()),
                 Span::styled(
-                    row.language.picker_title(),
+                    name,
                     if is_selected {
                         Style::default()
                             .fg(theme.text.to_color())
@@ -427,12 +452,9 @@ pub fn draw_syntax_language_picker(
                         Style::default().fg(theme.text.to_color())
                     },
                 ),
+                Span::styled(extensions, Style::default().fg(theme.primary.to_color())),
                 Span::styled(
-                    format!("  {}  ", row.language.extension_summary()),
-                    Style::default().fg(theme.primary.to_color()),
-                ),
-                Span::styled(
-                    row.language.picker_description(),
+                    description,
                     Style::default().fg(theme.text_muted.to_color()),
                 ),
             ]);
@@ -456,36 +478,58 @@ pub fn draw_syntax_language_picker(
             ),
         ]))
     } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "  j/k or \u{2191}/\u{2193}",
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::styled(
-                " navigate  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Enter/i", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " install or reinstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("x", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " uninstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("r", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " refresh  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]))
-        .wrap(Wrap { trim: false })
+        Paragraph::new(flow_hints(
+            &[
+                ("j/k or \u{2191}/\u{2193}", "navigate"),
+                ("Enter/i", "install or reinstall"),
+                ("x", "uninstall"),
+                ("r", "refresh"),
+                ("Esc", "cancel"),
+            ],
+            chunks[2].width as usize,
+            Style::default().fg(theme.warning.to_color()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
     };
     frame.render_widget(hints, chunks[2]);
+}
+
+/// Lay `(key, label)` hints out over as many lines as `width` needs, moving a
+/// whole hint to the next line rather than letting the terminal split it
+/// ("r" at the end of one line, "refresh" at the start of the next).
+fn flow_hints(
+    hints: &[(&str, &str)],
+    width: usize,
+    key_style: Style,
+    label_style: Style,
+) -> Vec<Line<'static>> {
+    const INDENT: &str = "  ";
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(INDENT)];
+    let mut used = INDENT.chars().count();
+    let mut line_has_hint = false;
+    for (key, label) in hints {
+        let separator = if line_has_hint { 2 } else { 0 };
+        let cost = separator + key.chars().count() + 1 + label.chars().count();
+        if line_has_hint && used + cost > width {
+            lines.push(Line::from(std::mem::replace(
+                &mut spans,
+                vec![Span::raw(INDENT)],
+            )));
+            used = INDENT.chars().count();
+            line_has_hint = false;
+        }
+        if line_has_hint {
+            spans.push(Span::raw("  "));
+            used += 2;
+        }
+        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled(format!(" {label}"), label_style));
+        used += key.chars().count() + 1 + label.chars().count();
+        line_has_hint = true;
+    }
+    lines.push(Line::from(spans));
+    lines
 }
 
 pub fn draw_markdown_file_picker(

@@ -37,6 +37,20 @@ are tagged.
   ordinary change, and so is a `.gitignore` or `AGENTS.md` with any line of
   yours in the change. Final Review still asks for a verdict on AMF's files.
   The GUI and remote diff are unchanged. No migration is required.
+- **Plan interview "leave?" prompt matches every other confirm.** `y` leaves the
+  interview, and `n` or `Esc` keeps going, so pressing `Esc` twice no longer
+  looks like it should leave. When the interview is deferring a new feature,
+  cancelling the feature is now `c` (it was `n`). The New Feature form also
+  explains, for a project's first feature, that it works in the repo folder
+  and how to get a separate worktree. No migration is required.
+- **Fewer clipped hints and tighter parser rows.** Learning Mode's two-line
+  footer now drops whole low-priority hints at 80 columns instead of cutting
+  one mid-word (`? help` and `q close` always stay), the New Feature Mode rows
+  use a shorter description when the full one would not fit, and the Syntax
+  Parsers list no longer leaves a wide blank gap before each uninstalled
+  language. On small terminals that list also uses most of the screen, shows
+  more rows, and shortens a long description with an ellipsis instead of
+  cutting it off at the edge. No migration is required.
 - **Footers and forms stay readable at 80 and 120 columns.** The compose
   bar keeps whole hints (`Enter send`, `Esc close`, `Ctrl+T vim`) and drops the
   least important ones when the pane is narrow instead of cutting one mid-word.

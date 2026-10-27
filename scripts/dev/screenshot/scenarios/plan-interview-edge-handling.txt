@@ -56,5 +56,5 @@ shot:brief-only-raw-plan-review
 key:Escape
 wait:300
 shot:brief-only-abort-confirmation
-key:n
+key:c
 wait:500

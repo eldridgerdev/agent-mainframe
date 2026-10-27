@@ -76,8 +76,8 @@ shot:quick-plan-brief-typed
 # not do.
 key:Escape
 wait:400
-note:Aborting from an on-demand interview offers only "leave the plan unchanged" -- there is no feature creation to cancel, matching full Plan mode's on-demand abort.
-expect:leave the plan unchanged
+note:Aborting from an on-demand interview offers only "leave interview, plan unchanged" -- there is no feature creation to cancel, matching full Plan mode's on-demand abort.
+expect:leave interview, plan unchanged
 expect_not:cancel feature creation
 shot:quick-plan-abort-confirm
 

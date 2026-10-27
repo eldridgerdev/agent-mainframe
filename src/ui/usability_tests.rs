@@ -567,6 +567,95 @@ fn syntax_parser_rows_have_no_repeated_available_badge() {
         assert!(!screen.contains("AVAILABLE"), "{width}x{height}");
         assert!(screen.contains("INSTALLED"));
         assert!(screen.contains(&format!("1/{total} installed")));
+
+        // Available rows have no gap between the cursor column and the name.
+        let rows = rendered_rows(width, height, |frame| {
+            picker::draw_syntax_language_picker(
+                frame,
+                &state,
+                &throbber_widgets_tui::ThrobberState::default(),
+                &Theme::default(),
+            )
+        });
+        let name = HighlightLanguage::ALL[1].picker_title();
+        let row = rows
+            .iter()
+            .find(|r| r.contains(name) && r.contains(".") && !r.contains("INSTALLED"))
+            .unwrap_or_else(|| panic!("no row for {name}: {rows:#?}"));
+        assert!(
+            !row.contains(&format!("      {name}")),
+            "{width}x{height}: gap before name: {row:?}"
+        );
+
+        // A description is whole, ends in an ellipsis, or is left out: it is
+        // never cut off at the dialog edge. Small terminals also keep most
+        // of the list on screen.
+        let mut visible = 0;
+        for language in HighlightLanguage::ALL {
+            let Some(row) = rows.iter().find(|r| {
+                r.contains(language.picker_title()) && r.contains(language.extension_summary())
+            }) else {
+                continue;
+            };
+            visible += 1;
+            let description = language.picker_description();
+            let prefix: String = description.chars().take(4).collect();
+            if row.contains(&prefix) {
+                assert!(
+                    row.contains(description) || row.contains('…'),
+                    "{width}x{height}: description cut mid-word: {row:?}"
+                );
+            }
+        }
+        if height == 24 {
+            assert!(
+                visible >= 10,
+                "{width}x{height}: only {visible} rows visible"
+            );
+        }
+
+        // Footer hints are whole: a hint never starts on one line and ends on
+        // the next, so a key is always on the same line as its label.
+        for (key, label) in [
+            ("Enter/i", "install or reinstall"),
+            ("x", "uninstall"),
+            ("r", "refresh"),
+            ("Esc", "cancel"),
+        ] {
+            let hint = format!("{key} {label}");
+            assert!(
+                rows.iter().any(|r| r.contains(&hint)),
+                "{width}x{height}: hint split or missing: {hint:?} in {rows:#?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn new_feature_mode_descriptions_are_whole_at_80_and_120_columns() {
+    let mut state = feature_form_state();
+    state.mode_focus = 1;
+    for (width, full) in [(80u16, false), (120, true)] {
+        let rows = rendered_rows(width, 40, |frame| {
+            dialogs::draw_create_feature_dialog(
+                frame,
+                &state,
+                &[],
+                &[AgentKind::Claude, AgentKind::Codex],
+                &crate::usage::UsageData::default(),
+                &Theme::default(),
+            )
+        });
+        let screen = rows.join("\n");
+        for mode in crate::project::VibeMode::ALL {
+            let whole = screen.contains(mode.description());
+            let short = screen.contains(mode.short_description());
+            if full {
+                assert!(whole, "{width}: {} missing\n{screen}", mode.description());
+            } else {
+                assert!(whole || short, "{width}: {mode:?} clipped\n{screen}");
+            }
+        }
     }
 }
 
@@ -740,6 +829,93 @@ fn session_picker_names_each_kind_and_its_count() {
         assert!(screen.contains("Esc cancel"), "{w}x{h}: footer clipped");
         assert!(!screen.contains("  * "), "{w}x{h}: glyph still drawn");
         assert!(!screen.contains("  V "), "{w}x{h}: glyph still drawn");
+    }
+}
+
+#[test]
+fn plan_interview_abort_confirm_uses_the_shared_decline_keys() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut app = test_app();
+        let mut state = crate::app::PlanInterviewState::for_feature(
+            "demo".into(),
+            "f1".into(),
+            Vec::new(),
+            std::path::PathBuf::from("/tmp/demo"),
+            AgentKind::Claude,
+        );
+        state.abort_confirmation = true;
+        app.mode = crate::app::AppMode::PlanInterview(state);
+        let text = screen_rows(&mut app, w, h).join("\n");
+        assert!(text.contains("Leave this interview?"), "{w}x{h}\n{text}");
+        assert!(text.contains("leave interview"), "{w}x{h}\n{text}");
+        assert!(text.contains("keep going"), "{w}x{h}\n{text}");
+        assert!(!text.contains("resume interview"), "{w}x{h}\n{text}");
+    }
+}
+
+#[test]
+fn first_feature_form_explains_its_different_defaults() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let draw = |first: bool, use_worktree: bool| {
+            let mut state = crate::app::CreateFeatureState::new(
+                "demo".into(),
+                std::path::PathBuf::from("/tmp/demo"),
+                Vec::new(),
+                first,
+            );
+            state.use_worktree = use_worktree;
+            state.step = crate::app::CreateFeatureStep::Branch;
+            rendered_rows(w, h, |frame| {
+                dialogs::draw_create_feature_dialog(
+                    frame,
+                    &state,
+                    &[],
+                    &[AgentKind::Claude, AgentKind::Codex],
+                    &crate::usage::UsageData::default(),
+                    &Theme::default(),
+                )
+            })
+            .join("\n")
+        };
+        let first = draw(true, false);
+        assert!(
+            first.contains("First feature: works in the repo folder."),
+            "{w}x{h}\n{first}"
+        );
+        assert!(
+            first.contains("Pick Worktree Yes for a separate copy."),
+            "{w}x{h}\n{first}"
+        );
+        assert!(!draw(false, true).contains("First feature"), "{w}x{h}");
+        assert!(!draw(true, true).contains("First feature"), "{w}x{h}");
+    }
+}
+
+#[test]
+fn first_feature_note_is_not_clipped_by_a_name_error() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut state = crate::app::CreateFeatureState::new(
+            "demo".into(),
+            std::path::PathBuf::from("/tmp/demo"),
+            Vec::new(),
+            true,
+        );
+        state.step = crate::app::CreateFeatureStep::Branch;
+        state.branch_error = Some("Name is required".into());
+        let text = rendered_rows(w, h, |frame| {
+            dialogs::draw_create_feature_dialog(
+                frame,
+                &state,
+                &[],
+                &[AgentKind::Claude, AgentKind::Codex],
+                &crate::usage::UsageData::default(),
+                &Theme::default(),
+            )
+        })
+        .join("\n");
+        assert!(text.contains("Name is required"), "{w}x{h}\n{text}");
+        // Half a note (its first line without the second) would mislead.
+        assert!(!text.contains("First feature"), "{w}x{h}\n{text}");
     }
 }
 

@@ -60,6 +60,27 @@ are tagged.
     (`Enter`/`Space` toggle, `c` save, `Esc` cancel). `q` no longer closes it
     from the dashboard; on first run it still quits AMF.
   - `Ctrl+U` also clears the rename prompts. No migration is required.
+- **Easier to find your way around the terminal UI.**
+  - The dashboard footer now has a second line listing the keys for the
+    selected row (`Enter` open, `s` add session, `x` stop, `d` remove, and so
+    on), always ending in `? help`. An empty dashboard says "Press N to add a
+    project", an empty project "Press n to add a feature", and a feature
+    with no sessions "Press s to add a session". The line fits at 80
+    columns. The dashboard list is one row shorter to make room.
+  - `?` help is grouped under headings: Getting around, Projects & features,
+    Sessions, Review, Plan, and Settings & other. Press `/` inside help to
+    search it; `Enter` keeps the filter and `Esc` clears it. A new "What Esc
+    does on each screen" block explains that Esc in a session goes to the
+    agent, closes the compose box (typing reopens it), and asks to quit on the
+    dashboard. The long plan-interview key list is gone from help; each plan
+    screen already lists its keys in its footer.
+  - A session's header now reads "Ctrl+Space: commands · type to compose",
+    or says keys go straight to the agent when compose is switched off. On
+    a narrow terminal the project name is dropped first to make room.
+  - The Start Session picker (`s`) names each kind ("AI agent", "shell",
+    "editor in AMF", "opens VS Code", "TODO list") instead of using `*`, `>`
+    and `V`. Its title now says what the number counts ("Start a session ·
+    5 options"). No migration is required.
 - **Esc and `d` no longer act instantly on the dashboard.** Esc now asks
   "Quit AMF?" (`q` still quits directly), and `d` on a session asks before
   removing it, saying whether an agent is running. No migration is required.

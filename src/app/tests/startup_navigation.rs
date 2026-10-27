@@ -333,10 +333,7 @@ fn usability_help_end_then_up_moves_immediately() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.mode = AppMode::Help(HelpState {
-        from_view: None,
-        scroll_offset: 0,
-    });
+    app.mode = AppMode::Help(HelpState::new(None));
     crate::handlers::handle_help_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE))
         .unwrap();
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
@@ -370,4 +367,66 @@ fn usability_search_finds_the_feature_name_shown_on_the_dashboard() {
     assert!(
         matches!(&app.mode, AppMode::Searching(s) if s.matches.len() == 1 && s.matches[0].label == "Release polish")
     );
+}
+
+#[test]
+fn help_search_filters_then_esc_clears_before_closing() {
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Help(HelpState::new(None));
+    let press = |app: &mut App, code| {
+        crate::handlers::handle_help_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap()
+    };
+    let help = |app: &App| match &app.mode {
+        AppMode::Help(s) => (s.query.clone(), s.searching),
+        _ => panic!("help closed"),
+    };
+
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(help(&app), (String::new(), true));
+    // While typing, q and ? are text, not "close".
+    for c in "q?x".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert_eq!(help(&app), ("q?x".to_string(), true));
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    press(&mut app, KeyCode::Backspace);
+    for c in "theme".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    // Enter keeps the filter and goes back to scrolling keys.
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(help(&app), ("theme".to_string(), false));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let screen: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("Theme picker"));
+    assert!(!screen.contains("Navigate comments"));
+
+    // First Esc clears the filter, the second closes help.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(help(&app), (String::new(), false));
+    press(&mut app, KeyCode::Esc);
+    assert!(matches!(app.mode, AppMode::Normal));
+
+    // Esc while typing clears and stops searching; q then closes.
+    app.mode = AppMode::Help(HelpState::new(None));
+    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(help(&app), (String::new(), false));
+    press(&mut app, KeyCode::Char('q'));
+    assert!(matches!(app.mode, AppMode::Normal));
 }

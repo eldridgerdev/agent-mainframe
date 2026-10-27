@@ -19,6 +19,11 @@ use crate::theme::Theme;
 /// This is the single source of truth for what the menu lists. Entries are
 /// rendered under a dim heading per consecutive `group`; consumers that only
 /// want the flat key table (e.g. the help overlay) can ignore the first field.
+/// Leader key that toggles compose/direct input. Not in `LEADER_COMMANDS`:
+/// it is inserted only when the session has a compose box, and help
+/// documents it from this constant.
+pub(crate) const COMPOSE_TOGGLE_KEY: &str = "e";
+
 pub(crate) const LEADER_COMMANDS: &[(&str, &str, &str)] = &[
     ("Sessions", "q", "Exit view"),
     ("Sessions", "t / T", "Next / prev session"),
@@ -205,6 +210,15 @@ pub fn attention_badge_text(attention_count: usize) -> Option<String> {
     })
 }
 
+/// Header hint for where typed keys go in an agent session: into the compose
+/// box, or (with compose switched off) straight to the agent.
+fn typing_hint(compose_intercept: Option<bool>) -> Option<&'static str> {
+    match compose_intercept? {
+        true => Some(" \u{00b7} type to compose "),
+        false => Some(" \u{00b7} keys go to the agent (Ctrl+Space e: compose) "),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // exercised only by unit tests
 pub(crate) fn draw(
@@ -364,9 +378,38 @@ pub(crate) fn draw_with_lines(
             Style::default().fg(theme.warning.to_color()),
         ));
         header_spans.push(Span::styled(
-            " commands",
+            ": commands",
             Style::default().fg(theme.text.to_color()),
         ));
+        // Say where typing goes. On a narrow line the project name gives
+        // way first (feature and session still identify the view); if even
+        // that is not enough, the hint is the part left out.
+        if let Some(hint) = typing_hint(compose_intercept) {
+            let width = header_area.width as usize;
+            let hint_w = hint.chars().count();
+            let used: usize = header_spans.iter().map(|s| s.width()).sum();
+            let project_w = header_spans.get(1).map_or(0, |s| s.width());
+            let fits = if used + hint_w <= width {
+                true
+            } else if used - project_w + hint_w <= width && header_spans.len() > 2 {
+                header_spans.remove(1);
+                // The feature span opened with the separator after the project.
+                let feature = header_spans[1].clone();
+                header_spans[1] = Span::styled(
+                    feature.content.trim_start_matches('/').to_string(),
+                    feature.style,
+                );
+                true
+            } else {
+                false
+            };
+            if fits {
+                header_spans.push(Span::styled(
+                    hint,
+                    Style::default().fg(theme.text_muted.to_color()),
+                ));
+            }
+        }
     }
 
     if !view.scroll_mode
@@ -1073,7 +1116,12 @@ fn leader_menu_rows(
         } else {
             "Enable compose input"
         };
-        insert_after(&mut entries, "s", "e".to_string(), desc.to_string());
+        insert_after(
+            &mut entries,
+            "s",
+            COMPOSE_TOGGLE_KEY.to_string(),
+            desc.to_string(),
+        );
     }
 
     // Next/prev feature has no default binding; only advertise it when the
@@ -2351,6 +2399,78 @@ mod tests {
 
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn session_header_says_where_typing_goes() {
+        let header = |w: u16, kind, compose: Option<bool>| {
+            let mut terminal = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            let view = sample_view(kind);
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        &view,
+                        "",
+                        None,
+                        false,
+                        0,
+                        None,
+                        compose,
+                        (None, None),
+                        &Theme::default(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..w)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect::<String>()
+        };
+        for w in [80u16, 120] {
+            let line = header(w, crate::project::SessionKind::Claude, Some(true));
+            assert!(line.contains("proj"), "{w}: {line}");
+            assert!(line.contains("Ctrl+Space: commands"), "{w}: {line}");
+            assert!(line.contains("type to compose"), "{w}: {line}");
+        }
+        // Realistic names at 80 columns: the project name gives way so the
+        // hint still shows next to the feature and session.
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut view = sample_view(crate::project::SessionKind::Claude);
+            view.project_name = "agent-mainframe".into();
+            view.feature_name = "first-feature".into();
+            view.session_label = "Claude 1".into();
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        &view,
+                        "",
+                        None,
+                        false,
+                        0,
+                        None,
+                        Some(true),
+                        (None, None),
+                        &Theme::default(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let line: String = (0..80)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            assert!(line.contains("first-feature /Claude 1"), "{line}");
+            assert!(!line.contains("agent-mainframe"), "{line}");
+            assert!(line.contains("type to compose"), "{line}");
+        }
+        let direct = header(120, crate::project::SessionKind::Claude, Some(false));
+        assert!(direct.contains("keys go to the agent"), "{direct}");
+        // A shell has no compose box, so no typing hint.
+        let shell = header(80, crate::project::SessionKind::Terminal, None);
+        assert!(shell.contains("Ctrl+Space: commands"));
+        assert!(!shell.contains("compose"));
     }
 
     #[test]

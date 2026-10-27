@@ -209,22 +209,22 @@ only quits on first run.
 
 ## Epic 7 — Discoverability (P1)
 
-- [ ] **First-run dashboard footer.** Show a short key strip on an empty store
+- [x] **First-run dashboard footer.** Show a short key strip on an empty store
       and for the selected row type (project: `n` feature · `s` session ·
       `Enter` open; session: `Enter` open · `x` stop · `d` remove), with
       `? help` always visible. Keep it one line at 80 columns.
-- [ ] **`?` help is a flat list of ~70 keys.** Group by area (Projects and
+- [x] **`?` help is a flat list of ~70 keys.** Group by area (Projects and
       features · Sessions · Review · Plan · Settings) with headings; add `/`
       search inside help; move the plan-interview block to the interview's own
       screen (it already has footer hints).
-- [ ] Share the key/description table between help, leader menu and footers so
+- [x] Share the key/description table between help, leader menu and footers so
       they can't drift (see Epic 5).
-- [ ] **Session view:** show "Ctrl+Space: commands · type to compose" in the header
+- [x] **Session view:** show "Ctrl+Space: commands · type to compose" in the header
       next to the title. Document that Esc with compose closed goes to the agent
       (as `^[`), and what reopens compose.
-- [ ] Start Session picker: explain `*`, `>`, `V` glyphs or replace them with
+- [x] Start Session picker: explain `*`, `>`, `V` glyphs or replace them with
       words; say what the "(5)" count is.
-- [ ] The first-time experience on an empty store points at `N`; after the project
+- [x] The first-time experience on an empty store points at `N`; after the project
       exists, say "press `n` to add a feature" on the project row (already done)
       **and** in the footer.
 

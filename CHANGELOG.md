@@ -10,6 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.51.0] - 2026-10-27
+
+The terminal UI is much easier to pick up for someone who does not know the
+keys. Esc and `d` now ask before they quit AMF or remove a session, `?` help is
+grouped and searchable, every row has a key hint in the footer, and the
+Ctrl+Space menu no longer clips. The creation forms behave the same way, a
+non-git folder is flagged instead of failing late, diffs work in a repository
+with one branch, and AMF's own generated files no longer bury your changes.
+The desktop app adds interface zoom and terminal text size controls and a
+filterable projects sidebar, and `amf automation` can start sessions and tasks.
+
 ### Added
 
 - **Start tracked sessions and tasks from external tools.** `amf automation
@@ -164,6 +177,11 @@ are tagged.
   base ref. Choose Diff Scope explains in one line why it has no commits
   instead of printing the raw git error. A branch that shares no history with
   an existing base branch is still reported as an error.
+
+### Security
+
+- Updated tokio to 1.54.1 to clear RUSTSEC-2026-0386, and updated the
+  `ctutils` dependency that carried a published advisory.
 
 ## [v0.50.0] - 2026-10-19
 

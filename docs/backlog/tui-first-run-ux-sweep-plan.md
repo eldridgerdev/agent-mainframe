@@ -1,6 +1,6 @@
 # TUI first-run UX sweep
 
-- **Status:** Ready
+- **Status:** Partial — Epics 1–9 shipped (#774–#785, #786); follow-ups listed under Epic 9
 - **Owner:** unassigned
 - **Relates to:** dashboard key handling (`src/handlers/normal.rs`), leader menu
   (`src/ui/pane.rs` — `draw_leader_menu`), diff base resolution (`src/diff.rs`),
@@ -252,17 +252,47 @@ only quits on first run.
 
 ## Epic 9 — Verification (P0, runs alongside every epic)
 
-- [ ] Add a TUI-driver scenario for the new-user path: `N` → project (non-git and
-      git) → `n` → session → leader menu → diff → delete session → `q`.
-      Assert on rendered text; use the fake-`claude` stub pattern from the
-      sweep for a live session.
-- [ ] Re-run the sweep at 80×24 and 120×40 after Epics 1–7 and compare to the
-      list above; tick items here only after the rerun.
-- [ ] `cargo fmt`, `cargo clippy -- -W clippy::all`, and the full test suite
-      before each PR (CI lint includes `cargo fmt`).
-- [ ] Update `CHANGELOG.md`, `site/content/docs/keybindings.md` and the README
-      key tables for every changed key (Esc, `d`, Ctrl+U, Space toggle).
+- [x] Add a TUI-driver scenario for the new-user path: Esc prompt, grouped help,
+      non-git warning and `Ctrl+G`, project, one-form feature wizard, leader
+      menu, diff on a single-branch repo, remove-session confirm
+      (`scripts/dev/tui-driver/new_user_path.py`, run in the Linux CI job after
+      `smoke.py`). It uses the driver's own harness stubs rather than a fake
+      `claude`, so it never starts a paid agent.
+- [x] Re-run the sweep at 80×24 and 120×40 after Epics 1–8 and compare to the
+      list above (2026-10-26, build of `d23442f5`; results below).
+- [x] `cargo fmt`, `cargo clippy`, and the full test suite before each PR (each
+      PR's CI passed).
+- [x] Update `CHANGELOG.md` and `site/content/docs/keybindings.md` for every
+      changed key (done per epic; the root README has no key tables for these).
 - [ ] If screenshots are wanted for the PR, capture them only on request.
+
+### Re-run results (2026-10-26)
+
+Resolved and seen on screen: Esc asks "Quit AMF?"; `d` on a session asks; diff
+viewer shows `vs HEAD (no base branch found)`; non-git warning and `Ctrl+G`;
+`g` with no remote says to add one; no doubled "Error:"; leader menu shows every
+entry, grouped and scrollable, and an unknown key stays in the menu; one-form
+New Feature wizard (Space, `▸` focus, `Ctrl+S`) opens the session; Batch uses
+the selected project and explains itself; footer key strip on every row type;
+grouped searchable help with an Esc section; word labels in the session picker;
+plan steps read "Step 2/7 Scope"; prompt overrides show only overridden entries.
+
+New or remaining findings, for a follow-up:
+
+- [ ] **AMF's own generated files drown the diff.** On a fresh repo the viewer
+      listed 5 changes, 4 of them AMF's (`.claude/settings.local.json` +107,
+      `.claude/amf-hook-state.json`, `.claude/.gitignore`, `.gitignore`), with the
+      user's `README.md` edit last. Hide or group AMF-managed paths by default.
+- [ ] **Syntax Parsers list** keeps a ~12-column empty gap where the removed
+      badge was; close it up.
+- [ ] **New Feature defaults differ between the first and later features**: the
+      first prefills the name `main` with "No (use repo dir)", later ones start
+      blank with "Yes" (worktree). Explain it in the form, or make a first
+      feature's name a prompt like the rest.
+- [ ] Learning Mode footer and the New Feature Mode descriptions are still
+      clipped at 80 columns (known from Epic 8).
+- [ ] Interview Esc cycles through "Confirm abort" and back; pressing Esc twice
+      resumes rather than leaves. Consider "Esc again to leave" wording.
 
 ## Decisions (2026-10-26)
 

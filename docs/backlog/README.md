@@ -63,7 +63,7 @@ doc always says exactly what remains.
 
 ## Index
 
-- [TUI first-run UX sweep](tui-first-run-ux-sweep-plan.md) — _Ready._ A
+- [TUI first-run UX sweep](tui-first-run-ux-sweep-plan.md) — _Partial: all nine epics shipped; a handful of follow-ups remain._ A
   new-user sweep of the TUI found four P0 problems (Esc on the dashboard quits
   AMF unconfirmed, `d` removes a live session unconfirmed, the diff viewer
   fails on a single-branch repo, non-git projects are accepted silently) plus

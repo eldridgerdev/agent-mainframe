@@ -43,10 +43,12 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         if: ${{ env.CF_TOKEN_SET == 'true' }}
-        uses: cloudflare/pages-action@v1
+        # `cloudflare/pages-action` was retired and no longer resolves, which
+        # failed this workflow at "Set up job". Cloudflare's replacement is
+        # wrangler-action running `pages deploy`.
+        uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: agent-mainframe-site
-          directory: site/public
+          command: pages deploy site/public --project-name=agent-mainframe-site --branch=main
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}

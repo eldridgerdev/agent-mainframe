@@ -680,12 +680,17 @@ fn draw_create_feature_branch_mode(
         } else {
             Style::default().fg(theme.text_muted.to_color())
         };
+        let prefix = format!("   {} {:<10}", marker, m.display_name());
+        // Whole description if it fits, the short form if not, never a
+        // sentence cut mid-word at the dialog edge.
+        let room = (chunks[6].width as usize).saturating_sub(prefix.chars().count());
+        let desc = [m.description(), m.short_description()]
+            .into_iter()
+            .find(|d| d.chars().count() <= room)
+            .unwrap_or("");
         mode_lines.push(Line::from(vec![
-            Span::styled(
-                format!("   {} {:<10}", marker, m.display_name()),
-                name_style,
-            ),
-            Span::styled(m.description(), desc_style),
+            Span::styled(prefix, name_style),
+            Span::styled(desc, desc_style),
         ]));
     }
 

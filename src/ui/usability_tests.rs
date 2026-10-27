@@ -586,6 +586,33 @@ fn syntax_parser_rows_have_no_repeated_available_badge() {
             !row.contains(&format!("      {name}")),
             "{width}x{height}: gap before name: {row:?}"
         );
+
+        // A description is whole, ends in an ellipsis, or is left out: it is
+        // never cut off at the dialog edge. Small terminals also keep most
+        // of the list on screen.
+        let mut visible = 0;
+        for language in HighlightLanguage::ALL {
+            let Some(row) = rows.iter().find(|r| {
+                r.contains(language.picker_title()) && r.contains(language.extension_summary())
+            }) else {
+                continue;
+            };
+            visible += 1;
+            let description = language.picker_description();
+            let prefix: String = description.chars().take(4).collect();
+            if row.contains(&prefix) {
+                assert!(
+                    row.contains(description) || row.contains('…'),
+                    "{width}x{height}: description cut mid-word: {row:?}"
+                );
+            }
+        }
+        if height == 24 {
+            assert!(
+                visible >= 10,
+                "{width}x{height}: only {visible} rows visible"
+            );
+        }
     }
 }
 

@@ -26,6 +26,14 @@ are tagged.
 
 ### Changed
 
+- **Fewer clipped hints and tighter parser rows.** Learning Mode's two-line
+  footer now drops whole low-priority hints at 80 columns instead of cutting
+  one mid-word (`? help` and `q close` always stay), the New Feature Mode rows
+  use a shorter description when the full one would not fit, and the Syntax
+  Parsers list no longer leaves a wide blank gap before each uninstalled
+  language. On small terminals that list also uses most of the screen, shows
+  more rows, and shortens a long description with an ellipsis instead of
+  cutting it off at the edge. No migration is required.
 - **Footers and forms stay readable at 80 and 120 columns.** The compose
   bar keeps whole hints (`Enter send`, `Esc close`, `Ctrl+T vim`) and drops the
   least important ones when the pane is narrow instead of cutting one mid-word.

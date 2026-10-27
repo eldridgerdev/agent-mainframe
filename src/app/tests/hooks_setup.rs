@@ -2188,3 +2188,58 @@ fn starting_a_feature_whose_workdir_is_gone_names_the_missing_path() {
     assert!(error.contains(&workdir.display().to_string()), "{error}");
     assert!(!workdir.exists(), "the missing checkout was recreated");
 }
+
+/// Drift guard for `crate::amf_managed`: whatever AMF's setup writes into a
+/// fresh checkout — hooks, skills, plugins, Review/Plan Mode instructions and
+/// their ignore entries, `.amf/` — the diff viewer must recognise as AMF's,
+/// while the user's own edit stays theirs. A new file setup starts writing
+/// fails here until it is added to that module.
+#[test]
+fn every_file_amf_sets_up_in_a_checkout_is_recognised_as_amfs_own() {
+    for agent in [
+        AgentKind::Claude,
+        AgentKind::Codex,
+        AgentKind::Opencode,
+        AgentKind::Pi,
+    ] {
+        let repo = TempDir::new().unwrap();
+        let dir = repo.path();
+        git_in(dir, &["init", "--quiet", "--initial-branch=main"]);
+        // A developer's global excludes often ignore `settings.local.json`.
+        git_in(dir, &["config", "core.excludesFile", "/dev/null"]);
+        std::fs::write(dir.join("README.md"), "# Demo\n").unwrap();
+        git_in(dir, &["add", "README.md"]);
+        git_in(
+            dir,
+            &[
+                "-c",
+                "user.name=AMF Test",
+                "-c",
+                "user.email=amf@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        );
+
+        ensure_notification_hooks(dir, dir, &VibeMode::Vibeless, &agent, false);
+        ensure_review_claude_md(dir, true);
+        ensure_plan_mode_instructions(dir, &agent, true);
+        crate::extension::generated_amf_subdir(dir, "session-status");
+        std::fs::write(dir.join("README.md"), "# Demo\n\nEdited by the user.\n").unwrap();
+
+        let snapshot = crate::diff::load_snapshot(dir, None, false).unwrap();
+        let (amf, yours): (Vec<_>, Vec<_>) = snapshot
+            .files
+            .iter()
+            .partition(|file| crate::amf_managed::is_amf_generated_change(file));
+        let yours: Vec<&str> = yours.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(
+            yours,
+            vec!["README.md"],
+            "{agent:?}: only the edit is yours"
+        );
+        assert!(!amf.is_empty(), "{agent:?}: setup wrote nothing visible");
+    }
+}

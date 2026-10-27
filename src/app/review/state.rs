@@ -401,6 +401,13 @@ pub enum FileTreeRow {
     },
 }
 
+/// Tree key of the synthetic row that holds AMF's own files
+/// (`DiffViewerState::amf_file_count`). It shares `collapsed_dirs` and
+/// `tree_cursor_dir` with real directories so every fold key works on it, and
+/// can never collide with one: a repository path has no NUL byte, and having no
+/// `/` it has no parent row.
+pub const AMF_GROUP_KEY: &str = "\u{0}amf-files";
+
 /// Every ancestor directory of `path`, shallowest first (`src`, `src/app`, …).
 /// Empty for a repo-root file.
 pub fn ancestor_dirs(path: &str) -> Vec<String> {
@@ -813,6 +820,14 @@ pub struct DiffViewerState {
     /// landing on a file inside one re-expands its ancestors
     /// (`reveal_selected_file`) so the selection is always reachable.
     pub collapsed_dirs: std::collections::BTreeSet<String>,
+    /// How many of `files` — always the trailing run, see
+    /// `group_amf_files` — are AMF's own (`crate::amf_managed`) rather than
+    /// changes to review. They are drawn under one [`AMF_GROUP_KEY`] row in the
+    /// tree. Zero for a PR review and for files set without a load.
+    pub amf_file_count: usize,
+    /// Set once the AMF group has been folded by default, so a refresh keeps
+    /// whatever the reviewer chose after that.
+    pub amf_group_seeded: bool,
     /// Set while the file-list row cursor is parked on a *directory* row rather
     /// than a file. The selected file (and therefore the patch panel) is left
     /// alone, so collapsing a tree never changes what's being diffed.
@@ -982,6 +997,8 @@ impl DiffViewerState {
             summary_selected: 0,
             review_history: None,
             collapsed_dirs: std::collections::BTreeSet::new(),
+            amf_file_count: 0,
+            amf_group_seeded: false,
             tree_cursor_dir: None,
             ignore_whitespace: false,
             context_expansion: std::collections::HashMap::new(),
@@ -1242,7 +1259,10 @@ impl DiffViewerState {
     /// collapsed directory emits its own row and swallows everything beneath
     /// it.
     pub fn file_tree_rows(&self) -> Vec<FileTreeRow> {
-        let visible = self.visible_file_indices();
+        let (visible, amf): (Vec<usize>, Vec<usize>) = self
+            .visible_file_indices()
+            .into_iter()
+            .partition(|&idx| !self.is_amf_file(idx));
         // Visible-file count per ancestor directory, for the row's `(n)` badge.
         let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for &idx in &visible {
@@ -1305,6 +1325,27 @@ impl DiffViewerState {
                 });
             }
         }
+
+        // AMF's own files last, under one row, by full path: there are few of
+        // them and their directories (`.claude/`, …) would otherwise read as
+        // the reviewer's.
+        if !amf.is_empty() {
+            let collapsed = self.collapsed_dirs.contains(AMF_GROUP_KEY);
+            rows.push(FileTreeRow::Dir {
+                path: AMF_GROUP_KEY.to_string(),
+                label: "AMF files".to_string(),
+                depth: 0,
+                collapsed,
+                files: amf.len(),
+            });
+            if !collapsed {
+                rows.extend(amf.into_iter().map(|index| FileTreeRow::File {
+                    index,
+                    depth: 1,
+                    name: self.files[index].path.clone(),
+                }));
+            }
+        }
         rows
     }
 
@@ -1313,12 +1354,56 @@ impl DiffViewerState {
     /// every file-order navigation path (n/p, verdict advance, filters, search,
     /// summary jumps) reveals its target without having to know about the tree.
     pub fn reveal_selected_file(&mut self) {
-        let Some(file) = self.files.get(self.selected_file) else {
-            return;
-        };
-        for dir in ancestor_dirs(&file.path) {
+        for dir in self.tree_ancestors(self.selected_file) {
             self.collapsed_dirs.remove(&dir);
         }
+    }
+
+    /// Index of the first of AMF's own files; `files.len()` when there are
+    /// none.
+    pub fn amf_files_start(&self) -> usize {
+        self.files.len().saturating_sub(self.amf_file_count)
+    }
+
+    pub fn is_amf_file(&self, index: usize) -> bool {
+        index < self.files.len() && index >= self.amf_files_start()
+    }
+
+    /// Order freshly loaded files for the tree: the changes to review first,
+    /// in path order, then AMF's own files (`crate::amf_managed`). Ordering
+    /// `files` itself — not just the rows — keeps `n`/`p`, the verdict
+    /// advance and the initial selection on the reviewer's files first. The
+    /// group starts folded the first time it appears beside files of the
+    /// user's; with nothing else to show, folding would only hide the list. A
+    /// PR review is left alone: everything in a PR was pushed by someone.
+    pub fn group_amf_files(&mut self) {
+        if self.is_pr_review() {
+            self.amf_file_count = 0;
+            return;
+        }
+        let (mut files, amf): (Vec<_>, Vec<_>) = std::mem::take(&mut self.files)
+            .into_iter()
+            .partition(|file| !crate::amf_managed::is_amf_generated_change(file));
+        self.amf_file_count = amf.len();
+        let has_user_files = !files.is_empty();
+        files.extend(amf);
+        self.files = files;
+        if self.amf_file_count > 0 && has_user_files && !self.amf_group_seeded {
+            self.collapsed_dirs.insert(AMF_GROUP_KEY.to_string());
+            self.amf_group_seeded = true;
+        }
+    }
+
+    /// The tree rows above file `index`, shallowest first: its directories,
+    /// or just the AMF group for one of AMF's files (drawn flat beneath it).
+    pub fn tree_ancestors(&self, index: usize) -> Vec<String> {
+        if self.is_amf_file(index) {
+            return vec![AMF_GROUP_KEY.to_string()];
+        }
+        self.files
+            .get(index)
+            .map(|file| ancestor_dirs(&file.path))
+            .unwrap_or_default()
     }
 
     /// Toggle a directory's collapsed state. Collapsing an ancestor of the
@@ -1359,11 +1444,14 @@ impl DiffViewerState {
         ) {
             return Some(pos);
         }
-        let path = self.files.get(self.selected_file)?.path.as_str();
-        ancestor_dirs(path).into_iter().rev().find_map(|dir| {
-            rows.iter()
-                .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if *path == dir))
-        })
+        self.files.get(self.selected_file)?;
+        self.tree_ancestors(self.selected_file)
+            .into_iter()
+            .rev()
+            .find_map(|dir| {
+                rows.iter()
+                    .position(|row| matches!(row, FileTreeRow::Dir { path, .. } if *path == dir))
+            })
     }
 
     /// Directory the fold commands act on, derived from whichever row
@@ -1375,10 +1463,7 @@ impl DiffViewerState {
     pub fn tree_cursor_target_dir(&self, rows: &[FileTreeRow]) -> Option<String> {
         match rows.get(self.tree_cursor_row(rows)?)? {
             FileTreeRow::Dir { path, .. } => Some(path.clone()),
-            FileTreeRow::File { index, .. } => self
-                .files
-                .get(*index)
-                .and_then(|file| ancestor_dirs(&file.path).pop()),
+            FileTreeRow::File { index, .. } => self.tree_ancestors(*index).pop(),
         }
     }
 

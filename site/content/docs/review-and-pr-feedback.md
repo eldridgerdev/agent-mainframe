@@ -17,6 +17,16 @@ reviews an oversized file hunk group by hunk group rather than sending one
 truncated prompt; the status line reports if any group could not be
 reviewed.
 
+Files AMF itself wrote into the checkout — the harness hooks in
+`.claude/settings.local.json`, `.claude/amf-hook-state.json`, the injected
+`amf-*` skills, `.amf/`, and `.gitignore` or `AGENTS.md` changes made only of
+AMF's own lines — are listed after your changes under a folded **AMF files (n)**
+row, both here and in the current-changes viewer (`Ctrl+Space`, then `d`). The
+header counts them separately (`5 files, 1 yours`). Press `.` to show or fold
+them, or use the file-tree fold keys (`z`, `h`/`l`, `Z`) on the row. A file you
+or an agent committed or staged is always listed as an ordinary change, even at
+one of those paths.
+
 <figure>
   <img src="/images/docs/final-review-file-tree.png" alt="Final Review's hierarchical file tree, with directory headers and per-file status, +/- counts, and risk flags">
   <figcaption>Final Review's file tree, with per-file status and risk flags at a glance.</figcaption>

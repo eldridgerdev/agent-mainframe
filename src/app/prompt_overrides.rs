@@ -218,8 +218,8 @@ impl App {
                 && let Some(first) = state.visible_indices().first()
             {
                 state.selected = *first;
+                state.scroll = 0;
             }
-            state.scroll = 0;
         }
         let message = match self.prompt_overrides_state() {
             Some(s) if s.show_all => "Showing all prompts",
@@ -565,8 +565,8 @@ impl App {
                 && let Some(first) = state.visible_indices().first()
             {
                 state.selected = *first;
+                state.scroll = 0;
             }
-            state.scroll = 0;
         }
     }
 }

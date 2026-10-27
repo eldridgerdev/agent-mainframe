@@ -446,7 +446,16 @@ fn draw_create_feature_branch_mode(
                 .max(min_agent_block_height),
         )
     };
-    let form_height = other_sections_height - 2 + agent_block_height;
+    // The focused-option help scrolls with the rest of the compact form, so
+    // its wrapped height is part of the off-screen layout.
+    let help_extra = if compact {
+        focused_help_lines(state, theme).map_or(0, |lines| {
+            (focused_help_paragraph(lines, theme).line_count(inner.width) as u16).max(3)
+        })
+    } else {
+        0
+    };
+    let form_height = other_sections_height - 2 + agent_block_height + help_extra;
     let mut scratch = ratatui::buffer::Buffer::empty(Rect::new(0, 0, inner.width, form_height));
     let layout_area = if compact {
         // The two trailing rows are the hints chunk; they are drawn for real.
@@ -831,15 +840,7 @@ fn draw_create_feature_branch_mode(
     put(buf, Paragraph::new(Line::from(session_spans)), chunks[17]);
 
     if let Some(help_lines) = focused_help_lines(state, theme) {
-        let help = Paragraph::new(help_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(theme.primary.to_color()))
-                    .style(Style::default().bg(theme.effective_selection_bg())),
-            )
-            .style(Style::default().bg(theme.effective_selection_bg()))
-            .wrap(Wrap { trim: true });
+        let help = focused_help_paragraph(help_lines, theme);
         // As tall as the wrapped text (at least three rows), never taller
         // than the space left.
         let wanted = (help.line_count(chunks[19].width) as u16).max(3);
@@ -855,7 +856,12 @@ fn draw_create_feature_branch_mode(
     }
 
     if compact {
-        let hints_area = Rect::new(inner.x, inner.y + inner.height - 2, inner.width, 2);
+        let hints_area = Rect::new(
+            inner.x,
+            (inner.y + inner.height).saturating_sub(2),
+            inner.width,
+            inner.height.min(2),
+        );
         let viewport = inner.height.saturating_sub(2);
         // The chunk holding the focused field, to keep it in the window.
         let focus_chunk = match state.step {
@@ -895,13 +901,25 @@ fn draw_create_feature_branch_mode(
         if offset > 0 {
             more(frame, inner.y, "\u{25b2}");
         }
-        if offset + viewport < form_height {
+        if viewport > 0 && offset + viewport < form_height {
             more(frame, inner.y + viewport - 1, "\u{25bc}");
         }
         frame.render_widget(form_hints(state, theme, inner.width), hints_area);
     } else {
         put(buf, form_hints(state, theme, inner.width), chunks[20]);
     }
+}
+
+fn focused_help_paragraph(lines: Vec<Line<'static>>, theme: &Theme) -> Paragraph<'static> {
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(theme.primary.to_color()))
+                .style(Style::default().bg(theme.effective_selection_bg())),
+        )
+        .style(Style::default().bg(theme.effective_selection_bg()))
+        .wrap(Wrap { trim: true })
 }
 
 fn frame_buf_cell<'a>(

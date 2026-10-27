@@ -579,9 +579,11 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
                 .current_question()
                 .map(|question| match question.source {
                     QuestionSource::Ai { round } => format!("AI round {round}"),
-                    QuestionSource::Builtin
-                    | QuestionSource::GlobalTemplate
-                    | QuestionSource::Template => question.section_name(),
+                    QuestionSource::Builtin => question.section_name(),
+                    // Template ids are user-defined and often not readable
+                    // slugs, so name the source instead.
+                    QuestionSource::GlobalTemplate => "Global template".to_string(),
+                    QuestionSource::Template => "Project template".to_string(),
                 })
                 .unwrap_or_default();
             (state.question_index + 2, source)

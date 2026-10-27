@@ -78,13 +78,10 @@ pub(crate) fn fit_hints(
     let cost = |h: &Hint| 2 + UnicodeWidthStr::width(h.key) + 1 + UnicodeWidthStr::width(h.label);
     let mut keep = vec![true; hints.len()];
     // " " lead, items separated by two spaces.
+    // The first kept hint has no separator before it.
     let total = |keep: &[bool]| -> usize {
-        1 + hints
-            .iter()
-            .zip(keep)
-            .filter(|(_, k)| **k)
-            .map(|(h, _)| cost(h))
-            .sum::<usize>()
+        let kept = hints.iter().zip(keep).filter(|(_, k)| **k);
+        1 + kept.map(|(h, _)| cost(h)).sum::<usize>().saturating_sub(2)
     };
     while total(&keep) > width {
         let drop = hints

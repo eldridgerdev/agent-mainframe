@@ -370,7 +370,18 @@ fn file_row(
             false,
         ),
         LearningListEntry::ProjectTour => (
-            "  Tour this whole project".to_string(),
+            // The list pane is only ~25 columns at 120; use the longest wording
+            // that fits instead of clipping "Tour this whole proj…".
+            [
+                "  Tour this whole project",
+                "  Tour the project",
+                "  Tour project",
+                "Tour project",
+            ]
+            .into_iter()
+            .find(|label| label.chars().count() + 2 <= width)
+            .unwrap_or("Tour project")
+            .to_string(),
             theme.info.to_color(),
             false,
         ),
@@ -413,7 +424,9 @@ fn file_row(
     };
 
     let cursor = if selected { "› " } else { "  " };
-    let avail = width.saturating_sub(cursor.len());
+    // Columns, not bytes: "›" is three bytes but one cell wide, and counting
+    // bytes clipped every row two columns early.
+    let avail = width.saturating_sub(cursor.chars().count());
     // Truncating a tree row from the left would eat the indent that says where
     // it sits, so those clip from the right instead.
     let body = if truncate_from_left {
@@ -1945,6 +1958,34 @@ let files = list_repo_files(workdir)?;
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn project_tour_row_is_never_clipped_mid_word_at_80_and_120_columns() {
+        for (width, height) in [(80, 30), (120, 40)] {
+            let mut state = state();
+            state.entries = vec![LearningListEntry::ProjectTour];
+            state.selected_entry = 0;
+            let screen = render_at(&mut state, width, height);
+            assert!(
+                screen.contains("Tour the project")
+                    || screen.contains("Tour this whole project")
+                    || screen.contains("Tour project"),
+                "tour row clipped at {width}x{height}: {}",
+                screen
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(width as usize)
+                    .take(8)
+                    .map(|r| r.iter().collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            assert!(
+                !screen.contains("proj\u{2026}"),
+                "{width}x{height}: {screen}"
+            );
+        }
     }
 
     fn dir_row(path: &str, depth: usize, expanded: bool, file_count: usize) -> LearningListEntry {

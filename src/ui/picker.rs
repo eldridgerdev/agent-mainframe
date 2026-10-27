@@ -283,7 +283,11 @@ pub fn draw_syntax_language_picker(
     let area = centered_rect(68, 58, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let title = format!(" Syntax Parsers ({}/{}) ", installed, state.languages.len());
+    let title = format!(
+        " Syntax Parsers: {}/{} installed ",
+        installed,
+        state.languages.len()
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -356,7 +360,7 @@ pub fn draw_syntax_language_picker(
             Style::default().fg(theme.text_muted.to_color()),
         )))
     };
-    frame.render_widget(status_line, chunks[0]);
+    frame.render_widget(status_line.wrap(Wrap { trim: false }), chunks[0]);
 
     let items: Vec<ListItem> = state
         .languages
@@ -391,11 +395,10 @@ pub fn draw_syntax_language_picker(
                             .add_modifier(Modifier::BOLD),
                     ),
                     crate::highlight::HighlightInstallState::Available => (
-                        " AVAILABLE ",
-                        Style::default()
-                            .fg(theme.effective_bg())
-                            .bg(theme.text_muted.to_color())
-                            .add_modifier(Modifier::BOLD),
+                        // Not installed is the default; a repeated badge on
+                        // every row is noise. Keep the width so names align.
+                        "           ",
+                        Style::default(),
                     ),
                     crate::highlight::HighlightInstallState::Broken => (
                         " BROKEN ",
@@ -480,6 +483,7 @@ pub fn draw_syntax_language_picker(
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
         ]))
+        .wrap(Wrap { trim: false })
     };
     frame.render_widget(hints, chunks[2]);
 }
@@ -906,7 +910,12 @@ pub fn draw_session_switcher(
     nerd_font: bool,
     theme: &Theme,
 ) {
-    let area = centered_rect(40, 50, frame.area());
+    // Wider on small terminals so the footer wraps to two rows, not four.
+    let area = centered_rect(
+        if frame.area().width < 100 { 60 } else { 40 },
+        50,
+        frame.area(),
+    );
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" {} / {} ", state.project_name, state.feature_name);
@@ -930,7 +939,7 @@ pub fn draw_session_switcher(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(inner);
 
     let items: Vec<ListItem> = state
@@ -1037,24 +1046,32 @@ pub fn draw_session_switcher(
             Style::default().fg(theme.warning.to_color()),
         ),
         Span::styled(
-            " navigate  ",
+            "\u{a0}navigate  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            " select  ",
+            "\u{a0}select  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("s", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" new  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            "\u{a0}new  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            " rename  ",
+            "\u{a0}rename  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-    ]));
+        Span::styled(
+            "\u{a0}cancel",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]))
+    // Wrap rather than clip: "s new  r" lost its meaning at 120 columns.
+    .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(hints, chunks[1]);
 }
 

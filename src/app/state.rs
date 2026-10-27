@@ -1075,6 +1075,13 @@ pub struct PromptOverrideRow {
     pub has_global: bool,
 }
 
+impl PromptOverrideRow {
+    /// True when any scope overrides this prompt (for any harness).
+    pub fn is_overridden(&self) -> bool {
+        self.source.is_override() || self.has_feature || self.has_project || self.has_global
+    }
+}
+
 /// The editor sub-state, open for `rows[row]`.
 pub struct PromptOverrideEditState {
     pub row: usize,
@@ -1117,11 +1124,32 @@ pub struct PromptOverridesState {
     /// A second `d` in the list confirms clearing the selected row's override.
     pub confirm_clear: bool,
     pub from_view: Option<ViewState>,
+    /// List every prompt (`true`) or only the overridden ones (`false`, the
+    /// default). `selected` always indexes `rows`; `scroll` indexes the
+    /// *visible* list.
+    pub show_all: bool,
 }
 
 impl PromptOverridesState {
     pub fn selected_row(&self) -> Option<&PromptOverrideRow> {
         self.rows.get(self.selected)
+    }
+
+    /// Whether row `i` appears in the list: always when `show_all`, else only
+    /// when some scope overrides it.
+    pub fn is_visible(&self, i: usize) -> bool {
+        self.show_all
+            || self
+                .rows
+                .get(i)
+                .is_some_and(PromptOverrideRow::is_overridden)
+    }
+
+    /// Indices into `rows` of the rows the list currently shows.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        (0..self.rows.len())
+            .filter(|i| self.is_visible(*i))
+            .collect()
     }
 }
 

@@ -8,7 +8,7 @@ use crate::project::{AgentKind, VibeMode};
 use crate::theme::Theme;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -404,6 +404,7 @@ fn draw_create_feature_branch_mode(
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let buf = frame.buffer_mut();
 
     // 1 name line per harness, plus 1 more when a usage summary is known
     // for it (omitted entirely when unknown, per the picker's "fail
@@ -431,12 +432,39 @@ fn draw_create_feature_branch_mode(
         + 1 // [18] spacer before focused help
         + 2; // [20] hints
     let min_agent_block_height = 1 + allowed_agents.len() as u16;
-    let agent_block_height = wanted_agent_block_height.min(
+    // Not even the squeezed form plus its hints fits (80x24 with Claude): lay
+    // it out at full height off-screen and show a window that follows focus,
+    // rather than clipping the Mode list.
+    let compact = inner.height < other_sections_height + min_agent_block_height;
+    let agent_block_height = if compact {
+        wanted_agent_block_height
+    } else {
+        wanted_agent_block_height.min(
+            inner
+                .height
+                .saturating_sub(other_sections_height)
+                .max(min_agent_block_height),
+        )
+    };
+    // The focused-option help scrolls with the rest of the compact form, so
+    // its wrapped height is part of the off-screen layout.
+    let help_extra = if compact {
+        focused_help_lines(state, theme).map_or(0, |lines| {
+            (focused_help_paragraph(lines, theme).line_count(inner.width) as u16).max(3)
+        })
+    } else {
+        0
+    };
+    let form_height = other_sections_height - 2 + agent_block_height + help_extra;
+    let mut scratch = ratatui::buffer::Buffer::empty(Rect::new(0, 0, inner.width, form_height));
+    let layout_area = if compact {
+        // The two trailing rows are the hints chunk; they are drawn for real.
+        Rect::new(0, 0, inner.width, form_height + 2)
+    } else {
         inner
-            .height
-            .saturating_sub(other_sections_height)
-            .max(min_agent_block_height),
-    );
+    };
+    let frame_buf = buf;
+    let buf: &mut ratatui::buffer::Buffer = if compact { &mut scratch } else { frame_buf };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -463,7 +491,7 @@ fn draw_create_feature_branch_mode(
             Constraint::Min(0),    // [19] focused option help
             Constraint::Length(2), // [20] hints
         ])
-        .split(inner);
+        .split(layout_area);
 
     let branch_active = state.step == CreateFeatureStep::Branch;
     let branch_has_error = state.branch_error.is_some();
@@ -507,7 +535,7 @@ fn draw_create_feature_branch_mode(
         )));
     }
     let branch_field = Paragraph::new(branch_lines);
-    frame.render_widget(branch_field, chunks[0]);
+    put(buf, branch_field, chunks[0]);
 
     let wt_active = state.step == CreateFeatureStep::Worktree;
     let wt_label_style = if wt_active {
@@ -561,7 +589,7 @@ fn draw_create_feature_branch_mode(
         )),
     ];
     let wt_widget = Paragraph::new(wt_lines);
-    frame.render_widget(wt_widget, chunks[2]);
+    put(buf, wt_widget, chunks[2]);
 
     let agent_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 0;
     let agent_label_style = if agent_active {
@@ -601,7 +629,7 @@ fn draw_create_feature_branch_mode(
     }
 
     let agent_widget = Paragraph::new(agent_lines);
-    frame.render_widget(agent_widget, chunks[4]);
+    put(buf, agent_widget, chunks[4]);
 
     let mode_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 1;
     let mode_label_style = if mode_active {
@@ -643,7 +671,7 @@ fn draw_create_feature_branch_mode(
     }
 
     let mode_widget = Paragraph::new(mode_lines);
-    frame.render_widget(mode_widget, chunks[6]);
+    put(buf, mode_widget, chunks[6]);
 
     // Review checkbox (chunks[8])
     let review_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 2;
@@ -664,7 +692,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let review_widget = Paragraph::new(review_lines);
-    frame.render_widget(review_widget, chunks[8]);
+    put(buf, review_widget, chunks[8]);
 
     // Plan checkbox (chunks[10]): a 3-state cycle (None / Quick Plan / Full
     // Plan) on one field, mirroring how the mode picker above lists its
@@ -685,7 +713,7 @@ fn draw_create_feature_branch_mode(
         Span::styled(format!("{plan_check} {plan_label}"), plan_style),
     ])];
     let plan_widget = Paragraph::new(plan_lines);
-    frame.render_widget(plan_widget, chunks[10]);
+    put(buf, plan_widget, chunks[10]);
 
     // Chrome checkbox (chunks[12])
     let chrome_active = state.step == CreateFeatureStep::Mode
@@ -721,7 +749,7 @@ fn draw_create_feature_branch_mode(
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[12]);
+        put(buf, chrome_widget, chunks[12]);
 
         // Remote Control checkbox (chunks[14]) — Claude only.
         // Requires claude.ai OAuth; unavailable for z.ai / third-party
@@ -763,7 +791,7 @@ fn draw_create_feature_branch_mode(
             Span::styled(rc_value, rc_value_style),
         ])];
         let rc_widget = Paragraph::new(rc_lines);
-        frame.render_widget(rc_widget, chunks[14]);
+        put(buf, rc_widget, chunks[14]);
     }
 
     // Steering coach — focus 6 for Claude, 4 for others.
@@ -787,7 +815,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[16]);
+    put(buf, steering_widget, chunks[16]);
 
     // Session name (chunks[17]): the agent session's label, defaulting to
     // "<Harness> 1". It used to be a separate prompt after the form.
@@ -809,18 +837,10 @@ fn draw_create_feature_branch_mode(
             Style::default().fg(theme.primary.to_color()),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(session_spans)), chunks[17]);
+    put(buf, Paragraph::new(Line::from(session_spans)), chunks[17]);
 
     if let Some(help_lines) = focused_help_lines(state, theme) {
-        let help = Paragraph::new(help_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::LEFT)
-                    .border_style(Style::default().fg(theme.primary.to_color()))
-                    .style(Style::default().bg(theme.effective_selection_bg())),
-            )
-            .style(Style::default().bg(theme.effective_selection_bg()))
-            .wrap(Wrap { trim: true });
+        let help = focused_help_paragraph(help_lines, theme);
         // As tall as the wrapped text (at least three rows), never taller
         // than the space left.
         let wanted = (help.line_count(chunks[19].width) as u16).max(3);
@@ -832,10 +852,88 @@ fn draw_create_feature_branch_mode(
         } else {
             chunks[19]
         };
-        frame.render_widget(help, help_area);
+        put(buf, help, help_area);
     }
 
-    frame.render_widget(form_hints(state, theme, inner.width), chunks[20]);
+    if compact {
+        let hints_area = Rect::new(
+            inner.x,
+            (inner.y + inner.height).saturating_sub(2),
+            inner.width,
+            inner.height.min(2),
+        );
+        let viewport = inner.height.saturating_sub(2);
+        // The chunk holding the focused field, to keep it in the window.
+        let focus_chunk = match state.step {
+            CreateFeatureStep::Branch => 0,
+            CreateFeatureStep::Worktree => 2,
+            CreateFeatureStep::SessionName => 17,
+            _ => match (state.mode_focus, state.agent == AgentKind::Claude) {
+                (0, _) => 4,
+                (1, _) => 6,
+                (2, _) => 8,
+                (3, _) => 10,
+                (4, true) => 12,
+                (5, true) => 14,
+                _ => 16,
+            },
+        };
+        let focus_bottom = chunks[focus_chunk].bottom();
+        let offset = focus_bottom
+            .saturating_sub(viewport)
+            .min(form_height.saturating_sub(viewport));
+        for row in 0..viewport.min(form_height) {
+            for col in 0..inner.width {
+                if let Some(cell) = scratch.cell((col, row + offset))
+                    && let Some(dst) = frame_buf_cell(frame, inner.x + col, inner.y + row)
+                {
+                    *dst = cell.clone();
+                }
+            }
+        }
+        // Drawn on the right border, so it never covers form text.
+        let more = |frame: &mut Frame, y: u16, symbol: &str| {
+            if let Some(cell) = frame_buf_cell(frame, inner.x + inner.width, y) {
+                cell.set_symbol(symbol)
+                    .set_style(Style::default().fg(theme.warning.to_color()));
+            }
+        };
+        if offset > 0 {
+            more(frame, inner.y, "\u{25b2}");
+        }
+        if viewport > 0 && offset + viewport < form_height {
+            more(frame, inner.y + viewport - 1, "\u{25bc}");
+        }
+        frame.render_widget(form_hints(state, theme, inner.width), hints_area);
+    } else {
+        put(buf, form_hints(state, theme, inner.width), chunks[20]);
+    }
+}
+
+fn focused_help_paragraph(lines: Vec<Line<'static>>, theme: &Theme) -> Paragraph<'static> {
+    Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(theme.primary.to_color()))
+                .style(Style::default().bg(theme.effective_selection_bg())),
+        )
+        .style(Style::default().bg(theme.effective_selection_bg()))
+        .wrap(Wrap { trim: true })
+}
+
+fn frame_buf_cell<'a>(
+    frame: &'a mut Frame<'_>,
+    x: u16,
+    y: u16,
+) -> Option<&'a mut ratatui::buffer::Cell> {
+    frame.buffer_mut().cell_mut((x, y))
+}
+
+/// Render `widget` into `buf`; the feature form draws through this so it can
+/// target either the frame or an off-screen scratch buffer.
+fn put<W: ratatui::widgets::Widget>(buf: &mut ratatui::buffer::Buffer, widget: W, area: Rect) {
+    widget.render(area, buf);
 }
 
 /// The explanation box under the form for the focused row. On the Mode row

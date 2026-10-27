@@ -681,6 +681,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" edit  "),
                     Span::styled("d", key_style()),
                     Span::raw(" clear override  "),
+                    Span::styled("a", key_style()),
+                    Span::raw(if state.show_all {
+                        " overridden only  "
+                    } else {
+                        " show all  "
+                    }),
                     Span::styled("?", key_style()),
                     Span::raw(" help  "),
                     Span::styled("Esc", key_style()),

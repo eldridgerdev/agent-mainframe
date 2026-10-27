@@ -230,22 +230,25 @@ only quits on first run.
 
 ## Epic 8 — Polish (P2)
 
-- [ ] Syntax Parsers (`p`): drop the repeated green "AVAILABLE" badge from rows;
+- [x] Syntax Parsers (`p`): drop the repeated green "AVAILABLE" badge from rows;
       show only "installed" for installed parsers and a summary "0/16 installed".
-- [ ] Headless Prompt Overrides (`E`): drop the repeated "built-in" tag and the
+- [x] Headless Prompt Overrides (`E`): drop the repeated "built-in" tag and the
       `···` filler, align the id column, and show only the **overridden**
       entries by default with a "show all" toggle.
-- [ ] `O` (AMF settings): stop adding an "amf-settings" project row to the tree as
+- [x] `O` (AMF settings): stop adding an "amf-settings" project row to the tree as
       a side effect, or label it and explain what it is. Check the GUI path.
-- [ ] Plan interview step titles: "Step 2/6 Built-in" → use the question's section
+- [x] Plan interview step titles: "Step 2/6 Built-in" → use the question's section
       name; the last screen also says "6/6" (as "Optional AI") — renumber.
-- [ ] Footers truncated at 120 columns (compose bar `Ctrl+T vim  C┘└──`, switcher
+- [x] Footers truncated at 120 columns (compose bar `Ctrl+T vim  C┘└──`, switcher
       `s new  r`, Learning Mode "Tour this whole proj…"): wrap or shorten per
       width, and add `usability_tests.rs` coverage at 80 and 120 columns.
-- [ ] Session sidebar: nested bordered boxes produce garbled edges (`└────�`);
+- [x] Session sidebar: nested bordered boxes produce garbled edges (`└────�`);
       check ratatui border sets and wide-character clipping.
-- [ ] `Esc` closes a compose box and the dashboard's behaviours differ (see 1a);
-      list Esc's meaning per screen in help.
+      (Investigated: not a defect. The real tmux grid is clean at 80x24, 100x30,
+      120x40 and 140x44; the driver omits border-only rows and a byte-wise
+      `cut` of its text splits `┌`/`─`.)
+- [x] `Esc` closes a compose box and the dashboard's behaviours differ (see 1a);
+      list Esc's meaning per screen in help. (Covered by Epic 7.)
 
 ## Epic 9 — Verification (P0, runs alongside every epic)
 

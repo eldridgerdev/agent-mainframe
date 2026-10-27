@@ -1565,3 +1565,68 @@ fn desktop_debug_log_database_failure_is_reported_instead_of_cached_history() {
     assert_eq!(error.kind, crate::gui_contract::GuiErrorKind::Internal);
     assert!(error.message.contains("debug_log"));
 }
+
+#[test]
+fn prompt_manager_lists_only_overridden_prompts_until_show_all_is_toggled() {
+    use crate::db::AmfDb;
+    use crate::db::prompt_overrides::OverrideScope;
+    use crate::prompts::PromptId;
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Idle),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let db_file = NamedTempFile::new().unwrap();
+    app.db = Some(AmfDb::open(db_file.path()).unwrap());
+    app.db
+        .as_ref()
+        .unwrap()
+        .upsert_prompt_override(
+            PromptId::SessionSummary.as_str(),
+            &OverrideScope::Global,
+            None,
+            "X",
+        )
+        .unwrap();
+
+    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+    app.open_prompt_overrides(None);
+    let (visible, selected_id) = match &app.mode {
+        AppMode::PromptOverrides(s) => (s.visible_indices(), s.rows[s.selected].id),
+        _ => panic!("manager not open"),
+    };
+    assert_eq!(visible.len(), 1, "only the overridden prompt is listed");
+    assert_eq!(selected_id, PromptId::SessionSummary);
+
+    // `a` reveals every prompt and `a` again hides them.
+    crate::handlers::handle_key(&mut app, key(KeyCode::Char('a')), 30).unwrap();
+    assert!(matches!(&app.mode, AppMode::PromptOverrides(s)
+        if s.visible_indices().len() == PromptId::ALL.len()));
+    crate::handlers::handle_key(&mut app, key(KeyCode::Char('a')), 30).unwrap();
+    assert!(matches!(&app.mode, AppMode::PromptOverrides(s) if s.visible_indices().len() == 1));
+
+    // With nothing overridden, a focused prompt still opens revealed.
+    app.db
+        .as_ref()
+        .unwrap()
+        .delete_prompt_override(
+            PromptId::SessionSummary.as_str(),
+            &OverrideScope::Global,
+            None,
+        )
+        .unwrap();
+    app.open_prompt_overrides_focused(None, Some(PromptId::ReviewChangesetOverview));
+    assert!(matches!(&app.mode, AppMode::PromptOverrides(s)
+        if s.show_all && s.rows[s.selected].id == PromptId::ReviewChangesetOverview));
+
+    // Enter on a hidden selection says why nothing happened instead of editing.
+    app.open_prompt_overrides(None);
+    crate::handlers::handle_key(&mut app, key(KeyCode::Enter), 30).unwrap();
+    assert!(matches!(&app.mode, AppMode::PromptOverrides(s) if s.edit.is_none()));
+    assert!(
+        app.message
+            .as_deref()
+            .is_some_and(|m| m.contains("show all"))
+    );
+}

@@ -174,7 +174,7 @@ const ESC_MEANINGS: &[(&str, &str)] = &[
     ),
     (
         "Session view",
-        "Goes to the agent (as ^[), e.g. to interrupt it; Ctrl+Q leaves the view",
+        "Goes to the session (as ^[); Ctrl+Q leaves the view",
     ),
     (
         "Compose box",
@@ -193,7 +193,7 @@ const SESSION_VIEW_KEYS: &[(&str, &str)] = &[
     ),
     (
         "Esc",
-        "Goes to the agent as ^[ when compose is closed — it does not leave the view",
+        "Goes to the session as ^[ when compose is closed — it does not leave the view",
     ),
     (
         "Ctrl+Space e",
@@ -810,7 +810,7 @@ mod tests {
                 last = at;
             }
             assert!(seen.contains("What Esc does on each screen"));
-            assert!(seen.contains("Goes to the agent (as ^[)"));
+            assert!(seen.contains("Goes to the session (as ^[)"));
             assert!(seen.contains("Close picker"));
         }
     }
@@ -866,6 +866,18 @@ mod tests {
         assert!(screen.contains("Theme picker"));
         assert!(screen.contains("match"));
         assert!(!screen.contains("Close picker"));
+    }
+
+    #[test]
+    fn session_view_compose_toggle_row_tracks_the_leader_key() {
+        let row = SESSION_VIEW_KEYS
+            .iter()
+            .find(|(_, d)| d.starts_with("Switch between compose"))
+            .expect("compose toggle row");
+        assert_eq!(
+            row.0,
+            format!("Ctrl+Space {}", crate::ui::pane::COMPOSE_TOGGLE_KEY)
+        );
     }
 
     #[test]

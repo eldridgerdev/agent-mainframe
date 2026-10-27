@@ -19,6 +19,11 @@ use crate::theme::Theme;
 /// This is the single source of truth for what the menu lists. Entries are
 /// rendered under a dim heading per consecutive `group`; consumers that only
 /// want the flat key table (e.g. the help overlay) can ignore the first field.
+/// Leader key that toggles compose/direct input. Not in `LEADER_COMMANDS`:
+/// it is inserted only when the session has a compose box, and help
+/// documents it from this constant.
+pub(crate) const COMPOSE_TOGGLE_KEY: &str = "e";
+
 pub(crate) const LEADER_COMMANDS: &[(&str, &str, &str)] = &[
     ("Sessions", "q", "Exit view"),
     ("Sessions", "t / T", "Next / prev session"),
@@ -1111,7 +1116,12 @@ fn leader_menu_rows(
         } else {
             "Enable compose input"
         };
-        insert_after(&mut entries, "s", "e".to_string(), desc.to_string());
+        insert_after(
+            &mut entries,
+            "s",
+            COMPOSE_TOGGLE_KEY.to_string(),
+            desc.to_string(),
+        );
     }
 
     // Next/prev feature has no default binding; only advertise it when the

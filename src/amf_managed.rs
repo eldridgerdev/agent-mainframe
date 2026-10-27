@@ -139,23 +139,34 @@ fn shared_file_change_is_amf_only(file: &DiffFile) -> bool {
         ".claude/.gitignore" => same_without(old, new, is_amf_claude_ignore_line),
         "AGENTS.md" | "CLAUDE.local.md" => {
             let strip = crate::app::setup::strip_amf_managed_blocks;
-            strip(old).trim() == strip(new).trim()
+            let (old_rest, new_rest) = (strip(old), strip(new));
+            // A file with no AMF block on either side has nothing of AMF's in
+            // it (an empty new `AGENTS.md`, a whitespace edit): the user's.
+            let has_block = old_rest != old || new_rest != new;
+            // AMF re-appends its block after `trim_end()` of the user's text,
+            // so trailing whitespace before it is the only part of the user's
+            // text AMF changes.
+            has_block && old_rest.trim_end() == new_rest.trim_end()
         }
         _ => false,
     }
 }
 
 /// `old` and `new` agree once AMF's lines (and blank lines, which AMF adds
-/// around its own) are dropped.
+/// around its own) are dropped, and AMF's lines are what changed. Without the
+/// second half, a user's blank-line edit, or an empty `.gitignore` they
+/// created, would count as AMF's.
 fn same_without(old: &str, new: &str, is_amf_line: fn(&str) -> bool) -> bool {
-    let keep = |text: &str| -> Vec<String> {
+    let split = |text: &str| -> (Vec<String>, Vec<String>) {
         text.lines()
             .map(str::trim_end)
-            .filter(|line| !line.trim().is_empty() && !is_amf_line(line))
+            .filter(|line| !line.trim().is_empty())
             .map(ToOwned::to_owned)
-            .collect()
+            .partition(|line| !is_amf_line(line))
     };
-    keep(old) == keep(new)
+    let (old_user, old_amf) = split(old);
+    let (new_user, new_amf) = split(new);
+    old_user == new_user && old_amf != new_amf
 }
 
 #[cfg(test)]
@@ -348,6 +359,46 @@ mod tests {
             Some(&format!("# Rules\nNew rule\n\n{block}")),
         );
         assert!(!is_amf_generated_change(&edited));
+    }
+
+    /// The line and block rules need AMF's content to be what changed. A
+    /// whitespace edit beside untouched AMF lines, or an empty file, is the
+    /// user's — it has nothing of AMF's in the change.
+    #[test]
+    fn a_change_with_nothing_of_amfs_in_it_is_the_users() {
+        let blank_line = file(
+            ".gitignore",
+            DiffFileStatus::Modified,
+            Some("target/\nCLAUDE.local.md\n"),
+            Some("target/\n\nCLAUDE.local.md\n"),
+        );
+        assert!(!is_amf_generated_change(&blank_line));
+        let empty_ignore = file(".gitignore", DiffFileStatus::Untracked, None, Some("\n"));
+        assert!(!is_amf_generated_change(&empty_ignore));
+
+        let empty_agents = file("AGENTS.md", DiffFileStatus::Untracked, None, Some("\n"));
+        assert!(!is_amf_generated_change(&empty_agents));
+        let block = "<!-- AMF:plan-instructions:begin -->\nx\n<!-- AMF:plan-instructions:end -->\n";
+        let reindented = file(
+            "AGENTS.md",
+            DiffFileStatus::Modified,
+            Some(&format!("# Rules\n{block}")),
+            Some(&format!("  # Rules\n{block}")),
+        );
+        assert!(
+            !is_amf_generated_change(&reindented),
+            "a leading-whitespace edit of the user's text is theirs"
+        );
+        let block_removed = file(
+            "AGENTS.md",
+            DiffFileStatus::Modified,
+            Some(&format!("# Rules\n\n{block}")),
+            Some("# Rules\n"),
+        );
+        assert!(
+            is_amf_generated_change(&block_removed),
+            "AMF taking its own block out again is AMF's"
+        );
     }
 
     #[test]

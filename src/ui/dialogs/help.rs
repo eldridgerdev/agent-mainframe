@@ -252,10 +252,7 @@ const PLAN_SCREEN_KEYS: &[(&str, &str)] = &[
         "Ctrl+F",
         "Draft the plan now from saved answers (uses tokens)",
     ),
-    (
-        "Esc",
-        "Cancel: launch without a plan, or leave the plan unchanged",
-    ),
+    ("Esc", "Ask to leave (y leave, n/Esc keep going)"),
 ];
 
 const PR_TRIAGE_KEYS: &[(&str, &str)] = &[

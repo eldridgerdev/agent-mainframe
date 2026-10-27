@@ -831,3 +831,90 @@ fn session_picker_names_each_kind_and_its_count() {
         assert!(!screen.contains("  V "), "{w}x{h}: glyph still drawn");
     }
 }
+
+#[test]
+fn plan_interview_abort_confirm_uses_the_shared_decline_keys() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut app = test_app();
+        let mut state = crate::app::PlanInterviewState::for_feature(
+            "demo".into(),
+            "f1".into(),
+            Vec::new(),
+            std::path::PathBuf::from("/tmp/demo"),
+            AgentKind::Claude,
+        );
+        state.abort_confirmation = true;
+        app.mode = crate::app::AppMode::PlanInterview(state);
+        let text = screen_rows(&mut app, w, h).join("\n");
+        assert!(text.contains("Leave this interview?"), "{w}x{h}\n{text}");
+        assert!(text.contains("leave interview"), "{w}x{h}\n{text}");
+        assert!(text.contains("keep going"), "{w}x{h}\n{text}");
+        assert!(!text.contains("resume interview"), "{w}x{h}\n{text}");
+    }
+}
+
+#[test]
+fn first_feature_form_explains_its_different_defaults() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let draw = |first: bool, use_worktree: bool| {
+            let mut state = crate::app::CreateFeatureState::new(
+                "demo".into(),
+                std::path::PathBuf::from("/tmp/demo"),
+                Vec::new(),
+                first,
+            );
+            state.use_worktree = use_worktree;
+            state.step = crate::app::CreateFeatureStep::Branch;
+            rendered_rows(w, h, |frame| {
+                dialogs::draw_create_feature_dialog(
+                    frame,
+                    &state,
+                    &[],
+                    &[AgentKind::Claude, AgentKind::Codex],
+                    &crate::usage::UsageData::default(),
+                    &Theme::default(),
+                )
+            })
+            .join("\n")
+        };
+        let first = draw(true, false);
+        assert!(
+            first.contains("First feature: works in the repo folder."),
+            "{w}x{h}\n{first}"
+        );
+        assert!(
+            first.contains("Pick Worktree Yes for a separate copy."),
+            "{w}x{h}\n{first}"
+        );
+        assert!(!draw(false, true).contains("First feature"), "{w}x{h}");
+        assert!(!draw(true, true).contains("First feature"), "{w}x{h}");
+    }
+}
+
+#[test]
+fn first_feature_note_is_not_clipped_by_a_name_error() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut state = crate::app::CreateFeatureState::new(
+            "demo".into(),
+            std::path::PathBuf::from("/tmp/demo"),
+            Vec::new(),
+            true,
+        );
+        state.step = crate::app::CreateFeatureStep::Branch;
+        state.branch_error = Some("Name is required".into());
+        let text = rendered_rows(w, h, |frame| {
+            dialogs::draw_create_feature_dialog(
+                frame,
+                &state,
+                &[],
+                &[AgentKind::Claude, AgentKind::Codex],
+                &crate::usage::UsageData::default(),
+                &Theme::default(),
+            )
+        })
+        .join("\n");
+        assert!(text.contains("Name is required"), "{w}x{h}\n{text}");
+        // Half a note (its first line without the second) would mislead.
+        assert!(!text.contains("First feature"), "{w}x{h}\n{text}");
+    }
+}

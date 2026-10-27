@@ -68,11 +68,11 @@ key:Enter
 wait:400
 shot:interview-second-question
 
-# Esc asks how to abandon; 'n' cancels the feature entirely. The draft stays.
+# Esc asks how to abandon; 'c' cancels the feature entirely. The draft stays.
 key:Escape
 wait:300
 shot:interview-abort-confirm
-key:n
+key:c
 wait:500
 shot:dashboard-after-abandon
 
@@ -119,6 +119,6 @@ shot:resumed-answer-restored
 # Leave without accepting: nothing is created, the draft is kept.
 key:Escape
 wait:300
-key:n
+key:c
 wait:500
 shot:dashboard-final

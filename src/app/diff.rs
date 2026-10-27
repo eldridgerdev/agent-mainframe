@@ -209,6 +209,7 @@ impl App {
                         .files
                         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
                 }
+                state.group_amf_files();
                 state.selected_file = selected_path
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
@@ -226,6 +227,9 @@ impl App {
                 state.base_commit.clear();
                 state.no_base_branch = false;
                 state.files.clear();
+                // Nothing is listed, so nothing is AMF's: a stale count would
+                // keep the `.` hint and the split header over an empty list.
+                state.amf_file_count = 0;
                 state.selected_file = 0;
                 state.patch_scroll = 0;
                 state.error = Some(err.to_string());
@@ -445,11 +449,7 @@ impl App {
                 // straight away, mirroring how a file explorer's left arrow
                 // behaves.
                 FileTreeRow::File { index, .. } => {
-                    let parent = state
-                        .files
-                        .get(*index)
-                        .and_then(|file| crate::app::ancestor_dirs(&file.path).pop());
-                    if let Some(parent) = parent {
+                    if let Some(parent) = state.tree_ancestors(*index).pop() {
                         state.tree_cursor_dir = Some(parent);
                     }
                 }
@@ -485,11 +485,21 @@ impl App {
     }
 
     /// `Z`: fold the whole tree to its top-level directories, or unfold it
-    /// completely when nothing is currently collapsed.
+    /// completely when nothing is currently collapsed. The AMF files row is
+    /// not part of "the tree" here: it is folded by default, so counting it
+    /// would turn the first `Z` into "unfold everything", and `.` already
+    /// shows or folds it. Its state is left as it is either way.
     pub fn diff_viewer_tree_toggle_all(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
-            if state.collapsed_dirs.is_empty() {
-                let dirs = state.tree_dirs();
+            let amf_key = crate::app::AMF_GROUP_KEY;
+            let amf_folded = state.collapsed_dirs.contains(amf_key);
+            let any_dir_folded = state.collapsed_dirs.iter().any(|dir| dir != amf_key);
+            if !any_dir_folded {
+                let dirs: Vec<String> = state
+                    .tree_dirs()
+                    .into_iter()
+                    .filter(|dir| dir != amf_key)
+                    .collect();
                 if dirs.is_empty() {
                     self.message = Some("No directories to collapse".to_string());
                     return;
@@ -497,13 +507,41 @@ impl App {
                 state.collapsed_dirs.extend(dirs);
                 // The selected file is now folded away; park the cursor on the
                 // outermost directory holding it so the highlight stays put.
-                state.tree_cursor_dir = state
-                    .files
-                    .get(state.selected_file)
-                    .and_then(|file| crate::app::ancestor_dirs(&file.path).into_iter().next());
+                // One of AMF's files is untouched by this, so it keeps its row.
+                if !state.is_amf_file(state.selected_file) {
+                    state.tree_cursor_dir =
+                        state.tree_ancestors(state.selected_file).into_iter().next();
+                }
             } else {
                 state.collapsed_dirs.clear();
+                if amf_folded {
+                    state.collapsed_dirs.insert(amf_key.to_string());
+                }
             }
+        }
+    }
+
+    /// `.`: show or fold the "AMF files" group from either panel — the
+    /// file-manager convention for hidden files. The same row also answers to
+    /// `z`/`h`/`l` like any directory (`Z` leaves it alone). Folding it while
+    /// one of its files is selected leaves that file selected (the highlight
+    /// falls back to the group row), exactly as folding a directory does.
+    pub fn diff_viewer_toggle_amf_files(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let count = state.amf_file_count;
+            if count == 0 {
+                self.message = Some("No AMF-generated files in this diff".to_string());
+                return;
+            }
+            let noun = if count == 1 { "file" } else { "files" };
+            state.toggle_dir_collapsed(crate::app::AMF_GROUP_KEY);
+            self.message = Some(
+                if state.collapsed_dirs.contains(crate::app::AMF_GROUP_KEY) {
+                    format!("Folded {count} AMF {noun} (. to show)")
+                } else {
+                    format!("Showing {count} AMF {noun}, listed after yours (. to fold)")
+                },
+            );
         }
     }
 

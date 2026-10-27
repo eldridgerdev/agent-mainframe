@@ -536,7 +536,13 @@ fn draw_create_feature_branch_mode(
     }
     // The first feature's defaults differ from later ones (name = the repo's
     // branch, no worktree); say why while that default is still in effect.
-    if state.first_feature && !state.use_worktree && state.git_available {
+    // The Name row is three lines tall: a validation error takes the
+    // spare line, so the note waits until the name is valid.
+    if state.first_feature
+        && !state.use_worktree
+        && state.git_available
+        && state.branch_error.is_none()
+    {
         let muted = Style::default().fg(theme.text_muted.to_color());
         branch_lines.push(Line::from(Span::styled(
             " First feature: works in the repo folder.",

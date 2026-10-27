@@ -801,3 +801,31 @@ fn first_feature_form_explains_its_different_defaults() {
         assert!(!draw(true, true).contains("First feature"), "{w}x{h}");
     }
 }
+
+#[test]
+fn first_feature_note_is_not_clipped_by_a_name_error() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let mut state = crate::app::CreateFeatureState::new(
+            "demo".into(),
+            std::path::PathBuf::from("/tmp/demo"),
+            Vec::new(),
+            true,
+        );
+        state.step = crate::app::CreateFeatureStep::Branch;
+        state.branch_error = Some("Name is required".into());
+        let text = rendered_rows(w, h, |frame| {
+            dialogs::draw_create_feature_dialog(
+                frame,
+                &state,
+                &[],
+                &[AgentKind::Claude, AgentKind::Codex],
+                &crate::usage::UsageData::default(),
+                &Theme::default(),
+            )
+        })
+        .join("\n");
+        assert!(text.contains("Name is required"), "{w}x{h}\n{text}");
+        // Half a note (its first line without the second) would mislead.
+        assert!(!text.contains("First feature"), "{w}x{h}\n{text}");
+    }
+}

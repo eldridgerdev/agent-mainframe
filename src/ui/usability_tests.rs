@@ -613,6 +613,21 @@ fn syntax_parser_rows_have_no_repeated_available_badge() {
                 "{width}x{height}: only {visible} rows visible"
             );
         }
+
+        // Footer hints are whole: a hint never starts on one line and ends on
+        // the next, so a key is always on the same line as its label.
+        for (key, label) in [
+            ("Enter/i", "install or reinstall"),
+            ("x", "uninstall"),
+            ("r", "refresh"),
+            ("Esc", "cancel"),
+        ] {
+            let hint = format!("{key} {label}");
+            assert!(
+                rows.iter().any(|r| r.contains(&hint)),
+                "{width}x{height}: hint split or missing: {hint:?} in {rows:#?}"
+            );
+        }
     }
 }
 

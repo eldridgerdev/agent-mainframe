@@ -478,36 +478,58 @@ pub fn draw_syntax_language_picker(
             ),
         ]))
     } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "  j/k or \u{2191}/\u{2193}",
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::styled(
-                " navigate  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Enter/i", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " install or reinstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("x", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " uninstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("r", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " refresh  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]))
-        .wrap(Wrap { trim: false })
+        Paragraph::new(flow_hints(
+            &[
+                ("j/k or \u{2191}/\u{2193}", "navigate"),
+                ("Enter/i", "install or reinstall"),
+                ("x", "uninstall"),
+                ("r", "refresh"),
+                ("Esc", "cancel"),
+            ],
+            chunks[2].width as usize,
+            Style::default().fg(theme.warning.to_color()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
     };
     frame.render_widget(hints, chunks[2]);
+}
+
+/// Lay `(key, label)` hints out over as many lines as `width` needs, moving a
+/// whole hint to the next line rather than letting the terminal split it
+/// ("r" at the end of one line, "refresh" at the start of the next).
+fn flow_hints(
+    hints: &[(&str, &str)],
+    width: usize,
+    key_style: Style,
+    label_style: Style,
+) -> Vec<Line<'static>> {
+    const INDENT: &str = "  ";
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(INDENT)];
+    let mut used = INDENT.chars().count();
+    let mut line_has_hint = false;
+    for (key, label) in hints {
+        let separator = if line_has_hint { 2 } else { 0 };
+        let cost = separator + key.chars().count() + 1 + label.chars().count();
+        if line_has_hint && used + cost > width {
+            lines.push(Line::from(std::mem::replace(
+                &mut spans,
+                vec![Span::raw(INDENT)],
+            )));
+            used = INDENT.chars().count();
+            line_has_hint = false;
+        }
+        if line_has_hint {
+            spans.push(Span::raw("  "));
+            used += 2;
+        }
+        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled(format!(" {label}"), label_style));
+        used += key.chars().count() + 1 + label.chars().count();
+        line_has_hint = true;
+    }
+    lines.push(Line::from(spans));
+    lines
 }
 
 pub fn draw_markdown_file_picker(

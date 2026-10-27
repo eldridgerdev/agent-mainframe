@@ -93,13 +93,14 @@ fn usability_delete_dialogs_show_consequences_and_confirmation() {
 fn usability_help_wraps_and_handles_tiny_terminals() {
     let mut bottom = 0;
     let screen = rendered(80, 24, |frame| {
-        bottom = dialogs::draw_help(frame, usize::MAX, &Theme::default())
+        bottom = dialogs::draw_help(frame, usize::MAX, "", false, &Theme::default())
     });
     assert!(bottom > 0 && bottom < 1000);
-    assert!(screen.contains("Close picker"));
+    // The last row of the last section is reachable at the bottom.
+    assert!(screen.contains("PR Triage / Review (legacy)"));
     for (width, height) in [(1, 1), (2, 2), (10, 4)] {
         rendered(width, height, |frame| {
-            dialogs::draw_help(frame, usize::MAX, &Theme::default());
+            dialogs::draw_help(frame, usize::MAX, "", false, &Theme::default());
         });
     }
 }
@@ -566,5 +567,178 @@ fn syntax_parser_rows_have_no_repeated_available_badge() {
         assert!(!screen.contains("AVAILABLE"), "{width}x{height}");
         assert!(screen.contains("INSTALLED"));
         assert!(screen.contains(&format!("1/{total} installed")));
+    }
+}
+
+fn discoverability_app(selection: &str) -> crate::app::App {
+    use crate::project::{Feature, Project, ProjectStore, SessionKind, VibeMode};
+    let mut store = ProjectStore::empty();
+    if selection != "empty" {
+        store.add_project(Project::new(
+            "demo".into(),
+            "/tmp/amf-discoverability-demo".into(),
+            true,
+            AgentKind::Claude,
+        ));
+    }
+    if matches!(
+        selection,
+        "project" | "feature" | "bare-feature" | "session"
+    ) {
+        let mut feature = Feature::new(
+            "first".into(),
+            "first".into(),
+            "/tmp/amf-discoverability-demo".into(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        if selection != "bare-feature" {
+            feature.add_session(SessionKind::Claude);
+        }
+        store.add_feature("demo", feature);
+    }
+    let mut app = crate::app::App::new_for_test(
+        store,
+        Box::new(crate::traits::MockTmuxOps::new()),
+        Box::new(crate::traits::MockWorktreeOps::new()),
+    );
+    app.selection = match selection {
+        "feature" | "bare-feature" => crate::app::Selection::Feature(0, 0),
+        "session" => crate::app::Selection::Session(0, 0, 0),
+        _ => crate::app::Selection::Project(0),
+    };
+    app
+}
+
+const DISCOVERABILITY_ROWS: &[&str] = &[
+    "empty",
+    "bare-project",
+    "project",
+    "bare-feature",
+    "feature",
+    "session",
+];
+
+/// The footer's key row: the line above the bottom border.
+fn footer_key_row(screen: &str, width: u16, height: u16) -> String {
+    let rows: Vec<String> = screen
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(width as usize)
+        .map(|c| c.iter().collect())
+        .collect();
+    rows[height as usize - 2].clone()
+}
+
+#[test]
+fn dashboard_footer_shows_a_key_strip_with_help_at_every_size() {
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        for selection in DISCOVERABILITY_ROWS {
+            let mut app = discoverability_app(selection);
+            let screen = rendered(w, h, |frame| crate::ui::draw(frame, &mut app));
+            let row = footer_key_row(&screen, w, h);
+            // One line, fully visible: `? help` ends it and the right border
+            // is intact.
+            assert!(row.contains("? help"), "{w}x{h} {selection}: {row:?}");
+            assert!(
+                row.trim_end().ends_with('\u{2502}'),
+                "{w}x{h} {selection}: {row:?}"
+            );
+            let expect = match *selection {
+                "empty" => "Press N to add a project",
+                "bare-project" => "Press n to add a feature",
+                "project" => "n new feature",
+                "bare-feature" => "Press s to add a session",
+                "feature" => "s add session",
+                _ => "Enter open",
+            };
+            assert!(row.contains(expect), "{w}x{h} {selection}: {row:?}");
+            // The selection line above it is still there.
+            let above = footer_key_row(&screen, w, h - 1);
+            if *selection != "empty" {
+                assert!(
+                    above.contains("demo") || above.contains("first") || above.contains("claude"),
+                    "{w}x{h} {selection}: selection line lost: {above:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dashboard_footer_keys_all_have_help_rows() {
+    for selection in DISCOVERABILITY_ROWS {
+        let app = discoverability_app(selection);
+        let strip = status::dashboard_key_strip(&app);
+        let lead_keys = strip
+            .lead
+            .unwrap_or_default()
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .copied();
+        for key in strip.keys.iter().map(|(k, _)| *k).chain(lead_keys) {
+            assert!(
+                dialogs::DASHBOARD_KEYS.iter().any(|(_, k, _)| *k == key),
+                "{selection}: footer key {key:?} has no help row"
+            );
+        }
+    }
+}
+
+#[test]
+fn session_picker_names_each_kind_and_its_count() {
+    let state = crate::app::SessionPickerState {
+        builtin_sessions: [
+            (crate::project::SessionKind::Claude, "Claude"),
+            (crate::project::SessionKind::Terminal, "Terminal"),
+            (crate::project::SessionKind::Nvim, "Neovim"),
+            (crate::project::SessionKind::Vscode, "VSCode"),
+            (crate::project::SessionKind::Todos, "TODOs"),
+        ]
+        .into_iter()
+        .map(|(kind, label)| crate::app::BuiltinSessionOption {
+            kind,
+            label: label.into(),
+            disabled: None,
+        })
+        .collect(),
+        custom_sessions: vec![],
+        selected: 1,
+        pi: 0,
+        fi: 0,
+        from_view: None,
+    };
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let screen = rendered(w, h, |frame| {
+            picker::draw_session_picker(
+                frame,
+                &state,
+                &crate::usage::UsageData::default(),
+                false,
+                &Theme::default(),
+            )
+        });
+        assert!(
+            screen.contains("Start a session \u{00b7} 5 options"),
+            "{w}x{h}"
+        );
+        for word in [
+            "AI agent",
+            "shell",
+            "editor in AMF",
+            "opens VS Code",
+            "TODO list",
+        ] {
+            assert!(screen.contains(word), "{w}x{h}: missing {word}");
+        }
+        assert!(screen.contains("Esc cancel"), "{w}x{h}: footer clipped");
+        assert!(!screen.contains("  * "), "{w}x{h}: glyph still drawn");
+        assert!(!screen.contains("  V "), "{w}x{h}: glyph still drawn");
     }
 }

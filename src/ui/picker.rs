@@ -1557,6 +1557,22 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame, theme: &Theme) {
     draw_session_restore_confirm(frame, theme, "opencode");
 }
 
+/// What a built-in session kind is, in a word or two, for the Start Session
+/// picker.
+pub(crate) fn session_kind_word(kind: &crate::project::SessionKind) -> &'static str {
+    use crate::project::SessionKind;
+    match kind {
+        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi => {
+            "AI agent"
+        }
+        SessionKind::Terminal => "shell",
+        SessionKind::Nvim => "editor in AMF",
+        SessionKind::Vscode => "opens VS Code",
+        SessionKind::Todos => "TODO list",
+        SessionKind::Custom => "custom",
+    }
+}
+
 pub fn draw_session_picker(
     frame: &mut Frame,
     state: &SessionPickerState,
@@ -1568,7 +1584,13 @@ pub fn draw_session_picker(
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let total = state.builtin_sessions.len() + state.custom_sessions.len();
-    let title = format!(" Start Session ({}) ", total);
+    // The count is how many kinds of session this feature can start — not
+    // how many are running — so the title says so.
+    let title = format!(
+        " Start a session \u{00b7} {} option{} ",
+        total,
+        if total == 1 { "" } else { "s" }
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -1603,49 +1625,29 @@ pub fn draw_session_picker(
                 .add_modifier(Modifier::BOLD),
         ))));
 
+        let label_width = state
+            .builtin_sessions
+            .iter()
+            .map(|s| s.label.chars().count())
+            .max()
+            .unwrap_or(0);
         for (i, session) in state.builtin_sessions.iter().enumerate() {
             let idx = i;
             let is_selected = idx == state.selected;
             let is_disabled = session.disabled.is_some();
 
-            let icon = match session.kind {
-                crate::project::SessionKind::Claude => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_claude.to_color()),
-                ),
-                crate::project::SessionKind::Opencode => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_opencode.to_color()),
-                ),
-                crate::project::SessionKind::Codex => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_codex.to_color()),
-                ),
-                crate::project::SessionKind::Terminal => Span::styled(
-                    "  > ",
-                    Style::default().fg(theme.session_icon_terminal.to_color()),
-                ),
-                crate::project::SessionKind::Nvim => {
-                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
-                    Span::styled(
-                        icon,
-                        Style::default().fg(theme.session_icon_nvim.to_color()),
-                    )
-                }
-                crate::project::SessionKind::Vscode => Span::styled(
-                    "  V ",
-                    Style::default().fg(theme.session_icon_vscode.to_color()),
-                ),
-                crate::project::SessionKind::Todos => {
-                    let icon = if nerd_font { "  \u{f0ae} " } else { "  = " };
-                    Span::styled(
-                        icon,
-                        Style::default().fg(theme.session_icon_custom.to_color()),
-                    )
-                }
-                _ => Span::styled("    ", Style::default().fg(theme.text_muted.to_color())),
+            // A word, not a glyph: `*`, `>` and `V` read as markup, and `>`
+            // collides with the selection marker beside it.
+            let kind_word = session_kind_word(&session.kind);
+            let kind_color = match session.kind {
+                crate::project::SessionKind::Claude => &theme.session_icon_claude,
+                crate::project::SessionKind::Opencode => &theme.session_icon_opencode,
+                crate::project::SessionKind::Codex => &theme.session_icon_codex,
+                crate::project::SessionKind::Terminal => &theme.session_icon_terminal,
+                crate::project::SessionKind::Nvim => &theme.session_icon_nvim,
+                crate::project::SessionKind::Vscode => &theme.session_icon_vscode,
+                _ => &theme.session_icon_custom,
             };
-
             let (label_style, msg) = if is_disabled {
                 (
                     Style::default().fg(theme.text_muted.to_color()),
@@ -1668,8 +1670,14 @@ pub fn draw_session_picker(
                 } else {
                     Span::styled("    ", Style::default().fg(theme.text_muted.to_color()))
                 },
-                icon,
-                Span::styled(&session.label, label_style),
+                Span::styled(
+                    format!("{:<label_w$}", session.label, label_w = label_width),
+                    label_style,
+                ),
+                Span::styled(
+                    format!("  {kind_word}"),
+                    Style::default().fg(kind_color.to_color()),
+                ),
             ];
 
             if let Some(reason) = msg {
@@ -1791,10 +1799,7 @@ pub fn draw_session_picker(
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "  j/k or \u{2191}/\u{2193}",
-            Style::default().fg(theme.warning.to_color()),
-        ),
+        Span::styled("  j/k", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " navigate  ",
             Style::default().fg(theme.text_muted.to_color()),

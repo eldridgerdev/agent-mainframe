@@ -163,19 +163,75 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_help_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn close_help(app: &mut App) {
+    let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+        AppMode::Help(state) => state.from_view,
+        other => {
+            app.mode = other;
+            return;
+        }
+    };
+    if let Some(view) = from_view {
+        app.mode = AppMode::Viewing(view);
+    }
+}
+
+/// Typing into the help search box: printable keys edit the query, Enter
+/// keeps the filter and returns to scrolling, Esc clears it.
+fn handle_help_search_key(app: &mut App, key: KeyEvent) {
+    let AppMode::Help(state) = &mut app.mode else {
+        return;
+    };
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-            let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                AppMode::Help(state) => state.from_view,
-                other => {
-                    app.mode = other;
-                    return Ok(());
-                }
-            };
-            if let Some(view) = from_view {
-                app.mode = AppMode::Viewing(view);
+        KeyCode::Esc => {
+            state.query.clear();
+            state.searching = false;
+            state.scroll_offset = 0;
+        }
+        KeyCode::Enter => state.searching = false,
+        KeyCode::Backspace => {
+            state.query.pop();
+            state.scroll_offset = 0;
+        }
+        KeyCode::Down => state.scroll_offset = state.scroll_offset.saturating_add(1),
+        KeyCode::Up => state.scroll_offset = state.scroll_offset.saturating_sub(1),
+        KeyCode::PageDown => state.scroll_offset = state.scroll_offset.saturating_add(10),
+        KeyCode::PageUp => state.scroll_offset = state.scroll_offset.saturating_sub(10),
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.query.clear();
+            state.scroll_offset = 0;
+        }
+        KeyCode::Char(c)
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            state.query.push(c);
+            state.scroll_offset = 0;
+        }
+        _ => {}
+    }
+}
+
+pub fn handle_help_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(&app.mode, AppMode::Help(state) if state.searching) {
+        handle_help_search_key(app, key);
+        return Ok(());
+    }
+    match key.code {
+        KeyCode::Char('/') => {
+            if let AppMode::Help(state) = &mut app.mode {
+                state.searching = true;
             }
+        }
+        // Esc peels a filter off before it closes help.
+        KeyCode::Esc if matches!(&app.mode, AppMode::Help(state) if !state.query.is_empty()) => {
+            if let AppMode::Help(state) = &mut app.mode {
+                state.query.clear();
+                state.scroll_offset = 0;
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+            close_help(app);
         }
         KeyCode::Char('j') | KeyCode::Down => {
             if let AppMode::Help(state) = &mut app.mode {

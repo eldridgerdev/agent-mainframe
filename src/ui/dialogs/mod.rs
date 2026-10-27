@@ -52,6 +52,8 @@ pub use feature::{
 };
 pub use handoff::draw_fresh_context_prompt_dialog;
 pub use harness::draw_harness_setup_dialog;
+#[cfg(test)]
+pub(crate) use help::DASHBOARD_KEYS;
 pub use help::draw_help;
 pub use hooks::{
     draw_diff_review_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,

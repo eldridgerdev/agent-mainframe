@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{SessionKind, VibeMode};
 
-const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
+pub(crate) const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("i", "Pending inputs"),
     ("?", "Help"),
     ("/", "Command picker"),
@@ -552,8 +552,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && let Some(view) = &state.from_view
     {
         let scroll = state.scroll_offset;
+        let query = state.query.clone();
+        let searching = state.searching;
         draw_view_pane(frame, app, view, false, false);
-        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        let scroll = super::dialogs::draw_help(frame, scroll, &query, searching, &app.theme);
         if let AppMode::Help(state) = &mut app.mode {
             state.scroll_offset = scroll;
         }
@@ -775,7 +777,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            // Two inner rows: the selection / feedback line, then the keys.
+            Constraint::Length(4),
         ])
         .split(frame.area());
 
@@ -945,7 +948,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_none()
     {
         let scroll = state.scroll_offset;
-        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        let query = state.query.clone();
+        let scroll = super::dialogs::draw_help(frame, scroll, &query, state.searching, &app.theme);
         if let AppMode::Help(state) = &mut app.mode {
             state.scroll_offset = scroll;
         }

@@ -1123,7 +1123,63 @@ impl App {
 
     pub fn activate_leader(&mut self) {
         self.leader_active = true;
+        self.leader_scroll = 0;
+        self.leader_max_scroll.set(0);
         self.leader_activated_at = Some(std::time::Instant::now());
+    }
+
+    /// Keep the leader menu open after a key that did not run a command
+    /// (scrolling, or an unrecognised key): restart the idle timeout and keep
+    /// the scroll position.
+    pub fn keep_leader_open(&mut self) {
+        self.leader_active = true;
+        self.leader_activated_at = Some(std::time::Instant::now());
+    }
+
+    /// Scroll/dismiss keys for the open leader menu. Returns true when the key
+    /// was consumed here (the menu stays open, or was dismissed) so it never
+    /// reaches a command or the agent.
+    pub fn handle_leader_menu_nav(&mut self, key: &crossterm::event::KeyEvent) -> bool {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(' ') {
+            self.deactivate_leader();
+            return true;
+        }
+        if key.code == KeyCode::Esc {
+            self.deactivate_leader();
+            return true;
+        }
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return false;
+        }
+        let max = self.leader_max_scroll.get();
+        let page = crate::ui::pane::LEADER_MENU_PAGE;
+        let next = match key.code {
+            KeyCode::Down | KeyCode::Char('j') => self.leader_scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => self.leader_scroll.saturating_sub(1),
+            KeyCode::PageDown => self.leader_scroll.saturating_add(page),
+            KeyCode::PageUp => self.leader_scroll.saturating_sub(page),
+            KeyCode::Home => 0,
+            KeyCode::End => max,
+            _ => return false,
+        };
+        self.leader_scroll = next.min(max);
+        self.keep_leader_open();
+        true
+    }
+
+    /// A key the leader menu has no command for. It is not forwarded to the
+    /// agent; say so and keep the menu open.
+    pub fn leader_unrecognised(&mut self, key: &crossterm::event::KeyEvent) {
+        let name = match key.code {
+            crossterm::event::KeyCode::Char(c) => c.to_string(),
+            other => format!("{other:?}"),
+        };
+        self.push_toast_warning(format!("No command on `{name}`. Esc closes the menu."));
+        self.keep_leader_open();
     }
 
     pub fn deactivate_leader(&mut self) {

@@ -81,6 +81,12 @@ pub fn handle_prompt_overrides_key(app: &mut App, key: KeyEvent, visible_rows: u
             app.prompt_overrides_select(-1);
             app.prompt_overrides_clamp_scroll(list_height);
         }
+        KeyCode::Char('a') => app.prompt_overrides_toggle_show_all(),
+        KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('d')
+            if !state.is_visible(state.selected) =>
+        {
+            app.message = Some("Nothing selected. Press a to show all prompts.".into());
+        }
         KeyCode::Enter | KeyCode::Char('e') => app.prompt_overrides_start_edit(),
         KeyCode::Char('d') => app.prompt_overrides_clear_selected()?,
         KeyCode::Char('?') | KeyCode::Char('h') => app.prompt_overrides_toggle_help(),

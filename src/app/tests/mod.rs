@@ -20,3 +20,4 @@ mod status_sidebar;
 mod store_sync;
 mod support;
 mod todos;
+mod wizards;

@@ -44,7 +44,7 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        let mut state = CreateProjectState::auto_detect();
+        let mut state = CreateProjectState::blank();
         state.agent = self.default_project_preferred_agent();
         let path = PathBuf::from(&state.path);
         let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &state.agent);
@@ -55,37 +55,24 @@ impl App {
     }
 
     pub fn start_create_batch_features(&mut self) {
-        let workspace_path = match &self.selection {
-            Selection::Project(pi) => self
-                .store
-                .projects
-                .get(*pi)
-                .map(|p| p.repo.to_string_lossy().into_owned()),
-            Selection::Feature(pi, fi) => {
-                if let Some(p) = self.store.projects.get(*pi) {
-                    if p.features.get(*fi).is_some() {
-                        Some(p.repo.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+        // With a project selected, the batch goes into that project; asking
+        // for its path and name again would only invite a mismatch (and
+        // naming an existing project used to fail with no visible error).
+        let selected = self
+            .selected_project()
+            .map(|p| (p.name.clone(), p.repo.clone(), p.is_git));
+        let mut state = match selected {
+            Some((name, repo, is_git)) => {
+                if !is_git && self.worktree.repo_root(&repo).is_err() {
+                    self.push_toast_warning(format!(
+                        "Batch features need git worktrees; '{name}' is not a git repository"
+                    ));
+                    return;
                 }
+                CreateBatchFeaturesState::for_project(name, &repo)
             }
-            Selection::Session(pi, fi, _) => {
-                if let Some(p) = self.store.projects.get(*pi) {
-                    if p.features.get(*fi).is_some() {
-                        Some(p.repo.to_string_lossy().into_owned())
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
+            None => CreateBatchFeaturesState::with_workspace(None),
         };
-
-        let mut state = CreateBatchFeaturesState::with_workspace(workspace_path);
         let repo = PathBuf::from(&state.workspace_path);
         self.active_extension = self.extension_for_repo(&repo);
         let (agent, agent_index) = self.normalize_agent_for_repo(&repo, &state.agent);
@@ -127,7 +114,10 @@ impl App {
 
         let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
-        self.message = Some("Created AMF settings project".into());
+        // `O` registers the config folder as an ordinary project so an agent
+        // can edit it; say so, since a new tree row is otherwise unexplained.
+        self.message =
+            Some("Added 'amf-settings' (your AMF config folder). Press d on it to remove.".into());
 
         Ok(())
     }
@@ -138,7 +128,7 @@ impl App {
 
     pub fn show_error(&mut self, error: anyhow::Error) {
         let detail = error.to_string();
-        self.report_logged_error("app", format!("Error: {}", detail));
+        self.report_logged_error("app", detail);
         match &self.mode {
             AppMode::Normal | AppMode::Help(_) | AppMode::Viewing(_) => {}
             _ => {
@@ -157,9 +147,17 @@ impl App {
             }
         };
 
-        let start_dir = PathBuf::from(&create_state.path);
-        let start_dir = if start_dir.is_dir() {
-            start_dir
+        // Start where the typed path points; with nothing typed, beside the
+        // selected project (new projects tend to live next to old ones).
+        let typed = PathBuf::from(&create_state.path);
+        let start_dir = if !create_state.path.trim().is_empty() && typed.is_dir() {
+            typed
+        } else if let Some(parent) = self
+            .selected_project()
+            .and_then(|p| p.repo.parent().map(PathBuf::from))
+            .filter(|parent| parent.is_dir())
+        {
+            parent
         } else {
             dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
         };
@@ -191,6 +189,8 @@ impl App {
             );
             state.create_state.agent = agent;
             state.create_state.agent_index = agent_index;
+            state.create_state.path_is_git =
+                self.probe_path_is_git(&PathBuf::from(&state.create_state.path));
             self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
@@ -230,6 +230,34 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Run `git init` in the New Project dialog's path so the project can use
+    /// worktrees, diffs, issues and PRs. Reports the outcome in the dialog.
+    pub fn init_git_for_create_project(&mut self) {
+        let path = match &self.mode {
+            AppMode::CreatingProject(state) if state.path_is_git == Some(false) => {
+                PathBuf::from(&state.path)
+            }
+            _ => return,
+        };
+        let result = std::process::Command::new("git")
+            .arg("init")
+            .current_dir(&path)
+            .output();
+        let outcome = match result {
+            Ok(out) if out.status.success() => Ok(()),
+            Ok(out) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            Err(err) => Err(err.to_string()),
+        };
+        let path_is_git = self.probe_path_is_git(&path);
+        if let AppMode::CreatingProject(state) = &mut self.mode {
+            state.path_is_git = path_is_git;
+        }
+        self.message = Some(match outcome {
+            Ok(()) => format!("Initialized a git repository in {}", path.display()),
+            Err(err) => format!("git init failed: {err}"),
+        });
     }
 
     pub fn create_project(&mut self) -> Result<()> {
@@ -273,7 +301,14 @@ impl App {
         let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
         self.mode = AppMode::Normal;
-        self.message = Some(response.message);
+        self.message = Some(if response.is_git {
+            response.message
+        } else {
+            format!(
+                "{} (no git repository: worktrees, diffs, issues and PRs are unavailable)",
+                response.message
+            )
+        });
 
         Ok(())
     }

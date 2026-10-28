@@ -296,6 +296,11 @@ fn read_prompts_from_opencode_storage(
     read_prompts_from_opencode_storage_root(&storage_root, workdir, preferred_session_id)
 }
 
+/// Reads the Claude task list from `~/.claude/tasks/<session-id>/`.
+///
+/// No task store means no tasks. This runs on every sidebar draw, so it
+/// must never fall back to parsing the session transcript: transcripts
+/// can reach 100 MB or more, and a full parse per frame made typing lag.
 pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Option<ClaudeTaskState> {
     let tasks_root = claude_tasks_root();
     let session_id = session_id
@@ -304,18 +309,9 @@ pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Optio
         .map(ToOwned::to_owned)
         .or_else(|| latest_claude_session_id(workdir));
 
-    if let Some(session_id) = session_id.as_deref()
-        && let Some(state) = read_claude_task_state_from_task_store(&tasks_root, session_id)
-    {
-        return Some(state);
-    }
-
-    let path = session_id
+    session_id
         .as_deref()
-        .and_then(|session_id| claude_session_jsonl_path(workdir, session_id))
-        .or_else(|| latest_claude_session_jsonl_path(workdir))?;
-    let content = std::fs::read_to_string(path).ok()?;
-    parse_claude_task_state_from_jsonl(&content)
+        .and_then(|session_id| read_claude_task_state_from_task_store(&tasks_root, session_id))
 }
 
 // Read only the last 64 KB of a session file — avoids loading multi-MB
@@ -608,12 +604,6 @@ fn claude_projects_dir(workdir: &Path) -> Option<PathBuf> {
     )
 }
 
-fn claude_session_jsonl_path(workdir: &Path, session_id: &str) -> Option<PathBuf> {
-    let projects_dir = claude_projects_dir(workdir)?;
-    let path = projects_dir.join(format!("{session_id}.jsonl"));
-    path.is_file().then_some(path)
-}
-
 fn latest_claude_session_jsonl_path(workdir: &Path) -> Option<PathBuf> {
     let projects_dir = claude_projects_dir(workdir)?;
     if !is_real_dir(&projects_dir) {
@@ -708,146 +698,6 @@ fn read_claude_task_state_from_task_dir(tasks_dir: &Path) -> Option<ClaudeTaskSt
     }
 
     (!tasks.is_empty()).then_some(ClaudeTaskState { tasks })
-}
-
-fn parse_claude_task_state_from_jsonl(content: &str) -> Option<ClaudeTaskState> {
-    let mut state = ClaudeTaskState::default();
-
-    for line in content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        let value: serde_json::Value = match serde_json::from_str(line) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-
-        let Some(contents) = value
-            .get("message")
-            .and_then(|message| message.get("content"))
-            .and_then(|content| content.as_array())
-        else {
-            continue;
-        };
-
-        for item in contents {
-            if item.get("type").and_then(|value| value.as_str()) != Some("tool_use") {
-                continue;
-            }
-
-            match item.get("name").and_then(|value| value.as_str()) {
-                Some("TaskCreate") => apply_task_create(&mut state, item.get("input")),
-                Some("TaskUpdate") => apply_task_update(&mut state, item.get("input")),
-                _ => {}
-            }
-        }
-    }
-
-    (!state.tasks.is_empty()).then_some(state)
-}
-
-fn apply_task_create(state: &mut ClaudeTaskState, input: Option<&serde_json::Value>) {
-    let Some(input) = input else {
-        return;
-    };
-
-    let subject = input
-        .get("subject")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim();
-    if subject.is_empty() {
-        return;
-    }
-
-    let id = (state.tasks.len() + 1).to_string();
-    let description = input
-        .get("description")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let active_form = input
-        .get("activeForm")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    state.tasks.push(ClaudeTask {
-        id,
-        subject: subject.to_string(),
-        description,
-        active_form,
-        status: "pending".to_string(),
-    });
-}
-
-fn apply_task_update(state: &mut ClaudeTaskState, input: Option<&serde_json::Value>) {
-    let Some(input) = input else {
-        return;
-    };
-
-    let task_id = input
-        .get("taskId")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .trim();
-    if task_id.is_empty() {
-        return;
-    }
-
-    let status = input
-        .get("status")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let active_form = input
-        .get("activeForm")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let subject = input
-        .get("subject")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let description = input
-        .get("description")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    let task = if let Some(task) = state.tasks.iter_mut().find(|task| task.id == task_id) {
-        task
-    } else {
-        state.tasks.push(ClaudeTask {
-            id: task_id.to_string(),
-            subject: subject.clone().unwrap_or_else(|| format!("Task {task_id}")),
-            description: description.clone(),
-            active_form: None,
-            status: "pending".to_string(),
-        });
-        state.tasks.last_mut().expect("inserted task should exist")
-    };
-
-    if let Some(subject) = subject {
-        task.subject = subject;
-    }
-    if let Some(description) = description {
-        task.description = Some(description);
-    }
-    if let Some(status) = status {
-        task.status = status;
-    }
-    if active_form.is_some() {
-        task.active_form = active_form;
-    }
 }
 
 fn extract_user_prompt_text(value: &serde_json::Value) -> Option<String> {

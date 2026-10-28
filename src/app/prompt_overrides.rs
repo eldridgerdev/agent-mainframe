@@ -143,18 +143,26 @@ impl App {
     ) {
         let ctx = self.prompt_override_context();
         let rows = self.prompt_override_rows(&ctx);
-        let selected = focus
-            .and_then(|id| rows.iter().position(|r| r.id == id))
-            .unwrap_or(0);
-        self.mode = AppMode::PromptOverrides(Box::new(PromptOverridesState {
+        let focused = focus.and_then(|id| rows.iter().position(|r| r.id == id));
+        // A focused prompt that has no override is hidden by default; reveal
+        // everything so the pre-call notice's `e` still lands on it.
+        let show_all = focused.is_some_and(|i| !rows[i].is_overridden());
+        let mut state = PromptOverridesState {
+            selected: focused.unwrap_or(0),
             rows,
-            selected,
             scroll: 0,
             edit: None,
             help_open: false,
             confirm_clear: false,
             from_view,
-        }));
+            show_all,
+        };
+        if focused.is_none()
+            && let Some(first) = state.visible_indices().first()
+        {
+            state.selected = *first;
+        }
+        self.mode = AppMode::PromptOverrides(Box::new(state));
         self.message = None;
     }
 
@@ -186,23 +194,53 @@ impl App {
 
     pub fn prompt_overrides_select(&mut self, delta: isize) {
         if let Some(state) = self.prompt_overrides_state() {
-            let n = state.rows.len();
-            if n == 0 {
+            let visible = state.visible_indices();
+            if visible.is_empty() {
                 return;
             }
             state.confirm_clear = false;
-            let cur = state.selected as isize;
-            state.selected = (cur + delta).rem_euclid(n as isize) as usize;
+            let n = visible.len() as isize;
+            let pos = visible.iter().position(|i| *i == state.selected);
+            let next = match pos {
+                Some(p) => (p as isize + delta).rem_euclid(n),
+                None => 0,
+            };
+            state.selected = visible[next as usize];
         }
+    }
+
+    /// `a`: switch between "overridden only" and "all prompts".
+    pub fn prompt_overrides_toggle_show_all(&mut self) {
+        if let Some(state) = self.prompt_overrides_state() {
+            state.show_all = !state.show_all;
+            state.confirm_clear = false;
+            if !state.is_visible(state.selected)
+                && let Some(first) = state.visible_indices().first()
+            {
+                state.selected = *first;
+                state.scroll = 0;
+            }
+        }
+        let message = match self.prompt_overrides_state() {
+            Some(s) if s.show_all => "Showing all prompts",
+            Some(_) => "Showing overridden prompts only",
+            None => return,
+        };
+        self.message = Some(message.into());
     }
 
     /// Scroll the list so `selected` stays visible in a window of `height` rows.
     pub fn prompt_overrides_clamp_scroll(&mut self, height: usize) {
         if let Some(state) = self.prompt_overrides_state() {
-            if state.selected < state.scroll {
-                state.scroll = state.selected;
-            } else if height > 0 && state.selected >= state.scroll + height {
-                state.scroll = state.selected + 1 - height;
+            let pos = state
+                .visible_indices()
+                .iter()
+                .position(|i| *i == state.selected)
+                .unwrap_or(0);
+            if pos < state.scroll {
+                state.scroll = pos;
+            } else if height > 0 && pos >= state.scroll + height {
+                state.scroll = pos + 1 - height;
             }
         }
     }
@@ -521,6 +559,14 @@ impl App {
             let keep = state.selected.min(rows.len().saturating_sub(1));
             state.rows = rows;
             state.selected = keep;
+            // A cleared override leaves the filtered list; move to a row that
+            // is still shown rather than resting on a hidden one.
+            if !state.is_visible(keep)
+                && let Some(first) = state.visible_indices().first()
+            {
+                state.selected = *first;
+                state.scroll = 0;
+            }
         }
     }
 }

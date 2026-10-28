@@ -39,6 +39,7 @@ pub mod gui_themes;
 pub mod gui_todos;
 pub mod project;
 
+mod amf_managed;
 mod app;
 mod claude;
 mod codex;

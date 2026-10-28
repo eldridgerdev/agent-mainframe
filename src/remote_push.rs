@@ -18,11 +18,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use base64ct::{Base64UrlUnpadded, Encoding};
-use p256::PublicKey;
+use p256::ecdh::diffie_hellman;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::{PublicKey, SecretKey};
 use serde::Serialize;
-use web_push_native::{Auth, WebPushBuilder};
 
 use crate::db::remote_push::PushSubscription;
 
@@ -41,22 +42,100 @@ pub struct VapidKey {
     signing: SigningKey,
 }
 
+/// `N` bytes from the operating system's CSPRNG.
+fn random_bytes<const N: usize>() -> [u8; N] {
+    use aes_gcm::aead::OsRng;
+    use aes_gcm::aead::rand_core::RngCore;
+    let mut bytes = [0u8; N];
+    OsRng.fill_bytes(&mut bytes);
+    bytes
+}
+
+/// A fresh P-256 scalar; the loop only repeats in the astronomically
+/// unlikely case the bytes aren't a valid one.
+fn random_secret_key() -> SecretKey {
+    loop {
+        if let Ok(secret) = SecretKey::from_slice(&random_bytes::<32>()) {
+            return secret;
+        }
+    }
+}
+
+/// Record size announced in the aes128gcm header. The payload always fits
+/// one record (`MAX_PLAINTEXT`), so this only has to be at least that large.
+const RECORD_SIZE: u32 = 4096;
+
+/// Longest plaintext that fits one record: the record minus the GCM tag
+/// (16) and the padding delimiter (1). Push services accept 4096 bytes of
+/// body; the header (86) takes some of that, so the cap is conservative.
+const MAX_PLAINTEXT: usize = 3993;
+
+/// RFC 8291 `aes128gcm` encryption of `plaintext` to a browser subscription.
+/// `ephemeral` and `salt` are inputs so tests can pin the RFC's vectors.
+fn encrypt_aes128gcm(
+    plaintext: &[u8],
+    ua_public: &PublicKey,
+    auth_secret: &[u8],
+    ephemeral: &SecretKey,
+    salt: &[u8; 16],
+) -> Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes128Gcm, Nonce};
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    if plaintext.len() > MAX_PLAINTEXT {
+        return Err(anyhow!(
+            "push payload is {} bytes; limit is {MAX_PLAINTEXT}",
+            plaintext.len()
+        ));
+    }
+    let as_public = ephemeral.public_key().to_sec1_point(false);
+    let ua_point = ua_public.to_sec1_point(false);
+    let shared = diffie_hellman(ephemeral.to_nonzero_scalar(), ua_public.as_affine());
+
+    // RFC 8291 §3.4: mix the auth secret and both public keys into the IKM.
+    let mut key_info = b"WebPush: info\0".to_vec();
+    key_info.extend_from_slice(ua_point.as_bytes());
+    key_info.extend_from_slice(as_public.as_bytes());
+    let mut ikm = [0u8; 32];
+    Hkdf::<Sha256>::new(Some(auth_secret), shared.raw_secret_bytes().as_slice())
+        .expand(&key_info, &mut ikm)
+        .map_err(|e| anyhow!("hkdf expand failed: {e}"))?;
+
+    // RFC 8188 §2.2-2.3: content-encryption key and nonce from the salt.
+    let prk = Hkdf::<Sha256>::new(Some(salt), &ikm);
+    let mut cek = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+        .map_err(|e| anyhow!("hkdf expand failed: {e}"))?;
+    prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+        .map_err(|e| anyhow!("hkdf expand failed: {e}"))?;
+
+    // 0x02 marks the final (here the only) record.
+    let mut record = plaintext.to_vec();
+    record.push(2);
+    let ciphertext = Aes128Gcm::new(&cek.into())
+        .encrypt(Nonce::from_slice(&nonce), record.as_slice())
+        .map_err(|e| anyhow!("push encryption failed: {e}"))?;
+
+    let mut body = Vec::with_capacity(21 + as_public.len() + ciphertext.len());
+    body.extend_from_slice(salt);
+    body.extend_from_slice(&RECORD_SIZE.to_be_bytes());
+    body.push(as_public.len() as u8);
+    body.extend_from_slice(as_public.as_bytes());
+    body.extend_from_slice(&ciphertext);
+    Ok(body)
+}
+
 /// How long a VAPID token stays valid. RFC 8292 caps it at 24 hours.
 const VAPID_TOKEN_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 
 impl VapidKey {
-    /// A fresh P-256 key. The scalar comes from two v4 UUIDs — the same
-    /// `getrandom`-backed source `remote_server::generate_device_token`
-    /// uses — rather than a new RNG dependency; the loop only repeats in
-    /// the astronomically unlikely case the bytes aren't a valid scalar.
+    /// A fresh P-256 key.
     pub fn generate() -> Self {
-        loop {
-            let mut bytes = [0u8; 32];
-            bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-            bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-            if let Ok(signing) = SigningKey::from_slice(&bytes) {
-                return Self { signing };
-            }
+        Self {
+            signing: SigningKey::from(random_secret_key()),
         }
     }
 
@@ -76,7 +155,7 @@ impl VapidKey {
     fn public_key_bytes(&self) -> Vec<u8> {
         self.signing
             .verifying_key()
-            .to_encoded_point(false)
+            .to_sec1_point(false)
             .as_bytes()
             .to_vec()
     }
@@ -137,7 +216,7 @@ pub fn validate_subscription_keys(p256dh: &str, auth: &str) -> Result<()> {
     decode_keys(p256dh, auth).map(|_| ())
 }
 
-fn decode_keys(p256dh: &str, auth: &str) -> Result<(PublicKey, Auth)> {
+fn decode_keys(p256dh: &str, auth: &str) -> Result<(PublicKey, Vec<u8>)> {
     let public = Base64UrlUnpadded::decode_vec(p256dh)
         .map_err(|e| anyhow!("p256dh is not base64url: {e}"))?;
     let public = PublicKey::from_sec1_bytes(&public).context("p256dh is not a P-256 point")?;
@@ -146,7 +225,7 @@ fn decode_keys(p256dh: &str, auth: &str) -> Result<(PublicKey, Auth)> {
     if auth.len() != 16 {
         return Err(anyhow!("auth secret must be 16 bytes, got {}", auth.len()));
     }
-    Ok((public, Auth::clone_from_slice(&auth)))
+    Ok((public, auth))
 }
 
 /// Encrypt `message` for one subscription and sign it with `key`.
@@ -162,15 +241,20 @@ pub fn build_request(
         .context("push endpoint is not a URI")?;
     let body = serde_json::to_vec(message)?;
     let authorization = key.authorization(&endpoint)?;
-    let mut request = WebPushBuilder::new(endpoint, public, auth)
-        .with_valid_duration(PUSH_TTL)
-        .build(body)
-        .map_err(|e| anyhow!("failed to build push request: {e}"))?;
-    request.headers_mut().insert(
-        ureq::http::header::AUTHORIZATION,
-        ureq::http::HeaderValue::from_str(&authorization)?,
-    );
-    Ok(request)
+    let body = encrypt_aes128gcm(
+        &body,
+        &public,
+        &auth,
+        &random_secret_key(),
+        &random_bytes::<16>(),
+    )?;
+    ureq::http::Request::post(endpoint)
+        .header(ureq::http::header::CONTENT_ENCODING, "aes128gcm")
+        .header(ureq::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header("TTL", PUSH_TTL.as_secs().to_string())
+        .header(ureq::http::header::AUTHORIZATION, authorization)
+        .body(body)
+        .context("failed to build push request")
 }
 
 /// What happened to one push.
@@ -227,13 +311,13 @@ mod tests {
     use p256::SecretKey;
     use p256::ecdsa::VerifyingKey;
     use p256::ecdsa::signature::Verifier;
-    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use p256::elliptic_curve::sec1::ToSec1Point;
 
     /// A browser-side key pair, standing in for what `pushManager.subscribe`
     /// would generate.
     fn browser_subscription() -> (SecretKey, [u8; 16], PushSubscription) {
         let secret = SecretKey::from_slice(&VapidKey::generate().signing.to_bytes()).unwrap();
-        let public = secret.public_key().to_encoded_point(false);
+        let public = secret.public_key().to_sec1_point(false);
         let auth = [7u8; 16];
         let subscription = PushSubscription {
             endpoint: "https://push.example.com/send/abc".to_string(),
@@ -242,6 +326,79 @@ mod tests {
             auth: Base64UrlUnpadded::encode_string(&auth),
         };
         (secret, auth, subscription)
+    }
+
+    /// The user-agent side of RFC 8291, to check what `build_request` sends.
+    fn decrypt_aes128gcm(body: &[u8], ua_secret: &SecretKey, auth: &[u8]) -> Vec<u8> {
+        use aes_gcm::aead::{Aead, KeyInit};
+        use aes_gcm::{Aes128Gcm, Nonce};
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        let salt = &body[..16];
+        let id_len = body[20] as usize;
+        let as_public = &body[21..21 + id_len];
+        let ciphertext = &body[21 + id_len..];
+        let shared = diffie_hellman(
+            ua_secret.to_nonzero_scalar(),
+            PublicKey::from_sec1_bytes(as_public).unwrap().as_affine(),
+        );
+        let mut key_info = b"WebPush: info\0".to_vec();
+        key_info.extend_from_slice(ua_secret.public_key().to_sec1_point(false).as_bytes());
+        key_info.extend_from_slice(as_public);
+        let mut ikm = [0u8; 32];
+        Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes().as_slice())
+            .expand(&key_info, &mut ikm)
+            .unwrap();
+        let prk = Hkdf::<Sha256>::new(Some(salt), &ikm);
+        let (mut cek, mut nonce) = ([0u8; 16], [0u8; 12]);
+        prk.expand(b"Content-Encoding: aes128gcm\0", &mut cek)
+            .unwrap();
+        prk.expand(b"Content-Encoding: nonce\0", &mut nonce)
+            .unwrap();
+        let mut record = Aes128Gcm::new(&cek.into())
+            .decrypt(Nonce::from_slice(&nonce), ciphertext)
+            .unwrap();
+        assert_eq!(record.pop(), Some(2), "final-record delimiter");
+        record
+    }
+
+    /// The worked example in RFC 8291 Appendix A.
+    #[test]
+    fn encryption_matches_the_rfc_8291_vector() {
+        let b64 = |s: &str| Base64UrlUnpadded::decode_vec(s).unwrap();
+        let as_secret =
+            SecretKey::from_slice(&b64("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw")).unwrap();
+        let ua_public = PublicKey::from_sec1_bytes(&b64(
+            "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        ))
+        .unwrap();
+        let salt: [u8; 16] = b64("DGv6ra1nlYgDCS1FRnbzlw").try_into().unwrap();
+        let body = encrypt_aes128gcm(
+            b"When I grow up, I want to be a watermelon",
+            &ua_public,
+            &b64("BTBZMqHH6r4Tts7J_aSIgg"),
+            &as_secret,
+            &salt,
+        )
+        .unwrap();
+        assert_eq!(
+            Base64UrlUnpadded::encode_string(&body),
+            "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+        );
+    }
+
+    #[test]
+    fn oversized_payload_is_refused() {
+        let (secret, _, _) = browser_subscription();
+        let result = encrypt_aes128gcm(
+            &vec![0u8; MAX_PLAINTEXT + 1],
+            &secret.public_key(),
+            &[7u8; 16],
+            &random_secret_key(),
+            &[0u8; 16],
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -288,12 +445,9 @@ mod tests {
             Signature::from_slice(&Base64UrlUnpadded::decode_vec(signature).unwrap()).unwrap();
         verifying.verify(signed.as_bytes(), &signature).unwrap();
 
-        let plaintext = web_push_native::decrypt(
-            request.body().clone(),
-            &secret,
-            &Auth::clone_from_slice(&auth),
-        )
-        .unwrap();
+        assert_eq!(request.headers()["content-encoding"], "aes128gcm");
+        assert_eq!(request.headers()["ttl"], "3600");
+        let plaintext = decrypt_aes128gcm(request.body(), &secret, &auth);
         let decoded: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
         assert_eq!(decoded["title"], "my-feature needs attention");
         assert_eq!(decoded["tag"], "amf-my-feature");

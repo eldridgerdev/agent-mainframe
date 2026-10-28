@@ -7,10 +7,17 @@
 //! `docs/backlog/pr-comment-review-plan.md` (Epic E).
 //!
 //! There are **two** such docs, distinguished by [`MemoryScope`]: each repo's
-//! own committed doc (the default target for every write) and one
-//! cross-project doc in the AMF config dir for habits that outlive a single
-//! repo. The AI reviewer reads both, merged by [`merge_memory_context`]; every
-//! other flow writes to exactly one, chosen by the user.
+//! own doc and one cross-project doc in the AMF config dir for habits that
+//! outlive a single repo. The AI reviewer reads both, merged by
+//! [`merge_memory_context`]; every other flow writes to exactly one, chosen by
+//! the user.
+//!
+//! The repo doc's default path sits under `.amf/`, which is usually
+//! gitignored, so the doc is local rather than committed. In that case every
+//! linked worktree resolves it to the main checkout's copy
+//! ([`resolve_project_memory_path`]); otherwise each worktree would read and
+//! write its own private copy and lose it when the worktree is deleted. A doc
+//! that git *tracks* stays per-checkout and travels with its branch.
 //!
 //! AMF only ever *appends* here (dedup-aware, grouped by category) — it never
 //! rewrites existing prose, so hand-edits are safe across runs. The one
@@ -23,6 +30,7 @@
 //! cross-project one), the write re-reads the file and reconciles against that
 //! snapshot via [`doc_drift`] rather than trusting it.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Default location of the review-memory doc, relative to the repo root.
@@ -33,11 +41,13 @@ pub const DEFAULT_REVIEW_MEMORY_PATH: &str = ".amf/review-memory.md";
 pub const DEFAULT_GLOBAL_REVIEW_MEMORY_FILE: &str = "review-memory.md";
 
 /// Which of the two review-memory docs a flow reads or writes: the repo's own
-/// committed doc, or the user's cross-project one. Writes always target
-/// exactly one (the user picks); only the AI reviewer's context reads both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// doc, or the user's cross-project one. Writes always target exactly one (the
+/// user picks); only the AI reviewer's context reads both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryScope {
-    /// `{repo}/.amf/review-memory.md` — committed, shared with the team.
+    /// `{repo}/.amf/review-memory.md` — this repo's, shared by its worktrees
+    /// (and with the team, when the path is committed).
     #[default]
     Project,
     /// `~/.config/amf/review-memory.md` — this user's, across every repo.
@@ -69,6 +79,11 @@ impl MemoryScope {
 pub struct ReviewMemoryPaths {
     pub project: PathBuf,
     pub global: PathBuf,
+    /// The path this checkout would have used for the project doc before it
+    /// was redirected to the main checkout (see [`resolve_project_memory_path`]).
+    /// `None` when no redirect happened. A doc that still exists here is
+    /// *not* read, so the AI Review pane warns about it.
+    pub worktree_local: Option<PathBuf>,
 }
 
 impl ReviewMemoryPaths {
@@ -112,6 +127,96 @@ pub fn review_memory_path(repo: &Path, configured: Option<&str>) -> PathBuf {
     } else {
         repo.join(rel)
     }
+}
+
+/// Resolve the project doc for `repo` the way every review-memory flow should:
+/// [`review_memory_path`], except that a doc git **ignores** (the default
+/// `.amf/review-memory.md` is, since `.amf/` is ignored dir-wide) is anchored
+/// to the main checkout when `repo` is a linked worktree.
+///
+/// Without this, each worktree reads and writes its own private copy. Findings
+/// added while triaging in one worktree never reach a review run from another,
+/// and they are deleted along with their worktree. A doc git *tracks* stays
+/// per-checkout, because it travels with the branch like any other file.
+///
+/// Returns the path to use plus, when it was redirected, the per-worktree path
+/// it replaced.
+pub fn resolve_project_memory_path(
+    repo: &Path,
+    configured: Option<&str>,
+) -> (PathBuf, Option<PathBuf>) {
+    let local = review_memory_path(repo, configured);
+    let Some(primary) = primary_checkout_root(repo) else {
+        return (local, None);
+    };
+    let Ok(relative) = local.strip_prefix(repo) else {
+        // An absolute override outside the repo is already shared.
+        return (local, None);
+    };
+    if !is_git_ignored(repo, relative) {
+        return (local, None);
+    }
+    (primary.join(relative), Some(local))
+}
+
+/// The main checkout that `repo` is a linked worktree of, read from git's own
+/// files rather than by running git: a linked worktree's `.git` is a file
+/// naming `<common-dir>/worktrees/<name>`, whose `commondir` names the shared
+/// `.git`. `None` for the main checkout itself, a non-git directory, a
+/// submodule, or a worktree of a bare repo (which has no main checkout).
+pub fn primary_checkout_root(repo: &Path) -> Option<PathBuf> {
+    let dot_git = std::fs::read_to_string(repo.join(".git")).ok()?;
+    let gitdir = dot_git
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    let gitdir = repo.join(gitdir);
+    let commondir = std::fs::read_to_string(gitdir.join("commondir")).ok()?;
+    let common = gitdir.join(commondir.trim()).canonicalize().ok()?;
+    if common.file_name()? != ".git" {
+        return None;
+    }
+    let primary = common.parent()?.to_path_buf();
+    let is_self = repo.canonicalize().is_ok_and(|repo| repo == primary);
+    (!is_self).then_some(primary)
+}
+
+/// How long an [`is_git_ignored`] answer is reused. Several panes resolve the
+/// memory paths on every frame, so this keeps that to one `git` spawn per
+/// window while still noticing a `.gitignore` edit within seconds.
+const IGNORE_CHECK_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether git ignores `relative` inside `repo`. A tracked file is never
+/// reported as ignored, even when an ignore pattern matches it. Any failure to
+/// ask git counts as "not ignored", which keeps the old per-checkout path.
+fn is_git_ignored(repo: &Path, relative: &Path) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (Instant, bool)>>> = OnceLock::new();
+    let key = repo.join(relative);
+    let cache = CACHE.get_or_init(Default::default);
+    if let Ok(cache) = cache.lock()
+        && let Some((at, ignored)) = cache.get(&key)
+        && at.elapsed() < IGNORE_CHECK_TTL
+    {
+        return *ignored;
+    }
+    let ignored = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["check-ignore", "-q", "--"])
+        .arg(relative)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, (Instant::now(), ignored));
+    }
+    ignored
 }
 
 /// Resolve the cross-project review-memory doc path, honoring a configured
@@ -357,6 +462,126 @@ pub fn merge_memory_context(project: &str, global: &str) -> String {
             format!("{PROJECT_CONTEXT_LABEL}\n{project}\n\n{GLOBAL_CONTEXT_LABEL}\n{global}")
         }
     }
+}
+
+/// What one review-memory doc looked like when it was read for a review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryDocState {
+    /// No file at the path.
+    Missing,
+    /// The file exists but is blank.
+    Empty,
+    /// The file exists but could not be read (permissions, invalid UTF-8).
+    /// It contributes nothing, which used to happen silently.
+    Unreadable,
+    /// Read and merged into the reviewer's context.
+    Loaded,
+}
+
+/// One doc's part in a review's memory context: where it was looked for, what
+/// was found, and how many findings it contributed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryDocStatus {
+    pub scope: MemoryScope,
+    pub path: PathBuf,
+    pub state: MemoryDocState,
+    /// `- ` findings this doc contributed to the merged context. For the
+    /// global doc this excludes the ones the project doc already states.
+    #[serde(default)]
+    pub findings: usize,
+    /// Global findings dropped because the project doc already states them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub duplicates: usize,
+    /// The read error, for [`MemoryDocState::Unreadable`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Which docs a review would read, and what each holds right now.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReviewMemoryStatus {
+    /// Project doc first, then global.
+    pub docs: Vec<MemoryDocStatus>,
+    /// A per-worktree doc left over from before the project doc was shared
+    /// across worktrees. It exists but is not read.
+    pub stray_worktree_doc: Option<PathBuf>,
+}
+
+/// The reviewer's memory context together with the status that explains it.
+#[derive(Debug, Clone)]
+pub struct LoadedReviewMemory {
+    /// The merged text for `{{recurring_findings}}` ([`merge_memory_context`]).
+    pub context: String,
+    pub status: ReviewMemoryStatus,
+}
+
+/// Read both docs, merge them for the reviewer, and record what each one
+/// contributed. This replaces the earlier `read_to_string(..).unwrap_or_default()`
+/// reads, which made a missing doc and an unreadable doc look the same as an
+/// empty one.
+pub fn load_review_memory(paths: &ReviewMemoryPaths) -> LoadedReviewMemory {
+    let read = |path: &Path| -> (String, MemoryDocState, Option<String>) {
+        match std::fs::read_to_string(path) {
+            Ok(text) if text.trim().is_empty() => (String::new(), MemoryDocState::Empty, None),
+            Ok(text) => (text, MemoryDocState::Loaded, None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                (String::new(), MemoryDocState::Missing, None)
+            }
+            Err(e) => (
+                String::new(),
+                MemoryDocState::Unreadable,
+                Some(e.to_string()),
+            ),
+        }
+    };
+    let (project, project_state, project_error) = read(&paths.project);
+    let (global, global_state, global_error) = read(&paths.global);
+
+    let global_raw = count_findings(&global);
+    let global_kept = count_findings(&prune_duplicate_findings(&global, project.trim()));
+    let docs = vec![
+        MemoryDocStatus {
+            scope: MemoryScope::Project,
+            path: paths.project.clone(),
+            state: project_state,
+            findings: count_findings(&project),
+            duplicates: 0,
+            error: project_error,
+        },
+        MemoryDocStatus {
+            scope: MemoryScope::Global,
+            path: paths.global.clone(),
+            state: global_state,
+            findings: global_kept,
+            duplicates: global_raw.saturating_sub(global_kept),
+            error: global_error,
+        },
+    ];
+    let stray_worktree_doc = paths
+        .worktree_local
+        .as_ref()
+        .filter(|path| path.is_file())
+        .cloned();
+    LoadedReviewMemory {
+        context: merge_memory_context(&project, &global),
+        status: ReviewMemoryStatus {
+            docs,
+            stray_worktree_doc,
+        },
+    }
+}
+
+/// Whether `prompt` actually carries `memory`. Used after rendering to catch a
+/// prompt override that dropped `{{recurring_findings}}`: the memory was read,
+/// but the agent would never have seen it.
+pub fn prompt_carries_memory(prompt: &str, memory: &str) -> bool {
+    let memory = memory.trim();
+    !memory.is_empty() && prompt.contains(memory)
 }
 
 /// Drop every `- ` bullet in `doc` that already appears (case- and
@@ -857,6 +1082,7 @@ mod tests {
         let paths = ReviewMemoryPaths {
             project: PathBuf::from("/repo/.amf/review-memory.md"),
             global: PathBuf::from("/home/u/.config/amf/review-memory.md"),
+            worktree_local: None,
         };
         assert_eq!(
             paths.for_scope(MemoryScope::Project),
@@ -920,6 +1146,167 @@ mod tests {
         let merged = merge_memory_context(project, "## Tests\n- Cover the error path\n");
         assert_eq!(merged, project.trim());
         assert!(!merged.contains(GLOBAL_CONTEXT_LABEL));
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A main checkout at `<tmp>/main` with one commit, `.gitignore` given by
+    /// `ignore`, and a linked worktree at `<tmp>/main/.worktrees/feature`.
+    fn repo_with_linked_worktree(ignore: &str) -> (TempDir, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "AMF Test"]);
+        git(&main, &["config", "user.email", "amf@example.com"]);
+        git(&main, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(main.join(".gitignore"), ignore).unwrap();
+        git(&main, &["add", ".gitignore"]);
+        git(&main, &["commit", "-m", "initial"]);
+        let worktree = main.join(".worktrees").join("feature");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        let main = main.canonicalize().unwrap();
+        let worktree = worktree.canonicalize().unwrap();
+        (tmp, main, worktree)
+    }
+
+    #[test]
+    fn primary_checkout_root_finds_the_main_checkout_from_a_linked_worktree() {
+        let (_tmp, main, worktree) = repo_with_linked_worktree(".amf/\n");
+
+        assert_eq!(primary_checkout_root(&worktree), Some(main.clone()));
+        assert_eq!(
+            primary_checkout_root(&main),
+            None,
+            "already the main checkout"
+        );
+        let plain = TempDir::new().unwrap();
+        assert_eq!(primary_checkout_root(plain.path()), None, "not a git repo");
+    }
+
+    #[test]
+    fn ignored_project_doc_is_shared_with_the_main_checkout() {
+        let (_tmp, main, worktree) = repo_with_linked_worktree(".amf/\n");
+
+        let (path, local) = resolve_project_memory_path(&worktree, None);
+
+        assert_eq!(path, main.join(".amf/review-memory.md"));
+        assert_eq!(local, Some(worktree.join(".amf/review-memory.md")));
+        // From the main checkout itself, nothing changes.
+        assert_eq!(
+            resolve_project_memory_path(&main, None),
+            (main.join(".amf/review-memory.md"), None)
+        );
+    }
+
+    #[test]
+    fn unignored_project_doc_stays_in_its_own_worktree() {
+        // Not ignored, so it is committed with the branch: each checkout
+        // reads its own copy, as before.
+        let (_tmp, _main, worktree) = repo_with_linked_worktree("target/\n");
+
+        assert_eq!(
+            resolve_project_memory_path(&worktree, Some("docs/review-memory.md")),
+            (worktree.join("docs/review-memory.md"), None)
+        );
+    }
+
+    #[test]
+    fn load_review_memory_reports_each_doc_and_flags_a_stray_worktree_copy() {
+        let dir = TempDir::new().unwrap();
+        let project = dir.path().join("project.md");
+        let global = dir.path().join("global.md");
+        let stray = dir.path().join("stray.md");
+        std::fs::write(
+            &project,
+            "# Review memory\n\n## Tests\n- Cover the error path\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &global,
+            "## Tests\n- cover the error path\n- Assert on the message\n",
+        )
+        .unwrap();
+        std::fs::write(&stray, "- Forgotten finding\n").unwrap();
+
+        let loaded = load_review_memory(&ReviewMemoryPaths {
+            project: project.clone(),
+            global: global.clone(),
+            worktree_local: Some(stray.clone()),
+        });
+
+        let [project_doc, global_doc] = loaded.status.docs.as_slice() else {
+            panic!("expected project and global docs");
+        };
+        assert_eq!(project_doc.state, MemoryDocState::Loaded);
+        assert_eq!(project_doc.findings, 1);
+        assert_eq!(global_doc.state, MemoryDocState::Loaded);
+        assert_eq!(global_doc.findings, 1, "the duplicate is not counted twice");
+        assert_eq!(global_doc.duplicates, 1);
+        assert_eq!(loaded.status.stray_worktree_doc, Some(stray));
+        assert!(loaded.context.contains("Assert on the message"));
+        assert!(!loaded.context.contains("Forgotten finding"));
+    }
+
+    #[test]
+    fn load_review_memory_tells_missing_empty_and_unreadable_apart() {
+        let dir = TempDir::new().unwrap();
+        let empty = dir.path().join("empty.md");
+        std::fs::write(&empty, "  \n").unwrap();
+        // A directory where the doc should be fails to read as a file.
+        let unreadable = dir.path().join("dir.md");
+        std::fs::create_dir(&unreadable).unwrap();
+
+        let missing = load_review_memory(&ReviewMemoryPaths {
+            project: dir.path().join("nope.md"),
+            global: empty,
+            worktree_local: None,
+        });
+        assert_eq!(missing.status.docs[0].state, MemoryDocState::Missing);
+        assert_eq!(missing.status.docs[1].state, MemoryDocState::Empty);
+        assert!(missing.context.is_empty());
+
+        let broken = load_review_memory(&ReviewMemoryPaths {
+            project: unreadable,
+            global: dir.path().join("nope.md"),
+            worktree_local: None,
+        });
+        assert_eq!(broken.status.docs[0].state, MemoryDocState::Unreadable);
+        assert!(broken.status.docs[0].error.is_some());
+    }
+
+    #[test]
+    fn prompt_carries_memory_requires_the_text_itself() {
+        assert!(prompt_carries_memory(
+            "intro\n- Guard state\nDiff:",
+            " - Guard state\n"
+        ));
+        assert!(!prompt_carries_memory("intro\nDiff:", "- Guard state"));
+        assert!(
+            !prompt_carries_memory("anything", "   "),
+            "empty memory is never carried"
+        );
     }
 
     #[test]

@@ -564,7 +564,7 @@ interview with prior answers pre-filled, get an updated
       `feature.plan_mode`: writing `AMF_PLAN.md` alone leaves the agent
       never told the plan exists, and a restart would stop injecting the
       block. Abort is non-destructive — there is no launch to cancel, so
-      the confirm offers only "leave the plan unchanged" and `n` is inert.
+      the confirm offers only "leave interview, plan unchanged" (`n`/`Esc` keep going; `c` is inert).
       Visual proof: `docs/screenshots/plan-mode-on-demand/`, regenerable via
       `scripts/dev/screenshot/scenarios/plan-interview-on-demand.txt`. The
       capture stops short of accepting — that runs a real headless synthesis

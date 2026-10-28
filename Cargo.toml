@@ -7,7 +7,7 @@ members = ["gui/src-tauri"]
 
 [package]
 name = "agent-mainframe"
-version = "0.50.0"
+version = "0.51.0"
 edition = "2024"
 description = "Terminal dashboard for running many AI coding agents in parallel — each on its own branch, in its own tmux session"
 license = "MIT"
@@ -95,11 +95,13 @@ axum = { version = "0.8", features = ["ws"] }
 # (`src/db/remote_devices.rs` never sees a plaintext token) reuses the `sha2`
 # dependency above.
 qrcode = { version = "0.14", default-features = false }
-# Web Push for the Remote Control PWA: payload encryption only. The crate's
-# `vapid` feature would pull in jwt-simple (RSA, Ed25519, P-384, ML-DSA, …) to
-# make one ES256 signature; `src/remote_push.rs` signs it with `p256` instead.
-web-push-native = { version = "0.5", default-features = false }
-p256 = { version = "0.13", features = ["ecdsa"] }
+# Web Push for the Remote Control PWA: `src/remote_push.rs` signs the VAPID
+# token (ES256) and encrypts payloads (RFC 8291 aes128gcm) itself. No
+# `web-push-native`: it pins p256 0.13, which drags in a vulnerable
+# crypto-bigint (RUSTSEC-2026-0387).
+p256 = { version = "0.14", features = ["ecdsa", "ecdh"] }
+hkdf = "0.12"
+aes-gcm = "0.10"
 base64ct = { version = "1", features = ["alloc"] }
 # Codex's existing daemon uses WebSocket frames over its local control socket.
 # Already in the dependency tree through axum's `ws` feature.

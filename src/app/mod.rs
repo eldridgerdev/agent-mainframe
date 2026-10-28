@@ -958,6 +958,9 @@ pub struct App {
     /// Set by `precall_confirm` when the user clears a pre-call notice; the
     /// re-dispatched `start_*` method consumes it to skip the gate and spawn.
     pub precall_cleared: Option<precall::PrecallAction>,
+    /// Last path probed for git by the create-project dialog, so typing in
+    /// the Name field does not re-run `git rev-parse` for an unchanged path.
+    pub(crate) create_project_git_probe: Option<(PathBuf, Option<bool>)>,
     /// Set while an interface that saves review progress itself (and must
     /// report whether the save succeeded) drives the shared review actions, so
     /// their best-effort `persist_review_progress` does not write a second time.
@@ -1017,10 +1020,15 @@ pub struct App {
     pub viewport_total_rows: u16,
     pub tmux_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
+    /// Line offset into the Ctrl+Space menu when it is taller than the pane.
+    pub leader_scroll: usize,
+    /// Largest useful `leader_scroll` as of the last draw (draw is `&App`).
+    pub leader_max_scroll: std::cell::Cell<usize>,
     pub leader_activated_at: Option<Instant>,
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
+    pub(crate) pending_automation_prompts: Vec<automation::PendingAutomationPrompt>,
     /// Feature IDs stopped from the dashboard (`x`) during this run. Their
     /// missing tmux session is expected, so opening a saved agent pane
     /// restarts and resumes directly instead of asking (see
@@ -1510,6 +1518,7 @@ impl App {
         std::mem::discriminant(&self.selection).hash(&mut hasher);
         self.should_quit.hash(&mut hasher);
         self.leader_active.hash(&mut hasher);
+        self.leader_scroll.hash(&mut hasher);
         self.message.hash(&mut hasher);
         self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
@@ -2584,6 +2593,7 @@ impl App {
             db: Some(db),
             store_version: Some(store_version),
             precall_cleared: None,
+            create_project_git_probe: None,
             defer_review_progress_persist: false,
             precall_return: None,
             saved_config: config.clone(),
@@ -2610,10 +2620,13 @@ impl App {
             viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
+            leader_scroll: 0,
+            leader_max_scroll: std::cell::Cell::new(0),
             leader_activated_at: None,
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            pending_automation_prompts: Vec::new(),
             user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
@@ -2848,6 +2861,7 @@ impl App {
             db: None,
             store_version: None,
             precall_cleared: None,
+            create_project_git_probe: None,
             defer_review_progress_persist: false,
             precall_return: None,
             saved_config: AppConfig::default(),
@@ -2881,10 +2895,13 @@ impl App {
             viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
+            leader_scroll: 0,
+            leader_max_scroll: std::cell::Cell::new(0),
             leader_activated_at: None,
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            pending_automation_prompts: Vec::new(),
             user_stopped_features: std::collections::HashSet::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
@@ -3603,6 +3620,10 @@ impl App {
     }
 
     pub(crate) fn repo_for_project_path(&self, path: &Path) -> PathBuf {
+        // A blank form field names no folder; don't ask git about one.
+        if path.as_os_str().is_empty() {
+            return PathBuf::new();
+        }
         self.worktree
             .repo_root(path)
             .unwrap_or_else(|_| path.to_path_buf())
@@ -3630,19 +3651,24 @@ impl App {
             .or_else(|| self.config.review_memory_path.clone())
     }
 
-    /// Both review-memory doc paths for `repo`: its own committed doc (via
+    /// Both review-memory doc paths for `repo`: its own doc (via
     /// [`Self::configured_review_memory_path`]) and the user's cross-project
     /// one. Every review-memory flow resolves through this, so a scope toggle
-    /// is just a lookup rather than a second round of config plumbing.
+    /// is just a lookup rather than a second round of config plumbing, and
+    /// the reviewer reads the same file the add/bootstrap/compact flows write.
+    /// An ignored project doc in a linked worktree resolves to the main
+    /// checkout's copy ([`review_memory::resolve_project_memory_path`]).
     pub(crate) fn review_memory_paths(&self, repo: &Path) -> review_memory::ReviewMemoryPaths {
+        let (project, worktree_local) = review_memory::resolve_project_memory_path(
+            repo,
+            self.configured_review_memory_path(repo).as_deref(),
+        );
         review_memory::ReviewMemoryPaths {
-            project: review_memory::review_memory_path(
-                repo,
-                self.configured_review_memory_path(repo).as_deref(),
-            ),
+            project,
             global: review_memory::global_review_memory_path(
                 self.config.global_review_memory_path.as_deref(),
             ),
+            worktree_local,
         }
     }
 
@@ -3733,10 +3759,24 @@ impl App {
             _ => return,
         };
         let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &preferred);
+        let path_is_git = match &self.create_project_git_probe {
+            Some((cached, result)) if *cached == path => *result,
+            _ => {
+                let result = self.probe_path_is_git(&path);
+                self.create_project_git_probe = Some((path.clone(), result));
+                result
+            }
+        };
         if let AppMode::CreatingProject(state) = &mut self.mode {
             state.agent = agent;
             state.agent_index = agent_index;
+            state.path_is_git = path_is_git;
         }
+    }
+
+    /// `Some(is_git)` for an existing directory, `None` otherwise.
+    pub(crate) fn probe_path_is_git(&self, path: &std::path::Path) -> Option<bool> {
+        path.is_dir().then(|| self.worktree.repo_root(path).is_ok())
     }
 
     pub(crate) fn default_project_preferred_agent(&self) -> AgentKind {
@@ -4088,10 +4128,35 @@ impl App {
     }
 
     pub fn set_debug_log_error_message(&mut self, message: impl Into<String>) {
-        self.message = Some(format!(
-            "Error: {} Check debug log for details.",
-            message.into()
-        ));
+        self.message = Some(Self::logged_error_message(&message.into()));
+    }
+
+    /// The one place the status-line "Error: " prefix and the debug-log
+    /// pointer are added. A prefix already on `detail` is dropped first so
+    /// callers that pre-prefix cannot produce "Error: Error: ...", and the
+    /// pointer is omitted when the message already says what to do next.
+    pub(crate) fn logged_error_message(detail: &str) -> String {
+        let detail = strip_error_prefix(detail);
+        let lower = detail.to_lowercase();
+        let words: Vec<&str> = lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let has_word = |w: &str| words.contains(&w);
+        let actionable = has_word("retry")
+            || has_word("press")
+            || lower.contains("is written to")
+            || lower.contains("debug log");
+        if actionable {
+            format!("Error: {detail}")
+        } else {
+            let sep = if detail.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            format!("Error: {detail}{sep} Press D for the debug log.")
+        }
     }
 
     pub fn flush_token_cache_to_db(&mut self) {
@@ -4384,6 +4449,20 @@ fn hash_path_metadata(hasher: &mut impl Hasher, path: PathBuf) {
         }
         Err(_) => false.hash(hasher),
     }
+}
+
+/// Strip a leading `Error:` (any case, with its spacing) so a message is never
+/// prefixed twice.
+pub(crate) fn strip_error_prefix(message: &str) -> &str {
+    let mut rest = message.trim_start();
+    while let Some(tail) = rest
+        .get(..6)
+        .filter(|p| p.eq_ignore_ascii_case("error:"))
+        .map(|_| &rest[6..])
+    {
+        rest = tail.trim_start();
+    }
+    rest
 }
 
 #[cfg(test)]

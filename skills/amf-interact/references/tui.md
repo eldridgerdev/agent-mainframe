@@ -77,6 +77,11 @@ JSON
 Driver `automation` targets the private TUI, unlike a bare `amf automation`
 command. Use the latter only for requested changes to the running dashboard.
 For its current request fields, run `amf automation <action> --help`.
+For `create-feature`, set `"no_start": true` in `request` to create a stopped
+feature/worktree without launching live sessions; its response has
+`started: false`. The default is to start sessions. Do not combine
+`no_start` with `initial_prompt` or `submit_prompt`. The bare CLI also accepts
+`amf automation create-feature --file request.json --no-start`.
 
 `stop` shuts down only the driver's private tmux server. Logs and its database
 remain under the returned session directory for diagnosis. If AMF exits on its

@@ -31,12 +31,10 @@ pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('c') => {
             confirm_harness_setup(app)?;
         }
-        KeyCode::Char('q') => {
-            if state.is_startup {
-                app.should_quit = true;
-            } else {
-                app.mode = AppMode::Normal;
-            }
+        // First run only: quit AMF without configuring anything. From the
+        // dashboard `q` used to be a second, unexplained name for Esc.
+        KeyCode::Char('q') if state.is_startup => {
+            app.should_quit = true;
         }
         KeyCode::Esc => {
             if state.is_startup {

@@ -280,10 +280,21 @@ pub fn draw_syntax_language_picker(
             )
         })
         .count();
-    let area = centered_rect(68, 58, frame.area());
+    // 68% x 58% is 54 columns by 14 rows at 80x24: too narrow for a row and
+    // only six rows tall. Use most of a small terminal instead.
+    let screen = frame.area();
+    let area = centered_rect(
+        if screen.width < 100 { 96 } else { 68 },
+        if screen.height < 30 { 84 } else { 58 },
+        screen,
+    );
     crate::ui::draw_modal_overlay(frame, area, theme);
 
-    let title = format!(" Syntax Parsers ({}/{}) ", installed, state.languages.len());
+    let title = format!(
+        " Syntax Parsers: {}/{} installed ",
+        installed,
+        state.languages.len()
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -356,7 +367,7 @@ pub fn draw_syntax_language_picker(
             Style::default().fg(theme.text_muted.to_color()),
         )))
     };
-    frame.render_widget(status_line, chunks[0]);
+    frame.render_widget(status_line.wrap(Wrap { trim: false }), chunks[0]);
 
     let items: Vec<ListItem> = state
         .languages
@@ -391,11 +402,10 @@ pub fn draw_syntax_language_picker(
                             .add_modifier(Modifier::BOLD),
                     ),
                     crate::highlight::HighlightInstallState::Available => (
-                        " AVAILABLE ",
-                        Style::default()
-                            .fg(theme.effective_bg())
-                            .bg(theme.text_muted.to_color())
-                            .add_modifier(Modifier::BOLD),
+                        // Not installed is the default; a repeated badge on
+                        // every row is noise, and so is the gap it left.
+                        "",
+                        Style::default(),
                     ),
                     crate::highlight::HighlightInstallState::Broken => (
                         " BROKEN ",
@@ -407,15 +417,33 @@ pub fn draw_syntax_language_picker(
                 }
             };
 
+            // Fit the row to the list: the description is the part that gives
+            // way (with an ellipsis, or not at all), so no word is cut mid-row.
+            let name = row.language.picker_title();
+            let marker = if is_selected { "  > " } else { "    " };
+            let separator = if badge_label.is_empty() { "" } else { " " };
+            let list_width = chunks[1].width as usize;
+            let fixed = marker.chars().count()
+                + badge_label.chars().count()
+                + separator.len()
+                + name.chars().count();
+            let extensions = truncate_text(
+                &format!("  {}  ", row.language.extension_summary()),
+                list_width.saturating_sub(fixed),
+            );
+            let remaining = list_width.saturating_sub(fixed + extensions.chars().count());
+            let description = if remaining >= 6 {
+                truncate_text(row.language.picker_description(), remaining)
+            } else {
+                String::new()
+            };
+
             let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(theme.warning.to_color()),
-                ),
+                Span::styled(marker, Style::default().fg(theme.warning.to_color())),
                 Span::styled(badge_label, badge_style),
-                Span::styled(" ", Style::default()),
+                Span::styled(separator, Style::default()),
                 Span::styled(
-                    row.language.picker_title(),
+                    name,
                     if is_selected {
                         Style::default()
                             .fg(theme.text.to_color())
@@ -424,12 +452,9 @@ pub fn draw_syntax_language_picker(
                         Style::default().fg(theme.text.to_color())
                     },
                 ),
+                Span::styled(extensions, Style::default().fg(theme.primary.to_color())),
                 Span::styled(
-                    format!("  {}  ", row.language.extension_summary()),
-                    Style::default().fg(theme.primary.to_color()),
-                ),
-                Span::styled(
-                    row.language.picker_description(),
+                    description,
                     Style::default().fg(theme.text_muted.to_color()),
                 ),
             ]);
@@ -453,35 +478,58 @@ pub fn draw_syntax_language_picker(
             ),
         ]))
     } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "  j/k or \u{2191}/\u{2193}",
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::styled(
-                " navigate  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Enter/i", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " install or reinstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("x", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " uninstall  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("r", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " refresh  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]))
+        Paragraph::new(flow_hints(
+            &[
+                ("j/k or \u{2191}/\u{2193}", "navigate"),
+                ("Enter/i", "install or reinstall"),
+                ("x", "uninstall"),
+                ("r", "refresh"),
+                ("Esc", "cancel"),
+            ],
+            chunks[2].width as usize,
+            Style::default().fg(theme.warning.to_color()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
     };
     frame.render_widget(hints, chunks[2]);
+}
+
+/// Lay `(key, label)` hints out over as many lines as `width` needs, moving a
+/// whole hint to the next line rather than letting the terminal split it
+/// ("r" at the end of one line, "refresh" at the start of the next).
+fn flow_hints(
+    hints: &[(&str, &str)],
+    width: usize,
+    key_style: Style,
+    label_style: Style,
+) -> Vec<Line<'static>> {
+    const INDENT: &str = "  ";
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(INDENT)];
+    let mut used = INDENT.chars().count();
+    let mut line_has_hint = false;
+    for (key, label) in hints {
+        let separator = if line_has_hint { 2 } else { 0 };
+        let cost = separator + key.chars().count() + 1 + label.chars().count();
+        if line_has_hint && used + cost > width {
+            lines.push(Line::from(std::mem::replace(
+                &mut spans,
+                vec![Span::raw(INDENT)],
+            )));
+            used = INDENT.chars().count();
+            line_has_hint = false;
+        }
+        if line_has_hint {
+            spans.push(Span::raw("  "));
+            used += 2;
+        }
+        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled(format!(" {label}"), label_style));
+        used += key.chars().count() + 1 + label.chars().count();
+        line_has_hint = true;
+    }
+    lines.push(Line::from(spans));
+    lines
 }
 
 pub fn draw_markdown_file_picker(
@@ -906,7 +954,12 @@ pub fn draw_session_switcher(
     nerd_font: bool,
     theme: &Theme,
 ) {
-    let area = centered_rect(40, 50, frame.area());
+    // Wider on small terminals so the footer wraps to two rows, not four.
+    let area = centered_rect(
+        if frame.area().width < 100 { 60 } else { 40 },
+        50,
+        frame.area(),
+    );
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" {} / {} ", state.project_name, state.feature_name);
@@ -930,7 +983,7 @@ pub fn draw_session_switcher(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(inner);
 
     let items: Vec<ListItem> = state
@@ -1037,24 +1090,32 @@ pub fn draw_session_switcher(
             Style::default().fg(theme.warning.to_color()),
         ),
         Span::styled(
-            " navigate  ",
+            "\u{a0}navigate  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            " select  ",
+            "\u{a0}select  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("s", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" new  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            "\u{a0}new  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            " rename  ",
+            "\u{a0}rename  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-    ]));
+        Span::styled(
+            "\u{a0}cancel",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]))
+    // Wrap rather than clip: "s new  r" lost its meaning at 120 columns.
+    .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(hints, chunks[1]);
 }
 
@@ -1540,6 +1601,22 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame, theme: &Theme) {
     draw_session_restore_confirm(frame, theme, "opencode");
 }
 
+/// What a built-in session kind is, in a word or two, for the Start Session
+/// picker.
+pub(crate) fn session_kind_word(kind: &crate::project::SessionKind) -> &'static str {
+    use crate::project::SessionKind;
+    match kind {
+        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi => {
+            "AI agent"
+        }
+        SessionKind::Terminal => "shell",
+        SessionKind::Nvim => "editor in AMF",
+        SessionKind::Vscode => "opens VS Code",
+        SessionKind::Todos => "TODO list",
+        SessionKind::Custom => "custom",
+    }
+}
+
 pub fn draw_session_picker(
     frame: &mut Frame,
     state: &SessionPickerState,
@@ -1551,7 +1628,13 @@ pub fn draw_session_picker(
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let total = state.builtin_sessions.len() + state.custom_sessions.len();
-    let title = format!(" Start Session ({}) ", total);
+    // The count is how many kinds of session this feature can start — not
+    // how many are running — so the title says so.
+    let title = format!(
+        " Start a session \u{00b7} {} option{} ",
+        total,
+        if total == 1 { "" } else { "s" }
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -1586,49 +1669,29 @@ pub fn draw_session_picker(
                 .add_modifier(Modifier::BOLD),
         ))));
 
+        let label_width = state
+            .builtin_sessions
+            .iter()
+            .map(|s| s.label.chars().count())
+            .max()
+            .unwrap_or(0);
         for (i, session) in state.builtin_sessions.iter().enumerate() {
             let idx = i;
             let is_selected = idx == state.selected;
             let is_disabled = session.disabled.is_some();
 
-            let icon = match session.kind {
-                crate::project::SessionKind::Claude => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_claude.to_color()),
-                ),
-                crate::project::SessionKind::Opencode => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_opencode.to_color()),
-                ),
-                crate::project::SessionKind::Codex => Span::styled(
-                    "  * ",
-                    Style::default().fg(theme.session_icon_codex.to_color()),
-                ),
-                crate::project::SessionKind::Terminal => Span::styled(
-                    "  > ",
-                    Style::default().fg(theme.session_icon_terminal.to_color()),
-                ),
-                crate::project::SessionKind::Nvim => {
-                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
-                    Span::styled(
-                        icon,
-                        Style::default().fg(theme.session_icon_nvim.to_color()),
-                    )
-                }
-                crate::project::SessionKind::Vscode => Span::styled(
-                    "  V ",
-                    Style::default().fg(theme.session_icon_vscode.to_color()),
-                ),
-                crate::project::SessionKind::Todos => {
-                    let icon = if nerd_font { "  \u{f0ae} " } else { "  = " };
-                    Span::styled(
-                        icon,
-                        Style::default().fg(theme.session_icon_custom.to_color()),
-                    )
-                }
-                _ => Span::styled("    ", Style::default().fg(theme.text_muted.to_color())),
+            // A word, not a glyph: `*`, `>` and `V` read as markup, and `>`
+            // collides with the selection marker beside it.
+            let kind_word = session_kind_word(&session.kind);
+            let kind_color = match session.kind {
+                crate::project::SessionKind::Claude => &theme.session_icon_claude,
+                crate::project::SessionKind::Opencode => &theme.session_icon_opencode,
+                crate::project::SessionKind::Codex => &theme.session_icon_codex,
+                crate::project::SessionKind::Terminal => &theme.session_icon_terminal,
+                crate::project::SessionKind::Nvim => &theme.session_icon_nvim,
+                crate::project::SessionKind::Vscode => &theme.session_icon_vscode,
+                _ => &theme.session_icon_custom,
             };
-
             let (label_style, msg) = if is_disabled {
                 (
                     Style::default().fg(theme.text_muted.to_color()),
@@ -1651,8 +1714,14 @@ pub fn draw_session_picker(
                 } else {
                     Span::styled("    ", Style::default().fg(theme.text_muted.to_color()))
                 },
-                icon,
-                Span::styled(&session.label, label_style),
+                Span::styled(
+                    format!("{:<label_w$}", session.label, label_w = label_width),
+                    label_style,
+                ),
+                Span::styled(
+                    format!("  {kind_word}"),
+                    Style::default().fg(kind_color.to_color()),
+                ),
             ];
 
             if let Some(reason) = msg {
@@ -1774,10 +1843,7 @@ pub fn draw_session_picker(
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "  j/k or \u{2191}/\u{2193}",
-            Style::default().fg(theme.warning.to_color()),
-        ),
+        Span::styled("  j/k", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " navigate  ",
             Style::default().fg(theme.text_muted.to_color()),

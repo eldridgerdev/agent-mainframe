@@ -588,7 +588,7 @@ impl UsageManager {
                             "usage-refresh thread panicked; see panic log entry for details",
                         );
                         set_user_alert(
-                            "Error: Usage refresh failed. Check debug log for details.".to_string(),
+                            "Error: Usage refresh failed. Press D for the debug log.".to_string(),
                         );
                     }
                 });
@@ -599,7 +599,7 @@ impl UsageManager {
                     "usage",
                     &format!("failed to spawn usage-refresh thread: {err}"),
                 );
-                set_user_alert("Error: Usage refresh failed. Check debug log for details.".into());
+                set_user_alert("Error: Usage refresh failed. Press D for the debug log.".into());
             }
         }
     }

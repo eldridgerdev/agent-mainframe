@@ -32,6 +32,12 @@ amf automation create-feature --file request.json
 amf automation create-batch-features --file request.json
 ```
 
+Use `amf automation create-feature --file request.json --no-start` (or
+`"no_start": true` in the request) to create the feature and worktree without
+starting live sessions. It remains stopped until you start it, and the response
+reports `started: false`. Omit the option to keep the default automatic start.
+`no_start` cannot be combined with `initial_prompt` or `submit_prompt`.
+
 Each command sends a request to the running dashboard over the same local
 IPC system AMF's own lifecycle hooks use; AMF applies it inside the
 dashboard process and prints a JSON response. Every command accepts

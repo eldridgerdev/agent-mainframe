@@ -42,6 +42,13 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
             KeyCode::End => "End",
             KeyCode::PageUp => "PPage",
             KeyCode::PageDown => "NPage",
+            KeyCode::Enter => "Enter",
+            KeyCode::Backspace => "BSpace",
+            KeyCode::Delete => "DC",
+            KeyCode::Insert => "IC",
+            KeyCode::Tab => "Tab",
+            KeyCode::Esc => "Escape",
+            KeyCode::F(n) => return Some(TmuxKey::Named(format!("M-F{n}"))),
             _ => return None,
         };
         return Some(TmuxKey::Named(format!("M-{name}")));
@@ -559,6 +566,20 @@ mod tests {
             crossterm_key_to_tmux(&k),
             Some(TmuxKey::Named(s)) if s == "M-x"
         ));
+    }
+
+    #[test]
+    fn alt_named_keys_remain_forwardable() {
+        for (code, expected) in [
+            (KeyCode::Enter, "M-Enter"),
+            (KeyCode::Backspace, "M-BSpace"),
+            (KeyCode::Delete, "M-DC"),
+            (KeyCode::F(5), "M-F5"),
+        ] {
+            assert!(
+                matches!(crossterm_key_to_tmux(&alt(code)), Some(TmuxKey::Named(s)) if s == expected)
+            );
+        }
     }
 
     #[test]

@@ -204,9 +204,12 @@ fn escape_sequence(chars: &[char]) -> (usize, Option<String>) {
                 ("", 'S') => named("F4"),
                 _ => None,
             };
-            let key = match (key, modifier) {
-                (Some(key), Some(3)) => Some(format!("M-{key}")),
-                (key, _) => key,
+            let key = match modifier {
+                None => key,
+                Some(3) => key.map(|key| format!("M-{key}")),
+                // xterm modifier parameter is 1 + bitmask (shift, alt, ctrl).
+                Some(2 | 4 | 6 | 8 | 10 | 12 | 14) => None,
+                Some(_) => None,
             };
             (end + 1, key)
         }
@@ -482,6 +485,15 @@ mod tests {
         );
         assert_eq!(translate_input("\x1b"), keys(&["Escape"]));
         assert_eq!(translate_input("\x1bx"), keys(&["M-x"]));
+    }
+
+    #[test]
+    fn unsupported_escape_modifiers_are_dropped() {
+        assert_eq!(
+            translate_input("\x1b[1;5D\x1b[3;2~"),
+            Vec::<PaneInput>::new()
+        );
+        assert_eq!(translate_input("\x1b[1;3D"), keys(&["M-Left"]));
     }
 
     #[test]

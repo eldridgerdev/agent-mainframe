@@ -159,6 +159,10 @@ filterable projects sidebar, and `amf automation` can start sessions and tasks.
 
 ### Fixed
 
+- **Alt+arrow shortcuts now reach agent sessions.** Use Alt+Left and Alt+Right
+  to switch Codex subagents in AMF; the same modified keys also pass through
+  the remote terminal.
+
 - **Non-git folders are flagged instead of failing late.** The New Project
   dialog warns when the folder is not a git repository, says what still works
   and what needs git, and offers `Ctrl+G` to run `git init`. Such projects show

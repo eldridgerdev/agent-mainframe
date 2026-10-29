@@ -2888,6 +2888,48 @@ non-goal for v1 (GitHub `gh` only), not an open question.
 
       **Shipped, 2026-09-15.**
 
+- [x] **Make review memory reach every review, and show that it did.**
+      Reported as "inconsistent results": PR Triage findings added to memory
+      often had no effect on later AI reviews. Root cause: the project doc's
+      default path is under `.amf/`, which is gitignored dir-wide, and the doc
+      was resolved against `git rev-parse --show-toplevel`, so each linked
+      worktree read and wrote its own private copy (and deleting the worktree
+      deleted it). A finding added while triaging in worktree A never reached
+      a review run from worktree B. Also found: an unreadable doc was read as
+      empty (`unwrap_or_default`), and the `review.hunk_split` prompt carried
+      no memory, so oversized files were reviewed without it.
+
+      **Fix.** `review_memory::resolve_project_memory_path` anchors a
+      git-*ignored* project doc to the main checkout when called from a
+      linked worktree (main checkout found from git's own `.git` /
+      `commondir` files, ignore status from `git check-ignore` memoized for
+      10 s because several panes resolve paths per frame). A *tracked* doc
+      stays per-checkout. `App::review_memory_paths` is the one resolution
+      point, so add/bootstrap/compact/review all agree. `review.hunk_split`
+      gained `{{recurring_findings}}`.
+
+      **Visibility.** `load_review_memory` returns a per-doc
+      `MemoryDocStatus` (missing / empty / unreadable / loaded + finding
+      count, with global duplicates of project findings counted separately).
+      The AI Review pane shows it as a Memory block, read on open. Each run
+      records `AiReviewAttribution::memory`: the docs read plus how many
+      review prompts were sent and how many actually contained the memory
+      text, which catches an override template that dropped
+      `{{recurring_findings}}`. Stored in the existing cache JSON, so no
+      migration. A leftover worktree-local doc is flagged as not read.
+
+      **Add to Memory requires a destination.** `MemoryAddState::scope` is
+      now `Option`, starting `None`; `p` / `g` choose project / global
+      (replacing the `g` toggle) and `⏎` refuses with an inline reason until
+      one is picked. Both destinations are listed with full paths. →
+      `src/app/review_memory.rs`, `src/app/ai_review.rs`, `src/app/mod.rs`,
+      `src/app/pr_review/memory.rs`, `src/app/pr_review/state.rs`,
+      `src/handlers/pr_review.rs`, `src/prompts/defaults.rs`,
+      `src/prompts/mod.rs`, `src/ui/dialogs/ai_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `CHANGELOG.md`.
+
+      **Shipped, 2026-10-16.**
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

@@ -32,6 +32,28 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
         return Some(TmuxKey::Named(format!("M-{}", c)));
     }
 
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        let name = match key.code {
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Left => "Left",
+            KeyCode::Right => "Right",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PPage",
+            KeyCode::PageDown => "NPage",
+            KeyCode::Enter => "Enter",
+            KeyCode::Backspace => "BSpace",
+            KeyCode::Delete => "DC",
+            KeyCode::Insert => "IC",
+            KeyCode::Tab => "Tab",
+            KeyCode::Esc => "Escape",
+            KeyCode::F(n) => return Some(TmuxKey::Named(format!("M-F{n}"))),
+            _ => return None,
+        };
+        return Some(TmuxKey::Named(format!("M-{name}")));
+    }
+
     match key.code {
         KeyCode::Char('\n' | '\r') => None,
         KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),
@@ -261,6 +283,13 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 }
 
 fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
+    // A configured next/prev binding on a scroll key must stay reachable.
+    let bound = matches!(key.code, KeyCode::Char(c)
+        if app.active_extension.keybindings.get("next_feature") == Some(&c)
+            || app.active_extension.keybindings.get("prev_feature") == Some(&c));
+    if !bound && app.handle_leader_menu_nav(&key) {
+        return Ok(());
+    }
     app.deactivate_leader();
 
     // Next/prev feature navigation has no default binding. Dispatch it only
@@ -385,10 +414,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                     return Ok(());
                 }
             };
-            app.mode = AppMode::Help(crate::app::HelpState {
-                from_view: Some(view),
-                scroll_offset: 0,
-            });
+            app.mode = AppMode::Help(crate::app::HelpState::new(Some(view)));
         }
         KeyCode::Char('o') | KeyCode::Char('S') => {
             app.toggle_scroll_mode(visible_rows);
@@ -491,7 +517,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('W') => {
             app.open_ai_review_from_view();
         }
-        _ => {}
+        _ => app.leader_unrecognised(&key),
     }
 
     Ok(())
@@ -544,6 +570,20 @@ mod tests {
             crossterm_key_to_tmux(&k),
             Some(TmuxKey::Named(s)) if s == "M-x"
         ));
+    }
+
+    #[test]
+    fn alt_named_keys_remain_forwardable() {
+        for (code, expected) in [
+            (KeyCode::Enter, "M-Enter"),
+            (KeyCode::Backspace, "M-BSpace"),
+            (KeyCode::Delete, "M-DC"),
+            (KeyCode::F(5), "M-F5"),
+        ] {
+            assert!(
+                matches!(crossterm_key_to_tmux(&alt(code)), Some(TmuxKey::Named(s)) if s == expected)
+            );
+        }
     }
 
     #[test]
@@ -1298,6 +1338,36 @@ mod tests {
             AppMode::Compose(state) => assert_eq!(state.editor.text(), "hi"),
             _ => panic!("expected Compose mode"),
         }
+    }
+
+    #[test]
+    fn leader_menu_unrecognised_key_stays_open_and_scroll_keys_do_not_close_it() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        app.leader_max_scroll.set(5);
+        handle_view_key(&mut app, key(KeyCode::Char('j')), 20).unwrap();
+        assert!(app.leader_active);
+        assert_eq!(app.leader_scroll, 1);
+        handle_view_key(&mut app, key(KeyCode::Down), 20).unwrap();
+        assert_eq!(app.leader_scroll, 2);
+        handle_view_key(&mut app, key(KeyCode::Up), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Char('k')), 20).unwrap();
+        assert_eq!(app.leader_scroll, 0);
+        handle_view_key(&mut app, key(KeyCode::End), 20).unwrap();
+        assert_eq!(app.leader_scroll, 5);
+
+        // A key with no command is not forwarded and the menu stays open.
+        handle_view_key(&mut app, key(KeyCode::Char('Z')), 20).unwrap();
+        assert!(app.leader_active);
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.leader_scroll, 5);
+
+        // Esc dismisses without running anything.
+        handle_view_key(&mut app, key(KeyCode::Esc), 20).unwrap();
+        assert!(!app.leader_active);
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
     }
 
     #[test]

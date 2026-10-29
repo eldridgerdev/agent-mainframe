@@ -14,44 +14,67 @@ use crate::context_tracking::ContextBand;
 use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
-const LEADER_COMMANDS: &[(&str, &str)] = &[
-    ("q", "Exit view"),
-    ("t / T", "Next / prev session"),
-    ("w", "Session switcher"),
-    ("/", "Command picker"),
-    ("h", "Bookmark picker"),
-    ("H", "Bookmark session"),
-    ("M", "Unbookmark session"),
-    ("1-9", "Jump to bookmark slot"),
-    ("i", "Needs attention"),
-    ("s", "Steering coach (experimental)"),
-    ("g", "Generate summary"),
-    ("l", "Latest prompt"),
-    ("p", "Prompt library"),
-    ("E", "Headless prompt overrides"),
-    ("d", "Diff viewer (all changes / commit)"),
-    ("m", "Markdown viewer"),
-    ("B", "Model / reasoning advice"),
-    ("n", "Open current plan"),
-    ("F", "Fresh context"),
-    ("b", "Show / hide sidebar"),
-    ("v", "Expand / collapse todos"),
-    ("V", "Check pending diff review"),
-    ("o", "Scroll mode"),
-    ("r", "Refresh statuses"),
-    ("R", "Refresh pane sizing"),
-    ("x", "Stop session"),
-    ("c", "Copy Claude /rc URL"),
-    ("O", "Open Claude /rc URL"),
-    ("C", "AMF Remote server on / off"),
-    ("Q", "Pair a phone (QR)"),
-    ("f", "Final review"),
-    ("G", "PR Workspace (experimental)"),
-    ("U", "PR Triage (legacy)"),
-    ("W", "AI Review"),
-    ("D", "Debug log"),
-    ("?", "Help"),
+/// The Ctrl+Space menu in a session view: `(group, key, description)`.
+///
+/// This is the single source of truth for what the menu lists. Entries are
+/// rendered under a dim heading per consecutive `group`; consumers that only
+/// want the flat key table (e.g. the help overlay) can ignore the first field.
+/// Leader key that toggles compose/direct input. Not in `LEADER_COMMANDS`:
+/// it is inserted only when the session has a compose box, and help
+/// documents it from this constant.
+pub(crate) const COMPOSE_TOGGLE_KEY: &str = "e";
+
+pub(crate) const LEADER_COMMANDS: &[(&str, &str, &str)] = &[
+    ("Sessions", "q", "Exit view"),
+    ("Sessions", "t / T", "Next / prev session"),
+    ("Sessions", "w", "Session switcher"),
+    ("Sessions", "x", "Stop session"),
+    ("Sessions", "b", "Show / hide sidebar"),
+    ("Sessions", "v", "Expand / collapse todos"),
+    ("Sessions", "o", "Scroll mode"),
+    ("Sessions", "r", "Refresh statuses"),
+    ("Sessions", "R", "Refresh pane sizing"),
+    ("Bookmarks", "h", "Bookmark picker"),
+    ("Bookmarks", "H", "Bookmark session"),
+    ("Bookmarks", "M", "Unbookmark session"),
+    ("Bookmarks", "1-9", "Jump to bookmark slot"),
+    ("Bookmarks", "i", "Needs attention"),
+    ("Agent", "/", "Command picker"),
+    ("Agent", "a", "Local commands"),
+    ("Agent", "s", "Steering coach (experimental)"),
+    ("Agent", "g", "Generate summary"),
+    ("Agent", "l", "Latest prompt"),
+    ("Agent", "p", "Prompt library"),
+    ("Agent", "E", "Headless prompt overrides"),
+    ("Agent", "B", "Model / reasoning advice"),
+    ("Agent", "F", "Fresh context"),
+    ("Agent", "N", "Quick-capture a TODO"),
+    ("Agent", "A", "Manage harnesses"),
+    ("Review & plan", "d", "Diff viewer (all changes / commit)"),
+    ("Review & plan", "m", "Markdown viewer"),
+    ("Review & plan", "n", "Open current plan"),
+    ("Review & plan", "V", "Check pending diff review"),
+    ("Review & plan", "f", "Final review"),
+    ("Review & plan", "W", "AI Review"),
+    ("Review & plan", "G", "PR Workspace (experimental)"),
+    ("Review & plan", "U", "PR Triage (legacy)"),
+    ("Remote & help", "c", "Copy Claude /rc URL"),
+    ("Remote & help", "O", "Open Claude /rc URL"),
+    ("Remote & help", "C", "AMF Remote server on / off"),
+    ("Remote & help", "Q", "Pair a phone (QR)"),
+    ("Remote & help", "D", "Debug log"),
+    ("Remote & help", "?", "Help"),
 ];
+
+/// One row of a command menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MenuRow {
+    Heading(String),
+    Entry(String, String),
+}
+
+/// Rows scrolled per PageUp/PageDown in the leader menu.
+pub(crate) const LEADER_MENU_PAGE: usize = 8;
 
 const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
 const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
@@ -187,6 +210,15 @@ pub fn attention_badge_text(attention_count: usize) -> Option<String> {
     })
 }
 
+/// Header hint for where typed keys go in an agent session: into the compose
+/// box, or (with compose switched off) straight to the agent.
+fn typing_hint(compose_intercept: Option<bool>) -> Option<&'static str> {
+    match compose_intercept? {
+        true => Some(" \u{00b7} type to compose "),
+        false => Some(" \u{00b7} keys go to the agent (Ctrl+Space e: compose) "),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // exercised only by unit tests
 pub(crate) fn draw(
@@ -215,6 +247,7 @@ pub(crate) fn draw(
         next_prev_feature,
         &throbber_state,
         theme,
+        0,
     );
 }
 
@@ -232,7 +265,9 @@ pub(crate) fn draw_with_lines(
     next_prev_feature: (Option<char>, Option<char>),
     throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
-) {
+    leader_scroll: usize,
+) -> usize {
+    let mut leader_max_scroll = 0;
     let area = frame.area();
     let header_area = Rect::new(area.x, area.y, area.width, 1);
     let content_area = Rect::new(
@@ -343,9 +378,38 @@ pub(crate) fn draw_with_lines(
             Style::default().fg(theme.warning.to_color()),
         ));
         header_spans.push(Span::styled(
-            " commands",
+            ": commands",
             Style::default().fg(theme.text.to_color()),
         ));
+        // Say where typing goes. On a narrow line the project name gives
+        // way first (feature and session still identify the view); if even
+        // that is not enough, the hint is the part left out.
+        if let Some(hint) = typing_hint(compose_intercept) {
+            let width = header_area.width as usize;
+            let hint_w = hint.chars().count();
+            let used: usize = header_spans.iter().map(|s| s.width()).sum();
+            let project_w = header_spans.get(1).map_or(0, |s| s.width());
+            let fits = if used + hint_w <= width {
+                true
+            } else if used - project_w + hint_w <= width && header_spans.len() > 2 {
+                header_spans.remove(1);
+                // The feature span opened with the separator after the project.
+                let feature = header_spans[1].clone();
+                header_spans[1] = Span::styled(
+                    feature.content.trim_start_matches('/').to_string(),
+                    feature.style,
+                );
+                true
+            } else {
+                false
+            };
+            if fits {
+                header_spans.push(Span::styled(
+                    hint,
+                    Style::default().fg(theme.text_muted.to_color()),
+                ));
+            }
+        }
     }
 
     if !view.scroll_mode
@@ -469,14 +533,16 @@ pub(crate) fn draw_with_lines(
     }
 
     if leader_active {
-        draw_leader_menu(
+        leader_max_scroll = draw_leader_menu(
             frame,
             main_content_area,
             theme,
             compose_intercept,
             next_prev_feature,
+            leader_scroll,
         );
     }
+    leader_max_scroll
 }
 
 fn draw_startup_loading(
@@ -1026,111 +1092,230 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     style
 }
 
-fn draw_leader_menu(
-    frame: &mut Frame,
-    content_area: Rect,
-    theme: &Theme,
+/// Assemble the leader menu rows: grouped, with the dynamic entries
+/// (`e` compose toggle, configured next/prev feature keys) slotted in beside
+/// the key they belong to.
+fn leader_menu_rows(
     compose_intercept: Option<bool>,
     next_prev_feature: (Option<char>, Option<char>),
-) {
-    let mut commands: Vec<(String, String)> = LEADER_COMMANDS
+) -> Vec<MenuRow> {
+    let mut entries: Vec<(&str, String, String)> = LEADER_COMMANDS
         .iter()
-        .map(|(key, desc)| ((*key).to_string(), (*desc).to_string()))
+        .map(|(group, key, desc)| (*group, (*key).to_string(), (*desc).to_string()))
         .collect();
-    if let Some(active) = compose_intercept {
-        let entry = if active {
-            ("e".to_string(), "Direct input (compose off)".to_string())
-        } else {
-            ("e".to_string(), "Enable compose input".to_string())
+    let insert_after =
+        |entries: &mut Vec<(&str, String, String)>, after: &str, key: String, desc: String| {
+            let pos = entries.iter().position(|(_, k, _)| k == after);
+            let group = pos.map(|p| entries[p].0).unwrap_or("Sessions");
+            let at = pos.map(|p| p + 1).unwrap_or(entries.len());
+            entries.insert(at, (group, key, desc));
         };
-        let pos = commands
-            .iter()
-            .position(|(key, _)| key == "s")
-            .map(|pos| pos + 1)
-            .unwrap_or(commands.len());
-        commands.insert(pos, entry);
+    if let Some(active) = compose_intercept {
+        let desc = if active {
+            "Direct input (compose off)"
+        } else {
+            "Enable compose input"
+        };
+        insert_after(
+            &mut entries,
+            "s",
+            COMPOSE_TOGGLE_KEY.to_string(),
+            desc.to_string(),
+        );
     }
 
     // Next/prev feature has no default binding; only advertise it when the
     // user has configured a key for it.
     let (next_key, prev_key) = next_prev_feature;
     let feature_entry = match (next_key, prev_key) {
-        (Some(n), Some(p)) => Some((format!("{n} / {p}"), "Next / prev feature".to_string())),
-        (Some(n), None) => Some((n.to_string(), "Next feature".to_string())),
-        (None, Some(p)) => Some((p.to_string(), "Prev feature".to_string())),
+        (Some(n), Some(p)) => Some((format!("{n} / {p}"), "Next / prev feature")),
+        (Some(n), None) => Some((n.to_string(), "Next feature")),
+        (None, Some(p)) => Some((p.to_string(), "Prev feature")),
         (None, None) => None,
     };
-    if let Some(entry) = feature_entry {
-        let pos = commands
-            .iter()
-            .position(|(key, _)| key == "w")
-            .map(|pos| pos + 1)
-            .unwrap_or(commands.len());
-        commands.insert(pos, entry);
+    if let Some((key, desc)) = feature_entry {
+        insert_after(&mut entries, "w", key, desc.to_string());
     }
 
-    let borrowed: Vec<(&str, &str)> = commands
-        .iter()
-        .map(|(key, desc)| (key.as_str(), desc.as_str()))
-        .collect();
+    let mut rows = Vec::with_capacity(entries.len() + 6);
+    let mut current: Option<&str> = None;
+    for (group, key, desc) in entries {
+        if current != Some(group) {
+            rows.push(MenuRow::Heading(group.to_string()));
+            current = Some(group);
+        }
+        rows.push(MenuRow::Entry(key, desc));
+    }
+    rows
+}
 
-    draw_command_menu(
+/// Draw the session-view leader menu. Returns the largest useful scroll
+/// offset so the key handler can clamp against what was actually drawn.
+fn draw_leader_menu(
+    frame: &mut Frame,
+    content_area: Rect,
+    theme: &Theme,
+    compose_intercept: Option<bool>,
+    next_prev_feature: (Option<char>, Option<char>),
+    scroll: usize,
+) -> usize {
+    let rows = leader_menu_rows(compose_intercept, next_prev_feature);
+    draw_menu_rows(
         frame,
         content_area,
         " Ctrl+Space commands ",
-        borrowed.as_slice(),
+        &rows,
         theme,
-    );
+        scroll,
+    )
 }
 
+/// Flat (ungrouped) command menu. Returns the max scroll offset.
 pub(crate) fn draw_command_menu(
     frame: &mut Frame,
     content_area: Rect,
     title: &str,
     commands: &[(&str, &str)],
     theme: &Theme,
-) {
+    scroll: usize,
+) -> usize {
+    let rows: Vec<MenuRow> = commands
+        .iter()
+        .map(|(k, d)| MenuRow::Entry((*k).to_string(), (*d).to_string()))
+        .collect();
+    draw_menu_rows(frame, content_area, title, &rows, theme, scroll)
+}
+
+const MENU_KEY_COL: usize = 6;
+const MENU_GAP: usize = 2;
+
+/// Greedy word wrap. A word longer than `width` is split by characters.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let mut word = word.to_string();
+        while word.chars().count() > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            let head: String = word.chars().take(width).collect();
+            word = word.chars().skip(width).collect();
+            lines.push(head);
+        }
+        let cur_len = current.chars().count();
+        if current.is_empty() {
+            current = word;
+        } else if cur_len + 1 + word.chars().count() <= width {
+            current.push(' ');
+            current.push_str(&word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = word;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+/// Draw a command menu sized to its content and bounded by `content_area`.
+/// Descriptions wrap at word boundaries; when the rows still do not fit the
+/// menu scrolls (`scroll` is a line offset) and the bottom border says so.
+/// Returns the largest valid scroll offset (0 when everything fits or the area
+/// is too small to draw anything).
+fn draw_menu_rows(
+    frame: &mut Frame,
+    content_area: Rect,
+    title: &str,
+    rows: &[MenuRow],
+    theme: &Theme,
+    scroll: usize,
+) -> usize {
     if content_area.width < 30 || content_area.height < 8 {
-        return;
+        return 0;
     }
 
-    let longest_label = commands
+    // Natural inner width: key column + gap + longest description/heading.
+    let natural = rows
         .iter()
-        .map(|(key, desc)| key.len() + desc.len() + 4)
+        .map(|row| match row {
+            MenuRow::Heading(text) => text.chars().count() + 1,
+            MenuRow::Entry(key, desc) => {
+                key.chars().count().max(MENU_KEY_COL) + MENU_GAP + desc.chars().count()
+            }
+        })
         .max()
-        .unwrap_or(24) as u16;
-    let width = (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
-    let height = (commands.len() as u16 + 2).min(content_area.height.saturating_sub(1));
+        .unwrap_or(24)
+        .max(title.chars().count());
+    let max_width = content_area.width.saturating_sub(2).max(1);
+    // +2 borders, +1 right padding.
+    let width = ((natural + 3) as u16).clamp(30.min(max_width), max_width);
+    let inner_width = width.saturating_sub(3) as usize;
+    let desc_width = inner_width.saturating_sub(MENU_KEY_COL + MENU_GAP).max(8);
+
+    let key_style = Style::default()
+        .fg(theme.info.to_color())
+        .add_modifier(Modifier::BOLD);
+    let text_style = Style::default().fg(theme.text.to_color());
+    let heading_style = Style::default()
+        .fg(theme.text.to_color())
+        .add_modifier(Modifier::DIM | Modifier::BOLD);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for row in rows {
+        match row {
+            MenuRow::Heading(text) => {
+                lines.push(Line::from(Span::styled(text.clone(), heading_style)));
+            }
+            MenuRow::Entry(key, desc) => {
+                for (i, part) in wrap_words(desc, desc_width).into_iter().enumerate() {
+                    let lead = if i == 0 {
+                        Span::styled(format!("{:<width$}", key, width = MENU_KEY_COL), key_style)
+                    } else {
+                        Span::raw(" ".repeat(MENU_KEY_COL))
+                    };
+                    lines.push(Line::from(vec![
+                        lead,
+                        Span::raw(" ".repeat(MENU_GAP)),
+                        Span::styled(part, text_style),
+                    ]));
+                }
+            }
+        }
+    }
+
+    let avail = content_area.height.saturating_sub(1);
+    let height = (lines.len() as u16 + 2).min(avail);
+    let inner_height = height.saturating_sub(2) as usize;
+    let max_scroll = lines.len().saturating_sub(inner_height);
+    let scroll = scroll.min(max_scroll);
+
     let x = content_area.x + content_area.width.saturating_sub(width + 1);
     let y = content_area.y + content_area.height.saturating_sub(height + 1);
     let area = Rect::new(x, y, width, height);
 
-    let lines: Vec<Line<'static>> = commands
-        .iter()
-        .map(|(key, desc)| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{:<6}", key),
-                    Style::default()
-                        .fg(theme.info.to_color())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(desc.to_string(), Style::default().fg(theme.text.to_color())),
-            ])
-        })
-        .collect();
+    let mut block = Block::default()
+        .title(title.to_string())
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.info.to_color()));
+    if max_scroll > 0 {
+        let up = if scroll > 0 { "\u{25B2} more " } else { "" };
+        let down = if scroll < max_scroll {
+            "\u{25BC} more "
+        } else {
+            ""
+        };
+        block = block.title_bottom(format!(" {up}{down}\u{b7} j/k scroll \u{b7} Esc "));
+    }
 
-    let popup = Paragraph::new(lines).block(
-        Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .style(Style::default().bg(theme.effective_bg()))
-            .border_style(Style::default().fg(theme.info.to_color())),
-    );
-
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(inner_height).collect();
     frame.render_widget(Clear, area);
-    frame.render_widget(popup, area);
+    frame.render_widget(Paragraph::new(visible).block(block), area);
+    max_scroll
 }
 
 fn scroll_content_to_lines_with_selection(
@@ -2217,8 +2402,80 @@ mod tests {
     }
 
     #[test]
+    fn session_header_says_where_typing_goes() {
+        let header = |w: u16, kind, compose: Option<bool>| {
+            let mut terminal = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            let view = sample_view(kind);
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        &view,
+                        "",
+                        None,
+                        false,
+                        0,
+                        None,
+                        compose,
+                        (None, None),
+                        &Theme::default(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..w)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect::<String>()
+        };
+        for w in [80u16, 120] {
+            let line = header(w, crate::project::SessionKind::Claude, Some(true));
+            assert!(line.contains("proj"), "{w}: {line}");
+            assert!(line.contains("Ctrl+Space: commands"), "{w}: {line}");
+            assert!(line.contains("type to compose"), "{w}: {line}");
+        }
+        // Realistic names at 80 columns: the project name gives way so the
+        // hint still shows next to the feature and session.
+        {
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut view = sample_view(crate::project::SessionKind::Claude);
+            view.project_name = "agent-mainframe".into();
+            view.feature_name = "first-feature".into();
+            view.session_label = "Claude 1".into();
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame,
+                        &view,
+                        "",
+                        None,
+                        false,
+                        0,
+                        None,
+                        Some(true),
+                        (None, None),
+                        &Theme::default(),
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let line: String = (0..80)
+                .map(|x| buffer[(x, 0)].symbol().to_string())
+                .collect();
+            assert!(line.contains("first-feature /Claude 1"), "{line}");
+            assert!(!line.contains("agent-mainframe"), "{line}");
+            assert!(line.contains("type to compose"), "{line}");
+        }
+        let direct = header(120, crate::project::SessionKind::Claude, Some(false));
+        assert!(direct.contains("keys go to the agent"), "{direct}");
+        // A shell has no compose box, so no typing hint.
+        let shell = header(80, crate::project::SessionKind::Terminal, None);
+        assert!(shell.contains("Ctrl+Space: commands"));
+        assert!(!shell.contains("compose"));
+    }
+
+    #[test]
     fn leader_menu_lists_sidebar_toggle_command() {
-        let backend = TestBackend::new(120, 28);
+        let backend = TestBackend::new(120, 60);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
@@ -2249,13 +2506,108 @@ mod tests {
         assert!(rendered.contains("Open current plan"));
         assert!(rendered.contains("Fresh context"));
         assert!(rendered.contains("Jump to bookmark slot"));
-        assert!(rendered.contains("Check pending diff revie"));
+        assert!(rendered.contains("Check pending diff review"));
         // compose_intercept is Some(false): the menu offers the way
         // back out of direct mode.
         assert!(rendered.contains("Enable compose input"));
         // Next/prev feature is unbound by default, so it is hidden.
         assert!(!rendered.contains("Next / prev feature"));
         assert!(!rendered.contains("Next feature"));
+    }
+
+    /// Draw the leader menu in a `w`x`h` terminal at `scroll`; returns the
+    /// rendered rows and the max scroll the draw reported.
+    fn render_leader_menu(w: u16, h: u16, scroll: usize) -> (Vec<String>, usize) {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+        let throbber = throbber_widgets_tui::ThrobberState::default();
+        let mut max = 0;
+        terminal
+            .draw(|frame| {
+                max = draw_with_lines(
+                    frame,
+                    &view,
+                    "hello",
+                    &[],
+                    None,
+                    true,
+                    0,
+                    None,
+                    Some(false),
+                    (Some('n'), Some('p')),
+                    &throbber,
+                    &theme,
+                    scroll,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = buffer
+            .content()
+            .chunks(w as usize)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect();
+        (rows, max)
+    }
+
+    #[test]
+    fn leader_menu_reaches_every_entry_untruncated_at_common_sizes() {
+        for (w, h) in [(80u16, 24u16), (120, 40), (120, 50)] {
+            let (_, max) = render_leader_menu(w, h, 0);
+            let mut seen = String::new();
+            let mut last_frame = Vec::new();
+            for scroll in 0..=max {
+                let (rows, _) = render_leader_menu(w, h, scroll);
+                seen.push_str(&rows.join("\n"));
+                seen.push('\n');
+                last_frame = rows;
+            }
+            for (_, key, desc) in LEADER_COMMANDS {
+                for word in desc.split_whitespace() {
+                    assert!(
+                        seen.contains(word),
+                        "{w}x{h}: `{word}` of `{desc}` never shown"
+                    );
+                }
+                assert!(seen.contains(key), "{w}x{h}: key `{key}` never shown");
+            }
+            // The menu is closed by a bottom border on the last scroll
+            // position, and the final entry is visible there.
+            let text = last_frame.join("\n");
+            assert!(text.contains('\u{2514}'), "{w}x{h}: no bottom border");
+            assert!(text.contains("Help"), "{w}x{h}: last entry not reachable");
+            if max > 0 {
+                let (first, _) = render_leader_menu(w, h, 0);
+                assert!(
+                    first.join("\n").contains("more"),
+                    "{w}x{h}: scrollable menu must say there is more"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn leader_menu_fits_without_scrolling_when_terminal_is_tall() {
+        let (rows, max) = render_leader_menu(120, 50, 0);
+        assert_eq!(max, 0);
+        let text = rows.join("\n");
+        assert!(text.contains("Stop session"));
+        assert!(text.contains("Copy Claude /rc URL"));
+        assert!(text.contains("Sessions") && text.contains("Review & plan"));
+        // And it must scroll at 24 rows.
+        assert!(render_leader_menu(80, 24, 0).1 > 0);
+    }
+
+    #[test]
+    fn leader_menu_wraps_long_descriptions_at_word_boundaries() {
+        // 80 wide leaves less room than the longest description needs.
+        let (rows, _) = render_leader_menu(80, 50, 0);
+        let text = rows.join("\n");
+        assert!(text.contains("Diff viewer"));
+        assert!(!text.contains("(all changes / commit\n"));
+        assert_eq!(wrap_words("one two three", 7), vec!["one two", "three"]);
+        assert_eq!(wrap_words("abcdefgh", 3), vec!["abc", "def", "gh"]);
     }
 
     #[test]

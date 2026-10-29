@@ -848,7 +848,7 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 app.push_toast_success(format!("Added '{}'", builtin.label));
                             }
                             Err(e) => {
-                                app.push_toast_error(format!("Error: {}", e));
+                                app.push_toast_error(e.to_string());
                             }
                         }
                         if let Some(view) = state.from_view {
@@ -923,7 +923,7 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
                         // anything yet; the confirm path reports it instead.
                         Ok(()) if matches!(app.mode, AppMode::ConfirmResourceStart(_)) => {}
                         Ok(()) => app.push_toast_success(format!("Added '{}'", label)),
-                        Err(e) => app.push_toast_error(format!("Error: {}", e)),
+                        Err(e) => app.push_toast_error(e.to_string()),
                     }
                 }
                 NewSessionTarget::Custom(cfg) => {
@@ -970,7 +970,7 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
                                     let _ = app.enter_view();
                                 }
                             }
-                            Err(e) => app.push_toast_error(format!("Error: {}", e)),
+                            Err(e) => app.push_toast_error(e.to_string()),
                         }
                     }
                 }

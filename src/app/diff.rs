@@ -2,6 +2,23 @@ use anyhow::Result;
 
 use super::*;
 
+/// One line for the scope picker explaining why branch commits are missing.
+fn diff_picker_error_summary(err: &anyhow::Error) -> String {
+    let message = err.to_string();
+    if message.starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX) {
+        "No base branch found for this one, so commits can't be listed; \
+         choose a base ref with b in the viewer."
+            .to_string()
+    } else if message.contains("not on a named branch") {
+        "Detached HEAD: commits are listed only on a named branch.".to_string()
+    } else {
+        format!(
+            "Commits unavailable: {}",
+            message.lines().next().unwrap_or_default()
+        )
+    }
+}
+
 impl App {
     pub fn preferred_diff_viewer_layout(&self) -> DiffViewerLayout {
         self.config.diff_viewer_layout.clone()
@@ -25,9 +42,26 @@ impl App {
             return Ok(());
         };
 
-        let (commits, error) = match crate::diff::list_diff_commits(&workdir) {
-            Ok(commits) => (commits, None),
-            Err(err) => (Vec::new(), Some(err.to_string())),
+        let listed = crate::diff::resolve_base_ref(&workdir, None).and_then(|base| {
+            crate::diff::list_diff_commits_since(&workdir, &base)
+                .map(|commits| (commits, base.no_base_branch))
+        });
+        let (commits, no_base_branch, error, base_unresolved) = match listed {
+            Ok((commits, no_base_branch)) => (commits, no_base_branch, None, false),
+            Err(err) => {
+                // The full git message is long and technical; the picker
+                // gets one line and the details stay in the debug log.
+                self.log_warn("diff", format!("could not list feature commits: {err:#}"));
+                let base_unresolved = err
+                    .to_string()
+                    .starts_with(crate::diff::NO_BASE_BRANCH_ERROR_PREFIX);
+                (
+                    Vec::new(),
+                    false,
+                    Some(diff_picker_error_summary(&err)),
+                    base_unresolved,
+                )
+            }
         };
         self.mode = AppMode::DiffPicker(DiffPickerState {
             from_view: view,
@@ -35,6 +69,8 @@ impl App {
             commits,
             selected: 0,
             error,
+            no_base_branch,
+            base_unresolved,
         });
         Ok(())
     }
@@ -163,6 +199,7 @@ impl App {
                 state.branch = snapshot.branch;
                 state.base_ref = snapshot.base_ref;
                 state.base_commit = snapshot.base_commit;
+                state.no_base_branch = snapshot.no_base_branch;
                 state.error = None;
                 state.files = snapshot.files;
                 if state.review && !state.is_pr_review() {
@@ -172,6 +209,7 @@ impl App {
                         .files
                         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
                 }
+                state.group_amf_files();
                 state.selected_file = selected_path
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
@@ -187,7 +225,11 @@ impl App {
                 state.branch.clear();
                 state.base_ref.clear();
                 state.base_commit.clear();
+                state.no_base_branch = false;
                 state.files.clear();
+                // Nothing is listed, so nothing is AMF's: a stale count would
+                // keep the `.` hint and the split header over an empty list.
+                state.amf_file_count = 0;
                 state.selected_file = 0;
                 state.patch_scroll = 0;
                 state.error = Some(err.to_string());
@@ -225,10 +267,13 @@ impl App {
         if let AppMode::DiffViewer(state) = &mut self.mode
             && matches!(&state.scope, DiffScope::CurrentChanges)
         {
-            state.base_ref_input = state
-                .override_base_ref
-                .clone()
-                .unwrap_or_else(|| state.base_ref.clone());
+            // A `HEAD` fallback is not a base the reviewer chose; start blank.
+            let resolved = if state.no_base_branch {
+                String::new()
+            } else {
+                state.base_ref.clone()
+            };
+            state.base_ref_input = state.override_base_ref.clone().unwrap_or(resolved);
             state.editing_base_ref = true;
         }
     }
@@ -404,11 +449,7 @@ impl App {
                 // straight away, mirroring how a file explorer's left arrow
                 // behaves.
                 FileTreeRow::File { index, .. } => {
-                    let parent = state
-                        .files
-                        .get(*index)
-                        .and_then(|file| crate::app::ancestor_dirs(&file.path).pop());
-                    if let Some(parent) = parent {
+                    if let Some(parent) = state.tree_ancestors(*index).pop() {
                         state.tree_cursor_dir = Some(parent);
                     }
                 }
@@ -444,11 +485,21 @@ impl App {
     }
 
     /// `Z`: fold the whole tree to its top-level directories, or unfold it
-    /// completely when nothing is currently collapsed.
+    /// completely when nothing is currently collapsed. The AMF files row is
+    /// not part of "the tree" here: it is folded by default, so counting it
+    /// would turn the first `Z` into "unfold everything", and `.` already
+    /// shows or folds it. Its state is left as it is either way.
     pub fn diff_viewer_tree_toggle_all(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
-            if state.collapsed_dirs.is_empty() {
-                let dirs = state.tree_dirs();
+            let amf_key = crate::app::AMF_GROUP_KEY;
+            let amf_folded = state.collapsed_dirs.contains(amf_key);
+            let any_dir_folded = state.collapsed_dirs.iter().any(|dir| dir != amf_key);
+            if !any_dir_folded {
+                let dirs: Vec<String> = state
+                    .tree_dirs()
+                    .into_iter()
+                    .filter(|dir| dir != amf_key)
+                    .collect();
                 if dirs.is_empty() {
                     self.message = Some("No directories to collapse".to_string());
                     return;
@@ -456,13 +507,41 @@ impl App {
                 state.collapsed_dirs.extend(dirs);
                 // The selected file is now folded away; park the cursor on the
                 // outermost directory holding it so the highlight stays put.
-                state.tree_cursor_dir = state
-                    .files
-                    .get(state.selected_file)
-                    .and_then(|file| crate::app::ancestor_dirs(&file.path).into_iter().next());
+                // One of AMF's files is untouched by this, so it keeps its row.
+                if !state.is_amf_file(state.selected_file) {
+                    state.tree_cursor_dir =
+                        state.tree_ancestors(state.selected_file).into_iter().next();
+                }
             } else {
                 state.collapsed_dirs.clear();
+                if amf_folded {
+                    state.collapsed_dirs.insert(amf_key.to_string());
+                }
             }
+        }
+    }
+
+    /// `.`: show or fold the "AMF files" group from either panel — the
+    /// file-manager convention for hidden files. The same row also answers to
+    /// `z`/`h`/`l` like any directory (`Z` leaves it alone). Folding it while
+    /// one of its files is selected leaves that file selected (the highlight
+    /// falls back to the group row), exactly as folding a directory does.
+    pub fn diff_viewer_toggle_amf_files(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let count = state.amf_file_count;
+            if count == 0 {
+                self.message = Some("No AMF-generated files in this diff".to_string());
+                return;
+            }
+            let noun = if count == 1 { "file" } else { "files" };
+            state.toggle_dir_collapsed(crate::app::AMF_GROUP_KEY);
+            self.message = Some(
+                if state.collapsed_dirs.contains(crate::app::AMF_GROUP_KEY) {
+                    format!("Folded {count} AMF {noun} (. to show)")
+                } else {
+                    format!("Showing {count} AMF {noun}, listed after yours (. to fold)")
+                },
+            );
         }
     }
 
@@ -528,6 +607,12 @@ impl App {
     }
 
     pub fn diff_viewer_toggle_layout(&mut self) {
+        if matches!(&self.mode, AppMode::DiffViewer(state) if state.narrow_layout_restore.is_some())
+        {
+            self.message =
+                Some("Side-by-side needs a wider pane; widen it or expand the diff".to_string());
+            return;
+        }
         if self.diff_viewer_selected_file_is_new() {
             self.message =
                 Some("Side-by-side isn't available for a new/untracked file".to_string());

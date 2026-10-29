@@ -100,17 +100,21 @@ pub fn draw_plan_interview_dialog(
             vec![
                 hint("y", theme),
                 Span::raw(" launch without a plan  "),
-                hint("n", theme),
+                hint("c", theme),
                 Span::raw(" cancel feature creation  "),
+                hint("n", theme),
+                Span::raw("/"),
                 hint("Esc", theme),
-                Span::raw(" resume interview"),
+                Span::raw(" keep going"),
             ]
         } else {
             vec![
                 hint("y", theme),
-                Span::raw(" leave the plan unchanged  "),
+                Span::raw(" leave interview, plan unchanged  "),
+                hint("n", theme),
+                Span::raw("/"),
                 hint("Esc", theme),
-                Span::raw(" resume interview"),
+                Span::raw(" keep going"),
             ]
         };
         let confirm = Paragraph::new(vec![
@@ -568,7 +572,9 @@ fn wrapped_rows(text: &str, width: usize) -> usize {
 }
 
 fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'static> {
-    let total = state.questions.len() + 1;
+    // Brief + every question + one closing step (optional AI and everything
+    // after it), so the last question is never also "the last step".
+    let total = state.questions.len() + 2;
     let (position, stage) = match state.phase {
         PlanInterviewPhase::ResumePrompt => (1, "Saved draft".to_string()),
         PlanInterviewPhase::Brief => (1, "Feature brief".to_string()),
@@ -576,19 +582,20 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
             let source = state
                 .current_question()
                 .map(|question| match question.source {
-                    QuestionSource::Builtin => "Built-in".to_string(),
+                    QuestionSource::Ai { round } => format!("AI round {round}"),
+                    QuestionSource::Builtin => question.section_name(),
+                    // Template ids are user-defined and often not readable
+                    // slugs, so name the source instead.
                     QuestionSource::GlobalTemplate => "Global template".to_string(),
                     QuestionSource::Template => "Project template".to_string(),
-                    QuestionSource::Ai { round } => format!("AI round {round}"),
                 })
                 .unwrap_or_default();
             (state.question_index + 2, source)
         }
         PlanInterviewPhase::AiConsent => (total, "Optional AI".to_string()),
-        PlanInterviewPhase::AiLoading => (
-            state.questions.len() + 1,
-            format!("AI round {}", state.ai_rounds_completed + 1),
-        ),
+        PlanInterviewPhase::AiLoading => {
+            (total, format!("AI round {}", state.ai_rounds_completed + 1))
+        }
         PlanInterviewPhase::SynthesisLoading => (total, "Plan synthesis".to_string()),
         PlanInterviewPhase::CritiqueLoading | PlanInterviewPhase::Critique => {
             (total, "Expert review".to_string())
@@ -1646,6 +1653,48 @@ mod tests {
     use crate::app::{App, AppMode};
     use crate::project::ProjectStore;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    fn header_text(state: &PlanInterviewState) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(progress_header(state, &Theme::default()), frame.area())
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn step_titles_name_the_section_and_the_last_question_is_not_the_last_step() {
+        let mut state = PlanInterviewState::new(
+            "parser".into(),
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+        let total = state.questions.len() + 2;
+        state.phase = PlanInterviewPhase::StaticQuestions;
+        state.question_index = 0;
+        assert_eq!(header_text(&state), format!("Step 2/{total} Scope"));
+        state.question_index = state.questions.len() - 1;
+        assert_eq!(
+            header_text(&state),
+            format!("Step {}/{total} Definition of done", total - 1)
+        );
+        state.phase = PlanInterviewPhase::AiConsent;
+        assert_eq!(
+            header_text(&state),
+            format!("Step {total}/{total} Optional AI")
+        );
+    }
 
     #[test]
     fn expert_picker_keeps_advice_and_cancel_visible() {

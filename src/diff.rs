@@ -12,6 +12,9 @@ pub struct DiffSnapshot {
     pub branch: String,
     pub base_ref: String,
     pub base_commit: String,
+    /// True when no base branch resolved and the snapshot is the working tree
+    /// against `HEAD` (see [`ResolvedBase::no_base_branch`]).
+    pub no_base_branch: bool,
     pub files: Vec<DiffFile>,
     pub total_additions: usize,
     pub total_deletions: usize,
@@ -32,7 +35,15 @@ pub struct ResolvedBase {
     pub branch: String,
     pub base_ref: String,
     pub base_commit: String,
+    /// True when none of the usual base candidates exists (a plain repo on its
+    /// only branch, with no remote), so `HEAD` stands in as the base: the diff
+    /// is then exactly the staged, unstaged and untracked work. Callers label
+    /// it rather than presenting `HEAD` as if it were a branch.
+    pub no_base_branch: bool,
 }
+
+/// Header label for a snapshot that fell back to `HEAD`.
+pub const NO_BASE_BRANCH_LABEL: &str = "HEAD (no base branch found)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffFile {
@@ -661,6 +672,7 @@ pub fn load_snapshot(
         branch: base.branch,
         base_ref: base.base_ref,
         base_commit: base.base_commit,
+        no_base_branch: base.no_base_branch,
         files,
         total_additions,
         total_deletions,
@@ -669,7 +681,12 @@ pub fn load_snapshot(
 
 /// List the commits that make up the active branch diff, newest first.
 pub fn list_diff_commits(workdir: &Path) -> Result<Vec<DiffCommit>> {
-    let base = resolve_base_ref(workdir, None)?;
+    list_diff_commits_since(workdir, &resolve_base_ref(workdir, None)?)
+}
+
+/// [`list_diff_commits`] against an already-resolved base, for callers that
+/// also need to know how the base was found. A `HEAD` fallback has no commits.
+pub fn list_diff_commits_since(workdir: &Path, base: &ResolvedBase) -> Result<Vec<DiffCommit>> {
     let range = format!("{}..HEAD", base.base_commit);
     let stdout = git_capture(
         workdir,
@@ -770,6 +787,7 @@ pub fn load_commit_snapshot(
         branch,
         base_ref: subject,
         base_commit: parent.unwrap_or_default(),
+        no_base_branch: false,
         files,
         total_additions,
         total_deletions,
@@ -814,6 +832,7 @@ pub fn load_range_snapshot(
         branch: String::new(),
         base_ref: String::new(),
         base_commit: base.to_string(),
+        no_base_branch: false,
         files,
         total_additions,
         total_deletions,
@@ -949,6 +968,10 @@ fn hydrate_commit_file_contents(
     Ok(())
 }
 
+/// Start of the error `resolve_base_ref` returns when no base can be found;
+/// callers classify that error by this prefix.
+pub const NO_BASE_BRANCH_ERROR_PREFIX: &str = "Could not determine a base branch";
+
 pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<ResolvedBase> {
     let branch = WorktreeManager::current_branch(workdir)?
         .filter(|branch| !branch.is_empty())
@@ -968,6 +991,7 @@ pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<Re
             branch,
             base_ref: reference.to_string(),
             base_commit,
+            no_base_branch: false,
         });
     }
 
@@ -1010,22 +1034,47 @@ pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<Re
     candidates.retain(|candidate| candidate != &branch);
     dedupe_preserving_order(&mut candidates);
 
+    let mut any_candidate_exists = false;
     for candidate in candidates {
         if !git_ref_exists(workdir, &candidate) {
             continue;
         }
+        any_candidate_exists = true;
 
         if let Some(base_commit) = fork_point_or_merge_base(workdir, &candidate)? {
             return Ok(ResolvedBase {
                 branch: branch.clone(),
                 base_ref: candidate,
                 base_commit,
+                no_base_branch: false,
             });
         }
     }
 
+    // Nothing to compare against at all — typically a fresh repository on its
+    // only branch with no remote. Diff the working tree against `HEAD` so the
+    // uncommitted work still shows. When a candidate *does* exist but shares no
+    // history with this branch, or another local branch exists that this one
+    // may have been cut from, a base was expected and could not be found: that
+    // stays an error rather than quietly hiding the branch's commits.
+    let has_other_branch = git_optional_trimmed(
+        workdir,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?
+    .is_some_and(|refs| refs.lines().any(|name| name != branch));
+    if !any_candidate_exists && !has_other_branch {
+        let head = git_optional_trimmed(workdir, &["rev-parse", "--verify", "HEAD^{commit}"])?
+            .ok_or_else(|| anyhow!("'{branch}' has no commits yet, so there is nothing to diff"))?;
+        return Ok(ResolvedBase {
+            branch,
+            base_ref: "HEAD".to_string(),
+            base_commit: head,
+            no_base_branch: true,
+        });
+    }
+
     bail!(
-        "Could not determine a base branch for '{}'; tried origin/HEAD, origin/main, main, origin/master, and master",
+        "{NO_BASE_BRANCH_ERROR_PREFIX} for '{}'; tried origin/HEAD, origin/main, main, origin/master, and master",
         branch
     );
 }
@@ -1870,6 +1919,77 @@ index 1111111..2222222 100644
         assert_eq!(snapshot.files[1].status, DiffFileStatus::Modified);
         assert!(snapshot.total_additions >= 2);
         assert_eq!(snapshot.total_deletions, 0);
+        assert!(
+            !snapshot.no_base_branch,
+            "main + feature resolves a real base"
+        );
+        assert_eq!(snapshot.base_commit, rev_parse(repo.path(), "main"));
+    }
+
+    #[test]
+    fn single_branch_repo_falls_back_to_the_working_tree_against_head() {
+        // `git init -b main`, one commit, no remote: nothing to compare to.
+        let repo = init_repo_with_main();
+        std::fs::write(repo.path().join("src.txt"), "base\nedited\n").unwrap();
+        std::fs::write(repo.path().join("staged.txt"), "staged\n").unwrap();
+        git(repo.path(), &["add", "staged.txt"]);
+        std::fs::write(repo.path().join("untracked.txt"), "new\n").unwrap();
+
+        let base = resolve_base_ref(repo.path(), None).unwrap();
+        assert!(base.no_base_branch);
+        assert_eq!(base.branch, "main");
+        assert_eq!(base.base_ref, "HEAD");
+        assert_eq!(base.base_commit, rev_parse(repo.path(), "HEAD"));
+
+        let snapshot = load_snapshot(repo.path(), None, false).unwrap();
+        assert!(snapshot.no_base_branch);
+        let paths: Vec<_> = snapshot.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["src.txt", "staged.txt", "untracked.txt"]);
+        assert_eq!(snapshot.files[0].status, DiffFileStatus::Modified);
+        assert_eq!(snapshot.files[2].status, DiffFileStatus::Untracked);
+        assert_eq!(snapshot.files[0].old_content.as_deref(), Some("base\n"));
+
+        // A `HEAD` base has no commits after it; the picker lists none.
+        assert!(list_diff_commits(repo.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn single_branch_repo_without_edits_is_an_empty_diff_not_an_error() {
+        let repo = init_repo_with_main();
+        let snapshot = load_snapshot(repo.path(), None, false).unwrap();
+        assert!(snapshot.no_base_branch);
+        assert!(snapshot.files.is_empty());
+    }
+
+    #[test]
+    fn an_override_is_never_reported_as_a_fallback() {
+        let repo = init_repo_with_main();
+        let base = resolve_base_ref(repo.path(), Some("HEAD")).unwrap();
+        assert!(!base.no_base_branch);
+    }
+
+    #[test]
+    fn a_base_with_no_shared_history_stays_a_strict_error() {
+        // `main` exists but this branch shares nothing with it: a base was
+        // expected, so do not quietly diff against HEAD instead.
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "--orphan", "feature"]);
+        git(repo.path(), &["commit", "-m", "unrelated root"]);
+
+        let err = resolve_base_ref(repo.path(), None).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Could not determine a base branch for 'feature'"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_repo_with_no_commits_says_so() {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "--initial-branch=main"]);
+        let err = resolve_base_ref(repo.path(), None).unwrap_err();
+        assert!(err.to_string().contains("no commits yet"), "{err}");
     }
 
     #[test]

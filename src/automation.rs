@@ -7,6 +7,7 @@ use crate::project::{AgentKind, VibeMode};
 pub const AUTOMATION_REQUEST_TYPE: &str = "automation";
 pub const AUTOMATION_RESULT_TYPE: &str = "automation-result";
 pub const CREATE_PROJECT_ACTION: &str = "create_project";
+pub const CREATE_SESSION_ACTION: &str = "create_session";
 pub const CREATE_FEATURE_ACTION: &str = "create_feature";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
 pub const SEED_AI_REVIEW_ACTION: &str = "seed_ai_review";
@@ -27,6 +28,10 @@ pub struct SeedAiReviewRequest {
     pub workdir: Option<PathBuf>,
     pub repository: Option<String>,
     pub head_ref: Option<String>,
+    /// Optional run attribution (harness/model/usage and the review memory the
+    /// run read and sent), so a visual test can show the attribution and
+    /// memory lines without running a review. Omitted, the row has none.
+    pub attribution: Option<crate::app::ai_review::AiReviewAttribution>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,6 +59,7 @@ impl SeedAiReviewRequest {
             "workdir": self.workdir,
             "repository": self.repository,
             "head_ref": self.head_ref,
+            "attribution": self.attribution,
         })
     }
 }
@@ -106,7 +112,43 @@ impl CreateProjectRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct CreateSessionRequest {
+    pub project_name: String,
+    pub feature: String,
+    pub kind: String,
+    pub label: Option<String>,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
+    pub dry_run: bool,
+}
+
+impl CreateSessionRequest {
+    pub fn ipc_payload(&self) -> serde_json::Value {
+        let mut payload = serde_json::to_value(self).expect("serializable request");
+        payload["type"] = AUTOMATION_REQUEST_TYPE.into();
+        payload["action"] = CREATE_SESSION_ACTION.into();
+        payload
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateSessionResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub dry_run: bool,
+    pub tmux_session: String,
+    pub tmux_window: Option<String>,
+    pub session_id: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct CreateFeatureRequest {
+    /// Create the feature stopped, without launching sessions.
+    pub no_start: bool,
     pub project_name: String,
     pub branch: String,
     pub agent: AgentKind,
@@ -118,6 +160,8 @@ pub struct CreateFeatureRequest {
     pub enable_chrome: bool,
     pub hook_choice: Option<String>,
     pub dry_run: bool,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
 }
 
 impl CreateFeatureRequest {
@@ -125,6 +169,7 @@ impl CreateFeatureRequest {
         serde_json::json!({
             "type": AUTOMATION_REQUEST_TYPE,
             "action": CREATE_FEATURE_ACTION,
+            "no_start": self.no_start,
             "project_name": self.project_name,
             "branch": self.branch,
             "agent": self.agent,
@@ -135,6 +180,8 @@ impl CreateFeatureRequest {
             "use_worktree": self.use_worktree,
             "enable_chrome": self.enable_chrome,
             "hook_choice": self.hook_choice,
+            "initial_prompt": self.initial_prompt,
+            "submit_prompt": self.submit_prompt,
             "dry_run": self.dry_run,
         })
     }
@@ -152,6 +199,8 @@ pub struct CreateBatchFeaturesRequest {
     pub review: bool,
     pub enable_chrome: bool,
     pub dry_run: bool,
+    pub initial_prompt: Option<String>,
+    pub submit_prompt: bool,
 }
 
 impl Default for CreateBatchFeaturesRequest {
@@ -161,6 +210,8 @@ impl Default for CreateBatchFeaturesRequest {
             project_name: String::new(),
             feature_count: 3,
             feature_prefix: "feature".to_string(),
+            initial_prompt: None,
+            submit_prompt: false,
             agent: AgentKind::default(),
             mode: VibeMode::default(),
             review: false,
@@ -183,6 +234,8 @@ impl CreateBatchFeaturesRequest {
             "mode": self.mode,
             "review": self.review,
             "enable_chrome": self.enable_chrome,
+            "initial_prompt": self.initial_prompt,
+            "submit_prompt": self.submit_prompt,
             "dry_run": self.dry_run,
         })
     }
@@ -353,4 +406,70 @@ pub fn automation_error_response(action: &str, error: impl Into<String>) -> serd
         "ok": false,
         "error": error.into(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_no_start_defaults_off_and_survives_ipc() {
+        let default: CreateFeatureRequest = serde_json::from_str("{}").unwrap();
+        assert!(!default.no_start);
+        let request: CreateFeatureRequest = serde_json::from_str(r#"{"no_start": true}"#).unwrap();
+        assert_eq!(request.ipc_payload()["no_start"], true);
+    }
+
+    #[test]
+    fn initial_prompt_and_submission_survive_cli_ipc_requests() {
+        let input = serde_json::json!({
+            "initial_prompt": "First line\nSecond line",
+            "submit_prompt": true,
+        });
+        let feature: CreateFeatureRequest = serde_json::from_value(input.clone()).unwrap();
+        let batch: CreateBatchFeaturesRequest = serde_json::from_value(input.clone()).unwrap();
+        let session: CreateSessionRequest = serde_json::from_value(input.clone()).unwrap();
+        for payload in [
+            feature.ipc_payload(),
+            batch.ipc_payload(),
+            session.ipc_payload(),
+        ] {
+            assert_eq!(payload["initial_prompt"], input["initial_prompt"]);
+            assert_eq!(payload["submit_prompt"], true);
+            assert_eq!(payload["type"], AUTOMATION_REQUEST_TYPE);
+        }
+        assert_eq!(session.ipc_payload()["action"], CREATE_SESSION_ACTION);
+        let default: CreateSessionRequest = serde_json::from_str("{}").unwrap();
+        assert!(!default.submit_prompt);
+        assert!(default.initial_prompt.is_none());
+    }
+}
+
+#[cfg(test)]
+mod seed_ai_review_tests {
+    use super::*;
+
+    #[test]
+    fn seed_ai_review_payload_carries_the_fixture_attribution() {
+        // The CLI forwards `ipc_payload()` to the running dashboard, so a
+        // field missing here never reaches the seeded cache row.
+        let request = SeedAiReviewRequest {
+            pr_number: 1,
+            attribution: Some(crate::app::ai_review::AiReviewAttribution {
+                harness: Some("Claude".to_string()),
+                memory: Some(crate::app::ai_review::AiReviewMemoryUsage {
+                    context_chars: 12,
+                    prompts: 1,
+                    prompts_with_memory: 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let received: SeedAiReviewRequest = serde_json::from_value(request.ipc_payload()).unwrap();
+
+        assert_eq!(received.attribution, request.attribution);
+    }
 }

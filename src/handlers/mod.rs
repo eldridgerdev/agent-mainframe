@@ -32,6 +32,7 @@ mod review_destination;
 mod review_questions;
 mod search;
 mod skill_picker;
+mod text_field;
 mod todos;
 mod view;
 
@@ -41,7 +42,6 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::app::App;
 
 pub use ai_review::{handle_ai_review_key, handle_ai_review_running_key};
-pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
 pub use config_wizard::handle_config_wizard_key;
@@ -59,6 +59,7 @@ pub use diff::{
 };
 pub use diff_review::handle_diff_review_key;
 pub use dormant::handle_dormant_key;
+#[cfg(test)]
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
 pub use handoff::handle_fresh_context_prompt_key;
@@ -142,12 +143,18 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::PlanInterviewAttachDoc(_) => handle_plan_interview_attach_doc_key(app, key),
-        AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
+        AppMode::CreatingFeature(_) => feature_creation::handle_create_feature_event(app, key),
         AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
         AppMode::ModelAnalysis(_) => model_analysis::handle_model_analysis_key(app, key),
-        AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
+        AppMode::CreatingBatchFeatures(_) => {
+            batch_creation::handle_create_batch_features_event(app, key)
+        }
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
+        AppMode::ConfirmingQuit => dialog::handle_confirm_quit_key(app, key.code),
+        AppMode::ConfirmingRemoveSession(_) => {
+            dialog::handle_confirm_remove_session_key(app, key.code)
+        }
         AppMode::ConfirmResourceStart(_) => handle_resource_confirm_key(app, key.code),
         AppMode::Dormant(_) => handle_dormant_key(app, key),
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
@@ -156,6 +163,18 @@ fn handle_key_inner(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<(
         AppMode::Compose(_) => handle_compose_key(app, key),
         AppMode::NotificationPicker(_, _) => handle_notification_picker_key(app, key.code),
         AppMode::SessionSwitcher(_) => handle_session_switcher_key(app, key.code),
+        AppMode::RenamingSession(_) | AppMode::RenamingFeature(_)
+            if text_field::is_clear_key(&key) || text_field::is_unbound_ctrl_chord(&key) =>
+        {
+            if text_field::is_clear_key(&key) {
+                match &mut app.mode {
+                    AppMode::RenamingSession(state) => state.input.clear(),
+                    AppMode::RenamingFeature(state) => state.input.clear(),
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
         AppMode::RenamingSession(_) => handle_rename_session_key(app, key.code),
         AppMode::RenamingFeature(_) => handle_rename_feature_key(app, key.code),
         AppMode::SessionConfig(_) => handle_session_config_key(app, key.code),

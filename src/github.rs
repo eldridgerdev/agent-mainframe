@@ -1643,6 +1643,31 @@ impl fmt::Display for GithubRepositoryError {
     }
 }
 
+impl GithubRepositoryError {
+    /// Plain-language explanation plus what to do next, for the user-facing
+    /// toast when the issue browser cannot open. Unlike `Display` it names the
+    /// fix and carries no `Error:` prefix.
+    pub fn guidance(&self) -> String {
+        match self {
+            Self::NotGitRepository => {
+                "GitHub issues need a git repository: this project is not one. \
+                 Run `git init` in the project folder and add a GitHub remote."
+                    .to_string()
+            }
+            Self::NoRemote => {
+                "This project has no git remotes: add a GitHub remote to browse issues \
+                 (git remote add origin <url>)."
+                    .to_string()
+            }
+            Self::NoGithubRemote => {
+                "None of this project's remotes point to GitHub: add a GitHub remote to browse issues."
+                    .to_string()
+            }
+            Self::Ambiguous { .. } => self.to_string(),
+        }
+    }
+}
+
 impl std::error::Error for GithubRepositoryError {}
 
 fn is_known_non_github_host(host: &str) -> bool {

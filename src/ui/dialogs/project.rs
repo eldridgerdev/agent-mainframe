@@ -17,7 +17,7 @@ pub fn draw_create_project_dialog(
     message: Option<&str>,
     theme: &Theme,
 ) {
-    let area = crate::ui::dialog_rect(frame.area(), 90, 20);
+    let area = crate::ui::dialog_rect(frame.area(), 90, 22);
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
@@ -29,10 +29,48 @@ pub fn draw_create_project_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let path_active = matches!(state.step, CreateProjectStep::Path);
+    let path_style = if path_active {
+        Style::default().fg(theme.primary.to_color())
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let mut path_spans = vec![Span::styled(" Repo path: ", path_style)];
+    if state.path.is_empty() {
+        // Nothing is prefilled: AMF's own launch directory is rarely the
+        // project being added. Say what to type instead.
+        path_spans.push(cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Path,
+            theme,
+        ));
+        path_spans.push(Span::styled(
+            "type the folder's full path, or press Ctrl+B to browse",
+            Style::default()
+                .fg(theme.text_muted.to_color())
+                .add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        path_spans.push(Span::styled(
+            &state.path,
+            Style::default().fg(theme.text.to_color()),
+        ));
+        path_spans.push(cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Path,
+            theme,
+        ));
+    }
+    let path_field = Paragraph::new(Line::from(path_spans)).wrap(Wrap { trim: false });
+    // A long path wraps onto as many rows as it needs (up to four), and the
+    // key hint sits on its own row below rather than trailing the path.
+    let path_height = (path_field.line_count(inner.width) as u16).clamp(1, 4);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
+            Constraint::Length(path_height),
             Constraint::Length(2),
             Constraint::Length(allowed_agents.len() as u16 + 1),
             Constraint::Min(1),
@@ -51,21 +89,16 @@ pub fn draw_create_project_dialog(
     ]));
     frame.render_widget(name_field, chunks[0]);
 
-    let path_style = match state.step {
-        CreateProjectStep::Path => Style::default().fg(theme.primary.to_color()),
-        _ => Style::default().fg(theme.text_muted.to_color()),
-    };
-    let path_spans = vec![
-        Span::styled(" Repo path: ", path_style),
-        Span::styled(&state.path, Style::default().fg(theme.text.to_color())),
-        cursor_span_project(&state.step, &CreateProjectStep::Path, theme),
-        Span::styled(
-            "  (Ctrl+B browse)",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-    ];
-    let path_field = Paragraph::new(Line::from(path_spans)).wrap(Wrap { trim: false });
     frame.render_widget(path_field, chunks[1]);
+    let key = Style::default().fg(theme.warning.to_color());
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    let path_hint = Paragraph::new(Line::from(vec![
+        Span::styled("   Ctrl+B", key),
+        Span::styled(" browse folders  ", muted),
+        Span::styled("Ctrl+U", key),
+        Span::styled(" clear field", muted),
+    ]));
+    frame.render_widget(path_hint, chunks[2]);
 
     let agent_active = matches!(state.step, CreateProjectStep::Agent);
     let mut agent_lines = vec![Line::from(Span::styled(
@@ -96,14 +129,57 @@ pub fn draw_create_project_dialog(
             style,
         )));
     }
-    frame.render_widget(Paragraph::new(agent_lines), chunks[2]);
+    frame.render_widget(Paragraph::new(agent_lines), chunks[3]);
 
+    let mut message_area = chunks[4];
+    if state.path_is_git == Some(false) {
+        // The message (git init result, errors) outranks the warning.
+        let message_height = message.map_or(0, |m| {
+            Paragraph::new(m.to_string())
+                .wrap(Wrap { trim: false })
+                .line_count(message_area.width) as u16
+        });
+        let warning_height = message_area.height.saturating_sub(message_height).min(5);
+        let warning = vec![
+            Line::from(Span::styled(
+                " This folder is not a git repository.",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "   Still works: agent and terminal sessions in the folder.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(Span::styled(
+                "   Needs git: worktrees, branches, diffs, GitHub issues and PRs.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(vec![
+                Span::styled("   Ctrl+G", Style::default().fg(theme.warning.to_color())),
+                Span::raw(" runs git init here, or "),
+                Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+                Span::raw(" on the last field to continue without git."),
+            ]),
+        ];
+        let split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(warning_height), Constraint::Min(0)])
+            .split(message_area);
+        frame.render_widget(Paragraph::new(warning).wrap(Wrap { trim: false }), split[0]);
+        message_area = split[1];
+    }
     if let Some(message) = message {
+        let style = if message.starts_with("Error") || message.starts_with("git init failed") {
+            Style::default().fg(theme.danger.to_color())
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
         frame.render_widget(
             Paragraph::new(message)
-                .style(Style::default().fg(theme.danger.to_color()))
+                .style(style)
                 .wrap(Wrap { trim: false }),
-            chunks[3],
+            message_area,
         );
     }
 
@@ -124,12 +200,12 @@ pub fn draw_create_project_dialog(
         Span::raw(" cancel"),
     ];
     match state.step {
-        CreateProjectStep::Path => {
+        CreateProjectStep::Name | CreateProjectStep::Path => {
             hints.push(Span::styled(
-                "  Ctrl+B",
+                "  Ctrl+U",
                 Style::default().fg(theme.warning.to_color()),
             ));
-            hints.push(Span::raw(" browse"));
+            hints.push(Span::raw(" clear"));
         }
         CreateProjectStep::Agent => {
             hints.push(Span::styled(
@@ -138,10 +214,16 @@ pub fn draw_create_project_dialog(
             ));
             hints.push(Span::raw(" choose harness"));
         }
-        CreateProjectStep::Name => {}
+    }
+    if state.path_is_git == Some(false) {
+        hints.push(Span::styled(
+            "  Ctrl+G",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hints.push(Span::raw(" git init"));
     }
     let hints = Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false });
-    frame.render_widget(hints, chunks[4]);
+    frame.render_widget(hints, chunks[5]);
 }
 
 fn cursor_span_project<'a>(

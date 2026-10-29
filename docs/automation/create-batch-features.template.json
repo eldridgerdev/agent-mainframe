@@ -7,5 +7,7 @@
   "mode": "vibe",
   "review": false,
   "enable_chrome": false,
-  "dry_run": false
+  "dry_run": false,
+  "initial_prompt": null,
+  "submit_prompt": false
 }

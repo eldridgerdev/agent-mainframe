@@ -4936,6 +4936,16 @@ fn pr_review_append_memory_writes_and_dedups() {
     enter_pr_review(&mut app, 1);
 
     app.pr_review_open_memory_add();
+    // Nothing is preselected: ⏎ alone keeps the dialog open and says why.
+    app.pr_review_append_memory().unwrap();
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.memory_add.as_ref().unwrap().scope_required),
+        _ => panic!("expected PrReview"),
+    }
+    assert!(!repo.join(".amf").join("review-memory.md").exists());
+
+    app.pr_review_set_memory_scope(crate::app::review_memory::MemoryScope::Project);
     app.pr_review_append_memory().unwrap();
     assert_eq!(
         app.pr_review_memory_add_view(),
@@ -4950,6 +4960,7 @@ fn pr_review_append_memory_writes_and_dedups() {
 
     // Re-adding the same finding is a dedup no-op, not a duplicate bullet.
     app.pr_review_open_memory_add();
+    app.pr_review_set_memory_scope(crate::app::review_memory::MemoryScope::Project);
     app.pr_review_append_memory().unwrap();
     let contents_after = std::fs::read_to_string(&doc_path).unwrap();
     assert_eq!(
@@ -4995,6 +5006,7 @@ fn pr_review_append_memory_honors_project_review_memory_path_override() {
     enter_pr_review(&mut app, 1);
 
     app.pr_review_open_memory_add();
+    app.pr_review_set_memory_scope(crate::app::review_memory::MemoryScope::Project);
     app.pr_review_append_memory().unwrap();
 
     let default_path = repo.join(".amf").join("review-memory.md");
@@ -5008,7 +5020,7 @@ fn pr_review_append_memory_honors_project_review_memory_path_override() {
 }
 
 #[test]
-fn pr_review_memory_add_defaults_to_project_scope_and_toggles() {
+fn pr_review_memory_add_starts_with_no_destination_until_one_is_picked() {
     use crate::app::review_memory::MemoryScope;
 
     let mut app = pr_review_test_app();
@@ -5021,14 +5033,14 @@ fn pr_review_memory_add_defaults_to_project_scope_and_toggles() {
     };
     assert_eq!(
         scope(&app),
-        MemoryScope::Project,
-        "a finding from this PR is about this repo until the user says otherwise"
+        None,
+        "a default was too easy to confirm without noticing where the finding went"
     );
 
-    app.pr_review_toggle_memory_scope();
-    assert_eq!(scope(&app), MemoryScope::Global);
-    app.pr_review_toggle_memory_scope();
-    assert_eq!(scope(&app), MemoryScope::Project);
+    app.pr_review_set_memory_scope(MemoryScope::Global);
+    assert_eq!(scope(&app), Some(MemoryScope::Global));
+    app.pr_review_set_memory_scope(MemoryScope::Project);
+    assert_eq!(scope(&app), Some(MemoryScope::Project));
 }
 
 #[test]
@@ -5377,6 +5389,7 @@ fn pr_review_append_memory_after_ai_summary_persists_the_generated_text_not_the_
     .unwrap();
     assert!(app.poll_memory_ai_summary_bg());
 
+    app.pr_review_set_memory_scope(crate::app::review_memory::MemoryScope::Project);
     app.pr_review_append_memory().unwrap();
 
     let contents = std::fs::read_to_string(repo.join(".amf").join("review-memory.md")).unwrap();
@@ -5419,7 +5432,7 @@ fn pr_review_append_memory_global_scope_writes_the_cross_project_doc() {
     enter_pr_review(&mut app, 1);
 
     app.pr_review_open_memory_add();
-    app.pr_review_toggle_memory_scope();
+    app.pr_review_set_memory_scope(crate::app::review_memory::MemoryScope::Global);
     app.pr_review_append_memory().unwrap();
 
     assert_eq!(app.pr_review_memory_add_view(), None, "dialog closes");
@@ -5541,7 +5554,7 @@ fn completed_ai_review_updates_stashed_triage_pending_count_and_summary() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 1);
     app.open_ai_review_from_triage();
@@ -5610,7 +5623,7 @@ fn completed_ai_review_carries_run_attribution_into_the_pane_and_cache() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     let db_file = tempfile::NamedTempFile::new().unwrap();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
@@ -5797,7 +5810,7 @@ fn escape_keeps_ai_review_running_through_triage_return_and_completion() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 1);
     app.open_ai_review_from_triage();
@@ -5959,12 +5972,122 @@ fn running_ai_review_can_reopen_preserved_progress_after_escape() {
 }
 
 #[test]
+fn open_ai_review_for_pr_reads_the_memory_docs_the_next_run_would_use() {
+    use crate::app::review_memory::{MemoryDocState, MemoryScope};
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".amf")).unwrap();
+    std::fs::write(
+        repo.join(".amf").join("review-memory.md"),
+        "# Review memory\n\n## Tests\n- One\n- Two\n",
+    )
+    .unwrap();
+    let mut app = ai_review_test_app();
+    // Keeps the test off the developer's real `~/.config/amf/review-memory.md`.
+    app.config.global_review_memory_path =
+        Some(tmp.path().join("absent-global.md").display().to_string());
+
+    let pr = crate::github::PrRef {
+        number: 1,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/1".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+        head_ref: "main".to_string(),
+    };
+    app.open_ai_review_for_pr(repo.clone(), pr);
+
+    let AppMode::AiReview(state) = &app.mode else {
+        panic!("expected AiReview");
+    };
+    let status = state.memory_status.as_ref().expect("status read on open");
+    assert_eq!(status.docs[0].scope, MemoryScope::Project);
+    assert_eq!(status.docs[0].state, MemoryDocState::Loaded);
+    assert_eq!(status.docs[0].findings, 2);
+    assert_eq!(
+        status.docs[0].path,
+        repo.join(".amf").join("review-memory.md")
+    );
+    assert_eq!(status.docs[1].state, MemoryDocState::Missing);
+}
+
+#[test]
+fn ai_review_from_linked_worktree_reads_shared_memory_instead_of_local_copy() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().join("main");
+    std::fs::create_dir_all(&repo).unwrap();
+    git_out(&repo, &["init", "--initial-branch=main"]);
+    std::fs::write(repo.join(".gitignore"), ".amf/\n").unwrap();
+    git_out(&repo, &["add", ".gitignore"]);
+    git_out(
+        &repo,
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "initial",
+        ],
+    );
+    let workdir = tmp.path().join("feature");
+    git_out(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            workdir.to_str().unwrap(),
+        ],
+    );
+    for (root, text) in [
+        (&repo, "- Shared one\n- Shared two\n"),
+        (&workdir, "- Stray local finding\n"),
+    ] {
+        std::fs::create_dir_all(root.join(".amf")).unwrap();
+        std::fs::write(root.join(".amf/review-memory.md"), text).unwrap();
+    }
+    let mut app = ai_review_test_app();
+    // Exercise the production git-root lookup rather than an identity mock.
+    app.worktree = Box::new(crate::worktree::WorktreeManager);
+    app.config.global_review_memory_path = Some(tmp.path().join("absent.md").display().to_string());
+    app.open_ai_review_for_pr(workdir.clone(), pr_review_with_comments(1).pr);
+    let AppMode::AiReview(state) = &app.mode else {
+        panic!("expected AiReview")
+    };
+    let status = state.memory_status.as_ref().unwrap();
+    let shared = repo.canonicalize().unwrap().join(".amf/review-memory.md");
+    assert_eq!(status.docs[0].path, shared);
+    assert_eq!(status.docs[0].findings, 2);
+    // The run resolves its input through this same path, keeping display and delivery aligned.
+    let paths = app.review_memory_paths(&app.repo_for_project_path(&workdir));
+    assert_eq!(paths.project, shared);
+    assert_eq!(
+        paths.worktree_local,
+        Some(
+            workdir
+                .canonicalize()
+                .unwrap()
+                .join(".amf/review-memory.md")
+        )
+    );
+    let loaded = crate::app::review_memory::load_review_memory(&paths);
+    assert!(loaded.context.contains("Shared one"));
+    assert!(!loaded.context.contains("Stray local"));
+}
+
+#[test]
 fn open_ai_review_for_pr_starts_empty_with_no_stashed_return() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     // A stash left over from a previous PR Triage-originated visit must not
     // leak into a fresh dashboard/session/picker entry.
@@ -5997,7 +6120,7 @@ fn open_ai_review_for_pr_reopens_cached_findings_and_summary() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     let db_file = tempfile::NamedTempFile::new().unwrap();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
@@ -6038,7 +6161,7 @@ fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     let db_file = tempfile::NamedTempFile::new().unwrap();
     let workdir = tempfile::tempdir().unwrap();
@@ -6057,6 +6180,7 @@ fn seed_ai_review_fixture_persists_and_opens_without_running_an_agent() {
             workdir: Some(workdir.path().to_path_buf()),
             repository: Some("owner/repository".to_string()),
             head_ref: Some("fixture-branch".to_string()),
+            attribution: None,
         })
         .unwrap();
 
@@ -6167,7 +6291,7 @@ fn refreshed_pr_head_clears_stale_ai_review_completion() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     let db_file = tempfile::NamedTempFile::new().unwrap();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
@@ -6340,7 +6464,7 @@ fn open_ai_review_from_triage_stashes_the_pane_and_close_restores_it() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 1);
     let triage_workdir = match &app.mode {
@@ -6367,7 +6491,7 @@ fn post_success_refresh_updates_stashed_triage_without_leaving_ai_review() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
@@ -6409,7 +6533,7 @@ fn post_success_refresh_snaps_selection_off_a_newly_resolved_comment() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 3);
     if let AppMode::PrReview(state) = &mut app.mode {
@@ -6493,7 +6617,7 @@ fn post_success_refresh_snaps_selection_off_a_newly_collated_amf_reply() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     enter_pr_review_for_feature(&mut app, 1);
 
@@ -6622,7 +6746,7 @@ fn post_success_refresh_caches_fresh_triage_when_ai_review_has_no_return_pane() 
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree_rooted_at_workdir()),
     );
     let db_file = tempfile::NamedTempFile::new().unwrap();
     app.db = Some(crate::db::AmfDb::open(db_file.path()).unwrap());
@@ -7493,7 +7617,7 @@ fn ai_review_over_triage(app: &mut App, n: usize) {
 
 #[test]
 fn ai_review_fix_hands_the_finding_to_triage_without_posting() {
-    let mut app = pr_review_test_app();
+    let mut app = ai_review_test_app();
     ai_review_over_triage(&mut app, 2);
     if let AppMode::AiReview(state) = &mut app.mode {
         state.selected = 1;
@@ -7520,7 +7644,7 @@ fn ai_review_fix_hands_the_finding_to_triage_without_posting() {
 
 #[test]
 fn ai_review_batch_fix_combines_marked_findings() {
-    let mut app = pr_review_test_app();
+    let mut app = ai_review_test_app();
     ai_review_over_triage(&mut app, 3);
     app.ai_review_toggle_mark();
     app.ai_review_select_next();
@@ -7545,7 +7669,7 @@ fn ai_review_batch_fix_combines_marked_findings() {
 
 #[test]
 fn ai_review_fix_refuses_posted_and_skipped_findings() {
-    let mut app = pr_review_test_app();
+    let mut app = ai_review_test_app();
     ai_review_over_triage(&mut app, 2);
     if let AppMode::AiReview(state) = &mut app.mode {
         state.findings[0].published = true;
@@ -7565,7 +7689,7 @@ fn ai_review_fix_refuses_posted_and_skipped_findings() {
 
 #[test]
 fn a_local_finding_cannot_be_replied_to_on_github() {
-    let mut app = pr_review_test_app();
+    let mut app = ai_review_test_app();
     ai_review_over_triage(&mut app, 1);
     app.ai_review_fix_selected();
     app.pr_review_cancel_fix();

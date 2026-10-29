@@ -9,13 +9,14 @@ use ratatui::{
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{SessionKind, VibeMode};
 
-const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
+pub(crate) const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("i", "Pending inputs"),
     ("?", "Help"),
     ("/", "Command picker"),
     ("a", "Local commands"),
     ("A", "Manage harnesses"),
     ("c", "Config wizard"),
+    ("m", "Compact review memory"),
     ("h", "Bookmarks"),
     ("H", "Bookmark current session"),
     ("M", "Remove bookmark"),
@@ -161,7 +162,7 @@ fn draw_view_pane(
             .copied(),
     );
 
-    super::pane::draw_with_lines(
+    let leader_max = super::pane::draw_with_lines(
         frame,
         view,
         &app.pane_content,
@@ -174,7 +175,9 @@ fn draw_view_pane(
         next_prev_feature,
         &app.throbber_state,
         &app.theme,
+        app.leader_scroll,
     );
+    app.leader_max_scroll.set(leader_max);
 }
 
 fn draw_view_context_bar(
@@ -304,24 +307,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
 
     if super::dialogs::pr_workspace::draw(frame, app) {
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
 
     match &app.mode {
         AppMode::IssueBrowser(state) => {
             super::dialogs::draw_issue_browser(frame, state, &app.theme);
-            super::draw_toasts(frame, &app.toasts, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme, 1);
             return;
         }
         AppMode::IssueSetup(state) => {
             super::dialogs::draw_issue_setup(frame, state, &app.theme);
-            super::draw_toasts(frame, &app.toasts, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme, 1);
             return;
         }
         AppMode::IssueDuplicateWarning(state) => {
             super::dialogs::draw_issue_duplicate_warning(frame, state, &app.theme);
-            super::draw_toasts(frame, &app.toasts, &app.theme);
+            super::draw_toasts(frame, &app.toasts, &app.theme, 1);
             return;
         }
         _ => {}
@@ -336,7 +339,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // swallowed until the mode changes.
     if let AppMode::PrReviewLoading(state) = &app.mode {
         super::dialogs::draw_pr_review_loading(frame, state, &app.throbber_state, &app.theme);
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::PrInvestigationLoading(state) = &app.mode {
@@ -346,7 +349,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.throbber_state,
             &app.theme,
         );
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if matches!(app.mode, AppMode::PrReview(_)) {
@@ -386,7 +389,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 memory_paths.as_ref(),
             );
         }
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if matches!(app.mode, AppMode::AiReview(_)) {
@@ -402,19 +405,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &finding_fix_costs,
             );
         }
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::PrPicker(state) = &app.mode {
         let repo = app.repo_for_project_path(&state.workdir);
         let memory_paths = app.review_memory_paths(&repo);
         super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_paths);
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::PrReviewList(state) = &app.mode {
         super::dialogs::draw_pr_review_list(frame, state, &app.theme);
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::ReviewMemoryBootstrapRunning(state) = &app.mode {
@@ -424,7 +427,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.throbber_state,
             &app.theme,
         );
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::ReviewMemoryCompactRunning(state) = &app.mode {
@@ -434,19 +437,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.throbber_state,
             &app.theme,
         );
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if matches!(app.mode, AppMode::ReviewMemoryCompactReview(_)) {
         if let AppMode::ReviewMemoryCompactReview(state) = &mut app.mode {
             super::dialogs::draw_review_memory_compact_review(frame, state, &app.theme);
         }
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
     if let AppMode::AiReviewRunning(state) = &app.mode {
         super::dialogs::draw_ai_review_running(frame, state, &app.throbber_state, &app.theme);
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
 
@@ -459,13 +462,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.todo_project_visible,
             app.todo_global_visible,
         );
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
 
     if let AppMode::Learning(state) = &mut app.mode {
         super::dialogs::draw_learning_view(frame, state, &app.theme);
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
 
@@ -519,7 +522,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             }
             draw_badge_row(frame, area, badge_spans);
         }
-        super::draw_toasts(frame, &app.toasts, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme, 1);
         return;
     }
 
@@ -549,8 +552,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && let Some(view) = &state.from_view
     {
         let scroll = state.scroll_offset;
+        let query = state.query.clone();
+        let searching = state.searching;
         draw_view_pane(frame, app, view, false, false);
-        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        let scroll = super::dialogs::draw_help(frame, scroll, &query, searching, &app.theme);
         if let AppMode::Help(state) = &mut app.mode {
             state.scroll_offset = scroll;
         }
@@ -772,7 +777,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            // Two inner rows: the selection / feedback line, then the keys.
+            Constraint::Length(4),
         ])
         .split(frame.area());
 
@@ -792,13 +798,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     super::status::draw(frame, app, chunks[2]);
 
     if app.leader_active {
-        super::pane::draw_command_menu(
+        let max = super::pane::draw_command_menu(
             frame,
             frame.area(),
             " Ctrl+Space commands ",
             DASHBOARD_LEADER_COMMANDS,
             &app.theme,
+            app.leader_scroll,
         );
+        app.leader_max_scroll.set(max);
     }
 
     if let AppMode::ModelAnalysis(state) = &app.mode {
@@ -861,7 +869,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppMode::ModelAnalysis(_) => unreachable!("model analysis handled above"),
         AppMode::PlanInterview(_) => unreachable!("plan interview handled above"),
         AppMode::CreatingBatchFeatures(state) => {
-            super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
+            super::dialogs::draw_create_batch_features_dialog(
+                frame,
+                state,
+                app.message.as_deref(),
+                &app.theme,
+            );
         }
         AppMode::DeletingProject(name) => {
             super::dialogs::draw_delete_project_confirm(frame, name, &app.theme);
@@ -873,6 +886,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 feature_name,
                 &app.theme,
             );
+        }
+        AppMode::ConfirmingQuit => {
+            super::dialogs::draw_confirm_quit(frame, &app.theme);
+        }
+        AppMode::ConfirmingRemoveSession(state) => {
+            super::dialogs::draw_confirm_remove_session(frame, state, &app.theme);
         }
         AppMode::BrowsingPath(state) => {
             super::dialogs::draw_browse_path_dialog(frame, state, &app.theme);
@@ -929,7 +948,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_none()
     {
         let scroll = state.scroll_offset;
-        let scroll = super::dialogs::draw_help(frame, scroll, &app.theme);
+        let query = state.query.clone();
+        let scroll = super::dialogs::draw_help(frame, scroll, &query, state.searching, &app.theme);
         if let AppMode::Help(state) = &mut app.mode {
             state.scroll_offset = scroll;
         }
@@ -1127,7 +1147,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => {}
     }
 
-    super::draw_toasts(frame, &app.toasts, &app.theme);
+    super::draw_toasts(frame, &app.toasts, &app.theme, chunks[2].height);
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1966,6 +1986,7 @@ mod tests {
             finding_editor: None,
             post_confirm: None,
             marked: Default::default(),
+            memory_status: None,
         };
         let (_tx, rx) = std::sync::mpsc::channel();
         app.ai_review_run.set_receiver_for_test(Some(rx));
@@ -2134,6 +2155,7 @@ mod tests {
                 finding_editor: None,
                 post_confirm: None,
                 marked: Default::default(),
+                memory_status: None,
             }));
 
         let backend = TestBackend::new(140, 30);

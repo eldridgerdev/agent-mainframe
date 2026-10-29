@@ -39,12 +39,12 @@ identical to the creation-triggered interview.
 ## 4. Aborting has no feature to cancel
 
 The distinguishing frame. A creation-triggered interview offers
-`y launch without a plan` / `n cancel feature creation` here; an on-demand one
-has neither, so the confirm offers only **`y` leave the plan unchanged** and
-**`Esc` resume interview**. `n` is inert rather than falling through to a
+`y launch without a plan` / `c cancel feature creation` here; an on-demand one
+has neither, so the confirm offers only **`y` leave interview, plan unchanged**
+and **`n`/`Esc` keep going**. `c` is inert rather than falling through to a
 handler that would exit the interview anyway.
 
-![Abort confirmation offering only "leave the plan unchanged"](04-abort-confirm-no-launch.png)
+![Abort confirmation offering only "leave interview, plan unchanged"](04-abort-confirm-no-launch.png)
 
 ## 5. Leaving is non-destructive
 

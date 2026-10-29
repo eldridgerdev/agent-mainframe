@@ -2274,7 +2274,9 @@ mod tests {
         let binary = dir.path().join("claude");
         crate::resources::test_support::write_executable_script(
             &binary,
-            "#!/bin/sh\ntouch must-not-run\n",
+            r#"#!/bin/sh
+touch "$(dirname "$0")/must-not-run"
+"#,
         );
         let relative = dir
             .path()

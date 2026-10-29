@@ -613,7 +613,7 @@ mod tests {
             .expect_repo_root()
             .returning(crate::worktree::WorktreeManager::repo_root);
         let app = gui.app_for_workflow();
-        app.worktree = Box::new(worktree);
+        app.worktree = std::sync::Arc::new(worktree);
         app.config.global_review_memory_path =
             Some(dir.path().join("absent-memory.md").display().to_string());
         let id = begin(&mut gui, target).unwrap();

@@ -158,5 +158,5 @@ with GuiFrames.from_argv() as frames:
     # the retained draft at the start; this one proves the cross-checkout path.
     frames.evaluate('''(() => { const field=document.querySelector(`textarea[aria-label="Draft prompt"]`); field.scrollTop=6*parseFloat(getComputedStyle(field).lineHeight); })()''')
     capture('011-original-feedback-path.png','The scrolled unsent composer names the original reviewed checkout feedback file, rather than a different review in the destination checkout.', ['Invoice tests','Test agent'],expression='document.querySelector(`textarea[aria-label="Draft prompt"]`).value.includes('+json.dumps(str(feedback))+')')
-    (out/'destination-proof.json').write_text(json.dumps({'source_feedback':str(feedback),'existing_draft_preserved':True,'gui_auto_submit_ignored':True,'no_receiver_input':True,'companion_retained_stopped':True,'single_companion':True,'hook_choice':'offline'},indent=2)+'\n')
+    (out/'destination-proof.json').write_text(json.dumps({'source_feedback':str(feedback),'existing_draft_preserved':True,'gui_auto_submit_ignored':True,'no_receiver_input':True,'companion_retained_stopped':True,'single_companion':True,'hook_choice':'offline','post_startup_global_hook_refreshed':True},indent=2)+'\n')
     frames.write_notes()

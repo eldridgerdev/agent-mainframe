@@ -69,7 +69,7 @@ try:
         frames.resize(1420,980)
         action('wait',text='Invoice rounding',scope='nav[aria-label=Workspace]')
         action('click',selector='nav[aria-label=Workspace] [aria-describedby="tree-feature-proof-feature"]')
-        action('wait',text='Supervised edits',scope='main')
+        action('wait',text='Invoice rounding',scope='main')
         initial_rows, initial_panes = rows(), panes()
         hook = subprocess.Popen(['bash',str(workspace/'plugins/diff-review/scripts/custom-diff-review.sh'),str(host)],
             cwd=host,env=os.environ|{'AMF_ACTIVE':'1','AMF_SESSION':'amf-harness-proof'},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True)

@@ -2412,7 +2412,7 @@ echo fallback-version
             .parse()
             .unwrap();
         assert!(
-            in_flight_headless_runs() >= baseline + 1,
+            in_flight_headless_runs() > baseline,
             "The ignored SIGTERM still owns a lease"
         );
         assert!(wait_for_exit(pid, 5));

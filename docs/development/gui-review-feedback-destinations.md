@@ -61,18 +61,21 @@ harness or GitHub writes are allowed.
 
 Local capture uses a source-matched debug GUI built with a capture-only
 `TAURI_CONFIG` devUrl/CSP override for free port 1440. The ordinary default build
-remains part of validation; the unrelated desktop on 1420 is untouched. Hosted
-capture uses 1420 on its isolated runner. The final guard-validated local run passed eleven asserted native frames,
-including the scrolled original feedback path, cancelled launch recovery and
-retained unsent composer. All protected configuration/runtime inventories were
-unchanged, and owned processes closed. Earlier captured diagnostics are labeled
-pre-guard and are not final-source evidence.
+is validated separately, leaving any existing desktop instance untouched.
+Hosted capture uses port 1420 on its isolated runner.
 
-The final normal Rust milestone passed 3,696 library tests and seven GUI tests
-with one existing ignored test; formatting, strict all-target workspace Clippy
-and both default/capture-config builds passed. Five shared destination tests and
-95 GUI review tests passed separately. The full frontend passed 521 tests in 60 files and its production build.
-After the final display-only cancellation-warning deduplication, 74 focused
-component tests and the production build passed again; the regenerated native
-proof covers that final UI. Real paid-harness delivery and macOS runtime validation
+The final October 29 local run passed eleven asserted native frames. It changes
+the private global hook after GUI startup, then verifies the fresh setup choice,
+explicit resource approval, stale-target refusal, cancelled launch recovery,
+retained companion and unsent composer with the original feedback path. All
+protected configuration/runtime inventories stayed unchanged and owned processes
+closed. Earlier diagnostics and intermediate captures are labeled accordingly
+and are not final-source evidence.
+
+The final normal Rust milestone passed 3,841 library tests and seven GUI tests
+with one existing ignored test. Formatting, strict all-target workspace Clippy,
+both default/capture-config builds, the full frontend suite (522 tests in 60
+files) and production build passed. Five shared destination tests and 97 GUI
+review tests passed separately, including repaired-input retry refusal after
+partial Git creation. Real paid-harness delivery and macOS runtime validation
 remain open.

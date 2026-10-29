@@ -109,7 +109,9 @@ try:
         action('wait',text='Explanation call cancelled. The edit is still waiting.',scope=popup)
         capture('007-call-cancelled.png','Cancel acknowledges the matching worker and its process is reaped; the original interactive panes, hook and unsent feedback remain untouched.', ['Explanation call cancelled. The edit is still waiting.','Feedback for the agent','Reject edit'])
         click('Explain this edit',popup); action('wait',text='Continue explanation',scope=popup)
-        project_config = repo/'amf.json'; original_config = project_config.read_text()
+        # Prompt resolution uses the feature worktree's Git root, so mutate the
+        # effective config there rather than the separate project checkout.
+        project_config = host/'amf.json'; original_config = project_config.read_text()
         config = json.loads(original_config); config['prompt_overrides']['review.diff_explain']['template']+='\nChanged externally.'; project_config.write_text(json.dumps(config))
         click('Continue explanation',popup)
         action('wait',text='The edit, checkout or explanation settings changed.',scope=popup)

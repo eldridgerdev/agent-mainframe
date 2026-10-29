@@ -54,21 +54,27 @@ thread_local! {
 }
 fn global_snapshot(gui: &mut GuiHandle) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
     #[cfg(test)]
-    let path = TEST_GLOBAL_DOCUMENT.with(|path| path.borrow().clone());
-    #[cfg(not(test))]
-    let path: Option<PathBuf> = None;
-    if path.is_none() && gui.app_for_workflow().store_path.as_os_str().is_empty() {
+    if let Some(path) = TEST_GLOBAL_DOCUMENT.with(|path| path.borrow().clone()) {
+        return global_snapshot_at(gui, &path);
+    }
+    if gui.app_for_workflow().store_path.as_os_str().is_empty() {
         let config = &gui.app_for_workflow().config;
         return Ok((hash(config).map_err(conflict)?, config.extension.clone()));
     }
-    let path = path.unwrap_or_else(|| crate::project::amf_config_dir().join("config.json"));
-    let (_, config, revision) = crate::gui_settings::read_document(&path)?;
+    global_snapshot_at(gui, &crate::project::amf_config_dir().join("config.json"))
+}
+fn global_snapshot_at(
+    gui: &mut GuiHandle,
+    path: &Path,
+) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
+    let (_, config, revision) = crate::gui_settings::read_document(path)?;
     // Read the current soft-gate policy before an explicit preparation; no
     // settings file is written and no other runtime setting is changed.
     gui.app_for_workflow().config.max_concurrent_agents = config.max_concurrent_agents;
     gui.app_for_workflow().config.low_memory_warn_mb = config.low_memory_warn_mb;
     Ok((revision, config.extension))
 }
+
 #[derive(Clone)]
 struct BoundFeature {
     project: Project,
@@ -438,7 +444,6 @@ fn plan(
             if branch.is_empty() {
                 return Err(GuiError::conflict("Choose a companion branch name"));
             }
-            let app = gui.app_for_workflow();
             if source.project.features.iter().any(|feature| {
                 crate::project::normalized_feature_name(&feature.name)
                     == crate::project::normalized_feature_name(branch)

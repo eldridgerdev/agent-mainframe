@@ -51,7 +51,12 @@ try:
                 (out/'last-state.txt').write_text(frames.evaluate('document.body.innerText'))
                 (out/'headless-diagnostics.json').write_text(json.dumps(launched(),indent=2)+'\n')
                 raise
-        def click(name, scope=None): return action('click',name=name,**({'scope':scope} if scope else {}))
+        def click(name, scope=None):
+            # Text can paint before the preceding IPC clears its busy state.
+            # Wait for the actual control instead of retrying a failed click.
+            root = 'document.querySelector('+json.dumps(scope)+')' if scope else 'document'
+            action('wait',expression='Array.from(('+root+' ?? document.createElement("div")).querySelectorAll("button")).some(button => button.textContent.trim() === '+json.dumps(name)+' && !button.disabled)')
+            return action('click',name=name,**({'scope':scope} if scope else {}))
         def wait(expression): return action('wait',expression=expression)
         popup = '[role=dialog][aria-label="Supervised edits"]'
         def capture(name, caption, expected, allow_alert=False):
@@ -73,6 +78,7 @@ try:
         wait_for(lambda: notification_dir.exists() and bool(list(notification_dir.glob('*.json'))), 'Real hook did not publish its waiting notification')
         notification = next(notification_dir.glob('*.json')); request = json.loads(notification.read_text())
         wait('!!document.querySelector('+json.dumps(popup)+')')
+        wait('!!document.querySelector(`textarea[aria-label="Feedback for the agent"]`)')
         action('fill',name='Feedback for the agent',value='Keep this unsent rejection draft — café.',scope=popup)
         capture('001-waiting-draft.png','The real Claude hook is still waiting; the reviewer has an unsent rejection draft before requesting an explanation.', ['Supervised edits','invoice.ts','Feedback for the agent','Explain this edit'])
         notes.write_text('## invoice.ts\n\nSaved rationale: credits must not generate negative tax.\n')

@@ -11,7 +11,10 @@ review retains an operation ID and the created feature/session IDs. **Cancel
 pending launch** prevents the later start; it waits for work already running to
 settle and retains created checkouts/features. Closing or editing the review is
 blocked during setup. Hook failure, stale continuation or worker failure leaves
-an explicit recovery message and preserves created resources. Replaying the
+an explicit recovery message and preserves created resources. If Git creates a
+checkout but later settings copying fails, the error names its retained path and
+branch for manual recovery. Repairing the input does not automatically recreate,
+adopt or delete that uncertain checkout, and no AMF feature row is invented. Replaying the
 same successful preparation selects its retained stable session instead of
 creating a second companion. The user can select a retained companion as an
 existing destination, or manage it from the workspace after pausing the review.

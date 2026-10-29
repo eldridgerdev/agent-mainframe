@@ -1691,6 +1691,70 @@ mod tests {
         assert!(prepare_choice(&mut gui, &selected_view, choice).is_ok());
     }
     #[test]
+    fn settings_failure_after_git_creation_names_retained_resources_and_refuses_recreation() {
+        let (dir, mut gui, view) = review();
+        let repo = dir.path().join("repo");
+        crate::gui_diff::tests::git(&repo, &["config", "core.hooksPath", "/dev/null"]);
+        let excludes = repo.join(".git/info/exclude");
+        let mut ignored = std::fs::read_to_string(&excludes).unwrap();
+        ignored.push_str("\n.claude/\n.worktrees/\n");
+        std::fs::write(excludes, ignored).unwrap();
+        let settings = repo.join(".claude/settings.local.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+        let branch = "partial-copy-fixes";
+        let expected = repo.join(".worktrees").join(crate::project::worktree_name(
+            &gui.app_for_workflow().store.projects[0].name,
+            branch,
+        ));
+        let changed_settings = settings.clone();
+        let mut worktree = MockWorktreeOps::new();
+        worktree
+            .expect_create_from()
+            .times(1)
+            .returning(move |repo, name, branch, base| {
+                // This edit happens after the GUI's last source check. Git adds
+                // the worktree successfully, then the real settings copy fails.
+                std::fs::write(&changed_settings, "{invalid after preflight")?;
+                crate::worktree::WorktreeManager::create_from(repo, name, branch, base)
+            });
+        gui.app_for_workflow().worktree = std::sync::Arc::new(worktree);
+        let started = prepare_choice(&mut gui, &view, companion(branch)).unwrap();
+        assert!(started.preparation.is_some());
+        let ended = wait_setup(&mut gui, &view.workflow_id);
+        let message = ended.preparation_error.as_deref().unwrap();
+        for expected_text in [
+            expected.to_str().unwrap(),
+            branch,
+            "retained",
+            "manual recovery",
+            "git worktree list",
+        ] {
+            assert!(message.contains(expected_text), "{message}");
+        }
+        assert!(expected.is_dir());
+        assert_eq!(gui.app_for_workflow().store.projects[0].features.len(), 1);
+        let persisted = crate::db::AmfDb::open(&dir.path().join("amf.db"))
+            .unwrap()
+            .load_store()
+            .unwrap();
+        assert_eq!(persisted.projects[0].features.len(), 1);
+        // Repair the input, so retry refusal proves retained branch protection,
+        // rather than just refusing the malformed source again.
+        std::fs::write(&settings, "{}").unwrap();
+        let refused = prepare_choice(&mut gui, &ended, companion(branch)).unwrap_err();
+        assert!(
+            refused.message.contains("already exists"),
+            "{}",
+            refused.message
+        );
+        let retained = crate::gui_diff::tests::git(&repo, &["worktree", "list", "--porcelain"]);
+        assert!(retained.contains(expected.to_str().unwrap()));
+        assert!(retained.contains(&format!("refs/heads/{branch}")));
+        assert!(expected.is_dir());
+    }
+
+    #[test]
     fn companion_preview_uses_the_current_strict_global_hook_without_mutating_startup_settings() {
         struct DocumentGuard(Option<PathBuf>);
         impl Drop for DocumentGuard {

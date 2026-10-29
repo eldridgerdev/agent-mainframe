@@ -51,8 +51,18 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
     };
     let key = remapped_key;
     match key {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
             app.request_dashboard_quit();
+        }
+        KeyCode::Esc => {
+            // Esc is how people dismiss toasts and popups; quitting on it
+            // loses the whole session, so ask first. A parked plan interview
+            // already has its own abort gate, which `q` reopens; Esc does too.
+            if app.paused_plan_interview.is_some() {
+                app.request_dashboard_quit();
+            } else {
+                app.mode = AppMode::ConfirmingQuit;
+            }
         }
         KeyCode::Char('N') => {
             app.start_create_project();
@@ -139,7 +149,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
             }
             Selection::Session(_, _, _) => {
-                app.remove_session()?;
+                app.open_remove_session_confirm();
             }
         },
         KeyCode::Char('s') => {
@@ -192,7 +202,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if is_codex.unwrap_or(false) {
                 app.pick_codex_session();
             } else {
-                app.push_toast_warning("S only works for opencode, claude, or codex sessions");
+                app.push_toast_warning("S opens saved transcripts: select a claude, codex or opencode feature or session first");
             }
         }
         KeyCode::Char('u') => match &app.selection {
@@ -254,10 +264,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             Selection::Session(_, _, _) => {}
         },
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help(crate::app::HelpState {
-                from_view: None,
-                scroll_offset: 0,
-            });
+            app.mode = AppMode::Help(crate::app::HelpState::new(None));
         }
         KeyCode::Char('/') => {
             app.start_search();
@@ -402,6 +409,9 @@ pub(crate) fn default_key_for_action(action: &str) -> Option<char> {
 }
 
 fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if app.handle_leader_menu_nav(&key) {
+        return Ok(());
+    }
     app.deactivate_leader();
 
     match key.code {
@@ -415,16 +425,16 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help(crate::app::HelpState {
-                from_view: None,
-                scroll_offset: 0,
-            });
+            app.mode = AppMode::Help(crate::app::HelpState::new(None));
         }
         KeyCode::Char('/') => {
             app.open_command_picker(None);
         }
         KeyCode::Char('a') => {
             app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
+        }
+        KeyCode::Char('A') => {
+            app.open_harness_setup(false);
         }
         KeyCode::Char('c') => {
             app.start_config_wizard();
@@ -454,7 +464,7 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('Q') => {
             app.start_pairing();
         }
-        _ => {}
+        _ => app.leader_unrecognised(&key),
     }
 
     Ok(())

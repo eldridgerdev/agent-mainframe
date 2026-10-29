@@ -1315,10 +1315,7 @@ pub(super) mod tests {
     fn a_deferred_pairing_request_waits_for_another_dialog_to_close() {
         let mut app = test_app();
         app.start_pairing();
-        app.mode = AppMode::Help(crate::app::HelpState {
-            from_view: None,
-            scroll_offset: 0,
-        });
+        app.mode = AppMode::Help(crate::app::HelpState::new(None));
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while app.remote_server_addr.is_none() && Instant::now() < deadline {
@@ -1347,10 +1344,7 @@ pub(super) mod tests {
         app.start_pairing();
         // Hold the dialog off while the server comes up, then age the
         // request past its window, as a slow bind would.
-        app.mode = AppMode::Help(crate::app::HelpState {
-            from_view: None,
-            scroll_offset: 0,
-        });
+        app.mode = AppMode::Help(crate::app::HelpState::new(None));
         let deadline = Instant::now() + Duration::from_secs(2);
         while app.remote_server_addr.is_none() && Instant::now() < deadline {
             app.poll_remote_server_bg();

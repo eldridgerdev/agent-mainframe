@@ -68,7 +68,7 @@ note:The optional-AI consent step. With a reference doc attached it adds a line:
 shot:consent-notes-read-only
 
 # Abort without accepting (accepting spends tokens). The confirm offers
-# only "leave the plan unchanged" for an on-demand interview.
+# only "leave interview, plan unchanged" for an on-demand interview.
 key:Escape
 wait:400
 key:y

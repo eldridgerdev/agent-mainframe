@@ -233,6 +233,18 @@ Example:
 Reads the file given by --file, or stdin when omitted or `-`.
 See docs/automation/README.md for responses.";
 
+const CREATE_SESSION_SCHEMA: &str = "Request JSON:
+  {
+    \"project_name\": string (required) existing AMF project
+    \"feature\": string (required) existing feature name
+    \"kind\": string (required) claude, codex, opencode, pi, terminal or custom session name
+    \"label\": string | null
+    \"initial_prompt\": string | null
+    \"submit_prompt\": bool default false
+    \"dry_run\": bool default false
+  }
+Reads --file or stdin. See docs/automation/README.md.";
+
 const CREATE_FEATURE_SCHEMA: &str = "\
 Request JSON (all fields optional unless marked required):
   {
@@ -242,10 +254,13 @@ Request JSON (all fields optional unless marked required):
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
     \"plan_mode\":       bool    default false
+    \"no_start\":        bool    default false
     \"create_terminal\": bool    default false
     \"use_worktree\":    bool | null   null = project default
     \"enable_chrome\":   bool    default false
     \"hook_choice\":     string | null  option for an on_worktree_created hook
+    \"initial_prompt\": string | null  task to paste when the harness is ready
+    \"submit_prompt\": bool    default false
     \"dry_run\":         bool    default false; validate only
   }
 
@@ -266,6 +281,8 @@ Request JSON (all fields optional unless marked required):
     \"mode\":            \"vibeless\" | \"vibe\" | \"supervibe\"       default \"vibeless\"
     \"review\":          bool    default false
     \"enable_chrome\":   bool    default false
+    \"initial_prompt\": string | null  task to paste when the harness is ready
+    \"submit_prompt\": bool    default false
     \"dry_run\":         bool    default false; validate only
   }
 
@@ -293,6 +310,19 @@ enum AutomationCommands {
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
+    /// Add a tracked session to an existing feature from JSON input
+    #[command(after_help = CREATE_SESSION_SCHEMA)]
+    CreateSession {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Override the JSON payload and perform validation only.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
     /// Create a single feature/worktree inside an existing AMF project from JSON input
     #[command(after_help = CREATE_FEATURE_SCHEMA)]
     CreateFeature {
@@ -302,6 +332,9 @@ enum AutomationCommands {
         /// Override the JSON payload and perform validation only.
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Create the feature without starting live sessions.
+        #[arg(long)]
+        no_start: bool,
         /// Timeout in milliseconds while waiting for AMF to reply.
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
@@ -909,9 +942,31 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             );
             Ok(())
         }
+        AutomationCommands::CreateSession {
+            file,
+            dry_run,
+            timeout_ms,
+        } => {
+            let payload = read_json_input(file.as_ref())?;
+            let mut request: automation::CreateSessionRequest =
+                serde_json::from_str(&payload).context("Invalid create_session JSON payload")?;
+            if dry_run {
+                request.dry_run = true;
+            }
+
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
         AutomationCommands::CreateFeature {
             file,
             dry_run,
+            no_start,
             timeout_ms,
         } => {
             let payload = read_json_input(file.as_ref())?;
@@ -920,6 +975,8 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             if dry_run {
                 request.dry_run = true;
             }
+
+            request.no_start |= no_start;
 
             let socket = ipc::socket_path();
             let outbound = serde_json::to_string(&request.ipc_payload())?;
@@ -2248,6 +2305,12 @@ mod tests {
             CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
         };
         let cases = [
+            (
+                "create-session",
+                super::CREATE_SESSION_SCHEMA,
+                serde_json::to_value(crate::automation::CreateSessionRequest::default()).unwrap(),
+                include_str!("../docs/automation/create-session.template.json"),
+            ),
             (
                 "create-project",
                 super::CREATE_PROJECT_SCHEMA,

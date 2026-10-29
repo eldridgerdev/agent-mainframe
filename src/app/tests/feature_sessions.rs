@@ -551,6 +551,8 @@ fn app_in_creating_feature_mode(
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree,
+        first_feature: false,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -857,7 +859,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -903,7 +905,7 @@ fn create_feature_default_remote_control_matches_availability() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -927,7 +929,7 @@ fn create_feature_default_remote_control_blocked_by_zai() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
     app.config.remote_control_default = true;
@@ -1066,6 +1068,8 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree: true,
+        first_feature: false,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -1659,6 +1663,7 @@ fn create_project_persists_selected_preferred_agent() {
         path: repo.path().to_string_lossy().into_owned(),
         agent: AgentKind::Codex,
         agent_index: 0,
+        path_is_git: None,
     });
 
     app.create_project().unwrap();
@@ -1691,7 +1696,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(non_git_probe_worktree()),
     );
     app.selection = Selection::Project(0);
 
@@ -1931,7 +1936,14 @@ fn create_feature_final_enter_opens_session_name_step() {
     let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
     if let AppMode::CreatingFeature(state) = &mut app.mode {
         state.step = CreateFeatureStep::Mode;
-        state.agent = AgentKind::Codex;
+        state.session_name = "Claude 1".to_string();
+        // Choosing a harness renames an untouched default session name.
+        let codex = state
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+        state.select_agent(codex);
         state.mode_focus = 4;
     }
 
@@ -1952,10 +1964,12 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
 
     let repo = TempDir::new().unwrap();
     let mut tmux = MockTmuxOps::new();
+    // Absent when the feature is created; present when its view opens.
+    let mut created = false;
     tmux.expect_session_exists()
         .withf(|session| session == "amf-automation-project-feature-1")
-        .times(1)
-        .return_const(false);
+        .times(2..)
+        .returning(move |_| std::mem::replace(&mut created, true));
     let expected_repo = repo.path().to_path_buf();
     tmux.expect_create_session_with_window()
         .withf(move |session, window, workdir| {
@@ -2025,6 +2039,8 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         worktree_search_active: false,
         worktree_query: String::new(),
         use_worktree: false,
+        first_feature: false,
+        git_available: true,
         enable_chrome: false,
         remote_control: false,
         remote_control_available: true,
@@ -2038,7 +2054,15 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
 
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
 
-    assert!(matches!(app.mode, AppMode::Normal));
+    // The new feature's session opens instead of leaving the dashboard, the
+    // same as pressing Enter on it (which may open the compose box over it).
+    let view = match &app.mode {
+        AppMode::Viewing(view) => view,
+        AppMode::Compose(state) => &state.view,
+        _ => panic!("expected the new feature's session to open"),
+    };
+    assert_eq!(view.feature_name, "feature-1");
+    assert_eq!(view.session_label, "Pairing Claude");
     let feature = &app.store.projects[0].features[0];
     assert_eq!(feature.name, "feature-1");
     assert_eq!(feature.sessions[0].label, "Pairing Claude");
@@ -2318,7 +2342,7 @@ fn adding_session_start_failure_shows_error_toast() {
 
     assert_eq!(
         app.toasts.last().map(|toast| toast.message.as_str()),
-        Some("Error: tmux failed")
+        Some("tmux failed")
     );
     assert_eq!(
         app.store.projects[0].features[0].status,
@@ -3049,13 +3073,21 @@ fn enter_on_a_stopped_session_of_a_running_feature_restarts_and_opens_it() {
     tmux.expect_window_exists()
         .withf(|_, window| window == "Claude-2")
         .returning(|_, _| false);
+    let mut sequence = mockall::Sequence::new();
     tmux.expect_create_window()
         .withf(|_, window, _| window == "Claude-2")
         .times(1)
+        .in_sequence(&mut sequence)
         .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .withf(|_, window, cols, rows| window == "Claude-2" && *cols == 120 && *rows == 39)
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _, _| Ok(()));
     tmux.expect_launch_claude()
         .withf(|_, window, _, _, _| window == "Claude-2")
         .times(1)
+        .in_sequence(&mut sequence)
         .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
 
@@ -3065,6 +3097,8 @@ fn enter_on_a_stopped_session_of_a_running_feature_restarts_and_opens_it() {
         &["Claude-2"],
     );
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
     app.selection = Selection::Session(0, 0, 1);
 
     crate::handlers::handle_normal_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
@@ -3586,6 +3620,7 @@ fn usability_project_form_can_move_back_without_losing_input() {
         path: "/tmp/my-project".into(),
         agent: AgentKind::Claude,
         agent_index: 0,
+        path_is_git: None,
     });
     crate::handlers::handle_create_project_key(
         &mut app,
@@ -3611,6 +3646,7 @@ fn usability_project_rejects_file_path_and_focuses_preserved_input() {
         path: file.path().to_string_lossy().into_owned(),
         agent: AgentKind::Claude,
         agent_index: 0,
+        path_is_git: None,
     });
     app.create_project().unwrap();
     assert!(app.store.projects.is_empty());
@@ -3682,5 +3718,322 @@ fn usability_failed_project_cleanup_preserves_records_for_retry() {
         assert!(error.to_string().contains("Project retained"));
         assert_eq!(app.store.projects.len(), 1);
         assert_eq!(app.store.projects[0].features.len(), 1);
+    }
+}
+
+#[test]
+fn new_terminal_session_is_sized_before_it_is_opened() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    let mut sequence = mockall::Sequence::new();
+    tmux.expect_create_window()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .withf(|_, _, cols, rows| *cols == 120 && *rows == 39)
+        .times(1)
+        .in_sequence(&mut sequence)
+        .returning(|_, _, _, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
+
+    app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+        .unwrap();
+
+    assert!(
+        app.store.projects[0].features[0]
+            .sessions
+            .iter()
+            .any(|session| session.label == "Shell")
+    );
+}
+
+#[test]
+fn new_terminal_session_resize_failure_keeps_session() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .times(1)
+        .returning(|_, _, _, _| anyhow::bail!("resize failed"));
+    tmux.expect_kill_window().never();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.viewport_cols = 120;
+    app.viewport_total_rows = 40;
+
+    app.add_builtin_session_unchecked(0, 0, SessionKind::Terminal, Some("Shell".into()))
+        .unwrap();
+
+    assert!(
+        app.store.projects[0].features[0]
+            .sessions
+            .iter()
+            .any(|session| session.label == "Shell")
+    );
+}
+
+#[test]
+fn new_agent_session_window_failure_removes_record() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let original_sessions = store.projects[0].features[0].sessions.len();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(true);
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| anyhow::bail!("create failed"));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    assert!(
+        app.add_builtin_session_unchecked(0, 0, SessionKind::Codex, Some("Agent".into()))
+            .is_err()
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions.len(),
+        original_sessions
+    );
+}
+
+fn non_git_probe_worktree() -> MockWorktreeOps {
+    let mut worktree = MockWorktreeOps::new();
+    worktree.expect_repo_root().returning(|path| {
+        if path.join(".git").exists() {
+            Ok(path.to_path_buf())
+        } else {
+            Err(anyhow::anyhow!("not a repository"))
+        }
+    });
+    worktree
+}
+
+fn project_store_with_repo(repo: &std::path::Path, is_git: bool) -> ProjectStore {
+    let mut store = ProjectStore::empty();
+    store.projects.push(crate::project::Project::new(
+        "plain".to_string(),
+        repo.to_path_buf(),
+        is_git,
+        AgentKind::Claude,
+    ));
+    store
+}
+
+#[test]
+fn non_git_project_dialog_warns_and_git_init_clears_the_warning() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Path,
+        name: "plain".into(),
+        path: dir.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git: None,
+    });
+    app.refresh_create_project_agent_selection();
+    assert!(matches!(&app.mode, AppMode::CreatingProject(s) if s.path_is_git == Some(false)));
+
+    crate::handlers::handle_create_project_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(dir.path().join(".git").exists(), "git init should run");
+    assert!(matches!(&app.mode, AppMode::CreatingProject(s)
+        if s.path_is_git == Some(true) && s.path.ends_with(dir.path().file_name().unwrap().to_str().unwrap())));
+}
+
+#[test]
+fn creating_a_non_git_project_continues_and_says_what_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore::empty(),
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.store_path = dir.path().join("store.json");
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "plain".into(),
+        path: dir.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        path_is_git: Some(false),
+    });
+    app.create_project().unwrap();
+    assert_eq!(app.store.projects.len(), 1);
+    assert!(!app.store.projects[0].is_git);
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap()
+            .contains("no git repository")
+    );
+}
+
+#[test]
+fn issue_browser_on_non_git_project_gives_guidance_not_the_generic_error() {
+    let dir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        project_store_with_repo(dir.path(), false),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_issue_browser_for_project(0);
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.message.is_none());
+    let toast = &app.toasts.last().expect("a guidance toast").message;
+    assert!(toast.contains("git init"), "{toast}");
+    assert!(!toast.contains("Error"), "{toast}");
+}
+
+#[test]
+fn issue_browser_on_repo_without_remotes_says_to_add_a_github_remote() {
+    let dir = TempDir::new().unwrap();
+    let status = std::process::Command::new("git")
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+        .status;
+    assert!(status.success());
+    let mut app = App::new_for_test(
+        project_store_with_repo(dir.path(), true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_issue_browser_for_project(0);
+    let toast = &app.toasts.last().expect("a guidance toast").message;
+    assert!(toast.contains("add a GitHub remote"), "{toast}");
+    assert!(!toast.contains("Error"), "{toast}");
+}
+
+#[test]
+fn feature_wizard_for_non_git_project_disables_the_worktree_choice() {
+    let dir = TempDir::new().unwrap();
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].repo = dir.path().to_path_buf();
+    store.projects[0].is_git = false;
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(non_git_probe_worktree()),
+    );
+    app.selection = Selection::Project(0);
+    // A second feature normally defaults to a worktree.
+    app.start_create_feature();
+    let AppMode::CreatingFeature(state) = &mut app.mode else {
+        panic!("wizard should open");
+    };
+    assert!(!state.git_available);
+    assert!(!state.use_worktree);
+    state.step = crate::app::state::CreateFeatureStep::Worktree;
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Down).unwrap();
+    assert!(matches!(&app.mode, AppMode::CreatingFeature(s) if !s.use_worktree));
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    crate::handlers::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE), 40).unwrap();
+}
+
+fn dashboard_app_with_claude_session(window_live: bool) -> App {
+    dashboard_app_with_claude_session_kills(window_live, 0)
+}
+
+/// `kills` is how many tmux kills (session or window) the test expects.
+fn dashboard_app_with_claude_session_kills(window_live: bool, kills: usize) -> App {
+    let mut store = store_with_feature(ProjectStatus::Idle);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "Claude 1".into());
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().return_const(window_live);
+    tmux.expect_window_exists().return_const(window_live);
+    tmux.expect_kill_session()
+        .times(kills)
+        .returning(|_| Ok(()));
+    tmux.expect_kill_window().times(0).returning(|_, _| Ok(()));
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app
+}
+
+#[test]
+fn esc_on_dashboard_asks_before_quitting() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.should_quit);
+    assert!(matches!(app.mode, AppMode::ConfirmingQuit));
+}
+
+#[test]
+fn confirming_quit_with_y_quits() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn quit_confirm_is_cancelled_by_n_and_esc() {
+    for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+        let mut app = dashboard_app_with_claude_session(false);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, cancel);
+        assert!(!app.should_quit);
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+}
+
+#[test]
+fn q_on_dashboard_still_quits_directly() {
+    let mut app = dashboard_app_with_claude_session(false);
+    press(&mut app, KeyCode::Char('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn d_on_a_session_asks_and_removes_nothing() {
+    for live in [true, false] {
+        let mut app = dashboard_app_with_claude_session(live);
+        press(&mut app, KeyCode::Char('d'));
+        match &app.mode {
+            AppMode::ConfirmingRemoveSession(state) => {
+                assert_eq!(state.label, "Claude 1");
+                assert_eq!(state.agent_running, live);
+                assert_eq!(state.window_live, live);
+                assert_eq!(state.closes_tmux_session, live);
+            }
+            _ => panic!("expected the remove-session confirm"),
+        }
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+    }
+}
+
+#[test]
+fn confirming_session_removal_with_y_removes_it() {
+    // The only session: removing it closes the feature's tmux session.
+    let mut app = dashboard_app_with_claude_session_kills(true, 1);
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn session_removal_confirm_is_cancelled_by_n_and_esc() {
+    for cancel in [KeyCode::Char('n'), KeyCode::Esc] {
+        let mut app = dashboard_app_with_claude_session(true);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, cancel);
+        assert!(matches!(app.mode, AppMode::Normal));
+        assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
+        assert!(!app.should_quit);
     }
 }

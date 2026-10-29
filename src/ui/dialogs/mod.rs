@@ -46,11 +46,14 @@ pub use debug::draw_debug_log;
 pub use diff::{draw_diff_picker, draw_diff_viewer, draw_diff_viewer_loading};
 pub use dormant::draw_dormant_view;
 pub use feature::{
-    draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
-    draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
+    draw_confirm_quit, draw_confirm_remove_session, draw_confirm_supervibe_dialog,
+    draw_create_feature_dialog, draw_delete_feature_confirm, draw_deleting_feature_dialog,
+    draw_fork_feature_dialog, draw_steering_prompt_dialog,
 };
 pub use handoff::draw_fresh_context_prompt_dialog;
 pub use harness::draw_harness_setup_dialog;
+#[cfg(test)]
+pub(crate) use help::DASHBOARD_KEYS;
 pub use help::draw_help;
 pub use hooks::{
     draw_diff_review_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,

@@ -1,0 +1,9 @@
+{
+  "project_name": "my-repo",
+  "feature": "main",
+  "kind": "codex",
+  "label": "Docs from note",
+  "initial_prompt": "Review the documentation and suggest improvements.",
+  "submit_prompt": false,
+  "dry_run": false
+}

@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, AppMode, ConfigWizardStep, DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
+    App, AppMode, ConfigWizardStep, CreateFeatureState, CreateFeatureStep,
+    DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
 };
 use crate::editor::VimMode;
 use crate::project::SessionKind;
@@ -67,6 +68,88 @@ fn shorten_path(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
+/// The dashboard's one-line key strip for the selected row: a few keys that
+/// matter on that row, an optional lead sentence for an empty project or
+/// feature, and `? help` last so it is always there. Every key here has a row
+/// in `help::DASHBOARD_KEYS` (a test holds the two together).
+pub(crate) struct KeyStrip {
+    /// Alternating text / key fragments, e.g. `["Press ", "n", " to add a feature"]`.
+    pub lead: Option<&'static [&'static str]>,
+    pub keys: Vec<(&'static str, &'static str)>,
+    pub note: Option<&'static str>,
+}
+
+pub(crate) fn dashboard_key_strip(app: &App) -> KeyStrip {
+    const HELP: (&str, &str) = ("?", "help");
+    let mut lead = None;
+    let mut note = None;
+    let keys = match app.selection {
+        _ if app.store.projects.is_empty() => {
+            lead = Some(&["Press ", "N", " to add a project"][..]);
+            vec![("q", "quit"), HELP]
+        }
+        Selection::Session(pi, fi, si) => {
+            let mut keys = vec![("Enter", "open")];
+            // Offer whichever of start/stop applies; neither for a session
+            // with no tmux window (TODOs), which `c` and `x` do nothing to.
+            match app.session_window_running(pi, fi, si) {
+                Some(true) => keys.push(("x", "stop")),
+                Some(false) => keys.push(("c", "start")),
+                None => {}
+            }
+            keys.extend([("r", "rename"), ("d", "remove"), ("s", "add session"), HELP]);
+            keys
+        }
+        Selection::Feature(pi, fi) if app.feature_is_pending_worktree_script(pi, fi) => {
+            note = Some("worktree script still running");
+            vec![("Enter", "expand"), ("d", "delete"), HELP]
+        }
+        Selection::Feature(pi, fi) => {
+            let no_sessions = app
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .is_some_and(|f| f.sessions.is_empty());
+            if no_sessions {
+                lead = Some(&["Press ", "s", " to add a session"][..]);
+                vec![("c", "start"), ("d", "delete"), HELP]
+            } else {
+                vec![
+                    ("Enter", "expand"),
+                    ("s", "add session"),
+                    ("c", "start"),
+                    ("x", "stop"),
+                    ("r", "rename"),
+                    ("d", "delete"),
+                    HELP,
+                ]
+            }
+        }
+        Selection::Project(pi) => {
+            let no_features = app
+                .store
+                .projects
+                .get(pi)
+                .is_some_and(|p| p.features.is_empty());
+            if no_features {
+                lead = Some(&["Press ", "n", " to add a feature"][..]);
+                vec![("N", "new project"), ("d", "delete"), HELP]
+            } else {
+                vec![
+                    ("n", "new feature"),
+                    ("Enter", "expand/collapse"),
+                    ("g", "issues"),
+                    ("u", "harness"),
+                    ("d", "delete"),
+                    HELP,
+                ]
+            }
+        }
+    };
+    KeyStrip { lead, keys, note }
+}
+
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let theme = &app.theme;
     let key_style = || Style::default().fg(theme.warning.to_color());
@@ -88,121 +171,38 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let keybinds = match &app.mode {
         AppMode::Normal => {
-            let on_session = matches!(app.selection, Selection::Session(_, _, _));
-            let on_feature = matches!(app.selection, Selection::Feature(_, _));
-            let pending_worktree_script = match app.selection {
-                Selection::Feature(pi, fi) => app.feature_is_pending_worktree_script(pi, fi),
-                _ => false,
-            };
-            if on_session {
-                // Offer whichever of start/stop applies to this session —
-                // neither for one with no tmux window (TODOs), which `c` and
-                // `x` do nothing to.
-                let session_running = match app.selection {
-                    Selection::Session(pi, fi, si) => app.session_window_running(pi, fi, si),
-                    _ => None,
-                };
-                let start_stop = session_running.map(|running| {
-                    if running {
-                        ("x", " stop  ")
+            let strip = dashboard_key_strip(app);
+            let mut spans = filter_spans;
+            if let Some(lead) = strip.lead {
+                spans.push(Span::raw(" "));
+                for (i, part) in lead.iter().enumerate() {
+                    if i % 2 == 1 {
+                        spans.push(Span::styled(*part, key_style()));
                     } else {
-                        ("c", " start  ")
+                        spans.push(Span::styled(
+                            *part,
+                            Style::default().fg(theme.info.to_color()),
+                        ));
                     }
-                });
-                let mut spans = filter_spans;
-                spans.extend(vec![
-                    Span::styled(" Enter", key_style()),
-                    Span::raw(" view  "),
-                    Span::styled("r", key_style()),
-                    Span::raw(" rename  "),
-                ]);
-                if let Some((key, label)) = start_stop {
-                    spans.extend([Span::styled(key, key_style()), Span::raw(label)]);
                 }
-                spans.extend(vec![
-                    Span::styled("d", key_style()),
-                    Span::raw(" delete  "),
-                    Span::styled("s", key_style()),
-                    Span::raw(" switch  "),
-                    Span::styled("S", key_style()),
-                    Span::raw(" resume  "),
-                    Span::styled("u", key_style()),
-                    Span::raw(" config  "),
-                    Span::styled("V", key_style()),
-                    Span::raw(" pending review  "),
-                    Span::styled("q", key_style()),
-                    Span::raw(" quit"),
-                ]);
-                Line::from(spans)
-            } else if on_feature && pending_worktree_script {
-                let mut spans = filter_spans;
-                spans.extend(vec![
-                    Span::styled("Enter", key_style()),
-                    Span::raw(" expand  "),
-                    Span::styled("d", key_style()),
-                    Span::raw(" delete  "),
-                    Span::styled("V", key_style()),
-                    Span::raw(" pending review  "),
-                    Span::styled("q", key_style()),
-                    Span::raw(" quit  "),
-                    Span::styled(
-                        "worktree script still running",
-                        Style::default().fg(theme.info.to_color()),
-                    ),
-                ]);
-                Line::from(spans)
-            } else if on_feature {
-                let mut spans = filter_spans;
-                spans.extend(vec![
-                    Span::styled(" n", key_style()),
-                    Span::raw(" feature  "),
-                    Span::styled("Enter", key_style()),
-                    Span::raw(" expand  "),
-                    Span::styled("c", key_style()),
-                    Span::raw(" start  "),
-                    Span::styled("x", key_style()),
-                    Span::raw(" stop  "),
-                    Span::styled("y", key_style()),
-                    Span::raw(" ready  "),
-                    Span::styled("s", key_style()),
-                    Span::raw(" switch  "),
-                    Span::styled("S", key_style()),
-                    Span::raw(" resume  "),
-                    Span::styled("u", key_style()),
-                    Span::raw(" config  "),
-                    Span::styled("d", key_style()),
-                    Span::raw(" delete  "),
-                    Span::styled("V", key_style()),
-                    Span::raw(" pending review  "),
-                ]);
-                if !app.active_extension.custom_sessions.is_empty() {
-                    spans.push(Span::styled("p", key_style()));
-                    spans.push(Span::raw(" sessions  "));
-                }
-                spans.extend(vec![Span::styled("q", key_style()), Span::raw(" quit")]);
-                Line::from(spans)
+                spans.push(Span::styled("  \u{00b7}  ", hint_style()));
             } else {
-                let mut spans = filter_spans;
-                spans.extend(vec![
-                    Span::styled(" n", key_style()),
-                    Span::raw(" feature  "),
-                    Span::styled("g", key_style()),
-                    Span::raw(" issues  "),
-                    Span::styled("N", key_style()),
-                    Span::raw(" project  "),
-                    Span::styled("Enter", key_style()),
-                    Span::raw(" expand  "),
-                    Span::styled("u", key_style()),
-                    Span::raw(" preferred harness  "),
-                    Span::styled("d", key_style()),
-                    Span::raw(" delete  "),
-                    Span::styled("R", key_style()),
-                    Span::raw(" refresh  "),
-                    Span::styled("q", key_style()),
-                    Span::raw(" quit"),
-                ]);
-                Line::from(spans)
+                spans.push(Span::raw(" "));
             }
+            for (i, (key, label)) in strip.keys.iter().enumerate() {
+                if i > 0 {
+                    spans.push(Span::raw("  "));
+                }
+                spans.push(Span::styled(*key, key_style()));
+                spans.push(Span::raw(format!(" {label}")));
+            }
+            if let Some(note) = strip.note {
+                spans.push(Span::styled(
+                    format!("  {note}"),
+                    Style::default().fg(theme.info.to_color()),
+                ));
+            }
+            Line::from(spans)
         }
         AppMode::Compose(state) => Line::from(vec![
             Span::styled("Enter", key_style()),
@@ -264,8 +264,29 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+Q", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::CreatingFeature(state) => {
+            if CreateFeatureState::is_form_step(&state.step) {
+                let last = state.step == CreateFeatureStep::SessionName;
+                Line::from(vec![
+                    Span::styled("Tab", key_style()),
+                    Span::raw(" field  "),
+                    Span::styled("Enter", key_style()),
+                    Span::raw(if last { " create  " } else { " next field  " }),
+                    Span::styled("Ctrl+S", key_style()),
+                    Span::raw(" create  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" select  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back"),
+                ])
+            }
+        }
         AppMode::CreatingProject(_)
-        | AppMode::CreatingFeature(_)
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
@@ -276,7 +297,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::DeletingProject(_) | AppMode::DeletingFeature(_, _) => Line::from(vec![
+        AppMode::DeletingProject(_)
+        | AppMode::DeletingFeature(_, _)
+        | AppMode::ConfirmingQuit
+        | AppMode::ConfirmingRemoveSession(_) => Line::from(vec![
             Span::styled("y", key_style()),
             Span::raw(" confirm  "),
             Span::styled("n/Esc", key_style()),
@@ -424,8 +448,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" keep list"),
         ]),
         AppMode::Help(_) => Line::from(vec![
-            Span::styled("Esc/q/?", key_style()),
-            Span::raw(" close help"),
+            Span::styled(" Esc/q/?", key_style()),
+            Span::raw(" close help  "),
+            Span::styled("/", key_style()),
+            Span::raw(" search"),
         ]),
         AppMode::CommandPicker(_) => Line::from(vec![
             Span::styled("j/k or \u{2191}/\u{2193}", key_style()),
@@ -655,6 +681,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" edit  "),
                     Span::styled("d", key_style()),
                     Span::raw(" clear override  "),
+                    Span::styled("a", key_style()),
+                    Span::raw(if state.show_all {
+                        " overridden only  "
+                    } else {
+                        " show all  "
+                    }),
                     Span::styled("?", key_style()),
                     Span::raw(" help  "),
                     Span::styled("Esc", key_style()),
@@ -924,13 +956,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::HarnessSetup(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
-            Span::raw(" navigate  "),
-            Span::styled("Enter", key_style()),
+            Span::raw(" move  "),
+            Span::styled("Enter/Space", key_style()),
             Span::raw(" toggle  "),
             Span::styled("c", key_style()),
-            Span::raw(" confirm  "),
+            Span::raw(" save  "),
             Span::styled("Esc", key_style()),
-            Span::raw(" close"),
+            Span::raw(" cancel"),
         ]),
         AppMode::ReviewHarnessPick(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),

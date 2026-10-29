@@ -1662,3 +1662,99 @@ fn a_pr_scope_shows_only_the_prs_changes_never_the_current_feature_branch() {
     let local_paths: Vec<&str> = local.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(local_paths, ["feature.rs", "staged.rs", "untracked.rs"]);
 }
+
+/// A plain repository on its only branch (`git init -b main`, no remote) has
+/// no base branch. The scope picker explains that in one line instead of
+/// printing the raw git error, and the viewer — plain and Final Review alike —
+/// shows the uncommitted work against `HEAD` rather than failing to load.
+#[test]
+fn a_single_branch_repo_shows_its_working_tree_against_head() {
+    let repo = TempDir::new().unwrap();
+    let dir = repo.path();
+    git_in(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_in(dir, &["config", "user.name", "AMF Test"]);
+    git_in(dir, &["config", "user.email", "amf@example.com"]);
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+    git_in(dir, &["add", "a.rs"]);
+    git_in(dir, &["commit", "--quiet", "-m", "initial"]);
+    std::fs::write(dir.join("a.rs"), "fn a() { edited }\n").unwrap();
+    std::fs::write(dir.join("new.rs"), "fn new() {}\n").unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_repo(dir.to_path_buf(), crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(view_state_for("my-project", "my-feat"));
+    app.open_diff_viewer().unwrap();
+    let AppMode::DiffPicker(picker) = &app.mode else {
+        panic!("the scope picker should open");
+    };
+    assert_eq!(picker.error, None, "no base branch is not an error");
+    assert!(picker.no_base_branch);
+    assert!(picker.commits.is_empty());
+
+    for review in [false, true] {
+        let mut state = DiffViewerState::new(view_state_for("my-project", "my-feat"), dir.into());
+        state.review = review;
+        app.mode = AppMode::DiffViewerLoading(state);
+        app.complete_diff_viewer_loading();
+        let AppMode::DiffViewer(state) = &app.mode else {
+            panic!("viewer should have loaded");
+        };
+        assert_eq!(state.error, None, "review={review}");
+        assert!(state.no_base_branch);
+        assert_eq!(state.branch, "main");
+        let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs", "new.rs"], "review={review}");
+    }
+
+    // `b` starts from a blank prompt: HEAD was a stand-in, not a choice.
+    app.diff_viewer_start_base_ref_edit();
+    let AppMode::DiffViewer(state) = &app.mode else {
+        panic!("viewer should stay open");
+    };
+    assert!(state.editing_base_ref);
+    assert_eq!(state.base_ref_input, "");
+}
+
+/// With a real base (`main` + a feature branch) nothing about the picker or
+/// the viewer changes.
+#[test]
+fn a_feature_branch_still_diffs_against_its_base_branch() {
+    let repo = TempDir::new().unwrap();
+    let dir = repo.path();
+    git_in(dir, &["init", "--quiet", "--initial-branch=main"]);
+    git_in(dir, &["config", "user.name", "AMF Test"]);
+    git_in(dir, &["config", "user.email", "amf@example.com"]);
+    std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+    git_in(dir, &["add", "a.rs"]);
+    git_in(dir, &["commit", "--quiet", "-m", "initial"]);
+    git_in(dir, &["checkout", "--quiet", "-b", "my-feat"]);
+    std::fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
+    git_in(dir, &["add", "b.rs"]);
+    git_in(dir, &["commit", "--quiet", "-m", "feature"]);
+
+    let mut app = App::new_for_test(
+        store_with_repo(dir.to_path_buf(), crate::project::ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(view_state_for("my-project", "my-feat"));
+    app.open_diff_viewer().unwrap();
+    let AppMode::DiffPicker(picker) = &app.mode else {
+        panic!("the scope picker should open");
+    };
+    assert!(!picker.no_base_branch);
+    assert_eq!(picker.commits.len(), 1);
+
+    app.diff_picker_choose();
+    app.complete_diff_viewer_loading();
+    let AppMode::DiffViewer(state) = &app.mode else {
+        panic!("viewer should have loaded");
+    };
+    assert!(!state.no_base_branch);
+    assert_eq!(state.base_ref, "main");
+    let paths: Vec<&str> = state.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["b.rs"]);
+}

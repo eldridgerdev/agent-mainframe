@@ -8,7 +8,7 @@ use crate::project::{AgentKind, VibeMode};
 use crate::theme::Theme;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -40,55 +40,10 @@ pub fn draw_create_feature_dialog(
         CreateFeatureStep::TaskPrompt => {
             draw_create_feature_prompt_coach(frame, state, theme);
         }
-        CreateFeatureStep::SessionName => {
-            draw_create_feature_session_name(frame, state, theme);
-        }
         _ => {
             draw_create_feature_branch_mode(frame, state, allowed_agents, usage, theme);
         }
     }
-}
-
-fn draw_create_feature_session_name(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
-    let area = centered_rect(50, 25, frame.area());
-    crate::ui::draw_modal_overlay(frame, area, theme);
-
-    let title = format!(" Name Session ({}) ", state.project_name);
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    let name_field = Paragraph::new(Line::from(vec![
-        Span::styled(" Name: ", Style::default().fg(theme.primary.to_color())),
-        Span::styled(
-            &state.session_name,
-            Style::default().fg(theme.text.to_color()),
-        ),
-        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
-    ]));
-    frame.render_widget(name_field, chunks[0]);
-
-    let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" create  "),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" back"),
-    ]));
-    frame.render_widget(hints, chunks[2]);
 }
 
 fn draw_create_feature_source(
@@ -408,6 +363,26 @@ fn draw_create_feature_worktree_picker(
     frame.render_widget(hints, chunks[2]);
 }
 
+/// A form row's label. The focused row gets a `▸` marker and a highlighted
+/// background, so focus is visible without reading the footer; other rows
+/// keep a space in the marker column so nothing shifts.
+fn form_label(label: &str, active: bool, theme: &Theme) -> Span<'static> {
+    if active {
+        Span::styled(
+            format!("\u{25b8}{label}"),
+            Style::default()
+                .fg(theme.primary.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            format!(" {label}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        )
+    }
+}
+
 fn draw_create_feature_branch_mode(
     frame: &mut Frame,
     state: &CreateFeatureState,
@@ -429,6 +404,7 @@ fn draw_create_feature_branch_mode(
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let buf = frame.buffer_mut();
 
     // 1 name line per harness, plus 1 more when a usage summary is known
     // for it (omitted entirely when unknown, per the picker's "fail
@@ -452,15 +428,43 @@ fn draw_create_feature_branch_mode(
         + if has_chrome_row { 1 } else { 0 } // [12] chrome checkbox
         + if has_rc_row { 1 } else { 0 } // [14] remote_control checkbox
         + 1 // [16] steering coach checkbox
-        + 1 // [17] spacer before focused help
-        + 1; // [19] hints
+        + 1 // [17] session name
+        + 1 // [18] spacer before focused help
+        + 2; // [20] hints
     let min_agent_block_height = 1 + allowed_agents.len() as u16;
-    let agent_block_height = wanted_agent_block_height.min(
+    // Not even the squeezed form plus its hints fits (80x24 with Claude): lay
+    // it out at full height off-screen and show a window that follows focus,
+    // rather than clipping the Mode list.
+    let compact = inner.height < other_sections_height + min_agent_block_height;
+    let agent_block_height = if compact {
+        wanted_agent_block_height
+    } else {
+        wanted_agent_block_height.min(
+            inner
+                .height
+                .saturating_sub(other_sections_height)
+                .max(min_agent_block_height),
+        )
+    };
+    // The focused-option help scrolls with the rest of the compact form, so
+    // its wrapped height is part of the off-screen layout.
+    let help_extra = if compact {
+        focused_help_lines(state, theme).map_or(0, |lines| {
+            (focused_help_paragraph(lines, theme).line_count(inner.width) as u16).max(3)
+        })
+    } else {
+        0
+    };
+    let form_height = other_sections_height - 2 + agent_block_height + help_extra;
+    let mut scratch = ratatui::buffer::Buffer::empty(Rect::new(0, 0, inner.width, form_height));
+    let layout_area = if compact {
+        // The two trailing rows are the hints chunk; they are drawn for real.
+        Rect::new(0, 0, inner.width, form_height + 2)
+    } else {
         inner
-            .height
-            .saturating_sub(other_sections_height)
-            .max(min_agent_block_height),
-    );
+    };
+    let frame_buf = buf;
+    let buf: &mut ratatui::buffer::Buffer = if compact { &mut scratch } else { frame_buf };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -482,11 +486,12 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(if has_rc_row { 1 } else { 0 }),     // [14] remote_control
             Constraint::Length(0),                                  // [15] spacer
             Constraint::Length(1),                                  // [16] steering coach checkbox
-            Constraint::Length(1), // [17] spacer before focused help
-            Constraint::Min(0),    // [18] focused option help
-            Constraint::Length(1), // [19] hints
+            Constraint::Length(1),                                  // [17] session name
+            Constraint::Length(1), // [18] spacer before focused help
+            Constraint::Min(0),    // [19] focused option help
+            Constraint::Length(2), // [20] hints
         ])
-        .split(inner);
+        .split(layout_area);
 
     let branch_active = state.step == CreateFeatureStep::Branch;
     let branch_has_error = state.branch_error.is_some();
@@ -513,8 +518,13 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text.to_color())
     };
 
+    let branch_label = if branch_active {
+        form_label("Name: ", true, theme)
+    } else {
+        Span::styled(" Name: ", branch_label_style)
+    };
     let mut branch_lines = vec![Line::from(vec![
-        Span::styled(" Name: ", branch_label_style),
+        branch_label,
         Span::styled(&state.branch, branch_value_style),
         cursor,
     ])];
@@ -524,8 +534,27 @@ fn draw_create_feature_branch_mode(
             Style::default().fg(theme.danger.to_color()),
         )));
     }
+    // The first feature's defaults differ from later ones (name = the repo's
+    // branch, no worktree); say why while that default is still in effect.
+    // The Name row is three lines tall: a validation error takes the
+    // spare line, so the note waits until the name is valid.
+    if state.first_feature
+        && !state.use_worktree
+        && state.git_available
+        && state.branch_error.is_none()
+    {
+        let muted = Style::default().fg(theme.text_muted.to_color());
+        branch_lines.push(Line::from(Span::styled(
+            " First feature: works in the repo folder.",
+            muted,
+        )));
+        branch_lines.push(Line::from(Span::styled(
+            " Pick Worktree Yes for a separate copy.",
+            muted,
+        )));
+    }
     let branch_field = Paragraph::new(branch_lines);
-    frame.render_widget(branch_field, chunks[0]);
+    put(buf, branch_field, chunks[0]);
 
     let wt_active = state.step == CreateFeatureStep::Worktree;
     let wt_label_style = if wt_active {
@@ -556,16 +585,30 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
 
+    let yes_text = if state.git_available {
+        format!("   {} Yes", yes_marker)
+    } else {
+        "     Yes (unavailable: this folder is not a git repository; run git init)".to_string()
+    };
+    let yes_style = if state.git_available {
+        yes_style
+    } else {
+        Style::default().fg(theme.warning.to_color())
+    };
     let wt_lines = vec![
-        Line::from(Span::styled(" Worktree:", wt_label_style)),
-        Line::from(Span::styled(format!("   {} Yes", yes_marker), yes_style)),
+        Line::from(if wt_active {
+            form_label("Worktree:", true, theme)
+        } else {
+            Span::styled(" Worktree:", wt_label_style)
+        }),
+        Line::from(Span::styled(yes_text, yes_style)),
         Line::from(Span::styled(
             format!("   {} No (use repo dir)", no_marker),
             no_style,
         )),
     ];
     let wt_widget = Paragraph::new(wt_lines);
-    frame.render_widget(wt_widget, chunks[2]);
+    put(buf, wt_widget, chunks[2]);
 
     let agent_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 0;
     let agent_label_style = if agent_active {
@@ -574,7 +617,11 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
 
-    let mut agent_lines = vec![Line::from(Span::styled(" Harness:", agent_label_style))];
+    let mut agent_lines = vec![Line::from(if agent_active {
+        form_label("Harness:", true, theme)
+    } else {
+        Span::styled(" Harness:", agent_label_style)
+    })];
 
     for (i, agent) in allowed_agents.iter().enumerate() {
         let is_selected = i == state.agent_index;
@@ -601,7 +648,7 @@ fn draw_create_feature_branch_mode(
     }
 
     let agent_widget = Paragraph::new(agent_lines);
-    frame.render_widget(agent_widget, chunks[4]);
+    put(buf, agent_widget, chunks[4]);
 
     let mode_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 1;
     let mode_label_style = if mode_active {
@@ -610,7 +657,11 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
 
-    let mut mode_lines = vec![Line::from(Span::styled(" Mode:", mode_label_style))];
+    let mut mode_lines = vec![Line::from(if mode_active {
+        form_label("Mode:", true, theme)
+    } else {
+        Span::styled(" Mode:", mode_label_style)
+    })];
 
     for (i, m) in VibeMode::ALL.iter().enumerate() {
         let is_selected = i == state.mode_index;
@@ -629,17 +680,22 @@ fn draw_create_feature_branch_mode(
         } else {
             Style::default().fg(theme.text_muted.to_color())
         };
+        let prefix = format!("   {} {:<10}", marker, m.display_name());
+        // Whole description if it fits, the short form if not, never a
+        // sentence cut mid-word at the dialog edge.
+        let room = (chunks[6].width as usize).saturating_sub(prefix.chars().count());
+        let desc = [m.description(), m.short_description()]
+            .into_iter()
+            .find(|d| d.chars().count() <= room)
+            .unwrap_or("");
         mode_lines.push(Line::from(vec![
-            Span::styled(
-                format!("   {} {:<10}", marker, m.display_name()),
-                name_style,
-            ),
-            Span::styled(m.description(), desc_style),
+            Span::styled(prefix, name_style),
+            Span::styled(desc, desc_style),
         ]));
     }
 
     let mode_widget = Paragraph::new(mode_lines);
-    frame.render_widget(mode_widget, chunks[6]);
+    put(buf, mode_widget, chunks[6]);
 
     // Review checkbox (chunks[8])
     let review_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 2;
@@ -650,14 +706,7 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
     let review_lines = vec![Line::from(vec![
-        Span::styled(
-            " Review: ",
-            if review_active {
-                Style::default().fg(theme.primary.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
+        form_label("Review: ", review_active, theme),
         Span::styled(format!("{} Final review log", review_check), review_style),
         Span::styled(
             " HIGH TOKEN USAGE",
@@ -667,7 +716,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let review_widget = Paragraph::new(review_lines);
-    frame.render_widget(review_widget, chunks[8]);
+    put(buf, review_widget, chunks[8]);
 
     // Plan checkbox (chunks[10]): a 3-state cycle (None / Quick Plan / Full
     // Plan) on one field, mirroring how the mode picker above lists its
@@ -684,18 +733,11 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
     let plan_lines = vec![Line::from(vec![
-        Span::styled(
-            " Plan: ",
-            if plan_active {
-                Style::default().fg(theme.primary.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
+        form_label("Plan: ", plan_active, theme),
         Span::styled(format!("{plan_check} {plan_label}"), plan_style),
     ])];
     let plan_widget = Paragraph::new(plan_lines);
-    frame.render_widget(plan_widget, chunks[10]);
+    put(buf, plan_widget, chunks[10]);
 
     // Chrome checkbox (chunks[12])
     let chrome_active = state.step == CreateFeatureStep::Mode
@@ -720,14 +762,18 @@ fn draw_create_feature_branch_mode(
 
     if state.agent == AgentKind::Claude {
         let chrome_lines = vec![Line::from(vec![
-            Span::styled(" Chrome: ", chrome_label_style),
+            if chrome_active {
+                form_label("Chrome: ", true, theme)
+            } else {
+                Span::styled(" Chrome: ", chrome_label_style)
+            },
             Span::styled(
                 format!("{} Enable browser automation", chrome_check),
                 chrome_style,
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[12]);
+        put(buf, chrome_widget, chunks[12]);
 
         // Remote Control checkbox (chunks[14]) — Claude only.
         // Requires claude.ai OAuth; unavailable for z.ai / third-party
@@ -759,12 +805,17 @@ fn draw_create_feature_branch_mode(
                 .unwrap_or("Unavailable");
             format!("{} {}", rc_check, reason)
         };
+        let rc_focused = state.step == CreateFeatureStep::Mode && state.mode_focus == 5;
         let rc_lines = vec![Line::from(vec![
-            Span::styled(" Remote Control: ", rc_label_style),
+            if rc_focused {
+                form_label("Remote Control: ", true, theme)
+            } else {
+                Span::styled(" Remote Control: ", rc_label_style)
+            },
             Span::styled(rc_value, rc_value_style),
         ])];
         let rc_widget = Paragraph::new(rc_lines);
-        frame.render_widget(rc_widget, chunks[14]);
+        put(buf, rc_widget, chunks[14]);
     }
 
     // Steering coach — focus 6 for Claude, 4 for others.
@@ -777,14 +828,7 @@ fn draw_create_feature_branch_mode(
         state.step == CreateFeatureStep::Mode && state.mode_focus == steering_focus;
     let steering_check = if state.steering_enabled { "[x]" } else { "[ ]" };
     let steering_lines = vec![Line::from(vec![
-        Span::styled(
-            " Steering: ",
-            if steering_active {
-                Style::default().fg(theme.primary.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
+        form_label("Steering: ", steering_active, theme),
         Span::styled(
             format!("{} Prompt coach (experimental)", steering_check),
             if steering_active {
@@ -795,23 +839,103 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[16]);
+    put(buf, steering_widget, chunks[16]);
 
-    if state.step == CreateFeatureStep::Mode
-        && let Some(description) = state.focused_mode_description()
-    {
-        let help_area = if chunks[18].height > 3 {
+    // Session name (chunks[17]): the agent session's label, defaulting to
+    // "<Harness> 1". It used to be a separate prompt after the form.
+    let session_active = state.step == CreateFeatureStep::SessionName;
+    let mut session_spans = vec![
+        form_label("Session: ", session_active, theme),
+        Span::styled(
+            state.session_name.clone(),
+            if session_active {
+                Style::default().fg(theme.text.to_color())
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            },
+        ),
+    ];
+    if session_active {
+        session_spans.push(Span::styled(
+            "\u{2588}",
+            Style::default().fg(theme.primary.to_color()),
+        ));
+    }
+    put(buf, Paragraph::new(Line::from(session_spans)), chunks[17]);
+
+    if let Some(help_lines) = focused_help_lines(state, theme) {
+        let help = focused_help_paragraph(help_lines, theme);
+        // As tall as the wrapped text (at least three rows), never taller
+        // than the space left.
+        let wanted = (help.line_count(chunks[19].width) as u16).max(3);
+        let help_area = if chunks[19].height > wanted {
             Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0)])
-                .split(chunks[18])[0]
+                .constraints([Constraint::Length(wanted), Constraint::Min(0)])
+                .split(chunks[19])[0]
         } else {
-            chunks[18]
+            chunks[19]
         };
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled("  Details  ", Style::default().fg(theme.primary.to_color())),
-            Span::styled(description, Style::default().fg(theme.text.to_color())),
-        ]))
+        put(buf, help, help_area);
+    }
+
+    if compact {
+        let hints_area = Rect::new(
+            inner.x,
+            (inner.y + inner.height).saturating_sub(2),
+            inner.width,
+            inner.height.min(2),
+        );
+        let viewport = inner.height.saturating_sub(2);
+        // The chunk holding the focused field, to keep it in the window.
+        let focus_chunk = match state.step {
+            CreateFeatureStep::Branch => 0,
+            CreateFeatureStep::Worktree => 2,
+            CreateFeatureStep::SessionName => 17,
+            _ => match (state.mode_focus, state.agent == AgentKind::Claude) {
+                (0, _) => 4,
+                (1, _) => 6,
+                (2, _) => 8,
+                (3, _) => 10,
+                (4, true) => 12,
+                (5, true) => 14,
+                _ => 16,
+            },
+        };
+        let focus_bottom = chunks[focus_chunk].bottom();
+        let offset = focus_bottom
+            .saturating_sub(viewport)
+            .min(form_height.saturating_sub(viewport));
+        for row in 0..viewport.min(form_height) {
+            for col in 0..inner.width {
+                if let Some(cell) = scratch.cell((col, row + offset))
+                    && let Some(dst) = frame_buf_cell(frame, inner.x + col, inner.y + row)
+                {
+                    *dst = cell.clone();
+                }
+            }
+        }
+        // Drawn on the right border, so it never covers form text.
+        let more = |frame: &mut Frame, y: u16, symbol: &str| {
+            if let Some(cell) = frame_buf_cell(frame, inner.x + inner.width, y) {
+                cell.set_symbol(symbol)
+                    .set_style(Style::default().fg(theme.warning.to_color()));
+            }
+        };
+        if offset > 0 {
+            more(frame, inner.y, "\u{25b2}");
+        }
+        if viewport > 0 && offset + viewport < form_height {
+            more(frame, inner.y + viewport - 1, "\u{25bc}");
+        }
+        frame.render_widget(form_hints(state, theme, inner.width), hints_area);
+    } else {
+        put(buf, form_hints(state, theme, inner.width), chunks[20]);
+    }
+}
+
+fn focused_help_paragraph(lines: Vec<Line<'static>>, theme: &Theme) -> Paragraph<'static> {
+    Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::LEFT)
@@ -819,43 +943,132 @@ fn draw_create_feature_branch_mode(
                 .style(Style::default().bg(theme.effective_selection_bg())),
         )
         .style(Style::default().bg(theme.effective_selection_bg()))
-        .wrap(Wrap { trim: true });
-        frame.render_widget(help, help_area);
-    }
+        .wrap(Wrap { trim: true })
+}
 
-    let hints = if state.step == CreateFeatureStep::Mode {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(theme.warning.to_color()),
+fn frame_buf_cell<'a>(
+    frame: &'a mut Frame<'_>,
+    x: u16,
+    y: u16,
+) -> Option<&'a mut ratatui::buffer::Cell> {
+    frame.buffer_mut().cell_mut((x, y))
+}
+
+/// Render `widget` into `buf`; the feature form draws through this so it can
+/// target either the frame or an off-screen scratch buffer.
+fn put<W: ratatui::widgets::Widget>(buf: &mut ratatui::buffer::Buffer, widget: W, area: Rect) {
+    widget.render(area, buf);
+}
+
+/// The explanation box under the form for the focused row. On the Mode row
+/// it spells out, one plain line per mode, what the agent may do without
+/// asking — the list above only has room for a short phrase.
+fn focused_help_lines(state: &CreateFeatureState, theme: &Theme) -> Option<Vec<Line<'static>>> {
+    let label = || Span::styled("  Details  ", Style::default().fg(theme.primary.to_color()));
+    let text = |t: &'static str| Span::styled(t, Style::default().fg(theme.text.to_color()));
+    match state.step {
+        CreateFeatureStep::Mode if state.mode_focus == 1 => Some(
+            VibeMode::ALL
+                .iter()
+                .map(|mode| {
+                    let mut name = Style::default().fg(theme.primary.to_color());
+                    if *mode == state.mode {
+                        name = name.add_modifier(Modifier::BOLD);
+                    }
+                    Line::from(vec![
+                        Span::styled(format!("  {:<10} ", mode.display_name()), name),
+                        text(mode.permission_summary()),
+                    ])
+                })
+                .collect(),
+        ),
+        CreateFeatureStep::Mode => state
+            .focused_mode_description()
+            .map(|description| vec![Line::from(vec![label(), text(description)])]),
+        CreateFeatureStep::SessionName => Some(vec![Line::from(vec![
+            label(),
+            text(
+                "The name of this feature's first agent session. Enter creates the feature and opens it.",
             ),
-            Span::raw(" select  "),
-            Span::styled("h/l", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" prev/next field  "),
-            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" confirm"),
-        ]))
-    } else if state.step == CreateFeatureStep::Worktree {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(theme.warning.to_color()),
-            ),
-            Span::raw(" toggle  "),
-            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" next  "),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" back"),
-        ]))
-    } else {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" next  "),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" cancel"),
-        ]))
+        ])]),
+        _ => None,
+    }
+}
+
+/// The form's footer: one line of keys that work on every row, and one for
+/// the focused row. "Enter" is labelled for what it does on that row.
+/// Narrower than this, the common line uses its short form so `Ctrl+S` and
+/// `Esc` are not cut off (80-column terminals).
+const FORM_HINTS_FULL_WIDTH: u16 = 64;
+
+fn form_hints(state: &CreateFeatureState, theme: &Theme, width: u16) -> Paragraph<'static> {
+    let key =
+        |text: &'static str| Span::styled(text, Style::default().fg(theme.warning.to_color()));
+    let on_last_row = state.step == CreateFeatureStep::SessionName;
+    let cancels = state.step == CreateFeatureStep::Branch && state.worktrees.is_empty();
+    let full = width >= FORM_HINTS_FULL_WIDTH;
+    // Narrow: Tab moves to the second line so the first keeps create/back.
+    let mut common = Vec::new();
+    if full {
+        common.push(key(" Tab/Shift+Tab"));
+        common.push(Span::raw(" field  "));
+    }
+    common.extend([
+        key(if full { "Enter" } else { " Enter" }),
+        Span::raw(match (on_last_row, full) {
+            (true, _) => " create  ",
+            (false, true) => " next field  ",
+            (false, false) => " next  ",
+        }),
+        key("Ctrl+S"),
+        Span::raw(" create  "),
+        key("Esc"),
+        Span::raw(if cancels { " cancel" } else { " back" }),
+    ]);
+
+    let focused: Vec<Span<'static>> = match state.step {
+        CreateFeatureStep::Branch | CreateFeatureStep::SessionName => vec![
+            Span::raw(" Type to edit  "),
+            key("Ctrl+U"),
+            Span::raw(" clear"),
+        ],
+        CreateFeatureStep::Worktree => vec![
+            key(" Space"),
+            Span::raw(" or "),
+            key("j/k"),
+            Span::raw(" toggle Yes/No"),
+        ],
+        CreateFeatureStep::Mode if state.mode_focus <= 1 => vec![
+            key(" j/k"),
+            Span::raw(" or "),
+            key("\u{2191}/\u{2193}"),
+            Span::raw(if state.mode_focus == 0 {
+                " choose harness"
+            } else {
+                " choose mode"
+            }),
+        ],
+        CreateFeatureStep::Mode if state.mode_focus == 3 => vec![
+            key(" Space"),
+            Span::raw(" or "),
+            key("j/k"),
+            Span::raw(" cycle None / Quick / Full"),
+        ],
+        CreateFeatureStep::Mode => vec![
+            key(" Space"),
+            Span::raw(" or "),
+            key("j/k"),
+            Span::raw(" toggle [x]"),
+        ],
+        _ => Vec::new(),
     };
-    frame.render_widget(hints, chunks[19]);
+    let mut second = Vec::new();
+    if !full {
+        second.push(key(" Tab"));
+        second.push(Span::raw(" field "));
+    }
+    second.extend(focused);
+    Paragraph::new(vec![Line::from(common), Line::from(second)])
 }
 
 fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
@@ -1304,6 +1517,115 @@ pub fn draw_steering_prompt_dialog(
         Span::raw(" close"),
     ]));
     frame.render_widget(hints, chunks[6]);
+}
+
+fn confirm_prompt_line(theme: &Theme) -> Line<'static> {
+    let key = |k: &'static str| {
+        Span::styled(
+            k,
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    Line::from(vec![
+        Span::raw(" Press "),
+        key("y"),
+        Span::raw(" to confirm, "),
+        key("n"),
+        Span::raw(" or "),
+        key("Esc"),
+        Span::raw(" to cancel"),
+    ])
+}
+
+fn draw_small_confirm(
+    frame: &mut Frame,
+    title: &'static str,
+    lines: Vec<Line<'static>>,
+    theme: &Theme,
+) {
+    let width = frame.area().width.min(76);
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let height = text.line_count(width.saturating_sub(2)).saturating_add(2);
+    let area = crate::ui::dialog_rect(frame.area(), width, height.min(u16::MAX as usize) as u16);
+    crate::ui::draw_modal_overlay(frame, area, theme);
+    let text = text.block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.danger.to_color())),
+    );
+    frame.render_widget(text, area);
+}
+
+pub fn draw_confirm_quit(frame: &mut Frame, theme: &Theme) {
+    draw_small_confirm(
+        frame,
+        " Confirm Quit ",
+        vec![
+            Line::from(""),
+            Line::from(" Quit AMF?"),
+            Line::from(""),
+            confirm_prompt_line(theme),
+        ],
+        theme,
+    );
+}
+
+pub fn draw_confirm_remove_session(
+    frame: &mut Frame,
+    state: &crate::app::RemoveSessionConfirm,
+    theme: &Theme,
+) {
+    let (detail, color) = if state.agent_running {
+        (
+            " An agent is running in this session; removing it will stop the agent.",
+            theme.warning.to_color(),
+        )
+    } else if state.window_live {
+        (
+            " This session is running; removing it will stop its process.",
+            theme.warning.to_color(),
+        )
+    } else {
+        (
+            " This session is not running; its record will be removed.",
+            theme.text_muted.to_color(),
+        )
+    };
+    let closes_line = if state.closes_tmux_session {
+        Line::from(Span::styled(
+            " It is the last session, so the feature's tmux session will be closed.",
+            Style::default().fg(theme.warning.to_color()),
+        ))
+    } else {
+        Line::from("")
+    };
+    draw_small_confirm(
+        frame,
+        " Confirm Remove Session ",
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::raw(" Remove session "),
+                Span::styled(
+                    state.label.clone(),
+                    Style::default()
+                        .fg(theme.danger.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("?"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(detail, Style::default().fg(color))),
+            closes_line,
+            Line::from(""),
+            confirm_prompt_line(theme),
+        ],
+        theme,
+    );
 }
 
 pub fn draw_delete_feature_confirm(

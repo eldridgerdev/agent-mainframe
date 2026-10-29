@@ -547,8 +547,11 @@ impl App {
             self.open_pr_submit();
             return Ok(());
         }
-        let undecided = match &self.mode {
-            AppMode::DiffViewer(state) if state.review => Self::diff_review_undecided_count(state),
+        let (undecided, amf_note) = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => (
+                Self::diff_review_undecided_count(state),
+                state.undecided_amf_note(),
+            ),
             _ => return self.finish_final_review(),
         };
         if undecided == 0 {
@@ -559,8 +562,8 @@ impl App {
             state.finish_confirm = true;
         }
         self.message = Some(format!(
-            "{undecided} file(s) have no verdict — q/y to finish anyway, u to jump to the next, \
-             Esc to keep reviewing"
+            "{undecided} file(s){amf_note} have no verdict — q/y to finish anyway, u to jump to \
+             the next, Esc to keep reviewing"
         ));
         Ok(())
     }

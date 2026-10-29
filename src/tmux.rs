@@ -2605,6 +2605,10 @@ impl TmuxOps for TmuxManager {
         TmuxManager::send_literal(session, window, text)
     }
 
+    fn capture_pane(&self, session: &str, window: &str) -> Result<String> {
+        TmuxManager::capture_pane(session, window)
+    }
+
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()> {
         TmuxManager::paste_text(session, window, text)
     }

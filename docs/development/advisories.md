@@ -125,7 +125,9 @@ Vite's development-server patch also clears the launch-editor findings
 [GHSA-r825-w8mm-5pxw](https://github.com/advisories/GHSA-r825-w8mm-5pxw) and
 [GHSA-587h-7wmj-h5pm](https://github.com/advisories/GHSA-587h-7wmj-h5pm).
 The Vitest patch updates its matching mocker/spy packages and runtime diagnostics;
-the lockfile also refreshes the compatible magic-string patch. The direct
+the lockfile also refreshes the compatible magic-string patch. Vitest 5.0.3
+pins `why-is-node-running` to 3.2.1, a dev-only major bump from 2.3.0 that
+requires Node 20.11 or newer (CI uses Node 22). The direct
 development requirements now start at the patched Vite/Vitest versions. No
 application UI or workflow behavior changes.
 

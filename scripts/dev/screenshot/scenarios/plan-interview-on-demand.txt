@@ -4,7 +4,7 @@
 # than deferring a feature launch the way the creation wizard does.
 # Shows both triggers ('P' on the dashboard, and the `plan-interview`
 # command-picker entry) and the no-pending-launch abort, whose confirm
-# offers only "leave the plan unchanged" -- there is no feature creation
+# offers only "leave interview, plan unchanged" -- there is no feature creation
 # to cancel, so 'n' is not offered and is inert.
 #
 # Requires --seed with a create-project payload and --seed-feature with
@@ -49,18 +49,18 @@ shot:interview-second-question
 
 # ---- The no-pending-launch abort ----
 
-# THE FRAME: the confirm offers only "leave the plan unchanged".
+# THE FRAME: the confirm offers only "leave interview, plan unchanged".
 # The creation-triggered interview offers "y launch without a plan /
-# n cancel feature creation" here instead.
+# c cancel feature creation" here instead.
 key:Escape
 wait:400
 shot:abort-confirm-no-launch
 
-# 'n' cancels feature creation, which this interview never started --
+# 'c' cancels feature creation, which this interview never started --
 # it must be inert rather than exiting.
-key:n
+key:c
 wait:400
-shot:abort-confirm-ignores-n
+shot:abort-confirm-ignores-c
 
 # 'y' leaves. Non-destructive: the feature keeps whatever plan it had
 # (here: none), and no [plan] badge appears.

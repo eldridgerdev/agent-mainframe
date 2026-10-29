@@ -57,9 +57,12 @@ def main():
         ]})
         metrics["five_action_batch_seconds"] = round(time.monotonic() - began, 2)
         metrics["dialog_snapshot_chars"] = len(driver.encode(batch["result"]))
-        # Keep the form's existing private workdir and confirm through all fields.
+        # The path starts blank: enter this session's private workdir, then
+        # confirm through the harness field.
         call({"op": "batch", "actions": [
-            {"op": "keys", "keys": ["Tab", "Tab", "Enter"]},
+            {"op": "keys", "keys": ["Tab"]},
+            {"op": "paste", "text": str(session)},
+            {"op": "keys", "keys": ["Tab", "Enter"]},
             {"op": "wait", "text": "New Project", "absent": True},
             {"op": "wait", "text": name},
         ]})

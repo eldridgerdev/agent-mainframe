@@ -1242,6 +1242,7 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {
+        self.poll_automation_prompts();
         // Background sidebar loads warm Opencode status/prompt data for the
         // dashboard. Drain them here too, not just when a sidebar is open, so
         // thinking sync can use cached state instead of falling back to

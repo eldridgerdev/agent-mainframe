@@ -139,3 +139,24 @@ commit. Local `npm audit --package-lock-only` changes from three vulnerable
 package entries (two moderate, one high) to zero. No advisory is ignored or
 suppressed. Full Linux/macOS tests, strict lint and frontend checks remain
 required for the published commit.
+
+## Markdown parser patch (2026-10-29)
+
+PR #766's current-main dependency audit found pulldown-cmark 0.13.1 affected by
+[RUSTSEC-2026-0414](https://github.com/RustSec/advisory-db/blob/main/crates/pulldown-cmark/RUSTSEC-2026-0414.md).
+Repeated empty-display wikilinks can cause exponential parser output when
+`ENABLE_WIKILINKS` is enabled; versions >=0.13.5 are patched.
+
+The lockfile moves only pulldown-cmark to 0.13.5, retaining the existing
+`0.13` manifest requirement. AMF's direct callers are the TUI Markdown renderer
+and screenshot-source link extraction. The renderer explicitly enables tables,
+strikethrough, task lists, footnotes and math, and link extraction uses default
+options; neither currently enables wikilinks. Upgrade the parser without an
+audit exception rather than relying on those option choices as an exemption.
+
+Local cargo-audit 0.22.2 compares both lockfiles against database commit
+`40f5be6fb12ed93fc591bf4ab23b7d793b3f2239` (1,381 advisories). The original
+lockfile has one blocking finding; the patched lockfile has zero. All 13
+existing nonfatal warnings remain visible. The second scan uses `--no-fetch`
+against the same database checkout. Full Linux/macOS tests, strict lint and
+frontend checks remain required for the published commit.

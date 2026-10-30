@@ -1153,4 +1153,74 @@ mod tests {
         assert!(snapshot.transfer(&dest).is_err());
         assert_eq!(fs::read(dest.join("old name")).unwrap(), b"head");
     }
+
+    #[test]
+    fn transfers_directory_to_file_and_non_utf8_executable() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::create_dir(root.join("directory")).unwrap();
+        fs::write(root.join("directory/child"), b"old").unwrap();
+        run(root, &["add", "directory"]);
+        run(root, &["commit", "-qm", "directory fixture"]);
+        fs::remove_file(root.join("directory/child")).unwrap();
+        fs::remove_dir(root.join("directory")).unwrap();
+        fs::write(root.join("directory"), b"replacement").unwrap();
+        let raw = PathBuf::from(OsString::from_vec(b"quote'\n\xff".to_vec()));
+        fs::write(root.join(&raw), b"executable").unwrap();
+        fs::set_permissions(root.join(&raw), fs::Permissions::from_mode(0o755)).unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        snapshot.transfer(&dest).unwrap();
+        assert_eq!(fs::read(dest.join("directory")).unwrap(), b"replacement");
+        assert_eq!(fs::read(dest.join(&raw)).unwrap(), b"executable");
+        assert_ne!(fs::metadata(dest.join(&raw)).unwrap().mode() & 0o111, 0);
+        run(&dest, &["diff", "--cached", "--quiet"]);
+    }
+
+    #[test]
+    fn changed_symlink_parent_is_never_followed_into_another_directory() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/file"), b"tracked").unwrap();
+        run(root, &["add", "sub"]);
+        run(root, &["commit", "-qm", "subdirectory fixture"]);
+        fs::write(root.join("sub/file"), b"updated").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let outside = parent.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("file"), b"outside").unwrap();
+        fs::remove_file(dest.join("sub/file")).unwrap();
+        fs::remove_dir(dest.join("sub")).unwrap();
+        symlink(&outside, dest.join("sub")).unwrap();
+        assert!(snapshot.transfer(&dest).is_err());
+        assert_eq!(fs::read(outside.join("file")).unwrap(), b"outside");
+    }
 }

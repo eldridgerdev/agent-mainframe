@@ -1103,6 +1103,19 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
+
+    /// A name with bytes plain text cannot carry. APFS rejects non-UTF-8
+    /// names outright (EILSEQ), so macOS gets a non-ASCII UTF-8 suffix.
+    fn raw_test_name(prefix: &[u8]) -> PathBuf {
+        let mut name = prefix.to_vec();
+        if cfg!(target_os = "macos") {
+            name.extend_from_slice("\u{e9}".as_bytes());
+        } else {
+            name.push(0xff);
+        }
+        PathBuf::from(OsString::from_vec(name))
+    }
+
     use super::*;
     use std::os::unix::fs::{PermissionsExt, symlink};
 
@@ -1141,7 +1154,7 @@ mod tests {
         fs::write(root.join("new name"), "working after staged rename").unwrap();
         run(root, &["rm", "-q", "deleted"]);
         fs::write(root.join("deleted"), "recreated").unwrap();
-        let raw = PathBuf::from(OsString::from_vec(b"untracked\n\xff".to_vec()));
+        let raw = raw_test_name(b"untracked\n");
         fs::write(root.join(&raw), b"bytes").unwrap();
         fs::set_permissions(root.join(&raw), fs::Permissions::from_mode(0o755)).unwrap();
         symlink("../outside-missing", root.join("link")).unwrap();
@@ -1366,7 +1379,7 @@ mod tests {
         fs::remove_file(root.join("directory/child")).unwrap();
         fs::remove_dir(root.join("directory")).unwrap();
         fs::write(root.join("directory"), b"replacement").unwrap();
-        let raw = PathBuf::from(OsString::from_vec(b"quote'\n\xff".to_vec()));
+        let raw = raw_test_name(b"quote'\n");
         fs::write(root.join(&raw), b"executable").unwrap();
         fs::set_permissions(root.join(&raw), fs::Permissions::from_mode(0o755)).unwrap();
         let snapshot = Snapshot::capture(root).unwrap();

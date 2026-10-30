@@ -41,6 +41,7 @@ impl WorktreeManager {
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
         use std::os::unix::fs::MetadataExt;
+        use std::os::unix::process::CommandExt;
         let mut parent = repo.join(".worktrees");
         let mut directory = std::fs::File::open(&repo)?;
         let components = std::iter::once(std::ffi::OsStr::new(".worktrees")).chain(
@@ -128,23 +129,33 @@ impl WorktreeManager {
             bail!("Invalid project Git directory response");
         }
         let git_dir = std::ffi::OsString::from_vec(git_dir);
-        // chdir happens before close-on-exec, anchoring Git's relative output
-        // path to the checked parent even if its pathname is replaced.
-        let anchored_parent = format!("/dev/fd/{}", directory.as_raw_fd());
-        let output = Command::new("git")
+        // fchdir in the child anchors Git's relative output path to the
+        // checked parent even if its pathname is replaced. macOS cannot
+        // chdir through /dev/fd, so the descriptor is used directly.
+        let anchor = directory.as_raw_fd();
+        let mut git_add = Command::new("git");
+        git_add
             .arg("--git-dir")
             .arg(git_dir)
             .args(["worktree", "add", "-b", branch])
             .arg("--")
             .arg(leaf)
             .arg(commit)
-            .current_dir(anchored_parent)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_COMMON_DIR")
-            .output()
-            .context("Failed to run git worktree add")?;
+            .env_remove("GIT_COMMON_DIR");
+        // SAFETY: the hook only calls async-signal-safe fchdir and the
+        // descriptor outlives the spawn (`directory` is held until after).
+        unsafe {
+            git_add.pre_exec(move || {
+                if libc::fchdir(anchor) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = git_add.output().context("Failed to run git worktree add")?;
         if !parent_matches() {
             bail!(
                 "Fork checkout parent moved during creation; inspect Git worktrees for branch {branch:?} before retrying (original parent {})",

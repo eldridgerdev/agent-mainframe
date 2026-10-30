@@ -247,6 +247,8 @@ fn ignored(root: &Path, path: &Path) -> Result<bool> {
     }
 }
 
+// libc stat field widths differ by platform; the casts are needed on macOS.
+#[allow(clippy::unnecessary_cast)]
 fn check_special_entries(
     root: &Path,
     directory: &File,
@@ -744,6 +746,8 @@ struct DestinationEntry {
     changed_nanos: i64,
 }
 
+// libc stat field widths differ by platform (macOS: i32 dev); the casts are needed there.
+#[allow(clippy::unnecessary_cast)]
 fn destination_entry(directory: &File, name: &CString) -> Result<Option<DestinationEntry>> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
     if unsafe {

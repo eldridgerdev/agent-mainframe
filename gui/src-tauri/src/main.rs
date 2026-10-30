@@ -1791,6 +1791,40 @@ async fn pr_workspace_ai_act(
 }
 
 #[tauri::command]
+async fn pr_workspace_fix_targets(
+    app: tauri::AppHandle,
+    workflow_id: String,
+) -> Result<Vec<gui_pr_triage::PrFixTargetView>, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::fix_targets(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_prepare_fix(
+    app: tauri::AppHandle,
+    request: gui_pr_workspace::FixHandoffRequest,
+) -> Result<gui_pr_triage::PrFixHandoff, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        let read = gui_pr_workspace::prepare_fix_read(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            request,
+        )?;
+        let current = gui_pr_workspace::fetch_fix_pr(&read).map_err(GuiError::from)?;
+        gui_pr_workspace::finish_fix_read(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            read,
+            current,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
 async fn pr_workspace_files(
     state: State<'_, AppState>,
     workflow_id: String,
@@ -2221,6 +2255,8 @@ fn main() {
             pr_workspace_ai_snapshot,
             pr_workspace_ai_act,
             pr_workspace_files,
+            pr_workspace_prepare_fix,
+            pr_workspace_fix_targets,
             syntax_install_status,
             syntax_install,
             syntax_languages,

@@ -20,8 +20,11 @@ are tagged.
 
 ### Fixed
 
+- **Desktop PR Workspace checks AI fix handoffs before preparing a draft.** Choose an existing agent explicitly; AMF refuses changed findings, a moved PR head or a changed destination rather than silently retargeting the handoff. Refresh agents to choose again when the selected session is unavailable. The resulting prompt is appended to the unsent composer.
+
 - **Empty saved review notes no longer trigger an AI explanation call.** Both
   interfaces now show an explicitly empty note instead of silently asking Claude.
+
 
 ## [v0.51.0] - 2026-10-27
 

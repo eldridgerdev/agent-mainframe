@@ -84,7 +84,7 @@ export interface PrReview {
 
 export type PrReplyKind = "done" | "not_needed" | "investigation";
 
-export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean }
+export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean; destination_revision: string }
 export interface PrFixHandoff { target: SessionTarget; draft_prompt: string }
 
 export interface PrTriageView {

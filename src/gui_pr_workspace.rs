@@ -4,6 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::app::{
     AppMode,
@@ -60,6 +61,8 @@ pub(crate) struct PrWorkspaceContext {
     pub(crate) parked_threads: Option<Box<AppMode>>,
     pub(crate) parked_ai: Option<Box<AppMode>>,
     pub(crate) ai_active: bool,
+    result_epoch: String,
+    checkout_identity: CheckoutIdentity,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,6 +80,7 @@ pub struct PrWorkspaceAiView {
     pub error: Option<String>,
     pub precall: Option<crate::gui_plans::PrecallView>,
     pub can_cancel: bool,
+    pub result_revision: Option<String>,
 }
 
 pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
@@ -94,6 +98,12 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
             && existing_target.feature_id == target.feature_id
             && context_for_feature(gui.app_for_workflow(), &target)? == existing_workdir
         {
+            let context = gui.pr_workspace_context.as_ref().unwrap();
+            if checkout_identity(&context.workdir).as_ref() != Some(&context.checkout_identity) {
+                return Err(GuiError::conflict(
+                    "Feature checkout changed; close and reopen PR Workspace",
+                ));
+            }
             // React StrictMode replays mount effects in development. Treat a
             // second open for the same feature as the same workspace instead
             // of leaving its first initialization orphaned.
@@ -113,6 +123,9 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
         return Err(GuiError::conflict("PR Workspace requires a Git feature"));
     }
     let workdir = app.store.projects[pi].features[fi].workdir.clone();
+    let identity = checkout_identity(&workdir).ok_or_else(|| {
+        GuiError::conflict("Feature checkout is unavailable or is not a Git checkout")
+    })?;
     let id = uuid::Uuid::new_v4().to_string();
     gui.pr_workspace_context = Some(PrWorkspaceContext {
         id: id.clone(),
@@ -122,6 +135,8 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
         parked_threads: None,
         parked_ai: None,
         ai_active: false,
+        result_epoch: uuid::Uuid::new_v4().to_string(),
+        checkout_identity: identity,
     });
     Ok(id)
 }
@@ -294,6 +309,13 @@ pub fn close(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
 
 pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView> {
     check(gui, id)?;
+    let context = gui.pr_workspace_context.as_ref().unwrap();
+    let identity = checkout_identity(&context.workdir);
+    if identity.as_ref() != Some(&context.checkout_identity) {
+        return Err(GuiError::conflict(
+            "Feature checkout changed; reopen PR Workspace",
+        ));
+    }
     let (app, workspace) = gui.app_and_pr_workspace();
     let context = workspace.as_mut().unwrap();
     // A snapshot may arrive while Threads is visible (the frontend can still
@@ -306,6 +328,10 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
     }
     app.poll_ai_pr_review_bg();
     let selected_pr = context.pr.clone();
+    let result_revision = match &app.mode {
+        AppMode::AiReview(state) => Some(result_revision(&context.result_epoch, state, &identity)),
+        _ => None,
+    };
     let (findings, summary, error) = match &app.mode {
         AppMode::AiReview(state) => (
             state.findings.clone(),
@@ -399,6 +425,7 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
         error,
         precall: pre,
         can_cancel,
+        result_revision,
     })
 }
 
@@ -484,6 +511,9 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
         let number = pr_number.ok_or_else(|| GuiError::conflict("Select a PR in Threads first"))?;
         switch_to_ai(gui, id, number)?;
     }
+    if matches!(action, AiAction::Start) {
+        gui.pr_workspace_context.as_mut().unwrap().result_epoch = uuid::Uuid::new_v4().to_string();
+    }
     let app = gui.app_for_workflow();
     match action {
         AiAction::Start => {
@@ -541,6 +571,366 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
         }
     }
     ai_snapshot(gui, id)
+}
+
+fn digest(value: &impl Serialize) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(value).expect("serializable revision"))
+    )
+}
+
+// Bind the checkout directory, Git marker and worktree gitdir to detect
+// replacement at an otherwise unchanged path.
+#[derive(Serialize, PartialEq, Eq)]
+pub(crate) struct CheckoutIdentity {
+    directory: (PathBuf, u64, u64),
+    marker: (PathBuf, u64, u64),
+    marker_contents: Option<Vec<u8>>,
+    gitdir: (PathBuf, u64, u64),
+}
+
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+// No portable device/inode pair off Unix: identity falls back to the
+// canonical paths and the `.git` pointer contents.
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+pub(crate) fn checkout_identity(path: &Path) -> Option<CheckoutIdentity> {
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let directory = std::fs::metadata(&canonical).ok()?;
+    if !directory.is_dir() {
+        return None;
+    }
+    let marker = std::fs::canonicalize(canonical.join(".git")).ok()?;
+    let meta = std::fs::metadata(&marker).ok()?;
+    let (contents, gitdir) = if meta.is_file() {
+        let bytes = std::fs::read(&marker).ok()?;
+        let pointer = std::str::from_utf8(&bytes)
+            .ok()?
+            .trim_end_matches(['\r', '\n'])
+            .strip_prefix("gitdir: ")?;
+        let target = Path::new(pointer);
+        let target = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            canonical.join(target)
+        };
+        (Some(bytes), std::fs::canonicalize(target).ok()?)
+    } else if meta.is_dir() {
+        (None, marker.clone())
+    } else {
+        return None;
+    };
+    let gitdir_meta = std::fs::metadata(&gitdir).ok()?;
+    if !gitdir_meta.is_dir() {
+        return None;
+    }
+    Some(CheckoutIdentity {
+        directory: (canonical, file_id(&directory).0, file_id(&directory).1),
+        marker: (marker, file_id(&meta).0, file_id(&meta).1),
+        marker_contents: contents,
+        gitdir: (gitdir, file_id(&gitdir_meta).0, file_id(&gitdir_meta).1),
+    })
+}
+
+pub(crate) fn destination_revision(
+    feature: &crate::project::Feature,
+    session: &crate::project::FeatureSession,
+) -> String {
+    destination_revision_with(feature, session, &checkout_identity(&feature.workdir))
+}
+
+/// As `destination_revision`, for callers that already hold the feature's
+/// checkout identity (it is filesystem-backed, so compute it once per feature).
+pub(crate) fn destination_revision_with(
+    feature: &crate::project::Feature,
+    session: &crate::project::FeatureSession,
+    identity: &Option<CheckoutIdentity>,
+) -> String {
+    digest(&(
+        &feature.id,
+        &feature.workdir,
+        identity,
+        &feature.branch,
+        &feature.tmux_session,
+        feature.status == crate::project::ProjectStatus::Stopped,
+        &session.id,
+        &session.kind,
+        &session.tmux_window,
+        &session.claude_session_id,
+        session.stopped,
+        &session.created_at,
+    ))
+}
+
+fn result_revision(
+    epoch: &str,
+    state: &crate::app::pr_review::state::AiReviewState,
+    identity: &Option<CheckoutIdentity>,
+) -> String {
+    digest(&(
+        epoch,
+        identity,
+        &state.pr,
+        &state.findings,
+        &state.summary,
+        &state.last_run,
+    ))
+}
+
+pub fn fix_targets(
+    gui: &mut GuiHandle,
+    id: &str,
+) -> GuiResult<Vec<crate::gui_pr_triage::PrFixTargetView>> {
+    gui.refresh_store()?;
+    check(gui, id)?;
+    let (app, workspace) = gui.app_and_pr_workspace();
+    let target = &workspace.as_ref().unwrap().target;
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    Ok(feature
+        .sessions
+        .iter()
+        .filter_map(|session| {
+            let harness = match session.kind {
+                crate::project::SessionKind::Claude => crate::project::AgentKind::Claude,
+                crate::project::SessionKind::Codex => crate::project::AgentKind::Codex,
+                crate::project::SessionKind::Opencode => crate::project::AgentKind::Opencode,
+                crate::project::SessionKind::Pi => crate::project::AgentKind::Pi,
+                _ => return None,
+            };
+            Some(crate::gui_pr_triage::PrFixTargetView {
+                target: crate::gui_contract::SessionTarget {
+                    project_id: target.project_id.clone(),
+                    feature_id: feature.id.clone(),
+                    session_id: session.id.clone(),
+                },
+                label: session.label.clone(),
+                harness,
+                stopped: feature.status == crate::project::ProjectStatus::Stopped
+                    || session.stopped
+                    || !app
+                        .tmux
+                        .window_exists(&feature.tmux_session, &session.tmux_window),
+                destination_revision: destination_revision(feature, session),
+            })
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FixHandoffRequest {
+    pub workflow_id: String,
+    pub result_revision: String,
+    pub finding_indices: Vec<usize>,
+    pub target: crate::gui_contract::SessionTarget,
+    pub destination_revision: String,
+}
+
+#[derive(Clone)]
+pub struct FixRead {
+    workdir: PathBuf,
+    pr: PrRef,
+    request: FixHandoffRequest,
+}
+
+pub fn prepare_fix_read(gui: &mut GuiHandle, request: FixHandoffRequest) -> GuiResult<FixRead> {
+    validate_fix(gui, &request)?;
+    let context = gui.pr_workspace_context.as_ref().unwrap();
+    Ok(FixRead {
+        workdir: context.workdir.clone(),
+        pr: context.pr.clone().unwrap(),
+        request,
+    })
+}
+
+pub fn fetch_fix_pr(read: &FixRead) -> anyhow::Result<PrRef> {
+    crate::github::GhCli::fetch_pr_by_number(&read.workdir, read.pr.number)
+}
+
+pub fn finish_fix_read(
+    gui: &mut GuiHandle,
+    read: FixRead,
+    current: PrRef,
+) -> GuiResult<crate::gui_pr_triage::PrFixHandoff> {
+    if current.number != read.pr.number
+        || current.head_sha != read.pr.head_sha
+        || current.owner != read.pr.owner
+        || current.repo != read.pr.repo
+    {
+        return Err(GuiError::conflict(
+            "The PR changed; refresh before preparing a fix",
+        ));
+    }
+    let context = gui
+        .pr_workspace_context
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("PR Workspace closed"))?;
+    let selected = context
+        .pr
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("PR selection changed"))?;
+    if context.workdir != read.workdir
+        || selected.number != read.pr.number
+        || selected.head_sha != read.pr.head_sha
+        || selected.owner != read.pr.owner
+        || selected.repo != read.pr.repo
+    {
+        return Err(GuiError::conflict(
+            "PR selection changed while checking its head",
+        ));
+    }
+    validate_fix(gui, &read.request)
+}
+
+fn validate_fix(
+    gui: &mut GuiHandle,
+    request: &FixHandoffRequest,
+) -> GuiResult<crate::gui_pr_triage::PrFixHandoff> {
+    gui.refresh_store()?;
+    check(gui, &request.workflow_id)?;
+    let (app, workspace) = gui.app_and_pr_workspace();
+    let context = workspace.as_ref().unwrap();
+    let pr = context
+        .pr
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
+    let identity = checkout_identity(&context.workdir);
+    if context_for_feature(app, &context.target)? != context.workdir
+        || identity.as_ref() != Some(&context.checkout_identity)
+    {
+        return Err(GuiError::conflict(
+            "Feature checkout changed or is unavailable; reopen PR Workspace",
+        ));
+    }
+    let state = match &app.mode {
+        AppMode::AiReview(state)
+            if context.ai_active
+                && state.pr == *pr
+                && mode_matches_pr(&app.mode, &context.workdir, pr) =>
+        {
+            state
+        }
+        _ => {
+            return Err(GuiError::conflict(
+                "The AI review changed; refresh before preparing a fix",
+            ));
+        }
+    };
+    if matches!(
+        state.last_run.as_ref().map(|run| &run.outcome),
+        Some(crate::app::ai_review::AiReviewRunOutcome::Error(_))
+    ) {
+        return Err(GuiError::conflict(
+            "The latest AI review failed; run it again before preparing a fix",
+        ));
+    }
+    if result_revision(&context.result_epoch, state, &identity) != request.result_revision {
+        return Err(GuiError::conflict(
+            "The AI findings changed; refresh before preparing a fix",
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if request.finding_indices.is_empty()
+        || request.finding_indices.iter().any(|i| !seen.insert(*i))
+    {
+        return Err(GuiError::conflict("Choose one or more distinct findings"));
+    }
+    let mut findings = Vec::new();
+    for &index in &request.finding_indices {
+        let finding = state
+            .findings
+            .get(index)
+            .filter(|f| !f.skipped && !f.published)
+            .ok_or_else(|| GuiError::conflict("A finding is no longer available"))?;
+        findings.push(finding);
+    }
+    if request.target.project_id != context.target.project_id
+        || request.target.feature_id != context.target.feature_id
+    {
+        return Err(GuiError::conflict("Choose a session in this feature"));
+    }
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&request.target.project_id), &request.target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    let session = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == request.target.session_id && s.kind.is_agent_harness())
+        .ok_or_else(|| GuiError::conflict("The selected agent session is unavailable"))?;
+    if checkout_identity(&feature.workdir).is_none()
+        || app
+            .store
+            .projects
+            .iter()
+            .flat_map(|p| &p.features)
+            .filter(|f| f.tmux_session == feature.tmux_session)
+            .count()
+            != 1
+        || feature.status == crate::project::ProjectStatus::Stopped
+        || session.stopped
+        || destination_revision(feature, session) != request.destination_revision
+        || !app
+            .tmux
+            .window_exists(&feature.tmux_session, &session.tmux_window)
+    {
+        return Err(GuiError::conflict(
+            "The selected agent session changed or stopped; choose it again",
+        ));
+    }
+    let label = if findings.len() == 1 {
+        "AI review finding".to_string()
+    } else {
+        format!("{} AI review findings", findings.len())
+    };
+    let details = findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let location = f
+                .path
+                .as_ref()
+                .map(|p| {
+                    format!(
+                        "{}{}",
+                        p,
+                        f.line.map(|l| format!(":{l}")).unwrap_or_default()
+                    )
+                })
+                .unwrap_or_else(|| "General finding".into());
+            format!(
+                "### {}. {}\n{}{}",
+                i + 1,
+                location,
+                f.body,
+                f.diff_hunk
+                    .as_ref()
+                    .map(|h| format!("\n\nRelated diff:\n\n```diff\n{h}\n```"))
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(crate::gui_pr_triage::PrFixHandoff {
+        target: request.target.clone(),
+        draft_prompt: format!(
+            "Please address the following {label} from PR #{}. Review the relevant code and make the smallest correct changes. Do not post anything to GitHub; leave a concise summary of changes and any remaining concerns.\n\n{details}",
+            pr.number
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -657,6 +1047,212 @@ mod tests {
         // The normal mode is standing in for the AI pane or its completion
         // transition; the selected PR must remain usable in this state.
         assert!(select_pr(&mut gui, &id, 42).is_ok());
+    }
+
+    fn fix_fixture() -> (tempfile::TempDir, GuiHandle, FixHandoffRequest) {
+        let (dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        let mut worktree = crate::traits::MockWorktreeOps::new();
+        worktree
+            .expect_repo_root()
+            .returning(crate::worktree::WorktreeManager::repo_root);
+        let app = gui.app_for_workflow();
+        app.tmux = Box::new(tmux);
+        app.worktree = Box::new(worktree);
+        app.config.global_review_memory_path =
+            Some(dir.path().join("absent-memory.md").display().to_string());
+        let feature = &mut app.store.projects[0].features[0];
+        feature.status = crate::project::ProjectStatus::Idle;
+        feature.add_session(crate::project::SessionKind::Claude);
+        let session = feature.sessions.first().unwrap();
+        let target_session = crate::gui_contract::SessionTarget {
+            project_id: target.project_id.clone(),
+            feature_id: target.feature_id.clone(),
+            session_id: session.id.clone(),
+        };
+        let destination_revision = super::destination_revision(feature, session);
+        let id = begin(&mut gui, target).unwrap();
+        let pr = test_pr();
+        let workdir = gui.pr_workspace_context.as_ref().unwrap().workdir.clone();
+        gui.app_for_workflow()
+            .open_ai_review_for_pr(workdir, pr.clone());
+        let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("AI mode")
+        };
+        state.findings = vec![
+            AiReviewFinding {
+                path: Some("code.txt".into()),
+                line: Some(8),
+                side: None,
+                body: "Handle empty input".into(),
+                diff_hunk: Some("@@ fixture @@".into()),
+                skipped: false,
+                published: false,
+            },
+            AiReviewFinding {
+                path: None,
+                line: None,
+                side: None,
+                body: "Check another case".into(),
+                diff_hunk: None,
+                skipped: false,
+                published: false,
+            },
+        ];
+        let context = gui.pr_workspace_context.as_mut().unwrap();
+        context.pr = Some(pr);
+        context.ai_active = true;
+        let result_revision = ai_snapshot(&mut gui, &id).unwrap().result_revision.unwrap();
+        (
+            dir,
+            gui,
+            FixHandoffRequest {
+                workflow_id: id,
+                result_revision,
+                finding_indices: vec![0, 1],
+                target: target_session,
+                destination_revision,
+            },
+        )
+    }
+
+    #[test]
+    fn fix_handoff_binds_findings_and_exact_remote_head_without_side_effects() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let read = prepare_fix_read(&mut gui, request.clone()).unwrap();
+        let result = finish_fix_read(&mut gui, read.clone(), test_pr()).unwrap();
+        assert!(result.draft_prompt.contains("2 AI review findings"));
+        assert!(result.draft_prompt.contains("Handle empty input"));
+        assert!(result.draft_prompt.contains("Check another case"));
+        let mut moved = test_pr();
+        moved.head_sha = "new-head".into();
+        assert!(finish_fix_read(&mut gui, read, moved).is_err());
+        let mut single = request;
+        single.finding_indices = vec![1];
+        assert!(
+            prepare_fix_read(&mut gui, single)
+                .unwrap()
+                .request
+                .finding_indices
+                .len()
+                == 1
+        );
+    }
+
+    #[test]
+    fn fix_handoff_refuses_changed_results_destinations_and_delayed_reads() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let read = prepare_fix_read(&mut gui, request.clone()).unwrap();
+        let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("AI mode")
+        };
+        state.findings[0].body = "changed".into();
+        assert!(finish_fix_read(&mut gui, read, test_pr()).is_err());
+        state_restore(&mut gui);
+        let mut fresh = request.clone();
+        fresh.result_revision = ai_snapshot(&mut gui, &request.workflow_id)
+            .unwrap()
+            .result_revision
+            .unwrap();
+        let read = prepare_fix_read(&mut gui, fresh.clone()).unwrap();
+        gui.app_for_workflow().store.projects[0].features[0].sessions[0].claude_session_id =
+            Some("new conversation".into());
+        assert!(finish_fix_read(&mut gui, read, test_pr()).is_err());
+        assert!(prepare_fix_read(&mut gui, fresh.clone()).is_err());
+        let feature = &mut gui.app_for_workflow().store.projects[0].features[0];
+        feature.sessions[0].claude_session_id = None;
+        fresh.destination_revision = destination_revision(feature, &feature.sessions[0]);
+        let read = prepare_fix_read(&mut gui, fresh.clone()).unwrap();
+        gui.pr_workspace_context.as_mut().unwrap().result_epoch = uuid::Uuid::new_v4().to_string();
+        assert!(finish_fix_read(&mut gui, read, test_pr()).is_err());
+        fresh.result_revision = ai_snapshot(&mut gui, &fresh.workflow_id)
+            .unwrap()
+            .result_revision
+            .unwrap();
+        for indices in [vec![], vec![0, 0], vec![99]] {
+            let mut bad = fresh.clone();
+            bad.finding_indices = indices;
+            assert!(prepare_fix_read(&mut gui, bad).is_err());
+        }
+        let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("AI mode")
+        };
+        state.findings[0].skipped = true;
+        fresh.result_revision = ai_snapshot(&mut gui, &fresh.workflow_id)
+            .unwrap()
+            .result_revision
+            .unwrap();
+        assert!(prepare_fix_read(&mut gui, fresh).is_err());
+    }
+
+    #[test]
+    fn fix_handoff_rejects_destination_identity_and_finding_state_changes() {
+        for change in 0..7 {
+            let (_dir, mut gui, request) = fix_fixture();
+            let read = prepare_fix_read(&mut gui, request.clone()).unwrap();
+            let feature = &mut gui.app_for_workflow().store.projects[0].features[0];
+            match change {
+                0 => feature.workdir.push("other"),
+                1 => feature.tmux_session.push_str("-other"),
+                2 => feature.sessions[0].tmux_window.push_str("-other"),
+                3 => feature.sessions[0].kind = crate::project::SessionKind::Codex,
+                4 => feature.sessions[0].stopped = true,
+                5 => feature.sessions.clear(),
+                6 => feature.status = crate::project::ProjectStatus::Stopped,
+                _ => unreachable!(),
+            }
+            assert!(
+                finish_fix_read(&mut gui, read, test_pr()).is_err(),
+                "change {change}"
+            );
+            assert!(
+                prepare_fix_read(&mut gui, request.clone()).is_err(),
+                "change {change}"
+            );
+        }
+        for published in [false, true] {
+            let (_dir, mut gui, mut request) = fix_fixture();
+            let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode else {
+                panic!("AI mode")
+            };
+            if published {
+                state.findings[0].published = true;
+            } else {
+                state.findings[0].skipped = true;
+            }
+            request.result_revision = ai_snapshot(&mut gui, &request.workflow_id)
+                .unwrap()
+                .result_revision
+                .unwrap();
+            assert!(prepare_fix_read(&mut gui, request).is_err());
+        }
+    }
+
+    #[test]
+    fn fix_handoff_rejects_replaced_checkout_at_same_path() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let read = prepare_fix_read(&mut gui, request).unwrap();
+        let checkout = gui.pr_workspace_context.as_ref().unwrap().workdir.clone();
+        std::fs::rename(&checkout, checkout.with_extension("old")).unwrap();
+        std::fs::create_dir(&checkout).unwrap();
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(finish_fix_read(&mut gui, read.clone(), test_pr()).is_err());
+        assert!(ai_snapshot(&mut gui, &read.request.workflow_id).is_err());
+    }
+
+    fn state_restore(gui: &mut GuiHandle) {
+        let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("AI mode")
+        };
+        state.findings[0].body = "Handle empty input".into();
     }
 
     #[test]

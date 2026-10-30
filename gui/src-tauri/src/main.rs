@@ -1648,12 +1648,18 @@ fn companion_integration_status(target: FeatureTarget) -> CompanionOperationStat
         .lock()
         .expect("operation mutex poisoned")
         .contains(&key);
-    let result = COMPANION_RESULTS
+    let mut results = COMPANION_RESULTS
         .get_or_init(Default::default)
         .lock()
-        .expect("result mutex poisoned")
-        .get(&key)
-        .cloned();
+        .expect("result mutex poisoned");
+    // A finished outcome is reported once, so reopening the dialog later does
+    // not present an old result as current.
+    let result = if running {
+        results.get(&key).cloned()
+    } else {
+        results.remove(&key)
+    };
+    drop(results);
     CompanionOperationStatus {
         running,
         result: result.as_ref().and_then(|r| r.as_ref().ok().cloned()),

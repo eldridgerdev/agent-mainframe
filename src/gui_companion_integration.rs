@@ -92,6 +92,7 @@ pub struct IntegrationPlan {
     pub remote_tip: Option<String>,
     pub remote_display: Option<String>,
     pub ignored_collisions: Vec<String>,
+    pub hidden_tracked: Vec<String>,
     #[serde(skip_serializing)]
     remote: Option<String>,
     companion_identity: CheckoutIdentity,
@@ -191,7 +192,7 @@ fn git(path: &Path, args: &[&str]) -> Result<String> {
             String::from_utf8_lossy(&err).trim()
         );
     }
-    Ok(String::from_utf8(out).context("Git output is not UTF-8")?)
+    String::from_utf8(out).context("Git output is not UTF-8")
 }
 fn value(path: &Path, args: &[&str]) -> Result<String> {
     Ok(git(path, args)?.trim().to_owned())
@@ -255,9 +256,9 @@ fn remote_tip(path: &Path, remote: &str, reference: &str) -> Result<Option<Strin
     Ok(Some(parts[0].into()))
 }
 
-// Check every path touched by every pinned commit, not just the net diff:
-// Git may overwrite ignored files when applying an intermediate commit.
-fn ignored_collisions(source: &Path, companion: &Path, commits: &[String]) -> Result<Vec<String>> {
+// Every path touched by every pinned commit, not just the net diff: Git may
+// overwrite ignored or hidden files when applying an intermediate commit.
+fn incoming_paths(companion: &Path, commits: &[String]) -> Result<Vec<String>> {
     let mut paths = std::collections::BTreeSet::new();
     for commit in commits {
         let changed = git(
@@ -282,8 +283,11 @@ fn ignored_collisions(source: &Path, companion: &Path, commits: &[String]) -> Re
             paths.insert(format!(":(literal){path}"));
         }
     }
+    Ok(paths.into_iter().collect())
+}
+
+fn ignored_collisions(source: &Path, paths: &[String]) -> Result<Vec<String>> {
     let mut collisions = std::collections::BTreeSet::new();
-    let paths: Vec<_> = paths.into_iter().collect();
     for batch in paths.chunks(128) {
         let mut args = vec![
             "ls-files",
@@ -304,6 +308,29 @@ fn ignored_collisions(source: &Path, companion: &Path, commits: &[String]) -> Re
         );
     }
     Ok(collisions.into_iter().collect())
+}
+
+// Tracked paths flagged assume-unchanged (lowercase tag) or skip-worktree
+// ('S') are invisible to `git status`, so local edits there would look clean.
+// Scoped to incoming paths; unparseable output fails closed.
+fn hidden_tracked(source: &Path, paths: &[String]) -> Result<Vec<String>> {
+    let mut hidden = std::collections::BTreeSet::new();
+    for batch in paths.chunks(128) {
+        let mut args = vec!["ls-files", "-v", "-z", "--"];
+        args.extend(batch.iter().map(String::as_str));
+        let found = git(source, &args)?;
+        for entry in found.split('\0').filter(|p| !p.is_empty()) {
+            let (tag, path) = entry
+                .split_once(' ')
+                .context("Git returned an unreadable tracked-file listing")?;
+            ensure!(tag.len() == 1, "Git returned an unreadable file tag");
+            let tag = tag.as_bytes()[0];
+            if tag == b'S' || tag.is_ascii_lowercase() {
+                hidden.insert(path.to_owned());
+            }
+        }
+    }
+    Ok(hidden.into_iter().collect())
 }
 
 fn display_remote(remote: &str) -> String {
@@ -359,10 +386,11 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
     );
     let source_dirty = !clean(s)?;
     let companion_dirty = !clean(c)?;
-    let ignored_collisions = if choice == IntegrationChoice::CherryPick {
-        ignored_collisions(s, c, &commits)?
+    let (ignored_collisions, hidden_tracked) = if choice == IntegrationChoice::CherryPick {
+        let paths = incoming_paths(c, &commits)?;
+        (ignored_collisions(s, &paths)?, hidden_tracked(s, &paths)?)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let (remote, tip) = if choice == IntegrationChoice::Push {
         let reference = format!("refs/heads/{}", binding.link.target_branch);
@@ -410,6 +438,7 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
         remote_tip: tip,
         remote_display: remote.as_deref().map(display_remote),
         ignored_collisions,
+        hidden_tracked,
         remote,
         companion_identity: ci,
         source_identity: si,
@@ -432,6 +461,10 @@ pub fn execute(plan: &IntegrationPlan) -> Result<String> {
     ensure!(
         plan.ignored_collisions.is_empty(),
         "Ignored files at incoming paths would be overwritten; move them before cherry-picking"
+    );
+    ensure!(
+        plan.hidden_tracked.is_empty(),
+        "Incoming paths are marked assume-unchanged or skip-worktree in the source checkout, so local edits could be hidden; clear those flags first"
     );
     let current = plan_again(plan)?;
     ensure!(
@@ -470,6 +503,7 @@ pub fn execute(plan: &IntegrationPlan) -> Result<String> {
                 &range,
                 plan.commits.len(),
                 &plan.source_branch,
+                &plan.source_head,
             )
         }
     }
@@ -479,13 +513,21 @@ fn pick_with_recovery(
     range: &str,
     count: usize,
     branch: &str,
+    expected_head: &str,
 ) -> Result<String> {
     match run(&["cherry-pick", range]) {
         Ok(_) => Ok(format!(
             "Cherry-picked {count} companion commit(s) into {branch}"
         )),
         Err(error) => match run(&["cherry-pick", "--abort"]) {
-            Ok(_) => bail!("Cherry-pick failed and was aborted: {error}"),
+            Ok(_) => match run(&["rev-parse", "HEAD"]) {
+                Ok(head) if head.trim() == expected_head => {
+                    bail!("Cherry-pick failed and was aborted: {error}")
+                }
+                _ => bail!(
+                    "Cherry-pick failed: {error}. Abort ran but {branch} could not be confirmed at its original commit; inspect the source checkout."
+                ),
+            },
             Err(abort) => bail!(
                 "Cherry-pick failed: {error}. Abort also failed: {abort}. Inspect the source checkout and resolve the Git operation manually."
             ),
@@ -657,6 +699,7 @@ mod tests {
             "base..head",
             1,
             "source",
+            "head",
         )
         .unwrap_err()
         .to_string();
@@ -730,6 +773,41 @@ mod tests {
             std::fs::read_to_string(b.source_workdir.join("private.txt")).unwrap(),
             "user data"
         );
+    }
+
+    #[test]
+    fn hidden_tracked_incoming_path_is_refused() {
+        for flag in ["--assume-unchanged", "--skip-worktree"] {
+            let (_dir, b) = fixture();
+            run(&b.source_workdir, &["update-index", flag, "file"]);
+            std::fs::write(b.source_workdir.join("file"), "hidden edit\n").unwrap();
+            let p = plan(b.clone(), IntegrationChoice::CherryPick).unwrap();
+            assert!(!p.source_dirty, "status hides the edit");
+            assert_eq!(p.hidden_tracked, ["file"], "{flag}");
+            assert!(execute(&p).is_err());
+            assert_eq!(
+                std::fs::read_to_string(b.source_workdir.join("file")).unwrap(),
+                "hidden edit\n"
+            );
+        }
+    }
+
+    #[test]
+    fn abort_that_leaves_head_moved_is_not_reported_as_restored() {
+        let err = pick_with_recovery(
+            |args| match args[0] {
+                "rev-parse" => Ok("other\n".into()),
+                "cherry-pick" if args[1] == "--abort" => Ok(String::new()),
+                _ => anyhow::bail!("conflict"),
+            },
+            "b..h",
+            1,
+            "source",
+            "head",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("could not be confirmed") && !err.contains("was aborted"));
     }
 
     #[test]

@@ -10,9 +10,21 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Explain waiting edits in the desktop app.** Read saved review notes without
+  an AI call, or review the exact prompt before asking Claude for an explanation.
+  Calls can be cancelled, changed edits discard old results, and unsent rejection
+  feedback stays in place. Explanations never answer the waiting agent. No
+  migration is required.
+
 ### Fixed
 
 - **Desktop PR Workspace checks AI fix handoffs before preparing a draft.** Choose an existing agent explicitly; AMF refuses changed findings, a moved PR head or a changed destination rather than silently retargeting the handoff. Refresh agents to choose again when the selected session is unavailable. The resulting prompt is appended to the unsent composer.
+
+- **Empty saved review notes no longer trigger an AI explanation call.** Both
+  interfaces now show an explicitly empty note instead of silently asking Claude.
+
 
 ## [v0.51.0] - 2026-10-27
 
@@ -41,6 +53,10 @@ filterable projects sidebar, and `amf automation` can start sessions and tasks.
 
 ### Changed
 
+- **PR Workspace Threads footer lists more of the keys that work there.** The
+  footer and `?` help now show `M` (add a comment to review memory), plus `h`
+  (hide/show resolved), `o` (sort) and `B` (fix marked). The keys already
+  worked; they just weren't listed. No migration is required.
 - **AMF's own files no longer drown your changes in the diff.** The
   current-changes viewer and Final Review list the files AMF wrote into the
   checkout (hook settings, injected skills, `.amf/`, and `.gitignore` or

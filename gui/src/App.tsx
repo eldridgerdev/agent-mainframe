@@ -96,6 +96,7 @@ import DiffPanel from "./DiffPanel";
 import SupervisedEditsPanel, { SupervisedEditsPanelHandle, usePendingEdits } from "./SupervisedEditsPanel";
 import ScreenshotsPanel from "./ScreenshotsPanel";
 import ReviewPanel from "./ReviewPanel";
+import CompanionIntegrationDialog from "./CompanionIntegrationDialog";
 import type { PrTriageTarget } from "./prTriageApi";
 import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
@@ -2254,6 +2255,7 @@ function FeatureView({
   onComposerFocusHandled: () => void;
   todoPanel: ReactNode;
 }) {
+  const [integrateCompanion, setIntegrateCompanion] = useState(false);
   const sessions = feature.sessions.filter((session) => session.kind !== "todos");
   const known = (id: string | undefined) =>
     id === TODOS_TAB || id === VSCODE_TAB || sessions.some((session) => session.id === id);
@@ -2295,6 +2297,7 @@ function FeatureView({
 
   return (
     <div className="page page-fill">
+      {integrateCompanion && <CompanionIntegrationDialog target={{ project_id: project.id, feature_id: feature.id }} onClose={() => setIntegrateCompanion(false)} />}
       <PageHeader
         crumb={<button className="link-button" onClick={onBack}>{project.name}</button>}
         title={feature.name}
@@ -2339,6 +2342,7 @@ function FeatureView({
             {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
               {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
             </button>}
+            {feature.review_source && <button className="btn btn-secondary" onClick={() => setIntegrateCompanion(true)}>Integrate companion…</button>}
             <button className="btn btn-secondary" onClick={() => onScreenshots(null)}>Screenshots</button>
             {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>

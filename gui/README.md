@@ -521,15 +521,13 @@ the round in `.claude/final-review-feedback.md`. It then clears saved progress
 and closes the review. While the check runs you can **Cancel completion**;
 no feedback round is recorded, and any suggestions already applied remain in
 source files. Choose **Complete and hand off to …** to give an actionable
-round's "address the feedback" prompt to the feature's first agent session. It
-is submitted when the TUI's `final_review_submit_prompt` setting is on and the
-session is running. Otherwise it is added to that session's composer as an
-unsent draft. **Complete without handoff** only saves the feedback. Unsaved or
+round's "address the feedback" prompt to the selected agent session. The GUI
+adds it to the session's composer as an unsent draft, preserving existing text. **Complete without handoff** only saves the feedback. Unsaved or
 generated drafts, failed saves, changed patches or saved progress, a changed
 check command or agent session, and deleted or moved features are refused
-before anything is written. The completion is delivered once. Choosing another
-destination (a dedicated session, another feature or a companion feature)
-remains in the TUI.
+before anything is written. The completion is delivered once. The destination
+may be the current session, a dedicated review agent, another feature session or
+a new companion worktree.
 
 The summary and batch controls have automated command/component coverage and
 an eight-frame native Linux scenario at
@@ -893,5 +891,12 @@ Completion always opens feedback as an unsent composer draft, preserving existin
 text. Another checkout receives the original reviewed source's feedback path;
 its own feedback file is not replaced. Companion worktrees branch from the
 confirmed committed HEAD, so uncommitted reviewed changes are not copied.
-Companion commit integration remains a terminal workflow. See
-[validation and limitations](../docs/development/gui-review-feedback-destinations.md).
+Open a companion feature and select **Integrate companion…** to preview its
+committed changes. Cherry-pick applies the listed commits to the linked source
+checkout; push updates its origin branch only if the previewed destination is
+unchanged and an existing branch update is fast-forward. The source must be
+clean for cherry-pick, and AMF refuses ignored files at incoming paths. A failed
+cherry-pick attempts an abort and reports if recovery fails. Changes in the
+companion that are not committed remain there. External Git operations are not
+locked by the preview, so avoid running concurrent operations in the same
+checkouts. See [feedback destination validation](../docs/development/gui-review-feedback-destinations.md).

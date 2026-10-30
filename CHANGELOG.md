@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Integrate Final Review companion commits from the desktop.** Preview the
+  exact commits and destination, then explicitly cherry-pick them into the
+  linked source checkout or push them to its origin branch. Changed previews,
+  dirty sources and ignored files that could be overwritten are refused.
+  Uncommitted companion changes are excluded.
+
 - **Choose where desktop Final Review feedback goes.** Select the current
   session, a dedicated review agent, another feature session or a new companion
   worktree. New resources and worktree setup require confirmation; cancelling

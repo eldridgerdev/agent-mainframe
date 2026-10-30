@@ -78,7 +78,17 @@ struct Job {
     cancelled: Arc<AtomicBool>,
     receiver: Receiver<Result<String, String>>,
     finished: Option<Result<String, String>>,
+    /// When the edit and checkout were last re-validated. Revalidation hashes
+    /// files and runs Git under the GUI lock, so polls between checks skip it.
+    checked_at: std::time::Instant,
 }
+
+/// Minimum gap between revalidations of a running explanation. Tests poll
+/// immediately after mutating the checkout, so they revalidate every time.
+#[cfg(not(test))]
+const REVALIDATE_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(test)]
+const REVALIDATE_EVERY: std::time::Duration = std::time::Duration::ZERO;
 impl Drop for Job {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::Relaxed);
@@ -473,6 +483,7 @@ impl Controller {
             cancelled,
             receiver,
             finished: None,
+            checked_at: std::time::Instant::now(),
         });
         Ok(ExplanationView::Running {
             owner: owner.to_owned(),
@@ -491,24 +502,34 @@ impl Controller {
             .as_mut()
             .filter(|job| job.owner == owner && job.request == request)
             .ok_or_else(|| GuiError::conflict("This explanation is no longer active"))?;
-        let checked = observe(
-            gui,
-            &self.config_path,
-            &job.source.target,
-            &job.source.edit,
-            &job.source.revision,
-            false,
-            self.available,
-        );
-        if !checked.as_ref().is_ok_and(|current| {
-            current.source.as_ref().is_some_and(|source| {
-                source.identity == job.source.identity && source.call == job.source.call
-            })
-        }) {
-            self.job = None;
-            return Err(GuiError::conflict(
-                "The waiting edit or checkout changed. The explanation was discarded.",
-            ));
+        if job.checked_at.elapsed() >= REVALIDATE_EVERY {
+            let checked = observe(
+                gui,
+                &self.config_path,
+                &job.source.target,
+                &job.source.edit,
+                &job.source.revision,
+                false,
+                self.available,
+            );
+            if let Ok(current) = &checked
+                && let Some(text) = &current.note
+            {
+                let text = text.clone();
+                self.job = None;
+                return Ok(ExplanationView::SavedNote { text });
+            }
+            if !checked.as_ref().is_ok_and(|current| {
+                current.source.as_ref().is_some_and(|source| {
+                    source.identity == job.source.identity && source.call == job.source.call
+                })
+            }) {
+                self.job = None;
+                return Err(GuiError::conflict(
+                    "The waiting edit or checkout changed. The explanation was discarded.",
+                ));
+            }
+            job.checked_at = std::time::Instant::now();
         }
         if job.finished.is_none() {
             match job.receiver.try_recv() {

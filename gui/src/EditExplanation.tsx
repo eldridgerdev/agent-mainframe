@@ -40,7 +40,9 @@ export function useEditExplanation(target: FeatureTarget, edit?: { id: string; r
       return;
     }
     owned.current = result;
-    if ("owner" in result) unacknowledged.current.add(result.owner);
+    if ("owner" in result && (result.state === "precall" || result.state === "running")) {
+      unacknowledged.current.add(result.owner);
+    }
     setView(result);
   }, [cancelOwner]);
   const cancel = useCallback(async () => {

@@ -1298,7 +1298,14 @@ fn load_review_notes_with_empty(
         .map(|content| parse(&content))
         .unwrap_or_default();
     if let Ok(content) = std::fs::read_to_string(claude_dir.join("review-notes.md")) {
-        notes.extend(parse(&content));
+        for (path, note) in parse(&content) {
+            // An empty live section must not hide a real archived rationale.
+            let hides_archive =
+                note.trim().is_empty() && notes.get(&path).is_some_and(|n| !n.trim().is_empty());
+            if !hides_archive {
+                notes.insert(path, note);
+            }
+        }
     }
     notes
 }

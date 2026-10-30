@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 import pathlib
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -36,7 +35,7 @@ def alive(pid):
     except ProcessLookupError: return False
 
 original = (host/'invoice.ts').read_bytes()
-(repo/'.git/info/exclude').open('a').write('\n.claude/\n')
+with (repo/'.git/info/exclude').open('a') as exclude: exclude.write('\n.claude/\n')
 notes = host/'.claude/review-notes.md'; notes.parent.mkdir(exist_ok=True)
 notification_dir = host/'.claude/notifications'
 hook = None

@@ -16,7 +16,6 @@ pub struct SpawnedWorktreeCommand {
 impl WorktreeManager {
     /// Create a checkout for a fork without modifying its contents. Setup must
     /// happen after the approved source snapshot has been transferred.
-    #[cfg(test)]
     pub fn create_fork_base(
         repo: &Path,
         name: &str,
@@ -41,6 +40,7 @@ impl WorktreeManager {
         }
         use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use std::os::unix::fs::MetadataExt;
         let mut parent = repo.join(".worktrees");
         let mut directory = std::fs::File::open(&repo)?;
         let components = std::iter::once(std::ffi::OsStr::new(".worktrees")).chain(
@@ -97,6 +97,17 @@ impl WorktreeManager {
             return Err(err).context("Cannot inspect fork checkout path");
         }
         let path = parent.join(leaf);
+        let parent_identity = directory.metadata()?;
+        let parent_matches = || -> bool {
+            std::fs::metadata(&parent)
+                .is_ok_and(|m| m.dev() == parent_identity.dev() && m.ino() == parent_identity.ino())
+        };
+        if !parent_matches() {
+            bail!(
+                "Fork checkout parent changed before creation: {}",
+                parent.display()
+            );
+        }
         let git_dir = Command::new("git")
             .args(["rev-parse", "--absolute-git-dir"])
             .current_dir(&repo)
@@ -124,6 +135,7 @@ impl WorktreeManager {
             .arg("--git-dir")
             .arg(git_dir)
             .args(["worktree", "add", "-b", branch])
+            .arg("--")
             .arg(leaf)
             .arg(commit)
             .current_dir(anchored_parent)
@@ -133,6 +145,12 @@ impl WorktreeManager {
             .env_remove("GIT_COMMON_DIR")
             .output()
             .context("Failed to run git worktree add")?;
+        if !parent_matches() {
+            bail!(
+                "Fork checkout parent moved during creation; inspect Git worktrees for branch {branch:?} before retrying (original parent {})",
+                parent.display()
+            );
+        }
         if !output.status.success() {
             let details = String::from_utf8_lossy(&output.stderr);
             if std::fs::symlink_metadata(&path).is_ok() {
@@ -142,7 +160,10 @@ impl WorktreeManager {
                     path.display()
                 );
             }
-            bail!("Git could not create the fork checkout: {}", details.trim());
+            bail!(
+                "Git could not create the fork checkout: {}. Branch {branch:?} may exist; inspect before retrying",
+                details.trim()
+            );
         }
         Ok(path)
     }
@@ -366,55 +387,6 @@ impl WorktreeManager {
         })?;
 
         Ok(worktree_path)
-    }
-
-    /// Copy uncommitted changes from source worktree to destination worktree
-    pub fn copy_uncommitted_changes(source: &Path, dest: &Path) -> Result<()> {
-        let output = Command::new("git")
-            .args(["status", "--porcelain", "-uall"])
-            .current_dir(source)
-            .output()
-            .context("Failed to get git status")?;
-
-        if !output.status.success() {
-            return Ok(());
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.is_empty() {
-                continue;
-            }
-
-            let status_code = &line[..2];
-            let file_path = line[3..].trim();
-
-            if file_path.is_empty() {
-                continue;
-            }
-
-            let source_file = source.join(file_path);
-            let dest_file = dest.join(file_path);
-
-            let first_char = status_code.chars().next().unwrap_or(' ');
-            let second_char = status_code.chars().nth(1).unwrap_or(' ');
-
-            match (first_char, second_char) {
-                (_, 'D') | ('D', _) => {
-                    let _ = std::fs::remove_file(&dest_file);
-                }
-                _ => {
-                    if source_file.exists() {
-                        if let Some(parent) = dest_file.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                        let _ = std::fs::copy(&source_file, &dest_file);
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Remove a worktree
@@ -650,7 +622,6 @@ impl WorktreeOps for WorktreeManager {
         WorktreeManager::create_from(repo, name, new_branch, base)
     }
 
-    #[cfg(test)]
     fn create_fork_base(
         &self,
         repo: &Path,

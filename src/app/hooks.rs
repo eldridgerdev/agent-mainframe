@@ -5,6 +5,42 @@ use super::*;
 use crate::debug::{LogLevel, log_to_file};
 
 impl App {
+    fn validate_fork_hook_target(
+        &self,
+        id: Option<&str>,
+        project_name: &str,
+        branch: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        let Some(id) = id else {
+            return Ok(());
+        };
+        if let (Some(db), Some(version)) = (&self.db, self.store_version) {
+            anyhow::ensure!(
+                db.current_store_version()? == version,
+                "Workspace changed while the fork hook was pending; checkout retained at {}",
+                workdir.display()
+            );
+        }
+        let (pi, fi) = self.store.locate_feature_by_id(None, id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Fork feature disappeared; checkout retained at {}",
+                workdir.display()
+            )
+        })?;
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        anyhow::ensure!(
+            project.name == project_name
+                && feature.name == branch
+                && feature.branch == branch
+                && feature.workdir == workdir
+                && feature.status == ProjectStatus::Stopped,
+            "Fork feature changed; checkout retained at {}",
+            workdir.display()
+        );
+        Ok(())
+    }
     pub(crate) fn feature_is_pending_worktree_script(&self, pi: usize, fi: usize) -> bool {
         self.store
             .projects
@@ -124,6 +160,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     fn finalize_worktree_hook_feature(
         &mut self,
+        expected_feature_id: Option<String>,
         workdir: PathBuf,
         project_name: String,
         feature_name: Option<String>,
@@ -143,6 +180,12 @@ impl App {
         startup_prompt: Option<String>,
         focus_feature: bool,
     ) -> Result<()> {
+        self.validate_fork_hook_target(
+            expected_feature_id.as_deref(),
+            &project_name,
+            &branch,
+            &workdir,
+        )?;
         let Some((pi, fi)) = self.upsert_pending_worktree_feature(
             &project_name,
             feature_name.as_deref(),
@@ -328,6 +371,7 @@ impl App {
 
         match state.next {
             HookNext::WorktreeCreated {
+                expected_feature_id,
                 project_name,
                 feature_name,
                 branch,
@@ -346,6 +390,7 @@ impl App {
                 issue_source,
             } => {
                 self.start_worktree_hook(
+                    expected_feature_id,
                     &state.script,
                     state.workdir,
                     project_name,
@@ -383,6 +428,7 @@ impl App {
     #[allow(clippy::too_many_arguments)]
     pub fn start_worktree_hook(
         &mut self,
+        expected_feature_id: Option<String>,
         script: &str,
         workdir: PathBuf,
         project_name: String,
@@ -403,6 +449,15 @@ impl App {
         issue_source: Option<crate::project::IssueSource>,
         choice: Option<String>,
     ) {
+        if let Err(err) = self.validate_fork_hook_target(
+            expected_feature_id.as_deref(),
+            &project_name,
+            &branch,
+            &workdir,
+        ) {
+            self.report_logged_error("hooks", err.to_string());
+            return;
+        }
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
                 .map(|h| format!("{}/{}", h.display(), &script[2..]))
@@ -468,6 +523,7 @@ impl App {
         }
 
         self.mode = AppMode::RunningHook(RunningHookState {
+            expected_feature_id,
             script: script.to_string(),
             workdir,
             project_name,
@@ -532,6 +588,7 @@ impl App {
 
     pub fn complete_running_hook(&mut self) -> Result<()> {
         let (
+            expected_feature_id,
             workdir,
             project_name,
             feature_name,
@@ -553,6 +610,7 @@ impl App {
         ) = {
             match &self.mode {
                 AppMode::RunningHook(s) => (
+                    s.expected_feature_id.clone(),
                     s.workdir.clone(),
                     s.project_name.clone(),
                     s.feature_name.clone(),
@@ -578,6 +636,7 @@ impl App {
 
         self.mode = AppMode::Normal;
         self.finalize_worktree_hook_feature(
+            expected_feature_id,
             workdir,
             project_name.clone(),
             feature_name,
@@ -668,6 +727,7 @@ impl App {
         for key in completed {
             if let Some(hook) = self.background_hooks.remove(&key) {
                 if let Err(err) = self.finalize_worktree_hook_feature(
+                    hook.expected_feature_id.clone(),
                     hook.workdir.clone(),
                     hook.project_name.clone(),
                     hook.feature_name.clone(),

@@ -119,6 +119,10 @@ pub(crate) struct Snapshot {
     _spool: tempfile::TempDir,
 }
 fn fingerprint(root: &Path) -> Result<Fingerprint> {
+    fingerprint_excluding(root, None)
+}
+
+fn fingerprint_excluding(root: &Path, excluded: Option<&Path>) -> Result<Fingerprint> {
     ensure!(
         git(root, &["rev-parse", "--show-cdup"])? == b"\n",
         "Fork source must be a repository root"
@@ -150,23 +154,34 @@ fn fingerprint(root: &Path) -> Result<Fingerprint> {
     let index: [u8; 32] =
         Sha256::digest(fs::read(&index_path).context("Cannot read source index")?).into();
     let meta = root.metadata()?;
-    let status = git(
-        root,
-        &[
-            "-c",
-            "status.renames=false",
-            "-c",
-            "core.filemode=true",
-            "-c",
-            "core.fsmonitor=false",
-            "status",
-            "--porcelain=v1",
-            "-z",
-            "--untracked-files=all",
-            "--no-renames",
-            "--ignore-submodules=none",
-        ],
-    )?;
+    let mut command = git_command(root);
+    command.args([
+        "-c",
+        "status.renames=false",
+        "-c",
+        "core.filemode=true",
+        "-c",
+        "core.fsmonitor=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--no-renames",
+        "--ignore-submodules=none",
+    ]);
+    if let Some(excluded) = excluded {
+        path_parts(excluded)?;
+        let mut spec = OsString::from(":(exclude,literal)");
+        spec.push(excluded.as_os_str());
+        command.arg("--").arg(".").arg(spec);
+    }
+    let output = command.output().context("Failed to inspect fork status")?;
+    ensure!(
+        output.status.success(),
+        "Cannot inspect fork status: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let status = output.stdout;
     Ok(Fingerprint {
         head,
         symbolic_head,
@@ -238,6 +253,7 @@ fn check_special_entries(
     prefix: &Path,
     gitlinks: &BTreeSet<PathBuf>,
     reject_ignored: bool,
+    excluded: Option<(&Path, u64, u64)>,
 ) -> Result<()> {
     struct Dir(*mut libc::DIR);
     impl Drop for Dir {
@@ -308,12 +324,24 @@ fn check_special_entries(
             return Err(io::Error::last_os_error())
                 .with_context(|| format!("Cannot enumerate {:?}", path));
         }
-        let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
+        let stat = unsafe { stat.assume_init() };
+        let kind = stat.st_mode & libc::S_IFMT;
+        if let Some((owned, device, inode)) = excluded
+            && path == owned
+        {
+            ensure!(
+                kind == libc::S_IFDIR
+                    && stat.st_dev as u64 == device
+                    && stat.st_ino as u64 == inode,
+                "Owned fork checkout changed during source validation"
+            );
+            continue;
+        }
         if kind == libc::S_IFDIR {
             if !gitlinks.contains(&path) && (reject_ignored || !ignored(root, &path)?) {
                 let child = open_dir_at(directory, &n)
                     .with_context(|| format!("Cannot enumerate {:?}", path))?;
-                check_special_entries(root, &child, &path, gitlinks, reject_ignored)?;
+                check_special_entries(root, &child, &path, gitlinks, reject_ignored, excluded)?;
             }
         } else if kind != libc::S_IFREG
             && kind != libc::S_IFLNK
@@ -482,19 +510,27 @@ fn capture_entry(root: &File, path: &Path, spool: &Path) -> Result<Entry> {
     }
 }
 impl Snapshot {
+    pub(crate) fn is_branch(&self, branch: &str) -> bool {
+        self.fingerprint.symbolic_head == format!("refs/heads/{branch}\n").as_bytes()
+    }
+    pub(crate) fn touches(&self, path: &Path) -> bool {
+        self.entries
+            .iter()
+            .any(|(changed, _)| changed.starts_with(path) || path.starts_with(changed))
+    }
     pub(crate) fn capture(root: &Path) -> Result<Self> {
-        let snapshot = Self::capture_once(root)?;
+        let snapshot = Self::capture_once(root, None)?;
         snapshot.validate()?;
         Ok(snapshot)
     }
 
-    fn capture_once(root: &Path) -> Result<Self> {
+    fn capture_once(root: &Path, excluded: Option<(&Path, u64, u64)>) -> Result<Self> {
         let root = root.canonicalize().context("Cannot resolve fork source")?;
-        let before = fingerprint(&root)?;
+        let before = fingerprint_excluding(&root, excluded.map(|e| e.0))?;
         let changed = paths(&before.status)?;
         let gitlinks = check_supported(&root, &changed)?;
         let dir = File::open(&root)?;
-        check_special_entries(&root, &dir, Path::new(""), &gitlinks, false)?;
+        check_special_entries(&root, &dir, Path::new(""), &gitlinks, false, excluded)?;
         let spool = tempfile::tempdir().context("Cannot create fork snapshot spool")?;
         let mut entries = Vec::new();
         for (i, path) in changed.into_iter().enumerate() {
@@ -504,7 +540,7 @@ impl Snapshot {
             ));
         }
         ensure!(
-            before == fingerprint(&root)?,
+            before == fingerprint_excluding(&root, excluded.map(|e| e.0))?,
             "Source changed while preparing fork"
         );
         let head = String::from_utf8(before.head.clone()).context("Invalid Git HEAD")?;
@@ -518,11 +554,15 @@ impl Snapshot {
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
+        self.validate_excluding(None)
+    }
+
+    fn validate_excluding(&self, excluded: Option<(&Path, u64, u64)>) -> Result<()> {
         ensure!(
-            self.fingerprint == fingerprint(&self.root)?,
+            self.fingerprint == fingerprint_excluding(&self.root, excluded.map(|e| e.0))?,
             "Fork source changed; prepare it again"
         );
-        let current = Self::capture_once(&self.root)?;
+        let current = Self::capture_once(&self.root, excluded)?;
         ensure!(
             self.entries.len() == current.entries.len(),
             "Fork paths changed; prepare again"
@@ -553,6 +593,143 @@ impl Snapshot {
         }
         Ok(())
     }
+}
+
+/// Add a generated fork file without replacing source data or following a
+/// source-controlled parent link. The caller owns this fresh checkout.
+pub(crate) fn write_auxiliary(destination: &Path, relative: &Path, bytes: &[u8]) -> Result<()> {
+    let parts = path_parts(relative)?;
+    let (name, parents) = parts.split_last().context("Missing auxiliary filename")?;
+    let mut directory = File::open(destination)?;
+    for component in parents {
+        let rc = unsafe { libc::mkdirat(directory.as_raw_fd(), component.as_ptr(), 0o755) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::AlreadyExists {
+                return Err(err)
+                    .with_context(|| format!("Cannot create parent for {:?}", relative));
+            }
+        }
+        directory = open_dir_at(&directory, component)
+            .with_context(|| format!("Unsafe parent for {:?}", relative))?;
+    }
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).with_context(|| {
+            format!(
+                "Cannot create {:?}; it may already contain source data",
+                relative
+            )
+        });
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(bytes)
+        .with_context(|| format!("Cannot write {:?}", relative))?;
+    Ok(())
+}
+
+/// Preserve the existing worktree settings merge for an unchanged tracked
+/// settings file. A source-changed settings path is refused by the caller.
+pub(crate) fn merge_settings(destination: &Path, source: &[u8]) -> Result<()> {
+    let relative = Path::new(".claude/settings.local.json");
+    let root = File::open(destination)?;
+    let Some((parent, leaf)) = parent_at(&root, relative)? else {
+        return write_auxiliary(destination, relative, source);
+    };
+    let Some(before) = destination_entry(&parent, &leaf)? else {
+        return write_auxiliary(destination, relative, source);
+    };
+    ensure!(
+        before.mode & libc::S_IFMT == libc::S_IFREG,
+        "Fork settings target is not a regular file"
+    );
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            leaf.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("Cannot read fork settings");
+    }
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 16 * 1024 * 1024,
+        "Fork settings exceed size limit"
+    );
+    ensure!(
+        destination_entry(&parent, &leaf)?.as_ref() == Some(&before),
+        "Fork settings changed while reading"
+    );
+    let source: serde_json::Value = serde_json::from_slice(source)?;
+    let mut target: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if let (Some(src), Some(dst)) = (source.as_object(), target.as_object_mut()) {
+        for (key, value) in src {
+            let entry = dst
+                .entry(key.clone())
+                .or_insert_with(|| serde_json::json!({}));
+            if let (Some(src), Some(dst)) = (value.as_object(), entry.as_object_mut()) {
+                for (key, value) in src {
+                    dst.insert(key.clone(), value.clone());
+                }
+            } else {
+                *entry = value.clone();
+            }
+        }
+    }
+    let temp = CString::new(format!(".amf-fork-settings-{}", uuid::Uuid::new_v4()))?;
+    let fd = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            temp.as_ptr(),
+            libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_CREAT | libc::O_EXCL,
+            before.mode & 0o777,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("Cannot stage fork settings");
+    }
+    let mut output = unsafe { File::from_raw_fd(fd) };
+    let result = (|| -> Result<()> {
+        output.write_all(serde_json::to_string_pretty(&target)?.as_bytes())?;
+        output.write_all(b"\n")?;
+        if unsafe { libc::fchmod(output.as_raw_fd(), before.mode & 0o777) } < 0 {
+            return Err(io::Error::last_os_error())
+                .context("Cannot preserve fork settings permissions");
+        }
+        ensure!(
+            destination_entry(&parent, &leaf)?.as_ref() == Some(&before),
+            "Fork settings changed before merge"
+        );
+        if unsafe {
+            libc::renameat(
+                parent.as_raw_fd(),
+                temp.as_ptr(),
+                parent.as_raw_fd(),
+                leaf.as_ptr(),
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error()).context("Cannot publish fork settings");
+        }
+        Ok(())
+    })();
+    if result.is_err() && unsafe { libc::unlinkat(parent.as_raw_fd(), temp.as_ptr(), 0) } < 0 {
+        return Err(io::Error::last_os_error()).context("Cannot remove staged fork settings");
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -697,7 +874,6 @@ impl Snapshot {
 
     fn transfer_inner(&self, destination: &Path) -> Result<()> {
         use std::collections::BTreeMap;
-        self.validate()?;
         let destination = destination
             .canonicalize()
             .context("Cannot resolve fork destination")?;
@@ -705,6 +881,16 @@ impl Snapshot {
             destination != self.root,
             "Fork destination is the source checkout"
         );
+        let destination_meta = destination.metadata()?;
+        let relative = destination.strip_prefix(&self.root).ok();
+        if let Some(relative) = relative {
+            ensure!(
+                !self.touches(relative),
+                "Fork destination overlaps captured source data"
+            );
+        }
+        let excluded = relative.map(|path| (path, destination_meta.dev(), destination_meta.ino()));
+        self.validate_excluding(excluded)?;
         let dest = fingerprint(&destination)?;
         ensure!(
             dest.head == self.fingerprint.head,
@@ -733,7 +919,14 @@ impl Snapshot {
             destination.display()
         );
         let root = File::open(&destination)?;
-        check_special_entries(&destination, &root, Path::new(""), &dest_gitlinks, true)?;
+        check_special_entries(
+            &destination,
+            &root,
+            Path::new(""),
+            &dest_gitlinks,
+            true,
+            None,
+        )?;
         let meta = root.metadata()?;
         ensure!(
             meta.dev() == dest.root_dev && meta.ino() == dest.root_ino,
@@ -755,7 +948,7 @@ impl Snapshot {
             fingerprint(&destination)? == dest,
             "Fork destination changed before transfer"
         );
-        self.validate()?;
+        self.validate_excluding(excluded)?;
         let mut operations = 0usize;
         let mut apply = || -> Result<()> {
             let mut removed = BTreeSet::new();
@@ -1222,5 +1415,94 @@ mod tests {
         symlink(&outside, dest.join("sub")).unwrap();
         assert!(snapshot.transfer(&dest).is_err());
         assert_eq!(fs::read(outside.join("file")).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn settings_merge_preserves_tracked_fields_and_refuses_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".claude")).unwrap();
+        let settings = dir.path().join(".claude/settings.local.json");
+        fs::write(
+            &settings,
+            br#"{"nested":{"keep":1,"override":"old"},"other":true}"#,
+        )
+        .unwrap();
+        merge_settings(dir.path(), br#"{"nested":{"override":"new"},"added":2}"#).unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({"nested":{"keep":1,"override":"new"},"other":true,"added":2})
+        );
+        fs::remove_file(&settings).unwrap();
+        let outside = dir.path().join("outside");
+        fs::write(&outside, b"unchanged").unwrap();
+        symlink(&outside, &settings).unwrap();
+        assert!(merge_settings(dir.path(), b"{}").is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn owned_destination_inside_source_does_not_hide_other_untracked_worktree_data() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".worktrees/other")).unwrap();
+        fs::write(root.join(".worktrees/other/user-file"), b"keep").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let dest = root.join(".worktrees/fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        snapshot.transfer(&dest).unwrap();
+        assert_eq!(
+            fs::read(dest.join(".worktrees/other/user-file")).unwrap(),
+            b"keep"
+        );
+    }
+
+    #[test]
+    fn transfer_failure_reports_partial_progress_and_keeps_checkout() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::write(root.join("old name"), b"changed").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let (_, Entry::Regular { spool, .. }) = &snapshot.entries[0] else {
+            panic!("expected captured file")
+        };
+        fs::write(spool, b"corrupted spool").unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        let error = format!("{:#}", snapshot.transfer(&dest).unwrap_err());
+        assert!(error.contains("after 1 operations") && error.contains("snapshot changed"));
+        assert!(dest.exists());
+        assert!(!dest.join("old name").exists());
+        assert!(!fs::read_dir(&dest).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".amf-fork-")
+        }));
     }
 }

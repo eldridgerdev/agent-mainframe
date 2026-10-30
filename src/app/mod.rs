@@ -3907,7 +3907,10 @@ impl App {
     /// `(pi, fi)` indices a reload would silently re-point. Anywhere else
     /// the check waits for the next call.
     pub fn refresh_store_if_changed_elsewhere(&mut self) -> Result<bool> {
-        if !matches!(self.mode, AppMode::Normal | AppMode::Viewing(_)) {
+        if !matches!(
+            self.mode,
+            AppMode::Normal | AppMode::Viewing(_) | AppMode::ForkingFeature(_)
+        ) {
             return Ok(false);
         }
         let Some(db) = &self.db else {

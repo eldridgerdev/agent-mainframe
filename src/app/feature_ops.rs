@@ -484,6 +484,7 @@ impl App {
                         prompt.title.clone(),
                         prompt.options.clone(),
                         HookNext::WorktreeCreated {
+                            expected_feature_id: None,
                             project_name,
                             feature_name: feature_name.clone(),
                             branch,
@@ -504,6 +505,7 @@ impl App {
                     );
                 } else {
                     self.start_worktree_hook(
+                        None,
                         hook_cfg.script(),
                         wt_path.clone(),
                         project_name,
@@ -2292,20 +2294,58 @@ impl App {
             _ => return,
         };
 
-        let (project_name, project_repo, feature) = match self.store.projects.get(pi) {
+        let (project_id, project_name, project_repo, feature) = match self.store.projects.get(pi) {
             Some(p) => match p.features.get(fi) {
-                Some(f) => (p.name.clone(), p.repo.clone(), f),
+                Some(f) => (p.id.clone(), p.name.clone(), p.repo.clone(), f.clone()),
                 None => return,
             },
             None => return,
         };
 
+        let selected_session = match &self.selection {
+            Selection::Session(_, _, si) => feature.sessions.get(*si),
+            _ => feature
+                .sessions
+                .iter()
+                .find(|session| session.kind == SessionKind::Claude),
+        };
+        let source_session_id = selected_session.map(|session| session.id.clone());
+        let source_session_kind = selected_session.map(|session| session.kind.clone());
+        let source_session_window = selected_session.map(|session| session.tmux_window.clone());
+        let source_session_stopped = selected_session.map(|session| session.stopped);
+        let source_claude_session_id = selected_session.and_then(|session| {
+            (session.kind == SessionKind::Claude)
+                .then(|| session.claude_session_id.clone())
+                .flatten()
+        });
+        let snapshot = match crate::fork_snapshot::Snapshot::capture(&feature.workdir) {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                self.show_error(anyhow::anyhow!("Cannot prepare fork: {err:#}"));
+                return;
+            }
+        };
+        if !snapshot.is_branch(&feature.branch) {
+            self.show_error(anyhow::anyhow!("Fork source checkout is not on recorded branch {:?}; check the source before forking", feature.branch));
+            return;
+        }
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &feature.agent);
         self.active_extension = self.extension_for_repo(&project_repo);
 
         let state = ForkFeatureState {
-            source_pi: pi,
-            source_fi: fi,
+            project_id,
+            source_feature_id: feature.id.clone(),
+            source_workdir: feature.workdir.clone(),
+            source_agent: feature.agent.clone(),
+            source_tmux_session: feature.tmux_session.clone(),
+            source_is_worktree: feature.is_worktree,
+            source_status: feature.status.clone(),
+            source_session_id,
+            source_session_kind,
+            source_session_window,
+            source_session_stopped,
+            source_claude_session_id,
+            snapshot,
             project_name,
             project_repo,
             source_branch: feature.branch.clone(),
@@ -2325,6 +2365,7 @@ impl App {
     }
 
     pub fn create_forked_feature(&mut self) -> Result<()> {
+        self.refresh_store_if_changed_elsewhere()?;
         let state = match &self.mode {
             AppMode::ForkingFeature(s) => s,
             _ => return Ok(()),
@@ -2340,12 +2381,49 @@ impl App {
         let enable_chrome = state.enable_chrome;
         let remote_control = state.remote_control;
         let include_context = state.include_context;
-        let source_workdir = self
+        let source_workdir = state.source_workdir.clone();
+        let project = self
             .store
             .projects
-            .get(state.source_pi)
-            .and_then(|p| p.features.get(state.source_fi))
-            .map(|f| f.workdir.clone());
+            .iter()
+            .find(|p| p.id == state.project_id)
+            .ok_or_else(|| anyhow::anyhow!("Fork source project no longer exists"))?;
+        anyhow::ensure!(
+            project.name == project_name && project.repo == project_repo,
+            "Fork source project changed; prepare again"
+        );
+        let source = project
+            .features
+            .iter()
+            .find(|f| f.id == state.source_feature_id)
+            .ok_or_else(|| anyhow::anyhow!("Fork source feature no longer exists"))?;
+        anyhow::ensure!(
+            source.workdir == source_workdir
+                && source.branch == source_branch
+                && source.agent == state.source_agent
+                && source.tmux_session == state.source_tmux_session
+                && source.is_worktree == state.source_is_worktree
+                && source.status == state.source_status
+                && source.mode == mode
+                && source.review == review
+                && source.enable_chrome == enable_chrome
+                && source.remote_control == remote_control,
+            "Fork source feature changed; prepare again"
+        );
+        if let Some(session_id) = &state.source_session_id {
+            let session = source
+                .sessions
+                .iter()
+                .find(|s| &s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Fork source session no longer exists"))?;
+            anyhow::ensure!(
+                session.claude_session_id == state.source_claude_session_id
+                    && Some(&session.kind) == state.source_session_kind.as_ref()
+                    && Some(&session.tmux_window) == state.source_session_window.as_ref()
+                    && Some(session.stopped) == state.source_session_stopped,
+                "Fork source session changed; prepare again"
+            );
+        }
 
         if new_branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
@@ -2375,26 +2453,131 @@ impl App {
             return Ok(());
         }
 
-        // Create worktree from source branch
-        let workdir =
-            self.worktree
-                .create_from(&project_repo, &new_branch, &new_branch, &source_branch)?;
-
-        // Copy uncommitted changes from source worktree
-        if let Some(ref src_wd) = source_workdir {
-            let _ = WorktreeManager::copy_uncommitted_changes(src_wd, &workdir);
+        state.snapshot.validate()?;
+        let context = if include_context {
+            anyhow::ensure!(
+                !state.snapshot.touches(Path::new(".claude/context.md")),
+                "Fork source changed .claude/context.md; disable context to preserve that file"
+            );
+            let session = state.source_claude_session_id.as_deref().ok_or_else(|| anyhow::anyhow!("No Claude transcript is bound to the selected session; press Tab to fork without context"))?;
+            Some(crate::transcript::CapturedContext::capture(
+                &source_workdir,
+                session,
+            )?)
+        } else {
+            None
+        };
+        let settings_path = project_repo
+            .canonicalize()?
+            .join(".claude/settings.local.json");
+        let settings = match std::fs::symlink_metadata(&settings_path) {
+            Ok(_) => {
+                let bytes =
+                    crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?;
+                let _: serde_json::Value = serde_json::from_slice(&bytes)?;
+                Some(bytes)
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        };
+        anyhow::ensure!(
+            settings.is_none()
+                || !state
+                    .snapshot
+                    .touches(Path::new(".claude/settings.local.json")),
+            "Fork source changed .claude/settings.local.json; refusing to overwrite it with project settings"
+        );
+        if let Some(context) = &context {
+            context.validate()?;
         }
-
-        // Export transcript context from source session
-        if include_context
-            && let Some(ref src_wd) = source_workdir
-            && let Some(jsonl) = crate::transcript::find_latest_transcript(src_wd)
-            && let Ok(md) = crate::transcript::export_transcript_markdown(&jsonl)
-        {
-            let claude_dir = workdir.join(".claude");
-            let _ = std::fs::create_dir_all(&claude_dir);
-            let _ = std::fs::write(claude_dir.join("context.md"), md);
+        match (&settings, std::fs::symlink_metadata(&settings_path)) {
+            (Some(bytes), Ok(_)) => anyhow::ensure!(
+                crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?
+                    == *bytes,
+                "Project settings changed; prepare fork again"
+            ),
+            (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => (),
+            _ => anyhow::bail!("Project settings changed; prepare fork again"),
         }
+        state.snapshot.validate()?;
+        let workdir = self.worktree.create_fork_base(
+            &project_repo,
+            &new_branch,
+            &new_branch,
+            &state.snapshot.head,
+        )?;
+        let prepare = || -> Result<()> {
+            state.snapshot.transfer(&workdir)?;
+            match (&settings, std::fs::symlink_metadata(&settings_path)) {
+                (Some(bytes), Ok(_)) => anyhow::ensure!(
+                    crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?
+                        == *bytes,
+                    "Project settings changed during fork"
+                ),
+                (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => (),
+                _ => anyhow::bail!("Project settings changed during fork"),
+            }
+            if let Some(bytes) = settings.as_deref() {
+                crate::fork_snapshot::merge_settings(&workdir, bytes)?;
+            }
+            if let Some(context) = context.as_ref() {
+                context.validate()?;
+                crate::fork_snapshot::write_auxiliary(
+                    &workdir,
+                    Path::new(".claude/context.md"),
+                    context.markdown.as_bytes(),
+                )?;
+            }
+            Ok(())
+        };
+        prepare().map_err(|err| anyhow::anyhow!("Fork setup failed: {err:#}. Checkout retained at {}; branch {:?}; no agent started", workdir.display(), new_branch))?;
+
+        // Record the stopped checkout before a hook prompt can be cancelled.
+        let feature = Feature::new_for_project(
+            &project_name,
+            new_branch.clone(),
+            new_branch.clone(),
+            workdir.clone(),
+            true,
+            mode.clone(),
+            review,
+            false,
+            agent.clone(),
+            enable_chrome,
+            remote_control,
+        );
+        let feature_id = feature.id.clone();
+        if !self.store.add_feature(&project_name, feature) {
+            anyhow::bail!(
+                "Fork checkout retained at {}; branch {:?}; project no longer exists and no agent started",
+                workdir.display(),
+                new_branch
+            );
+        }
+        match self.save_reporting_conflict() {
+            Ok(true) => (),
+            Ok(false) => anyhow::bail!(
+                "Fork checkout retained at {}; branch {:?}; registration conflicted and no agent started",
+                workdir.display(),
+                new_branch
+            ),
+            Err(err) => anyhow::bail!(
+                "Fork checkout retained at {}; branch {:?}; registration failed: {err:#}; no agent started",
+                workdir.display(),
+                new_branch
+            ),
+        }
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(None, &feature_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Fork checkout retained at {}; branch {:?}; registered feature disappeared",
+                    workdir.display(),
+                    new_branch
+                )
+            })?;
+        self.selection = Selection::Feature(pi, fi);
 
         // Check for lifecycle hooks
         let global_ext = load_global_extension_config();
@@ -2408,6 +2591,7 @@ impl App {
                     prompt.title.clone(),
                     prompt.options.clone(),
                     HookNext::WorktreeCreated {
+                        expected_feature_id: Some(feature_id.clone()),
                         project_name,
                         feature_name: None,
                         branch: new_branch,
@@ -2431,6 +2615,7 @@ impl App {
             }
 
             self.start_worktree_hook(
+                Some(feature_id.clone()),
                 hook_cfg.script(),
                 workdir.clone(),
                 project_name.clone(),
@@ -2455,51 +2640,13 @@ impl App {
             return Ok(());
         }
 
-        let feature = Feature::new_for_project(
-            &project_name,
-            new_branch.clone(),
-            new_branch.clone(),
-            workdir,
-            true,
-            mode,
-            review,
-            false,
-            agent,
-            enable_chrome,
-            remote_control,
-        );
-
-        self.store.add_feature(&project_name, feature);
-        self.save()?;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.store.projects[pi].collapsed = false;
-            self.selection = Selection::Feature(pi, fi);
-        }
-
         self.mode = AppMode::Normal;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            if !self.autostart_allowed(&new_branch) {
-                self.save()?;
-                return Ok(());
-            }
-            // `autostart_allowed` above is this path's gate.
-            self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+        if !self.autostart_allowed(&new_branch) {
             self.save()?;
+            return Ok(());
         }
+        self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
+        self.save()?;
 
         self.message = Some(format!("Forked '{}' -> '{}'", source_branch, new_branch));
 

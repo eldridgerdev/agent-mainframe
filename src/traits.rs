@@ -75,7 +75,6 @@ pub trait WorktreeOps: Send + Sync {
     fn create_from(&self, repo: &Path, name: &str, new_branch: &str, base: &str)
     -> Result<PathBuf>;
     /// Create a fork checkout at an exact commit without applying settings.
-    #[cfg(test)]
     fn create_fork_base(
         &self,
         repo: &Path,

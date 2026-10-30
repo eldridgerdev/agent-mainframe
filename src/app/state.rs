@@ -32,8 +32,19 @@ pub enum ForkFeatureStep {
 }
 
 pub struct ForkFeatureState {
-    pub source_pi: usize,
-    pub source_fi: usize,
+    pub project_id: String,
+    pub source_feature_id: String,
+    pub source_workdir: PathBuf,
+    pub source_agent: AgentKind,
+    pub source_tmux_session: String,
+    pub source_is_worktree: bool,
+    pub source_status: crate::project::ProjectStatus,
+    pub source_session_id: Option<String>,
+    pub source_session_kind: Option<crate::project::SessionKind>,
+    pub source_session_window: Option<String>,
+    pub source_session_stopped: Option<bool>,
+    pub source_claude_session_id: Option<String>,
+    pub snapshot: crate::fork_snapshot::Snapshot,
     pub project_name: String,
     pub project_repo: PathBuf,
     pub source_branch: String,
@@ -2575,6 +2586,7 @@ pub struct ResourceConfirmState {
 #[allow(clippy::large_enum_variant)]
 pub enum HookNext {
     WorktreeCreated {
+        expected_feature_id: Option<String>,
         project_name: String,
         feature_name: Option<String>,
         branch: String,
@@ -2617,6 +2629,7 @@ pub struct HookPromptState {
 }
 
 pub struct RunningHookState {
+    pub expected_feature_id: Option<String>,
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
@@ -2713,6 +2726,7 @@ impl BackgroundDeletion {
 }
 
 pub struct BackgroundHook {
+    pub expected_feature_id: Option<String>,
     #[allow(dead_code)] // retained for the background-hook key, not read directly
     pub script: String,
     pub workdir: PathBuf,
@@ -2741,6 +2755,7 @@ pub struct BackgroundHook {
 impl BackgroundHook {
     pub fn from_running_state(state: RunningHookState) -> Self {
         Self {
+            expected_feature_id: state.expected_feature_id,
             script: state.script,
             workdir: state.workdir,
             project_name: state.project_name,

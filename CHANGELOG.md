@@ -10,7 +10,9 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Desktop PR Workspace checks AI fix handoffs before preparing a draft.** Choose an existing agent explicitly; AMF refuses changed findings, a moved PR head or a changed destination rather than silently retargeting the handoff. Refresh agents to choose again when the selected session is unavailable. The resulting prompt is appended to the unsent composer.
 
 ## [v0.51.0] - 2026-10-27
 

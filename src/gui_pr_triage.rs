@@ -295,6 +295,7 @@ pub struct PrFixTargetView {
     pub label: String,
     pub harness: AgentKind,
     pub stopped: bool,
+    pub destination_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -978,6 +979,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
                 label: s.label.clone(),
                 harness,
                 stopped: s.stopped || feature.status == crate::project::ProjectStatus::Stopped,
+                destination_revision: crate::gui_pr_workspace::destination_revision(feature, s),
             })
         })
         .collect();

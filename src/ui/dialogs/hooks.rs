@@ -211,6 +211,11 @@ pub fn draw_diff_review_dialog(
         );
         frame.render_widget(explanation_widget, chunks[3]);
     } else if let Some(explanation) = &state.explanation {
+        let explanation = if explanation.trim().is_empty() {
+            "The saved note is empty."
+        } else {
+            explanation.as_str()
+        };
         let explanation_lines = explanation
             .lines()
             .map(|line| {

@@ -133,7 +133,7 @@ it("asks before discarding unsent feedback and states OpenCode's semantics", asy
   expect((screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("draft");
   fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
   fireEvent.click(screen.getByRole("button", { name: "Discard and close" }));
-  expect(onClose).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   expect(responds()).toHaveLength(0);
 });
 
@@ -220,7 +220,7 @@ it("focuses the requested edit, traps Tab and restores terminal focus after dism
   fireEvent.keyDown(document.activeElement!, { key: "Tab" });
   expect(document.activeElement).toBe(screen.getAllByRole("button", { name: "Close" })[0]);
   fireEvent.keyDown(document.activeElement!, { key: "Escape" });
-  expect(onClose).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   expect(responds()).toHaveLength(0);
   mounted.unmount();
   expect(document.activeElement).toBe(terminal);
@@ -286,4 +286,159 @@ it("updates remaining counts immediately after answering even while feature coun
   fireEvent.click(screen.getByRole("button", { name: "Send approval" }));
   await screen.findByText("No edits are waiting for review");
   expect(screen.getByText("2 more waiting")).toBeTruthy();
+});
+
+const explanationCalls = (command: string) => vi.mocked(invoke).mock.calls.filter(([name]) => name === `supervised_edit_explanation_${command}`);
+const precall = { state: "precall", owner: "owner-a", prompt: "Explain old -> new exactly", model: "review-model", reasoning: "high" };
+
+it("does not bypass or restart the original answer hold when explanation state changes", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return { ...view([edit()]), popup_hold_secs: 0.35 };
+    if (command === "supervised_edit_explanation_prepare") return precall;
+    if (command === "supervised_edit_explanation_start") return { state: "complete", owner: "owner-a", request: 1, text: "Explanation after hold" };
+    if (command === "supervised_edit_explanation_cancel") return { state: "cancelled", owner: "owner-a" };
+    return [];
+  });
+  mount(); await screen.findByText("-return subtotal;");
+  const approve = screen.getByRole("button", { name: "Approve edit" }) as HTMLButtonElement;
+  expect(approve.disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  await screen.findByRole("alertdialog", { name: "Explanation AI call" });
+  expect(approve.disabled).toBe(true);
+  await waitFor(() => expect(approve.disabled).toBe(false));
+  fireEvent.click(screen.getByRole("button", { name: "Continue explanation" }));
+  await screen.findByText("Explanation after hold");
+  expect(approve.disabled).toBe(false);
+  expect(responds()).toHaveLength(0);
+});
+
+it("prepares only on Explain and cancellation of the mandatory notice preserves unsent feedback", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return precall;
+    if (command === "supervised_edit_explanation_cancel") return { state: "cancelled", owner: "owner-a" };
+    return [];
+  });
+  mount(); await screen.findByText("-return subtotal;");
+  expect(explanationCalls("prepare")).toHaveLength(0);
+  const feedback = screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement;
+  fireEvent.change(feedback, { target: { value: "Keep my unsent rejection" } });
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  const notice = await screen.findByRole("alertdialog", { name: "Explanation AI call" });
+  expect(notice.textContent).toContain("review-model"); expect(notice.textContent).toContain("high");
+  expect(within(notice).getByText("Explain old -> new exactly")).toBeTruthy();
+  expect(explanationCalls("start")).toHaveLength(0);
+  fireEvent.click(within(notice).getByRole("button", { name: "Cancel explanation" }));
+  await waitFor(() => expect(explanationCalls("cancel")).toHaveLength(1));
+  expect(await screen.findByText("Explanation cancelled before starting an AI call.")).toBeTruthy();
+  expect(feedback.value).toBe("Keep my unsent rejection"); expect(responds()).toHaveLength(0);
+});
+
+it("shows a saved note without a call and keeps its draft through refresh", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return { state: "saved_note", text: "Previously saved rationale" };
+    return [];
+  });
+  mount(); await screen.findByText("-return subtotal;");
+  const feedback = screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement;
+  fireEvent.change(feedback, { target: { value: "Keep this draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  expect(await screen.findByText("Previously saved rationale")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === "supervised_edits_load").length).toBeGreaterThan(1));
+  expect(screen.getByText("Previously saved rationale")).toBeTruthy(); expect(feedback.value).toBe("Keep this draft");
+  expect(explanationCalls("start")).toHaveLength(0);
+});
+
+it("retries a failed cancellation of the same owner before Close can leave", async () => {
+  let attempts = 0;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return precall;
+    if (command === "supervised_edit_explanation_start") return { state: "running", owner: "owner-a", request: 1 };
+    if (command === "supervised_edit_explanation_cancel") {
+      if (++attempts === 1) throw { kind: "internal", message: "Cancellation transport failed" };
+      return { state: "cancelled", owner: "owner-a" };
+    }
+    return [];
+  });
+  const close = mount(); await screen.findByText("-return subtotal;");
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Continue explanation" }));
+  await screen.findByText("Explaining this edit…");
+  fireEvent.click(screen.getAllByRole("button", { name: "Close", exact: true })[0]);
+  await screen.findAllByText("Cancellation transport failed"); expect(close).not.toHaveBeenCalled();
+  expect(explanationCalls("cancel")[0][1]).toEqual({ owner: "owner-a" });
+  fireEvent.click(screen.getAllByRole("button", { name: "Close", exact: true })[0]);
+  await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(explanationCalls("cancel")[1][1]).toEqual({ owner: "owner-a" });
+});
+
+it("waits for cancellation before answering and preserves feedback through resource approval", async () => {
+  let started = 0; let acknowledge!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return precall;
+    if (command === "supervised_edit_explanation_start") {
+      if (++started === 1) throw { kind: "needs_approval", message: "Only 50 MiB free. Continue anyway?" };
+      return { state: "complete", owner: "owner-a", request: 1, text: "The change rounds cents" };
+    }
+    if (command === "supervised_edit_explanation_cancel") {
+      await new Promise<void>((resolve) => { acknowledge = resolve; }); return { state: "cancelled", owner: "owner-a" };
+    }
+    if (command === "supervised_edit_respond") return { message: "Rejected", view: view([edit({ answered: true })]) };
+    return [];
+  });
+  mount(); await screen.findByText("-return subtotal;");
+  fireEvent.change(screen.getByRole("textbox", { name: "Feedback for the agent" }), { target: { value: "Keep full precision" } });
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Continue explanation" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Continue anyway" })); await screen.findByText("The change rounds cents");
+  expect(explanationCalls("start")[0][1]).toEqual({ owner: "owner-a", approved: false });
+  expect(explanationCalls("start")[1][1]).toEqual({ owner: "owner-a", approved: true });
+  expect((screen.getByRole("textbox", { name: "Feedback for the agent" }) as HTMLTextAreaElement).value).toBe("Keep full precision");
+  fireEvent.click(screen.getByRole("button", { name: "Reject edit" })); fireEvent.click(screen.getByRole("button", { name: "Send rejection" }));
+  await waitFor(() => expect(explanationCalls("cancel")).toHaveLength(1)); expect(responds()).toHaveLength(0);
+  await act(async () => acknowledge()); await waitFor(() => expect(responds()).toHaveLength(1));
+  expect(responds()[0][1]).toMatchObject({ decision: { kind: "reject", feedback: "Keep full precision" } });
+});
+
+it("retires a preparation arriving during Close before leaving and never launches it", async () => {
+  let prepared!: (value: unknown) => void;
+  let cancelled!: () => void;
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return new Promise((resolve) => { prepared = resolve; });
+    if (command === "supervised_edit_explanation_cancel") {
+      await new Promise<void>((resolve) => { cancelled = resolve; }); return { state: "cancelled", owner: "owner-a" };
+    }
+    return [];
+  });
+  const close = mount(); await screen.findByText("-return subtotal;");
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]); expect(close).not.toHaveBeenCalled();
+  await act(async () => prepared(precall));
+  await waitFor(() => expect(explanationCalls("cancel")).toHaveLength(1)); expect(close).not.toHaveBeenCalled();
+  await act(async () => cancelled()); await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(screen.queryByRole("alertdialog", { name: "Explanation AI call" })).toBeNull();
+  expect(explanationCalls("start")).toHaveLength(0);
+});
+
+it("retains the worker owner after a poll transport error so Close still cancels it", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === "supervised_edits_load") return view([edit()]);
+    if (command === "supervised_edit_explanation_prepare") return precall;
+    if (command === "supervised_edit_explanation_start") return { state: "running", owner: "owner-a", request: 1 };
+    if (command === "supervised_edit_explanation_poll") throw { kind: "internal", message: "Poll transport failed" };
+    if (command === "supervised_edit_explanation_cancel") return { state: "cancelled", owner: "owner-a" };
+    return [];
+  });
+  const close = mount(); await screen.findByText("-return subtotal;");
+  fireEvent.click(screen.getByRole("button", { name: "Explain this edit" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Continue explanation" }));
+  await screen.findByText("Poll transport failed");
+  fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
+  await waitFor(() => expect(close).toHaveBeenCalledOnce());
+  expect(explanationCalls("cancel")[0][1]).toEqual({ owner: "owner-a" });
 });

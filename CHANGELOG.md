@@ -10,7 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Explain waiting edits in the desktop app.** Read saved review notes without
+  an AI call, or review the exact prompt before asking Claude for an explanation.
+  Calls can be cancelled, changed edits discard old results, and unsent rejection
+  feedback stays in place. Explanations never answer the waiting agent. No
+  migration is required.
+
+### Fixed
+
+- **Empty saved review notes no longer trigger an AI explanation call.** Both
+  interfaces now show an explicitly empty note instead of silently asking Claude.
 
 ## [v0.51.0] - 2026-10-27
 

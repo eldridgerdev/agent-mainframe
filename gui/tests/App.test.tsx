@@ -675,6 +675,8 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
     expect(screen.getByText(/Wait for its result before switching reviews/)).toBeTruthy();
     expect(screen.queryByText("Supervised edits · Docs")).toBeNull();
+    // The answer waits for matching explanation cancellation before IPC.
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => finish());
     expect((await screen.findAllByText(/Approved src\/a.ts/)).length).toBeGreaterThan(0);
     fireEvent.click(review);

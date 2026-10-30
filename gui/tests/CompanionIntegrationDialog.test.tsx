@@ -6,7 +6,7 @@ import CompanionIntegrationDialog from "../src/CompanionIntegrationDialog";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const target = { project_id: "p", feature_id: "companion" };
-const plan = { revision: "revision", choice: "cherry_pick", companion_name: "Companion", source_name: "Source", companion_path: "/companion", source_path: "/source", companion_branch: "fix", source_branch: "feature", base_sha: "a".repeat(40), companion_head: "b".repeat(40), source_head: "a".repeat(40), commits: ["b".repeat(40)], source_dirty: false, companion_dirty: true, remote_tip: null, remote_display: null, ignored_collisions: [] };
+const plan = { revision: "revision", choice: "cherry_pick", companion_name: "Companion", source_name: "Source", companion_path: "/companion", source_path: "/source", companion_branch: "fix", source_branch: "feature", base_sha: "a".repeat(40), companion_head: "b".repeat(40), source_head: "a".repeat(40), commits: ["b".repeat(40)], source_dirty: false, companion_dirty: true, remote_tip: null, remote_display: null, ignored_collisions: [], hidden_tracked: [] };
 it("previews without mutation, warns about excluded work, and confirms the exact revision once", async () => {
   let finish!: (value: string) => void;
   vi.mocked(invoke).mockImplementation(async command => {
@@ -73,5 +73,16 @@ it("blocks cherry-pick when an ignored destination file would be overwritten", a
   render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
   expect(await screen.findByText(/Ignored paths would be overwritten: private.txt/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
+});
+it("blocks cherry-pick when hidden tracked paths could conceal local edits", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return { ...plan, hidden_tracked: ["src/lib.rs"] };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/assume-unchanged or skip-worktree.*src\/lib.rs/)).toBeTruthy();
   expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
 });

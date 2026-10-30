@@ -14,6 +14,138 @@ pub struct SpawnedWorktreeCommand {
 }
 
 impl WorktreeManager {
+    /// Create a checkout for a fork without modifying its contents. Setup must
+    /// happen after the approved source snapshot has been transferred.
+    #[cfg(test)]
+    pub fn create_fork_base(
+        repo: &Path,
+        name: &str,
+        branch: &str,
+        commit: &str,
+    ) -> Result<PathBuf> {
+        use std::path::Component;
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            bail!("Fork base must be an exact Git commit ID");
+        }
+        let repo = repo
+            .canonicalize()
+            .context("Cannot resolve project checkout")?;
+        let relative = Path::new(name);
+        if relative.components().next().is_none()
+            || relative
+                .components()
+                .any(|c| !matches!(c, Component::Normal(n) if n != ".git"))
+        {
+            bail!("Invalid fork checkout name: {name:?}");
+        }
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let mut parent = repo.join(".worktrees");
+        let mut directory = std::fs::File::open(&repo)?;
+        let components = std::iter::once(std::ffi::OsStr::new(".worktrees")).chain(
+            relative
+                .parent()
+                .into_iter()
+                .flat_map(|p| p.components())
+                .map(|c| c.as_os_str()),
+        );
+        for component in components {
+            let component = std::ffi::CString::new(component.as_bytes())?;
+            let rc = unsafe { libc::mkdirat(directory.as_raw_fd(), component.as_ptr(), 0o755) };
+            if rc < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(err).context("Cannot create fork checkout parent");
+                }
+            }
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    component.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Fork checkout parent is not a safe directory");
+            }
+            directory = unsafe { std::fs::File::from_raw_fd(fd) };
+        }
+        if let Some(nested) = relative.parent() {
+            parent.push(nested);
+        }
+        let leaf = relative.file_name().context("Missing fork checkout name")?;
+        let name = std::ffi::CString::new(leaf.as_bytes())?;
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let rc = unsafe {
+            libc::fstatat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                stat.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if rc == 0 {
+            bail!(
+                "Fork checkout already exists: {}",
+                parent.join(leaf).display()
+            );
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err).context("Cannot inspect fork checkout path");
+        }
+        let path = parent.join(leaf);
+        let git_dir = Command::new("git")
+            .args(["rev-parse", "--absolute-git-dir"])
+            .current_dir(&repo)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .output()
+            .context("Cannot find project Git directory")?;
+        if !git_dir.status.success() {
+            bail!(
+                "Cannot find project Git directory: {}",
+                String::from_utf8_lossy(&git_dir.stderr).trim()
+            );
+        }
+        let mut git_dir = git_dir.stdout;
+        if git_dir.pop() != Some(b'\n') {
+            bail!("Invalid project Git directory response");
+        }
+        let git_dir = std::ffi::OsString::from_vec(git_dir);
+        // chdir happens before close-on-exec, anchoring Git's relative output
+        // path to the checked parent even if its pathname is replaced.
+        let anchored_parent = format!("/dev/fd/{}", directory.as_raw_fd());
+        let output = Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(["worktree", "add", "-b", branch])
+            .arg(leaf)
+            .arg(commit)
+            .current_dir(anchored_parent)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .output()
+            .context("Failed to run git worktree add")?;
+        if !output.status.success() {
+            let details = String::from_utf8_lossy(&output.stderr);
+            if std::fs::symlink_metadata(&path).is_ok() {
+                bail!(
+                    "Git could not finish the fork checkout: {}. Checkout retained at {}; branch {branch:?} may exist",
+                    details.trim(),
+                    path.display()
+                );
+            }
+            bail!("Git could not create the fork checkout: {}", details.trim());
+        }
+        Ok(path)
+    }
     fn stream_child_output<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) {
         if let Some(reader) = reader {
             std::thread::spawn(move || {
@@ -517,11 +649,74 @@ impl WorktreeOps for WorktreeManager {
     ) -> Result<PathBuf> {
         WorktreeManager::create_from(repo, name, new_branch, base)
     }
+
+    #[cfg(test)]
+    fn create_fork_base(
+        &self,
+        repo: &Path,
+        name: &str,
+        branch: &str,
+        commit: &str,
+    ) -> Result<PathBuf> {
+        WorktreeManager::create_fork_base(repo, name, branch, commit)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_base_requires_exact_commit_and_creates_an_unconfigured_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let result = Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_AUTHOR_NAME", "Fixture")
+                .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
+                .env("GIT_COMMITTER_NAME", "Fixture")
+                .env("GIT_COMMITTER_EMAIL", "fixture@example.test")
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            result.stdout
+        };
+        run(&["init", "-q"]);
+        std::fs::write(dir.path().join("file"), b"head").unwrap();
+        run(&["add", "file"]);
+        run(&["commit", "-qm", "initial"]);
+        let head = String::from_utf8(run(&["rev-parse", "HEAD"])).unwrap();
+        let ops: &dyn WorktreeOps = &WorktreeManager;
+        std::fs::create_dir(dir.path().join(".claude")).unwrap();
+        std::fs::write(dir.path().join(".claude/settings.local.json"), b"{}\n").unwrap();
+        assert!(
+            ops.create_fork_base(dir.path(), "bad", "bad", "HEAD")
+                .is_err()
+        );
+        let workdir = ops
+            .create_fork_base(dir.path(), "nested/fork", "fork", head.trim())
+            .unwrap();
+        assert_eq!(std::fs::read(workdir.join("file")).unwrap(), b"head");
+        assert!(!workdir.join(".claude/settings.local.json").exists());
+        assert!(
+            ops.create_fork_base(dir.path(), "nested/fork", "other", head.trim())
+                .is_err()
+        );
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join(".worktrees/escape")).unwrap();
+        assert!(
+            ops.create_fork_base(dir.path(), "escape/fork", "escape", head.trim())
+                .is_err()
+        );
+        assert!(!outside.path().join("fork").exists());
+    }
 
     #[test]
     fn parse_primary_worktree_root_returns_first_worktree_entry() {

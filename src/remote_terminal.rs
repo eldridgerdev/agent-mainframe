@@ -182,7 +182,11 @@ fn escape_sequence(chars: &[char]) -> (usize, Option<String>) {
                 return (chars.len(), None);
             }
             let params: String = chars[2..end].iter().collect();
-            let key = match (params.as_str(), chars[end]) {
+            let (key_params, modifier) = match params.split_once(';') {
+                Some((key_params, modifier)) => (key_params, modifier.parse::<u8>().ok()),
+                None => (params.as_str(), None),
+            };
+            let key = match (key_params, chars[end]) {
                 ("", 'A') | ("1", 'A') => named("Up"),
                 ("", 'B') | ("1", 'B') => named("Down"),
                 ("", 'C') | ("1", 'C') => named("Right"),
@@ -199,6 +203,13 @@ fn escape_sequence(chars: &[char]) -> (usize, Option<String>) {
                 ("", 'R') => named("F3"),
                 ("", 'S') => named("F4"),
                 _ => None,
+            };
+            let key = match modifier {
+                None => key,
+                Some(3) => key.map(|key| format!("M-{key}")),
+                // xterm modifier parameter is 1 + bitmask (shift, alt, ctrl).
+                Some(2 | 4 | 6 | 8 | 10 | 12 | 14) => None,
+                Some(_) => None,
             };
             (end + 1, key)
         }
@@ -474,6 +485,15 @@ mod tests {
         );
         assert_eq!(translate_input("\x1b"), keys(&["Escape"]));
         assert_eq!(translate_input("\x1bx"), keys(&["M-x"]));
+    }
+
+    #[test]
+    fn unsupported_escape_modifiers_are_dropped() {
+        assert_eq!(
+            translate_input("\x1b[1;5D\x1b[3;2~"),
+            Vec::<PaneInput>::new()
+        );
+        assert_eq!(translate_input("\x1b[1;3D"), keys(&["M-Left"]));
     }
 
     #[test]

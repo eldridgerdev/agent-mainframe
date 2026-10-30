@@ -414,6 +414,7 @@ fn check_supported(root: &Path, changed: &[PathBuf]) -> Result<BTreeSet<PathBuf>
     }
     Ok(gitlinks)
 }
+#[allow(clippy::unnecessary_cast)]
 fn capture_entry(root: &File, path: &Path, spool: &Path) -> Result<Entry> {
     let Some((dir, leaf)) = parent_at(root, path)? else {
         return Ok(Entry::Missing);
@@ -474,7 +475,9 @@ fn capture_entry(root: &File, path: &Path, spool: &Path) -> Result<Entry> {
             let mut src = unsafe { File::from_raw_fd(fd) };
             let before = src.metadata()?;
             ensure!(
-                before.is_file() && before.dev() == stat.st_dev && before.ino() == stat.st_ino,
+                before.is_file()
+                    && before.dev() == stat.st_dev as u64
+                    && before.ino() == stat.st_ino as u64,
                 "Source changed while reading {:?}",
                 path
             );
@@ -639,6 +642,7 @@ pub(crate) fn write_auxiliary(destination: &Path, relative: &Path, bytes: &[u8])
 
 /// Preserve the existing worktree settings merge for an unchanged tracked
 /// settings file. A source-changed settings path is refused by the caller.
+#[allow(clippy::unnecessary_cast)]
 pub(crate) fn merge_settings(destination: &Path, source: &[u8]) -> Result<()> {
     let relative = Path::new(".claude/settings.local.json");
     let root = File::open(destination)?;
@@ -697,7 +701,7 @@ pub(crate) fn merge_settings(destination: &Path, source: &[u8]) -> Result<()> {
             parent.as_raw_fd(),
             temp.as_ptr(),
             libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_CREAT | libc::O_EXCL,
-            before.mode & 0o777,
+            (before.mode & 0o777) as libc::c_uint,
         )
     };
     if fd < 0 {

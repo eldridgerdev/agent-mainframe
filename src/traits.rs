@@ -78,9 +78,5 @@ pub trait WorktreeOps: Send + Sync {
         name: &str,
         new_branch: &str,
         base: &str,
-    ) -> Result<PathBuf> {
-        // Default: fall back to create() ignoring base
-        let _ = base;
-        self.create(repo, name, new_branch)
-    }
+    ) -> Result<PathBuf>;
 }

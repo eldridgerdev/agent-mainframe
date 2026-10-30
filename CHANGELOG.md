@@ -26,6 +26,10 @@ are tagged.
 
 ### Changed
 
+- **PR Workspace Threads footer lists more of the keys that work there.** The
+  footer and `?` help now show `M` (add a comment to review memory), plus `h`
+  (hide/show resolved), `o` (sort) and `B` (fix marked). The keys already
+  worked; they just weren't listed. No migration is required.
 - **Plan interview "leave?" prompt matches every other confirm.** `y` leaves the
   interview, and `n` or `Esc` keeps going, so pressing `Esc` twice no longer
   looks like it should leave. When the interview is deferring a new feature,

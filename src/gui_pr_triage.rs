@@ -959,6 +959,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         || (project.name.clone(), String::new()),
         |f| (f.name.clone(), f.branch.clone()),
     );
+    let checkout = feature.map(|f| crate::gui_pr_workspace::checkout_identity(&f.workdir));
     let fix_targets = feature
         .into_iter()
         .flat_map(|feature| feature.sessions.iter().map(move |s| (feature, s)))
@@ -979,7 +980,11 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
                 label: s.label.clone(),
                 harness,
                 stopped: s.stopped || feature.status == crate::project::ProjectStatus::Stopped,
-                destination_revision: crate::gui_pr_workspace::destination_revision(feature, s),
+                destination_revision: crate::gui_pr_workspace::destination_revision_with(
+                    feature,
+                    s,
+                    checkout.as_ref().unwrap_or(&None),
+                ),
             })
         })
         .collect();

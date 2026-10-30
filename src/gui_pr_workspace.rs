@@ -310,7 +310,8 @@ pub fn close(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
 pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView> {
     check(gui, id)?;
     let context = gui.pr_workspace_context.as_ref().unwrap();
-    if checkout_identity(&context.workdir).as_ref() != Some(&context.checkout_identity) {
+    let identity = checkout_identity(&context.workdir);
+    if identity.as_ref() != Some(&context.checkout_identity) {
         return Err(GuiError::conflict(
             "Feature checkout changed; reopen PR Workspace",
         ));
@@ -328,7 +329,7 @@ pub fn ai_snapshot(gui: &mut GuiHandle, id: &str) -> GuiResult<PrWorkspaceAiView
     app.poll_ai_pr_review_bg();
     let selected_pr = context.pr.clone();
     let result_revision = match &app.mode {
-        AppMode::AiReview(state) => Some(result_revision(&context.result_epoch, state)),
+        AppMode::AiReview(state) => Some(result_revision(&context.result_epoch, state, &identity)),
         _ => None,
     };
     let (findings, summary, error) = match &app.mode {
@@ -582,15 +583,27 @@ fn digest(value: &impl Serialize) -> String {
 // Bind the checkout directory, Git marker and worktree gitdir to detect
 // replacement at an otherwise unchanged path.
 #[derive(Serialize, PartialEq, Eq)]
-struct CheckoutIdentity {
+pub(crate) struct CheckoutIdentity {
     directory: (PathBuf, u64, u64),
     marker: (PathBuf, u64, u64),
     marker_contents: Option<Vec<u8>>,
     gitdir: (PathBuf, u64, u64),
 }
 
-fn checkout_identity(path: &Path) -> Option<CheckoutIdentity> {
+#[cfg(unix)]
+fn file_id(meta: &std::fs::Metadata) -> (u64, u64) {
     use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+// No portable device/inode pair off Unix: identity falls back to the
+// canonical paths and the `.git` pointer contents.
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+pub(crate) fn checkout_identity(path: &Path) -> Option<CheckoutIdentity> {
     let canonical = std::fs::canonicalize(path).ok()?;
     let directory = std::fs::metadata(&canonical).ok()?;
     if !directory.is_dir() {
@@ -621,10 +634,10 @@ fn checkout_identity(path: &Path) -> Option<CheckoutIdentity> {
         return None;
     }
     Some(CheckoutIdentity {
-        directory: (canonical, directory.dev(), directory.ino()),
-        marker: (marker, meta.dev(), meta.ino()),
+        directory: (canonical, file_id(&directory).0, file_id(&directory).1),
+        marker: (marker, file_id(&meta).0, file_id(&meta).1),
         marker_contents: contents,
-        gitdir: (gitdir, gitdir_meta.dev(), gitdir_meta.ino()),
+        gitdir: (gitdir, file_id(&gitdir_meta).0, file_id(&gitdir_meta).1),
     })
 }
 
@@ -632,10 +645,20 @@ pub(crate) fn destination_revision(
     feature: &crate::project::Feature,
     session: &crate::project::FeatureSession,
 ) -> String {
+    destination_revision_with(feature, session, &checkout_identity(&feature.workdir))
+}
+
+/// As `destination_revision`, for callers that already hold the feature's
+/// checkout identity (it is filesystem-backed, so compute it once per feature).
+pub(crate) fn destination_revision_with(
+    feature: &crate::project::Feature,
+    session: &crate::project::FeatureSession,
+    identity: &Option<CheckoutIdentity>,
+) -> String {
     digest(&(
         &feature.id,
         &feature.workdir,
-        checkout_identity(&feature.workdir),
+        identity,
         &feature.branch,
         &feature.tmux_session,
         feature.status == crate::project::ProjectStatus::Stopped,
@@ -648,10 +671,14 @@ pub(crate) fn destination_revision(
     ))
 }
 
-fn result_revision(epoch: &str, state: &crate::app::pr_review::state::AiReviewState) -> String {
+fn result_revision(
+    epoch: &str,
+    state: &crate::app::pr_review::state::AiReviewState,
+    identity: &Option<CheckoutIdentity>,
+) -> String {
     digest(&(
         epoch,
-        checkout_identity(&state.workdir),
+        identity,
         &state.pr,
         &state.findings,
         &state.summary,
@@ -779,8 +806,9 @@ fn validate_fix(
         .pr
         .as_ref()
         .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
+    let identity = checkout_identity(&context.workdir);
     if context_for_feature(app, &context.target)? != context.workdir
-        || checkout_identity(&context.workdir).as_ref() != Some(&context.checkout_identity)
+        || identity.as_ref() != Some(&context.checkout_identity)
     {
         return Err(GuiError::conflict(
             "Feature checkout changed or is unavailable; reopen PR Workspace",
@@ -808,7 +836,7 @@ fn validate_fix(
             "The latest AI review failed; run it again before preparing a fix",
         ));
     }
-    if result_revision(&context.result_epoch, state) != request.result_revision {
+    if result_revision(&context.result_epoch, state, &identity) != request.result_revision {
         return Err(GuiError::conflict(
             "The AI findings changed; refresh before preparing a fix",
         ));

@@ -190,7 +190,7 @@ it("retains an unavailable agent choice after refresh instead of silently select
   targets = [second];
   fireEvent.click(within(aiPanel).getByRole("button", { name: "Refresh agents" }));
   await waitFor(() => expect(within(aiPanel).getByText("Previously selected session unavailable or changed")).toBeTruthy());
-  expect(select.value).toBe("first");
+  expect(select.value).toBe("__stale");
   fireEvent.click(within(aiPanel).getByRole("button", { name: "Prepare fix" }));
   expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === "pr_workspace_prepare_fix")).toHaveLength(0);
   fireEvent.change(select, { target: { value: "second" } });

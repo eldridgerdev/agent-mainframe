@@ -39,6 +39,10 @@ filterable projects sidebar, and `amf automation` can start sessions and tasks.
 
 ### Changed
 
+- **PR Workspace Threads footer lists more of the keys that work there.** The
+  footer and `?` help now show `M` (add a comment to review memory), plus `h`
+  (hide/show resolved), `o` (sort) and `B` (fix marked). The keys already
+  worked; they just weren't listed. No migration is required.
 - **AMF's own files no longer drown your changes in the diff.** The
   current-changes viewer and Final Review list the files AMF wrote into the
   checkout (hook settings, injected skills, `.amf/`, and `.gitignore` or

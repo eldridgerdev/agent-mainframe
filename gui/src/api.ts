@@ -63,6 +63,7 @@ export interface Feature {
   summary?: string | null;
   summary_updated_at?: string | null;
   issue_source?: IssueSource | null;
+  review_source?: { source_feature_id: string; target_branch: string; base_sha: string } | null;
 }
 
 export interface Project {

@@ -13,11 +13,22 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+fn git_command(root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.current_dir(root).env("GIT_OPTIONAL_LOCKS", "0");
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
+    let out = git_command(root)
         .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .current_dir(root)
         .output()
         .context("Failed to run git")?;
     ensure!(
@@ -95,6 +106,7 @@ struct Fingerprint {
     gitdir_ino: u64,
     root_dev: u64,
     root_ino: u64,
+    index_file: PathBuf,
     index: [u8; 32],
     status: Vec<u8>,
 }
@@ -118,9 +130,8 @@ fn fingerprint(root: &Path) -> Result<Fingerprint> {
     )?)?))
     .canonicalize()?;
     let gitdir_meta = gitdir.metadata()?;
-    let symbolic = Command::new("git")
+    let symbolic = git_command(root)
         .args(["symbolic-ref", "-q", "HEAD"])
-        .current_dir(root)
         .output()?;
     ensure!(
         symbolic.status.success() || symbolic.status.code() == Some(1),
@@ -137,13 +148,17 @@ fn fingerprint(root: &Path) -> Result<Fingerprint> {
         root.join(index_path)
     };
     let index: [u8; 32] =
-        Sha256::digest(fs::read(index_path).context("Cannot read source index")?).into();
+        Sha256::digest(fs::read(&index_path).context("Cannot read source index")?).into();
     let meta = root.metadata()?;
     let status = git(
         root,
         &[
             "-c",
             "status.renames=false",
+            "-c",
+            "core.filemode=true",
+            "-c",
+            "core.fsmonitor=false",
             "status",
             "--porcelain=v1",
             "-z",
@@ -160,6 +175,7 @@ fn fingerprint(root: &Path) -> Result<Fingerprint> {
         gitdir_ino: gitdir_meta.ino(),
         root_dev: meta.dev(),
         root_ino: meta.ino(),
+        index_file: index_path,
         index,
         status,
     })
@@ -192,9 +208,8 @@ fn paths(status: &[u8]) -> Result<Vec<PathBuf>> {
 // rules before descending so ignored build trees are not treated as fork data.
 fn ignored(root: &Path, path: &Path) -> Result<bool> {
     use std::process::Stdio;
-    let mut child = Command::new("git")
+    let mut child = git_command(root)
         .args(["check-ignore", "--no-index", "-q", "-z", "--stdin"])
-        .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -222,6 +237,7 @@ fn check_special_entries(
     directory: &File,
     prefix: &Path,
     gitlinks: &BTreeSet<PathBuf>,
+    reject_ignored: bool,
 ) -> Result<()> {
     struct Dir(*mut libc::DIR);
     impl Drop for Dir {
@@ -294,12 +310,15 @@ fn check_special_entries(
         }
         let kind = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
         if kind == libc::S_IFDIR {
-            if !gitlinks.contains(&path) && !ignored(root, &path)? {
+            if !gitlinks.contains(&path) && (reject_ignored || !ignored(root, &path)?) {
                 let child = open_dir_at(directory, &n)
                     .with_context(|| format!("Cannot enumerate {:?}", path))?;
-                check_special_entries(root, &child, &path, gitlinks)?;
+                check_special_entries(root, &child, &path, gitlinks, reject_ignored)?;
             }
-        } else if kind != libc::S_IFREG && kind != libc::S_IFLNK && !ignored(root, &path)? {
+        } else if kind != libc::S_IFREG
+            && kind != libc::S_IFLNK
+            && (reject_ignored || !ignored(root, &path)?)
+        {
             bail!("Unsupported fork entry {:?}", path);
         }
     }
@@ -307,9 +326,8 @@ fn check_special_entries(
 }
 fn check_supported(root: &Path, changed: &[PathBuf]) -> Result<BTreeSet<PathBuf>> {
     let mut gitlinks = BTreeSet::new();
-    let sparse = Command::new("git")
+    let sparse = git_command(root)
         .args(["config", "--bool", "--get", "core.sparseCheckout"])
-        .current_dir(root)
         .output()?;
     match sparse.status.code() {
         Some(0) => ensure!(
@@ -325,6 +343,12 @@ fn check_supported(root: &Path, changed: &[PathBuf]) -> Result<BTreeSet<PathBuf>
             .split(|b| *b == 0)
             .any(|record| matches!(record.first(), Some(b'S' | b's'))),
         "Sparse checkout is not supported for forks"
+    );
+    ensure!(
+        !entries
+            .split(|b| *b == 0)
+            .any(|record| record.first().is_some_and(u8::is_ascii_lowercase)),
+        "Assume-unchanged index entries are not supported for forks"
     );
     let stages = git(root, &["ls-files", "--stage", "-z"])?;
     for record in stages.split(|b| *b == 0).filter(|r| !r.is_empty()) {
@@ -470,7 +494,7 @@ impl Snapshot {
         let changed = paths(&before.status)?;
         let gitlinks = check_supported(&root, &changed)?;
         let dir = File::open(&root)?;
-        check_special_entries(&root, &dir, Path::new(""), &gitlinks)?;
+        check_special_entries(&root, &dir, Path::new(""), &gitlinks, false)?;
         let spool = tempfile::tempdir().context("Cannot create fork snapshot spool")?;
         let mut entries = Vec::new();
         for (i, path) in changed.into_iter().enumerate() {
@@ -528,6 +552,351 @@ impl Snapshot {
             );
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DestinationEntry {
+    device: u64,
+    inode: u64,
+    mode: libc::mode_t,
+    size: i64,
+    modified_seconds: i64,
+    modified_nanos: i64,
+    changed_seconds: i64,
+    changed_nanos: i64,
+}
+
+fn destination_entry(directory: &File, name: &CString) -> Result<Option<DestinationEntry>> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    if unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } < 0
+    {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(err.into());
+    }
+    let stat = unsafe { stat.assume_init() };
+    Ok(Some(DestinationEntry {
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+        mode: stat.st_mode,
+        size: stat.st_size as i64,
+        modified_seconds: stat.st_mtime as i64,
+        modified_nanos: stat.st_mtime_nsec as i64,
+        changed_seconds: stat.st_ctime as i64,
+        changed_nanos: stat.st_ctime_nsec as i64,
+    }))
+}
+
+fn entry_at(root: &File, path: &Path) -> Result<Option<DestinationEntry>> {
+    match parent_at(root, path)? {
+        Some((parent, name)) => destination_entry(&parent, &name),
+        None => Ok(None),
+    }
+}
+fn directory_identity_matches(a: &DestinationEntry, b: &DestinationEntry) -> bool {
+    a.device == b.device && a.inode == b.inode && a.mode == b.mode
+}
+fn validate_destination_identity(
+    root: &Path,
+    fingerprint: &Fingerprint,
+    git_entry: &DestinationEntry,
+    fd: &File,
+) -> Result<()> {
+    let current = root.metadata()?;
+    ensure!(
+        current.dev() == fingerprint.root_dev && current.ino() == fingerprint.root_ino,
+        "Fork destination was replaced"
+    );
+    let gitdir = fingerprint.gitdir.metadata()?;
+    ensure!(
+        gitdir.dev() == fingerprint.gitdir_dev && gitdir.ino() == fingerprint.gitdir_ino,
+        "Fork destination Git directory was replaced"
+    );
+    ensure!(
+        destination_entry(fd, &CString::new(".git")?)?.as_ref() == Some(git_entry),
+        "Fork destination Git entry changed"
+    );
+    let current_index: [u8; 32] = Sha256::digest(fs::read(&fingerprint.index_file)?).into();
+    ensure!(
+        current_index == fingerprint.index,
+        "Fork destination index changed"
+    );
+    ensure!(
+        line(git(root, &["rev-parse", "--verify", "HEAD^{commit}"])?)? == fingerprint.head,
+        "Fork destination HEAD changed"
+    );
+    Ok(())
+}
+fn ensure_parent(
+    root: &File,
+    path: &Path,
+    baseline: &std::collections::BTreeMap<PathBuf, Option<DestinationEntry>>,
+    owned: &mut std::collections::BTreeMap<PathBuf, DestinationEntry>,
+    removed: &BTreeSet<PathBuf>,
+) -> Result<(File, CString)> {
+    let mut components = path_parts(path)?;
+    let leaf = components.pop().context("Missing destination filename")?;
+    let mut dir = root.try_clone()?;
+    let mut relative = PathBuf::new();
+    for component in components {
+        relative.push(OsString::from_vec(component.as_bytes().to_vec()));
+        let expected = owned
+            .get(&relative)
+            .or_else(|| baseline.get(&relative).and_then(Option::as_ref));
+        let actual = destination_entry(&dir, &component)?;
+        if let Some(expected) = expected.filter(|entry| entry.mode & libc::S_IFMT == libc::S_IFDIR)
+        {
+            let actual = actual.as_ref().context("Destination parent disappeared")?;
+            ensure!(
+                directory_identity_matches(expected, actual),
+                "Destination parent changed: {:?}",
+                relative
+            );
+        } else {
+            ensure!(
+                expected.is_none() || removed.contains(&relative),
+                "Destination parent was removed externally: {:?}",
+                relative
+            );
+            ensure!(
+                actual.is_none(),
+                "Unexpected destination parent: {:?}",
+                relative
+            );
+            let rc = unsafe { libc::mkdirat(dir.as_raw_fd(), component.as_ptr(), 0o755) };
+            if rc < 0 {
+                return Err(io::Error::last_os_error())
+                    .with_context(|| format!("Cannot create directory {:?}", relative));
+            }
+            let entry =
+                destination_entry(&dir, &component)?.context("Created directory disappeared")?;
+            owned.insert(relative.clone(), entry);
+        }
+        dir = open_dir_at(&dir, &component)
+            .with_context(|| format!("Cannot open destination parent {:?}", relative))?;
+    }
+    Ok((dir, leaf))
+}
+impl Snapshot {
+    /// Transfer only to a freshly created, pristine checkout of this exact HEAD.
+    /// Errors retain the partially populated destination for manual recovery.
+    pub(crate) fn transfer(&self, destination: &Path) -> Result<()> {
+        self.transfer_inner(destination)
+            .with_context(|| format!("Fork checkout retained at {}", destination.display()))
+    }
+
+    fn transfer_inner(&self, destination: &Path) -> Result<()> {
+        use std::collections::BTreeMap;
+        self.validate()?;
+        let destination = destination
+            .canonicalize()
+            .context("Cannot resolve fork destination")?;
+        ensure!(
+            destination != self.root,
+            "Fork destination is the source checkout"
+        );
+        let dest = fingerprint(&destination)?;
+        ensure!(
+            dest.head == self.fingerprint.head,
+            "Fork destination HEAD changed"
+        );
+        let dest_gitlinks = check_supported(&destination, &paths(&dest.status)?)?;
+        let all_status = git(
+            &destination,
+            &[
+                "-c",
+                "core.filemode=true",
+                "-c",
+                "core.fsmonitor=false",
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+                "--ignored=traditional",
+                "--no-renames",
+                "--ignore-submodules=none",
+            ],
+        )?;
+        ensure!(
+            all_status.is_empty(),
+            "Fork destination is not pristine; retained checkout: {}",
+            destination.display()
+        );
+        let root = File::open(&destination)?;
+        check_special_entries(&destination, &root, Path::new(""), &dest_gitlinks, true)?;
+        let meta = root.metadata()?;
+        ensure!(
+            meta.dev() == dest.root_dev && meta.ino() == dest.root_ino,
+            "Fork destination was replaced"
+        );
+        let git_entry = destination_entry(&root, &CString::new(".git")?)?
+            .context("Destination has no Git entry")?;
+        let mut baseline = BTreeMap::<PathBuf, Option<DestinationEntry>>::new();
+        for (path, _) in &self.entries {
+            let mut prefix = PathBuf::new();
+            for part in path.components() {
+                prefix.push(part.as_os_str());
+                if !baseline.contains_key(&prefix) {
+                    baseline.insert(prefix.clone(), entry_at(&root, &prefix)?);
+                }
+            }
+        }
+        ensure!(
+            fingerprint(&destination)? == dest,
+            "Fork destination changed before transfer"
+        );
+        self.validate()?;
+        let mut operations = 0usize;
+        let mut apply = || -> Result<()> {
+            let mut removed = BTreeSet::new();
+            let mut order: Vec<_> = self.entries.iter().collect();
+            order.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+            for (path, desired) in order {
+                validate_destination_identity(&destination, &dest, &git_entry, &root)?;
+                let expected = baseline.get(path).context("Missing destination baseline")?;
+                let Some((parent, name)) = parent_at(&root, path)? else {
+                    ensure!(expected.is_none(), "Destination parent changed: {:?}", path);
+                    continue;
+                };
+                let actual = destination_entry(&parent, &name)?;
+                let matches = match (expected, &actual) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) if a.mode & libc::S_IFMT == libc::S_IFDIR => {
+                        directory_identity_matches(a, b)
+                    }
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+                ensure!(matches, "Destination entry changed: {:?}", path);
+                if let Some(actual) = actual {
+                    let is_dir = actual.mode & libc::S_IFMT == libc::S_IFDIR;
+                    if is_dir && matches!(desired, Entry::Missing) {
+                        continue;
+                    }
+                    let flags = if is_dir { libc::AT_REMOVEDIR } else { 0 };
+                    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) } < 0 {
+                        return Err(io::Error::last_os_error())
+                            .with_context(|| format!("Cannot remove destination {:?}", path));
+                    }
+                    operations += 1;
+                    removed.insert(path.clone());
+                }
+            }
+            let mut order: Vec<_> = self
+                .entries
+                .iter()
+                .filter(|(_, entry)| !matches!(entry, Entry::Missing))
+                .collect();
+            order.sort_by_key(|(path, _)| path.components().count());
+            let mut owned = BTreeMap::new();
+            for (path, entry) in order {
+                validate_destination_identity(&destination, &dest, &git_entry, &root)?;
+                let (parent, leaf) = ensure_parent(&root, path, &baseline, &mut owned, &removed)?;
+                match entry {
+                    Entry::Symlink(target) => {
+                        let target = CString::new(target.as_slice())?;
+                        if unsafe {
+                            libc::symlinkat(target.as_ptr(), parent.as_raw_fd(), leaf.as_ptr())
+                        } < 0
+                        {
+                            return Err(io::Error::last_os_error()).with_context(|| {
+                                format!("Cannot create destination link {:?}", path)
+                            });
+                        }
+                    }
+                    Entry::Regular {
+                        digest,
+                        executable,
+                        spool,
+                    } => {
+                        let temp = CString::new(format!(".amf-fork-{}", uuid::Uuid::new_v4()))?;
+                        let fd = unsafe {
+                            libc::openat(
+                                parent.as_raw_fd(),
+                                temp.as_ptr(),
+                                libc::O_WRONLY
+                                    | libc::O_CLOEXEC
+                                    | libc::O_NOFOLLOW
+                                    | libc::O_CREAT
+                                    | libc::O_EXCL,
+                                0o600,
+                            )
+                        };
+                        if fd < 0 {
+                            return Err(io::Error::last_os_error())
+                                .with_context(|| format!("Cannot stage destination {:?}", path));
+                        }
+                        let mut output = unsafe { File::from_raw_fd(fd) };
+                        let write = (|| -> Result<()> {
+                            let mut input = File::open(spool)?;
+                            let mut hasher = Sha256::new();
+                            let mut buf = [0; 65536];
+                            loop {
+                                let n = input.read(&mut buf)?;
+                                if n == 0 {
+                                    break;
+                                }
+                                hasher.update(&buf[..n]);
+                                output.write_all(&buf[..n])?;
+                            }
+                            let actual: [u8; 32] = hasher.finalize().into();
+                            ensure!(&actual == digest, "Fork snapshot changed at {:?}", path);
+                            if unsafe {
+                                libc::fchmod(
+                                    output.as_raw_fd(),
+                                    if *executable { 0o755 } else { 0o644 },
+                                )
+                            } < 0
+                            {
+                                return Err(io::Error::last_os_error().into());
+                            }
+                            if unsafe {
+                                libc::linkat(
+                                    parent.as_raw_fd(),
+                                    temp.as_ptr(),
+                                    parent.as_raw_fd(),
+                                    leaf.as_ptr(),
+                                    0,
+                                )
+                            } < 0
+                            {
+                                return Err(io::Error::last_os_error()).with_context(|| {
+                                    format!("Cannot publish destination {:?}", path)
+                                });
+                            }
+                            Ok(())
+                        })();
+                        let cleanup =
+                            unsafe { libc::unlinkat(parent.as_raw_fd(), temp.as_ptr(), 0) };
+                        if cleanup < 0 {
+                            return Err(io::Error::last_os_error()).with_context(|| {
+                                format!("Cannot remove temporary file for {:?}", path)
+                            });
+                        }
+                        write?;
+                    }
+                    Entry::Missing => unreachable!(),
+                }
+                operations += 1;
+            }
+            Ok(())
+        };
+        apply().with_context(|| {
+            format!(
+                "Fork transfer stopped after {operations} operations; checkout retained at {}",
+                destination.display()
+            )
+        })
     }
 }
 
@@ -652,5 +1021,136 @@ mod tests {
                 .to_string()
                 .contains("Nested Git")
         );
+    }
+
+    #[test]
+    fn executable_changes_are_captured_and_assume_unchanged_is_refused() {
+        let dir = fixture();
+        let root = dir.path();
+        run(root, &["config", "core.filemode", "false"]);
+        fs::set_permissions(root.join("old name"), fs::Permissions::from_mode(0o755)).unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        assert!(
+            snapshot
+                .entries
+                .iter()
+                .any(|(path, entry)| path == Path::new("old name")
+                    && matches!(
+                        entry,
+                        Entry::Regular {
+                            executable: true,
+                            ..
+                        }
+                    ))
+        );
+        run(root, &["update-index", "--assume-unchanged", "old name"]);
+        assert!(
+            Snapshot::capture(root)
+                .unwrap_err()
+                .to_string()
+                .contains("Assume-unchanged")
+        );
+    }
+
+    #[test]
+    fn transfers_working_content_and_keeps_destination_index_at_head() {
+        let dir = fixture();
+        let root = dir.path();
+        run(root, &["mv", "old name", "renamed"]);
+        fs::write(root.join("renamed"), b"working, not staged").unwrap();
+        fs::remove_file(root.join("deleted")).unwrap();
+        fs::create_dir(root.join("deleted")).unwrap();
+        fs::write(root.join("deleted/new"), b"nested").unwrap();
+        symlink("../external", root.join("link")).unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        snapshot.transfer(&dest).unwrap();
+        assert!(!dest.join("old name").exists());
+        assert_eq!(
+            fs::read(dest.join("renamed")).unwrap(),
+            b"working, not staged"
+        );
+        assert_eq!(fs::read(dest.join("deleted/new")).unwrap(), b"nested");
+        assert_eq!(
+            fs::read_link(dest.join("link")).unwrap(),
+            Path::new("../external")
+        );
+        run(&dest, &["diff", "--cached", "--quiet"]);
+    }
+
+    #[test]
+    fn refuses_dirty_destination_and_stale_source_before_writes() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::write(root.join("old name"), b"source").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        fs::write(dest.join("extra"), b"user").unwrap();
+        assert!(snapshot.transfer(&dest).is_err());
+        assert_eq!(fs::read(dest.join("old name")).unwrap(), b"head");
+        fs::remove_file(dest.join("extra")).unwrap();
+        fs::write(root.join("old name"), b"changed").unwrap();
+        assert!(snapshot.transfer(&dest).is_err());
+        assert_eq!(fs::read(dest.join("old name")).unwrap(), b"head");
+    }
+
+    #[test]
+    fn refuses_ignored_destination_files_instead_of_overwriting() {
+        let dir = fixture();
+        let root = dir.path();
+        fs::write(root.join(".gitignore"), "ignored\n").unwrap();
+        run(root, &["add", ".gitignore"]);
+        run(root, &["commit", "-qm", "ignore fixture"]);
+        fs::write(root.join("old name"), b"source").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        fs::write(dest.join("ignored"), b"user data").unwrap();
+        assert!(snapshot.transfer(&dest).is_err());
+        assert_eq!(fs::read(dest.join("ignored")).unwrap(), b"user data");
+        assert_eq!(fs::read(dest.join("old name")).unwrap(), b"head");
+        fs::remove_file(dest.join("ignored")).unwrap();
+        let fifo = CString::new(dest.join("ignored").as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(snapshot.transfer(&dest).is_err());
+        assert_eq!(fs::read(dest.join("old name")).unwrap(), b"head");
     }
 }

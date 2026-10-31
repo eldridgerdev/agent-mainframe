@@ -33,8 +33,9 @@ non-object settings and tracked destination symlinks are refused. Raw source
 bytes and physical identity are bound to confirmation and checked again before
 creation and after a delayed hook. These are final-read guards, not a lock
 against an unrelated writer changing repository files during Git checkout.
-Integrating companion commits is outside this increment and remains a terminal
-workflow.
+Integrating companion commits is a separate desktop workflow: open a companion
+feature and choose **Integrate companion…** to preview and confirm a
+cherry-pick into the source checkout or a push to its origin branch.
 
 Completion uses the shared review-round writer and check/suggestion workflow.
 Desktop handoff always returns an unsent draft, even with

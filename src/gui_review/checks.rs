@@ -178,9 +178,9 @@ pub fn poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<ReviewView> {
 /// `None` once a confirmed completion's check has finished and the review was
 /// completed; its result is then available from `take_completion`.
 pub fn poll_open(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<Option<ReviewView>> {
-    if destinations::poll_preparation(gui)? {
-        return snapshot(gui).map(Some);
-    }
+    // Advance destination setup, but keep polling: a standalone check or AI
+    // result must not be starved while setup is pending.
+    destinations::poll_preparation(gui)?;
     let context = gui
         .review_context
         .as_ref()

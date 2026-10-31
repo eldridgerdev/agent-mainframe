@@ -1,6 +1,6 @@
 //! Explicit, revision-bound integration of Final Review companion commits.
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
-use crate::project::ReviewSource;
+use crate::project::{ReviewSource, TriageSource};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -23,7 +23,46 @@ pub struct Binding {
     source_name: String,
     source_branch: String,
     source_workdir: PathBuf,
-    link: ReviewSource,
+    link: Link,
+}
+
+/// The persisted relationship that makes a feature an integration companion.
+/// A Final Review companion lands on its source feature's own branch; a PR
+/// Triage companion lands on the PR's recorded head branch, while its
+/// cherry-pick still targets whatever the triage source checkout has.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Link {
+    Review(ReviewSource),
+    Triage(TriageSource),
+}
+
+impl Link {
+    fn source_feature_id(&self) -> &str {
+        match self {
+            Link::Review(l) => &l.source_feature_id,
+            Link::Triage(l) => &l.source_feature_id,
+        }
+    }
+    fn base_sha(&self) -> &str {
+        match self {
+            Link::Review(l) => &l.base_sha,
+            Link::Triage(l) => &l.base_sha,
+        }
+    }
+    /// The remote branch a push updates.
+    fn destination_branch(&self) -> &str {
+        match self {
+            Link::Review(l) => &l.target_branch,
+            Link::Triage(l) => &l.pr_branch,
+        }
+    }
+    fn pr_number(&self) -> Option<u32> {
+        match self {
+            Link::Review(_) => None,
+            Link::Triage(l) => Some(l.pr_number),
+        }
+    }
 }
 
 pub fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Binding> {
@@ -35,14 +74,24 @@ pub fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<Binding> {
         .ok_or_else(|| GuiError::not_found("Companion feature was deleted or moved"))?;
     let project = &app.store.projects[pi];
     let companion = &project.features[fi];
-    let link = companion
-        .review_source
-        .clone()
-        .ok_or_else(|| GuiError::conflict("This feature is not a Final Review companion"))?;
+    let link = match (&companion.review_source, &companion.triage_source) {
+        (Some(l), None) => Link::Review(l.clone()),
+        (None, Some(l)) => Link::Triage(l.clone()),
+        (Some(_), Some(_)) => {
+            return Err(GuiError::conflict(
+                "This feature carries both Final Review and PR Triage links; refusing to guess",
+            ));
+        }
+        (None, None) => {
+            return Err(GuiError::conflict(
+                "This feature is not a Final Review or PR Triage companion",
+            ));
+        }
+    };
     let source = project
         .features
         .iter()
-        .find(|f| f.id == link.source_feature_id)
+        .find(|f| f.id == link.source_feature_id())
         .ok_or_else(|| {
             GuiError::conflict("The linked source feature no longer exists in this project")
         })?;
@@ -83,6 +132,9 @@ pub struct IntegrationPlan {
     pub source_path: PathBuf,
     pub companion_branch: String,
     pub source_branch: String,
+    /// Remote branch a push would update (the PR head branch for PR Triage).
+    pub destination_branch: String,
+    pub pr_number: Option<u32>,
     pub base_sha: String,
     pub companion_head: String,
     pub source_head: String,
@@ -353,6 +405,10 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
     let ci = identity(c)?;
     let si = identity(s)?;
     ensure!(
+        ci.directory != si.directory,
+        "Source and companion resolve to the same checkout"
+    );
+    ensure!(
         ci.common == si.common,
         "Source and companion no longer belong to the same repository"
     );
@@ -361,16 +417,16 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
     ensure!(
         cb == binding.companion_branch
             && sb == binding.source_branch
-            && sb == binding.link.target_branch,
+            && (matches!(binding.link, Link::Triage(_)) || sb == binding.link.destination_branch()),
         "A checkout branch changed; reopen the integration preview"
     );
     ensure!(
-        sha(&binding.link.base_sha),
+        sha(binding.link.base_sha()),
         "The recorded base is not a valid commit ID"
     );
-    let base = commit(c, &binding.link.base_sha)?;
+    let base = commit(c, binding.link.base_sha())?;
     ensure!(
-        base == binding.link.base_sha,
+        base == binding.link.base_sha(),
         "The recorded base is not an exact commit ID"
     );
     let head = commit(c, "HEAD")?;
@@ -378,7 +434,12 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
     ancestor(c, &base, &head)?;
     operation_clear(s)?;
     operation_clear(c)?;
-    let listed = git(c, &["rev-list", "--reverse", &format!("{base}..{head}")])?;
+    let range = format!("{base}..{head}");
+    ensure!(
+        git(c, &["rev-list", "--min-parents=2", "--count", &range])?.trim() == "0",
+        "The companion contains merge commits, which cannot be cherry-picked or previewed exactly; rebase it onto linear history first"
+    );
+    let listed = git(c, &["rev-list", "--reverse", &range])?;
     let commits: Vec<String> = listed.lines().map(str::to_owned).collect();
     ensure!(
         !commits.is_empty() && commits.iter().all(|x| sha(x)),
@@ -393,7 +454,7 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
         (Vec::new(), Vec::new())
     };
     let (remote, tip) = if choice == IntegrationChoice::Push {
-        let reference = format!("refs/heads/{}", binding.link.target_branch);
+        let reference = format!("refs/heads/{}", binding.link.destination_branch());
         git(c, &["check-ref-format", &reference])?;
         let configured = value(c, &["remote", "get-url", "--push", "origin"])?;
         // Resolve local relative paths now: a later Git config change cannot
@@ -411,12 +472,24 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
             "The origin remote is invalid"
         );
         let tip = remote_tip(c, &remote, &reference)?;
+        // A PR head that is absent from origin usually lives on a fork or was
+        // deleted; creating it would silently retarget the work.
+        ensure!(
+            tip.is_some() || !matches!(binding.link, Link::Triage(_)),
+            "The PR branch does not exist on origin; it may belong to a fork or have been deleted"
+        );
         if let Some(tip) = &tip {
             ensure!(
                 tip != &head,
                 "The remote branch already contains the companion head"
             );
             ancestor(c, tip, &head)?;
+            // The push sends tip..head; the preview lists base..head. They
+            // are the same set only when the remote tip is not ahead of base.
+            ensure!(
+                ancestor(c, tip, &base).is_ok(),
+                "The remote branch differs from the companion's base, so the push would publish commits not shown in the preview; update the source checkout and re-create the companion"
+            );
         }
         (Some(remote), tip)
     } else {
@@ -429,6 +502,8 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
         source_path: s.clone(),
         companion_branch: cb,
         source_branch: sb,
+        destination_branch: binding.link.destination_branch().to_owned(),
+        pr_number: binding.link.pr_number(),
         base_sha: base,
         companion_head: head,
         source_head,
@@ -475,7 +550,7 @@ pub fn execute(plan: &IntegrationPlan) -> Result<String> {
         IntegrationChoice::Push => {
             let remote = plan.remote.as_deref().context("Missing remote")?;
             let tip = plan.remote_tip.as_deref().unwrap_or("");
-            let reference = format!("refs/heads/{}", plan.source_branch);
+            let reference = format!("refs/heads/{}", plan.destination_branch);
             // The lease is permitted only after ancestry is proven: even if the
             // remote races, its exact observed tip cannot be overwritten.
             if !tip.is_empty() {
@@ -490,11 +565,18 @@ pub fn execute(plan: &IntegrationPlan) -> Result<String> {
                     &format!("{}:{reference}", plan.companion_head),
                 ],
             )?;
-            Ok(format!(
-                "Pushed {} companion commit(s) to origin/{}",
-                plan.commits.len(),
-                plan.source_branch
-            ))
+            Ok(match plan.pr_number {
+                Some(pr) => format!(
+                    "Pushed {} companion commit(s) to origin/{} for PR #{pr}",
+                    plan.commits.len(),
+                    plan.destination_branch
+                ),
+                None => format!(
+                    "Pushed {} companion commit(s) to origin/{}",
+                    plan.commits.len(),
+                    plan.destination_branch
+                ),
+            })
         }
         IntegrationChoice::CherryPick => {
             let range = format!("{}..{}", plan.base_sha, plan.companion_head);
@@ -611,11 +693,11 @@ mod tests {
             source_name: "Source".into(),
             source_branch: "source".into(),
             source_workdir: source,
-            link: ReviewSource {
+            link: Link::Review(ReviewSource {
                 source_feature_id: "source".into(),
                 target_branch: "source".into(),
                 base_sha: base,
-            },
+            }),
         };
         (dir, binding)
     }
@@ -843,5 +925,149 @@ mod tests {
         let display = display_remote("https://user:secret@example.test/repo?token=secret");
         assert!(!display.contains("secret") && !display.contains("user"));
         assert!(display.contains("example.test/repo"));
+    }
+
+    // PR Triage: the push destination is the PR head branch, which is not the
+    // branch the triage source checkout has out.
+    fn triage_fixture(publish_pr_branch: bool) -> (tempfile::TempDir, Binding) {
+        let (dir, mut b) = fixture();
+        let base = b.link.base_sha().to_owned();
+        if publish_pr_branch {
+            run(
+                &b.source_workdir,
+                &[
+                    "push",
+                    "-q",
+                    "origin",
+                    &format!("{base}:refs/heads/pr-head"),
+                ],
+            );
+        }
+        b.link = Link::Triage(TriageSource {
+            pr_number: 42,
+            source_feature_id: "source".into(),
+            pr_branch: "pr-head".into(),
+            base_sha: base,
+        });
+        (dir, b)
+    }
+    fn remote_branch(b: &Binding, branch: &str) -> Option<String> {
+        let remote = run(&b.companion_workdir, &["remote", "get-url", "origin"]);
+        remote_tip(
+            &b.companion_workdir,
+            &remote,
+            &format!("refs/heads/{branch}"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn triage_push_updates_the_pr_branch_not_the_source_branch() {
+        let (_dir, b) = triage_fixture(true);
+        let source_before = remote_branch(&b, "source");
+        let p = plan(b.clone(), IntegrationChoice::Push).unwrap();
+        assert_eq!(p.pr_number, Some(42));
+        assert_eq!(p.destination_branch, "pr-head");
+        assert_ne!(p.destination_branch, p.source_branch);
+        assert_eq!(p.remote_tip.as_deref(), Some(p.base_sha.as_str()));
+        let message = execute(&p).unwrap();
+        assert!(message.contains("PR #42") && message.contains("origin/pr-head"));
+        assert_eq!(remote_branch(&b, "pr-head"), Some(p.companion_head.clone()));
+        assert_eq!(remote_branch(&b, "source"), source_before);
+    }
+
+    #[test]
+    fn triage_push_never_creates_a_missing_pr_branch() {
+        let (_dir, b) = triage_fixture(false);
+        let err = plan(b.clone(), IntegrationChoice::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("does not exist on origin"), "{err}");
+        assert_eq!(remote_branch(&b, "pr-head"), None);
+    }
+
+    #[test]
+    fn triage_push_refuses_a_pr_branch_that_moved_or_diverged_after_preview() {
+        let (_dir, b) = triage_fixture(true);
+        let p = plan(b.clone(), IntegrationChoice::Push).unwrap();
+        run(
+            &b.source_workdir,
+            &["commit", "--allow-empty", "-qm", "other push"],
+        );
+        run(
+            &b.source_workdir,
+            &["push", "-q", "origin", "HEAD:refs/heads/pr-head"],
+        );
+        let moved = remote_branch(&b, "pr-head");
+        assert!(execute(&p).is_err());
+        assert_eq!(remote_branch(&b, "pr-head"), moved);
+        // A divergent PR branch cannot even be previewed.
+        let err = plan(b.clone(), IntegrationChoice::Push)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not an ancestor"), "{err}");
+    }
+
+    #[test]
+    fn triage_cherry_pick_lands_in_the_source_checkout_whatever_its_branch() {
+        let (_dir, b) = triage_fixture(true);
+        let p = plan(b.clone(), IntegrationChoice::CherryPick).unwrap();
+        assert_eq!(p.source_branch, "source");
+        assert_eq!(p.destination_branch, "pr-head");
+        execute(&p).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(b.source_workdir.join("file")).unwrap(),
+            "one\n"
+        );
+        // A source that moved to another branch since the preview is refused.
+        let (_dir, b) = triage_fixture(true);
+        let p = plan(b.clone(), IntegrationChoice::CherryPick).unwrap();
+        run(&b.source_workdir, &["checkout", "-qb", "elsewhere"]);
+        let head = run(&b.source_workdir, &["rev-parse", "HEAD"]);
+        assert!(execute(&p).is_err());
+        assert_eq!(run(&b.source_workdir, &["rev-parse", "HEAD"]), head);
+    }
+
+    #[test]
+    fn triage_binding_follows_its_own_link_and_refuses_ambiguity() {
+        let (_dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let project = &mut gui.app_for_workflow().store.projects[0];
+        let mut source = project.features[0].clone();
+        source.id = "source-feature".into();
+        source.review_source = None;
+        source.triage_source = None;
+        project.features[0].triage_source = Some(TriageSource {
+            pr_number: 7,
+            source_feature_id: source.id.clone(),
+            pr_branch: "pr".into(),
+            base_sha: "a".repeat(40),
+        });
+        project.features.push(source);
+        let binding = bind(&mut gui, &target).unwrap();
+        assert_eq!(binding.link.pr_number(), Some(7));
+        assert_eq!(binding.link.destination_branch(), "pr");
+        gui.app_for_workflow().store.projects[0].features[0].review_source = Some(ReviewSource {
+            source_feature_id: "source-feature".into(),
+            target_branch: "x".into(),
+            base_sha: "a".repeat(40),
+        });
+        assert!(bind(&mut gui, &target).is_err());
+    }
+
+    #[test]
+    fn a_checkout_cannot_be_its_own_integration_source() {
+        let (_dir, mut b) = fixture();
+        b.source_workdir = b.companion_workdir.clone();
+        b.source_branch = b.companion_branch.clone();
+        b.link = Link::Triage(TriageSource {
+            pr_number: 1,
+            source_feature_id: "source".into(),
+            pr_branch: "companion".into(),
+            base_sha: b.link.base_sha().to_owned(),
+        });
+        let err = plan(b, IntegrationChoice::CherryPick)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("same checkout"), "{err}");
     }
 }

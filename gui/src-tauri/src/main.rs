@@ -1798,7 +1798,8 @@ async fn companion_integration_confirm(
     revision: String,
 ) -> Result<String, GuiError> {
     let operation = CompanionOperation::acquire(&target)?;
-    pr_workspace_blocking(app, move |gui| {
+    let result_key = operation.0.clone();
+    let returned = pr_workspace_blocking(app, move |gui| {
         let _operation = operation;
         let outcome = (|| {
             let binding = agent_mainframe::gui_companion_integration::bind(
@@ -1832,7 +1833,15 @@ async fn companion_integration_confirm(
             .insert(_operation.0.clone(), outcome.clone());
         outcome
     })
-    .await?
+    .await;
+    // The caller receives the outcome directly; drop the polled copy so a
+    // later dialog does not present it as current.
+    COMPANION_RESULTS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("result mutex poisoned")
+        .remove(&result_key);
+    returned?
 }
 
 #[tauri::command]
@@ -2471,5 +2480,40 @@ mod tests {
 
         assert_eq!(attachments.remove("f:s", new), Some("new"));
         assert_eq!(attachments.get("f:s"), None);
+    }
+
+    #[test]
+    fn companion_operations_are_exclusive_and_report_a_triage_result_once() {
+        use super::{
+            COMPANION_RESULTS, CompanionOperation, FeatureTarget, companion_integration_status,
+        };
+        let target = FeatureTarget {
+            project_id: "project".into(),
+            feature_id: "triage-companion".into(),
+        };
+        let other = FeatureTarget {
+            project_id: "project".into(),
+            feature_id: "other".into(),
+        };
+        let held = CompanionOperation::acquire(&target).expect("first operation starts");
+        assert!(companion_integration_status(target.clone()).running);
+        // Duplicate and cross-feature starts are refused while one is running.
+        assert!(CompanionOperation::acquire(&target).is_err());
+        assert!(CompanionOperation::acquire(&other).is_err());
+        COMPANION_RESULTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .insert(
+                held.0.clone(),
+                Ok("Pushed 1 companion commit(s) to origin/pr for PR #7".into()),
+            );
+        drop(held);
+        let done = companion_integration_status(target.clone());
+        assert!(!done.running);
+        assert!(done.result.unwrap().contains("PR #7"));
+        // Reported once: reopening later cannot show it as current.
+        assert!(companion_integration_status(target).result.is_none());
+        drop(CompanionOperation::acquire(&other).expect("released after drop"));
     }
 }

@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { asGuiError } from "./api";
+import { DiffLine, ReviewLocation, ReviewSeverity, ReviewSpan } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import { Field, Modal, Spinner } from "./ui";
-import { PrReviewAction, PrReviewView, prReviewAct, prReviewBegin, prReviewSnapshot } from "./prReviewApi";
+import { PrReviewAction, PrReviewThread, PrReviewView, prReviewAct, prReviewBegin, prReviewSnapshot } from "./prReviewApi";
+
+type Editor = { kind: "line_comment" | "suggestion"; span: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
+const SEVERITIES: ReviewSeverity[] = ["blocker", "suggestion", "nit", "question", "praise"];
+const locationLabel = (l: ReviewLocation) => l.new_line !== null ? `line ${l.new_line}` : `base line ${l.old_line}`;
+const locationKey = (l: ReviewLocation) => `${l.old_line}:${l.new_line}`;
 
 export default function PrReviewPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const [view, setView] = useState<PrReviewView | null>(null);
@@ -14,6 +20,9 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   const [summary, setSummary] = useState("");
   const [event, setEvent] = useState("COMMENT");
   const [discard, setDiscard] = useState<"back" | "close" | null>(null);
+  const [selection, setSelection] = useState<{ anchor: ReviewLocation; cursor: ReviewLocation } | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const pending = useRef(false);
   useEffect(() => {
     let live = true;
@@ -36,10 +45,65 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   const file = view?.files.find((f) => f.diff.path === path) ?? view?.files[0];
   useEffect(() => { setComment(file?.comment ?? ""); }, [view?.number, file?.diff.path, file?.comment]);
   useEffect(() => { setSummary(view?.summary ?? ""); }, [view?.number, view?.summary]);
-  const dirty = comment !== (file?.comment ?? "") || summary !== (view?.summary ?? "");
+  const editorDirty = !!editor && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
+  const dirty = comment !== (file?.comment ?? "") || summary !== (view?.summary ?? "") || editorDirty;
   const locked = busy || !!view?.submission;
-  async function act(action: PrReviewAction) {
-    if (!view || pending.current) return;
+  // Selections and editors belong to one file of one PR head.
+  useEffect(() => { setSelection(null); setEditor(null); setNotice(null); }, [view?.number, view?.head_sha, file?.diff.path]);
+  const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
+  const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
+  const lineIndex = (l: ReviewLocation) => lineIndices.get(locationKey(l)) ?? -1;
+  const hunkIndex = (l: ReviewLocation) => file?.diff.hunks.findIndex((h) => h.lines.some((x) => x.kind !== "marker" && locationKey(x) === locationKey(l))) ?? -1;
+  const span: ReviewSpan | null = !selection ? null : lineIndex(selection.anchor) <= lineIndex(selection.cursor)
+    ? { start: selection.anchor, end: selection.cursor } : { start: selection.cursor, end: selection.anchor };
+  function selectLine(line: DiffLine, extend: boolean) {
+    if (locked || editorDirty) return;
+    setEditor(null);
+    setNotice(null);
+    const location = { old_line: line.old_line, new_line: line.new_line };
+    setSelection({ anchor: extend && selection ? selection.anchor : location, cursor: location });
+  }
+  function editSpan(kind: Editor["kind"], selected: ReviewSpan) {
+    if (!file || locked || editorDirty) return;
+    selected = { start: selected.start, end: selected.end };
+    const lo = lineIndex(selected.start), hi = lineIndex(selected.end);
+    // Saving replaces every thread overlapping the span, so only edit a thread
+    // at its own span: a selection inside one snaps to it, other overlap is refused.
+    const overlapping = file.line_comments.filter((c) => {
+      const s = lineIndex(c.start), e = lineIndex(c.end);
+      return s >= 0 && e >= 0 && s <= hi && e >= lo;
+    });
+    const existing: PrReviewThread | undefined = overlapping.length === 1 && overlapping[0].editable
+      && lineIndex(overlapping[0].start) <= lo && lineIndex(overlapping[0].end) >= hi ? overlapping[0] : undefined;
+    if (overlapping.length > 0 && !existing) {
+      setNotice(`Selection overlaps saved ${overlapping.length === 1 ? "thread" : "threads"} at ${overlapping.map((c) => c.anchor).join(", ")}, and saving would replace ${overlapping.length === 1 ? "it" : "them"}. Select lines within one thread to edit it, or lines clear of saved threads.`);
+      return;
+    }
+    if (hunkIndex(selected.start) !== hunkIndex(selected.end)) {
+      setNotice("GitHub only accepts a range inside one hunk; select lines within a single hunk.");
+      return;
+    }
+    if (kind === "suggestion" && lines.slice(lo, hi + 1).some((line) => line.new_line === null)) {
+      setNotice("A suggestion replaces current lines; the selection includes a removed (base-only) line, so select current lines or comment instead.");
+      return;
+    }
+    setNotice(null);
+    if (existing) selected = { start: existing.start, end: existing.end };
+    setSelection({ anchor: selected.start, cursor: selected.end });
+    const text = kind === "line_comment" ? existing?.text ?? ""
+      : existing?.suggestion ?? lines.slice(lineIndex(selected.start), lineIndex(selected.end) + 1).map((line) => line.text.slice(1)).join("\n");
+    const severity = existing?.severity ?? "suggestion";
+    setEditor({ kind, span: selected, path: file.diff.path, text, severity, original: text, originalSeverity: severity });
+  }
+  async function submitEditor() {
+    if (!editor || locked) return;
+    const base = { path: editor.path, ...editor.span, text: editor.text };
+    if (await act(editor.kind === "line_comment" ? { kind: "line_comment", ...base, severity: editor.severity } : { kind: "suggestion", ...base })) {
+      setEditor(null);
+    }
+  }
+  async function act(action: PrReviewAction): Promise<boolean> {
+    if (!view || pending.current) return false;
     pending.current = true;
     setBusy(true);
     try {
@@ -47,6 +111,7 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       setError(null);
       setDiscard(null);
       if (next) setView(next); else onClose();
+      return true;
     } catch (err) {
       setError(asGuiError(err).message);
       try {
@@ -58,6 +123,7 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
           f.diff.path === action.path ? { ...f, comment: view.files.find((saved) => saved.diff.path === action.path)?.comment ?? "" } : f);
         setView(next);
       } catch { /* retain editors */ }
+      return false;
     } finally { pending.current = false; setBusy(false); }
   }
   function leave(kind: "back" | "close") {
@@ -88,13 +154,44 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
     </section>}
     {view?.stage === "review" && <>
       <h3>#{view.number} {view.title}</h3>
+      {view.head_sha && <p className="muted small">Comments are pinned to head <code>{view.head_sha.slice(0, 8)}</code>; posting is refused if the PR moves.</p>}
       <div className="diff-reader">
         <nav className="diff-files" aria-label="Changed files">{view.files.map((f) => <button key={f.diff.path}
-          className={`diff-file ${file === f ? "diff-file-selected" : ""}`} disabled={locked || comment !== (file?.comment ?? "")}
+          className={`diff-file ${file === f ? "diff-file-selected" : ""}`} disabled={locked || comment !== (file?.comment ?? "") || editorDirty}
           onClick={() => setPath(f.diff.path)}>{f.diff.path}<small>+{f.diff.additions} −{f.diff.deletions}</small></button>)}</nav>
         <section className="diff-content" aria-label="File diff">{file && <>
           <strong>{file.diff.path}</strong>
-          <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
+          {!file.diff.is_binary && lines.length > 0 && <div className="review-line-controls">
+            <p className="muted small">Click a line number to select it; Shift-click another to select a range inside one hunk. Base-only (removed) lines comment on the base side.</p>
+            {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
+            {notice && <p role="alert">{notice}</p>}
+            <button className="btn btn-secondary btn-sm" disabled={locked || editorDirty || !span} onClick={() => span && editSpan("line_comment", span)}>Comment on selection</button>
+            <button className="btn btn-secondary btn-sm" disabled={locked || editorDirty || !span} onClick={() => span && editSpan("suggestion", span)}>Suggest replacement</button>
+          </div>}
+          {editor && <form className="review-editor" onSubmit={(event) => { event.preventDefault(); void submitEditor(); }}>
+            <Field label={editor.kind === "line_comment" ? "Line comment" : "Suggested replacement"}>
+              <textarea rows={5} value={editor.text} disabled={locked} onChange={(event) => setEditor({ ...editor, text: event.target.value })} />
+            </Field>
+            {editor.kind === "line_comment" && <Field label="Severity"><select value={editor.severity} disabled={locked} onChange={(event) => setEditor({ ...editor, severity: event.target.value as ReviewSeverity })}>
+              {SEVERITIES.map((severity) => <option key={severity} value={severity}>{severity}</option>)}
+            </select></Field>}
+            <button className="btn btn-primary" disabled={locked}>Save {editor.kind === "line_comment" ? "line comment" : "suggestion"}</button>
+            <button type="button" className="btn btn-secondary" disabled={locked} onClick={() => setEditor(null)}>Cancel edit</button>
+            <p className="muted small">Anchored to {locationLabel(editor.span.start)} – {locationLabel(editor.span.end)}. An empty save removes this {editor.kind === "suggestion" ? "suggestion" : "comment's prose"}; the other part of the thread is kept. Posts only after you confirm the submission preview.</p>
+          </form>}
+          <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} selection={{ disabled: locked || editorDirty, select: selectLine,
+            contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
+          {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
+            {file.line_comments.map((thread, index) => <div key={index}>
+              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} · {thread.side} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
+              {thread.suggestion !== null && <pre>{thread.suggestion}</pre>}
+              {thread.note && <p className="muted small">{thread.note}</p>}
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("line_comment", thread)}>Edit line comment</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("suggestion", thread)}>Edit suggestion</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable}
+                onClick={() => void act({ kind: "toggle_line_resolved", path: file.diff.path, start: thread.start, end: thread.end })}>{thread.resolved ? "Reopen thread" : "Resolve thread"}</button>
+            </div>)}
+          </details>}
         </>}</section>
       </div>
       {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>

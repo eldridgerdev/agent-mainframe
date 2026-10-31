@@ -5,8 +5,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{AppMode, DiffScope, PrReviewListLoad, PrSubmitStatus};
+use crate::diff::DiffLineLocation;
 use crate::gui_contract::{GuiError, GuiHandle, GuiResult};
 use crate::gui_diff::{DiffFileView, file_view_budgeted};
+use crate::gui_review::Severity;
 use crate::gui_syntax::HighlightBudget;
 
 pub(crate) struct PrReviewContext {
@@ -32,6 +34,27 @@ pub struct PrReviewEntry {
 pub struct PrReviewFile {
     diff: DiffFileView,
     comment: String,
+    line_comments: Vec<PrReviewLineComment>,
+}
+
+/// A saved line thread, in the shared draft's own terms.
+#[derive(Serialize)]
+pub struct PrReviewLineComment {
+    start: DiffLineLocation,
+    end: DiffLineLocation,
+    /// GitHub side of the end line (`RIGHT` for any line still in the file).
+    side: &'static str,
+    start_side: Option<&'static str>,
+    editable: bool,
+    anchor: String,
+    text: String,
+    severity: Severity,
+    resolved: bool,
+    anchor_lost: bool,
+    suggestion: Option<String>,
+    /// Whether an open thread posts inline; `note` says where it goes if not.
+    inline: bool,
+    note: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -50,6 +73,8 @@ pub struct PrReviewView {
     pub workflow_id: String,
     pub revision: u64,
     project_name: String,
+    /// The PR head every comment in this review is pinned to.
+    head_sha: Option<String>,
     stage: &'static str,
     entries: Vec<PrReviewEntry>,
     loading: bool,
@@ -66,10 +91,37 @@ pub struct PrReviewView {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PrReviewAction {
     Retry,
-    Open { number: u32 },
-    FileComment { path: String, text: String },
-    Summary { text: String },
-    Preview { event: String },
+    Open {
+        number: u32,
+    },
+    FileComment {
+        path: String,
+        text: String,
+    },
+    LineComment {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+        text: String,
+        severity: Severity,
+    },
+    Suggestion {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+        text: String,
+    },
+    ToggleLineResolved {
+        path: String,
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+    },
+    Summary {
+        text: String,
+    },
+    Preview {
+        event: String,
+    },
     CancelSubmit,
     ConfirmSubmit,
     Reopen,
@@ -191,6 +243,39 @@ fn save(gui: &mut GuiHandle) -> GuiResult<()> {
     Ok(())
 }
 
+/// The thread state a line action may change, so a failed draft save can put
+/// it back: the view must never show a thread that is not in storage.
+type ThreadState = (
+    std::collections::HashMap<String, Vec<crate::app::LineComment>>,
+    std::collections::HashMap<String, crate::app::ReviewDecision>,
+    std::collections::HashSet<String>,
+);
+
+fn thread_state(app: &mut crate::app::App) -> Option<ThreadState> {
+    match &app.mode {
+        AppMode::DiffViewer(s) => Some((
+            s.line_comments.clone(),
+            s.decisions.clone(),
+            s.auto_rejected.clone(),
+        )),
+        _ => None,
+    }
+}
+
+/// Save the draft after a line action; on failure restore `before` and report.
+fn save_threads(gui: &mut GuiHandle, before: Option<ThreadState>) -> GuiResult<()> {
+    let result = save(gui);
+    if result.is_err()
+        && let (Some((comments, decisions, auto)), AppMode::DiffViewer(s)) =
+            (before, &mut gui.app_for_workflow().mode)
+    {
+        s.line_comments = comments;
+        s.decisions = decisions;
+        s.auto_rejected = auto;
+    }
+    result
+}
+
 fn back(gui: &mut GuiHandle) {
     let app = gui.app_for_workflow();
     if !matches!(&app.mode, AppMode::DiffViewer(state) if state.is_pr_review()) {
@@ -301,6 +386,68 @@ pub fn act(
             app.defer_review_progress_persist = false;
             save(gui)?;
         }
+        PrReviewAction::LineComment {
+            path,
+            start,
+            end,
+            text,
+            severity,
+        } => {
+            let existing = prepare_span(app, &path, start, end, None)?;
+            if text.trim().is_empty() && !existing {
+                return Err(GuiError::conflict("Write a comment before saving"));
+            }
+            let before = thread_state(app);
+            app.defer_review_progress_persist = true;
+            app.diff_review_start_line_comment();
+            if let AppMode::DiffViewer(state) = &mut app.mode {
+                state.reset_feedback_editor(text);
+                state.comment_severity = severity;
+            }
+            app.diff_review_submit_line_comment();
+            app.defer_review_progress_persist = false;
+            save_threads(gui, before)?;
+        }
+        PrReviewAction::Suggestion {
+            path,
+            start,
+            end,
+            text,
+        } => {
+            let existing = prepare_span(app, &path, start, end, Some(&text))?;
+            if text.trim().is_empty() && !existing {
+                return Err(GuiError::conflict("Write a replacement before saving"));
+            }
+            let before = thread_state(app);
+            app.defer_review_progress_persist = true;
+            app.diff_review_start_suggestion();
+            if let AppMode::DiffViewer(state) = &mut app.mode {
+                state.reset_feedback_editor(text);
+            }
+            app.diff_review_submit_suggestion();
+            app.defer_review_progress_persist = false;
+            save_threads(gui, before)?;
+        }
+        PrReviewAction::ToggleLineResolved { path, start, end } => {
+            let AppMode::DiffViewer(state) = &mut app.mode else {
+                return Err(GuiError::conflict("Open a PR first"));
+            };
+            state.selected_file = state
+                .files
+                .iter()
+                .position(|f| f.path == path)
+                .ok_or_else(|| GuiError::not_found("File is no longer in this PR"))?;
+            let before = thread_state(app);
+            app.defer_review_progress_persist = true;
+            let toggled = app.diff_review_toggle_thread_resolved(start, end);
+            app.defer_review_progress_persist = false;
+            if !toggled {
+                return Err(GuiError::conflict(
+                    "That thread is no longer at this anchor, is lost, or is an unaccepted draft",
+                ));
+            }
+            save_threads(gui, before)?;
+        }
         PrReviewAction::Summary { text } => {
             let AppMode::DiffViewer(state) = &mut app.mode else {
                 return Err(GuiError::conflict("Open a PR first"));
@@ -352,6 +499,160 @@ pub fn act(
     view(gui).map(Some)
 }
 
+fn line_comment_views(
+    state: &crate::app::DiffViewerState,
+    file: &crate::diff::DiffFile,
+    inline: Option<&Vec<bool>>,
+) -> Vec<PrReviewLineComment> {
+    let locations = file.addressable_lines();
+    let side = |l: DiffLineLocation| {
+        if l.new_line.is_some() {
+            "RIGHT"
+        } else {
+            "LEFT"
+        }
+    };
+    let label = |l: DiffLineLocation| match (l.old_line, l.new_line) {
+        (_, Some(line)) => format!("line {line}"),
+        (Some(line), None) => format!("base line {line}"),
+        _ => "lost anchor".to_string(),
+    };
+    state
+        .line_comments
+        .get(&file.path)
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, c)| {
+            let first = c.start.unwrap_or(c.location);
+            let posts_inline = inline.and_then(|f| f.get(i)).copied().unwrap_or(false);
+            let note = if c.resolved {
+                Some("Resolved threads are kept locally and not posted".to_string())
+            } else if !posts_inline {
+                Some(
+                    if c.anchor_lost {
+                        "Its code is no longer in the PR; it will be added to the review summary"
+                    } else {
+                        "It is outside the PR's diff; it will be added to the review summary"
+                    }
+                    .to_string(),
+                )
+            } else {
+                None
+            };
+            PrReviewLineComment {
+                start: first,
+                end: c.location,
+                side: side(c.location),
+                start_side: c.start.map(side),
+                editable: !c.anchor_lost
+                    && locations.contains(&c.location)
+                    && c.start.is_none_or(|s| locations.contains(&s)),
+                anchor: match c.start {
+                    Some(start) => format!("{} – {}", label(start), label(c.location)),
+                    None => label(c.location),
+                },
+                text: c.text.clone(),
+                severity: c.severity,
+                resolved: c.resolved,
+                anchor_lost: c.anchor_lost,
+                suggestion: c.suggestion.clone(),
+                inline: posts_inline && !c.resolved,
+                note,
+            }
+        })
+        .collect()
+}
+
+/// Validate a line span against the PR's own diff and aim the shared line
+/// editor at it. Nothing is changed when this refuses. Returns whether a saved
+/// thread already sits at exactly this span (so an empty save may remove it).
+///
+/// GitHub 422s a range that crosses hunks, and a suggestion replaces lines of
+/// the current file, so a suggestion must be one run of current-side lines.
+fn prepare_span(
+    app: &mut crate::app::App,
+    path: &str,
+    start: DiffLineLocation,
+    end: DiffLineLocation,
+    suggestion: Option<&str>,
+) -> GuiResult<bool> {
+    let AppMode::DiffViewer(state) = &mut app.mode else {
+        return Err(GuiError::conflict("Open a PR first"));
+    };
+    if !state.is_pr_review() {
+        return Err(GuiError::conflict("Open a PR first"));
+    }
+    let index = state
+        .files
+        .iter()
+        .position(|f| f.path == path)
+        .ok_or_else(|| GuiError::not_found("File is no longer in this PR"))?;
+    state.selected_file = index;
+    let file = &state.files[index];
+    let locs = file.addressable_lines();
+    let locate = |location: DiffLineLocation| {
+        locs.iter().position(|l| *l == location).ok_or_else(|| {
+            GuiError::conflict("That line is not in this PR's diff; reopen the PR and select again")
+        })
+    };
+    let (lo, hi) = (locate(start)?, locate(end)?);
+    if lo > hi {
+        return Err(GuiError::conflict("Select the range in diff order"));
+    }
+    // Only lines of the PR's own diff can carry an inline comment.
+    let original = crate::diff::parse_unified_diff(&file.patch)
+        .ok()
+        .and_then(|files| files.into_iter().next())
+        .map(|f| f.addressable_lines())
+        .unwrap_or_default();
+    if !(original.contains(&start) && original.contains(&end)) {
+        return Err(GuiError::conflict(
+            "Those lines were only reached by expanding context; GitHub takes comments on the PR's own diff lines",
+        ));
+    }
+    let hunk_of = |location: DiffLineLocation| {
+        file.hunks.iter().position(|h| {
+            crate::diff::addressable_lines_in(std::slice::from_ref(h)).contains(&location)
+        })
+    };
+    if hunk_of(start) != hunk_of(end) {
+        return Err(GuiError::conflict(
+            "GitHub only accepts a range inside one hunk; select lines within a single hunk",
+        ));
+    }
+    if let Some(text) = suggestion {
+        if locs[lo..=hi].iter().any(|l| l.new_line.is_none()) {
+            return Err(GuiError::conflict(
+                "A suggestion replaces current lines; the selection includes a removed (base-only) line",
+            ));
+        }
+        if text.lines().any(|l| l.trim_start().starts_with("```")) {
+            return Err(GuiError::conflict(
+                "A suggestion cannot contain a ``` fence; it would end the suggestion block early",
+            ));
+        }
+    }
+    let mut existing = false;
+    for comment in state.line_comments.get(path).into_iter().flatten() {
+        let Some(range) = comment.covered_indices(&locs) else {
+            continue;
+        };
+        if *range.start() > hi || *range.end() < lo {
+            continue;
+        }
+        if comment.start.unwrap_or(comment.location) == start && comment.location == end {
+            existing = true;
+        } else {
+            return Err(GuiError::conflict(
+                "The selection overlaps another saved thread, and saving would replace it; select that thread's own lines, or lines clear of saved threads",
+            ));
+        }
+    }
+    crate::gui_review::set_span(state, start, end)?;
+    Ok(existing)
+}
+
 fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
     let context = gui.pr_review_context.as_ref().unwrap();
     let (id, revision, project_id) = (
@@ -371,6 +672,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
         workflow_id: id,
         revision,
         project_name,
+        head_sha: None,
         stage: "pick",
         entries: vec![],
         loading: false,
@@ -415,10 +717,12 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
             if let DiffScope::PullRequest(target) = &state.scope {
                 view.number = Some(target.pr.number);
                 view.title = Some(target.pr.title.clone());
+                view.head_sha = Some(target.pr.head_oid.clone());
             }
             view.summary = state.general_feedback.clone();
             view.error = state.error.clone();
             let mut budget = HighlightBudget::view();
+            let inline = crate::app::review::pr_inline_flags(state);
             view.files = state
                 .files
                 .iter()
@@ -429,6 +733,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
                         .get(&f.path)
                         .map(|c| c.text.clone())
                         .unwrap_or_default(),
+                    line_comments: line_comment_views(state, f, inline.get(&f.path)),
                 })
                 .collect();
             if let Some(submit) = &state.pr_submit {
@@ -746,5 +1051,486 @@ mod tests {
         assert!(poll(&mut gui, &view.workflow_id).is_err());
         assert!(gui.pr_review_context.is_none());
         assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+    }
+
+    // The fixture PR replaces base line 8 with "committed" inside the hunk
+    // that shows lines 5-11.
+    fn at(old: Option<usize>, new: Option<usize>) -> DiffLineLocation {
+        DiffLineLocation {
+            old_line: old,
+            new_line: new,
+        }
+    }
+    fn ctx(n: usize) -> DiffLineLocation {
+        at(Some(n), Some(n))
+    }
+    fn added(n: usize) -> DiffLineLocation {
+        at(None, Some(n))
+    }
+    fn removed(n: usize) -> DiffLineLocation {
+        at(Some(n), None)
+    }
+    fn line_comment(
+        start: DiffLineLocation,
+        end: DiffLineLocation,
+        text: &str,
+        severity: Severity,
+    ) -> PrReviewAction {
+        PrReviewAction::LineComment {
+            path: "code.txt".into(),
+            start,
+            end,
+            text: text.into(),
+            severity,
+        }
+    }
+    fn suggestion(start: DiffLineLocation, end: DiffLineLocation, text: &str) -> PrReviewAction {
+        PrReviewAction::Suggestion {
+            path: "code.txt".into(),
+            start,
+            end,
+            text: text.into(),
+        }
+    }
+    fn refused(gui: &mut GuiHandle, view: &PrReviewView, action: PrReviewAction) -> String {
+        super::act(gui, &view.workflow_id, view.revision, action)
+            .err()
+            .expect("the action must be refused")
+            .message
+    }
+    /// A feature branch with a second change far from the first, so the PR
+    /// has two hunks.
+    fn two_hunk_fixture() -> (tempfile::TempDir, GuiHandle, String) {
+        let (dir, gui, project_id) = fixture();
+        let repo = dir.path().join("repo");
+        let wt = dir.path().join("wt");
+        git(&repo, &["worktree", "add", wt.to_str().unwrap(), "feature"]);
+        let text = std::fs::read_to_string(wt.join("code.txt")).unwrap();
+        std::fs::write(
+            wt.join("code.txt"),
+            text.replace("line 19\n", "late change\n"),
+        )
+        .unwrap();
+        git(&wt, &["commit", "-am", "second hunk"]);
+        git(
+            &repo,
+            &["worktree", "remove", "--force", wt.to_str().unwrap()],
+        );
+        (dir, gui, project_id)
+    }
+
+    static POSTED: std::sync::Mutex<Option<PrPostRequest>> = std::sync::Mutex::new(None);
+    fn capture(request: &PrPostRequest) -> PrPostOutcome {
+        *POSTED.lock().unwrap() = Some(request.clone());
+        PrPostOutcome::Posted {
+            file_comment_failures: vec![],
+        }
+    }
+
+    #[test]
+    fn line_range_side_and_suggestion_comments_build_the_exact_submission() {
+        let (_dir, mut gui, project_id) = fixture();
+        gui.app_for_workflow()
+            .pr_review_work
+            .set_review_poster_for_test(capture);
+        let view = opened(&mut gui, project_id);
+        let head = git(
+            &gui.app_for_workflow().store.projects[0].repo.clone(),
+            &["rev-parse", "feature"],
+        );
+        assert_eq!(view.head_sha.as_deref(), Some(head.as_str()));
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(added(8), added(8), "Single", Severity::Blocker),
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(5), ctx(6), "Range", Severity::Nit),
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(removed(8), removed(8), "Base side", Severity::Question),
+        );
+        let view = action(&mut gui, &view, suggestion(ctx(10), ctx(11), "ten\neleven"));
+        let threads = &view.files[0].line_comments;
+        assert_eq!(threads.len(), 4);
+        assert_eq!(
+            threads.iter().map(|t| t.side).collect::<Vec<_>>(),
+            ["RIGHT", "RIGHT", "LEFT", "RIGHT"]
+        );
+        assert!(threads.iter().all(|t| t.inline && t.note.is_none()));
+        assert_eq!(threads[0].anchor, "line 5 – line 6");
+        assert_eq!(threads[2].anchor, "base line 8");
+        assert_eq!(threads[3].suggestion.as_deref(), Some("ten\neleven"));
+
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        let comment =
+            |line, side, start_line, start_side, body: &str| crate::github::PrReviewComment {
+                path: "code.txt".into(),
+                line,
+                side,
+                start_line,
+                start_side,
+                body: body.into(),
+            };
+        let expected = vec![
+            comment(6, "RIGHT", Some(5), Some("RIGHT"), "**[nit]** Range"),
+            comment(8, "RIGHT", None, None, "**[blocker]** Single"),
+            comment(8, "LEFT", None, None, "**[question]** Base side"),
+            comment(
+                11,
+                "RIGHT",
+                Some(10),
+                Some("RIGHT"),
+                "**[suggestion]**\n\n```suggestion\nten\neleven\n```",
+            ),
+        ];
+        let submission = view.submission.as_ref().unwrap();
+        assert_eq!(submission.comments, expected);
+        assert!(submission.file_comments.is_empty());
+        assert_eq!(submission.body, "");
+
+        // Posting sends that same payload, pinned to the reviewed head.
+        let view = action(&mut gui, &view, PrReviewAction::ConfirmSubmit);
+        settle(&mut gui, view);
+        let posted = POSTED.lock().unwrap().take().unwrap();
+        assert_eq!(posted.comments, expected);
+        assert_eq!(posted.pr.head_sha, head);
+    }
+
+    #[test]
+    fn line_threads_are_the_shared_draft_and_resolve_locally() {
+        let (_dir, mut gui, project_id) = fixture();
+        let view = opened(&mut gui, project_id);
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "Check this", Severity::Suggestion),
+        );
+        // The TUI reads the same row: the saved progress holds the thread.
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        let draft = db.load_pr_review_draft(REPO, 9).unwrap().unwrap();
+        let progress: serde_json::Value = serde_json::from_str(&draft.progress).unwrap();
+        let saved = progress["line_comments"]["code.txt"].as_array().unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0]["text"], "Check this");
+        assert_eq!(saved[0]["location"]["new_line"], 9);
+
+        let resolve = PrReviewAction::ToggleLineResolved {
+            path: "code.txt".into(),
+            start: ctx(9),
+            end: ctx(9),
+        };
+        let view = action(&mut gui, &view, resolve);
+        assert!(view.files[0].line_comments[0].resolved);
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        // A resolved thread is kept locally and never posted.
+        assert!(view.submission.as_ref().unwrap().comments.is_empty());
+        let view = action(&mut gui, &view, PrReviewAction::CancelSubmit);
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: ctx(9),
+                end: ctx(9),
+            },
+        );
+        assert!(!view.files[0].line_comments[0].resolved);
+        let view = action(&mut gui, &view, PrReviewAction::Back);
+        let view = action(&mut gui, &view, PrReviewAction::Open { number: 9 });
+        let view = settle(&mut gui, view);
+        assert_eq!(view.files[0].line_comments[0].text, "Check this");
+        // An empty save at the thread's own span removes the prose (and thread).
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "", Severity::Suggestion),
+        );
+        assert!(view.files[0].line_comments.is_empty());
+    }
+
+    #[test]
+    fn invalid_locations_suggestions_and_overlaps_are_refused_with_a_reason() {
+        let (_dir, mut gui, project_id) = two_hunk_fixture();
+        let view = opened(&mut gui, project_id);
+        assert_eq!(view.files[0].diff.hunks.len(), 2);
+        let late = view.files[0].diff.hunks[1]
+            .lines
+            .iter()
+            .find(|l| l.new_line == Some(19))
+            .map(|_| added(19))
+            .unwrap();
+
+        // A location that is not in the diff at all.
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(1), ctx(1), "x", Severity::Nit),
+        );
+        assert!(error.contains("not in this PR's diff"), "{error}");
+        // A range given backwards.
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(6), "x", Severity::Nit),
+        );
+        assert!(error.contains("diff order"), "{error}");
+        // A range across hunks.
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), late, "x", Severity::Nit),
+        );
+        assert!(error.contains("single hunk"), "{error}");
+        let error = refused(&mut gui, &view, suggestion(ctx(9), late, "x"));
+        assert!(error.contains("single hunk"), "{error}");
+        // A suggestion on removed-only lines, or a range that includes one.
+        let error = refused(&mut gui, &view, suggestion(removed(8), removed(8), "x"));
+        assert!(error.contains("removed"), "{error}");
+        let error = refused(&mut gui, &view, suggestion(ctx(7), added(8), "x"));
+        assert!(error.contains("removed"), "{error}");
+        // A suggestion that would close its own fence early.
+        let error = refused(&mut gui, &view, suggestion(ctx(9), ctx(9), "a\n```\nb"));
+        assert!(error.contains("fence"), "{error}");
+        // Unknown file, and empty saves with nothing to remove.
+        let error = refused(
+            &mut gui,
+            &view,
+            PrReviewAction::LineComment {
+                path: "gone.txt".into(),
+                start: ctx(9),
+                end: ctx(9),
+                text: "x".into(),
+                severity: Severity::Nit,
+            },
+        );
+        assert!(error.contains("no longer in this PR"), "{error}");
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "  ", Severity::Nit),
+        );
+        assert!(error.contains("Write a comment"), "{error}");
+        let error = refused(&mut gui, &view, suggestion(ctx(9), ctx(9), ""));
+        assert!(error.contains("Write a replacement"), "{error}");
+        // Resolving a thread that does not exist.
+        let error = refused(
+            &mut gui,
+            &view,
+            PrReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: ctx(9),
+                end: ctx(9),
+            },
+        );
+        assert!(error.contains("no longer at this anchor"), "{error}");
+
+        // Nothing above changed the draft or the submission.
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_review_draft(REPO, 9)
+                .unwrap()
+                .is_none()
+        );
+        assert!(view.submission.as_ref().unwrap().comments.is_empty());
+        let view = action(&mut gui, &view, PrReviewAction::CancelSubmit);
+
+        // Overlapping an existing thread would silently replace it.
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(10), "Kept", Severity::Nit),
+        );
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(10), ctx(11), "x", Severity::Nit),
+        );
+        assert!(error.contains("overlaps another saved thread"), "{error}");
+        let error = refused(&mut gui, &view, suggestion(ctx(9), ctx(9), "x"));
+        assert!(error.contains("overlaps another saved thread"), "{error}");
+        assert_eq!(view.files[0].line_comments[0].text, "Kept");
+        // The thread's own span still edits it, keeping any suggestion.
+        let view = action(&mut gui, &view, suggestion(ctx(9), ctx(10), "nine\nten"));
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(10), "Edited", Severity::Blocker),
+        );
+        let thread = &view.files[0].line_comments[0];
+        assert_eq!(thread.text, "Edited");
+        assert_eq!(thread.suggestion.as_deref(), Some("nine\nten"));
+        assert_eq!(view.files[0].line_comments.len(), 1);
+    }
+
+    #[test]
+    fn actions_are_bound_to_the_revision_the_draft_and_the_open_preview() {
+        let (_dir, mut gui, project_id) = fixture();
+        let initial = opened(&mut gui, project_id);
+        let view = action(
+            &mut gui,
+            &initial,
+            line_comment(ctx(9), ctx(9), "First", Severity::Nit),
+        );
+        // A stale view (older revision) cannot add a thread.
+        let error = super::act(
+            &mut gui,
+            &initial.workflow_id,
+            initial.revision,
+            line_comment(ctx(6), ctx(6), "Stale", Severity::Nit),
+        )
+        .err()
+        .unwrap();
+        assert!(error.message.contains("changed"), "{}", error.message);
+        // Another interface saved the draft: line actions refuse until reopen.
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        let mut draft = db.load_pr_review_draft(REPO, 9).unwrap().unwrap();
+        draft.progress = draft.progress.replace("First", "Elsewhere");
+        db.upsert_pr_review_draft(&draft).unwrap();
+        for next in [
+            line_comment(ctx(6), ctx(6), "x", Severity::Nit),
+            suggestion(ctx(6), ctx(6), "x"),
+            PrReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: ctx(9),
+                end: ctx(9),
+            },
+        ] {
+            let error = refused(&mut gui, &view, next);
+            assert!(error.contains("another interface"), "{error}");
+        }
+        let view = action(&mut gui, &view, PrReviewAction::Back);
+        let view = action(&mut gui, &view, PrReviewAction::Open { number: 9 });
+        let view = settle(&mut gui, view);
+        assert_eq!(view.files[0].line_comments[0].text, "Elsewhere");
+
+        // While the submission preview is open, the comments are frozen.
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(6), ctx(6), "x", Severity::Nit),
+        );
+        assert!(error.contains("submission preview"), "{error}");
+        let error = refused(
+            &mut gui,
+            &view,
+            PrReviewAction::ToggleLineResolved {
+                path: "code.txt".into(),
+                start: ctx(9),
+                end: ctx(9),
+            },
+        );
+        assert!(error.contains("submission preview"), "{error}");
+    }
+
+    #[test]
+    fn a_moved_head_still_blocks_posting_a_review_with_line_comments() {
+        let (_dir, mut gui, project_id) = fixture();
+        gui.app_for_workflow()
+            .pr_review_work
+            .set_review_poster_for_test(moved);
+        let view = opened(&mut gui, project_id);
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(10), "Range", Severity::Blocker),
+        );
+        let view = action(
+            &mut gui,
+            &view,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        let view = action(&mut gui, &view, PrReviewAction::ConfirmSubmit);
+        let view = settle(&mut gui, view);
+        let submission = view.submission.as_ref().unwrap();
+        assert!(submission.head_moved);
+        assert_eq!(submission.comments.len(), 1);
+        assert_eq!(submission.comments[0].start_line, Some(9));
+        // Confirming again is refused instead of posting at the old head.
+        let view = action(&mut gui, &view, PrReviewAction::ConfirmSubmit);
+        assert!(view.submission.as_ref().unwrap().head_moved);
+    }
+
+    #[test]
+    fn a_failed_draft_save_is_reported_and_the_thread_is_not_stored() {
+        let (dir, mut gui, project_id) = fixture();
+        let view = opened(&mut gui, project_id);
+        let conn = rusqlite::Connection::open(dir.path().join("amf.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER block_draft BEFORE INSERT ON pr_review_drafts
+             BEGIN SELECT RAISE(ABORT, 'drafts are read-only'); END;",
+        )
+        .unwrap();
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "Lost?", Severity::Nit),
+        );
+        assert!(error.contains("drafts are read-only"), "{error}");
+        // The view does not show a thread that is not in storage.
+        let snapshot = poll(&mut gui, &view.workflow_id).unwrap();
+        assert!(snapshot.files[0].line_comments.is_empty());
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_review_draft(REPO, 9)
+                .unwrap()
+                .is_none()
+        );
+        // Once storage works again, the same action saves.
+        conn.execute_batch("DROP TRIGGER block_draft;").unwrap();
+        let snapshot = poll(&mut gui, &view.workflow_id).unwrap();
+        let saved = action(
+            &mut gui,
+            &snapshot,
+            line_comment(ctx(9), ctx(9), "Lost?", Severity::Nit),
+        );
+        assert_eq!(saved.files[0].line_comments.len(), 1);
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_review_draft(REPO, 9)
+                .unwrap()
+                .is_some()
+        );
     }
 }

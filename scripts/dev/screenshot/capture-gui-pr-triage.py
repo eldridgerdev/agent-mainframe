@@ -26,7 +26,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     with socket.socket() as inspector_socket:
         inspector_socket.bind(("127.0.0.1", 0))
         inspector_address = f"127.0.0.1:{inspector_socket.getsockname()[1]}"
-    project_pr_proof = os.environ.get("AMF_GUI_PROJECT_PR_PROOF") == "1"
+    review_lines_proof = os.environ.get("AMF_GUI_PR_REVIEW_LINES_PROOF") == "1"
+    project_pr_proof = os.environ.get("AMF_GUI_PROJECT_PR_PROOF") == "1" or review_lines_proof
     frontend_port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1"
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
@@ -132,6 +133,18 @@ export function formatTotal(total: number): string {
     (repo / "invoice.ts").write_text(committed)
     git("add", ".")
     git("commit", "-m", "Round invoice totals to cents")
+    if review_lines_proof:
+        # PR #12 is the local branch: GitHub's pull ref points at it, and git
+        # rewrites the GitHub URL to this private repository, so opening the PR
+        # in PR Review fetches locally and never touches the network.
+        head = git("rev-parse", "round-invoice-totals")
+        git("update-ref", "refs/pull/12/head", head)
+        (gh_state / "head.txt").write_text(head + "\n")
+        env.update(
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0=f"url.{repo}.insteadOf",
+            GIT_CONFIG_VALUE_0="https://github.com/demo-org/invoice-api",
+        )
     (repo / "invoice.ts").write_text(
         committed.replace(
             "  return total.toFixed(2);",
@@ -239,7 +252,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,

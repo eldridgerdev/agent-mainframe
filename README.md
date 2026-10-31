@@ -898,6 +898,11 @@ starting live sessions. It remains stopped until you start it, and the response
 reports `started: false`. Omit the option to keep the default automatic start.
 `no_start` cannot be combined with `initial_prompt` or `submit_prompt`.
 
+If the worktree directory already exists, the request fails with `Worktree path
+already exists: <path>` and the error says to resend with
+`"existing_worktree": "<path>"`, which builds the feature on that worktree (as
+the wizard's existing-worktree source does) instead of creating one.
+
 See the [automation guide](docs/automation/README.md) for request templates,
 examples, dry runs, and response formats.
 

@@ -10,7 +10,9 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+- `amf automation create-feature` accepts `existing_worktree` to build a feature
+  on an existing git worktree, like the wizard's existing-worktree source. The
+  `Worktree path already exists` error now tells callers to use it.
 
 ## [v0.51.0] - 2026-10-27
 

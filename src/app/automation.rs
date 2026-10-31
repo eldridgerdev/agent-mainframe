@@ -502,6 +502,54 @@ impl App {
         ))
     }
 
+    /// Match `path` against the repo's registered worktrees, refusing the repo
+    /// root and any checkout another feature already owns. Mirrors the
+    /// wizard's "existing worktree" list.
+    fn resolve_existing_worktree(
+        &self,
+        project_repo: &Path,
+        path: &Path,
+    ) -> Result<crate::worktree::WorktreeInfo> {
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let wanted = canonical(&if path.is_relative() {
+            project_repo.join(path)
+        } else {
+            path.to_path_buf()
+        });
+        let repo = canonical(project_repo);
+        let listed = crate::worktree::WorktreeManager::list(project_repo).unwrap_or_default();
+        let Some(info) = listed
+            .iter()
+            .find(|wt| canonical(&wt.path) == wanted && canonical(&wt.path) != repo)
+        else {
+            let available = listed
+                .iter()
+                .filter(|wt| canonical(&wt.path) != repo)
+                .map(|wt| wt.path.display().to_string())
+                .collect::<Vec<_>>();
+            bail!(
+                "'{}' is not an existing git worktree of this repo (available: [{}])",
+                path.display(),
+                available.join(", ")
+            );
+        };
+        let owner = self.store.projects.iter().find_map(|p| {
+            p.features
+                .iter()
+                .find(|f| canonical(&f.workdir) == wanted)
+                .map(|f| (p.name.clone(), f.name.clone()))
+        });
+        if let Some((project, feature)) = owner {
+            bail!(
+                "Worktree {} is already used by feature '{}' in '{}'",
+                info.path.display(),
+                feature,
+                project
+            );
+        }
+        Ok(info.clone())
+    }
+
     pub fn create_feature_from_request(
         &mut self,
         request: &CreateFeatureRequest,
@@ -574,25 +622,43 @@ impl App {
             bail!("Worktrees require a git repository");
         }
 
+        let existing_worktree = match request.existing_worktree.as_deref() {
+            Some(path) => {
+                if request.use_worktree == Some(false) {
+                    bail!("existing_worktree cannot be combined with use_worktree: false");
+                }
+                if !is_git {
+                    bail!("Worktrees require a git repository");
+                }
+                Some(self.resolve_existing_worktree(&project_repo, path)?)
+            }
+            None => None,
+        };
+        let use_worktree = use_worktree || existing_worktree.is_some();
         if !use_worktree && has_non_worktree_feature {
             bail!("Only one non-worktree feature allowed per project");
         }
 
-        let hook_prompt = if use_worktree {
+        // An attached worktree already exists, so its creation hook is moot.
+        let hook_prompt = if use_worktree && existing_worktree.is_none() {
             self.worktree_hook_prompt_for_repo(&project_repo)
         } else {
             None
         };
         let mut hook_ran = false;
         let mut hook_succeeded = None;
-        let workdir = if use_worktree {
+        let workdir = if let Some(info) = &existing_worktree {
+            info.path.clone()
+        } else if use_worktree {
             let planned_workdir = project_repo
                 .join(".worktrees")
                 .join(worktree_name(&request.project_name, &request.branch));
             if planned_workdir.exists() {
                 bail!(
-                    "Worktree path already exists: {}",
-                    planned_workdir.display()
+                    "Worktree path already exists: {path}. To create the feature from that \
+                     existing worktree, resend the request with \"existing_worktree\": \
+                     \"{path}\" (or pick a different branch name)",
+                    path = planned_workdir.display()
                 );
             }
             planned_workdir
@@ -619,7 +685,7 @@ impl App {
         // Read the hook once and validate the choice against it before the
         // checkout exists; the hook that runs below is this same one, so the
         // choice cannot go stale between the check and the run.
-        let worktree_hook = if use_worktree {
+        let worktree_hook = if use_worktree && existing_worktree.is_none() {
             merge_project_extension_config(&self.config.extension, &project_repo)
                 .lifecycle_hooks
                 .on_worktree_created
@@ -630,7 +696,9 @@ impl App {
             worktree_hook.as_ref().and_then(|hook| hook.prompt()),
             request.hook_choice.as_deref(),
         )?;
-        let final_workdir = if use_worktree {
+        let final_workdir = if let Some(info) = &existing_worktree {
+            info.path.clone()
+        } else if use_worktree {
             let worktree_name = worktree_name(&request.project_name, &request.branch);
             let workdir = self
                 .worktree
@@ -661,7 +729,10 @@ impl App {
         let feature = Feature::new_for_project(
             &request.project_name,
             request.branch.clone(),
-            request.branch.clone(),
+            existing_worktree
+                .as_ref()
+                .and_then(|info| info.branch.clone())
+                .unwrap_or_else(|| request.branch.clone()),
             final_workdir.clone(),
             use_worktree,
             request.mode.clone(),

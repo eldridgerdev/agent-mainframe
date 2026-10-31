@@ -35,6 +35,44 @@ pub struct PrReviewFile {
     diff: DiffFileView,
     comment: String,
     line_comments: Vec<PrReviewLineComment>,
+    /// The lines of the PR's own diff, each with the index of its original
+    /// hunk. Expanded context is absent, so the client can refuse a selection
+    /// GitHub would reject (outside the diff, or spanning two hunks).
+    pr_lines: Vec<PrDiffLine>,
+}
+
+#[derive(Serialize)]
+pub struct PrDiffLine {
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+    hunk: usize,
+}
+
+/// The file as GitHub's own diff has it, free of expanded context.
+fn original_file(file: &crate::diff::DiffFile) -> Option<crate::diff::DiffFile> {
+    crate::diff::parse_unified_diff(&file.patch)
+        .ok()
+        .and_then(|files| files.into_iter().next())
+}
+
+fn pr_lines(file: &crate::diff::DiffFile) -> Vec<PrDiffLine> {
+    let Some(original) = original_file(file) else {
+        return Vec::new();
+    };
+    original
+        .hunks
+        .iter()
+        .enumerate()
+        .flat_map(|(hunk, h)| {
+            crate::diff::addressable_lines_in(std::slice::from_ref(h))
+                .into_iter()
+                .map(move |l| PrDiffLine {
+                    old_line: l.old_line,
+                    new_line: l.new_line,
+                    hunk,
+                })
+        })
+        .collect()
 }
 
 /// A saved line thread, in the shared draft's own terms.
@@ -245,19 +283,35 @@ fn save(gui: &mut GuiHandle) -> GuiResult<()> {
 
 /// The thread state a line action may change, so a failed draft save can put
 /// it back: the view must never show a thread that is not in storage.
-type ThreadState = (
-    std::collections::HashMap<String, Vec<crate::app::LineComment>>,
-    std::collections::HashMap<String, crate::app::ReviewDecision>,
-    std::collections::HashSet<String>,
-);
+struct ThreadState {
+    comments: std::collections::HashMap<String, Vec<crate::app::LineComment>>,
+    decisions: std::collections::HashMap<String, crate::app::ReviewDecision>,
+    auto_rejected: std::collections::HashSet<String>,
+    // The shared viewer state a line action also moves; a TUI attached to the
+    // same state must not be left on the rolled-back action's file or editor.
+    selected_file: usize,
+    comment_anchor: Option<usize>,
+    comment_cursor: Option<usize>,
+    comment_severity: crate::app::Severity,
+    feedback_editor: crate::editor::TextEditor,
+    editing_line_comment: bool,
+    editing_suggestion: bool,
+}
 
 fn thread_state(app: &mut crate::app::App) -> Option<ThreadState> {
     match &app.mode {
-        AppMode::DiffViewer(s) => Some((
-            s.line_comments.clone(),
-            s.decisions.clone(),
-            s.auto_rejected.clone(),
-        )),
+        AppMode::DiffViewer(s) => Some(ThreadState {
+            comments: s.line_comments.clone(),
+            decisions: s.decisions.clone(),
+            auto_rejected: s.auto_rejected.clone(),
+            selected_file: s.selected_file,
+            comment_anchor: s.comment_anchor,
+            comment_cursor: s.comment_cursor,
+            comment_severity: s.comment_severity,
+            feedback_editor: s.feedback_editor.clone(),
+            editing_line_comment: s.editing_line_comment,
+            editing_suggestion: s.editing_suggestion,
+        }),
         _ => None,
     }
 }
@@ -266,12 +320,18 @@ fn thread_state(app: &mut crate::app::App) -> Option<ThreadState> {
 fn save_threads(gui: &mut GuiHandle, before: Option<ThreadState>) -> GuiResult<()> {
     let result = save(gui);
     if result.is_err()
-        && let (Some((comments, decisions, auto)), AppMode::DiffViewer(s)) =
-            (before, &mut gui.app_for_workflow().mode)
+        && let (Some(before), AppMode::DiffViewer(s)) = (before, &mut gui.app_for_workflow().mode)
     {
-        s.line_comments = comments;
-        s.decisions = decisions;
-        s.auto_rejected = auto;
+        s.line_comments = before.comments;
+        s.decisions = before.decisions;
+        s.auto_rejected = before.auto_rejected;
+        s.selected_file = before.selected_file;
+        s.comment_anchor = before.comment_anchor;
+        s.comment_cursor = before.comment_cursor;
+        s.comment_severity = before.comment_severity;
+        s.feedback_editor = before.feedback_editor;
+        s.editing_line_comment = before.editing_line_comment;
+        s.editing_suggestion = before.editing_suggestion;
     }
     result
 }
@@ -504,7 +564,10 @@ fn line_comment_views(
     file: &crate::diff::DiffFile,
     inline: Option<&Vec<bool>>,
 ) -> Vec<PrReviewLineComment> {
-    let locations = file.addressable_lines();
+    // Editable only where `prepare_span` will accept it: the PR's own lines.
+    let locations = original_file(file)
+        .map(|f| f.addressable_lines())
+        .unwrap_or_default();
     let side = |l: DiffLineLocation| {
         if l.new_line.is_some() {
             "RIGHT"
@@ -601,9 +664,9 @@ fn prepare_span(
         return Err(GuiError::conflict("Select the range in diff order"));
     }
     // Only lines of the PR's own diff can carry an inline comment.
-    let original = crate::diff::parse_unified_diff(&file.patch)
-        .ok()
-        .and_then(|files| files.into_iter().next())
+    let original_file = original_file(file);
+    let original = original_file
+        .as_ref()
         .map(|f| f.addressable_lines())
         .unwrap_or_default();
     if !(original.contains(&start) && original.contains(&end)) {
@@ -612,9 +675,13 @@ fn prepare_span(
         ));
     }
     let hunk_of = |location: DiffLineLocation| {
-        file.hunks.iter().position(|h| {
-            crate::diff::addressable_lines_in(std::slice::from_ref(h)).contains(&location)
-        })
+        // The PR's own hunks: expanded context may have merged neighbours.
+        original_file
+            .iter()
+            .flat_map(|f| f.hunks.iter())
+            .position(|h| {
+                crate::diff::addressable_lines_in(std::slice::from_ref(h)).contains(&location)
+            })
     };
     if hunk_of(start) != hunk_of(end) {
         return Err(GuiError::conflict(
@@ -734,6 +801,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
                         .map(|c| c.text.clone())
                         .unwrap_or_default(),
                     line_comments: line_comment_views(state, f, inline.get(&f.path)),
+                    pr_lines: pr_lines(f),
                 })
                 .collect();
             if let Some(submit) = &state.pr_submit {

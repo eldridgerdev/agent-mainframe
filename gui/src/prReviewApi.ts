@@ -17,7 +17,7 @@ export interface PrReviewView {
   loading: boolean;
   number: number | null;
   title: string | null;
-  files: { diff: DiffFile; comment: string; line_comments: PrReviewThread[] }[];
+  files: { diff: DiffFile; comment: string; line_comments: PrReviewThread[]; pr_lines: { old_line: number | null; new_line: number | null; hunk: number }[] }[];
   summary: string;
   submission: {
     event: string; body: string;

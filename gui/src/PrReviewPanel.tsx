@@ -53,7 +53,9 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
   const lineIndices = new Map(lines.map((line, index) => [locationKey(line), index]));
   const lineIndex = (l: ReviewLocation) => lineIndices.get(locationKey(l)) ?? -1;
-  const hunkIndex = (l: ReviewLocation) => file?.diff.hunks.findIndex((h) => h.lines.some((x) => x.kind !== "marker" && locationKey(x) === locationKey(l))) ?? -1;
+  // Hunks of the PR's own diff; expanded context is not part of it.
+  const prHunks = new Map((file?.pr_lines ?? []).map((l) => [locationKey(l), l.hunk]));
+  const hunkIndex = (l: ReviewLocation) => prHunks.get(locationKey(l)) ?? -1;
   const span: ReviewSpan | null = !selection ? null : lineIndex(selection.anchor) <= lineIndex(selection.cursor)
     ? { start: selection.anchor, end: selection.cursor } : { start: selection.cursor, end: selection.anchor };
   function selectLine(line: DiffLine, extend: boolean) {
@@ -77,6 +79,10 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       && lineIndex(overlapping[0].start) <= lo && lineIndex(overlapping[0].end) >= hi ? overlapping[0] : undefined;
     if (overlapping.length > 0 && !existing) {
       setNotice(`Selection overlaps saved ${overlapping.length === 1 ? "thread" : "threads"} at ${overlapping.map((c) => c.anchor).join(", ")}, and saving would replace ${overlapping.length === 1 ? "it" : "them"}. Select lines within one thread to edit it, or lines clear of saved threads.`);
+      return;
+    }
+    if (hunkIndex(selected.start) < 0 || hunkIndex(selected.end) < 0) {
+      setNotice("GitHub takes comments on the PR's own diff lines; these lines were only reached by expanding context.");
       return;
     }
     if (hunkIndex(selected.start) !== hunkIndex(selected.end)) {

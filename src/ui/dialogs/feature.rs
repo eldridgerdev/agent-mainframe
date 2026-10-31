@@ -1935,11 +1935,17 @@ pub fn draw_fork_feature_dialog(
     let ctx_line = Paragraph::new(Line::from(vec![
         Span::styled(" Context: ", ctx_label_style),
         Span::styled(
-            format!("{} Include session transcript", ctx_check),
+            format!("{} Include selected Claude transcript", ctx_check),
             ctx_style,
         ),
     ]));
     frame.render_widget(ctx_line, chunks[4]);
+
+    frame.render_widget(
+        Paragraph::new(" Working changes are copied; staging is not copied.")
+            .style(Style::default().fg(theme.text_muted.to_color())),
+        chunks[5],
+    );
 
     // Hints
     let hints = if branch_active {

@@ -242,6 +242,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
     );
 
     app.start_worktree_hook(
+        None,
         "true",
         workdir.path().to_path_buf(),
         "my-project".to_string(),
@@ -311,6 +312,7 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
     );
 
     app.start_worktree_hook(
+        None,
         "true",
         workdir.path().to_path_buf(),
         "my-project".to_string(),
@@ -451,6 +453,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Feature(0, 0);
     app.mode = AppMode::RunningHook(RunningHookState {
+        expected_feature_id: None,
         script: "true".to_string(),
         workdir: workdir_path,
         todo_origin: None,

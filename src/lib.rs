@@ -55,6 +55,7 @@ mod diff;
 mod diff_split;
 mod editor;
 mod extension;
+mod fork_snapshot;
 mod fswatch;
 mod github;
 pub mod gui_screenshots;

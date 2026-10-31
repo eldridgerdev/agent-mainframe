@@ -5,6 +5,7 @@ mod automation;
 mod editor_lifecycle;
 mod feature_sessions;
 mod final_review;
+mod fork;
 mod harness_change;
 mod hooks_setup;
 mod pane_input;

@@ -1177,6 +1177,7 @@ mod tests {
             use_worktree: Some(true),
             enable_chrome: false,
             hook_choice: None,
+            existing_worktree: None,
             dry_run: false,
         };
         (GuiHandle::from_app(app), request, todo.id, worktree_dir)
@@ -1710,6 +1711,7 @@ mod tests {
                 use_worktree: Some(false),
                 enable_chrome: false,
                 hook_choice: None,
+                existing_worktree: None,
                 dry_run: false,
             };
             let view = begin_feature_creation(&mut gui, &request, quick)
@@ -1744,6 +1746,7 @@ mod tests {
             use_worktree: Some(true),
             enable_chrome: false,
             hook_choice: None,
+            existing_worktree: None,
             dry_run: false,
         }
     }
@@ -2009,6 +2012,7 @@ mod tests {
             use_worktree: Some(false),
             enable_chrome: false,
             hook_choice: None,
+            existing_worktree: None,
             dry_run: false,
         };
         begin_feature_creation(&mut gui, &request, false).unwrap();
@@ -2292,6 +2296,7 @@ mod tests {
             use_worktree: Some(false),
             enable_chrome: false,
             hook_choice: None,
+            existing_worktree: None,
             dry_run: false,
         };
         begin_feature_creation(&mut gui, &request, false).unwrap();

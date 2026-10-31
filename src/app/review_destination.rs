@@ -422,8 +422,19 @@ impl App {
             .store
             .locate_feature_by_id(Some(&created.project_id), &created.feature_id)
             .ok_or_else(|| anyhow::anyhow!("companion feature was removed"))?;
+        self.store.projects[pi].collapsed = false;
         self.ensure_feature_running(pi, fi, StartIntent::Warn("the review agent"))?;
         self.save()?;
+        self.log_info(
+            "review",
+            format!(
+                "Created companion review feature '{}' from '{}' ({} / {})",
+                created.name,
+                self.store.projects[pi].features[fi].branch,
+                setup.agent().display_name(),
+                setup.mode.display_name()
+            ),
+        );
         Ok((created.name, created.feature_id))
     }
 

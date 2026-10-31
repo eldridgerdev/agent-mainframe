@@ -105,6 +105,8 @@ if args[:2] == ["pr", "view"]:
 if args[:2] == ["pr", "list"]:
     everything = args[args.index("--state") + 1] == "all"
     out([p for p in PRS if everything or p["state"] == "OPEN"])
+if args[:2] == ["api", f"repos/{OWNER}/{REPO}/pulls/{NUMBER}"]:
+    out({"head": {"sha": HEAD}, "body": "Offline invoice review fixture."})
 if args[:2] == ["api", "user"]:
     print("demo-reviewer")
     raise SystemExit(0)

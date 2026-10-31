@@ -951,3 +951,15 @@ fn submitting_from_an_outdated_thread_clears_its_code_placeholder() {
         app.message
     );
 }
+
+#[test]
+fn m_on_the_threads_tab_opens_the_add_to_memory_dialog() {
+    let mut fixture = Fixture::new();
+    let app = &mut fixture.app;
+    press(app, KeyCode::Char('2'));
+    press(app, KeyCode::Char('M'));
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+    press(app, KeyCode::Esc);
+    assert_eq!(app.pr_review_memory_add_view(), None);
+    assert!(matches!(&app.mode, AppMode::PrReview(_)));
+}

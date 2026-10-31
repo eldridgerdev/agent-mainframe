@@ -38,6 +38,11 @@ starting live sessions. It remains stopped until you start it, and the response
 reports `started: false`. Omit the option to keep the default automatic start.
 `no_start` cannot be combined with `initial_prompt` or `submit_prompt`.
 
+If the worktree directory already exists, the request fails with `Worktree path
+already exists: <path>` and the error says to resend with
+`"existing_worktree": "<path>"`, which builds the feature on that worktree (as
+the wizard's existing-worktree source does) instead of creating one.
+
 Each command sends a request to the running dashboard over the same local
 IPC system AMF's own lifecycle hooks use; AMF applies it inside the
 dashboard process and prints a JSON response. Every command accepts

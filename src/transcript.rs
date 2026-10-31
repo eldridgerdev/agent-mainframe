@@ -1,35 +1,57 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Finds the most recently modified `.jsonl` transcript file
-/// for the given workdir in Claude Code's project directory.
-///
-/// Claude Code stores transcripts at
-/// `~/.claude/projects/{encoded-path}/{session-id}.jsonl`
-/// where the path encoding replaces all non-alphanumeric
-/// chars with `-`.
-pub fn find_latest_transcript(workdir: &Path) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let encoded = encode_path(workdir);
-    let projects_dir = PathBuf::from(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&encoded);
+/// Resolve a specific Claude session; do not substitute a newer transcript.
+pub(crate) fn session_transcript_path(workdir: &Path, session_id: &str) -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Home directory is unavailable"))?;
+    session_transcript_path_in(&home.canonicalize()?, workdir, session_id)
+}
 
-    if !projects_dir.is_dir() {
-        return None;
+pub(crate) struct CapturedContext {
+    path: PathBuf,
+    bytes: Vec<u8>,
+    pub markdown: String,
+}
+
+impl CapturedContext {
+    pub(crate) fn capture(workdir: &Path, session_id: &str) -> Result<Self> {
+        Self::from_path(session_transcript_path(workdir, session_id)?)
     }
 
-    std::fs::read_dir(&projects_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
-        .filter_map(|entry| {
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((entry.path(), modified))
+    fn from_path(path: PathBuf) -> Result<Self> {
+        let bytes = crate::screenshot_evidence::read_bounded(&path, 32 * 1024 * 1024)
+            .map_err(|err| anyhow::anyhow!("Cannot read selected transcript {}; press Tab to fork without context: {err:#}", path.display()))?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|err| anyhow::anyhow!("Selected transcript is not UTF-8: {err}"))?;
+        let markdown = export_transcript_text(text);
+        Ok(Self {
+            path,
+            bytes,
+            markdown,
         })
-        .max_by_key(|(_, modified)| *modified)
-        .map(|(path, _)| path)
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            crate::screenshot_evidence::read_bounded(&self.path, 32 * 1024 * 1024)? == self.bytes,
+            "Selected transcript changed; prepare again"
+        );
+        Ok(())
+    }
+}
+
+fn session_transcript_path_in(home: &Path, workdir: &Path, session_id: &str) -> Result<PathBuf> {
+    anyhow::ensure!(
+        !session_id.is_empty()
+            && session_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+        "Invalid Claude session ID"
+    );
+    Ok(home
+        .join(".claude/projects")
+        .join(encode_path(workdir))
+        .join(format!("{session_id}.jsonl")))
 }
 
 /// Reads a Claude Code JSONL transcript and exports it as
@@ -38,8 +60,15 @@ pub fn find_latest_transcript(workdir: &Path) -> Option<PathBuf> {
 /// Filters for user and assistant messages, extracting only
 /// text content blocks (skipping tool_use, tool_result, and
 /// thinking blocks).
+#[cfg(test)]
 pub fn export_transcript_markdown(jsonl_path: &Path) -> Result<String> {
     let content = std::fs::read_to_string(jsonl_path)?;
+    Ok(export_transcript_text(&content))
+}
+
+/// Render already captured transcript bytes, so a caller can bind a preview to
+/// one exact session and export without re-reading a different transcript.
+pub(crate) fn export_transcript_text(content: &str) -> String {
     let mut output = String::from(
         "# Session Transcript\n\n\
          Context from the parent session. This transcript\n\
@@ -77,7 +106,7 @@ pub fn export_transcript_markdown(jsonl_path: &Path) -> Result<String> {
         output.push_str(&format!("\n## {}\n\n{}\n", heading, text));
     }
 
-    Ok(output)
+    output
 }
 
 /// Extracts text from a message content field, which can be
@@ -111,6 +140,37 @@ fn encode_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_path_never_selects_another_session_or_traverses() {
+        let home = Path::new("/fixture-home");
+        let path =
+            session_transcript_path_in(home, Path::new("/work/project"), "session-123").unwrap();
+        assert_eq!(
+            path,
+            home.join(".claude/projects/-work-project/session-123.jsonl")
+        );
+        assert!(session_transcript_path_in(home, Path::new("/work/project"), "../other").is_err());
+        assert!(session_transcript_path_in(home, Path::new("/work/project"), "").is_err());
+    }
+
+    #[test]
+    fn captured_context_binds_selected_bytes_and_refuses_later_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let workdir = Path::new("/fixture/project");
+        let selected = session_transcript_path_in(&home_path, workdir, "selected").unwrap();
+        std::fs::create_dir_all(selected.parent().unwrap()).unwrap();
+        std::fs::write(&selected, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"selected request\"}}\n").unwrap();
+        let other = session_transcript_path_in(&home_path, workdir, "other").unwrap();
+        std::fs::write(other, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"newer unrelated request\"}}\n").unwrap();
+        let captured = CapturedContext::from_path(selected.clone()).unwrap();
+        assert!(captured.markdown.contains("selected request"));
+        assert!(!captured.markdown.contains("newer unrelated request"));
+        captured.validate().unwrap();
+        std::fs::write(selected, b"changed").unwrap();
+        assert!(captured.validate().is_err());
+    }
 
     #[test]
     fn encode_path_replaces_non_alnum() {

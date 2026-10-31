@@ -17,24 +17,45 @@ are tagged.
   Final Review companions: cherry-pick into the triage source checkout, or
   push to the PR's own branch on origin. Missing or diverged PR branches, changed
   previews and dirty sources are refused; no GitHub write or agent starts.
-
 - **Integrate Final Review companion commits from the desktop.** Preview the
   exact commits and destination, then explicitly cherry-pick them into the
   linked source checkout or push them to its origin branch. Changed previews,
   dirty sources and ignored files that could be overwritten are refused.
   Uncommitted companion changes are excluded.
-
+- `amf automation create-feature` accepts `existing_worktree` to build a feature
+  on an existing git worktree, like the wizard's existing-worktree source. The
+  `Worktree path already exists` error now tells callers to use it for registered worktrees.
 - **Choose where desktop Final Review feedback goes.** Select the current
   session, a dedicated review agent, another feature session or a new companion
   worktree. New resources and worktree setup require confirmation; cancelling
   their pending launch keeps created resources available for recovery. Feedback
   opens as an unsent draft and preserves the destination's existing composer
   text, including when the TUI is configured to submit prompts automatically.
+- **Explain waiting edits in the desktop app.** Read saved review notes without
+  an AI call, or review the exact prompt before asking Claude for an explanation.
+  Calls can be cancelled, changed edits discard old results, and unsent rejection
+  feedback stays in place. Explanations never answer the waiting agent. No
+  migration is required.
 
 ### Fixed
 
+- **Desktop PR Workspace checks AI fix handoffs before preparing a draft.** Choose an existing agent explicitly; AMF refuses changed findings, a moved PR head or a changed destination rather than silently retargeting the handoff. Refresh agents to choose again when the selected session is unavailable. The resulting prompt is appended to the unsent composer.
+
+- **Empty saved review notes no longer trigger an AI explanation call.** Both
+  interfaces now show an explicitly empty note instead of silently asking Claude.
+
 - Final Review prompts sent to another checkout now point to the original
   reviewed source's feedback file, keeping replies with the correct review.
+
+### Changed
+
+- **Forks preserve working changes more reliably.** A fork starts at the
+  source's confirmed commit and copies its current working content, including
+  supported filenames, executable files and symbolic links. Staging choices
+  are not copied. Changes to the source while the fork dialog is open are
+  refused; transfer errors name retained resources and do not start an agent.
+  When context is selected, AMF uses the selected Claude session's transcript
+  and reports unavailable or changed transcripts instead of choosing another.
 
 ## [v0.51.0] - 2026-10-27
 
@@ -61,8 +82,13 @@ filterable projects sidebar, and `amf automation` can start sessions and tasks.
   sessions stay connected. **Reset sizes** restores the existing 100% zoom and
   13px terminal defaults. No migration is required.
 
+
 ### Changed
 
+- **PR Workspace Threads footer lists more of the keys that work there.** The
+  footer and `?` help now show `M` (add a comment to review memory), plus `h`
+  (hide/show resolved), `o` (sort) and `B` (fix marked). The keys already
+  worked; they just weren't listed. No migration is required.
 - **AMF's own files no longer drown your changes in the diff.** The
   current-changes viewer and Final Review list the files AMF wrote into the
   checkout (hook settings, injected skills, `.amf/`, and `.gitignore` or
@@ -414,6 +440,7 @@ diagrams, and several paste, upgrade and PR-triage problems are fixed.
   file is plain text, and offers to install or repair a missing parser after
   confirmation, as the TUI's syntax picker does. Colours work in light and dark
   mode.
+
 
 ### Changed
 
@@ -768,6 +795,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   instead of showing an empty terminal. The project page counts stopped
   sessions next to each feature.
 
+
 ### Changed
 
 - **`amf automation` help now documents the request JSON.** `-h` / `--help` on
@@ -922,6 +950,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   **New session** button starts a Claude, Codex, OpenCode, or Pi agent, a
   terminal, or Neovim, with an optional name, and opens it in a new tab.
 
+
 ### Changed
 
 - **The session sidebar's Usage box now shows small bars, like the
@@ -1063,6 +1092,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   in one combined prompt, so you are less likely to send an agent after a
   hunk that has already changed.
 
+
 ### Changed
 
 - **Doc/marketing site moved off `*.pages.dev` to `agentmainframe.dev`.** The
@@ -1072,6 +1102,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   pipeline or deploy target.
 
 ## [v0.43.0] - 2026-09-17
+
 
 ### Changed
 
@@ -1427,6 +1458,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   trustworthy. Existing cached reviews remain compatible; no migration is
   required.
 
+
 ### Changed
 
 - **PR Triage now attributes a combined batch fix's cost to every comment it
@@ -1648,6 +1680,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   your AMF config. No migration is required — leaving both blank/default
   keeps today's behavior exactly as it is.
 
+
 ### Changed
 
 - **Starting a TODO plan now marks the item in progress immediately.** Choosing
@@ -1737,6 +1770,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   background schedule — no extra `gh` calls beyond what a branch actually
   needs. No migration is required; the database updates itself on first
   launch after upgrading.
+
 
 ### Changed
 
@@ -1889,6 +1923,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   operation already using agent tokens must finish before the interview can
   be parked, so its result is not discarded.
 
+
 ### Changed
 
 - **Project config moved to `amf.json` at the repo root.** AMF's per-project
@@ -2039,6 +2074,7 @@ Tailscale, and model advice and reasoning levels are available in more places.
   are now limited per folder rather than by a single cap on the whole listing,
   and a folder that hides part of its contents says so — which makes the
   all-files view usable on a monorepo instead of merely truncated.
+
 
 ### Changed
 
@@ -2638,6 +2674,7 @@ affected features so Claude reloads the automatically repaired hook settings.
 - **Agents working on AMF can capture UI proof.** This repository includes
   native Claude and Codex `amf-screenshot` skills for isolated PNG and GIF
   capture without touching the user's real AMF database or tmux sessions.
+
 ### Changed
 
 - **The AMF screenshot skill stays with AMF.** Feature setup no longer injects
@@ -2716,6 +2753,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   notes file retains the latest note for each of the 50 most recently
   documented files; older and superseded notes move to an archive that review
   surfaces still read.
+
 
 ### Changed
 
@@ -2807,6 +2845,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - **PR conversations can be grouped separately.** Press `o` to cycle to
   “conversations last,” which places top-level discussion after code comments
   under a visible divider.
+
 
 ### Changed
 
@@ -3135,6 +3174,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   outright — `Esc` keeps the list by moving it to the first surviving feature.
   If no features remain, the now-orphaned list is cleaned up automatically.
 
+
 ### Changed
 
 - **Codex-powered headless analysis is now isolated and disposable.** AI PR
@@ -3452,6 +3492,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   stale inferred Codex sources and clears any older bad inferred binding on the
   next refresh, so new panes stay blank until their own usage is known.
 
+
 ### Changed
 
 - **Readable comment rows in the interactive PR review.** Each row now leads
@@ -3598,6 +3639,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   config: dark/light, hard/medium/soft contrast, and material/mix/original
   foreground palettes. Use names like `gruvbox-material-dark-medium` or
   `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
+
 
 ### Changed
 
@@ -3763,6 +3805,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   existing live session for warm in-progress context. The footer shows the
   current target (`f fix→dedicated`).
 
+
 ### Changed
 
 - **Clearer feature setup options.** The new-feature mode step now shows a
@@ -3871,6 +3914,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   in AMF's in-app Markdown viewer alongside the existing plans, so known
   issues are tracked in one place. First entry: pressing `A` on the
   dashboard does not open harness setup.
+
 
 ### Changed
 
@@ -3993,6 +4037,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Added a top-level `llms.txt` navigation file so AI tools can quickly
   locate the README, architecture docs, and automation guides.
 
+
 ### Changed
 
 - Final review (press `f` in a feature view) now runs entirely inside
@@ -4060,6 +4105,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   toggle Remote Control on or off at runtime. When the link only lives
   in Claude Code's footer (and can't be read back), AMF tells you to use
   that footer link rather than failing silently.
+
 
 ### Changed
 
@@ -4158,6 +4204,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   for Claude, Codex, and OpenCode sessions, making it easier to confirm
   which model a running agent is using.
 
+
 ### Changed
 
 - Pending input requests can now surface sooner when AMF starts in an
@@ -4222,6 +4269,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 
 ## [v0.21.0] - 2026-06-11
 
+
 ### Changed
 
 - AMF now stays fast after running for hours or days. Usage and token
@@ -4278,6 +4326,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   worktree picker, so large worktree lists can be filtered before
   selecting one.
 
+
 ### Changed
 
 - The session picker no longer offers `Terminal` as a built-in session
@@ -4311,6 +4360,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 
 ## [v0.19.7] - 2026-05-14
 
+
 ### Changed
 
 - Pending diff reviews now show up in `Work -> state` for Claude,
@@ -4343,6 +4393,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   manually when the normal popup flow gets stuck. This is available as
   `V` on the dashboard for feature/session rows and as `Ctrl+Space`
   then `V` while viewing a session.
+
 
 ### Changed
 
@@ -4461,6 +4512,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - View mode now shows a real scrollbar while you are in scroll/copy mode, so it is easier to tell that the pane is being scrolled instead of forwarded directly to tmux.
 - Scroll/copy mode now supports fast movement with `Ctrl+j`, `Ctrl+k`, `Ctrl+Up`, and `Ctrl+Down`, matching the faster scrolling behavior used in other viewers.
 
+
 ### Changed
 
 - The dashboard header now shows the AMF version next to the app title.
@@ -4572,6 +4624,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Mouse-wheel scrolling now works in the Markdown viewer and help
   dialog.
 
+
 ### Changed
 
 - Project storage, token caching, debug logging, and session status
@@ -4639,6 +4692,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Help dialogs now support scrolling so longer keybinding and workflow
   reference text remains readable inside smaller terminals.
 
+
 ### Changed
 
 - AMF now uses a dedicated managed tmux socket for control-mode sessions
@@ -4678,6 +4732,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Debug log navigation now supports `PageUp`/`PageDown`, `g`/`G` for
   top/bottom jumps, mouse wheel scrolling, and an explicit end-of-log
   marker.
+
 
 ### Changed
 
@@ -4720,6 +4775,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Pi support as a fourth harness/session type alongside Claude,
   Opencode, and Codex.
 
+
 ### Changed
 
 - UI language now refers to user-selectable agents as "harnesses" in
@@ -4749,6 +4805,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 
 ## [v0.14.1] - 2026-04-07
 
+
 ### Changed
 
 - Dashboard status syncing now scales better with large project lists by
@@ -4768,6 +4825,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 
 - Embedded view now supports `Ctrl+Space` then `R` to refresh tmux pane
   sizing on demand after terminal or layout changes.
+
 
 ### Changed
 
@@ -4813,6 +4871,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   prompt in each saved conversation.
 - The steering prompt coach now supports scrolling for longer prompts
   without leaving the feature-creation flow.
+
 
 ### Changed
 
@@ -4860,6 +4919,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   Each entry shows a colored timestamp and the first line of the prompt,
   truncated with an ellipsis when needed.
 
+
 ### Changed
 
 - Markdown viewer and picker UX improvements.
@@ -4869,6 +4929,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - No store migration is required.
 
 ## [v0.11.1] - 2026-03-19
+
 
 ### Changed
 
@@ -4908,6 +4969,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Latest prompt injection — press `Tab` or `Enter` in the latest
   prompt dialog (leader `l`) to send the saved prompt directly into
   the active session without leaving view mode.
+
 
 ### Changed
 
@@ -4959,6 +5021,7 @@ Codex features receive the screenshot skill when their local setup next runs.
   separately.
 - `AMF_TMUX_BIN` and `AMF_TMUX_SOCKET` environment variables let you
   override the tmux binary and socket path at runtime.
+
 
 ### Changed
 
@@ -5014,6 +5077,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Vibeless-mode Codex diff review automation that watches file writes,
   opens the change-reason prompt, and reverts rejected changes.
 
+
 ### Changed
 
 - Diff review and markdown-reading workflows now stay inside AMF instead
@@ -5044,6 +5108,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Mouse wheel support for pane scrolling in view mode
 - Codex session restore functionality
 - Release session now displays current version before prompting for new version
+
 
 ### Changed
 
@@ -5092,6 +5157,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Configurable leader timeout via `leader_timeout_seconds`.
 - Codex usage bars in the status area plus extra usage debug logging.
 
+
 ### Changed
 
 - Leader mode now opens clearer popup menus in view mode.
@@ -5115,6 +5181,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - IPC-based input notifications with file-based fallback when the AMF
   socket is unavailable.
 - Improved input request handling for Codex worktrees.
+
 
 ### Changed
 
@@ -5147,6 +5214,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Feature nicknames shown in the dashboard.
 - Per-feature/session workdir handling for local extension config.
 
+
 ### Changed
 
 - Forking preserves uncommitted changes when creating the new feature.
@@ -5172,6 +5240,7 @@ Codex features receive the screenshot skill when their local setup next runs.
 - Mouse text selection and clipboard copy in the embedded pane.
 - Debug log overlay with file logging.
 - Claude session resume picker on `S`.
+
 
 ### Changed
 

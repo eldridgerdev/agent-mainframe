@@ -124,6 +124,65 @@ fn theme_catalog() -> agent_mainframe::gui_themes::ThemeCatalog {
 }
 
 struct AppState(Mutex<GuiHandle>);
+struct EditExplanationState(Mutex<gui_supervised_edits::explanations::Controller>);
+
+#[tauri::command]
+fn supervised_edit_explanation_prepare(
+    state: State<AppState>,
+    explanations: State<EditExplanationState>,
+    target: FeatureTarget,
+    edit_id: String,
+    revision: String,
+) -> Result<gui_supervised_edits::explanations::ExplanationView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    explanations
+        .0
+        .lock()
+        .expect("explanation mutex poisoned")
+        .prepare(&mut gui, target, &edit_id, &revision)
+}
+
+#[tauri::command]
+fn supervised_edit_explanation_start(
+    state: State<AppState>,
+    explanations: State<EditExplanationState>,
+    owner: String,
+    approved: bool,
+) -> Result<gui_supervised_edits::explanations::ExplanationView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    explanations
+        .0
+        .lock()
+        .expect("explanation mutex poisoned")
+        .start(&mut gui, &owner, approved)
+}
+
+#[tauri::command]
+fn supervised_edit_explanation_poll(
+    state: State<AppState>,
+    explanations: State<EditExplanationState>,
+    owner: String,
+    request: u64,
+) -> Result<gui_supervised_edits::explanations::ExplanationView, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    explanations
+        .0
+        .lock()
+        .expect("explanation mutex poisoned")
+        .poll(&mut gui, &owner, request)
+}
+
+#[tauri::command]
+fn supervised_edit_explanation_cancel(
+    explanations: State<EditExplanationState>,
+    owner: String,
+) -> gui_supervised_edits::explanations::ExplanationView {
+    explanations
+        .0
+        .lock()
+        .expect("explanation mutex poisoned")
+        .cancel(&owner)
+}
 
 #[tauri::command]
 fn prompt_library_load(
@@ -1905,6 +1964,40 @@ async fn pr_workspace_ai_act(
 }
 
 #[tauri::command]
+async fn pr_workspace_fix_targets(
+    app: tauri::AppHandle,
+    workflow_id: String,
+) -> Result<Vec<gui_pr_triage::PrFixTargetView>, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_pr_workspace::fix_targets(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow_id,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_workspace_prepare_fix(
+    app: tauri::AppHandle,
+    request: gui_pr_workspace::FixHandoffRequest,
+) -> Result<gui_pr_triage::PrFixHandoff, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        let read = gui_pr_workspace::prepare_fix_read(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            request,
+        )?;
+        let current = gui_pr_workspace::fetch_fix_pr(&read).map_err(GuiError::from)?;
+        gui_pr_workspace::finish_fix_read(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            read,
+            current,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
 async fn pr_workspace_files(
     state: State<'_, AppState>,
     workflow_id: String,
@@ -2202,6 +2295,9 @@ fn main() {
             let db_path = agent_mainframe::project::db_path();
             let gui = GuiHandle::new(db_path)?;
             app.manage(AppState(Mutex::new(gui)));
+            app.manage(EditExplanationState(Mutex::new(
+                gui_supervised_edits::explanations::Controller::default(),
+            )));
             app.manage(TerminalState(Mutex::new(Attachments::new())));
             app.manage(SidebarSources(Mutex::new(SidebarClock::default())));
             Ok(())
@@ -2296,6 +2392,10 @@ fn main() {
             plan_begin_todo_new,
             plan_snapshot,
             plan_act,
+            supervised_edit_explanation_prepare,
+            supervised_edit_explanation_start,
+            supervised_edit_explanation_poll,
+            supervised_edit_explanation_cancel,
             supervised_edits_load,
             supervised_edit_counts,
             supervised_edit_respond,
@@ -2333,6 +2433,8 @@ fn main() {
             pr_workspace_ai_snapshot,
             pr_workspace_ai_act,
             pr_workspace_files,
+            pr_workspace_prepare_fix,
+            pr_workspace_fix_targets,
             syntax_install_status,
             syntax_install,
             syntax_languages,

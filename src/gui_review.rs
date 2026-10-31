@@ -40,9 +40,17 @@ pub(crate) struct ReviewContext {
     /// A confirmed completion waiting for `check_run`.
     completion: Option<complete::PendingCompletion>,
     destination: Option<destinations::PreparedFeedbackDestination>,
+    /// Companion kept after a cancelled or failed launch. It is offered only
+    /// by replaying its request; it never replaces the chosen destination.
+    retained_companion: Option<destinations::PreparedFeedbackDestination>,
     preparation: Option<destinations::Preparation>,
+    /// Resolved handoff shown in the summary, keyed by review revision. Only
+    /// display reads it; completion always re-resolves and re-checks identity.
+    handoff_cache: Option<((u64, Option<u64>), HandoffResolution)>,
     preparation_error: Option<String>,
 }
+
+type HandoffResolution = Result<Option<destinations::ResolvedDestination>, String>;
 
 #[derive(Debug, Serialize)]
 pub struct ReviewFileView {
@@ -336,14 +344,18 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         check: None,
         completion: None,
         destination: None,
+        retained_companion: None,
         preparation: None,
+        handoff_cache: None,
         preparation_error: None,
     });
     snapshot(gui)
 }
 
 pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
-    gui.refresh_store()?;
+    // A transient store-read failure must not fail the whole snapshot or poll;
+    // actions that need a fresh store refresh it (and fail) on their own.
+    let _ = gui.refresh_store();
     let context = gui
         .review_context
         .as_ref()

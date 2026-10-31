@@ -15,6 +15,7 @@ mod context_hints;
 mod context_settings;
 mod diff;
 pub(crate) mod dormant;
+pub(crate) mod edit_explanation;
 pub(crate) mod editor_ops;
 pub(crate) mod feature_ops;
 pub(crate) mod feature_setup;
@@ -3906,7 +3907,10 @@ impl App {
     /// `(pi, fi)` indices a reload would silently re-point. Anywhere else
     /// the check waits for the next call.
     pub fn refresh_store_if_changed_elsewhere(&mut self) -> Result<bool> {
-        if !matches!(self.mode, AppMode::Normal | AppMode::Viewing(_)) {
+        if !matches!(
+            self.mode,
+            AppMode::Normal | AppMode::Viewing(_) | AppMode::ForkingFeature(_)
+        ) {
             return Ok(false);
         }
         let Some(db) = &self.db else {

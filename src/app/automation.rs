@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::*;
 use crate::automation::{
@@ -381,27 +381,74 @@ impl App {
         workdir: &Path,
         choice: Option<&str>,
     ) -> (bool, Option<String>) {
+        Self::run_worktree_hook_cancellable(script, workdir, choice, None)
+    }
+
+    /// Like [`Self::run_worktree_hook_sync`], but terminates the hook's whole
+    /// process tree once `cancel` is set, so a hook that never exits cannot
+    /// pin its caller.
+    pub(crate) fn run_worktree_hook_cancellable(
+        script: &str,
+        workdir: &Path,
+        choice: Option<&str>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> (bool, Option<String>) {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::Ordering;
         let expanded = Self::resolve_sync_hook_script(script);
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c")
             .arg(&expanded)
             .current_dir(workdir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
         if let Some(c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-
-        match cmd.output() {
-            Ok(output) if output.status.success() => (true, None),
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(err) => return (false, Some(err.to_string())),
+        };
+        // Drain stderr off-thread so a chatty hook cannot block on a full pipe.
+        let mut stderr = child.stderr.take();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(stderr) = stderr.as_mut() {
+                let _ = stderr.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {}
+                Err(err) => break Err(err),
+            }
+            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                crate::resources::procs::terminate_tree(
+                    i64::from(child.id()),
+                    std::time::Duration::from_secs(2),
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return (false, Some("cancelled; hook process was terminated".into()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let stderr = reader.join().unwrap_or_default();
+        match status {
+            Ok(status) if status.success() => (true, None),
+            Ok(status) => {
+                let stderr = String::from_utf8_lossy(&stderr);
                 let detail = stderr
                     .lines()
                     .rev()
                     .find(|line| !line.trim().is_empty())
                     .map(|line| line.trim().to_string())
-                    .or_else(|| output.status.code().map(|code| format!("exit code {code}")));
+                    .or_else(|| status.code().map(|code| format!("exit code {code}")));
                 (false, detail)
             }
             Err(err) => (false, Some(err.to_string())),
@@ -502,6 +549,61 @@ impl App {
         ))
     }
 
+    /// Match `path` against the repo's registered worktrees, refusing the repo
+    /// root and any checkout another feature already owns. Mirrors the
+    /// wizard's "existing worktree" list.
+    fn resolve_existing_worktree(
+        &self,
+        project_repo: &Path,
+        path: &Path,
+    ) -> Result<crate::worktree::WorktreeInfo> {
+        let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let wanted = canonical(&if path.is_relative() {
+            project_repo.join(path)
+        } else {
+            path.to_path_buf()
+        });
+        let repo = canonical(project_repo);
+        let listed = crate::worktree::WorktreeManager::list(project_repo)
+            .context("Failed to list git worktrees for this repo")?;
+        let Some(info) = listed
+            .iter()
+            .find(|wt| canonical(&wt.path) == wanted && canonical(&wt.path) != repo)
+        else {
+            let available = listed
+                .iter()
+                .filter(|wt| canonical(&wt.path) != repo)
+                .map(|wt| wt.path.display().to_string())
+                .collect::<Vec<_>>();
+            bail!(
+                "'{}' is not an existing git worktree of this repo (available: [{}])",
+                path.display(),
+                available.join(", ")
+            );
+        };
+        let owner = self.store.projects.iter().find_map(|p| {
+            p.features
+                .iter()
+                .find(|f| canonical(&f.workdir) == wanted)
+                .map(|f| (p.name.clone(), f.name.clone()))
+        });
+        if let Some((project, feature)) = owner {
+            bail!(
+                "Worktree {} is already used by feature '{}' in '{}'",
+                info.path.display(),
+                feature,
+                project
+            );
+        }
+        if info.branch.is_none() {
+            bail!(
+                "Worktree {} has a detached HEAD; check out a branch there before attaching it",
+                info.path.display()
+            );
+        }
+        Ok(info.clone())
+    }
+
     pub fn create_feature_from_request(
         &mut self,
         request: &CreateFeatureRequest,
@@ -574,25 +676,55 @@ impl App {
             bail!("Worktrees require a git repository");
         }
 
+        let existing_worktree = match request.existing_worktree.as_deref() {
+            Some(path) => {
+                if request.use_worktree == Some(false) {
+                    bail!("existing_worktree cannot be combined with use_worktree: false");
+                }
+                if !is_git {
+                    bail!("Worktrees require a git repository");
+                }
+                Some(self.resolve_existing_worktree(&project_repo, path)?)
+            }
+            None => None,
+        };
+        let use_worktree = use_worktree || existing_worktree.is_some();
         if !use_worktree && has_non_worktree_feature {
             bail!("Only one non-worktree feature allowed per project");
         }
 
-        let hook_prompt = if use_worktree {
+        // An attached worktree already exists, so its creation hook is moot.
+        let hook_prompt = if use_worktree && existing_worktree.is_none() {
             self.worktree_hook_prompt_for_repo(&project_repo)
         } else {
             None
         };
         let mut hook_ran = false;
         let mut hook_succeeded = None;
-        let workdir = if use_worktree {
+        let workdir = if let Some(info) = &existing_worktree {
+            info.path.clone()
+        } else if use_worktree {
             let planned_workdir = project_repo
                 .join(".worktrees")
                 .join(worktree_name(&request.project_name, &request.branch));
             if planned_workdir.exists() {
+                let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                let wanted = canonical(&planned_workdir);
+                let registered = crate::worktree::WorktreeManager::list(&project_repo)
+                    .map(|list| list.iter().any(|wt| canonical(&wt.path) == wanted))
+                    .unwrap_or(false);
+                if registered {
+                    bail!(
+                        "Worktree path already exists: {path}. To create the feature from that \
+                         existing worktree, resend the request with \"existing_worktree\": \
+                         \"{path}\" (or pick a different branch name)",
+                        path = planned_workdir.display()
+                    );
+                }
                 bail!(
-                    "Worktree path already exists: {}",
-                    planned_workdir.display()
+                    "Worktree path already exists: {path}, but it is not a registered git \
+                     worktree. Remove the stale directory or pick a different branch name",
+                    path = planned_workdir.display()
                 );
             }
             planned_workdir
@@ -619,7 +751,7 @@ impl App {
         // Read the hook once and validate the choice against it before the
         // checkout exists; the hook that runs below is this same one, so the
         // choice cannot go stale between the check and the run.
-        let worktree_hook = if use_worktree {
+        let worktree_hook = if use_worktree && existing_worktree.is_none() {
             merge_project_extension_config(&self.config.extension, &project_repo)
                 .lifecycle_hooks
                 .on_worktree_created
@@ -630,7 +762,9 @@ impl App {
             worktree_hook.as_ref().and_then(|hook| hook.prompt()),
             request.hook_choice.as_deref(),
         )?;
-        let final_workdir = if use_worktree {
+        let final_workdir = if let Some(info) = &existing_worktree {
+            info.path.clone()
+        } else if use_worktree {
             let worktree_name = worktree_name(&request.project_name, &request.branch);
             let workdir = self
                 .worktree
@@ -661,7 +795,10 @@ impl App {
         let feature = Feature::new_for_project(
             &request.project_name,
             request.branch.clone(),
-            request.branch.clone(),
+            existing_worktree
+                .as_ref()
+                .and_then(|info| info.branch.clone())
+                .unwrap_or_else(|| request.branch.clone()),
             final_workdir.clone(),
             use_worktree,
             request.mode.clone(),

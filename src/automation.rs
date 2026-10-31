@@ -159,6 +159,10 @@ pub struct CreateFeatureRequest {
     pub use_worktree: Option<bool>,
     pub enable_chrome: bool,
     pub hook_choice: Option<String>,
+    /// Attach this already-existing git worktree as the feature instead of
+    /// creating one. Must be one of the repo's registered worktrees and not
+    /// already used by another feature; the worktree hook is not run.
+    pub existing_worktree: Option<PathBuf>,
     pub dry_run: bool,
     pub initial_prompt: Option<String>,
     pub submit_prompt: bool,
@@ -180,6 +184,7 @@ impl CreateFeatureRequest {
             "use_worktree": self.use_worktree,
             "enable_chrome": self.enable_chrome,
             "hook_choice": self.hook_choice,
+            "existing_worktree": self.existing_worktree,
             "initial_prompt": self.initial_prompt,
             "submit_prompt": self.submit_prompt,
             "dry_run": self.dry_run,

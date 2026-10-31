@@ -19,8 +19,13 @@ impl CapturedContext {
     }
 
     pub(crate) fn from_path(path: PathBuf) -> Result<Self> {
-        let bytes = crate::screenshot_evidence::read_bounded(&path, 32 * 1024 * 1024)
-            .map_err(|err| anyhow::anyhow!("Cannot read selected transcript {}; press Tab to fork without context: {err:#}", path.display()))?;
+        let bytes =
+            crate::screenshot_evidence::read_bounded(&path, 32 * 1024 * 1024).map_err(|err| {
+                anyhow::anyhow!(
+                    "Cannot read selected transcript {}: {err:#}",
+                    path.display()
+                )
+            })?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|err| anyhow::anyhow!("Selected transcript is not UTF-8: {err}"))?;
         let markdown = export_transcript_text(text);

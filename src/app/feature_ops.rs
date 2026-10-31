@@ -2459,10 +2459,10 @@ impl App {
         let context = if include_context {
             crate::fork_snapshot::ensure_context_does_not_collide(&state.snapshot)?;
             let session = state.source_claude_session_id.as_deref().ok_or_else(|| anyhow::anyhow!("No Claude transcript is bound to the selected session; press Tab to fork without context"))?;
-            Some(crate::transcript::CapturedContext::capture(
-                &source_workdir,
-                session,
-            )?)
+            Some(
+                crate::transcript::CapturedContext::capture(&source_workdir, session)
+                    .map_err(|err| anyhow::anyhow!("{err:#}; press Tab to fork without context"))?,
+            )
         } else {
             None
         };

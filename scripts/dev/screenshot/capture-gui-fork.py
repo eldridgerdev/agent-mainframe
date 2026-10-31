@@ -35,6 +35,16 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-fork-") as temporary:
         env[f"XDG_{name}_HOME"] = str(directory)
     config = scratch / "config/amf"
     config.mkdir()
+    # The fork dialog lists only harnesses that answer `--version`. A stub shadows
+    # any real harness (CI has none), so the proof never runs a real agent; the
+    # fork is created stopped, so even the stub is never started.
+    stub_bin = scratch / "bin"
+    stub_bin.mkdir()
+    for harness in ["claude", "codex", "opencode", "pi"]:
+        stub = stub_bin / harness
+        stub.write_text('#!/bin/sh\necho "0.0.0-stub"\n')
+        stub.chmod(0o755)
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env['PATH']}"
     env.update(GDK_BACKEND="x11", WEBKIT_INSPECTOR_HTTP_SERVER=inspector,
                AMF_TMUX_SOCKET=str(scratch / "tmux.sock"))
     git_env = env | {

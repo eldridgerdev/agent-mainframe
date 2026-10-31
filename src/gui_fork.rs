@@ -1385,7 +1385,9 @@ mod tests {
         let mut gui = GuiHandle::from_app(app);
         // The transcript root is the real home directory; read a fixture file.
         let transcripts = TempDir::new().unwrap();
-        let transcript = transcripts.path().join("conversation.jsonl");
+        // macOS temp dirs sit behind a /var symlink; reads refuse symlinked parents.
+        let transcript_dir = transcripts.path().canonicalize().unwrap();
+        let transcript = transcript_dir.join("conversation.jsonl");
         std::fs::write(
             &transcript,
             "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"selected request\"}}\n",

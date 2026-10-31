@@ -956,7 +956,7 @@ fn create_feature_automation_hints_existing_worktree_when_path_exists() {
         .to_string();
     assert!(err.contains("Worktree path already exists"), "got: {err}");
     assert!(
-        err.contains("\"existing_worktree\"") && err.contains(&existing.display().to_string()),
+        err.contains("not a registered git worktree") && !err.contains("\"existing_worktree\""),
         "got: {err}"
     );
 }
@@ -1005,7 +1005,7 @@ fn create_feature_automation_attaches_existing_worktree() {
 
     let mut request = CreateFeatureRequest {
         project_name: "automation-project".into(),
-        branch: "side".into(),
+        branch: "feature-on-side".into(),
         no_start: true,
         existing_worktree: Some(workspace.path().join("nope")),
         ..Default::default()
@@ -1016,12 +1016,54 @@ fn create_feature_automation_attaches_existing_worktree() {
     request.existing_worktree = Some(repo.clone());
     assert!(app.create_feature_from_request(&request).is_err());
 
+    // A registered worktree at the planned path gets the existing_worktree hint.
+    let planned = repo.join(".worktrees").join("automation-project-hinted");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "hinted",
+            &planned.to_string_lossy(),
+        ],
+    );
+    let hinted = CreateFeatureRequest {
+        project_name: "automation-project".into(),
+        branch: "hinted".into(),
+        use_worktree: Some(true),
+        ..Default::default()
+    };
+    let err = app
+        .create_feature_from_request(&hinted)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("\"existing_worktree\""), "got: {err}");
+
+    // A detached worktree is rejected rather than recording a guessed branch.
+    let detached = workspace.path().join("detached");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &detached.to_string_lossy(),
+        ],
+    );
+    request.existing_worktree = Some(detached);
+    let err = app.create_feature_from_request(&request).unwrap_err();
+    assert!(err.to_string().contains("detached HEAD"), "{err}");
+
     request.existing_worktree = Some(wt.clone());
     let response = app.create_feature_from_request(&request).unwrap();
     assert!(response.ok);
     let feature = &app.store.projects[0].features[0];
     assert_eq!(feature.workdir, wt);
     assert!(feature.is_worktree);
+    assert_eq!(feature.name, "feature-on-side");
     assert_eq!(feature.branch, "side");
 
     request.branch = "side-2".into();

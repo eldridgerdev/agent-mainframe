@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use super::*;
 use crate::automation::{
@@ -517,7 +517,8 @@ impl App {
             path.to_path_buf()
         });
         let repo = canonical(project_repo);
-        let listed = crate::worktree::WorktreeManager::list(project_repo).unwrap_or_default();
+        let listed = crate::worktree::WorktreeManager::list(project_repo)
+            .context("Failed to list git worktrees for this repo")?;
         let Some(info) = listed
             .iter()
             .find(|wt| canonical(&wt.path) == wanted && canonical(&wt.path) != repo)
@@ -545,6 +546,12 @@ impl App {
                 info.path.display(),
                 feature,
                 project
+            );
+        }
+        if info.branch.is_none() {
+            bail!(
+                "Worktree {} has a detached HEAD; check out a branch there before attaching it",
+                info.path.display()
             );
         }
         Ok(info.clone())
@@ -654,10 +661,22 @@ impl App {
                 .join(".worktrees")
                 .join(worktree_name(&request.project_name, &request.branch));
             if planned_workdir.exists() {
+                let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+                let wanted = canonical(&planned_workdir);
+                let registered = crate::worktree::WorktreeManager::list(&project_repo)
+                    .map(|list| list.iter().any(|wt| canonical(&wt.path) == wanted))
+                    .unwrap_or(false);
+                if registered {
+                    bail!(
+                        "Worktree path already exists: {path}. To create the feature from that \
+                         existing worktree, resend the request with \"existing_worktree\": \
+                         \"{path}\" (or pick a different branch name)",
+                        path = planned_workdir.display()
+                    );
+                }
                 bail!(
-                    "Worktree path already exists: {path}. To create the feature from that \
-                     existing worktree, resend the request with \"existing_worktree\": \
-                     \"{path}\" (or pick a different branch name)",
+                    "Worktree path already exists: {path}, but it is not a registered git \
+                     worktree. Remove the stale directory or pick a different branch name",
                     path = planned_workdir.display()
                 );
             }

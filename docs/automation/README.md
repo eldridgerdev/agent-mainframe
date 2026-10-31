@@ -140,7 +140,7 @@ Fields:
 - `review`: separate toggle for diff-review / final-review flows
 - `use_worktree`: whether to create a git worktree or reuse the project repo
 - `hook_choice`: optional answer for prompted `on_worktree_created` hooks
-- `existing_worktree`: optional path of an existing git worktree to attach as the feature instead of creating one (the same as choosing "existing worktree" in the New Feature wizard). It must be a registered worktree of the project's repo (not the repo root) and not already used by another feature; relative paths resolve against the repo. The `on_worktree_created` hook is not run, `branch` is the feature name (the worktree's checked-out branch is recorded when known), and `use_worktree: false` is rejected alongside it.
+- `existing_worktree`: optional path of an existing git worktree to attach as the feature instead of creating one (the same as choosing "existing worktree" in the New Feature wizard). It must be a registered worktree of the project's repo (not the repo root) and not already used by another feature, and have a branch checked out (a detached HEAD is rejected); relative paths resolve against the repo. The `on_worktree_created` hook is not run, `branch` is the feature name (the worktree's checked-out branch is recorded when known), and `use_worktree: false` is rejected alongside it.
 - `dry_run`: validate and preview without changing AMF state
 
 To create a feature now and start its sessions later:
@@ -153,7 +153,7 @@ If a repo has a prompted `on_worktree_created` hook, `--dry-run` returns a `work
 
 ### Worktree already exists
 
-If the planned `.worktrees/<project>-<branch>` directory already exists, the request fails with `Worktree path already exists: <path>`. The error includes the fix: resend the request with `"existing_worktree": "<path>"` to build the feature on that worktree, or choose a different `branch`.
+If the planned `.worktrees/<project>-<branch>` directory already exists, the request fails with `Worktree path already exists: <path>`. If that path is a registered worktree the error includes the fix: resend the request with `"existing_worktree": "<path>"` to build the feature on that worktree, or choose a different `branch`. If it is a stale, unregistered directory, remove it or choose a different `branch`.
 
 ```bash
 echo '{"project_name":"my-repo","branch":"automation-feature","existing_worktree":"/home/you/code/my-repo/.worktrees/my-repo-automation-feature"}' \

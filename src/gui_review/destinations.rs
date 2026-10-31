@@ -55,24 +55,35 @@ thread_local! {
 fn global_snapshot(gui: &mut GuiHandle) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
     #[cfg(test)]
     if let Some(path) = TEST_GLOBAL_DOCUMENT.with(|path| path.borrow().clone()) {
-        return global_snapshot_at(gui, &path);
+        return global_snapshot_at(&path);
     }
     if gui.app_for_workflow().store_path.as_os_str().is_empty() {
         let config = &gui.app_for_workflow().config;
         return Ok((hash(config).map_err(conflict)?, config.extension.clone()));
     }
-    global_snapshot_at(gui, &crate::project::amf_config_dir().join("config.json"))
+    global_snapshot_at(&crate::project::amf_config_dir().join("config.json"))
 }
-fn global_snapshot_at(
-    gui: &mut GuiHandle,
-    path: &Path,
-) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
+fn global_snapshot_at(path: &Path) -> GuiResult<(String, crate::extension::ExtensionConfig)> {
     let (_, config, revision) = crate::gui_settings::read_document(path)?;
-    // Read the current soft-gate policy before an explicit preparation; no
-    // settings file is written and no other runtime setting is changed.
-    gui.app_for_workflow().config.max_concurrent_agents = config.max_concurrent_agents;
-    gui.app_for_workflow().config.low_memory_warn_mb = config.low_memory_warn_mb;
     Ok((revision, config.extension))
+}
+/// Adopt the on-disk soft-gate policy for an explicit preparation. Reads,
+/// previews and catalogs never call this, so they leave runtime settings alone.
+fn refresh_resource_policy(gui: &mut GuiHandle) -> GuiResult<()> {
+    #[cfg(test)]
+    let test_path = TEST_GLOBAL_DOCUMENT.with(|path| path.borrow().clone());
+    #[cfg(not(test))]
+    let test_path: Option<PathBuf> = None;
+    let path = match test_path {
+        Some(path) => path,
+        None if gui.app_for_workflow().store_path.as_os_str().is_empty() => return Ok(()),
+        None => crate::project::amf_config_dir().join("config.json"),
+    };
+    let (_, config, _) = crate::gui_settings::read_document(&path)?;
+    let app = gui.app_for_workflow();
+    app.config.max_concurrent_agents = config.max_concurrent_agents;
+    app.config.low_memory_warn_mb = config.low_memory_warn_mb;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -83,10 +94,41 @@ struct BoundFeature {
     config: String,
     global_extension: crate::extension::ExtensionConfig,
 }
-fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<BoundFeature> {
+/// Store refresh and configuration reads shared by every bind of one catalog.
+struct BindContext {
+    global: String,
+    global_extension: crate::extension::ExtensionConfig,
+    settings: std::collections::HashMap<String, String>,
+}
+fn bind_context(gui: &mut GuiHandle) -> GuiResult<BindContext> {
     gui.refresh_store()?;
     let (global, global_extension) = global_snapshot(gui)?;
-    let settings = crate::gui_project_settings::load(gui, &target.project_id)?;
+    Ok(BindContext {
+        global,
+        global_extension,
+        settings: Default::default(),
+    })
+}
+fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<BoundFeature> {
+    let mut context = bind_context(gui)?;
+    bind_in(gui, &mut context, target)
+}
+fn bind_in(
+    gui: &mut GuiHandle,
+    context: &mut BindContext,
+    target: &FeatureTarget,
+) -> GuiResult<BoundFeature> {
+    let settings_revision = match context.settings.get(&target.project_id) {
+        Some(revision) => revision.clone(),
+        None => {
+            let revision = crate::gui_project_settings::load(gui, &target.project_id)?.revision;
+            context
+                .settings
+                .insert(target.project_id.clone(), revision.clone());
+            revision
+        }
+    };
+    let (global, global_extension) = (context.global.clone(), context.global_extension.clone());
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store
@@ -140,7 +182,7 @@ fn bind(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<BoundFeature> 
         project,
         feature,
         identity,
-        config: hash(&(global, settings.revision)).map_err(conflict)?,
+        config: hash(&(global, settings_revision)).map_err(conflict)?,
         global_extension,
     })
 }
@@ -541,20 +583,39 @@ pub fn catalog(
     review_target(gui, workflow_id, revision)?;
     let source = source(gui)?;
     let projects = gui.app_for_workflow().store.projects.clone();
+    let mut context = bind_context(gui)?;
     let mut sessions = Vec::new();
     for project in projects {
         for feature in &project.features {
-            for row in feature
+            let agent_rows = feature
                 .sessions
                 .iter()
                 .filter(|row| row.kind.is_agent_harness())
-            {
+                .collect::<Vec<_>>();
+            if agent_rows.is_empty() {
+                continue;
+            }
+            // Bind each feature once; its rows share the identity checks.
+            let bound = bind_in(
+                gui,
+                &mut context,
+                &FeatureTarget {
+                    project_id: project.id.clone(),
+                    feature_id: feature.id.clone(),
+                },
+            );
+            for row in agent_rows {
                 let target = SessionTarget {
                     project_id: project.id.clone(),
                     feature_id: feature.id.clone(),
                     session_id: row.id.clone(),
                 };
-                let unavailable = target_bound(gui, &target).err().map(|error| error.message);
+                let unavailable = match &bound {
+                    Ok(bound) => session(gui, bound, &row.id)
+                        .err()
+                        .map(|error| error.message),
+                    Err(error) => Some(error.message.clone()),
+                };
                 sessions.push(DestinationSession {
                     label: format!("{} / {} / {}", project.name, feature.name, row.label),
                     current: feature.id == source.feature.id,
@@ -747,6 +808,11 @@ pub(super) fn prepare(
 ) -> GuiResult<ReviewView> {
     review_target(gui, workflow_id, revision)?;
     let context = gui.review_context.as_ref().unwrap();
+    if context.preparation.is_some() || context.check_run.is_some() {
+        return Err(GuiError::conflict(
+            "Wait for the running summary check or destination setup to finish first",
+        ));
+    }
     if context.save_error.is_some() || context.ready_comment.is_some() {
         return Err(GuiError::conflict(
             "Save review progress and resolve generated drafts before preparing a destination",
@@ -759,6 +825,7 @@ pub(super) fn prepare(
             "Wait for AI work and resolve its draft first",
         ));
     }
+    refresh_resource_policy(gui)?;
     let request_key = hash(&choice).map_err(conflict)?;
     // Replayed preparation after a successful create (including a refused
     // start) selects its exact session again; it never creates another one.
@@ -766,7 +833,7 @@ pub(super) fn prepare(
         .review_context
         .as_ref()
         .unwrap()
-        .destination
+        .retained_companion
         .clone()
         .filter(|previous| {
             previous.request_key == request_key
@@ -787,7 +854,9 @@ pub(super) fn prepare(
             request_key,
             previous.warning,
         )?;
-        gui.review_context.as_mut().unwrap().revision += 1;
+        let context = gui.review_context.as_mut().unwrap();
+        context.retained_companion = None;
+        context.revision += 1;
         return snapshot(gui);
     }
     let plan = plan(gui, workflow_id, revision, &choice)?;
@@ -862,6 +931,7 @@ pub(super) fn prepare(
             let context = gui.review_context.as_mut().unwrap();
             context.revision += 1;
             context.preparation_error = None;
+            let previous_destination = context.destination.clone();
             context.preparation = Some(Preparation {
                 id: uuid::Uuid::new_v4().to_string(),
                 receiver,
@@ -872,6 +942,8 @@ pub(super) fn prepare(
                 target: None,
                 target_revision: None,
                 cancelled: false,
+                previous_destination,
+                cancel: Default::default(),
                 approved,
                 label: plan.view.label,
                 request_key,
@@ -922,6 +994,10 @@ pub(super) struct Preparation {
     target: Option<SessionTarget>,
     target_revision: Option<String>,
     cancelled: bool,
+    /// The reviewer's choice before setup began; restored if setup does not finish.
+    previous_destination: Option<PreparedFeedbackDestination>,
+    /// Shared with the hook worker so cancelling terminates its process tree.
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     approved: bool,
     label: String,
     request_key: String,
@@ -959,6 +1035,9 @@ pub(super) fn cancel_preparation(gui: &mut GuiHandle, operation_id: &str) -> Gui
         .filter(|operation| operation.id == operation_id)
         .ok_or_else(|| GuiError::conflict("Destination setup operation changed"))?;
     operation.cancelled = true;
+    operation
+        .cancel
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
 }
 fn validate_continuation(gui: &mut GuiHandle, operation: &Preparation) -> GuiResult<()> {
@@ -1068,11 +1147,13 @@ pub(super) fn poll_preparation(gui: &mut GuiHandle) -> GuiResult<bool> {
                 if let Some(hook) = &operation.hook {
                     let script = hook.script().to_string();
                     let choice = operation.hook_choice.clone();
+                    let cancel = operation.cancel.clone();
                     operation.receiver = spawn_job(move || {
-                        let (ok, detail) = crate::app::App::run_worktree_hook_sync(
+                        let (ok, detail) = crate::app::App::run_worktree_hook_cancellable(
                             &script,
                             &workdir,
                             choice.as_deref(),
+                            Some(&cancel),
                         );
                         ensure!(
                             ok,
@@ -1104,6 +1185,7 @@ pub(super) fn poll_preparation(gui: &mut GuiHandle) -> GuiResult<bool> {
             operation.request_key.clone(),
             None,
         )?;
+        gui.review_context.as_mut().unwrap().retained_companion = None;
         Ok(false)
     })();
     match continuation {
@@ -1124,6 +1206,11 @@ pub(super) fn poll_preparation(gui: &mut GuiHandle) -> GuiResult<bool> {
                     operation.request_key,
                     warning.clone(),
                 );
+                // The companion never ran an agent: keep it recoverable, but do
+                // not let it displace what the reviewer had chosen.
+                let context = gui.review_context.as_mut().unwrap();
+                context.retained_companion = context.destination.take();
+                context.destination = operation.previous_destination;
             }
             let context = gui.review_context.as_mut().unwrap();
             context.preparation_error = warning;
@@ -1392,9 +1479,10 @@ mod tests {
             .review_context
             .as_ref()
             .unwrap()
-            .destination
+            .retained_companion
             .as_ref()
             .unwrap();
+        assert!(gui.review_context.as_ref().unwrap().destination.is_none());
         let id = retained.target.feature_id.clone();
         let app = gui.app_for_workflow();
         let (pi, fi) = app.store.locate_feature_by_id(None, &id).unwrap();
@@ -1505,7 +1593,7 @@ mod tests {
                 .review_context
                 .as_ref()
                 .unwrap()
-                .destination
+                .retained_companion
                 .as_ref()
                 .unwrap()
                 .target

@@ -89,9 +89,38 @@ pub(super) fn preview(gui: &mut GuiHandle) -> Option<ReviewFinishView> {
         return None;
     }
     let completing = gui.review_context.as_ref()?.completion.is_some();
-    let (handoff, handoff_error) = match handoff(gui) {
+    // Resolving touches git, config and tmux, so display reuses the result for
+    // the current revision and store version; completion re-resolves and compares identities.
+    // Only the 1 s polls while background work runs reuse a result; any other
+    // snapshot re-resolves so live tmux and config changes show immediately.
+    let polling = {
+        let context = gui.review_context.as_ref()?;
+        context.check_run.is_some() || context.preparation.is_some() || {
+            let app = gui.app_for_workflow();
+            ai::view(app).is_ok_and(|view| view.running)
+        }
+    };
+    let revision = (
+        gui.review_context.as_ref()?.revision,
+        gui.app_for_workflow().store_version,
+    );
+    let cached = gui
+        .review_context
+        .as_ref()?
+        .handoff_cache
+        .clone()
+        .filter(|(cached, _)| *cached == revision && polling);
+    let resolved = match cached {
+        Some((_, resolved)) => resolved,
+        None => {
+            let resolved = handoff(gui).map_err(|error| error.message);
+            gui.review_context.as_mut()?.handoff_cache = Some((revision, resolved.clone()));
+            resolved
+        }
+    };
+    let (handoff, handoff_error) = match resolved {
         Ok(target) => (target.map(handoff_view), None),
-        Err(error) => (None, Some(error.message)),
+        Err(error) => (None, Some(error)),
     };
     let app = gui.app_for_workflow();
     let s = ai::state(&app.mode).ok()?;

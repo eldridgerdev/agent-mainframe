@@ -29,6 +29,29 @@ pub(crate) const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on the
      if you disagree or are answering a [question], why. Keep each reply to a sentence or two. \
      These replies are shown to the reviewer beside your changes on the next review round.";
 
+/// Explicit source context for feedback addressed from another checkout. The
+/// original feedback file stays authoritative; no destination file is copied
+/// or overwritten. Identical-checkout handoffs retain the existing prompt.
+pub(crate) fn feedback_prompt_for_checkouts(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> String {
+    if source == destination {
+        return REVIEW_FEEDBACK_PROMPT.into();
+    }
+    let feedback = source.join(".claude/final-review-feedback.md");
+    format!(
+        "The reviewed source checkout is {}. Apply the requested changes in your destination checkout {}. Read and append replies to the original feedback file {} (do not replace a different review in this checkout).\n\n{}",
+        source.display(),
+        destination.display(),
+        feedback.display(),
+        REVIEW_FEEDBACK_PROMPT.replace(
+            ".claude/final-review-feedback.md",
+            &feedback.display().to_string()
+        )
+    )
+}
+
 /// Cap on how many files' notes stay in `.claude/review-notes.md`. In Review
 /// Mode the feature agent blind-appends sections and never reads the file back
 /// (`ensure_review_claude_md`); AMF collapses it to the newest note per file
@@ -1271,12 +1294,41 @@ pub(crate) fn archive_review_notes(workdir: &Path) -> Result<usize> {
 /// archived sections here so older files keep their walkthrough context. Live
 /// notes win over archived notes for the same path.
 pub(crate) fn load_review_notes(workdir: &Path) -> std::collections::HashMap<String, String> {
+    load_review_notes_with_empty(workdir, false)
+}
+
+/// Explanation lookup honors an explicitly empty saved section. Other review
+/// consumers retain their existing nonempty-note behavior.
+pub(crate) fn load_review_notes_for_explanation(
+    workdir: &Path,
+) -> std::collections::HashMap<String, String> {
+    load_review_notes_with_empty(workdir, true)
+}
+
+fn load_review_notes_with_empty(
+    workdir: &Path,
+    keep_empty: bool,
+) -> std::collections::HashMap<String, String> {
     let claude_dir = workdir.join(".claude");
+    let parse = |content: &str| {
+        if keep_empty {
+            parse_review_notes_with_empty(content, true)
+        } else {
+            parse_review_notes(content)
+        }
+    };
     let mut notes = std::fs::read_to_string(claude_dir.join("review-notes-archive.md"))
-        .map(|content| parse_review_notes(&content))
+        .map(|content| parse(&content))
         .unwrap_or_default();
     if let Ok(content) = std::fs::read_to_string(claude_dir.join("review-notes.md")) {
-        notes.extend(parse_review_notes(&content));
+        for (path, note) in parse(&content) {
+            // An empty live section must not hide a real archived rationale.
+            let hides_archive =
+                note.trim().is_empty() && notes.get(&path).is_some_and(|n| !n.trim().is_empty());
+            if !hides_archive {
+                notes.insert(path, note);
+            }
+        }
     }
     notes
 }
@@ -1288,12 +1340,23 @@ pub(crate) fn load_review_notes(workdir: &Path) -> std::collections::HashMap<Str
 /// The path is the heading text up to the first ` — ` / ` - ` separator. A
 /// section ends at the next heading or a `---` rule.
 pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<String, String> {
+    parse_review_notes_with_empty(content, false)
+}
+
+fn parse_review_notes_with_empty(
+    content: &str,
+    keep_empty: bool,
+) -> std::collections::HashMap<String, String> {
     use std::collections::HashMap;
 
-    fn flush(current: &mut Option<(String, String)>, map: &mut HashMap<String, String>) {
+    fn flush(
+        current: &mut Option<(String, String)>,
+        map: &mut HashMap<String, String>,
+        keep_empty: bool,
+    ) {
         if let Some((path, body)) = current.take() {
             let body = body.trim().to_string();
-            if !path.is_empty() && !body.is_empty() {
+            if !path.is_empty() && (keep_empty || !body.is_empty()) {
                 map.insert(path, body);
             }
         }
@@ -1304,13 +1367,13 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 
     for line in content.lines() {
         if let Some(path) = review_note_path_from_heading(line) {
-            flush(&mut current, &mut map);
+            flush(&mut current, &mut map, keep_empty);
             current = Some((path, String::new()));
             continue;
         }
 
         if line.trim() == "---" {
-            flush(&mut current, &mut map);
+            flush(&mut current, &mut map, keep_empty);
             continue;
         }
 
@@ -1320,6 +1383,25 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
         }
     }
 
-    flush(&mut current, &mut map);
+    flush(&mut current, &mut map, keep_empty);
     map
+}
+
+#[cfg(test)]
+mod feedback_destination_tests {
+    use super::*;
+    #[test]
+    fn cross_checkout_feedback_keeps_original_file_and_same_checkout_compatibility() {
+        let source = std::path::Path::new("/private/source");
+        let destination = std::path::Path::new("/private/companion");
+        assert_eq!(
+            feedback_prompt_for_checkouts(source, source),
+            REVIEW_FEEDBACK_PROMPT
+        );
+        let prompt = feedback_prompt_for_checkouts(source, destination);
+        assert!(prompt.contains("/private/source/.claude/final-review-feedback.md"));
+        assert!(prompt.contains("destination checkout /private/companion"));
+        assert!(!prompt.contains("/private/companion/.claude/final-review-feedback.md"));
+        assert!(prompt.contains("do not replace a different review"));
+    }
 }

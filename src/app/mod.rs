@@ -15,6 +15,7 @@ mod context_hints;
 mod context_settings;
 mod diff;
 pub(crate) mod dormant;
+pub(crate) mod edit_explanation;
 pub(crate) mod editor_ops;
 pub(crate) mod feature_ops;
 pub(crate) mod feature_setup;
@@ -1247,7 +1248,7 @@ pub struct App {
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
-    pub worktree: Box<dyn WorktreeOps>,
+    pub worktree: std::sync::Arc<dyn WorktreeOps>,
     pub debug_log: DebugLog,
     pending_debug_log_entries: VecDeque<LogEntry>,
     last_debug_log_flush_at: Instant,
@@ -2704,7 +2705,7 @@ impl App {
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux: Box::new(TmuxManager),
-            worktree: Box::new(WorktreeManager),
+            worktree: std::sync::Arc::new(WorktreeManager),
             debug_log: DebugLog::default(),
             pending_debug_log_entries: VecDeque::new(),
             last_debug_log_flush_at: Instant::now(),
@@ -2979,7 +2980,7 @@ impl App {
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,
-            worktree,
+            worktree: worktree.into(),
             debug_log: DebugLog::default(),
             pending_debug_log_entries: VecDeque::new(),
             last_debug_log_flush_at: Instant::now(),

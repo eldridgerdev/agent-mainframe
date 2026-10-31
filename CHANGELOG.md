@@ -10,9 +10,32 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
 - `amf automation create-feature` accepts `existing_worktree` to build a feature
   on an existing git worktree, like the wizard's existing-worktree source. The
-  `Worktree path already exists` error now tells callers to use it.
+  `Worktree path already exists` error now tells callers to use it for registered worktrees.
+- **Choose where desktop Final Review feedback goes.** Select the current
+  session, a dedicated review agent, another feature session or a new companion
+  worktree. New resources and worktree setup require confirmation; cancelling
+  their pending launch keeps created resources available for recovery. Feedback
+  opens as an unsent draft and preserves the destination's existing composer
+  text, including when the TUI is configured to submit prompts automatically.
+- **Explain waiting edits in the desktop app.** Read saved review notes without
+  an AI call, or review the exact prompt before asking Claude for an explanation.
+  Calls can be cancelled, changed edits discard old results, and unsent rejection
+  feedback stays in place. Explanations never answer the waiting agent. No
+  migration is required.
+
+### Fixed
+
+- **Desktop PR Workspace checks AI fix handoffs before preparing a draft.** Choose an existing agent explicitly; AMF refuses changed findings, a moved PR head or a changed destination rather than silently retargeting the handoff. Refresh agents to choose again when the selected session is unavailable. The resulting prompt is appended to the unsent composer.
+
+- **Empty saved review notes no longer trigger an AI explanation call.** Both
+  interfaces now show an explicitly empty note instead of silently asking Claude.
+
+- Final Review prompts sent to another checkout now point to the original
+  reviewed source's feedback file, keeping replies with the correct review.
 
 ## [v0.51.0] - 2026-10-27
 

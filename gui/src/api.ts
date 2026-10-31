@@ -779,6 +779,8 @@ export interface ReviewView {
   check_command: string | null;
   check: { command: string; status: "running" | "passed" | "failed" | "cancelled" | "stale"; output: string } | null;
   finish: ReviewFinish | null;
+  preparation?: { operation_id: string; label: string; cancelled: boolean; created_target: SessionTarget | null } | null;
+  preparation_error?: string | null;
   ai: ReviewAi;
 }
 /** What completing would record and hand off; present with the summary. */
@@ -794,7 +796,9 @@ export interface ReviewFinish {
   post_to_pr: boolean;
   /** Whether a handed-off prompt is submitted or left as an unsent draft. */
   submit_prompt: boolean;
-  handoff: { session_id: string; label: string; stopped: boolean } | null;
+  handoff: { session_id: string; label: string; stopped: boolean; revision?: string; target?: SessionTarget;
+    kind?: string; source_path?: string; destination_path?: string; warning?: string | null } | null;
+  handoff_error?: string | null;
   /** The configured check is running as part of a confirmed completion. */
   completing: boolean;
 }
@@ -837,10 +841,31 @@ export interface ReviewAi {
   harnesses: AgentSlug[];
   message: string | null;
 }
+export type ReviewDestinationChoice =
+  | { kind: "existing"; target: SessionTarget }
+  | { kind: "dedicated"; agent: AgentSlug }
+  | { kind: "companion"; settings: { branch: string; agent: AgentSlug; mode: ModeSlug; review: boolean; enable_chrome: boolean }; hook_choice: string | null };
+export interface ReviewDestinationCatalog {
+  sessions: { target: SessionTarget; label: string; current: boolean; stopped: boolean; unavailable: string | null }[];
+  agents: { agent: AgentSlug; label: string; unavailable: string | null }[];
+  source_path: string; source_branch: string; source_head: string; default_branch: string; companion_available: boolean;
+  hook_prompt: { title: string; options: string[] } | null; selected: SessionTarget | null;
+}
+export interface ReviewDestinationPreview {
+  revision: string; label: string; source_path: string; destination_path: string | null;
+  base_branch: string | null; base_sha: string | null; creates_session: boolean; creates_companion: boolean;
+  resource_warning: string | null; hook_prompt: { title: string; options: string[] } | null;
+}
+export const reviewDestinationCatalog = (view: ReviewView): Promise<ReviewDestinationCatalog> =>
+  invoke("review_destination_catalog", { workflowId: view.workflow_id, revision: view.revision });
+export const reviewDestinationPreview = (view: ReviewView, choice: ReviewDestinationChoice): Promise<ReviewDestinationPreview> =>
+  invoke("review_destination_preview", { workflowId: view.workflow_id, revision: view.revision, choice });
 export type ReviewAction =
+  | { kind: "prepare_destination"; choice: ReviewDestinationChoice; preview_revision: string; approved: boolean }
+  | { kind: "cancel_preparation"; operation_id: string }
   | { kind: "summary_open" | "summary_close" | "apply_finish_suggestions" | "cancel_check" }
   | { kind: "run_check"; command: string }
-  | { kind: "complete"; check_command: string | null; apply_suggestions: number; handoff_session: string | null; deliver: boolean }
+  | { kind: "complete"; check_command: string | null; apply_suggestions: number; handoff_session: string | null; handoff_revision?: string | null; deliver: boolean }
   | { kind: "history_open" | "history_load_older" | "history_close" }
   | { kind: "history_select"; round: number }
   | { kind: "select" | "approve" | "skip" | "toggle_resolved"; path: string }

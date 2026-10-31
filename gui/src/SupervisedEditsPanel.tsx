@@ -14,6 +14,7 @@ import {
 
 export { PENDING_EDITS_KEY, usePendingEdits } from "./usePendingEdits";
 import { PENDING_EDITS_KEY } from "./usePendingEdits";
+import { EditExplanation, useEditExplanation } from "./EditExplanation";
 
 type DecisionKind = SupervisedEditDecision["kind"];
 
@@ -90,6 +91,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
   const view = successfulLoads.current.has(loadIdentity) ? query.data : undefined;
   const edits = view?.edits ?? [];
   const edit = edits.find((candidate) => candidate.id === selectedId) ?? edits[0];
+  const explanation = useEditExplanation(target, edit);
   const waiting = edits.filter((candidate) => !candidate.answered);
   const moreWaiting = otherWaiting + waiting.length - (edit && !edit.answered ? 1 : 0);
 
@@ -173,15 +175,17 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       if (switching) setNotice("An answer is being sent. Wait for its result before switching reviews.");
       return;
     }
-    if (unsentDrafts.length > 0) setDiscardPrompt({ proceed, switching });
-    else proceed();
+    const leave = () => { void explanation.cancel().then(proceed).catch((err) => setError(asGuiError(err).message)); };
+    if (unsentDrafts.length > 0) setDiscardPrompt({ proceed: leave, switching });
+    else leave();
   }
 
   function requestClose() { requestLeave(onClose); }
 
   useImperativeHandle(ref, () => ({ requestSwitch: (proceed) => requestLeave(proceed, true) }));
 
-  function select(id: string) {
+  async function select(id: string) {
+    try { await explanation.cancel(); } catch (err) { setError(asGuiError(err).message); return; }
     setSelectedId(id);
     setConfirm(null);
     setError(null);
@@ -202,6 +206,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       ? { kind: "reject", feedback: draft.trim() }
       : { kind: confirm.kind };
     try {
+      await explanation.cancel();
       const outcome = await supervisedEditRespond(target, confirm, decision);
       answered.current.add(confirm.id);
       queryClient.setQueryData<SupervisedEditsView>(queryKey, outcome.view);
@@ -272,7 +277,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
       : <div className="diff-reader">
         <nav className="diff-files" aria-label="Pending edits">{edits.map((candidate) => <button key={candidate.id}
           className={`diff-file ${candidate.id === edit?.id ? "diff-file-selected" : ""}`} aria-pressed={candidate.id === edit?.id}
-          onClick={() => select(candidate.id)}>
+          onClick={() => void select(candidate.id)}>
           <span>{candidate.path}</span>
           <small>{TOOL_LABEL[candidate.tool] ?? (candidate.tool || "Change")}
             {" · "}{candidate.answered ? "Answer sent" : candidate.unavailable ? "Not answerable" : "Waiting"}</small>
@@ -297,6 +302,7 @@ const SupervisedEditsPanel = forwardRef<SupervisedEditsPanelHandle, {
                 {edit.new_snippet && <><h4>Added</h4><pre className="supervised-snippet diff-added">{edit.new_snippet}</pre></>}
               </>}
           </div>
+          <EditExplanation explanation={explanation} disabled={blocked} />
           <Field label="Feedback for the agent"
             hint={edit.effects.feedback_reaches_agent
               ? `Sent with Reject (optional, ${draft.length}/${MAX_FEEDBACK_CHARS}).`

@@ -513,6 +513,30 @@ const completionBase = {
     question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
 };
 
+it("polls destination setup without AI or a check and stops after its terminal result", async () => {
+  const client = await openFeature([session("Agent", "claude")], [], "idle", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const running = { ...completionBase, preparation: { operation_id: "owned-setup", label: "Companion fixes", cancelled: false, created_target: null } };
+  vi.mocked(invoke).mockImplementation((command, args, options) => {
+    if (command === "review_begin") return Promise.resolve(running);
+    if (command === "review_snapshot") return Promise.resolve({ ...running, revision: 4, preparation: null,
+      preparation_error: "Pending launch was cancelled; companion retained for recovery" });
+    return original(command, args, options);
+  });
+  vi.useFakeTimers();
+  try {
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Final Review", exact: true })));
+    expect(screen.getByRole("button", { name: "Cancel pending launch" })).toBeTruthy();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(screen.getByText(/Pending launch was cancelled; companion retained for recovery/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Cancel pending launch" })).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_snapshot"))
+      .toEqual([["review_snapshot", { workflowId: "review-done" }]]);
+    expect(promptCalls()).toHaveLength(0);
+  } finally { vi.useRealTimers(); client.clear(); }
+});
+
 it("completes once and appends the unsent feedback prompt to the agent's composer draft", async () => {
   const client = await openFeature([session("Agent", "claude")], [], "idle", true);
   fireEvent.change(draftInput(), { target: { value: "Existing message" } });
@@ -536,7 +560,7 @@ it("completes once and appends the unsent feedback prompt to the agent's compose
   fireEvent.click(handoff);
   await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_act")).toHaveLength(1));
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_act", { workflowId: "review-done", revision: 3,
-    action: { kind: "complete", check_command: null, apply_suggestions: 0, handoff_session: "Agent", deliver: true } });
+    action: { kind: "complete", check_command: null, apply_suggestions: 0, handoff_session: "Agent", handoff_revision: null, deliver: true } });
   await act(async () => finishAct());
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull());
   expect(draftInput().value).toBe("Existing message\n\nAddress the feedback");
@@ -675,6 +699,8 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
     expect(screen.getByText(/Wait for its result before switching reviews/)).toBeTruthy();
     expect(screen.queryByText("Supervised edits · Docs")).toBeNull();
+    // The answer waits for matching explanation cancellation before IPC.
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => finish());
     expect((await screen.findAllByText(/Approved src\/a.ts/)).length).toBeGreaterThan(0);
     fireEvent.click(review);
@@ -940,7 +966,7 @@ it("hands a PR fix to the chosen agent composer once while preserving both sessi
   const view = {
     workflow_id: "triage-id", revision: 2, target, feature_name: "my-feat", branch: "my-feat", stage: "review",
     picker: null, loading_pr: null, precall: null, reply: null, write_confirm: null, handoff: null,
-    fix_targets: [{ target, label: "Codex", harness: "codex", stopped: true }],
+    fix_targets: [{ target, label: "Codex", harness: "codex", stopped: true, destination_revision: "rev" }],
     fix_draft: { comment_id: 1, target, prompt: "Fix rounding" },
     harnesses: ["codex"], default_harness: "codex", error: null, notice: null,
     review: { number: 12, head_ref: "my-feat", head_sha: "abc", open_count: 1, total: 1, fetched_at: "", sort: "fetch_order", hide_resolved: false, comments: [], investigating: null },

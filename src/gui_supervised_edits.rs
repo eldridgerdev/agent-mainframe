@@ -12,6 +12,8 @@
 //! stable id and the revision the reviewer saw, and is refused when the edit
 //! has changed, been answered, or the agent has stopped waiting.
 
+pub mod explanations;
+
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};

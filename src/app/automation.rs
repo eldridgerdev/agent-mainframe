@@ -28,7 +28,7 @@ impl std::error::Error for WorktreeHookChoiceError {}
 
 /// The one place the hook-choice rule lives: a prompted hook needs one of its
 /// options; an unprompted hook (or none) takes no choice, so `None`.
-fn checked_hook_choice<'a>(
+pub(super) fn checked_hook_choice<'a>(
     prompt: Option<&HookPrompt>,
     choice: Option<&'a str>,
 ) -> std::result::Result<Option<&'a str>, WorktreeHookChoiceError> {
@@ -381,27 +381,74 @@ impl App {
         workdir: &Path,
         choice: Option<&str>,
     ) -> (bool, Option<String>) {
+        Self::run_worktree_hook_cancellable(script, workdir, choice, None)
+    }
+
+    /// Like [`Self::run_worktree_hook_sync`], but terminates the hook's whole
+    /// process tree once `cancel` is set, so a hook that never exits cannot
+    /// pin its caller.
+    pub(crate) fn run_worktree_hook_cancellable(
+        script: &str,
+        workdir: &Path,
+        choice: Option<&str>,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> (bool, Option<String>) {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::Ordering;
         let expanded = Self::resolve_sync_hook_script(script);
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c")
             .arg(&expanded)
             .current_dir(workdir)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
         if let Some(c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-
-        match cmd.output() {
-            Ok(output) if output.status.success() => (true, None),
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(err) => return (false, Some(err.to_string())),
+        };
+        // Drain stderr off-thread so a chatty hook cannot block on a full pipe.
+        let mut stderr = child.stderr.take();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(stderr) = stderr.as_mut() {
+                let _ = stderr.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => {}
+                Err(err) => break Err(err),
+            }
+            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                crate::resources::procs::terminate_tree(
+                    i64::from(child.id()),
+                    std::time::Duration::from_secs(2),
+                );
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return (false, Some("cancelled; hook process was terminated".into()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let stderr = reader.join().unwrap_or_default();
+        match status {
+            Ok(status) if status.success() => (true, None),
+            Ok(status) => {
+                let stderr = String::from_utf8_lossy(&stderr);
                 let detail = stderr
                     .lines()
                     .rev()
                     .find(|line| !line.trim().is_empty())
                     .map(|line| line.trim().to_string())
-                    .or_else(|| output.status.code().map(|code| format!("exit code {code}")));
+                    .or_else(|| status.code().map(|code| format!("exit code {code}")));
                 (false, detail)
             }
             Err(err) => (false, Some(err.to_string())),

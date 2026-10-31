@@ -5,8 +5,8 @@ import Markdown from "./Markdown";
 import { Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
 import type { PrFixHandoff } from "./prTriageApi";
-import { prTriageAct, prTriageBegin, type PrTriageView } from "./prTriageApi";
-import { workspaceAiAct, workspaceAiSnapshot, workspaceBegin, workspaceClose, workspaceFiles, workspaceSelectPr, workspaceSwitchAi, workspaceSwitchThreads, type WorkspaceAi, type WorkspaceFinding, type WorkspaceFiles } from "./prWorkspaceApi";
+import { prTriageAct, prTriageBegin, type PrTriageView, type PrFixTarget } from "./prTriageApi";
+import { workspaceAiAct, workspaceAiSnapshot, workspaceBegin, workspaceClose, workspaceFiles, workspaceSelectPr, workspaceSwitchAi, workspaceSwitchThreads, workspacePrepareFix, workspaceFixTargets, type WorkspaceAi, type WorkspaceFiles } from "./prWorkspaceApi";
 
 type Tab = "files" | "threads" | "ai";
 
@@ -26,8 +26,13 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
   const [ai, setAi] = useState<WorkspaceAi | null>(null);
   const [tab, setTab] = useState<Tab>("threads");
   const [path, setPath] = useState<string | null>(null);
-  const [fixTargetSession, setFixTargetSession] = useState("");
   const [selectedFindings, setSelectedFindings] = useState<Set<number>>(new Set());
+  const [fixTarget, setFixTarget] = useState<PrFixTarget | null>(null);
+  const [fixTargets, setFixTargets] = useState<PrFixTarget[]>([]);
+  const handoffPending = useRef(false);
+  const handoffGeneration = useRef(0);
+  const handoffContext = useRef("");
+  handoffContext.current = JSON.stringify([workflowId, ai?.result_revision, triage?.review?.number, triage?.review?.head_sha, fixTarget, fixTargets, [...selectedFindings].sort((a, b) => a - b)]);
   const [publishConfirm, setPublishConfirm] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [busy, setBusy] = useState(true);
@@ -74,6 +79,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     })();
     return () => {
       live = false;
+      handoffGeneration.current++;
       queueMicrotask(release);
     };
   }, [target.project_id, target.feature_id]);
@@ -95,6 +101,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         await workspaceSelectPr(workflowId, number);
         await workspaceSwitchAi(workflowId, number);
         setAi(await workspaceAiSnapshot(workflowId));
+        setFixTargets(await workspaceFixTargets(workflowId));
       } else {
         await workspaceSwitchThreads(workflowId);
         if (next === "files") await loadFiles(workflowId);
@@ -157,6 +164,8 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
 
   const publishableFindings = ai?.findings.filter((finding) => !finding.skipped && !finding.published) ?? [];
   const fixableFindingIndices = ai?.findings.flatMap((finding, index) => !finding.skipped && !finding.published ? [index] : []) ?? [];
+  const selectedFixable = [...selectedFindings].filter((index) => fixableFindingIndices.includes(index)).sort((a, b) => a - b);
+  const fixTargetStale = !!fixTarget && !fixTargets.some((item) => item.target.session_id === fixTarget.target.session_id && item.destination_revision === fixTarget.destination_revision && !item.stopped);
   const allFixableSelected = fixableFindingIndices.length > 0 && fixableFindingIndices.every((index) => selectedFindings.has(index));
   const toggleAllFixableFindings = () => setSelectedFindings((current) => {
     const next = new Set(current);
@@ -166,17 +175,32 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     }
     return next;
   });
-  const prepareFix = (findings: WorkspaceFinding[]) => {
-    const targets = triage?.fix_targets.filter((item) => !item.stopped) ?? [];
-    const chosen = targets.find((item) => item.target.session_id === fixTargetSession) ?? targets[0];
-    if (!chosen || !onHandoff || !findings.length) return;
-    const label = findings.length === 1 ? "AI review finding" : `${findings.length} AI review findings`;
-    const fence = String.fromCharCode(96).repeat(3);
-    const details = findings.map((finding, index) => {
-      const location = finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ""}` : "General finding";
-      return `### ${index + 1}. ${location}\n${finding.body}${finding.diff_hunk ? `\n\nRelated diff:\n\n${fence}diff\n${finding.diff_hunk}\n${fence}` : ""}`;
-    }).join("\n\n");
-    onHandoff({ target: chosen.target, draft_prompt: `Please address the following ${label} from PR #${ai?.pr_number ?? ""}. Review the relevant code and make the smallest correct changes. Do not post anything to GitHub; leave a concise summary of changes and any remaining concerns.\n\n${details}` });
+  const prepareFix = async (indices: number[]) => {
+    if (!workflowId || !ai?.result_revision || !fixTarget || !onHandoff || !indices.length || handoffPending.current) return;
+    const chosen = fixTargets.find((item) => item.target.session_id === fixTarget.target.session_id && item.destination_revision === fixTarget.destination_revision && !item.stopped);
+    if (!chosen) { setError("The selected agent session is unavailable or changed; choose a target again."); return; }
+    const generation = ++handoffGeneration.current;
+    const context = handoffContext.current;
+    handoffPending.current = true;
+    setBusy(true);
+    try {
+      const handoff = await workspacePrepareFix({ workflow_id: workflowId, result_revision: ai.result_revision, finding_indices: indices, target: fixTarget.target, destination_revision: fixTarget.destination_revision });
+      if (handoffGeneration.current === generation) {
+        if (handoffContext.current === context) { setError(null); onHandoff(handoff); }
+        else setError("The findings or fix agent changed while preparing; try again.");
+      }
+    } catch (e) {
+      if (handoffGeneration.current === generation && handoffContext.current === context) {
+        setError(asGuiError(e).message);
+        try {
+          const targets = await workspaceFixTargets(workflowId);
+          if (handoffGeneration.current === generation && handoffContext.current === context) setFixTargets(targets);
+        } catch { /* preserve the selected target */ }
+      }
+    } finally {
+      handoffPending.current = false;
+      if (handoffGeneration.current === generation) setBusy(false);
+    }
   };
 
   const closeWorkspace = useCallback(async (triageAlreadyClosed = false) => {
@@ -250,7 +274,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         <div><h1>Pull request workspace</h1><p className="muted">{triage?.feature_name ?? "Feature review"} · files, review threads and AI findings in one place</p></div>
         <div className="pr-workspace-page-actions">
           {ai?.running && <span className="pr-workspace-running-label"><Spinner /> Reviewing PR #{ai.pr_number}</span>}
-          <button type="button" className="btn btn-secondary" onClick={onReturnToFeature}>Back to feature</button>
+          <button type="button" className="btn btn-secondary" onClick={() => { if (handoffPending.current) { handoffGeneration.current++; setBusy(false); } onReturnToFeature(); }}>Back to feature</button>
         </div>
       </div>
     </header>
@@ -294,7 +318,7 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
               {publishConfirm && <section className="pr-ai-publish-confirm" role="alertdialog" aria-label="Confirm post AI review to GitHub"><div><span className="eyebrow">GitHub review</span><h3>Post {publishableFindings.length} {publishableFindings.length === 1 ? "finding" : "findings"} to PR #{ai?.pr_number}?</h3><p>This creates a comment review on GitHub as your <code>gh</code> account. The findings below will be visible to PR reviewers.</p><ul>{publishableFindings.map((finding, index) => <li key={`${finding.path}:${finding.line}:${index}`}><code>{finding.path ? `${finding.path}${finding.line ? `:${finding.line}` : ""}` : "General finding"}</code> — {finding.body.split("\n")[0]}</li>)}</ul></div><div className="pr-ai-results-actions"><button className="btn btn-primary" disabled={busy} onClick={() => void aiAct("post")}>{busy ? "Posting review…" : "Post review to GitHub"}</button><button className="btn btn-secondary" disabled={busy} onClick={() => setPublishConfirm(false)}>Cancel</button></div></section>}
               {ai?.error && <p className="callout callout-danger" role="alert">{ai.error}</p>}
               {ai?.summary && <section className="pr-ai-summary" aria-label="Review summary"><div className="pr-ai-summary-title"><span className="pr-ai-summary-mark">✓</span><div><span className="eyebrow">Review complete</span><h3>Summary</h3></div></div><Markdown source={ai.summary} /></section>}
-              {!!ai?.findings.length && <section className="pr-ai-findings-section" aria-label="Review findings"><div className="pr-ai-findings-heading"><h3>Findings</h3><span className="muted small">Ordered by appearance in the diff</span></div>{(triage?.fix_targets.filter((item) => !item.stopped).length ?? 0) > 0 && <div className="pr-ai-batch-toolbar"><label>Fix agent<select value={fixTargetSession || triage?.fix_targets.find((item) => !item.stopped)?.target.session_id || ""} disabled={busy} onChange={(event) => setFixTargetSession(event.target.value)}>{triage?.fix_targets.filter((item) => !item.stopped).map((item) => <option key={item.target.session_id} value={item.target.session_id}>{item.label}</option>)}</select></label><div className="pr-ai-batch-actions"><button className="btn btn-ghost btn-sm" disabled={busy || !fixableFindingIndices.length} onClick={toggleAllFixableFindings}>{allFixableSelected ? "Clear selection" : "Select all"}</button><button className="btn btn-secondary" disabled={busy || !onHandoff || !selectedFindings.size} onClick={() => prepareFix(ai!.findings.filter((_, index) => selectedFindings.has(index) && !ai!.findings[index].skipped && !ai!.findings[index].published))}>Prepare batch fix ({selectedFindings.size})</button></div></div>}<ol className="pr-ai-findings">{ai.findings.map((finding, i) => <li className="pr-ai-finding" key={`${finding.path}:${finding.line}:${i}`}><span className="pr-ai-finding-index">{String(i + 1).padStart(2, "0")}</span><article><header><code>{finding.path || "General"}{finding.line ? `:${finding.line}` : ""}</code><div className="pr-ai-finding-tools">{finding.published ? <span className="tag tag-success">Posted</span> : finding.skipped ? <span className="tag">Skipped</span> : <><span className="tag">Review finding</span>{onHandoff && triage?.fix_targets.some((item) => !item.stopped) && <><label className="pr-ai-select-finding"><input type="checkbox" checked={selectedFindings.has(i)} disabled={busy} onChange={(event) => setSelectedFindings((current) => { const next = new Set(current); if (event.target.checked) next.add(i); else next.delete(i); return next; })} />Batch</label><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => prepareFix([finding])}>Prepare fix</button></>}</>}</div></header><Markdown source={finding.body} />{finding.diff_hunk && <details className="pr-ai-finding-diff"><summary>Show related diff</summary><pre className="pr-snippet">{finding.diff_hunk}</pre></details>}</article></li>)}</ol></section>}
+              {!!ai?.findings.length && <section className="pr-ai-findings-section" aria-label="Review findings"><div className="pr-ai-findings-heading"><h3>Findings</h3><span className="muted small">Ordered by appearance in the diff</span></div>{!!onHandoff && <div className="pr-ai-batch-toolbar"><label>Fix agent<select value={fixTargetStale ? "__stale" : fixTarget?.target.session_id ?? ""} disabled={busy} onChange={(event) => setFixTarget(fixTargets.find((item) => item.target.session_id === event.target.value && !item.stopped) ?? null)}><option value="">Choose an agent session</option>{fixTargetStale && <option value="__stale" disabled>Previously selected session unavailable or changed</option>}{fixTargets.filter((item) => !item.stopped).map((item) => <option key={item.target.session_id} value={item.target.session_id}>{item.label}</option>)}</select></label><button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { if (workflowId) void workspaceFixTargets(workflowId).then((targets) => { setFixTargets(targets); setError(null); }).catch((e) => setError(asGuiError(e).message)); }}>Refresh agents</button><div className="pr-ai-batch-actions"><button className="btn btn-ghost btn-sm" disabled={busy || !fixableFindingIndices.length} onClick={toggleAllFixableFindings}>{allFixableSelected ? "Clear selection" : "Select all"}</button><button className="btn btn-secondary" disabled={busy || !onHandoff || !fixTarget || !selectedFixable.length} onClick={() => prepareFix(selectedFixable)}>Prepare batch fix ({selectedFixable.length})</button></div></div>}<ol className="pr-ai-findings">{ai.findings.map((finding, i) => <li className="pr-ai-finding" key={`${finding.path}:${finding.line}:${i}`}><span className="pr-ai-finding-index">{String(i + 1).padStart(2, "0")}</span><article><header><code>{finding.path || "General"}{finding.line ? `:${finding.line}` : ""}</code><div className="pr-ai-finding-tools">{finding.published ? <span className="tag tag-success">Posted</span> : finding.skipped ? <span className="tag">Skipped</span> : <><span className="tag">Review finding</span>{onHandoff && fixTargets.some((item) => !item.stopped) && <><label className="pr-ai-select-finding"><input type="checkbox" checked={selectedFindings.has(i)} disabled={busy} onChange={(event) => setSelectedFindings((current) => { const next = new Set(current); if (event.target.checked) next.add(i); else next.delete(i); return next; })} />Batch</label><button className="btn btn-ghost btn-sm" disabled={busy || !fixTarget} onClick={() => prepareFix([i])}>Prepare fix</button></>}</>}</div></header><Markdown source={finding.body} />{finding.diff_hunk && <details className="pr-ai-finding-diff"><summary>Show related diff</summary><pre className="pr-snippet">{finding.diff_hunk}</pre></details>}</article></li>)}</ol></section>}
               {ai && !ai.findings.length && !ai.error && !ai.summary && <div className="pr-ai-empty"><span className="pr-ai-summary-mark">✦</span><h3>Ready to review</h3><p className="muted">Run an AI review to inspect the selected PR for correctness issues.</p></div>}
             </div>}
         </section>}

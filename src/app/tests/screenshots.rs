@@ -315,7 +315,7 @@ fn project_deletion_retires_successful_worktree_scopes_and_retains_failed_and_ro
                 }
             });
         }
-        app.worktree = Box::new(worktree);
+        app.worktree = std::sync::Arc::new(worktree);
         app.save().unwrap();
         app.mode = crate::app::AppMode::DeletingProject(app.store.projects[0].name.clone());
         assert_eq!(app.delete_project().is_err(), failed);

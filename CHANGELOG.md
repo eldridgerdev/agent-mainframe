@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Integrate PR Triage companion fixes from the desktop.** A companion feature
+  created for a PR now offers the same explicit preview and confirmation as
+  Final Review companions: cherry-pick into the triage source checkout, or
+  push to the PR's own branch on origin. Missing or diverged PR branches, changed
+  previews and dirty sources are refused; no GitHub write or agent starts.
+
 - **Integrate Final Review companion commits from the desktop.** Preview the
   exact commits and destination, then explicitly cherry-pick them into the
   linked source checkout or push them to its origin branch. Changed previews,

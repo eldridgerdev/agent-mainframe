@@ -64,6 +64,7 @@ export interface Feature {
   summary_updated_at?: string | null;
   issue_source?: IssueSource | null;
   review_source?: { source_feature_id: string; target_branch: string; base_sha: string } | null;
+  triage_source?: { pr_number: number; source_feature_id: string; pr_branch: string; base_sha: string } | null;
 }
 
 export interface Project {

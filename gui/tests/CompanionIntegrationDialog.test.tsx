@@ -86,3 +86,31 @@ it("blocks cherry-pick when hidden tracked paths could conceal local edits", asy
   expect(await screen.findByText(/assume-unchanged or skip-worktree.*src\/lib.rs/)).toBeTruthy();
   expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
 });
+it("labels a PR Triage companion, names the PR branch and warns when the source is on another branch", async () => {
+  const triagePlan = { ...plan, choice: "push", pr_number: 42, destination_branch: "pr-head", source_branch: "local-work", remote_tip: "c".repeat(40), remote_display: "file:///remote.git" };
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return triagePlan;
+    if (command === "companion_integration_confirm") return "Pushed 1 companion commit(s) to origin/pr-head for PR #42";
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} prNumber={42} onClose={vi.fn()} />);
+  expect(screen.getByRole("option", { name: "Push to PR #42 branch on origin" })).toBeTruthy();
+  fireEvent.change(screen.getByRole("combobox", { name: "Integration method" }), { target: { value: "push" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/PR Triage companion for/)).toBeTruthy();
+  expect(screen.getByText(/not the PR branch/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "companion_integration_confirm")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm push" }));
+  expect(await screen.findByText(/for PR #42/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.find(([command]) => command === "companion_integration_confirm")?.[1]).toEqual({ target, choice: "push", revision: "revision" });
+});
+it("does not claim PR wording for a Final Review companion", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  expect(screen.getByRole("option", { name: "Push to source branch on origin" })).toBeTruthy();
+  expect(screen.queryByText(/PR Triage companion/)).toBeNull();
+});

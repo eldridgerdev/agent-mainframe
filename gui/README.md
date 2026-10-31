@@ -899,4 +899,11 @@ clean for cherry-pick, and AMF refuses ignored files at incoming paths. A failed
 cherry-pick attempts an abort and reports if recovery fails. Changes in the
 companion that are not committed remain there. External Git operations are not
 locked by the preview, so avoid running concurrent operations in the same
-checkouts. See [feedback destination validation](../docs/development/gui-review-feedback-destinations.md).
+checkouts. An existing PR Triage companion feature (one created from the TUI's
+`New feature...` fix target) offers **Integrate PR #N fixes...** on its feature
+page, using the same preview and confirmation. A push updates only the PR's
+recorded head branch on `origin` and is refused when that branch is missing
+(for example a fork PR) or has diverged; a cherry-pick lands on whatever branch
+the triage source checkout has out, which the preview names. The workflow makes
+no GitHub call and starts no agent. Creating triage companions in the GUI remains
+TUI-only. See [feedback destination validation](../docs/development/gui-review-feedback-destinations.md).

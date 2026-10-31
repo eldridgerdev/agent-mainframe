@@ -2297,7 +2297,7 @@ function FeatureView({
 
   return (
     <div className="page page-fill">
-      {integrateCompanion && <CompanionIntegrationDialog target={{ project_id: project.id, feature_id: feature.id }} onClose={() => setIntegrateCompanion(false)} />}
+      {integrateCompanion && <CompanionIntegrationDialog target={{ project_id: project.id, feature_id: feature.id }} prNumber={feature.triage_source && !feature.review_source ? feature.triage_source.pr_number : undefined} onClose={() => setIntegrateCompanion(false)} />}
       <PageHeader
         crumb={<button className="link-button" onClick={onBack}>{project.name}</button>}
         title={feature.name}
@@ -2342,7 +2342,7 @@ function FeatureView({
             {project.is_git && <button className="btn btn-secondary" onClick={onReview} disabled={reviewBusy}>
               {reviewBusy ? <Spinner /> : <Icon name="file" size={12} />} Final Review
             </button>}
-            {feature.review_source && <button className="btn btn-secondary" onClick={() => setIntegrateCompanion(true)}>Integrate companion…</button>}
+            {(feature.review_source || feature.triage_source) && <button className="btn btn-secondary" onClick={() => setIntegrateCompanion(true)}>{feature.triage_source && !feature.review_source ? `Integrate PR #${feature.triage_source.pr_number} fixes…` : "Integrate companion…"}</button>}
             <button className="btn btn-secondary" onClick={() => onScreenshots(null)}>Screenshots</button>
             {activeSession && <button className="btn btn-secondary" onClick={() => onScreenshots(activeSession.id)}>Session screenshots</button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>

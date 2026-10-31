@@ -4515,6 +4515,7 @@ mod tests {
                 use_worktree: Some(true),
                 enable_chrome: false,
                 hook_choice: None,
+                existing_worktree: None,
                 dry_run: false,
             },
             todo.id,

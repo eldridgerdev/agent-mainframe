@@ -12,6 +12,9 @@ are tagged.
 
 ### Added
 
+- `amf automation create-feature` accepts `existing_worktree` to build a feature
+  on an existing git worktree, like the wizard's existing-worktree source. The
+  `Worktree path already exists` error now tells callers to use it for registered worktrees.
 - **Choose where desktop Final Review feedback goes.** Select the current
   session, a dedicated review agent, another feature session or a new companion
   worktree. New resources and worktree setup require confirmation; cancelling

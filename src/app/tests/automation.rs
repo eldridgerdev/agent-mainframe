@@ -78,6 +78,7 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
+        existing_worktree: None,
         dry_run: true,
     };
 
@@ -136,6 +137,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
+        existing_worktree: None,
         dry_run: true,
     };
 
@@ -172,6 +174,7 @@ fn create_feature_automation_rejects_codex_vibeless_mode() {
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
+        existing_worktree: None,
         dry_run: true,
     };
 
@@ -288,6 +291,7 @@ fn create_feature_automation_creates_and_starts_feature() {
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
+        existing_worktree: None,
         dry_run: false,
     };
 
@@ -927,4 +931,145 @@ fn a_batch_can_join_an_existing_project_but_not_reuse_its_feature_names() {
     request.project_name = "missing".into();
     let err = app.add_batch_features_to_project(&request).unwrap_err();
     assert!(err.to_string().contains("not found"), "{err}");
+}
+
+#[test]
+fn create_feature_automation_hints_existing_worktree_when_path_exists() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    let existing = repo.join(".worktrees").join("automation-project-feature-1");
+    std::fs::create_dir_all(&existing).unwrap();
+    let mut app = App::new_for_test(
+        store_with_empty_project(repo, true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let request = CreateFeatureRequest {
+        project_name: "automation-project".into(),
+        branch: "feature-1".into(),
+        use_worktree: Some(true),
+        ..Default::default()
+    };
+    let err = app
+        .create_feature_from_request(&request)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Worktree path already exists"), "got: {err}");
+    assert!(
+        err.contains("not a registered git worktree") && !err.contains("\"existing_worktree\""),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn create_feature_automation_attaches_existing_worktree() {
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+    };
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    );
+    let wt = workspace.path().join("elsewhere");
+    git(
+        &repo,
+        &["worktree", "add", "-q", "-b", "side", &wt.to_string_lossy()],
+    );
+
+    let mut app = App::new_for_test(
+        store_with_empty_project(repo.clone(), true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+
+    let mut request = CreateFeatureRequest {
+        project_name: "automation-project".into(),
+        branch: "feature-on-side".into(),
+        no_start: true,
+        existing_worktree: Some(workspace.path().join("nope")),
+        ..Default::default()
+    };
+    let err = app.create_feature_from_request(&request).unwrap_err();
+    assert!(err.to_string().contains("not an existing git worktree"));
+
+    request.existing_worktree = Some(repo.clone());
+    assert!(app.create_feature_from_request(&request).is_err());
+
+    // A registered worktree at the planned path gets the existing_worktree hint.
+    let planned = repo.join(".worktrees").join("automation-project-hinted");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "hinted",
+            &planned.to_string_lossy(),
+        ],
+    );
+    let hinted = CreateFeatureRequest {
+        project_name: "automation-project".into(),
+        branch: "hinted".into(),
+        use_worktree: Some(true),
+        ..Default::default()
+    };
+    let err = app
+        .create_feature_from_request(&hinted)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("\"existing_worktree\""), "got: {err}");
+
+    // A detached worktree is rejected rather than recording a guessed branch.
+    let detached = workspace.path().join("detached");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            &detached.to_string_lossy(),
+        ],
+    );
+    request.existing_worktree = Some(detached);
+    let err = app.create_feature_from_request(&request).unwrap_err();
+    assert!(err.to_string().contains("detached HEAD"), "{err}");
+
+    request.existing_worktree = Some(wt.clone());
+    let response = app.create_feature_from_request(&request).unwrap();
+    assert!(response.ok);
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(
+        feature.workdir.canonicalize().unwrap(),
+        wt.canonicalize().unwrap()
+    );
+    assert!(feature.is_worktree);
+    assert_eq!(feature.name, "feature-on-side");
+    assert_eq!(feature.branch, "side");
+
+    request.branch = "side-2".into();
+    let err = app.create_feature_from_request(&request).unwrap_err();
+    assert!(err.to_string().contains("already used by feature"), "{err}");
 }

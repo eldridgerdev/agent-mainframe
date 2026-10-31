@@ -259,6 +259,9 @@ Request JSON (all fields optional unless marked required):
     \"use_worktree\":    bool | null   null = project default
     \"enable_chrome\":   bool    default false
     \"hook_choice\":     string | null  option for an on_worktree_created hook
+    \"existing_worktree\": string | null  path of an existing git worktree to attach
+                       as the feature instead of creating one (no hook runs).
+                       A \"Worktree path already exists\" error names this fix.
     \"initial_prompt\": string | null  task to paste when the harness is ready
     \"submit_prompt\": bool    default false
     \"dry_run\":         bool    default false; validate only

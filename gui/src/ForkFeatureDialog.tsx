@@ -48,6 +48,11 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
   const alive = useRef(true);
   const token = stage.kind === "preparing" || stage.kind === "error" ? null : stage.preview.token;
 
+  // A stale approval prompt must not survive an edit to the request it was for.
+  useEffect(() => {
+    setApproval(null);
+  }, [branch, agent, includeContext, hookChoice, startAgent]);
+
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; };
@@ -178,7 +183,7 @@ export default function ForkFeatureDialog({ target, sessionId, supported, onClos
               <button type="button" className="btn btn-secondary" onClick={() => setAttempt((n) => n + 1)}>Try again</button>
             )}
             {approval ? (
-              <button type="button" className="btn btn-warning" onClick={() => confirm(true)}>Approve and fork</button>
+              <button type="button" className="btn btn-warning" disabled={!canFork} onClick={() => confirm(true)}>Approve and fork</button>
             ) : stage.kind !== "error" && (
               <button type="submit" className="btn btn-primary" disabled={!canFork}>Fork feature</button>
             )}

@@ -272,6 +272,8 @@ struct Prepared {
     /// `Some` only when the exact session's transcript was read and exported.
     context: Option<CapturedContext>,
     context_view: ContextAvailability,
+    /// The worktree-hook prompt the preview showed; confirm refuses if it changed.
+    hook: Option<AutomationHookPrompt>,
 }
 
 // ---- wire types -----------------------------------------------------------
@@ -548,7 +550,10 @@ pub fn prepare(gui: &Mutex<GuiHandle>, request: ForkPrepareRequest) -> GuiResult
         },
         suggested_branch: inputs.suggested_branch.clone(),
         default_agent: inputs.default_agent.slug().to_string(),
-        mode: format!("{:?}", binding.mode).to_lowercase(),
+        mode: serde_json::to_value(&binding.mode)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| format!("{:?}", binding.mode).to_lowercase()),
         changes,
         staging_note: STAGING_NOTE,
         context: context_view.clone(),
@@ -562,6 +567,7 @@ pub fn prepare(gui: &Mutex<GuiHandle>, request: ForkPrepareRequest) -> GuiResult
             snapshot,
             context,
             context_view,
+            hook: preview.hook.clone(),
         })),
     );
     Ok(preview)
@@ -727,6 +733,7 @@ struct Plan {
     include_context: bool,
     hook: Option<HookPlan>,
     start_agent: bool,
+    approved: bool,
     worktree: Arc<dyn crate::traits::WorktreeOps>,
 }
 
@@ -831,6 +838,15 @@ fn begin(gui: &mut GuiHandle, request: &ForkConfirmRequest) -> GuiResult<Begin> 
         );
         return refuse(gui, prepared, GuiError::conflict(message));
     }
+    let current_hook = gui
+        .app_for_workflow()
+        .worktree_hook_prompt_for_repo(&prepared.binding.project_repo);
+    if serde_json::to_value(&current_hook).ok() != serde_json::to_value(&prepared.hook).ok() {
+        gui.fork.drop_record(&request.token);
+        return Err(GuiError::conflict(
+            "The project's worktree hook changed since the preview; prepare the fork again",
+        ));
+    }
     let hook_plan = match validate_request(gui.app_for_workflow(), &prepared, request, &new_branch)
     {
         Ok(plan) => plan,
@@ -858,6 +874,7 @@ fn begin(gui: &mut GuiHandle, request: &ForkConfirmRequest) -> GuiResult<Begin> 
         include_context: request.include_context,
         hook: hook_plan,
         start_agent: request.start_agent,
+        approved: request.approve_resources,
         worktree,
     }))
 }
@@ -937,6 +954,7 @@ fn execute(gui: &Mutex<GuiHandle>, plan: Plan) -> (Option<Box<Prepared>>, Step) 
         include_context,
         hook,
         start_agent,
+        approved,
         worktree,
     } = plan;
     let cancelled = || run.cancel.load(Ordering::SeqCst);
@@ -966,7 +984,11 @@ fn execute(gui: &Mutex<GuiHandle>, plan: Plan) -> (Option<Box<Prepared>>, Step) 
         if context.is_some() {
             fork_snapshot::ensure_context_does_not_collide(&prepared.snapshot)?;
         }
-        let settings = ProjectSettings::read(&repo)?;
+        let settings = ProjectSettings::read(&repo).map_err(|err| {
+            anyhow::anyhow!(
+                "Could not read the project's settings files: {err:#}. Fix them, then prepare the fork again"
+            )
+        })?;
         fork_snapshot::ensure_no_generated_collisions(
             &prepared.snapshot,
             &settings,
@@ -1167,7 +1189,7 @@ fn execute(gui: &Mutex<GuiHandle>, plan: Plan) -> (Option<Box<Prepared>>, Step) 
     set_phase(&run, ForkPhase::Starting);
     let started = {
         let mut gui = gui.lock().expect("gui handle mutex poisoned");
-        start(&mut gui, &target)
+        start(&mut gui, &target, approved, &new_branch)
     };
     match started {
         Ok(()) => (
@@ -1251,9 +1273,18 @@ fn register(
     );
     App::initialize_feature_sessions(&mut feature, false, None);
     let feature_id = feature.id.clone();
-    if !app.store.add_feature(&binding.project_name, feature) {
+    let Some(project) = app
+        .store
+        .projects
+        .iter_mut()
+        .find(|p| p.id == binding.project_id)
+    else {
         return Err("The source project no longer exists".into());
+    };
+    if project.features.iter().any(|f| f.name == new_branch) {
+        return Err(format!("Feature '{new_branch}' already exists"));
     }
+    project.features.push(feature);
     match app.save_reporting_conflict() {
         Ok(true) => (),
         Ok(false) => return Err("Registration conflicted with another AMF change".into()),
@@ -1268,8 +1299,19 @@ fn register(
         .ok_or_else(|| "The registered feature disappeared".to_string())
 }
 
-fn start(gui: &mut GuiHandle, target: &FeatureTarget) -> Result<(), String> {
+fn start(
+    gui: &mut GuiHandle,
+    target: &FeatureTarget,
+    approved: bool,
+    new_branch: &str,
+) -> Result<(), String> {
     gui.refresh_store().map_err(|e| e.message)?;
+    // The gate was checked in `begin`, before a possibly long checkout and hook;
+    // re-check it unless the user explicitly approved.
+    if !approved {
+        gui.require_start_approval(&format!("Starting fork '{new_branch}'"))
+            .map_err(|e| format!("needs approval: {}", e.message))?;
+    }
     let (pi, fi) = gui.locate(target).map_err(|e| e.message)?;
     let app = gui.app_for_workflow();
     app.ensure_feature_running(pi, fi, StartIntent::Approved)

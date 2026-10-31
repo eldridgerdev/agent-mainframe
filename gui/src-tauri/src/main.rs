@@ -1796,7 +1796,8 @@ async fn companion_integration_confirm(
     revision: String,
 ) -> Result<String, GuiError> {
     let operation = CompanionOperation::acquire(&target)?;
-    pr_workspace_blocking(app, move |gui| {
+    let result_key = operation.0.clone();
+    let returned = pr_workspace_blocking(app, move |gui| {
         let _operation = operation;
         let outcome = (|| {
             let binding = agent_mainframe::gui_companion_integration::bind(
@@ -1830,7 +1831,15 @@ async fn companion_integration_confirm(
             .insert(_operation.0.clone(), outcome.clone());
         outcome
     })
-    .await?
+    .await;
+    // The caller receives the outcome directly; drop the polled copy so a
+    // later dialog does not present it as current.
+    COMPANION_RESULTS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("result mutex poisoned")
+        .remove(&result_key);
+    returned?
 }
 
 #[tauri::command]

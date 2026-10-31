@@ -434,7 +434,12 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
     ancestor(c, &base, &head)?;
     operation_clear(s)?;
     operation_clear(c)?;
-    let listed = git(c, &["rev-list", "--reverse", &format!("{base}..{head}")])?;
+    let range = format!("{base}..{head}");
+    ensure!(
+        git(c, &["rev-list", "--min-parents=2", "--count", &range])?.trim() == "0",
+        "The companion contains merge commits, which cannot be cherry-picked or previewed exactly; rebase it onto linear history first"
+    );
+    let listed = git(c, &["rev-list", "--reverse", &range])?;
     let commits: Vec<String> = listed.lines().map(str::to_owned).collect();
     ensure!(
         !commits.is_empty() && commits.iter().all(|x| sha(x)),
@@ -479,6 +484,12 @@ pub fn plan(binding: Binding, choice: IntegrationChoice) -> Result<IntegrationPl
                 "The remote branch already contains the companion head"
             );
             ancestor(c, tip, &head)?;
+            // The push sends tip..head; the preview lists base..head. They
+            // are the same set only when the remote tip is not ahead of base.
+            ensure!(
+                ancestor(c, tip, &base).is_ok(),
+                "The remote branch differs from the companion's base, so the push would publish commits not shown in the preview; update the source checkout and re-create the companion"
+            );
         }
         (Some(remote), tip)
     } else {

@@ -16,11 +16,12 @@ export default function CompanionIntegrationDialog({ target, prNumber, onClose }
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
+    let cancelled = false;
     let timer = 0;
     const poll = async () => {
       try {
         const status = await invoke<{ running: boolean; result: string | null; error: { message: string } | null }>("companion_integration_status", { target });
-        if (!live.current || pending.current) return;
+        if (cancelled || pending.current) return;
         setBusy(status.running);
         if (!status.running && status.result) setResult(status.result);
         if (!status.running && status.error) setError(status.error.message);
@@ -28,7 +29,7 @@ export default function CompanionIntegrationDialog({ target, prNumber, onClose }
       } catch { /* Preview still reports any operational error. */ }
     };
     void poll();
-    return () => { live.current = false; window.clearTimeout(timer); };
+    return () => { cancelled = true; live.current = false; window.clearTimeout(timer); };
   }, [target.project_id, target.feature_id]);
   const preview = async () => {
     if (pending.current) return;

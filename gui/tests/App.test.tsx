@@ -699,6 +699,8 @@ it.each(["draft", "sending"])("guards an arrival toast target switch with %s in 
     expect(screen.getByText("Supervised edits · my-feat")).toBeTruthy();
     expect(screen.getByText(/Wait for its result before switching reviews/)).toBeTruthy();
     expect(screen.queryByText("Supervised edits · Docs")).toBeNull();
+    // The answer waits for matching explanation cancellation before IPC.
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
     await act(async () => finish());
     expect((await screen.findAllByText(/Approved src\/a.ts/)).length).toBeGreaterThan(0);
     fireEvent.click(review);
@@ -964,7 +966,7 @@ it("hands a PR fix to the chosen agent composer once while preserving both sessi
   const view = {
     workflow_id: "triage-id", revision: 2, target, feature_name: "my-feat", branch: "my-feat", stage: "review",
     picker: null, loading_pr: null, precall: null, reply: null, write_confirm: null, handoff: null,
-    fix_targets: [{ target, label: "Codex", harness: "codex", stopped: true }],
+    fix_targets: [{ target, label: "Codex", harness: "codex", stopped: true, destination_revision: "rev" }],
     fix_draft: { comment_id: 1, target, prompt: "Fix rounding" },
     harnesses: ["codex"], default_harness: "codex", error: null, notice: null,
     review: { number: 12, head_ref: "my-feat", head_sha: "abc", open_count: 1, total: 1, fetched_at: "", sort: "fetch_order", hide_resolved: false, comments: [], investigating: null },

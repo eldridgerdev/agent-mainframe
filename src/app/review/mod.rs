@@ -20,7 +20,7 @@ pub(crate) use pr_submit::{build_pr_submission, submission_counts};
 pub(crate) use preparation::{
     FINAL_REVIEW_SESSION_LABEL, archive_review_notes, checked_review_progress,
     feedback_prompt_for_checkouts, is_review_bookkeeping_path, load_review_notes,
-    review_progress_path,
+    load_review_notes_for_explanation, review_progress_path,
 };
 pub(crate) use progression::compute_search_matches;
 

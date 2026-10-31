@@ -158,5 +158,7 @@ Local cargo-audit 0.22.2 compares both lockfiles against database commit
 `40f5be6fb12ed93fc591bf4ab23b7d793b3f2239` (1,381 advisories). The original
 lockfile has one blocking finding; the patched lockfile has zero. All 13
 existing nonfatal warnings remain visible. The second scan uses `--no-fetch`
-against the same database checkout. Full Linux/macOS tests, strict lint and
-frontend checks remain required for the published commit.
+against the same database checkout. CI's `cargo audit` must also report zero
+blocking findings for the published commit, so the record does not rest only on
+the local `--no-fetch` scan. Full Linux/macOS tests, strict lint and frontend
+checks remain required for the published commit.

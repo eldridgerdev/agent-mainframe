@@ -1,0 +1,116 @@
+// @vitest-environment jsdom
+import { afterEach, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { invoke } from "@tauri-apps/api/core";
+import CompanionIntegrationDialog from "../src/CompanionIntegrationDialog";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
+const target = { project_id: "p", feature_id: "companion" };
+const plan = { revision: "revision", choice: "cherry_pick", companion_name: "Companion", source_name: "Source", companion_path: "/companion", source_path: "/source", companion_branch: "fix", source_branch: "feature", base_sha: "a".repeat(40), companion_head: "b".repeat(40), source_head: "a".repeat(40), commits: ["b".repeat(40)], source_dirty: false, companion_dirty: true, remote_tip: null, remote_display: null, ignored_collisions: [], hidden_tracked: [] };
+it("previews without mutation, warns about excluded work, and confirms the exact revision once", async () => {
+  let finish!: (value: string) => void;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return plan;
+    if (command === "companion_integration_confirm") return new Promise(resolve => { finish = resolve; });
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/companion checkout has uncommitted changes/)).toBeTruthy();
+  expect(screen.getAllByText(plan.companion_head).length).toBeGreaterThan(0);
+  const confirm = screen.getByRole("button", { name: "Confirm cherry-pick" });
+  fireEvent.click(confirm); fireEvent.click(confirm);
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "companion_integration_confirm")).toHaveLength(1);
+  expect(vi.mocked(invoke).mock.calls.find(([command]) => command === "companion_integration_confirm")?.[1]).toEqual({ target, choice: "cherry_pick", revision: "revision" });
+  expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true);
+  finish("Integrated"); await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Integrated"));
+});
+it("refuses dirty source and clears the preview when changing methods", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return { ...plan, source_dirty: true };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/source checkout has uncommitted changes/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByRole("combobox", { name: "Integration method" }), { target: { value: "push" } });
+  expect(screen.queryByRole("button", { name: /Confirm/ })).toBeNull();
+});
+it("shows a running operation and its retained result after reopening", async () => {
+  let calls = 0;
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return ++calls === 1 ? { running: true, result: null, error: null } : { running: false, result: "Integration completed", error: null };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  await waitFor(() => expect((screen.getByRole("button", { name: "Preview integration" }) as HTMLButtonElement).disabled).toBe(true));
+  expect(await screen.findByText("Integration completed", {}, { timeout: 2500 })).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Preview integration" }) as HTMLButtonElement).disabled).toBe(false);
+});
+it("closing a preview leaves both repositories untouched", async () => {
+  const close = vi.fn();
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return plan;
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={close} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  await screen.findByRole("button", { name: "Confirm cherry-pick" });
+  fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]);
+  expect(close).toHaveBeenCalledOnce();
+  expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "companion_integration_confirm")).toHaveLength(0);
+});
+it("blocks cherry-pick when an ignored destination file would be overwritten", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return { ...plan, ignored_collisions: ["private.txt"] };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/Ignored paths would be overwritten: private.txt/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
+});
+it("blocks cherry-pick when hidden tracked paths could conceal local edits", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return { ...plan, hidden_tracked: ["src/lib.rs"] };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/assume-unchanged or skip-worktree.*src\/lib.rs/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: "Confirm cherry-pick" }) as HTMLButtonElement).disabled).toBe(true);
+});
+it("labels a PR Triage companion, names the PR branch and warns when the source is on another branch", async () => {
+  const triagePlan = { ...plan, choice: "push", pr_number: 42, destination_branch: "pr-head", source_branch: "local-work", remote_tip: "c".repeat(40), remote_display: "file:///remote.git" };
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    if (command === "companion_integration_preview") return triagePlan;
+    if (command === "companion_integration_confirm") return "Pushed 1 companion commit(s) to origin/pr-head for PR #42";
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} prNumber={42} onClose={vi.fn()} />);
+  expect(screen.getByRole("option", { name: "Push to PR #42 branch on origin" })).toBeTruthy();
+  fireEvent.change(screen.getByRole("combobox", { name: "Integration method" }), { target: { value: "push" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview integration" }));
+  expect(await screen.findByText(/PR Triage companion for/)).toBeTruthy();
+  expect(screen.getByText(/not the PR branch/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "companion_integration_confirm")).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm push" }));
+  expect(await screen.findByText(/for PR #42/)).toBeTruthy();
+  expect(vi.mocked(invoke).mock.calls.find(([command]) => command === "companion_integration_confirm")?.[1]).toEqual({ target, choice: "push", revision: "revision" });
+});
+it("does not claim PR wording for a Final Review companion", async () => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "companion_integration_status") return { running: false, result: null, error: null };
+    throw new Error(command);
+  });
+  render(<CompanionIntegrationDialog target={target} onClose={vi.fn()} />);
+  expect(screen.getByRole("option", { name: "Push to source branch on origin" })).toBeTruthy();
+  expect(screen.queryByText(/PR Triage companion/)).toBeNull();
+});

@@ -290,11 +290,12 @@ pub(crate) mod tests {
         let db = AmfDb::open(&dir.path().join("amf.db")).unwrap();
         db.save_store(&store).unwrap();
         let (_, version) = db.load_store_versioned().unwrap();
-        let mut app = App::new_for_test(
-            store,
-            Box::new(MockTmuxOps::new()),
-            Box::new(MockWorktreeOps::new()),
-        );
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_check_harness_available().returning(|_| Ok(()));
+        tmux.expect_session_exists().return_const(false);
+        tmux.expect_window_exists().return_const(false);
+        tmux.expect_list_panes().returning(Vec::new);
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
         app.db = Some(db);
         app.store_version = Some(version);
         (dir, GuiHandle::from_app(app), target)

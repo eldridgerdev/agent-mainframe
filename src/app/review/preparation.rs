@@ -29,6 +29,29 @@ pub(crate) const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on the
      if you disagree or are answering a [question], why. Keep each reply to a sentence or two. \
      These replies are shown to the reviewer beside your changes on the next review round.";
 
+/// Explicit source context for feedback addressed from another checkout. The
+/// original feedback file stays authoritative; no destination file is copied
+/// or overwritten. Identical-checkout handoffs retain the existing prompt.
+pub(crate) fn feedback_prompt_for_checkouts(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) -> String {
+    if source == destination {
+        return REVIEW_FEEDBACK_PROMPT.into();
+    }
+    let feedback = source.join(".claude/final-review-feedback.md");
+    format!(
+        "The reviewed source checkout is {}. Apply the requested changes in your destination checkout {}. Read and append replies to the original feedback file {} (do not replace a different review in this checkout).\n\n{}",
+        source.display(),
+        destination.display(),
+        feedback.display(),
+        REVIEW_FEEDBACK_PROMPT.replace(
+            ".claude/final-review-feedback.md",
+            &feedback.display().to_string()
+        )
+    )
+}
+
 /// Cap on how many files' notes stay in `.claude/review-notes.md`. In Review
 /// Mode the feature agent blind-appends sections and never reads the file back
 /// (`ensure_review_claude_md`); AMF collapses it to the newest note per file
@@ -1362,4 +1385,23 @@ fn parse_review_notes_with_empty(
 
     flush(&mut current, &mut map, keep_empty);
     map
+}
+
+#[cfg(test)]
+mod feedback_destination_tests {
+    use super::*;
+    #[test]
+    fn cross_checkout_feedback_keeps_original_file_and_same_checkout_compatibility() {
+        let source = std::path::Path::new("/private/source");
+        let destination = std::path::Path::new("/private/companion");
+        assert_eq!(
+            feedback_prompt_for_checkouts(source, source),
+            REVIEW_FEEDBACK_PROMPT
+        );
+        let prompt = feedback_prompt_for_checkouts(source, destination);
+        assert!(prompt.contains("/private/source/.claude/final-review-feedback.md"));
+        assert!(prompt.contains("destination checkout /private/companion"));
+        assert!(!prompt.contains("/private/companion/.claude/final-review-feedback.md"));
+        assert!(prompt.contains("do not replace a different review"));
+    }
 }

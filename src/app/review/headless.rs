@@ -1083,6 +1083,14 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
+        let prompt = source_indices
+            .map(|(spi, sfi)| {
+                super::feedback_prompt_for_checkouts(
+                    &self.store.projects[spi].features[sfi].workdir,
+                    &feature.workdir,
+                )
+            })
+            .unwrap_or_else(|| REVIEW_FEEDBACK_PROMPT.into());
         let tmux_session = feature.tmux_session.clone();
         let target_window = crate::app::pr_review::fix_session_index(
             feature,
@@ -1092,7 +1100,7 @@ impl App {
         .map(|si| feature.sessions[si].tmux_window.clone());
 
         if let Some(window) = target_window {
-            let suffix = self.paste_review_prompt(&tmux_session, &window);
+            let suffix = self.paste_review_prompt_text(&tmux_session, &window, &prompt);
             self.message = Some(format!("{summary}{suffix}"));
             self.mode = AppMode::Viewing(from_view);
             return;
@@ -1126,7 +1134,7 @@ impl App {
                                 feature.sessions[si].tmux_window.clone(),
                             )
                         };
-                        let suffix = self.paste_review_prompt(&session, &window);
+                        let suffix = self.paste_review_prompt_text(&session, &window, &prompt);
                         self.message =
                             Some(format!("{summary}{suffix} (companion review feature)"));
                     }
@@ -1168,8 +1176,11 @@ impl App {
     /// watched when the prompt is only pasted, not submitted — the reviewer
     /// hasn't sent it yet, so there's nothing to watch for finishing.
     pub(super) fn paste_review_prompt(&mut self, session: &str, window: &str) -> String {
+        self.paste_review_prompt_text(session, window, REVIEW_FEEDBACK_PROMPT)
+    }
+    fn paste_review_prompt_text(&mut self, session: &str, window: &str, prompt: &str) -> String {
         let submit = self.config.final_review_submit_prompt;
-        match self.deliver_review_prompt(session, window, submit) {
+        match self.deliver_review_prompt_text(session, window, submit, prompt) {
             Ok(true) => " — sent to agent".to_string(),
             Ok(false) => " — pasted to agent (not submitted)".to_string(),
             Err(e) => format!(" (couldn't prompt agent: {e})"),
@@ -1179,14 +1190,14 @@ impl App {
     /// Paste the address-feedback prompt into `window`, sending Enter when
     /// `submit`. Returns whether it was submitted; a submitted prompt starts
     /// the "fixes ready" watch described on [`Self::paste_review_prompt`].
-    pub(crate) fn deliver_review_prompt(
+    fn deliver_review_prompt_text(
         &mut self,
         session: &str,
         window: &str,
         submit: bool,
+        prompt: &str,
     ) -> Result<bool> {
-        self.tmux
-            .paste_text(session, window, REVIEW_FEEDBACK_PROMPT)?;
+        self.tmux.paste_text(session, window, prompt)?;
         if submit {
             self.tmux.send_key_name(session, window, "Enter")?;
             self.awaiting_review_fixes.insert(

@@ -6054,7 +6054,7 @@ fn ai_review_from_linked_worktree_reads_shared_memory_instead_of_local_copy() {
     }
     let mut app = ai_review_test_app();
     // Exercise the production git-root lookup rather than an identity mock.
-    app.worktree = Box::new(crate::worktree::WorktreeManager);
+    app.worktree = std::sync::Arc::new(crate::worktree::WorktreeManager);
     app.config.global_review_memory_path = Some(tmp.path().join("absent.md").display().to_string());
     app.open_ai_review_for_pr(workdir.clone(), pr_review_with_comments(1).pr);
     let AppMode::AiReview(state) = &app.mode else {

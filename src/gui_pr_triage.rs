@@ -2461,7 +2461,7 @@ mod tests {
         worktree
             .expect_repo_root()
             .returning(|path| Ok(path.to_path_buf()));
-        gui.app_for_workflow().worktree = Box::new(worktree);
+        gui.app_for_workflow().worktree = std::sync::Arc::new(worktree);
         (dir, gui, target)
     }
 

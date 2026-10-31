@@ -13,6 +13,7 @@ use crate::project::SessionKind;
 mod ai;
 mod checks;
 mod complete;
+pub mod destinations;
 mod summary;
 pub use ai::{
     ReviewAiView, ReviewCommentDraftView, ReviewCommentEditorView, ReviewDraftDestination,
@@ -38,7 +39,18 @@ pub(crate) struct ReviewContext {
     check: Option<ReviewCheckView>,
     /// A confirmed completion waiting for `check_run`.
     completion: Option<complete::PendingCompletion>,
+    destination: Option<destinations::PreparedFeedbackDestination>,
+    /// Companion kept after a cancelled or failed launch. It is offered only
+    /// by replaying its request; it never replaces the chosen destination.
+    retained_companion: Option<destinations::PreparedFeedbackDestination>,
+    preparation: Option<destinations::Preparation>,
+    /// Resolved handoff shown in the summary, keyed by review revision. Only
+    /// display reads it; completion always re-resolves and re-checks identity.
+    handoff_cache: Option<((u64, Option<u64>), HandoffResolution)>,
+    preparation_error: Option<String>,
 }
+
+type HandoffResolution = Result<Option<destinations::ResolvedDestination>, String>;
 
 #[derive(Debug, Serialize)]
 pub struct ReviewFileView {
@@ -91,6 +103,8 @@ pub struct ReviewView {
     pub check: Option<ReviewCheckView>,
     /// What completing would record and hand off; present with the summary.
     pub finish: Option<ReviewFinishView>,
+    pub preparation: Option<destinations::PreparationView>,
+    pub preparation_error: Option<String>,
     pub ai: ReviewAiView,
 }
 
@@ -129,6 +143,16 @@ pub enum ReviewAction {
         apply_suggestions: usize,
         handoff_session: Option<String>,
         deliver: bool,
+        #[serde(default)]
+        handoff_revision: Option<String>,
+    },
+    CancelPreparation {
+        operation_id: String,
+    },
+    PrepareDestination {
+        choice: destinations::DestinationChoice,
+        preview_revision: String,
+        approved: bool,
     },
     HistoryOpen,
     HistorySelect {
@@ -319,11 +343,19 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<ReviewView
         check_run: None,
         check: None,
         completion: None,
+        destination: None,
+        retained_companion: None,
+        preparation: None,
+        handoff_cache: None,
+        preparation_error: None,
     });
     snapshot(gui)
 }
 
 pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
+    // A transient store-read failure must not fail the whole snapshot or poll;
+    // actions that need a fresh store refresh it (and fail) on their own.
+    let _ = gui.refresh_store();
     let context = gui
         .review_context
         .as_ref()
@@ -336,6 +368,13 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
     );
     let ready_comment = context.ready_comment.clone();
     let check = context.check.clone();
+    let preparation = destinations::preparation_view(gui);
+    let preparation_error = gui
+        .review_context
+        .as_ref()
+        .unwrap()
+        .preparation_error
+        .clone();
     let check_command = checks::command(gui);
     let finish = complete::preview(gui);
     let app = gui.app_for_workflow();
@@ -418,6 +457,8 @@ pub fn snapshot(gui: &mut GuiHandle) -> GuiResult<ReviewView> {
         check_command,
         check,
         finish,
+        preparation,
+        preparation_error,
         history: state
             .review_history
             .as_ref()
@@ -470,8 +511,19 @@ pub fn act(
     let context = gui
         .review_context
         .as_ref()
-        .filter(|c| c.id == workflow_id && c.revision == revision)
+        .filter(|context| context.id == workflow_id && (context.revision == revision
+            || matches!(&action, ReviewAction::CancelPreparation { operation_id }
+                if context.preparation.as_ref().is_some_and(|operation| operation.matches_id(operation_id)))))
         .ok_or_else(|| GuiError::conflict("Review changed; retry from the current view"))?;
+    if context.preparation.is_some() {
+        if let ReviewAction::CancelPreparation { operation_id } = &action {
+            destinations::cancel_preparation(gui, operation_id)?;
+            return snapshot(gui).map(Some);
+        }
+        return Err(GuiError::conflict(
+            "Destination setup is running. Cancel its pending launch and wait for setup to settle before closing or editing.",
+        ));
+    }
     if context.ready_comment.is_some()
         && matches!(
             action,
@@ -479,6 +531,7 @@ pub fn act(
                 | ReviewAction::DraftQuestion { .. }
                 | ReviewAction::ApplyFinishSuggestions
                 | ReviewAction::Complete { .. }
+                | ReviewAction::PrepareDestination { .. }
         )
     {
         return Err(GuiError::conflict(
@@ -669,11 +722,28 @@ pub fn act(
         gui.review_context.as_mut().unwrap().revision += 1;
         return snapshot(gui).map(Some);
     }
+    if let ReviewAction::PrepareDestination {
+        choice,
+        preview_revision,
+        approved,
+    } = action
+    {
+        return destinations::prepare(
+            gui,
+            workflow_id,
+            revision,
+            choice,
+            &preview_revision,
+            approved,
+        )
+        .map(Some);
+    }
     if let ReviewAction::Complete {
         check_command,
         apply_suggestions,
         handoff_session,
         deliver,
+        handoff_revision,
     } = action
     {
         return match complete::start(
@@ -682,6 +752,7 @@ pub fn act(
             apply_suggestions,
             handoff_session,
             deliver,
+            handoff_revision,
         )? {
             complete::Started::Completed => Ok(None),
             complete::Started::Checking | complete::Started::Stopped => {

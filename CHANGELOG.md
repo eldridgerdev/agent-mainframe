@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Choose where desktop Final Review feedback goes.** Select the current
+  session, a dedicated review agent, another feature session or a new companion
+  worktree. New resources and worktree setup require confirmation; cancelling
+  their pending launch keeps created resources available for recovery. Feedback
+  opens as an unsent draft and preserves the destination's existing composer
+  text, including when the TUI is configured to submit prompts automatically.
 - **Explain waiting edits in the desktop app.** Read saved review notes without
   an AI call, or review the exact prompt before asking Claude for an explanation.
   Calls can be cancelled, changed edits discard old results, and unsent rejection
@@ -25,6 +31,8 @@ are tagged.
 - **Empty saved review notes no longer trigger an AI explanation call.** Both
   interfaces now show an explicitly empty note instead of silently asking Claude.
 
+- Final Review prompts sent to another checkout now point to the original
+  reviewed source's feedback file, keeping replies with the correct review.
 
 ## [v0.51.0] - 2026-10-27
 

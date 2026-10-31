@@ -18,6 +18,9 @@
 //!    target, minus the PR: integration targets the source feature's own
 //!    branch, recorded on [`crate::project::ReviewSource`].
 
+mod copy_inputs;
+pub(crate) use copy_inputs::revision as companion_copy_revision;
+
 use anyhow::Result;
 
 use crate::app::pr_review::FixTarget;
@@ -41,6 +44,37 @@ const INTEGRATE_COMMIT_PREVIEW: usize = 20;
 
 /// Suffix appended to the source branch to name the companion branch.
 const REVIEW_BRANCH_SUFFIX: &str = "-review-fixes";
+
+/// Settings shared by companion creation adapters; no picker state is needed.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ReviewCompanionSpec {
+    pub branch: String,
+    pub agent: crate::project::AgentKind,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub enable_chrome: bool,
+}
+
+pub(crate) struct CreatedReviewCompanion {
+    pub project_id: String,
+    pub feature_id: String,
+    pub session_id: String,
+    pub name: String,
+    pub hook_warning: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ReviewCompanionRegistration {
+    pub project_id: String,
+    pub project_name: String,
+    pub repo: std::path::PathBuf,
+    pub source_id: String,
+    pub source_branch: String,
+    pub source_workdir: std::path::PathBuf,
+    pub base_sha: String,
+    pub copy_revision: String,
+    pub spec: ReviewCompanionSpec,
+}
 
 impl App {
     // ------------------------------------------------------------ picker
@@ -362,137 +396,296 @@ impl App {
         &mut self,
         setup: &TriageFeatureSetupState,
     ) -> Result<(String, String)> {
-        let branch = setup.branch.trim().to_string();
-        if branch.is_empty() {
-            anyhow::bail!("Branch name cannot be empty");
-        }
-
-        let (pi, source_fi) = self
+        let (pi, fi) = self
             .review_source_indices()
             .ok_or_else(|| anyhow::anyhow!("could not resolve the feature under review"))?;
-
-        let project_name = self.store.projects[pi].name.clone();
-        let project_repo = self.store.projects[pi].repo.clone();
-        let source = &self.store.projects[pi].features[source_fi];
-        let source_feature_id = source.id.clone();
-        let source_branch = source.branch.clone();
-        let source_workdir = source.workdir.clone();
-
-        if !self.store.projects[pi].is_git && self.worktree.repo_root(&project_repo).is_err() {
-            anyhow::bail!(
-                "A companion review feature needs a git repository (it runs in its own worktree)"
-            );
-        }
-        if source_branch.trim().is_empty() {
-            anyhow::bail!("the feature under review has no branch to seed the companion from");
-        }
-
-        let agent = setup.agent();
-        if !self.allows_agent_for_repo(&project_repo, &agent) {
-            anyhow::bail!(
-                "Harness '{}' is not allowed for this workspace",
-                agent.display_name()
-            );
-        }
-        self.ensure_agent_mode_supported(&agent, &setup.mode)?;
-
-        let normalized = normalized_feature_name(&branch);
-        if self.store.projects[pi]
-            .features
-            .iter()
-            .any(|f| normalized_feature_name(&f.name) == normalized)
-        {
-            anyhow::bail!("Feature '{branch}' already exists in '{project_name}'");
-        }
-
-        // Seed from the reviewed feature's branch head.
-        let base = source_branch.clone();
-        if !branch_exists(&source_workdir, &base) {
-            anyhow::bail!("branch '{base}' not found to seed the companion from");
-        }
-        let base_sha = rev_parse(&source_workdir, &base).unwrap_or_else(|| base.clone());
-
-        let wt_name = worktree_name(&project_name, &branch);
-        let workdir = self
-            .worktree
-            .create_from(&project_repo, &wt_name, &branch, &base)?;
-
-        // Run the on-worktree-created hook synchronously — the interactive
-        // prompt flow would have to unwind the review viewer.
-        let ext = merge_project_extension_config(&self.config.extension, &project_repo);
-        if let Some(hook) = ext.lifecycle_hooks.on_worktree_created.as_ref() {
-            let (ok, detail) = Self::run_worktree_hook_sync(hook.script(), &workdir, None);
-            if !ok {
-                self.log_warn(
-                    "review",
-                    format!(
-                        "Worktree hook failed for companion review feature '{branch}': {}",
-                        detail.unwrap_or_else(|| "unknown error".to_string())
-                    ),
-                );
-                self.push_toast_warning(
-                    "Companion worktree created, but its on_worktree_created hook failed",
-                );
-            }
-        }
-
-        let mut feature = Feature::new_for_project(
-            &project_name,
-            branch.clone(),
-            branch.clone(),
-            workdir,
-            true,
-            setup.mode.clone(),
-            setup.review,
-            // Plan mode would defer the launch into a planning interview; this
-            // feature exists to apply review feedback that already says what to do.
+        let source_id = self.store.projects[pi].features[fi].id.clone();
+        let repo = self.store.projects[pi].repo.clone();
+        let hook = merge_project_extension_config(&self.config.extension, &repo)
+            .lifecycle_hooks
+            .on_worktree_created;
+        let created = self.register_review_companion(
+            &source_id,
+            &ReviewCompanionSpec {
+                branch: setup.branch.clone(),
+                agent: setup.agent(),
+                mode: setup.mode.clone(),
+                review: setup.review,
+                enable_chrome: setup.enable_chrome,
+            },
+            hook.as_ref(),
+            None,
             false,
-            agent.clone(),
-            setup.enable_chrome,
-            false,
-        );
-        // The primary session carries the `Final Review` label, so
-        // `fix_session_index(.., FINAL_REVIEW_SESSION_LABEL)` finds it inside
-        // the companion the same way it does for the in-feature dedicated target.
-        feature.add_session_named(
-            crate::app::session_kind_for_agent(&agent),
-            FINAL_REVIEW_SESSION_LABEL.to_string(),
-        );
-        feature.status = ProjectStatus::Stopped;
-        feature.review_source = Some(ReviewSource {
-            source_feature_id,
-            target_branch: source_branch,
-            base_sha,
-        });
-        let feature_name = feature.name.clone();
-        let feature_id = feature.id.clone();
-
-        self.store.add_feature(&project_name, feature);
-        self.save()?;
-
-        let fi = self.store.projects[pi]
-            .features
-            .iter()
-            .position(|f| f.id == feature_id)
-            .ok_or_else(|| anyhow::anyhow!("companion feature missing after add"))?;
+            None,
+        )?;
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(Some(&created.project_id), &created.feature_id)
+            .ok_or_else(|| anyhow::anyhow!("companion feature was removed"))?;
         self.store.projects[pi].collapsed = false;
         self.ensure_feature_running(pi, fi, StartIntent::Warn("the review agent"))?;
         self.save()?;
         self.log_info(
             "review",
             format!(
-                "Created companion review feature '{feature_name}' from '{base}' \
-                 ({} / {})",
-                agent.display_name(),
+                "Created companion review feature '{}' from '{}' ({} / {})",
+                created.name,
+                self.store.projects[pi].features[fi].branch,
+                setup.agent().display_name(),
                 setup.mode.display_name()
             ),
         );
-        Ok((feature_name, feature_id))
+        Ok((created.name, created.feature_id))
+    }
+
+    /// Create and register a stopped companion, retaining its stable identities
+    /// before an adapter chooses whether to start it. The exact hook is supplied
+    /// by the caller's confirmed config snapshot, rather than read again after
+    /// validation. The TUI retains its existing noninteractive hook policy.
+    pub(crate) fn register_review_companion(
+        &mut self,
+        source_id: &str,
+        spec: &ReviewCompanionSpec,
+        hook: Option<&crate::extension::HookConfig>,
+        hook_choice: Option<&str>,
+        require_hook_choice: bool,
+        expected_base_sha: Option<&str>,
+    ) -> Result<CreatedReviewCompanion> {
+        let plan = self.plan_review_companion(
+            source_id,
+            spec,
+            hook,
+            hook_choice,
+            require_hook_choice,
+            expected_base_sha,
+        )?;
+        let workdir = self.worktree.create_from(
+            &plan.repo,
+            &worktree_name(&plan.project_name, &plan.spec.branch),
+            &plan.spec.branch,
+            &plan.base_sha,
+        )?;
+        let mut created = self.register_created_review_companion(&plan, workdir.clone())?;
+        created.hook_warning = hook.and_then(|hook| {
+            let (ok, detail) = Self::run_worktree_hook_sync(hook.script(), &workdir, hook_choice);
+            (!ok).then(|| format!("Companion created, but its worktree hook failed: {}. The companion is kept for recovery.", detail.unwrap_or_else(|| "unknown error".into())))
+        });
+        if let Some(warning) = &created.hook_warning {
+            self.log_warn("review", warning.clone());
+            self.push_toast_warning(warning.clone());
+        }
+        Ok(created)
+    }
+
+    pub(crate) fn plan_review_companion(
+        &self,
+        source_id: &str,
+        spec: &ReviewCompanionSpec,
+        hook: Option<&crate::extension::HookConfig>,
+        hook_choice: Option<&str>,
+        require_hook_choice: bool,
+        expected_base_sha: Option<&str>,
+    ) -> Result<ReviewCompanionRegistration> {
+        let branch = spec.branch.trim();
+        if branch.is_empty() {
+            anyhow::bail!("Branch name cannot be empty");
+        }
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(None, source_id)
+            .ok_or_else(|| anyhow::anyhow!("The reviewed feature was deleted"))?;
+        let project = &self.store.projects[pi];
+        let source = &project.features[fi];
+        let project_id = project.id.clone();
+        let project_name = project.name.clone();
+        let repo = project.repo.clone();
+        let source_branch = source.branch.clone();
+        let source_workdir = source.workdir.clone();
+        if !project.is_git && self.worktree.repo_root(&repo).is_err() {
+            anyhow::bail!("A companion review feature needs a git repository");
+        }
+        if source_branch.trim().is_empty() || !branch_exists(&source_workdir, &source_branch) {
+            anyhow::bail!("The reviewed branch no longer exists");
+        }
+        if !self.allows_agent_for_repo(&repo, &spec.agent) {
+            anyhow::bail!(
+                "Harness '{}' is not allowed for this workspace",
+                spec.agent.display_name()
+            );
+        }
+        self.ensure_agent_mode_supported(&spec.agent, &spec.mode)?;
+        if project.features.iter().any(|feature| {
+            normalized_feature_name(&feature.name) == normalized_feature_name(branch)
+        }) || branch_exists(&source_workdir, branch)
+        {
+            anyhow::bail!("Feature or branch '{branch}' already exists");
+        }
+        if require_hook_choice {
+            super::automation::checked_hook_choice(
+                hook.and_then(|hook| hook.prompt()),
+                hook_choice,
+            )?;
+        }
+        let base_sha = rev_parse(&source_workdir, &source_branch)
+            .ok_or_else(|| anyhow::anyhow!("Cannot resolve the reviewed branch head"))?;
+        if expected_base_sha.is_some_and(|expected| expected != base_sha) {
+            anyhow::bail!(
+                "The reviewed branch head changed. Refresh the companion preview before creating it"
+            );
+        }
+        let copy_revision = companion_copy_revision(&repo, &base_sha)?;
+        Ok(ReviewCompanionRegistration {
+            project_id,
+            project_name,
+            repo,
+            source_id: source_id.into(),
+            source_branch,
+            source_workdir,
+            base_sha,
+            copy_revision,
+            spec: ReviewCompanionSpec {
+                branch: branch.into(),
+                ..spec.clone()
+            },
+        })
+    }
+
+    pub(crate) fn register_created_review_companion(
+        &mut self,
+        plan: &ReviewCompanionRegistration,
+        workdir: std::path::PathBuf,
+    ) -> Result<CreatedReviewCompanion> {
+        let ReviewCompanionRegistration {
+            project_id,
+            project_name,
+            repo,
+            source_id,
+            source_branch,
+            source_workdir,
+            spec,
+            ..
+        } = plan;
+        let branch = spec.branch.as_str();
+        let (pi, _) = self
+            .store
+            .locate_feature_by_id(Some(project_id), source_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Source removed; companion checkout retained at {}",
+                    workdir.display()
+                )
+            })?;
+        let mut feature = Feature::new_for_project(
+            project_name,
+            branch.to_string(),
+            branch.to_string(),
+            workdir.clone(),
+            true,
+            spec.mode.clone(),
+            spec.review,
+            false,
+            spec.agent.clone(),
+            spec.enable_chrome,
+            false,
+        );
+        let session_id = feature
+            .add_session_named(
+                crate::app::session_kind_for_agent(&spec.agent),
+                FINAL_REVIEW_SESSION_LABEL.into(),
+            )
+            .id
+            .clone();
+        feature.status = ProjectStatus::Stopped;
+        feature.review_source = Some(ReviewSource {
+            source_feature_id: source_id.into(),
+            target_branch: source_branch.clone(),
+            base_sha: plan.base_sha.clone(),
+        });
+        let feature_id = feature.id.clone();
+        self.store.projects[pi].features.push(feature.clone());
+        let saved = self.save_reapplying(|store| {
+            let Some((pi, fi)) = store.locate_feature_by_id(Some(project_id), source_id) else {
+                return false;
+            };
+            let project = &mut store.projects[pi];
+            if &project.repo != repo
+                || &project.features[fi].workdir != source_workdir
+                || &project.features[fi].branch != source_branch
+            {
+                return false;
+            }
+            if project.features.iter().any(|existing| {
+                existing.id != feature_id
+                    && normalized_feature_name(&existing.name) == normalized_feature_name(branch)
+            }) {
+                return false;
+            }
+            if !project
+                .features
+                .iter()
+                .any(|existing| existing.id == feature_id)
+            {
+                project.features.push(feature.clone());
+            }
+            true
+        });
+        if !matches!(saved, Ok(crate::app::ReapplyOutcome::Saved)) {
+            for project in &mut self.store.projects {
+                project.features.retain(|feature| feature.id != feature_id);
+            }
+            let reason = saved
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "Workspace changed before registration".into());
+            anyhow::bail!(
+                "{reason}. Created companion checkout retained at {} for recovery; no agent started",
+                workdir.display()
+            );
+        }
+        Ok(CreatedReviewCompanion {
+            project_id: project_id.clone(),
+            feature_id,
+            session_id,
+            name: branch.into(),
+            hook_warning: None,
+        })
+    }
+
+    /// Validate every setup document a destination start can read, including
+    /// existing feature agents brought up by the shared session-start engine.
+    pub(crate) fn preflight_feedback_agent_setup(
+        &self,
+        feature_id: &str,
+        next: &crate::project::AgentKind,
+    ) -> Result<()> {
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(None, feature_id)
+            .ok_or_else(|| anyhow::anyhow!("Destination feature was deleted"))?;
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        let mut agents = feature
+            .sessions
+            .iter()
+            .filter_map(|session| crate::app::session_ops::agent_for_session_kind(&session.kind))
+            .collect::<Vec<_>>();
+        if !agents.contains(next) {
+            agents.push(next.clone());
+        }
+        for agent in agents {
+            super::setup::preflight_harness_change_setup(
+                &feature.workdir,
+                &project.repo,
+                &[],
+                &agent,
+            )?;
+        }
+        Ok(())
     }
 
     /// A companion branch name not already taken by a feature or a git branch:
     /// `<source>-review-fixes`, then `-2`, `-3`, …
-    fn unique_review_branch(
+    pub(crate) fn unique_review_branch(
         &self,
         source_workdir: &std::path::Path,
         source_branch: &str,
@@ -784,5 +977,69 @@ mod tests {
             }
             _ => panic!("still in the overlay"),
         }
+    }
+    #[test]
+    fn tui_companion_registration_keeps_failed_hook_warning_visible_and_exact_base() {
+        let (dir, mut gui, source) = crate::gui_diff::tests::fixture();
+        let repo = dir.path().join("repo");
+        let expected = rev_parse(&repo, "feature").unwrap();
+        let checkout = dir.path().join("companion");
+        let mut worktree = MockWorktreeOps::new();
+        let expected_worker = expected.clone();
+        worktree
+            .expect_create_from()
+            .times(1)
+            .returning(move |_, _, branch, base| {
+                assert_eq!(base, expected_worker);
+                let output = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["worktree", "add", "-b", branch])
+                    .arg(&checkout)
+                    .arg(base)
+                    .output()?;
+                anyhow::ensure!(output.status.success(), "fixture checkout failed");
+                Ok(checkout.clone())
+            });
+        let app = gui.app_for_workflow();
+        app.worktree = std::sync::Arc::new(worktree);
+        let created = app
+            .register_review_companion(
+                &source.feature_id,
+                &ReviewCompanionSpec {
+                    branch: "tui-review-fixes".into(),
+                    agent: AgentKind::Claude,
+                    mode: VibeMode::SuperVibe,
+                    review: false,
+                    enable_chrome: false,
+                },
+                Some(&crate::extension::HookConfig::Script(
+                    "printf 'offline setup failed' >&2; exit 9".into(),
+                )),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        assert!(
+            created
+                .hook_warning
+                .as_deref()
+                .unwrap()
+                .contains("offline setup failed")
+        );
+        assert!(
+            app.toasts
+                .iter()
+                .any(|toast| toast.message.contains("offline setup failed")
+                    && matches!(toast.kind, crate::app::toast::ToastKind::Warning))
+        );
+        let (pi, fi) = app
+            .store
+            .locate_feature_by_id(None, &created.feature_id)
+            .unwrap();
+        let feature = &app.store.projects[pi].features[fi];
+        assert_eq!(feature.status, ProjectStatus::Stopped);
+        assert_eq!(feature.review_source.as_ref().unwrap().base_sha, expected);
     }
 }

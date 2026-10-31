@@ -185,42 +185,53 @@ impl WorktreeManager {
             bail!("git worktree add failed: {}", stderr.trim());
         }
 
-        // Merge .claude/settings.local.json into new worktree
-        let src_settings = repo.join(".claude").join("settings.local.json");
-        if src_settings.exists() {
-            let dest_dir = worktree_path.join(".claude");
-            let dest_settings = dest_dir.join("settings.local.json");
-            std::fs::create_dir_all(&dest_dir)?;
+        // Git has already created these resources. A settings error must not
+        // hide their identity or imply that retrying will start from scratch.
+        (|| -> Result<()> {
+            // Merge .claude/settings.local.json into new worktree
+            let src_settings = repo.join(".claude").join("settings.local.json");
+            if src_settings.exists() {
+                let dest_dir = worktree_path.join(".claude");
+                let dest_settings = dest_dir.join("settings.local.json");
+                std::fs::create_dir_all(&dest_dir)?;
 
-            let src: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&src_settings)?)?;
+                let src: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&src_settings)?)?;
 
-            let mut dest: serde_json::Value = if dest_settings.exists() {
-                std::fs::read_to_string(&dest_settings)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_else(|| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
+                let mut dest: serde_json::Value = if dest_settings.exists() {
+                    std::fs::read_to_string(&dest_settings)
+                        .ok()
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_else(|| serde_json::json!({}))
+                } else {
+                    serde_json::json!({})
+                };
 
-            if let (Some(src_obj), Some(dest_obj)) = (src.as_object(), dest.as_object_mut()) {
-                for (key, src_val) in src_obj {
-                    let entry = dest_obj
-                        .entry(key.clone())
-                        .or_insert_with(|| serde_json::json!({}));
-                    if let (Some(sv), Some(ev)) = (src_val.as_object(), entry.as_object_mut()) {
-                        for (k, v) in sv {
-                            ev.insert(k.clone(), v.clone());
+                if let (Some(src_obj), Some(dest_obj)) = (src.as_object(), dest.as_object_mut()) {
+                    for (key, src_val) in src_obj {
+                        let entry = dest_obj
+                            .entry(key.clone())
+                            .or_insert_with(|| serde_json::json!({}));
+                        if let (Some(sv), Some(ev)) = (src_val.as_object(), entry.as_object_mut()) {
+                            for (k, v) in sv {
+                                ev.insert(k.clone(), v.clone());
+                            }
+                        } else {
+                            *entry = src_val.clone();
                         }
-                    } else {
-                        *entry = src_val.clone();
                     }
                 }
-            }
 
-            std::fs::write(&dest_settings, serde_json::to_string_pretty(&dest)? + "\n")?;
-        }
+                std::fs::write(&dest_settings, serde_json::to_string_pretty(&dest)? + "\n")?;
+            }
+            Ok(())
+        })()
+        .with_context(|| {
+            format!(
+                "Created checkout {} on branch {}, but settings setup failed. The checkout and branch are retained for manual recovery; inspect git worktree list before retrying.",
+                worktree_path.display(), new_branch
+            )
+        })?;
 
         Ok(worktree_path)
     }

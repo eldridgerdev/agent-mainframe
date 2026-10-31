@@ -37,11 +37,14 @@ export default function CompanionIntegrationDialog({ target, onClose }: { target
     catch (e) { if (live.current) setError(asGuiError(e).message); }
     finally { pending.current = false; if (live.current) setBusy(false); }
   };
+  // The outcome was shown from the confirm call; discard the stored copy so a
+  // later reopen does not present it as current.
+  const drain = () => invoke("companion_integration_status", { target }).catch(() => undefined);
   const confirm = async () => {
     if (!plan || pending.current) return;
     pending.current = true; setBusy(true); setError(null);
-    try { const message = await invoke<string>("companion_integration_confirm", { target, choice: plan.choice, revision: plan.revision }); if (live.current) { setPlan(null); setResult(message); } }
-    catch (e) { if (live.current) { setPlan(null); setError(asGuiError(e).message); } }
+    try { const message = await invoke<string>("companion_integration_confirm", { target, choice: plan.choice, revision: plan.revision }); if (live.current) { setPlan(null); setResult(message); void drain(); } }
+    catch (e) { if (live.current) { setPlan(null); setError(asGuiError(e).message); void drain(); } }
     finally { pending.current = false; if (live.current) setBusy(false); }
   };
   return <Modal label="Integrate companion commits" title="Integrate companion commits" subtitle="Review the exact destination and commits before continuing." onClose={onClose} dismissable={!busy} size="lg" footer={<><button className="btn btn-secondary" disabled={busy} onClick={onClose}>Close</button><button className="btn btn-secondary" disabled={busy} onClick={() => void preview()}>{busy && <Spinner />} Preview integration</button>{plan && <button className="btn btn-primary" disabled={busy || (plan.choice === "cherry_pick" && (plan.source_dirty || plan.ignored_collisions.length > 0 || plan.hidden_tracked.length > 0))} onClick={() => void confirm()}>Confirm {plan.choice === "push" ? "push" : "cherry-pick"}</button>}</>}>

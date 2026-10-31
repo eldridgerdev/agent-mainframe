@@ -1687,7 +1687,9 @@ async fn pr_triage_act(
     )
 }
 
-// One integration per companion while any preview/confirmed operation runs.
+// A single global lock: only one preview/confirmed integration runs at a time,
+// because companions may share a source checkout or the GUI handle's Git work.
+// Status reports `running` for any key so every dialog shows the real state.
 static COMPANION_OPERATIONS: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::OnceLock::new();
 static COMPANION_RESULTS: std::sync::OnceLock<
@@ -1702,11 +1704,11 @@ struct CompanionOperationStatus {
 #[tauri::command]
 fn companion_integration_status(target: FeatureTarget) -> CompanionOperationStatus {
     let key = format!("{}:{}", target.project_id, target.feature_id);
-    let running = COMPANION_OPERATIONS
+    let running = !COMPANION_OPERATIONS
         .get_or_init(Default::default)
         .lock()
         .expect("operation mutex poisoned")
-        .contains(&key);
+        .is_empty();
     let mut results = COMPANION_RESULTS
         .get_or_init(Default::default)
         .lock()

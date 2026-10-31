@@ -36,6 +36,9 @@ use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{
     self, DormancyStopResult, DormancyView, DormantDeleteRequest, DormantObservation,
 };
+use agent_mainframe::gui_fork::{
+    self, ForkConfirmRequest, ForkOutcome, ForkPrepareRequest, ForkPreview, ForkStatus,
+};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
@@ -1583,6 +1586,53 @@ async fn dormancy_delete(
     response
 }
 
+// Forking reads a working-tree snapshot, creates a worktree and may run the
+// project's worktree hook, so every step runs on a blocking thread and the
+// module itself holds the handle lock only for short checks and registration.
+async fn fork_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("Fork operation stopped: {e}")))
+}
+
+#[tauri::command]
+async fn fork_prepare(
+    app: tauri::AppHandle,
+    request: ForkPrepareRequest,
+) -> Result<ForkPreview, GuiError> {
+    fork_blocking(app, move |gui| gui_fork::prepare(gui, request)).await?
+}
+
+#[tauri::command]
+async fn fork_confirm(
+    app: tauri::AppHandle,
+    request: ForkConfirmRequest,
+) -> Result<ForkOutcome, GuiError> {
+    let result = fork_blocking(app.clone(), move |gui| gui_fork::confirm(gui, request)).await?;
+    // On an error too: validation may have adopted another process's changes.
+    let snapshot = app
+        .state::<AppState>()
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
+    result
+}
+
+#[tauri::command]
+async fn fork_cancel(app: tauri::AppHandle, token: String) -> Result<ForkStatus, GuiError> {
+    fork_blocking(app, move |gui| gui_fork::cancel(gui, &token)).await?
+}
+
+#[tauri::command]
+async fn fork_status(app: tauri::AppHandle, token: String) -> Result<ForkStatus, GuiError> {
+    fork_blocking(app, move |gui| gui_fork::status(gui, &token)).await?
+}
+
 // PR Triage reads GitHub through `gh`, which can be slow or hang (network,
 // auth prompt, rate limit). Each step names its reads under the handle lock,
 // performs them on a blocking thread without it, then applies the results
@@ -2427,6 +2477,10 @@ fn main() {
             debug_log_load,
             dormancy_stop,
             dormancy_delete,
+            fork_prepare,
+            fork_confirm,
+            fork_cancel,
+            fork_status,
             pr_review_begin,
             pr_review_snapshot,
             pr_review_act,
@@ -2466,6 +2520,41 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::Attachments;
+
+    /// The shapes `forkApi.ts` sends and expects, through the same types the
+    /// Tauri commands (de)serialize, so a drifted field fails here and not at
+    /// the first click.
+    #[test]
+    fn fork_commands_use_the_wire_shapes_of_the_frontend_client() {
+        use agent_mainframe::gui_fork::{ForkConfirmRequest, ForkOutcome, ForkPrepareRequest};
+        let prepare: ForkPrepareRequest = serde_json::from_value(serde_json::json!({
+            "target": {"project_id": "p", "feature_id": "f"}, "session_id": "s"
+        }))
+        .unwrap();
+        assert_eq!(prepare.session_id.as_deref(), Some("s"));
+        let confirm: ForkConfirmRequest = serde_json::from_value(serde_json::json!({
+            "token": "t",
+            "expected": {"project_id": "p", "feature_id": "f", "session_id": null, "branch": "b", "head": "h"},
+            "new_branch": "n", "agent": "codex", "include_context": false,
+            "hook_choice": "Continue", "start_agent": true, "approve_resources": true
+        }))
+        .unwrap();
+        assert!(confirm.start_agent && confirm.approve_resources);
+        assert!(
+            serde_json::from_value::<ForkConfirmRequest>(serde_json::json!({"token": "t"}))
+                .is_err()
+        );
+        let cancelled = serde_json::to_value(ForkOutcome::Cancelled {
+            message: "m".into(),
+        })
+        .unwrap();
+        assert_eq!(cancelled["status"], "cancelled");
+        let error = serde_json::to_value(agent_mainframe::gui_contract::GuiError::from(
+            anyhow::anyhow!("boom"),
+        ))
+        .unwrap();
+        assert_eq!(error["kind"], "internal");
+    }
 
     #[test]
     fn a_stale_detach_leaves_the_newer_attachment_in_place() {

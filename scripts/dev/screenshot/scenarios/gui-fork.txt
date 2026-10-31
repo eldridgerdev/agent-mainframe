@@ -1,0 +1,6 @@
+# Native desktop fork proof uses a private SQLite store and Git repository.
+# The fork is created stopped; no agent or harness is ever started.
+note:The empty isolated TUI confirms the screenshot harness is ready before native fork proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-fork.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

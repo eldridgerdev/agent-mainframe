@@ -339,6 +339,7 @@ pub struct GuiHandle {
     pub(crate) pr_review_context: Option<crate::gui_pr_review::PrReviewContext>,
     pub(crate) pr_triage_context: Option<crate::gui_pr_triage::PrTriageContext>,
     pub(crate) pr_workspace_context: Option<crate::gui_pr_workspace::PrWorkspaceContext>,
+    pub(crate) fork: crate::gui_fork::ForkState,
 }
 
 impl GuiHandle {
@@ -352,6 +353,7 @@ impl GuiHandle {
             pr_triage_context: None,
             pr_workspace_context: None,
             pr_review_context: None,
+            fork: Default::default(),
         })
     }
 
@@ -371,6 +373,7 @@ impl GuiHandle {
             pr_triage_context: None,
             pr_workspace_context: None,
             pr_review_context: None,
+            fork: Default::default(),
         }
     }
 
@@ -2131,6 +2134,7 @@ mod tests {
             pr_triage_context: None,
             pr_workspace_context: None,
             pr_review_context: None,
+            fork: Default::default(),
         }
     }
 
@@ -2157,6 +2161,7 @@ mod tests {
             pr_triage_context: None,
             pr_workspace_context: None,
             pr_review_context: None,
+            fork: Default::default(),
         }
     }
 
@@ -4300,6 +4305,7 @@ mod tests {
             pr_triage_context: None,
             pr_workspace_context: None,
             pr_review_context: None,
+            fork: Default::default(),
         }
     }
 
@@ -4500,6 +4506,7 @@ mod tests {
                 pr_triage_context: None,
                 pr_workspace_context: None,
                 pr_review_context: None,
+                fork: Default::default(),
             },
             CreateFeatureRequest {
                 no_start: false,

@@ -154,6 +154,18 @@ shares its window launch with the TUI's add. `with_feature_started_for_add`
 stops a feature that an add started, if the add then fails, for terminals,
 editors and custom sessions alike.
 
+`gui_fork.rs` sequences the shared fork foundation (`fork_snapshot`:
+snapshot, transfer, `populate`; `transcript::CapturedContext`;
+`WorktreeOps::create_fork_base`) for the desktop. `prepare` captures the
+snapshot and exact-session transcript off the GUI lock and stores them under a
+single-use token; `confirm` must echo the previewed project, feature, session,
+branch and HEAD, re-verifies them, then creates, populates, registers the
+feature stopped, runs the worktree hook (cancellable) and only then, if asked,
+starts the harness through `ensure_feature_running`. Outcomes (`Created`,
+`Cancelled`, `Failed` with the retained checkout) are recorded per token so a
+repeat confirm never forks twice. The TUI's `F` path in `app/feature_ops.rs`
+shares `fork_snapshot::populate`, `ProjectSettings` and `remove_checkout`.
+
 `gui_dormancy.rs` lists the shared `app::dormant` scan with the readings
 each row was decided on. Its confirmed stop re-checks every selected feature
 against those readings and the current scan, then calls the TUI's stop

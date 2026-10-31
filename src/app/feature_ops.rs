@@ -2457,57 +2457,26 @@ impl App {
 
         state.snapshot.validate()?;
         let context = if include_context {
-            anyhow::ensure!(
-                !state.snapshot.touches(Path::new(".claude/context.md")),
-                "Fork source changed .claude/context.md; disable context to preserve that file"
-            );
+            crate::fork_snapshot::ensure_context_does_not_collide(&state.snapshot)?;
             let session = state.source_claude_session_id.as_deref().ok_or_else(|| anyhow::anyhow!("No Claude transcript is bound to the selected session; press Tab to fork without context"))?;
-            Some(crate::transcript::CapturedContext::capture(
-                &source_workdir,
-                session,
-            )?)
+            Some(
+                crate::transcript::CapturedContext::capture(&source_workdir, session)
+                    .map_err(|err| anyhow::anyhow!("{err:#}; press Tab to fork without context"))?,
+            )
         } else {
             None
         };
-        let settings_path = project_repo
-            .canonicalize()?
-            .join(".claude/settings.local.json");
-        let settings = match std::fs::symlink_metadata(&settings_path) {
-            Ok(_) => {
-                let bytes =
-                    crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?;
-                let _: serde_json::Value = serde_json::from_slice(&bytes)?;
-                Some(bytes)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => return Err(err.into()),
-        };
-        // A repo-root source's changed settings file *is* the project settings
-        // being merged, so the copy cannot differ from what the snapshot carries.
-        let source_is_repo_root = matches!(
-            (source_workdir.canonicalize(), project_repo.canonicalize()),
-            (Ok(a), Ok(b)) if a == b
-        );
-        anyhow::ensure!(
-            settings.is_none()
-                || source_is_repo_root
-                || !state
-                    .snapshot
-                    .touches(Path::new(".claude/settings.local.json")),
-            "Fork source changed .claude/settings.local.json; refusing to overwrite it with project settings"
-        );
+        let settings = crate::fork_snapshot::ProjectSettings::read(&project_repo)?;
+        crate::fork_snapshot::ensure_no_generated_collisions(
+            &state.snapshot,
+            &settings,
+            &source_workdir,
+            &project_repo,
+        )?;
         if let Some(context) = &context {
             context.validate()?;
         }
-        match (&settings, std::fs::symlink_metadata(&settings_path)) {
-            (Some(bytes), Ok(_)) => anyhow::ensure!(
-                crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?
-                    == *bytes,
-                "Project settings changed; prepare fork again"
-            ),
-            (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => (),
-            _ => anyhow::bail!("Project settings changed; prepare fork again"),
-        }
+        settings.verify()?;
         state.snapshot.validate()?;
         let workdir = self.worktree.create_fork_base(
             &project_repo,
@@ -2515,69 +2484,26 @@ impl App {
             &new_branch,
             &state.snapshot.head,
         )?;
-        let prepare = || -> Result<()> {
-            state.snapshot.transfer(&workdir)?;
-            match (&settings, std::fs::symlink_metadata(&settings_path)) {
-                (Some(bytes), Ok(_)) => anyhow::ensure!(
-                    crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?
-                        == *bytes,
-                    crate::fork_snapshot::SourceChanged(
-                        "Project settings changed during fork".into()
-                    )
-                ),
-                (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => (),
-                _ => {
-                    return Err(crate::fork_snapshot::SourceChanged(
-                        "Project settings changed during fork".into(),
-                    )
-                    .into());
-                }
-            }
-            if let Some(bytes) = settings.as_deref() {
-                crate::fork_snapshot::merge_settings(&workdir, bytes)?;
-            }
-            if let Some(context) = context.as_ref() {
-                context.validate().map_err(|err| {
-                    anyhow::Error::new(crate::fork_snapshot::SourceChanged(format!("{err:#}")))
-                })?;
-                crate::fork_snapshot::write_auxiliary(
-                    &workdir,
-                    Path::new(".claude/context.md"),
-                    context.markdown.as_bytes(),
-                )?;
-            }
-            Ok(())
-        };
-        if let Err(err) = prepare() {
+        if let Err(err) =
+            crate::fork_snapshot::populate(&workdir, &state.snapshot, &settings, context.as_ref())
+        {
             // A live agent keeps editing, so a source that moved on is
             // expected; leaving the checkout behind would block retrying.
             // Any other failure may involve content we did not write, so the
             // checkout stays for inspection.
-            if !err
-                .chain()
-                .any(|cause| cause.is::<crate::fork_snapshot::SourceChanged>())
-            {
+            if !crate::fork_snapshot::is_source_changed(&err) {
                 return Err(anyhow::anyhow!(
                     "Fork setup failed: {err:#}. Checkout retained at {}; branch {:?}; no agent started",
                     workdir.display(),
                     new_branch
                 ));
             }
-            let removed = self
-                .worktree
-                .remove(&project_repo, &workdir)
-                .and_then(|()| {
-                    let out = std::process::Command::new("git")
-                        .args(["branch", "-D", &new_branch])
-                        .current_dir(&project_repo)
-                        .output()?;
-                    anyhow::ensure!(
-                        out.status.success(),
-                        "git branch -D failed: {}",
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    );
-                    Ok(())
-                });
+            let removed = crate::fork_snapshot::remove_checkout(
+                self.worktree.as_ref(),
+                &project_repo,
+                &workdir,
+                &new_branch,
+            );
             return Err(match removed {
                 Ok(()) => anyhow::anyhow!(
                     "Fork setup failed: {err:#}. Checkout removed; no agent started"

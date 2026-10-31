@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Fork a feature from the desktop app.** *More feature actions → Fork
+  feature…* previews the uncommitted changes that will be copied, states that Git
+  staging is not copied, and says exactly why the conversation can or cannot be
+  included (only Claude Code sessions export a transcript). Confirmation is bound
+  to the source feature, session, branch and HEAD you saw: if any of them moved,
+  the fork is refused and you prepare it again. The fork is registered stopped;
+  its agent starts only if you leave *Start the agent after forking* on, after
+  the usual harness and resource checks. A failure reports the checkout and
+  branch that were kept. The TUI's `F` keeps its keys and now shares the same
+  fork population code.
 - **Integrate PR Triage companion fixes from the desktop.** A companion feature
   created for a PR now offers the same explicit preview and confirmation as
   Final Review companions: cherry-pick into the triage source checkout, or
@@ -25,12 +35,6 @@ are tagged.
 - `amf automation create-feature` accepts `existing_worktree` to build a feature
   on an existing git worktree, like the wizard's existing-worktree source. The
   `Worktree path already exists` error now tells callers to use it for registered worktrees.
-
-- **Integrate Final Review companion commits from the desktop.** Preview the
-  exact commits and destination, then explicitly cherry-pick them into the
-  linked source checkout or push them to its origin branch. Changed previews,
-  dirty sources and ignored files that could be overwritten are refused.
-  Uncommitted companion changes are excluded.
 
 - **Choose where desktop Final Review feedback goes.** Select the current
   session, a dedicated review agent, another feature session or a new companion

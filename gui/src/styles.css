@@ -1695,3 +1695,16 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .debug-log-info strong { color: var(--green); }
 .debug-log-warn strong { color: var(--amber); }
 .debug-log-error strong { color: var(--red); }
+
+/* Fork feature dialog */
+.fork-form { border: 0; margin: 0; padding: 0; display: grid; gap: 12px; min-width: 0; }
+.fork-source { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0; }
+.fork-changes h4 { margin: 0 0 6px; font-size: 13px; }
+.fork-changes ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 180px; overflow: auto; }
+.fork-changes li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.fork-changes code { overflow-wrap: anywhere; }
+.fork-kind { flex: none; }
+.fork-kind-deleted { color: var(--red); }
+.fork-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0 0; }
+.fork-facts dt { color: var(--text-muted, inherit); }
+.fork-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }

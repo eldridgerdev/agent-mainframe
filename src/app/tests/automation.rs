@@ -1061,7 +1061,10 @@ fn create_feature_automation_attaches_existing_worktree() {
     let response = app.create_feature_from_request(&request).unwrap();
     assert!(response.ok);
     let feature = &app.store.projects[0].features[0];
-    assert_eq!(feature.workdir, wt);
+    assert_eq!(
+        feature.workdir.canonicalize().unwrap(),
+        wt.canonicalize().unwrap()
+    );
     assert!(feature.is_worktree);
     assert_eq!(feature.name, "feature-on-side");
     assert_eq!(feature.branch, "side");

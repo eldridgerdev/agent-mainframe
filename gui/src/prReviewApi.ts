@@ -1,16 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DiffFile } from "./api";
+import type { DiffFile, ReviewSeverity, ReviewSpan } from "./api";
+
+/** A saved line thread; `inline` false means it will be folded into the summary (see `note`). */
+export type PrReviewThread = ReviewSpan & {
+  side: "LEFT" | "RIGHT"; start_side: "LEFT" | "RIGHT" | null; editable: boolean; anchor: string; text: string;
+  severity: ReviewSeverity; resolved: boolean; anchor_lost: boolean; suggestion: string | null; inline: boolean; note: string | null;
+};
 
 export interface PrReviewView {
   workflow_id: string;
   revision: number;
   project_name: string;
+  head_sha: string | null;
   stage: "pick" | "review";
   entries: { number: number; title: string; author: string; head_ref: string; is_draft: boolean; has_draft: boolean; updated: boolean }[];
   loading: boolean;
   number: number | null;
   title: string | null;
-  files: { diff: DiffFile; comment: string }[];
+  files: { diff: DiffFile; comment: string; line_comments: PrReviewThread[]; pr_lines: { old_line: number | null; new_line: number | null; hunk: number }[] }[];
   summary: string;
   submission: {
     event: string; body: string;
@@ -25,6 +32,9 @@ export type PrReviewAction =
   | { kind: "retry" | "back" | "close" | "cancel_submit" | "confirm_submit" | "reopen" }
   | { kind: "open"; number: number }
   | { kind: "file_comment"; path: string; text: string }
+  | (ReviewSpan & { kind: "line_comment"; path: string; text: string; severity: ReviewSeverity })
+  | (ReviewSpan & { kind: "suggestion"; path: string; text: string })
+  | (ReviewSpan & { kind: "toggle_line_resolved"; path: string })
   | { kind: "summary"; text: string }
   | { kind: "preview"; event: string };
 export const prReviewBegin = (projectId: string): Promise<PrReviewView> => invoke("pr_review_begin", { projectId });

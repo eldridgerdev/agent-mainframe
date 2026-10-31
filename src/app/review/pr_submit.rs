@@ -123,6 +123,26 @@ pub(crate) fn build_pr_submission(state: &DiffViewerState) -> PrSubmission {
     }
 }
 
+/// For each file, whether each of its line comments (in order) would post
+/// inline on the PR diff rather than being folded into the summary, by the
+/// same rule [`build_pr_submission`] uses.
+pub(crate) fn pr_inline_flags(
+    state: &DiffViewerState,
+) -> std::collections::HashMap<String, Vec<bool>> {
+    let postable = pr_postable_lines(&state.files);
+    state
+        .line_comments
+        .iter()
+        .map(|(path, comments)| {
+            let flags = comments
+                .iter()
+                .map(|c| inline_position(c, postable.get(path)).is_some())
+                .collect();
+            (path.clone(), flags)
+        })
+        .collect()
+}
+
 /// One folded comment: where it was, why it isn't inline, and what it says.
 /// A suggestion is kept as a plain code block (a `suggestion` block only
 /// works on a diff line).

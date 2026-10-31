@@ -1006,7 +1006,7 @@ pub fn act(
     snapshot(gui).map(Some)
 }
 
-fn set_span(
+pub(crate) fn set_span(
     state: &mut DiffViewerState,
     start: DiffLineLocation,
     end: DiffLineLocation,

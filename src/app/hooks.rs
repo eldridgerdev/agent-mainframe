@@ -15,13 +15,6 @@ impl App {
         let Some(id) = id else {
             return Ok(());
         };
-        if let (Some(db), Some(version)) = (&self.db, self.store_version) {
-            anyhow::ensure!(
-                db.current_store_version()? == version,
-                "Workspace changed while the fork hook was pending; checkout retained at {}",
-                workdir.display()
-            );
-        }
         let (pi, fi) = self.store.locate_feature_by_id(None, id).ok_or_else(|| {
             anyhow::anyhow!(
                 "Fork feature disappeared; checkout retained at {}",

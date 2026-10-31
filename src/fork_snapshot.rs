@@ -13,6 +13,19 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+/// The live source moved on after it was captured. A fork checkout created
+/// from the stale capture holds nothing worth keeping.
+#[derive(Debug)]
+pub(crate) struct SourceChanged(pub(crate) String);
+
+impl std::fmt::Display for SourceChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SourceChanged {}
+
 fn git_command(root: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(root).env("GIT_OPTIONAL_LOCKS", "0");
@@ -221,36 +234,75 @@ fn paths(status: &[u8]) -> Result<Vec<PathBuf>> {
 // Git deliberately omits untracked FIFOs, sockets, and devices from status.
 // Enumerate directories without following links, consulting Git's own ignore
 // rules before descending so ignored build trees are not treated as fork data.
-fn ignored(root: &Path, path: &Path) -> Result<bool> {
-    use std::process::Stdio;
-    let mut child = git_command(root)
-        .args(["check-ignore", "--no-index", "-q", "-z", "--stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut input = child.stdin.take().context("Missing git stdin")?;
-    let sent = input
-        .write_all(path.as_os_str().as_bytes())
-        .and_then(|()| input.write_all(&[0]));
-    drop(input);
-    let out = child.wait_with_output()?;
-    sent.context("Cannot send path to git check-ignore")?;
-    match out.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => bail!(
-            "Cannot evaluate ignore rules for {:?}: {}",
-            path,
-            String::from_utf8_lossy(&out.stderr)
-        ),
+/// One long-lived `git check-ignore` per walk instead of one process per
+/// directory: each query writes a path and reads back its verbose record.
+struct IgnoreChecker {
+    root: PathBuf,
+    process: Option<(
+        std::process::Child,
+        std::process::ChildStdin,
+        io::BufReader<std::process::ChildStdout>,
+    )>,
+}
+
+impl IgnoreChecker {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            process: None,
+        }
+    }
+
+    fn ignored(&mut self, path: &Path) -> Result<bool> {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        if self.process.is_none() {
+            let mut child = git_command(&self.root)
+                .args(["check-ignore", "--no-index", "-v", "-n", "-z", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()?;
+            let stdin = child.stdin.take().context("Missing git stdin")?;
+            let stdout = io::BufReader::new(child.stdout.take().context("Missing git stdout")?);
+            self.process = Some((child, stdin, stdout));
+        }
+        let (_, stdin, stdout) = self.process.as_mut().expect("spawned above");
+        stdin
+            .write_all(path.as_os_str().as_bytes())
+            .and_then(|()| stdin.write_all(&[0]))
+            .and_then(|()| stdin.flush())
+            .with_context(|| format!("Cannot evaluate ignore rules for {:?}", path))?;
+        // Record: source, line number, pattern, pathname, each NUL-terminated.
+        let mut fields: [Vec<u8>; 4] = Default::default();
+        for field in &mut fields {
+            stdout
+                .read_until(0, field)
+                .with_context(|| format!("Cannot evaluate ignore rules for {:?}", path))?;
+            ensure!(
+                field.pop() == Some(0),
+                "Cannot evaluate ignore rules for {:?}: git check-ignore ended early",
+                path
+            );
+        }
+        let pattern = &fields[2];
+        Ok(!pattern.is_empty() && !pattern.starts_with(b"!"))
+    }
+}
+
+impl Drop for IgnoreChecker {
+    fn drop(&mut self) {
+        if let Some((mut child, stdin, _)) = self.process.take() {
+            drop(stdin);
+            let _ = child.wait();
+        }
     }
 }
 
 // libc stat field widths differ by platform; the casts are needed on macOS.
 #[allow(clippy::unnecessary_cast)]
 fn check_special_entries(
-    root: &Path,
+    checker: &mut IgnoreChecker,
     directory: &File,
     prefix: &Path,
     gitlinks: &BTreeSet<PathBuf>,
@@ -305,12 +357,15 @@ fn check_special_entries(
             continue;
         }
         if n.as_bytes() == b".git" {
-            ensure!(
-                prefix.as_os_str().is_empty(),
-                "Nested Git checkout is not supported: {:?}",
-                prefix
-            );
-            continue;
+            if prefix.as_os_str().is_empty() {
+                continue;
+            }
+            // AMF keeps its own linked worktrees under `<repo>/.worktrees/`;
+            // they are separate checkouts, not content of this one.
+            if prefix.starts_with(".worktrees") {
+                return Ok(());
+            }
+            bail!("Nested Git checkout is not supported: {:?}", prefix);
         }
         let path = prefix.join(OsString::from_vec(n.as_bytes().to_vec()));
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -340,14 +395,14 @@ fn check_special_entries(
             continue;
         }
         if kind == libc::S_IFDIR {
-            if !gitlinks.contains(&path) && (reject_ignored || !ignored(root, &path)?) {
+            if !gitlinks.contains(&path) && (reject_ignored || !checker.ignored(&path)?) {
                 let child = open_dir_at(directory, &n)
                     .with_context(|| format!("Cannot enumerate {:?}", path))?;
-                check_special_entries(root, &child, &path, gitlinks, reject_ignored, excluded)?;
+                check_special_entries(checker, &child, &path, gitlinks, reject_ignored, excluded)?;
             }
         } else if kind != libc::S_IFREG
             && kind != libc::S_IFLNK
-            && (reject_ignored || !ignored(root, &path)?)
+            && (reject_ignored || !checker.ignored(&path)?)
         {
             bail!("Unsupported fork entry {:?}", path);
         }
@@ -535,7 +590,14 @@ impl Snapshot {
         let changed = paths(&before.status)?;
         let gitlinks = check_supported(&root, &changed)?;
         let dir = File::open(&root)?;
-        check_special_entries(&root, &dir, Path::new(""), &gitlinks, false, excluded)?;
+        check_special_entries(
+            &mut IgnoreChecker::new(&root),
+            &dir,
+            Path::new(""),
+            &gitlinks,
+            false,
+            excluded,
+        )?;
         let spool = tempfile::tempdir().context("Cannot create fork snapshot spool")?;
         let mut entries = Vec::new();
         for (i, path) in changed.into_iter().enumerate() {
@@ -563,6 +625,11 @@ impl Snapshot {
     }
 
     fn validate_excluding(&self, excluded: Option<(&Path, u64, u64)>) -> Result<()> {
+        self.check_unchanged(excluded)
+            .map_err(|err| anyhow::Error::new(SourceChanged(format!("{err:#}"))))
+    }
+
+    fn check_unchanged(&self, excluded: Option<(&Path, u64, u64)>) -> Result<()> {
         ensure!(
             self.fingerprint == fingerprint_excluding(&self.root, excluded.map(|e| e.0))?,
             "Fork source changed; prepare it again"
@@ -928,7 +995,7 @@ impl Snapshot {
         );
         let root = File::open(&destination)?;
         check_special_entries(
-            &destination,
+            &mut IgnoreChecker::new(&destination),
             &root,
             Path::new(""),
             &dest_gitlinks,
@@ -1488,6 +1555,42 @@ mod tests {
             fs::read(dest.join(".worktrees/other/user-file")).unwrap(),
             b"keep"
         );
+    }
+
+    #[test]
+    fn linked_worktree_under_dot_worktrees_is_not_a_nested_checkout() {
+        let dir = fixture();
+        let root = dir.path();
+        let other = root.join(".worktrees/other");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "other",
+                other.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        fs::write(root.join("old name"), b"changed").unwrap();
+        let snapshot = Snapshot::capture(root).unwrap();
+        let dest = root.join(".worktrees/fork");
+        run(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "fork",
+                dest.to_str().unwrap(),
+                "HEAD",
+            ],
+        );
+        snapshot.transfer(&dest).unwrap();
+        assert_eq!(fs::read(dest.join("old name")).unwrap(), b"changed");
     }
 
     #[test]

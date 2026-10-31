@@ -2403,7 +2403,9 @@ impl App {
                 && source.agent == state.source_agent
                 && source.tmux_session == state.source_tmux_session
                 && source.is_worktree == state.source_is_worktree
-                && source.status == state.source_status
+                // Idle/Active flip as the agent works; only liveness matters.
+                && (source.status == ProjectStatus::Stopped)
+                    == (state.source_status == ProjectStatus::Stopped)
                 && source.mode == mode
                 && source.review == review
                 && source.enable_chrome == enable_chrome
@@ -2480,8 +2482,15 @@ impl App {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => return Err(err.into()),
         };
+        // A repo-root source's changed settings file *is* the project settings
+        // being merged, so the copy cannot differ from what the snapshot carries.
+        let source_is_repo_root = matches!(
+            (source_workdir.canonicalize(), project_repo.canonicalize()),
+            (Ok(a), Ok(b)) if a == b
+        );
         anyhow::ensure!(
             settings.is_none()
+                || source_is_repo_root
                 || !state
                     .snapshot
                     .touches(Path::new(".claude/settings.local.json")),
@@ -2512,16 +2521,25 @@ impl App {
                 (Some(bytes), Ok(_)) => anyhow::ensure!(
                     crate::screenshot_evidence::read_bounded(&settings_path, 16 * 1024 * 1024)?
                         == *bytes,
-                    "Project settings changed during fork"
+                    crate::fork_snapshot::SourceChanged(
+                        "Project settings changed during fork".into()
+                    )
                 ),
                 (None, Err(err)) if err.kind() == std::io::ErrorKind::NotFound => (),
-                _ => anyhow::bail!("Project settings changed during fork"),
+                _ => {
+                    return Err(crate::fork_snapshot::SourceChanged(
+                        "Project settings changed during fork".into(),
+                    )
+                    .into());
+                }
             }
             if let Some(bytes) = settings.as_deref() {
                 crate::fork_snapshot::merge_settings(&workdir, bytes)?;
             }
             if let Some(context) = context.as_ref() {
-                context.validate()?;
+                context.validate().map_err(|err| {
+                    anyhow::Error::new(crate::fork_snapshot::SourceChanged(format!("{err:#}")))
+                })?;
                 crate::fork_snapshot::write_auxiliary(
                     &workdir,
                     Path::new(".claude/context.md"),
@@ -2530,7 +2548,47 @@ impl App {
             }
             Ok(())
         };
-        prepare().map_err(|err| anyhow::anyhow!("Fork setup failed: {err:#}. Checkout retained at {}; branch {:?}; no agent started", workdir.display(), new_branch))?;
+        if let Err(err) = prepare() {
+            // A live agent keeps editing, so a source that moved on is
+            // expected; leaving the checkout behind would block retrying.
+            // Any other failure may involve content we did not write, so the
+            // checkout stays for inspection.
+            if !err
+                .chain()
+                .any(|cause| cause.is::<crate::fork_snapshot::SourceChanged>())
+            {
+                return Err(anyhow::anyhow!(
+                    "Fork setup failed: {err:#}. Checkout retained at {}; branch {:?}; no agent started",
+                    workdir.display(),
+                    new_branch
+                ));
+            }
+            let removed = self
+                .worktree
+                .remove(&project_repo, &workdir)
+                .and_then(|()| {
+                    let out = std::process::Command::new("git")
+                        .args(["branch", "-D", &new_branch])
+                        .current_dir(&project_repo)
+                        .output()?;
+                    anyhow::ensure!(
+                        out.status.success(),
+                        "git branch -D failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                    Ok(())
+                });
+            return Err(match removed {
+                Ok(()) => anyhow::anyhow!(
+                    "Fork setup failed: {err:#}. Checkout removed; no agent started"
+                ),
+                Err(cleanup) => anyhow::anyhow!(
+                    "Fork setup failed: {err:#}. Cleanup failed ({cleanup:#}); checkout retained at {}; branch {:?}; no agent started",
+                    workdir.display(),
+                    new_branch
+                ),
+            });
+        }
 
         // Record the stopped checkout before a hook prompt can be cancelled.
         let feature = Feature::new_for_project(
@@ -2577,6 +2635,7 @@ impl App {
                     new_branch
                 )
             })?;
+        self.store.projects[pi].collapsed = false;
         self.selection = Selection::Feature(pi, fi);
 
         // Check for lifecycle hooks

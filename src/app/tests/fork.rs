@@ -154,6 +154,44 @@ fn fork_transfer_failure_retains_checkout_without_registering_or_starting() {
 }
 
 #[test]
+fn fork_removes_checkout_and_branch_when_source_changes_mid_fork() {
+    let repo = fixture();
+    let source = repo.path().to_path_buf();
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_create_fork_base()
+        .times(1)
+        .returning(move |repo, name, branch, commit| {
+            let path = WorktreeManager::create_fork_base(repo, name, branch, commit)?;
+            std::fs::write(source.join("edited-by-live-agent"), b"new")?;
+            Ok(path)
+        });
+    worktree
+        .expect_remove()
+        .times(1)
+        .returning(WorktreeManager::remove);
+    let mut app = app(&repo, worktree);
+    app.start_fork_feature();
+    if let AppMode::ForkingFeature(state) = &mut app.mode {
+        state.include_context = false;
+    }
+    let error = app.create_forked_feature().unwrap_err().to_string();
+    assert!(error.contains("Checkout removed"), "{error}");
+    let dest = repo
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".worktrees/my-feat-fork");
+    assert!(!dest.exists());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", "my-feat-fork"])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(branches.stdout.is_empty());
+}
+
+#[test]
 fn fork_registration_conflict_retains_checkout_without_starting() {
     let repo = fixture();
     let db_dir = TempDir::new().unwrap();

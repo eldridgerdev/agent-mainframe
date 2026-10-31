@@ -161,17 +161,6 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
           onClick={() => setPath(f.diff.path)}>{f.diff.path}<small>+{f.diff.additions} −{f.diff.deletions}</small></button>)}</nav>
         <section className="diff-content" aria-label="File diff">{file && <>
           <strong>{file.diff.path}</strong>
-          {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
-            {file.line_comments.map((thread, index) => <div key={index}>
-              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} · {thread.side} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
-              {thread.suggestion !== null && <pre>{thread.suggestion}</pre>}
-              {thread.note && <p className="muted small">{thread.note}</p>}
-              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("line_comment", thread)}>Edit line comment</button>
-              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("suggestion", thread)}>Edit suggestion</button>
-              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable}
-                onClick={() => void act({ kind: "toggle_line_resolved", path: file.diff.path, start: thread.start, end: thread.end })}>{thread.resolved ? "Reopen thread" : "Resolve thread"}</button>
-            </div>)}
-          </details>}
           {!file.diff.is_binary && lines.length > 0 && <div className="review-line-controls">
             <p className="muted small">Click a line number to select it; Shift-click another to select a range inside one hunk. Base-only (removed) lines comment on the base side.</p>
             {span && <p>Selected {locationLabel(span.start)} – {locationLabel(span.end)}</p>}
@@ -192,6 +181,17 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
           </form>}
           <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} selection={{ disabled: locked || editorDirty, select: selectLine,
             contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
+          {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
+            {file.line_comments.map((thread, index) => <div key={index}>
+              <p>{thread.anchor} · {thread.side === "LEFT" ? "base" : "current"} · {thread.side} [{thread.severity}] {thread.text}{thread.resolved && " (resolved)"}{thread.anchor_lost && " (anchor lost)"}</p>
+              {thread.suggestion !== null && <pre>{thread.suggestion}</pre>}
+              {thread.note && <p className="muted small">{thread.note}</p>}
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("line_comment", thread)}>Edit line comment</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable} onClick={() => editSpan("suggestion", thread)}>Edit suggestion</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dirty || !thread.editable}
+                onClick={() => void act({ kind: "toggle_line_resolved", path: file.diff.path, start: thread.start, end: thread.end })}>{thread.resolved ? "Reopen thread" : "Resolve thread"}</button>
+            </div>)}
+          </details>}
         </>}</section>
       </div>
       {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>

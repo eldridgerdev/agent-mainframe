@@ -13,15 +13,16 @@ const base: PrReviewView = {
   number: null, title: null, files: [], summary: "", submission: null, error: null, notice: null,
 };
 const review: PrReviewView = { ...base, stage: "review", number: 9, title: "Teammate change", files: [{
-  diff: { path: "lib.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, hunks: [], patch: "-old\n+new" }, comment: "", line_comments: [],
+  diff: { path: "lib.rs", old_path: null, status: "modified", additions: 1, deletions: 1, is_binary: false, hunks: [], patch: "-old\n+new" }, comment: "", line_comments: [], pr_lines: [],
 }] };
 const line = (kind: "context" | "added" | "removed", old_line: number | null, new_line: number | null, text: string) => ({ kind, old_line, new_line, text });
 const HUNKS = [
   { header: "@@ -5,3 +5,3 @@", lines: [line("context", 5, 5, " five"), line("removed", 6, null, "-six"), line("added", null, 6, "+SIX"), line("context", 7, 7, " seven")] },
   { header: "@@ -30,2 +30,2 @@", lines: [line("context", 30, 30, " thirty"), line("added", null, 31, "+late")] },
 ];
+const prLines = HUNKS.flatMap((h, hunk) => h.lines.map((l) => ({ old_line: l.old_line, new_line: l.new_line, hunk })));
 const withHunks = (threads: PrReviewView["files"][0]["line_comments"] = []): PrReviewView => ({ ...review,
-  files: [{ ...review.files[0], diff: { ...review.files[0].diff, hunks: HUNKS }, line_comments: threads }] });
+  files: [{ ...review.files[0], diff: { ...review.files[0].diff, hunks: HUNKS }, line_comments: threads, pr_lines: prLines }] });
 const loc = (old_line: number | null, new_line: number | null) => ({ old_line, new_line });
 const pick = (label: string, shift = false) => fireEvent.click(screen.getByRole("button", { name: label }), { shiftKey: shift });
 const thread = (over: Partial<PrReviewView["files"][0]["line_comments"][0]> = {}) => ({

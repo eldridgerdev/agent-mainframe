@@ -1179,7 +1179,18 @@ mod tests {
             text.replace("line 19\n", "late change\n"),
         )
         .unwrap();
-        git(&wt, &["commit", "-am", "second hunk"]);
+        git(
+            &wt,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-am",
+                "second hunk",
+            ],
+        );
         git(
             &repo,
             &["worktree", "remove", "--force", wt.to_str().unwrap()],

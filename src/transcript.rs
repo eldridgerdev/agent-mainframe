@@ -18,7 +18,7 @@ impl CapturedContext {
         Self::from_path(session_transcript_path(workdir, session_id)?)
     }
 
-    fn from_path(path: PathBuf) -> Result<Self> {
+    pub(crate) fn from_path(path: PathBuf) -> Result<Self> {
         let bytes = crate::screenshot_evidence::read_bounded(&path, 32 * 1024 * 1024)
             .map_err(|err| anyhow::anyhow!("Cannot read selected transcript {}; press Tab to fork without context: {err:#}", path.display()))?;
         let text = std::str::from_utf8(&bytes)

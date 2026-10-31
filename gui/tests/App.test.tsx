@@ -1484,3 +1484,19 @@ it("blocks changing harness for an unsent draft in another agent tab and preserv
   expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "feature_harness_apply")).toBe(false);
   client.clear();
 });
+
+it("forks from the feature menu with the open agent session and the stable feature IDs", async () => {
+  const client = await openFeature([session("Shell"), session("Agent", "claude")], [], "idle", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) =>
+    command === "fork_prepare" ? new Promise(() => undefined) : original(command, args, options));
+  fireEvent.click(screen.getByRole("tab", { name: /Agent/ }));
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Fork feature…" }));
+
+  expect(await screen.findByRole("dialog", { name: "Fork feature" })).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("fork_prepare", {
+    request: { target: { project_id: "project", feature_id: "feature" }, session_id: "Agent" },
+  });
+  client.clear();
+});

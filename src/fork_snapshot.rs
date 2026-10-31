@@ -1168,6 +1168,147 @@ impl Snapshot {
     }
 }
 
+/// The project's `.claude/settings.local.json`, read once so every later step
+/// compares against the same bytes. Shared by the TUI and GUI fork adapters.
+pub(crate) struct ProjectSettings {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+const SETTINGS_LIMIT: u64 = 16 * 1024 * 1024;
+
+impl ProjectSettings {
+    pub(crate) fn read(repo: &Path) -> Result<Self> {
+        let path = repo.canonicalize()?.join(".claude/settings.local.json");
+        let bytes = match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let bytes = crate::screenshot_evidence::read_bounded(&path, SETTINGS_LIMIT)?;
+                let _: serde_json::Value = serde_json::from_slice(&bytes)
+                    .context("Project .claude/settings.local.json is not valid JSON")?;
+                Some(bytes)
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err.into()),
+        };
+        Ok(Self { path, bytes })
+    }
+
+    fn matches_disk(&self) -> bool {
+        match (&self.bytes, fs::symlink_metadata(&self.path)) {
+            (Some(bytes), Ok(_)) => {
+                crate::screenshot_evidence::read_bounded(&self.path, SETTINGS_LIMIT)
+                    .is_ok_and(|now| now == *bytes)
+            }
+            (None, Err(err)) => err.kind() == io::ErrorKind::NotFound,
+            _ => false,
+        }
+    }
+
+    /// Before the checkout exists: the user can simply prepare again.
+    pub(crate) fn verify(&self) -> Result<()> {
+        ensure!(
+            self.matches_disk(),
+            "Project settings changed; prepare fork again"
+        );
+        Ok(())
+    }
+
+    fn verify_during_fork(&self) -> Result<()> {
+        if self.matches_disk() {
+            Ok(())
+        } else {
+            Err(SourceChanged("Project settings changed during fork".into()).into())
+        }
+    }
+
+    pub(crate) fn is_present(&self) -> bool {
+        self.bytes.is_some()
+    }
+}
+
+/// Refuse a fork whose transferred changes would collide with files AMF
+/// generates (`.claude/context.md`, project settings merge).
+pub(crate) fn ensure_no_generated_collisions(
+    snapshot: &Snapshot,
+    settings: &ProjectSettings,
+    source_workdir: &Path,
+    repo: &Path,
+) -> Result<()> {
+    // A repo-root source's changed settings file *is* the project settings
+    // being merged, so the copy cannot differ from what the snapshot carries.
+    let source_is_repo_root = matches!(
+        (source_workdir.canonicalize(), repo.canonicalize()),
+        (Ok(a), Ok(b)) if a == b
+    );
+    ensure!(
+        !settings.is_present()
+            || source_is_repo_root
+            || !snapshot.touches(Path::new(".claude/settings.local.json")),
+        "Fork source changed .claude/settings.local.json; refusing to overwrite it with project settings"
+    );
+    Ok(())
+}
+
+pub(crate) fn ensure_context_does_not_collide(snapshot: &Snapshot) -> Result<()> {
+    ensure!(
+        !snapshot.touches(Path::new(".claude/context.md")),
+        "Fork source changed .claude/context.md; disable context to preserve that file"
+    );
+    Ok(())
+}
+
+/// Everything written into a freshly created fork base, in order. `transfer`
+/// is the foundation's; settings and context are revalidated just before they
+/// are written. A [`SourceChanged`] in the chain means the source moved on.
+pub(crate) fn populate(
+    workdir: &Path,
+    snapshot: &Snapshot,
+    settings: &ProjectSettings,
+    context: Option<&crate::transcript::CapturedContext>,
+) -> Result<()> {
+    snapshot.transfer(workdir)?;
+    settings.verify_during_fork()?;
+    if let Some(bytes) = settings.bytes.as_deref() {
+        merge_settings(workdir, bytes)?;
+    }
+    if let Some(context) = context {
+        context
+            .validate()
+            .map_err(|err| anyhow::Error::new(SourceChanged(format!("{err:#}"))))?;
+        write_auxiliary(
+            workdir,
+            Path::new(".claude/context.md"),
+            context.markdown.as_bytes(),
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn is_source_changed(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| cause.is::<SourceChanged>())
+}
+
+/// Remove a checkout and its branch after a setup failure that left nothing
+/// worth keeping (the source moved on).
+pub(crate) fn remove_checkout(
+    ops: &dyn crate::traits::WorktreeOps,
+    repo: &Path,
+    workdir: &Path,
+    branch: &str,
+) -> Result<()> {
+    ops.remove(repo, workdir)?;
+    let out = Command::new("git")
+        .args(["branch", "-D", branch])
+        .current_dir(repo)
+        .output()?;
+    ensure!(
+        out.status.success(),
+        "git branch -D failed: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
 

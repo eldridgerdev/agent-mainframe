@@ -108,6 +108,7 @@ import NewSessionDialog, { PreCheckFailure } from "./NewSessionDialog";
 import VscodePanel from "./VscodePanel";
 import { createSession, FeatureEditor, NewSessionOptions, SessionChoice } from "./sessionsApi";
 import DeleteFeatureDialog from "./DeleteFeatureDialog";
+import ForkFeatureDialog from "./ForkFeatureDialog";
 import SidebarTree, { byStatus, filterTree, shownCollapsed, withCollapsed } from "./SidebarTree";
 import { keyIsForOtherInput, useSidebarCollapsed } from "./sidebarPrefs";
 import WorktreeHookField, { useWorktreeHookChoice } from "./WorktreeHookField";
@@ -349,6 +350,7 @@ export default function App() {
     dormant?: DormantDeleteRequest;
   } | null>(null);
   const deleteFeatureInFlight = useRef(false);
+  const [forkDialog, setForkDialog] = useState<{ target: FeatureTarget; sessionId: string | null } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const [pendingStart, setPendingStart] = useState<{
@@ -1639,6 +1641,7 @@ export default function App() {
               ),
             })}
             onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onFork={(sessionId) => setForkDialog({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -1895,6 +1898,19 @@ export default function App() {
           void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
         }}
       />}
+
+      {forkDialog && (
+        <ForkFeatureDialog
+          target={forkDialog.target}
+          sessionId={forkDialog.sessionId}
+          supported={harnesses.data ?? []}
+          onClose={() => {
+            setForkDialog(null);
+            void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+          }}
+          onOpenFork={(target) => setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id })}
+        />
+      )}
 
       {deleteFeatureDialog && (
         <DeleteFeatureDialog
@@ -2186,6 +2202,7 @@ function FeatureView({
   onCloseSession,
   onDeleteFeature,
   onChangeHarness,
+  onFork,
   onVibeMode,
   vibeModeBusy,
   vibeModes,
@@ -2238,6 +2255,8 @@ function FeatureView({
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
   onChangeHarness?: () => void;
+  /** Fork this feature; the argument is the open agent session, if any. */
+  onFork: (sessionId: string | null) => void;
   onVibeMode: (mode: ModeSlug) => void;
   vibeModeBusy: boolean;
   vibeModes: ModeInfo[];
@@ -2390,6 +2409,7 @@ function FeatureView({
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
             />

@@ -403,11 +403,13 @@ export function Switch({
   onChange,
   label,
   hint,
+  disabled,
 }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: string;
   hint?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="switch-row">
@@ -415,6 +417,7 @@ export function Switch({
         type="checkbox"
         className="switch"
         checked={checked}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
       <span>

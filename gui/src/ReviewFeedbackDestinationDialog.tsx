@@ -143,7 +143,7 @@ export default function ReviewFeedbackDestinationDialog({ view, error, onAct, on
         <label className="checkbox"><input type="checkbox" checked={review} disabled={busy} onChange={event => edit(() => setReview(event.target.checked))} /> Review workflow</label>
         <label className="checkbox"><input type="checkbox" checked={chrome} disabled={busy} onChange={event => edit(() => setChrome(event.target.checked))} /> Enable Chrome</label>
         {catalog.hook_prompt && <Field label={catalog.hook_prompt.title}><select value={hookChoice} disabled={busy} onChange={event => edit(() => setHookChoice(event.target.value))}><option value="">Choose a worktree setup option</option>{catalog.hook_prompt.options.map(option => <option key={option}>{option}</option>)}</select></Field>}
-        <p>Branches from {catalog.source_branch} at {catalog.source_head}. Uncommitted reviewed changes are not copied. Integrating companion commits is a separate terminal workflow.</p>
+        <p>Branches from {catalog.source_branch} at {catalog.source_head}. Uncommitted reviewed changes are not copied. Integrate the companion's commits later from the companion feature's “Integrate companion…” dialog.</p>
       </>}
       <button className="btn btn-secondary" disabled={busy} onClick={() => void load()}>Refresh destinations</button>
       <button className="btn btn-secondary" disabled={busy || !choice} onClick={() => void inspect()}>Preview destination</button>

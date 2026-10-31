@@ -1687,6 +1687,154 @@ async fn pr_triage_act(
     )
 }
 
+// A single global lock: only one preview/confirmed integration runs at a time,
+// because companions may share a source checkout or the GUI handle's Git work.
+// Status reports `running` for any key so every dialog shows the real state.
+static COMPANION_OPERATIONS: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+static COMPANION_RESULTS: std::sync::OnceLock<
+    Mutex<std::collections::HashMap<String, Result<String, GuiError>>>,
+> = std::sync::OnceLock::new();
+#[derive(serde::Serialize)]
+struct CompanionOperationStatus {
+    running: bool,
+    result: Option<String>,
+    error: Option<GuiError>,
+}
+#[tauri::command]
+fn companion_integration_status(target: FeatureTarget) -> CompanionOperationStatus {
+    let key = format!("{}:{}", target.project_id, target.feature_id);
+    let running = !COMPANION_OPERATIONS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("operation mutex poisoned")
+        .is_empty();
+    let mut results = COMPANION_RESULTS
+        .get_or_init(Default::default)
+        .lock()
+        .expect("result mutex poisoned");
+    // A finished outcome is reported once, so reopening the dialog later does
+    // not present an old result as current.
+    let result = if running {
+        results.get(&key).cloned()
+    } else {
+        results.remove(&key)
+    };
+    drop(results);
+    CompanionOperationStatus {
+        running,
+        result: result.as_ref().and_then(|r| r.as_ref().ok().cloned()),
+        error: result.and_then(Result::err),
+    }
+}
+struct CompanionOperation(String);
+impl CompanionOperation {
+    fn acquire(target: &FeatureTarget) -> Result<Self, GuiError> {
+        let key = format!("{}:{}", target.project_id, target.feature_id);
+        let mut operations = COMPANION_OPERATIONS
+            .get_or_init(Default::default)
+            .lock()
+            .expect("operation mutex poisoned");
+        if !operations.is_empty() {
+            return Err(GuiError {
+                kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
+                message: "Another companion integration operation is already running".into(),
+            });
+        }
+        operations.insert(key.clone());
+        COMPANION_RESULTS
+            .get_or_init(Default::default)
+            .lock()
+            .expect("result mutex poisoned")
+            .remove(&key);
+        Ok(Self(key))
+    }
+}
+impl Drop for CompanionOperation {
+    fn drop(&mut self) {
+        COMPANION_OPERATIONS
+            .get_or_init(Default::default)
+            .lock()
+            .expect("operation mutex poisoned")
+            .remove(&self.0);
+    }
+}
+
+#[tauri::command]
+async fn companion_integration_preview(
+    app: tauri::AppHandle,
+    target: FeatureTarget,
+    choice: agent_mainframe::gui_companion_integration::IntegrationChoice,
+) -> Result<agent_mainframe::gui_companion_integration::IntegrationPlan, GuiError> {
+    let operation = CompanionOperation::acquire(&target)?;
+    pr_workspace_blocking(app, move |gui| {
+        let _operation = operation;
+        let binding = agent_mainframe::gui_companion_integration::bind(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &target,
+        )?;
+        let plan = agent_mainframe::gui_companion_integration::plan(binding.clone(), choice)
+            .map_err(GuiError::from)?;
+        let current = agent_mainframe::gui_companion_integration::bind(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &target,
+        )?;
+        if current != binding {
+            return Err(GuiError {
+                kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
+                message: "Companion or source changed; refresh the preview".into(),
+            });
+        }
+        Ok(plan)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn companion_integration_confirm(
+    app: tauri::AppHandle,
+    target: FeatureTarget,
+    choice: agent_mainframe::gui_companion_integration::IntegrationChoice,
+    revision: String,
+) -> Result<String, GuiError> {
+    let operation = CompanionOperation::acquire(&target)?;
+    pr_workspace_blocking(app, move |gui| {
+        let _operation = operation;
+        let outcome = (|| {
+            let binding = agent_mainframe::gui_companion_integration::bind(
+                &mut gui.lock().expect("gui handle mutex poisoned"),
+                &target,
+            )?;
+            let plan = agent_mainframe::gui_companion_integration::plan(binding.clone(), choice)
+                .map_err(GuiError::from)?;
+            if plan.revision != revision {
+                return Err(GuiError {
+                    kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
+                    message: "Integration changed; refresh the preview".into(),
+                });
+            }
+            let current = agent_mainframe::gui_companion_integration::bind(
+                &mut gui.lock().expect("gui handle mutex poisoned"),
+                &target,
+            )?;
+            if current != binding {
+                return Err(GuiError {
+                    kind: agent_mainframe::gui_contract::GuiErrorKind::Conflict,
+                    message: "Companion or source changed; refresh the preview".into(),
+                });
+            }
+            agent_mainframe::gui_companion_integration::execute(&plan).map_err(GuiError::from)
+        })();
+        COMPANION_RESULTS
+            .get_or_init(Default::default)
+            .lock()
+            .expect("result mutex poisoned")
+            .insert(_operation.0.clone(), outcome.clone());
+        outcome
+    })
+    .await?
+}
+
 #[tauri::command]
 async fn pr_workspace_begin(
     app: tauri::AppHandle,
@@ -2276,6 +2424,9 @@ fn main() {
             pr_triage_begin,
             pr_triage_snapshot,
             pr_triage_act,
+            companion_integration_status,
+            companion_integration_preview,
+            companion_integration_confirm,
             pr_workspace_begin,
             pr_workspace_select_pr,
             pr_workspace_switch_ai,

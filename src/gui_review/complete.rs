@@ -263,7 +263,7 @@ pub(super) fn start(
         }
     }
     let Some(command) = check_command else {
-        return if finish(gui, None, deliver) {
+        return if finish(gui, None, deliver)? {
             Ok(Started::Completed)
         } else {
             Err(GuiError::conflict(
@@ -299,7 +299,7 @@ pub(super) fn start(
                     output: format!("failed to start: {e}"),
                 }),
                 deliver,
-            ) {
+            )? {
                 return Err(GuiError::conflict(
                     "Could not save final review feedback; the review remains open",
                 ));
@@ -336,22 +336,22 @@ pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResu
         }
     }
     let pending = gui.review_context.as_mut().unwrap().completion.take();
-    Ok(finish(
-        gui,
-        Some(outcome),
-        pending.is_some_and(|p| p.deliver),
-    ))
+    finish(gui, Some(outcome), pending.is_some_and(|p| p.deliver))
 }
 
 /// Record the round with the shared engine, then hand an actionable round's
 /// prompt to the target when the reviewer chose to. Closes the review.
-fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bool {
+/// `Ok(false)` means the round could not be saved; `Err` means the handoff
+/// destination could not be resolved, so nothing was attempted.
+fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> GuiResult<bool> {
     let workflow_id = gui.review_context.as_ref().unwrap().id.clone();
     let handoff = if deliver {
-        match handoff(gui) {
-            Ok(target) => target,
-            Err(_) => return false,
-        }
+        handoff(gui).map_err(|error| {
+            GuiError::conflict(format!(
+                "Could not resolve the feedback destination ({}); nothing was recorded. Reselect the destination",
+                error.message
+            ))
+        })?
     } else {
         None
     };
@@ -367,7 +367,7 @@ fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bo
             check.status = ReviewCheckStatus::Failed;
             check.output = format!("Review not completed: {message}");
         }
-        return false;
+        return Ok(false);
     }
     let (message, handoff) = match (dispatch, handoff) {
         (None, _) => (
@@ -402,7 +402,7 @@ fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> bo
         message,
         handoff,
     });
-    true
+    Ok(true)
 }
 
 /// Hand the completion to the interface once. A repeated or unrelated request

@@ -63,6 +63,9 @@ pub struct DiffFileView {
     pub patch: String,
     /// The detected language and whether its lines carry highlight spans.
     pub syntax: SyntaxInfo,
+    /// AMF wrote this change itself (`amf_managed::is_amf_generated_change`,
+    /// the rule behind the TUI's "AMF files" group); the GUI groups on it.
+    pub amf_generated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -162,6 +165,7 @@ pub(crate) fn file_view_budgeted(
     context: usize,
     budget: &mut HighlightBudget,
 ) -> DiffFileView {
+    let amf_generated = crate::amf_managed::is_amf_generated_change(&file);
     let highlights = DiffHighlights::for_file(&file, budget);
     let hunks = file.hunks_with_context(context).unwrap_or(file.hunks);
     let hunks = hunks
@@ -212,6 +216,7 @@ pub(crate) fn file_view_budgeted(
         hunks,
         patch: file.patch,
         syntax: highlights.info,
+        amf_generated,
     }
 }
 
@@ -503,6 +508,48 @@ pub(crate) mod tests {
         let json = serde_json::to_value(&view.files[0]).unwrap();
         assert!(json["syntax"]["status"].is_string());
         assert!(json["hunks"][0]["lines"][0]["syntax"].is_null());
+    }
+
+    #[test]
+    fn amf_generated_flag_follows_the_shared_classifier_and_serializes() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".amf")).unwrap();
+        std::fs::create_dir_all(repo.join(".claude")).unwrap();
+        std::fs::create_dir_all(repo.join(".opencode/plugins")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(repo.join(".amf/scratch.txt"), "generated\n").unwrap();
+        std::fs::write(repo.join(".opencode/plugins/change-tracker.js"), "//\n").unwrap();
+        std::fs::write(repo.join("src/mine.rs"), "fn main() {}\n").unwrap();
+        // A committed managed path is someone's chosen work, not AMF's.
+        std::fs::write(repo.join(".claude/amf-hook-state.json"), "{}\n").unwrap();
+        git(&repo, &["add", ".claude/amf-hook-state.json"]);
+        let view = load(&mut gui, target, DiffOptions::default()).unwrap();
+        let flag = |path: &str| {
+            view.files
+                .iter()
+                .find(|f| f.path == path)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{path} missing from {:?}",
+                        view.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+                    )
+                })
+                .amf_generated
+        };
+        assert!(flag(".amf/scratch.txt"));
+        assert!(flag(".opencode/plugins/change-tracker.js"));
+        assert!(!flag(".claude/amf-hook-state.json"));
+        assert!(!flag("src/mine.rs"));
+        assert!(!flag("code.txt"));
+        let json = serde_json::to_value(&view).unwrap();
+        let amf = json["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == ".amf/scratch.txt")
+            .unwrap();
+        assert_eq!(amf["amf_generated"], serde_json::Value::Bool(true));
     }
 
     #[test]

@@ -731,6 +731,8 @@ export interface DiffFile {
   patch: string;
   /** Detected language and whether the lines carry highlight spans. */
   syntax?: SyntaxInfo;
+  /** True when AMF itself generated this change (the TUI's "AMF files" group). */
+  amf_generated?: boolean;
 }
 export interface DiffView {
   target: FeatureTarget;

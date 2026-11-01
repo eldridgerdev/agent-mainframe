@@ -1321,6 +1321,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-files { overflow: auto; border-right: 1px solid var(--border); }
 .diff-file { display: flex; flex-direction: column; width: 100%; padding: 8px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .diff-file small { color: var(--text-muted); }
+.diff-tree { list-style: none; margin: 0; padding: 0; }
+.diff-dir { display: block; width: 100%; padding: 6px 8px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
+.diff-dir:hover { background: var(--surface-2); }
+.diff-dir small, .diff-tree-empty { color: var(--text-muted); font-weight: 400; }
+.diff-tree-empty { padding: 8px; }
+.diff-amf-group { border-top: 1px solid var(--border); }
 .diff-file:hover, .diff-file-selected { background: var(--surface-2); }
 /* Selected rows carry an accent edge, like .review-line-selected: the
    neutral fill alone sits too close to its neighbours to read as selected. */

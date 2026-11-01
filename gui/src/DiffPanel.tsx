@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff } from "./api";
 import { Field, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
+import { TreeRow, amfGroupOpen, buildRows, selectFile, toggleAllFolds } from "./diffTree";
 
 /** Align runs of removed/added rows; marker rows retain their own position. */
 function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
@@ -54,6 +55,9 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
   const [baseDraft, setBaseDraft] = useState("");
   const [path, setPath] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  // Fold state is the reader's, keyed by directory path, so it survives a refresh.
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [amfChoice, setAmfChoice] = useState<boolean | null>(null);
   const [split, setSplit] = useState(false);
   const [hunk, setHunk] = useState(0);
   const content = useRef<HTMLDivElement>(null);
@@ -65,8 +69,17 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
     refetchOnWindowFocus: false,
   });
   const view = query.data;
-  const files = view?.files.filter((file) => file.path.toLowerCase().includes(filter.toLowerCase())) ?? [];
-  const file = files.find((file) => file.path === path) ?? files[0];
+  const all = view?.files ?? [];
+  const file = selectFile(all, path, filter);
+  const rows = buildRows(all, { collapsed, amfChoice, filter });
+  const amfCount = all.filter((item) => item.amf_generated).length;
+  const amfOpen = amfGroupOpen(amfChoice, all.length - amfCount);
+  const toggleDir = (key: string) => setCollapsed((prev) => { const next = new Set(prev); if (!next.delete(key)) next.add(key); return next; });
+  const fileRow = (row: Extract<TreeRow, { kind: "file" }>) => <li key={row.file.path} style={{ paddingLeft: row.depth * 12 }}>
+    <button className={`diff-file ${row.file.path === file?.path ? "diff-file-selected" : ""}`} aria-pressed={row.file.path === file?.path}
+      title={row.file.path} onClick={() => setPath(row.file.path)}>
+      <span>{row.name}</span><small>{row.file.status} · +{row.file.additions} −{row.file.deletions}</small>
+    </button></li>;
   useEffect(() => { setHunk(0); if (content.current) content.current.scrollTop = 0; }, [file?.path, view]);
   function jump(index: number) {
     setHunk(index);
@@ -101,13 +114,21 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
     {view && !query.error && <>
       <p className="diff-summary">{view.branch} · {view.base_ref} ({view.base_commit.slice(0, 8)}) · {view.files.length} files · +{view.total_additions} −{view.total_deletions}</p>
       {view.files.length === 0 ? <p role="status">No changes in this scope.</p> : <>
-        <Field label="Filter files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
+        <div className="diff-controls">
+          <Field label="Filter files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
+          <button className="btn btn-secondary btn-sm" onClick={() => setCollapsed(toggleAllFolds(all, collapsed))}>{collapsed.size > 0 ? "Unfold folders" : "Fold folders"}</button>
+          {amfCount > 0 && <button className="btn btn-secondary btn-sm" aria-pressed={amfOpen} onClick={() => setAmfChoice(!amfOpen)}>
+            {amfOpen ? "Hide" : "Show"} AMF files ({amfCount})</button>}
+        </div>
         <div className="diff-reader">
-          <nav className="diff-files" aria-label="Changed files">{files.map((candidate) => <button key={candidate.path}
-            className={`diff-file ${candidate.path === file?.path ? "diff-file-selected" : ""}`} aria-pressed={candidate.path === file?.path}
-            onClick={() => setPath(candidate.path)}>
-            <span>{candidate.path}</span><small>{candidate.status} · +{candidate.additions} −{candidate.deletions}</small>
-          </button>)}</nav>
+          <nav className="diff-files" aria-label="Changed files"><ul className="diff-tree">{rows.map((row) => row.kind === "file" ? fileRow(row)
+            : row.kind === "dir" ? <li key={`dir:${row.key}`} style={{ paddingLeft: row.depth * 12 }}>
+              <button className="diff-dir" aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => toggleDir(row.key)}>
+                <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> {row.name}/ <small>{row.files} {row.files === 1 ? "file" : "files"}</small></button></li>
+            : <li key="amf-group">
+              <button className="diff-dir diff-amf-group" aria-expanded={row.open} aria-label="AMF files group" onClick={() => setAmfChoice(!row.open)}>
+                <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> AMF files <small>{row.count} generated by AMF</small></button></li>)}
+          </ul></nav>
           <section className="diff-content" aria-label="File diff">
             {file ? <>
               <div className="diff-file-header"><strong>{file.old_path && file.old_path !== file.path ? `${file.old_path} → ${file.path}` : file.path}</strong>

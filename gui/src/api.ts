@@ -477,6 +477,63 @@ export function todoAdd(
   });
 }
 
+export interface TodoFields {
+  title: string;
+  body: string | null;
+  priority: TodoPriority;
+}
+
+export type TodoEditOutcome =
+  | { outcome: "saved"; todo: Todo }
+  /** Changed (or moved lists) since the editor opened; nothing was written. */
+  | { outcome: "conflict"; current: Todo }
+  | { outcome: "gone" };
+
+/** `base` is what the editor opened with; the save lands only if the TODO
+ * still holds it, so a stale editor never silently overwrites a newer edit. */
+export function todoUpdate(
+  todo: Pick<Todo, "id" | "list_id">,
+  base: TodoFields,
+  fields: TodoFields,
+): Promise<TodoEditOutcome> {
+  return invoke("todo_update", {
+    request: { list_id: todo.list_id, todo_id: todo.id, base, fields },
+  });
+}
+
+export type ScratchpadOutcome =
+  | { outcome: "saved"; list_id: string | null; carry_over: string | null }
+  | { outcome: "conflict"; list_id: string | null; current: string | null }
+  | { outcome: "gone" };
+
+export function todoUpdateScratchpad(args: {
+  scope: TodoScopeRequest;
+  hostFeatureId?: string;
+  listId: string | null;
+  base: string | null;
+  text: string | null;
+}): Promise<ScratchpadOutcome> {
+  return invoke("todo_update_scratchpad", {
+    request: {
+      scope: args.scope,
+      host_feature_id: args.hostFeatureId ?? null,
+      list_id: args.listId,
+      base: args.base,
+      text: args.text,
+    },
+  });
+}
+
+/** Where a TODO's existing work lives (linked feature first, then session). */
+export type TodoWorkTarget =
+  | { kind: "session"; target: SessionTarget }
+  | { kind: "feature"; target: FeatureTarget }
+  | { kind: "none"; message: string };
+
+export function todoWorkTarget(todoId: string): Promise<TodoWorkTarget> {
+  return invoke("todo_work_target", { todoId });
+}
+
 export function todoSetStatus(todoId: string, status: TodoStatus): Promise<void> {
   return invoke("todo_set_status", { todoId, status });
 }

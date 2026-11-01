@@ -872,6 +872,11 @@ export default function App() {
     }
   }
 
+  function jumpToTodoWork(found: { kind: "session"; target: SessionTarget } | { kind: "feature"; target: FeatureTarget }) {
+    if (found.kind === "session") openSession(found.target);
+    else setView({ kind: "feature", projectId: found.target.project_id, featureId: found.target.feature_id });
+  }
+
   async function launchTodoAgent(todoId: string, target: FeatureTarget, approved: boolean) {
     try {
       const launched = await todoLaunchAgent(todoId, target, approved);
@@ -1542,6 +1547,7 @@ export default function App() {
                 launchTargets={todoAgentTargets}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(gitProjectIds)}
                 onError={reportError}
               />
@@ -1570,6 +1576,7 @@ export default function App() {
                 launchTargets={todoAgentTargets.filter((candidate) => candidate.target.project_id === selectedProject.id)}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />
@@ -1680,6 +1687,7 @@ export default function App() {
                 }]}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />

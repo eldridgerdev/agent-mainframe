@@ -51,7 +51,7 @@ it("renders file and hunk navigation, split line numbers, renames, binaries and 
   fireEvent.change(screen.getByRole("textbox", { name: "Filter files" }), { target: { value: "missing" } });
   expect(screen.getByText("No files match your filter.")).toBeTruthy();
   // Browsing never reloads; only the layout change is written (to the saved preference).
-  expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual(["load_diff", "diff_layout_save"]);
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.map(([name]) => name)).toEqual(["load_diff", "diff_layout_save"]));
 });
 
 it("loads scope, whitespace, context and base changes with explicit requests and refreshes", async () => {

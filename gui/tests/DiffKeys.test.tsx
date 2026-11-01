@@ -97,9 +97,10 @@ it("v toggles the layout and saves it in the TUI's format; a saved layout opens 
   expect((screen.getByRole("combobox", { name: "Layout" }) as HTMLSelectElement).value).toBe("split");
   press("v");
   expect((screen.getByRole("combobox", { name: "Layout" }) as HTMLSelectElement).value).toBe("unified");
-  expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("diff_layout_save", { layout: "unified" });
+  // Saves are chained on a promise, so the call lands a microtask later.
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("diff_layout_save", { layout: "unified" }));
   fireEvent.change(screen.getByRole("combobox", { name: "Layout" }), { target: { value: "split" } });
-  expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("diff_layout_save", { layout: "side-by-side" });
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("diff_layout_save", { layout: "side-by-side" }));
 });
 
 it("reports a layout save failure without losing the choice", async () => {

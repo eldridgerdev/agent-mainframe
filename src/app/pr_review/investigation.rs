@@ -980,7 +980,7 @@ impl App {
     /// (the feature's worktree list, or the project's at the repo root — the
     /// same target Learning Mode's `a` uses).
     pub(super) fn pr_investigation_keep_as_todo(&mut self) -> Result<()> {
-        let (comment_locator, title, body) = match &self.mode {
+        let (title, body) = match &self.mode {
             AppMode::PrReview(state) => {
                 let Some(comment) = state.selected_comment() else {
                     return Ok(());
@@ -993,28 +993,10 @@ impl App {
                     self.message = Some("No investigation to keep".into());
                     return Ok(());
                 };
-                let locator = match (&comment.path, comment.line) {
-                    (Some(p), Some(l)) if !comment.file_level => format!("{p}:{l}"),
-                    (Some(p), _) => p.clone(),
-                    (None, _) => format!("PR #{}", state.review.pr.number),
-                };
-                let answer = inv.answer.clone().unwrap_or_default();
-                let title = answer
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .unwrap_or("PR investigation finding")
-                    .chars()
-                    .take(120)
-                    .collect::<String>();
-                let body = format!(
-                    "From a read-only investigation of a PR review comment ({locator}).\n\n{answer}"
-                );
-                (locator, title, body)
+                investigation_todo_seed(state.review.pr.number, comment, inv.answer.as_deref())
             }
             _ => return Ok(()),
         };
-        let _ = comment_locator;
 
         let Some((pi, fi)) = self.pr_review_target_feature() else {
             self.push_toast_error("Can't keep as TODO: no feature for this PR");
@@ -1182,4 +1164,52 @@ impl App {
             state.investigation_context.editor = None;
         }
     }
+}
+
+/// Marker line that ties a kept TODO to one investigation answer, stored in
+/// the TODO's own notes so no schema change is needed.
+pub(crate) fn todo_source_prefix(pr_number: u32, comment_id: u64) -> String {
+    format!("AMF source: PR #{pr_number} comment {comment_id} investigation")
+}
+
+/// The prefix plus a digest of the answer, so a re-run investigation (a
+/// different answer) is not mistaken for one already kept.
+pub(crate) fn todo_source_marker(pr_number: u32, comment_id: u64, answer: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(answer.as_bytes()));
+    format!(
+        "{} (answer {})",
+        todo_source_prefix(pr_number, comment_id),
+        &digest[..16]
+    )
+}
+
+/// The title and body a kept investigation answer becomes, shared by the TUI
+/// and the GUI so both write the same TODO.
+pub(crate) fn investigation_todo_seed(
+    pr_number: u32,
+    comment: &PrComment,
+    answer: Option<&str>,
+) -> (String, String) {
+    let locator = match (&comment.path, comment.line) {
+        (Some(p), Some(l)) if !comment.file_level => format!("{p}:{l}"),
+        (Some(p), _) => p.clone(),
+        (None, _) => format!("PR #{pr_number}"),
+    };
+    let answer = answer.unwrap_or_default();
+    let title = answer
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("PR investigation finding")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let mut body =
+        format!("From a read-only investigation of a PR review comment ({locator}).\n\n{answer}");
+    if !answer.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&todo_source_marker(pr_number, comment.id, answer));
+    }
+    (title, body)
 }

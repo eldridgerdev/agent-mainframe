@@ -10,7 +10,11 @@ export interface WorkspaceAi {
   activity: string | null; elapsed_seconds: number; token_estimate: number | null; findings: WorkspaceFinding[]; summary: string | null;
   result_revision: string | null; error: string | null; precall: { title: string; harness: string; preview: string; viewing: boolean } | null; can_cancel: boolean;
 }
-export type WorkspaceAiAction = { kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" | "post" };
+export const MAX_FINDING_BODY_CHARS = 8000;
+export type WorkspaceAiAction =
+  | { kind: "start" | "cancel" | "confirm_precall" | "cancel_precall" | "post" }
+  | { kind: "toggle_skip"; index: number; result_revision: string; head_sha: string }
+  | { kind: "edit_body"; index: number; body: string; result_revision: string; head_sha: string };
 export const workspaceBegin = (target: FeatureTarget) => invoke<string>("pr_workspace_begin", { target });
 export const workspaceSelectPr = (workflowId: string, number: number) => invoke<void>("pr_workspace_select_pr", { workflowId, number });
 export const workspaceSwitchAi = (workflowId: string, number: number) => invoke<void>("pr_workspace_switch_ai", { workflowId, number });

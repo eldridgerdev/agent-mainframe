@@ -36,6 +36,8 @@ export interface PrInvestigation {
   error: string | null;
   follow_ups: { question: string; answer: string; harness: AgentSlug }[];
   stale_head: boolean;
+  /** Title of the TODO this answer was already kept as, if it still exists. */
+  kept_todo: string | null;
 }
 
 export interface PrComment {
@@ -132,6 +134,7 @@ export type PrTriageAction =
   | { kind: "open"; number: number }
   | { kind: "view"; hide_resolved: boolean; sort: PrSort }
   | { kind: "toggle_done" | "toggle_skipped" | "dismiss_investigation" | "request_resolve"; comment_id: number }
+  | { kind: "keep_investigation_as_todo"; comment_id: number; head_sha: string }
   | { kind: "investigate"; comment_id: number; harness: AgentSlug; note: string | null; follow_up: string | null }
   | { kind: "start_reply"; comment_id: number; reply: PrReplyKind }
   | { kind: "prepare_reply"; comment_id: number; body: string };

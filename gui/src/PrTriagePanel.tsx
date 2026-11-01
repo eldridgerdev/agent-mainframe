@@ -484,6 +484,12 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
                 {selected.investigation.stale_head && <span className="tag tag-red">older PR head</span>}</p>
               {selected.investigation.error && <p className="error-text">{selected.investigation.error}</p>}
               {selected.investigation.answer && <Markdown source={selected.investigation.answer} />}
+              {selected.investigation.answer && ["complete", "dismissed"].includes(selected.investigation.status) && <p className="row small">
+                {selected.investigation.kept_todo
+                  ? <span className="tag tag-success" title={selected.investigation.kept_todo}>Kept as a TODO</span>
+                  : <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "keep_investigation_as_todo", comment_id: selected.id, head_sha: view!.review!.head_sha })}>Keep as a TODO</button>}
+                {selected.investigation.kept_todo && <span className="muted">{selected.investigation.kept_todo}</span>}
+              </p>}
               {selected.investigation.follow_ups.map((turn, i) => <div key={i} className="pr-follow-up">
                 <p className="small"><strong>Follow-up {i + 1}:</strong> {turn.question}</p>
                 <Markdown source={turn.answer} />

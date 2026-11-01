@@ -426,3 +426,38 @@ it("offers no batch selection without an agent session to send to", async () => 
   await screen.findByRole("navigation", { name: "Review comments" });
   expect(screen.queryByRole("checkbox", { name: /for batch fix/ })).toBeNull();
 });
+
+it("keeps a finished investigation as a TODO bound to the PR head and shows it as kept", async () => {
+  const investigation = { status: "complete" as const, harness: "claude" as const, answer: "The rounding is wrong", error: null, follow_ups: [], stale_head: false, kept_todo: null };
+  const withInvestigation = (kept: string | null): PrTriageView => ({ ...review, review: { ...review.review!, comments: [comment({ investigation: { ...investigation, kept_todo: kept } }), ...review.review!.comments.slice(1)] } });
+  let current = withInvestigation(null);
+  backend(current, (action) => {
+    if (action.kind === "keep_investigation_as_todo") { current = { ...withInvestigation("The rounding is wrong"), revision: 4, notice: "Kept as a TODO on Round totals" }; return current; }
+    return current;
+  }, () => current);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Keep as a TODO" }));
+  await waitFor(() => expect(actions().some((a) => a.action.kind === "keep_investigation_as_todo")).toBe(true));
+  expect(actions().find((a) => a.action.kind === "keep_investigation_as_todo")!.action).toEqual({ kind: "keep_investigation_as_todo", comment_id: 1, head_sha: "abcdef1234567" });
+  expect(await screen.findByText("Kept as a TODO")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Keep as a TODO" })).toBeNull();
+});
+
+it("offers no keep while an investigation runs and shows a refused keep", async () => {
+  const base = { harness: "claude" as const, answer: "partial", error: null, follow_ups: [], stale_head: false, kept_todo: null };
+  const mk = (status: "running" | "complete"): PrTriageView => ({ ...review, review: { ...review.review!, comments: [comment({ investigation: { ...base, status } }), ...review.review!.comments.slice(1)] } });
+  backend(mk("running"), () => mk("running"));
+  const running = render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  await screen.findByText("Investigation (read-only)");
+  expect(screen.queryByRole("button", { name: "Keep as a TODO" })).toBeNull();
+  running.unmount();
+
+  backend(mk("complete"), (action) => {
+    if (action.kind === "keep_investigation_as_todo") throw { kind: "conflict", message: "The pull request head changed since you opened this answer" };
+    return mk("complete");
+  });
+  render(<PrTriagePanel target={target} onClose={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "Keep as a TODO" }));
+  expect(await screen.findByText(/head changed since you opened/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Keep as a TODO" })).toBeTruthy();
+});

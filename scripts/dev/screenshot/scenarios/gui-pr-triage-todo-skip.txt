@@ -1,0 +1,5 @@
+# Seeded offline PR Triage keep-as-TODO and AI finding skip/edit with isolated Git, DB and receivers.
+note:The isolated TUI confirms that screenshot capture is ready before native proof.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_REQUIRE_USERNS=1 AMF_GUI_CAPTURE_PORT=1420 AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-pr-triage-todo-skip.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

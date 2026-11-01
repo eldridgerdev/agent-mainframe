@@ -521,7 +521,7 @@ pub(crate) mod tests {
         std::fs::write(repo.join(".amf/scratch.txt"), "generated\n").unwrap();
         std::fs::write(repo.join(".opencode/plugins/change-tracker.js"), "//\n").unwrap();
         std::fs::write(repo.join("src/mine.rs"), "fn main() {}\n").unwrap();
-        // A committed managed path is someone's chosen work, not AMF's.
+        // A staged managed path is someone's chosen work, not AMF's.
         std::fs::write(repo.join(".claude/amf-hook-state.json"), "{}\n").unwrap();
         git(&repo, &["add", ".claude/amf-hook-state.json"]);
         let view = load(&mut gui, target, DiffOptions::default()).unwrap();

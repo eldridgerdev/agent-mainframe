@@ -78,7 +78,7 @@ export function buildRows(files: DiffFile[], opts: { collapsed: ReadonlySet<stri
 export const allDirs = (files: DiffFile[]): string[] =>
   [...new Set(files.filter((f) => !f.amf_generated).flatMap((f) => ancestorDirs(f.path)))];
 
-/** `Z`: fold every directory, or unfold all when anything is already folded. */
+/** Fold every directory, or unfold all when anything is already folded. */
 export const toggleAllFolds = (files: DiffFile[], collapsed: ReadonlySet<string>): Set<string> =>
   collapsed.size > 0 ? new Set() : new Set(allDirs(files));
 

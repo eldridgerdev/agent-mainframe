@@ -2070,6 +2070,30 @@ async fn pr_workspace_prepare_fix(
 }
 
 #[tauri::command]
+async fn pr_workspace_review_open(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    number: u32,
+) -> Result<PrReviewView, GuiError> {
+    gui_pr_workspace::review_open(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+        number,
+    )
+}
+
+#[tauri::command]
+async fn pr_workspace_review_close(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<(), GuiError> {
+    gui_pr_workspace::review_close(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &workflow_id,
+    )
+}
+
+#[tauri::command]
 async fn pr_workspace_files(
     state: State<'_, AppState>,
     workflow_id: String,
@@ -2510,6 +2534,8 @@ fn main() {
             pr_workspace_ai_snapshot,
             pr_workspace_ai_act,
             pr_workspace_files,
+            pr_workspace_review_open,
+            pr_workspace_review_close,
             pr_workspace_prepare_fix,
             pr_workspace_fix_targets,
             syntax_install_status,

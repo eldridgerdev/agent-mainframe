@@ -61,6 +61,11 @@ pub(crate) struct PrWorkspaceContext {
     pub(crate) parked_threads: Option<Box<AppMode>>,
     pub(crate) parked_ai: Option<Box<AppMode>>,
     pub(crate) ai_active: bool,
+    /// The Files tab is editing a PR review. The Threads mode it displaced is
+    /// held in `files_prior`, a slot of its own so an AI snapshot borrowing
+    /// `parked_threads` can never clobber it.
+    pub(crate) files_review: bool,
+    pub(crate) files_prior: Option<Box<AppMode>>,
     result_epoch: String,
     checkout_identity: CheckoutIdentity,
 }
@@ -135,6 +140,8 @@ pub fn begin(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<String> {
         parked_threads: None,
         parked_ai: None,
         ai_active: false,
+        files_review: false,
+        files_prior: None,
         result_epoch: uuid::Uuid::new_v4().to_string(),
         checkout_identity: identity,
     });
@@ -222,8 +229,77 @@ fn mode_matches_pr(mode: &AppMode, workdir: &Path, pr: &PrRef) -> bool {
     }
 }
 
+/// Open the Files tab's comment editor on the selected PR, pinned to the head
+/// the workspace loaded. The Threads workflow is parked until it is closed.
+pub fn review_open(
+    gui: &mut GuiHandle,
+    id: &str,
+    number: u32,
+) -> GuiResult<crate::gui_pr_review::PrReviewView> {
+    check(gui, id)?;
+    let (pr, project_id, active, ai_active) = {
+        let context = gui.pr_workspace_context.as_ref().unwrap();
+        (
+            context.pr.clone(),
+            context.target.project_id.clone(),
+            context.files_review,
+            context.ai_active,
+        )
+    };
+    let pr = pr
+        .filter(|pr| pr.number == number)
+        .ok_or_else(|| GuiError::conflict("Select this PR in Threads first"))?;
+    if ai_active {
+        return Err(GuiError::conflict("Leave the AI tab before opening Files"));
+    }
+    if active {
+        // StrictMode replays mount effects; the same review is still ours.
+        let review_id = gui
+            .pr_review_context
+            .as_ref()
+            .map(|c| c.workflow_id())
+            .ok_or_else(|| GuiError::conflict("The Files review is no longer open"))?;
+        return crate::gui_pr_review::poll(gui, &review_id);
+    }
+    let (app, workspace) = gui.app_and_pr_workspace();
+    let prior = std::mem::replace(&mut app.mode, AppMode::Normal);
+    let context = workspace.as_mut().unwrap();
+    context.files_prior = Some(Box::new(prior));
+    match crate::gui_pr_review::begin_embedded(gui, project_id, pr.number, pr.head_sha) {
+        Ok(view) => {
+            gui.pr_workspace_context.as_mut().unwrap().files_review = true;
+            Ok(view)
+        }
+        Err(error) => {
+            let (app, workspace) = gui.app_and_pr_workspace();
+            if let Some(prior) = workspace.as_mut().and_then(|c| c.files_prior.take()) {
+                app.mode = *prior;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Close the Files tab's comment editor (a no-op when it is not open) and give
+/// Threads its mode back. Refuses while GitHub is answering a post.
+pub fn review_close(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
+    check(gui, id)?;
+    if !gui.pr_workspace_context.as_ref().unwrap().files_review {
+        return Ok(());
+    }
+    crate::gui_pr_review::close_embedded(gui)?;
+    let (app, workspace) = gui.app_and_pr_workspace();
+    let context = workspace.as_mut().unwrap();
+    context.files_review = false;
+    if let Some(prior) = context.files_prior.take() {
+        app.mode = *prior;
+    }
+    Ok(())
+}
+
 pub fn switch_to_ai(gui: &mut GuiHandle, id: &str, number: u32) -> GuiResult<()> {
     check(gui, id)?;
+    review_close(gui, id)?;
     let (workdir, pr, already_ai) = {
         let context = gui.pr_workspace_context.as_ref().unwrap();
         (
@@ -266,6 +342,7 @@ pub fn switch_to_ai(gui: &mut GuiHandle, id: &str, number: u32) -> GuiResult<()>
 
 pub fn switch_to_threads(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
     check(gui, id)?;
+    review_close(gui, id)?;
     let (app, workspace) = gui.app_and_pr_workspace();
     if let Some(context) = workspace.as_mut()
         && context.ai_active
@@ -283,6 +360,7 @@ pub fn switch_to_threads(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
 
 pub fn close(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
     check(gui, id)?;
+    review_close(gui, id)?;
     let (app, workspace) = gui.app_and_pr_workspace();
     let waiting_for_user = |mode: &AppMode| {
         matches!(mode, AppMode::PromptPrecall(pending)

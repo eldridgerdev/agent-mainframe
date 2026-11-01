@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Review comments can be written on the PR Workspace Files tab.** The Files tab
+  is now the same diff you read: click a line (Shift-click for a range inside one
+  hunk) to comment, add a severity or suggest a replacement, and resolve threads.
+  Saved threads show inline under their lines. They are the same shared draft
+  as PR Review and the terminal UI, with the same rules (GitHub's own diff lines,
+  one hunk per range, no suggestion over removed lines, draft changed elsewhere).
+  Files is pinned to the PR head the workspace loaded and refuses to edit if the PR
+  has moved. The summary, preview and posting stay in PR Review; *Preview and
+  post in PR Review* takes you there. If the PR cannot be reviewed from Files,
+  the old read-only diff is shown with the reason.
 - **Changes in the desktop app now has TUI-style keys and a remembered layout.**
   While reading a diff, `j`/`k` walk the file tree, `g`/`G` jump to the first or
   last file, `z`/`Z`/`h`/`l` fold folders, `.` shows or hides the AMF files group,

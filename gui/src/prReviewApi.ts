@@ -13,6 +13,10 @@ export interface PrReviewView {
   project_name: string;
   head_sha: string | null;
   stage: "pick" | "review";
+  /** Opened from PR Workspace's Files tab: comment editing only; summary, preview and posting stay in PR Review. */
+  embedded?: boolean;
+  /** Why the Files review is refused (PR not listed, or its head differs from the one the workspace loaded). */
+  pin_error?: string | null;
   entries: { number: number; title: string; author: string; head_ref: string; is_draft: boolean; has_draft: boolean; updated: boolean }[];
   loading: boolean;
   number: number | null;

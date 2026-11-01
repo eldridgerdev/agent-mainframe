@@ -226,3 +226,56 @@ it("keeps the editor and shows the failure when saving a thread fails", async ()
   await screen.findByText("drafts are read-only");
   expect((screen.getByRole("textbox", { name: "Line comment" }) as HTMLTextAreaElement).value).toBe("Keep me");
 });
+
+const embeddedProps = () => ({ workflowId: "workspace", number: 9, onDirtyChange: vi.fn(), onOpenReview: vi.fn(), fallback: <p>Read-only diff</p> });
+const embeddedView = (over: Partial<PrReviewView> = {}): PrReviewView => ({ ...withHunks([thread({ text: "Saved note", start: loc(7, 7), end: loc(7, 7) })]), embedded: true, pin_error: null, ...over, });
+
+it("hosts line comments in the Files tab without the dialog's summary, preview or posting", async () => {
+  const props = embeddedProps();
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "pr_workspace_review_open") return embeddedView();
+    if (command === "pr_review_act") return { ...embeddedView(), revision: 2 };
+    throw new Error(`Unexpected command ${command} ${JSON.stringify(args)}`);
+  });
+  render(<PrReviewPanel projectId="project" onClose={vi.fn()} embedded={props} />);
+  expect(await screen.findByRole("region", { name: "PR Files review" })).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_workspace_review_open", { workflowId: "workspace", number: 9 });
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "pr_review_begin")).toBe(false);
+  // The saved thread shows inline, under its line, in the diff.
+  const inline = document.querySelector(".review-inline-thread");
+  expect(inline?.textContent).toContain("Saved note");
+  expect(inline?.closest("tr")?.previousElementSibling?.textContent).toContain("seven");
+  expect(screen.queryByRole("textbox", { name: "Review summary" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Preview submission" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Back to pull requests" })).toBeNull();
+  // Authoring uses the same action and validation as the dialog.
+  pick("Select line 5");
+  fireEvent.click(screen.getByRole("button", { name: "Comment on selection" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Line comment" }), { target: { value: "From Files" } });
+  expect(props.onDirtyChange).toHaveBeenLastCalledWith(true);
+  fireEvent.click(screen.getByRole("button", { name: "Save line comment" }));
+  await waitFor(() => expect(actions()).toEqual([{ kind: "line_comment", path: "lib.rs", start: loc(5, 5), end: loc(5, 5), text: "From Files", severity: "suggestion" }]));
+  await waitFor(() => expect(props.onDirtyChange).toHaveBeenLastCalledWith(false));
+  fireEvent.click(screen.getByRole("button", { name: "Preview and post in PR Review…" }));
+  expect(props.onOpenReview).toHaveBeenCalledOnce();
+});
+
+it("refuses editing and says why when the Files PR head no longer matches", async () => {
+  const props = embeddedProps();
+  const message = "PR #9 is now at 11112222, but PR Workspace loaded aaaabbbb. Comments are pinned to one head, so editing is refused";
+  vi.mocked(invoke).mockResolvedValue(embeddedView({ pin_error: message }));
+  render(<PrReviewPanel projectId="project" onClose={vi.fn()} embedded={props} />);
+  expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
+  expect((screen.getByRole("button", { name: "Select line 5" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Preview and post in PR Review…" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByText("Read-only diff")).toBeNull();
+});
+
+it("falls back to the read-only diff when the PR cannot be reviewed from Files", async () => {
+  const props = embeddedProps();
+  vi.mocked(invoke).mockResolvedValue({ ...base, embedded: true, pin_error: "PR #9 is not in the open pull requests PR Review lists", entries: [] });
+  render(<PrReviewPanel projectId="project" onClose={vi.fn()} embedded={props} />);
+  expect(await screen.findByText("Read-only diff")).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toContain("not in the open pull requests");
+  expect(screen.queryByRole("button", { name: /#9 Teammate change/ })).toBeNull();
+});

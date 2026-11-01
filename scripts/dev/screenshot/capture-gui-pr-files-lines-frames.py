@@ -255,6 +255,8 @@ try:
     assert ai_calls() == [] and gh_writes() == []
     click("Keep editing")
     click("Back to pull requests")
+    # The dialog is not dismissable while its action is in flight.
+    wait('document.querySelectorAll(".pr-entry").length>=1 && !!document.querySelector("[role=dialog] button[aria-label=Close]")')
     evaluate('document.querySelector("[role=dialog] button[aria-label=Close]").click()')
     wait('!document.querySelector("[role=dialog]")')
     # A head that moved after the workspace loaded the PR refuses editing.

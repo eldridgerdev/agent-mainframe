@@ -79,7 +79,10 @@ use agent_mainframe::gui_syntax::{
 use agent_mainframe::gui_terminal::{
     TerminalFrame, TerminalHandle, TerminalHistory, WheelDirection,
 };
-use agent_mainframe::gui_todos::{self, TodoListView, TodoPriority, TodoScopeRequest, TodoStatus};
+use agent_mainframe::gui_todos::{
+    self, ScratchpadEditRequest, ScratchpadOutcome, TodoEditOutcome, TodoEditRequest, TodoListView,
+    TodoPriority, TodoScopeRequest, TodoStatus,
+};
 use agent_mainframe::project::{AgentKind, SessionKind, VibeMode};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -1172,6 +1175,40 @@ fn todo_add(
         body.as_deref(),
         priority,
     )
+}
+
+#[tauri::command]
+fn todo_update(
+    state: State<AppState>,
+    request: TodoEditRequest,
+) -> Result<TodoEditOutcome, GuiError> {
+    gui_todos::update(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &request,
+    )
+}
+
+#[tauri::command]
+fn todo_update_scratchpad(
+    state: State<AppState>,
+    request: ScratchpadEditRequest,
+) -> Result<ScratchpadOutcome, GuiError> {
+    gui_todos::update_scratchpad(
+        &state.0.lock().expect("gui handle mutex poisoned"),
+        &request,
+    )
+}
+
+#[tauri::command]
+fn todo_work_target(
+    state: State<AppState>,
+    todo_id: String,
+) -> Result<agent_mainframe::gui_contract::TodoWorkTarget, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .todo_work_target(&todo_id)
 }
 
 #[tauri::command]
@@ -2473,6 +2510,9 @@ fn main() {
             todo_list,
             todo_add,
             todo_set_status,
+            todo_update,
+            todo_update_scratchpad,
+            todo_work_target,
             todo_delete,
             todo_move,
             todo_copy,

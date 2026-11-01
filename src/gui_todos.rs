@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 // comment already states, applied at the type level rather than the module
 // level since `db` holds several unrelated submodules that should not all
 // become reachable just to export this one's types.
-pub use crate::db::todos::{Todo, TodoList, TodoPriority, TodoScope, TodoStatus};
+pub use crate::db::todos::{Todo, TodoFields, TodoList, TodoPriority, TodoScope, TodoStatus};
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
 
 /// A scope key as sent by the frontend. `Worktree` carries a `FeatureTarget`
@@ -134,6 +134,162 @@ pub fn set_status(gui: &GuiHandle, todo_id: &str, status: TodoStatus) -> GuiResu
         .map_err(GuiError::from)
 }
 
+/// An edit of a TODO's title, notes and priority. `base` is what the editor
+/// opened with; the write only lands if the row still holds it (and still sits
+/// in `list_id`), so a stale editor can never silently overwrite a newer edit.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TodoEditRequest {
+    pub list_id: String,
+    pub todo_id: String,
+    pub base: TodoFields,
+    pub fields: TodoFields,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum TodoEditOutcome {
+    Saved {
+        todo: Todo,
+    },
+    /// The TODO changed (or moved lists) since the editor opened. `current`
+    /// is what is stored now; nothing was written.
+    Conflict {
+        current: Todo,
+    },
+    Gone,
+}
+
+const MAX_TITLE_CHARS: usize = 300;
+
+fn normalize_fields(fields: &TodoFields) -> GuiResult<TodoFields> {
+    let title = fields.title.trim().to_string();
+    if title.is_empty() {
+        return Err(invalid("A TODO needs a title"));
+    }
+    if title.contains(['\n', '\r']) {
+        return Err(invalid("A TODO title is one line; put detail in the notes"));
+    }
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Err(invalid(format!(
+            "A TODO title is limited to {MAX_TITLE_CHARS} characters; put detail in the notes"
+        )));
+    }
+    let body = fields
+        .body
+        .as_deref()
+        .map(str::trim_end)
+        .filter(|b| !b.trim().is_empty())
+        .map(str::to_string);
+    Ok(TodoFields {
+        title,
+        body,
+        priority: fields.priority,
+    })
+}
+
+/// Edit title, notes and priority. Status, agent association and links are
+/// never written here (only `TodoWorkState` transitions change those).
+pub fn update(gui: &GuiHandle, request: &TodoEditRequest) -> GuiResult<TodoEditOutcome> {
+    let new = normalize_fields(&request.fields)?;
+    let db = gui.db()?;
+    let wrote = db
+        .update_todo_fields_if(&request.todo_id, &request.list_id, &request.base, &new)
+        .map_err(GuiError::from)?;
+    let current = db
+        .find_todo_by_id(&request.todo_id)
+        .map_err(GuiError::from)?;
+    Ok(match (wrote, current) {
+        (true, Some(todo)) => TodoEditOutcome::Saved { todo },
+        (false, Some(current)) => TodoEditOutcome::Conflict { current },
+        (_, None) => TodoEditOutcome::Gone,
+    })
+}
+
+/// A scratchpad edit. `list_id` is `None` when the editor opened on a scope
+/// with no list yet; `base` is the scratchpad text it opened with.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScratchpadEditRequest {
+    pub scope: TodoScopeRequest,
+    pub host_feature_id: Option<String>,
+    pub list_id: Option<String>,
+    pub base: Option<String>,
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ScratchpadOutcome {
+    Saved {
+        list_id: Option<String>,
+        carry_over: Option<String>,
+    },
+    Conflict {
+        list_id: Option<String>,
+        current: Option<String>,
+    },
+    Gone,
+}
+
+fn normalize_scratchpad(text: Option<&str>) -> Option<String> {
+    text.map(str::trim_end)
+        .filter(|t| !t.trim().is_empty())
+        .map(str::to_string)
+}
+
+pub fn update_scratchpad(
+    gui: &GuiHandle,
+    request: &ScratchpadEditRequest,
+) -> GuiResult<ScratchpadOutcome> {
+    let scope = resolve_scope(gui, &request.scope)?;
+    let db = gui.db()?;
+    let new = normalize_scratchpad(request.text.as_deref());
+    let base = normalize_scratchpad(request.base.as_deref());
+    let current = db.todo_list(&scope).map_err(GuiError::from)?;
+    let list = match (current, request.list_id.as_deref()) {
+        (Some(list), Some(id)) if list.id == id => list,
+        (Some(list), None) => {
+            return Ok(ScratchpadOutcome::Conflict {
+                list_id: Some(list.id),
+                current: list.carry_over,
+            });
+        }
+        (Some(list), Some(_)) => {
+            return Ok(ScratchpadOutcome::Conflict {
+                list_id: Some(list.id),
+                current: list.carry_over,
+            });
+        }
+        (None, Some(_)) => return Ok(ScratchpadOutcome::Gone),
+        // An untouched scope has no row; clearing nothing writes nothing.
+        (None, None) if new.is_none() => {
+            return Ok(ScratchpadOutcome::Saved {
+                list_id: None,
+                carry_over: None,
+            });
+        }
+        (None, None) => db
+            .load_or_create_todo_list(&scope, request.host_feature_id.as_deref())
+            .map_err(GuiError::from)?,
+    };
+    if db
+        .set_todo_carry_over_if(&list.id, base.as_deref(), new.as_deref())
+        .map_err(GuiError::from)?
+    {
+        return Ok(ScratchpadOutcome::Saved {
+            list_id: Some(list.id),
+            carry_over: new,
+        });
+    }
+    let latest = db.todo_list_by_id(&list.id).map_err(GuiError::from)?;
+    Ok(match latest {
+        Some(list) => ScratchpadOutcome::Conflict {
+            list_id: Some(list.id),
+            current: list.carry_over,
+        },
+        None => ScratchpadOutcome::Gone,
+    })
+}
+
 pub fn reorder(gui: &GuiHandle, ordered_ids: &[String]) -> GuiResult<()> {
     gui.db()?.reorder_todos(ordered_ids).map_err(GuiError::from)
 }
@@ -179,6 +335,13 @@ pub fn copy_to(
 
 pub fn delete(gui: &GuiHandle, todo_id: &str) -> GuiResult<()> {
     gui.db()?.delete_todo(todo_id).map_err(GuiError::from)
+}
+
+fn invalid(message: impl Into<String>) -> GuiError {
+    GuiError {
+        kind: crate::gui_contract::GuiErrorKind::Internal,
+        message: message.into(),
+    }
 }
 
 fn not_found(todo_id: &str) -> GuiError {
@@ -381,5 +544,221 @@ mod tests {
         let after_delete = load(&gui, &request).unwrap().unwrap();
         assert_eq!(after_delete.todos.len(), 1);
         assert_eq!(after_delete.todos[0].id, b);
+    }
+
+    fn fields(title: &str, body: Option<&str>, priority: TodoPriority) -> TodoFields {
+        TodoFields {
+            title: title.to_string(),
+            body: body.map(str::to_string),
+            priority,
+        }
+    }
+
+    fn seeded(gui: &GuiHandle, target: &FeatureTarget) -> Todo {
+        add(
+            gui,
+            &TodoScopeRequest::Worktree(target.clone()),
+            Some(&target.feature_id),
+            "original",
+            Some("notes"),
+            TodoPriority::Med,
+        )
+        .unwrap()
+        .todos
+        .remove(0)
+    }
+
+    #[test]
+    fn edit_saves_text_and_priority_but_never_the_work_state() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        // A launch claim lands between opening the editor and saving.
+        assert!(
+            gui.db()
+                .unwrap()
+                .reserve_todo_agent_launch(&todo.id)
+                .unwrap()
+        );
+
+        let outcome = update(
+            &gui,
+            &TodoEditRequest {
+                list_id: todo.list_id.clone(),
+                todo_id: todo.id.clone(),
+                base: TodoFields::of(&todo),
+                fields: fields("  renamed  ", Some("new notes\n"), TodoPriority::High),
+            },
+        )
+        .unwrap();
+        let TodoEditOutcome::Saved { todo: saved } = outcome else {
+            panic!("expected saved");
+        };
+        assert_eq!(saved.title, "renamed");
+        assert_eq!(saved.body.as_deref(), Some("new notes"));
+        assert_eq!(saved.priority, TodoPriority::High);
+        assert_eq!(saved.work.status, TodoStatus::InProgress);
+    }
+
+    #[test]
+    fn a_stale_edit_is_refused_with_the_current_value() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let request = |title: &str| TodoEditRequest {
+            list_id: todo.list_id.clone(),
+            todo_id: todo.id.clone(),
+            base: TodoFields::of(&todo),
+            fields: fields(title, None, TodoPriority::Low),
+        };
+        assert!(matches!(
+            update(&gui, &request("first")).unwrap(),
+            TodoEditOutcome::Saved { .. }
+        ));
+
+        // Same base again: the second editor lost the race.
+        let TodoEditOutcome::Conflict { current } = update(&gui, &request("second")).unwrap()
+        else {
+            panic!("expected conflict");
+        };
+        assert_eq!(current.title, "first");
+        assert_eq!(
+            load(&gui, &TodoScopeRequest::Worktree(target))
+                .unwrap()
+                .unwrap()
+                .todos[0]
+                .title,
+            "first"
+        );
+    }
+
+    #[test]
+    fn an_edit_after_a_move_conflicts_and_after_delete_reports_gone() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let moved = move_to(&gui, &todo.id, &TodoScopeRequest::Global).unwrap();
+        let req = TodoEditRequest {
+            list_id: todo.list_id.clone(),
+            todo_id: todo.id.clone(),
+            base: TodoFields::of(&todo),
+            fields: fields("late", None, TodoPriority::Med),
+        };
+        let TodoEditOutcome::Conflict { current } = update(&gui, &req).unwrap() else {
+            panic!("expected conflict");
+        };
+        assert_eq!(current.list_id, moved.list.id);
+        assert_eq!(current.title, "original");
+
+        delete(&gui, &todo.id).unwrap();
+        assert!(matches!(update(&gui, &req).unwrap(), TodoEditOutcome::Gone));
+    }
+
+    #[test]
+    fn edit_rejects_blank_and_multiline_titles() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        for bad in ["   ", "a\nb"] {
+            let err = update(
+                &gui,
+                &TodoEditRequest {
+                    list_id: todo.list_id.clone(),
+                    todo_id: todo.id.clone(),
+                    base: TodoFields::of(&todo),
+                    fields: fields(bad, None, TodoPriority::Med),
+                },
+            )
+            .unwrap_err();
+            assert!(err.message.contains("title"), "{}", err.message);
+        }
+    }
+
+    #[test]
+    fn scratchpad_creates_the_list_lazily_and_refuses_stale_writes() {
+        let (gui, target, _tmp) = fixture();
+        let scope = TodoScopeRequest::Worktree(target.clone());
+        let req = |list_id: Option<String>, base: Option<&str>, text: Option<&str>| {
+            ScratchpadEditRequest {
+                scope: scope.clone(),
+                host_feature_id: Some(target.feature_id.clone()),
+                list_id,
+                base: base.map(str::to_string),
+                text: text.map(str::to_string),
+            }
+        };
+        // Clearing an untouched scope leaves no row behind.
+        assert!(matches!(
+            update_scratchpad(&gui, &req(None, None, Some("  "))).unwrap(),
+            ScratchpadOutcome::Saved { list_id: None, .. }
+        ));
+        assert!(load(&gui, &scope).unwrap().is_none());
+
+        let ScratchpadOutcome::Saved {
+            list_id,
+            carry_over,
+        } = update_scratchpad(&gui, &req(None, None, Some("left off at X"))).unwrap()
+        else {
+            panic!("expected saved");
+        };
+        assert_eq!(carry_over.as_deref(), Some("left off at X"));
+        let list_id = list_id.unwrap();
+
+        // An editor opened before that write still thinks the pad is empty.
+        let ScratchpadOutcome::Conflict { current, .. } =
+            update_scratchpad(&gui, &req(Some(list_id.clone()), None, Some("mine"))).unwrap()
+        else {
+            panic!("expected conflict");
+        };
+        assert_eq!(current.as_deref(), Some("left off at X"));
+
+        assert!(matches!(
+            update_scratchpad(&gui, &req(Some(list_id), Some("left off at X"), None)).unwrap(),
+            ScratchpadOutcome::Saved {
+                carry_over: None,
+                ..
+            }
+        ));
+        assert_eq!(load(&gui, &scope).unwrap().unwrap().list.carry_over, None);
+    }
+
+    #[test]
+    fn jump_prefers_the_linked_feature_then_a_known_session_and_heals_dead_links() {
+        let (mut gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let db_todo = todo.id.clone();
+        assert!(matches!(
+            gui.todo_work_target(&db_todo).unwrap(),
+            crate::gui_contract::TodoWorkTarget::None { .. }
+        ));
+
+        // Link to a feature that no longer exists: cleared, then reported.
+        gui.db()
+            .unwrap()
+            .set_todo_linked_feature(&db_todo, "gone")
+            .unwrap();
+        let crate::gui_contract::TodoWorkTarget::None { message } =
+            gui.todo_work_target(&db_todo).unwrap()
+        else {
+            panic!("expected none");
+        };
+        assert!(message.contains("link was cleared"));
+        assert!(
+            gui.db()
+                .unwrap()
+                .find_todo_by_id(&db_todo)
+                .unwrap()
+                .unwrap()
+                .linked_feature_id
+                .is_none()
+        );
+
+        // A live linked feature without agent sessions opens the feature.
+        gui.db()
+            .unwrap()
+            .set_todo_linked_feature(&db_todo, &target.feature_id)
+            .unwrap();
+        let crate::gui_contract::TodoWorkTarget::Feature { target: found } =
+            gui.todo_work_target(&db_todo).unwrap()
+        else {
+            panic!("expected feature");
+        };
+        assert_eq!(found.feature_id, target.feature_id);
     }
 }

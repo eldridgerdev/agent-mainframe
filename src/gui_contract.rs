@@ -317,6 +317,15 @@ pub enum SessionRecoveryChoice {
     Pick,
 }
 
+/// Where a TODO's existing work can be reached.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TodoWorkTarget {
+    Session { target: SessionTarget },
+    Feature { target: FeatureTarget },
+    None { message: String },
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TodoAgentLaunchResponse {
     pub target: SessionTarget,
@@ -1029,6 +1038,74 @@ impl GuiHandle {
             )));
         }
         Ok(())
+    }
+
+    /// Where a TODO's work already lives, mirroring the TUI's `g`/`Enter`
+    /// resolution order: a linked feature (a plan run created it) wins and
+    /// opens on its first agent session, otherwise a session known to exist in
+    /// any feature. A feature link whose feature is gone is cleared so the
+    /// dead link stops holding the item back from "implement next". Status is
+    /// never touched.
+    pub fn todo_work_target(&mut self, todo_id: &str) -> GuiResult<TodoWorkTarget> {
+        self.refresh_store()?;
+        let todo = self
+            .db()?
+            .find_todo_by_id(todo_id)
+            .map_err(GuiError::from)?
+            .ok_or_else(|| GuiError::not_found(format!("TODO '{todo_id}' was not found")))?;
+        let mut note = None;
+        if let Some(feature_id) = todo.linked_feature_id.as_deref() {
+            match self.app.feature_indices_by_id(feature_id) {
+                Some((pi, fi)) => {
+                    let project = &self.app.store.projects[pi];
+                    let feature = &project.features[fi];
+                    if let Some(session) =
+                        feature.sessions.iter().find(|s| s.kind.is_agent_harness())
+                    {
+                        return Ok(TodoWorkTarget::Session {
+                            target: SessionTarget {
+                                project_id: project.id.clone(),
+                                feature_id: feature.id.clone(),
+                                session_id: session.id.clone(),
+                            },
+                        });
+                    }
+                    return Ok(TodoWorkTarget::Feature {
+                        target: FeatureTarget {
+                            project_id: project.id.clone(),
+                            feature_id: feature.id.clone(),
+                        },
+                    });
+                }
+                None => {
+                    self.db()?
+                        .clear_todo_linked_feature_for_todo(todo_id)
+                        .map_err(GuiError::from)?;
+                    note = Some(
+                        "The feature planned for this TODO no longer exists; the link was cleared"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        if let Some(session_id) = todo.work.agent_session_id.as_deref()
+            && let Some((pi, fi, si)) = self.app.session_indices_by_id(session_id)
+        {
+            let project = &self.app.store.projects[pi];
+            let feature = &project.features[fi];
+            return Ok(TodoWorkTarget::Session {
+                target: SessionTarget {
+                    project_id: project.id.clone(),
+                    feature_id: feature.id.clone(),
+                    session_id: feature.sessions[si].id.clone(),
+                },
+            });
+        }
+        Ok(TodoWorkTarget::None {
+            message: note.unwrap_or_else(|| {
+                "No work has started for this TODO, or its session no longer exists".to_string()
+            }),
+        })
     }
 
     /// Launch a TODO's agent in an explicit feature, using the same session

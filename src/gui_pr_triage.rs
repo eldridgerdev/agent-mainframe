@@ -1703,8 +1703,7 @@ fn confirm_batch_submission(
         .position(|s| s.id == target.session_id)
         .ok_or_else(|| GuiError::conflict("The agent session is gone"))?;
     let session = &feature.sessions[si];
-    if feature.status == crate::project::ProjectStatus::Stopped
-        || session.stopped
+    if session.stopped
         || !app
             .tmux
             .window_exists(&feature.tmux_session, &session.tmux_window)
@@ -1782,11 +1781,11 @@ fn confirm_batch_submission(
         .map_err(|e| GuiError::from(e.context("Could not confirm terminal delivery. Inspect the agent before preparing another fix; it may have received this prompt")))?;
     let batch_id = uuid::Uuid::new_v4().to_string();
     for id in &ids {
-        if let Some(c) = review_mut(app)?
-            .review
-            .comments
-            .iter_mut()
-            .find(|c| c.id == *id)
+        // The review state was resolved above (`number`) and nothing since
+        // can remove it; never fail after the prompt has been delivered.
+        if let Some(c) = review_mut(app)
+            .ok()
+            .and_then(|state| state.review.comments.iter_mut().find(|c| c.id == *id))
         {
             c.triage = TriageState::Fixing;
             c.batch_id = Some(batch_id.clone());

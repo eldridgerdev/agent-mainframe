@@ -334,7 +334,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             <pre className="doc pr-posted">{view.batch_fix.submission_prompt}</pre>
             <button className="btn btn-primary" disabled={busy}
               onClick={() => void act({ kind: "confirm_batch_submission", digest: view.batch_fix!.digest }).then((ok) => { if (ok) setMarked([]); })}>Send batch fix to agent</button>
-            <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_batch_fix" })}>Cancel batch fix</button>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => {
+              if (batchPrompt && batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
+              else void act({ kind: "cancel_batch_fix" });
+            }}>Cancel batch fix</button>
           </div>}
           {!view.batch_fix.submission_prompt && <button className="btn btn-secondary" disabled={busy} onClick={() => {
             if (batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
@@ -371,7 +374,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
             {comments.map((comment, index) => <div key={comment.id}>
               {index === review.conversation_start && <div className="pr-section">Conversation</div>}
               {canBatch && batchable(comment) && <label className="row small">
-                <input type="checkbox" checked={marked.includes(comment.id)} disabled={locked || view?.reply != null}
+                <input type="checkbox" checked={marked.includes(comment.id)} disabled={locked || view?.reply != null || investigate !== null}
                   aria-label={`Select comment by ${comment.author} for batch fix`}
                   onChange={(event) => setMarked((current) => event.target.checked ? [...current, comment.id] : current.filter((id) => id !== comment.id))} /> Select for batch fix
               </label>}

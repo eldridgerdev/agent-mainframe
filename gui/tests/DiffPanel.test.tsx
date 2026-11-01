@@ -124,3 +124,34 @@ it("keeps no-newline markers once in split view and leaves unmatched additions o
   expect(screen.getAllByText("\\ No newline at end of file")).toHaveLength(1);
   expect(screen.getByText("\\ No newline at end of file").closest("td")!.colSpan).toBe(4);
 });
+
+const treeView: DiffView = { ...view, files: [
+  ...view.files.map((item) => ({ ...item, path: `src/${item.path}`, old_path: null })),
+  { path: "README.md", old_path: null, status: "modified", additions: 1, deletions: 0, is_binary: false, patch: "", hunks: [], amf_generated: false },
+  { path: ".amf/scratch.txt", old_path: null, status: "untracked", additions: 1, deletions: 0, is_binary: false, patch: "", hunks: [], amf_generated: true },
+] };
+
+it("folds directories and the AMF group, searches inside folds, and keeps the selection across refresh", async () => {
+  vi.mocked(invoke).mockResolvedValue(treeView);
+  mount();
+  await screen.findByText("+new 🦀");
+  const nav = screen.getByRole("navigation", { name: "Changed files" });
+  expect(within(nav).getByRole("button", { name: "AMF files group" }).getAttribute("aria-expanded")).toBe("false");
+  expect(within(nav).queryByText(".amf/scratch.txt")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Show AMF files (1)" }));
+  fireEvent.click(within(nav).getByText(".amf/scratch.txt"));
+  expect(screen.getByRole("button", { name: "Hide AMF files (1)" }).getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(within(nav).getByRole("button", { name: "Folder src" }));
+  expect(within(nav).queryByText("mode.sh")).toBeNull();
+  // The selected AMF file stays selected while another folder folds.
+  expect(within(nav).getByText(".amf/scratch.txt").closest("button")!.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.change(screen.getByRole("textbox", { name: "Filter files" }), { target: { value: "mode" } });
+  fireEvent.click(within(nav).getByText("mode.sh"));
+  fireEvent.change(screen.getByRole("textbox", { name: "Filter files" }), { target: { value: "" } });
+  expect(within(nav).queryByText("mode.sh")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2));
+  expect(screen.getByText("src/mode.sh")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Unfold folders" }));
+  expect(within(nav).getByText("mode.sh").closest("button")!.getAttribute("aria-pressed")).toBe("true");
+});

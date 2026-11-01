@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **Changes in the desktop app is now a folder tree.** The changed-files list
+  groups files by directory with fold/expand (and *Fold folders* for all),
+  and AMF's own generated files (hooks, `.amf/` scratch, injected skills) sit
+  in a folded *AMF files* group, using the same rule as the TUI. Filtering
+  still finds files inside folded folders and the folded group, and your
+  selected file stays selected across refreshes. Read-only; no keys or
+  layout settings changed.
 - **Fork a feature from the desktop app.** *More feature actions → Fork
   feature…* previews the uncommitted changes that will be copied, states that Git
   staging is not copied, and says exactly why the conversation can or cannot be

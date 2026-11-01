@@ -1,0 +1,6 @@
+# Real native GUI, isolated Git checkout/database, no live or paid agents.
+# Changes file tree: fold/expand, filter inside folds, AMF-generated files group.
+note:The isolated TUI confirms the capture harness is ready before the native GUI scenario runs.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:AMF_GUI_CAPTURE_PORT=1440 TAURI_CONFIG='{"build":{"devUrl":"http://localhost:1440"}}' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-changes-tree.py" AMF_GUI_CAPTURE_FRAMES="$SCRIPT_DIR/capture-gui-changes-tree-frames.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

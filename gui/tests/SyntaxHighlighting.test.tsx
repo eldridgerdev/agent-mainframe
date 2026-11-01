@@ -144,6 +144,8 @@ it("refetches the diff after an install so the file gains colours", async () => 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
   render(<QueryClientProvider client={client}><DiffPanel target={diffView.target} onClose={vi.fn()} /></QueryClientProvider>);
+  // The tree lists folders first, so the root-level Python file is chosen explicitly.
+  fireEvent.click(await screen.findByRole("button", { name: /tool\.py modified/ }));
   fireEvent.click(await screen.findByRole("button", { name: "Install Python parser…" }));
   fireEvent.click(screen.getByRole("button", { name: "Install parser" }));
   await screen.findByText(/Installing the Python parser/);
@@ -152,7 +154,7 @@ it("refetches the diff after an install so the file gains colours", async () => 
   expect(loads).toBe(2);
   expect(screen.getByText("Python").className).toContain("syntax-chip-on");
   // The Rust file was already highlighted.
-  fireEvent.click(screen.getByRole("button", { name: /src\/lib.rs modified/ }));
+  fireEvent.click(screen.getByRole("button", { name: /lib\.rs modified/ }));
   expect(screen.getByText("Rust").className).toContain("syntax-chip-on");
   expect(codeCell("-   still a comment */").querySelector(".syn-comment")).toBeTruthy();
 });

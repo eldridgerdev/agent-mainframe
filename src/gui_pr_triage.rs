@@ -23,7 +23,7 @@ use crate::app::pr_review::{
     CommentKind, INVESTIGATION_CONTEXT_MAX_LEN, PrComment, PrFetchFailure, PrInvestigationStatus,
     PrSortMode, ReplyDraftRequest, ReplyKind, ReplyTarget, TriageState,
     investigation_findings_for_prompt, investigation_prompt_from_meta, investigation_todo_seed,
-    strip_bot_boilerplate, with_reply_draft_handoff,
+    strip_bot_boilerplate, todo_source_marker, todo_source_prefix, with_reply_draft_handoff,
 };
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
@@ -1084,13 +1084,20 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
     };
     let mut review = review_state(&app.mode).map(|state| review_view(state, investigating));
     if let (Some(review), Some(state)) = (review.as_mut(), review_state(&app.mode)) {
+        // Read the lists once, and only when some answer is final.
+        let mut todos = None;
         for comment in &mut review.comments {
             let Some(view) = comment.investigation.as_mut() else {
                 continue;
             };
-            view.kept_todo = view.answer.as_deref().and_then(|answer| {
-                kept_investigation_todo(app, state, comment.id, answer).map(|todo| todo.title)
-            });
+            let Some(answer) = view.answer.as_deref().filter(|_| view.status != "running") else {
+                continue;
+            };
+            let todos = todos.get_or_insert_with(|| investigation_scope_todos(app, state));
+            view.kept_todo =
+                find_investigation_todos(todos, state.review.pr.number, comment.id, answer)
+                    .0
+                    .map(|todo| todo.title);
         }
     }
     let reply = review_state(&app.mode)
@@ -2382,78 +2389,67 @@ fn apply(
     }
 }
 
-/// Marker line that ties a kept TODO to one investigation answer, stored in
-/// the TODO's own notes so no schema change is needed. The digest means an
-/// investigation that is re-run (a different answer) is not mistaken for one
-/// already kept.
-fn todo_source_prefix(pr_number: u32, comment_id: u64) -> String {
-    format!("AMF source: PR #{pr_number} comment {comment_id} investigation")
+/// Every TODO in any scope the PR's feature can reach (its worktree list, the
+/// project list, the global list), read once. Scopes are searched regardless
+/// of pane visibility, so a kept TODO that was later moved is still found.
+fn investigation_scope_todos(app: &App, state: &PrReviewState) -> Vec<crate::db::todos::Todo> {
+    use crate::db::todos::TodoScope;
+    let Some(db) = app.db.as_ref() else {
+        return Vec::new();
+    };
+    let Some((pi, fi)) = app.pr_review_feature_for_target(state) else {
+        return Vec::new();
+    };
+    let mut scopes = Vec::new();
+    if let Some(scope) = app.worktree_todo_scope(pi, fi) {
+        scopes.push(scope);
+    }
+    if let Some(project) = app.store.projects.get(pi) {
+        scopes.push(TodoScope::Project {
+            project_id: project.id.clone(),
+        });
+    }
+    scopes.push(TodoScope::Global);
+    scopes
+        .iter()
+        .filter_map(|scope| db.todo_list(scope).ok().flatten())
+        .flat_map(|list| db.todos(&list.id).unwrap_or_default())
+        .collect()
 }
 
-fn todo_source_marker(pr_number: u32, comment_id: u64, answer: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(answer.as_bytes()));
-    format!(
-        "{} (answer {})",
-        todo_source_prefix(pr_number, comment_id),
-        &digest[..16]
-    )
-}
-
-/// The TODOs in the feature's default scope that came from this comment's
-/// investigation: `(exact answer, an older answer)`.
-fn investigation_todos(
-    app: &App,
-    state: &PrReviewState,
+/// From `todos`, the one that came from this comment's investigation answer
+/// and, separately, one from an older answer to the same comment:
+/// `(exact answer, an older answer)`.
+fn find_investigation_todos(
+    todos: &[crate::db::todos::Todo],
+    pr_number: u32,
     comment_id: u64,
     answer: &str,
 ) -> (
     Option<crate::db::todos::Todo>,
     Option<crate::db::todos::Todo>,
 ) {
-    let Some(db) = app.db.as_ref() else {
-        return (None, None);
-    };
-    let Some((pi, fi)) = app.pr_review_feature_for_target(state) else {
-        return (None, None);
-    };
-    let Some(list) = app
-        .default_todo_scope(pi, fi)
-        .and_then(|scope| db.todo_list(&scope).ok().flatten())
-    else {
-        return (None, None);
-    };
-    let pr_number = state.review.pr.number;
     let marker = todo_source_marker(pr_number, comment_id, answer);
     let prefix = todo_source_prefix(pr_number, comment_id);
-    let todos = db.todos(&list.id).unwrap_or_default();
-    let exact = todos
-        .iter()
-        .find(|t| t.body.as_deref().is_some_and(|b| b.contains(&marker)))
-        .cloned();
-    let older = todos
-        .iter()
-        .find(|t| t.body.as_deref().is_some_and(|b| b.contains(&prefix)) && !b_has(t, &marker))
-        .cloned();
-    (exact, older)
-}
-
-fn b_has(todo: &crate::db::todos::Todo, marker: &str) -> bool {
-    todo.body.as_deref().is_some_and(|b| b.contains(marker))
-}
-
-fn kept_investigation_todo(
-    app: &App,
-    state: &PrReviewState,
-    comment_id: u64,
-    answer: &str,
-) -> Option<crate::db::todos::Todo> {
-    investigation_todos(app, state, comment_id, answer).0
+    let mut older = None;
+    for todo in todos {
+        let Some(body) = todo.body.as_deref() else {
+            continue;
+        };
+        if body.contains(&marker) {
+            return (Some(todo.clone()), older);
+        }
+        if older.is_none() && body.contains(&prefix) {
+            older = Some(todo.clone());
+        }
+    }
+    (None, older)
 }
 
 /// Keep a finished investigation answer as a TODO on the PR's feature (its
 /// worktree list, or the project's at the repo root), as the TUI does, with a
-/// source marker in the notes. Keeping it again does not write a second item.
+/// source marker in the notes. Keeping it again does not write a second item,
+/// even if the earlier one was moved to another scope.
 fn keep_investigation_as_todo(
     gui: &mut GuiHandle,
     comment_id: u64,
@@ -2492,6 +2488,7 @@ fn keep_investigation_as_todo(
         .ok_or_else(|| GuiError::conflict("This investigation has no answer to keep"))?;
     let inv_head = inv.head_sha.clone();
     let pr_number = state.review.pr.number;
+    // The seed carries the source marker, so the TUI and GUI dedupe alike.
     let (title, body) = investigation_todo_seed(pr_number, &comment, Some(&answer));
     let Some((pi, fi)) = app.pr_review_target_feature() else {
         return Err(GuiError::conflict(
@@ -2503,20 +2500,27 @@ fn keep_investigation_as_todo(
     };
     let label = app.todo_scope_label(&scope);
     let (exact, older) = match &app.mode {
-        AppMode::PrReview(state) => investigation_todos(app, state, comment_id, &answer),
+        AppMode::PrReview(state) => find_investigation_todos(
+            &investigation_scope_todos(app, state),
+            pr_number,
+            comment_id,
+            &answer,
+        ),
         _ => (None, None),
     };
     let notice = if let Some(todo) = exact {
-        format!("Already kept as a TODO on {label}: {}", todo.title)
+        format!("Already kept as a TODO: {}", todo.title)
     } else {
         let has_session = app.store.projects[pi].features[fi].has_todos_session();
-        if !has_session && let Err(e) = app.add_todos_session_for_picker(pi, fi, None) {
-            return Err(GuiError::conflict(format!(
-                "Couldn't start a TODO list; nothing was written: {e}"
-            )));
+        if !has_session {
+            if let Err(e) = app.add_todos_session_for_picker(pi, fi, None) {
+                return Err(GuiError::conflict(format!(
+                    "Couldn't start a TODO list; nothing was written: {e}"
+                )));
+            }
+            // add_todos_session_for_picker leaves its own status message behind.
+            app.message = None;
         }
-        // add_todos_session_for_picker leaves its own status message behind.
-        app.message = None;
         let feature_id = app.store.projects[pi].features[fi].id.clone();
         let head_note = if inv_head.is_empty() {
             String::new()
@@ -2526,10 +2530,7 @@ fn keep_investigation_as_todo(
                 &inv_head[..inv_head.len().min(12)]
             )
         };
-        let body = format!(
-            "{body}\n\n{}{head_note}",
-            todo_source_marker(pr_number, comment_id, &answer)
-        );
+        let body = format!("{body}{head_note}");
         let db = app.db.as_ref().expect("checked above");
         db.load_or_create_todo_list(&scope, Some(&feature_id))
             .and_then(|list| {

@@ -48,7 +48,10 @@ pub(crate) use fetch::PrFetchFailure;
 pub use fetch::{fetch_and_normalize, strip_bot_boilerplate};
 pub use investigation::InvestigationOutcome;
 pub(crate) use investigation::{INVESTIGATION_CONTEXT_MAX_LEN, investigation_prompt_from_meta};
-pub(crate) use investigation::{investigation_findings_for_prompt, investigation_todo_seed};
+pub(crate) use investigation::{
+    investigation_findings_for_prompt, investigation_todo_seed, todo_source_marker,
+    todo_source_prefix,
+};
 pub(crate) use memory::MEMORY_CATEGORIES;
 pub use memory::{
     BootstrapDepth, BootstrapProgress, BootstrapStage, CompactProgress, CompactStage,

@@ -1166,6 +1166,24 @@ impl App {
     }
 }
 
+/// Marker line that ties a kept TODO to one investigation answer, stored in
+/// the TODO's own notes so no schema change is needed.
+pub(crate) fn todo_source_prefix(pr_number: u32, comment_id: u64) -> String {
+    format!("AMF source: PR #{pr_number} comment {comment_id} investigation")
+}
+
+/// The prefix plus a digest of the answer, so a re-run investigation (a
+/// different answer) is not mistaken for one already kept.
+pub(crate) fn todo_source_marker(pr_number: u32, comment_id: u64, answer: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(answer.as_bytes()));
+    format!(
+        "{} (answer {})",
+        todo_source_prefix(pr_number, comment_id),
+        &digest[..16]
+    )
+}
+
 /// The title and body a kept investigation answer becomes, shared by the TUI
 /// and the GUI so both write the same TODO.
 pub(crate) fn investigation_todo_seed(
@@ -1187,7 +1205,11 @@ pub(crate) fn investigation_todo_seed(
         .chars()
         .take(120)
         .collect::<String>();
-    let body =
+    let mut body =
         format!("From a read-only investigation of a PR review comment ({locator}).\n\n{answer}");
+    if !answer.trim().is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&todo_source_marker(pr_number, comment.id, answer));
+    }
     (title, body)
 }

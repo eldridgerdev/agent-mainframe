@@ -22,7 +22,8 @@ use crate::app::pr_review::github_access::TriageGithub;
 use crate::app::pr_review::{
     CommentKind, INVESTIGATION_CONTEXT_MAX_LEN, PrComment, PrFetchFailure, PrInvestigationStatus,
     PrSortMode, ReplyDraftRequest, ReplyKind, ReplyTarget, TriageState,
-    investigation_prompt_from_meta, strip_bot_boilerplate, with_reply_draft_handoff,
+    investigation_findings_for_prompt, investigation_prompt_from_meta, strip_bot_boilerplate,
+    with_reply_draft_handoff,
 };
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
@@ -115,6 +116,7 @@ pub(crate) struct PrTriageContext {
     investigation: Option<PendingInvestigation>,
     write: Option<PendingWrite>,
     fix: Option<PendingFixDraft>,
+    batch: Option<PendingBatchFix>,
     handoff: Option<PrFixHandoff>,
 }
 
@@ -289,6 +291,28 @@ struct PendingFixDraft {
     submission: Option<ReplyDraftRequest>,
 }
 
+/// A fix for several comments waiting for explicit confirmation. It is bound
+/// by `view.digest` to the exact comment set, the PR head and the chosen
+/// session's revision, so nothing it was shown can change before it is sent.
+struct PendingBatchFix {
+    view: PrBatchFixView,
+    head_sha: String,
+    submission: Option<Vec<ReplyDraftRequest>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrBatchFixView {
+    pub comment_ids: Vec<u64>,
+    pub target: SessionTarget,
+    pub destination_revision: String,
+    /// Binds the comment set, PR head, destination session and its revision.
+    pub digest: String,
+    pub prompt: String,
+    pub submission_prompt: Option<String>,
+    /// Set past the TUI's soft ceilings; the batch is still allowed.
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PrFixTargetView {
     pub target: SessionTarget,
@@ -460,6 +484,7 @@ pub struct PrTriageView {
     pub write_confirm: Option<PrWriteConfirmView>,
     pub fix_targets: Vec<PrFixTargetView>,
     pub fix_draft: Option<PrFixDraftView>,
+    pub batch_fix: Option<PrBatchFixView>,
     /// Taken once by the action response; subsequent polls cannot redeliver.
     pub handoff: Option<PrFixHandoff>,
     pub harnesses: Vec<AgentKind>,
@@ -476,6 +501,19 @@ pub enum PrTriageAction {
         session_id: String,
     },
     CancelFixDraft,
+    StartBatchFix {
+        comment_ids: Vec<u64>,
+        session_id: String,
+        destination_revision: String,
+    },
+    PrepareBatchSubmission {
+        prompt: String,
+        digest: String,
+    },
+    ConfirmBatchSubmission {
+        digest: String,
+    },
+    CancelBatchFix,
     PrepareFixSubmission {
         prompt: String,
     },
@@ -768,6 +806,7 @@ pub fn begin_prefetched(
         investigation: None,
         write: None,
         fix: None,
+        batch: None,
         handoff: None,
     });
     open_picker(gui, false, Some(entries), resolve_error)?;
@@ -939,6 +978,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         viewing: p.viewing,
     });
     let fix_draft = context.fix.as_ref().map(|f| f.view.clone());
+    let batch_fix = context.batch.as_ref().map(|b| b.view.clone());
     let pending_write = context.write.as_ref().map(|w| match w {
         PendingWrite::Reply {
             comment_id, posted, ..
@@ -1078,6 +1118,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         write_confirm,
         fix_targets,
         fix_draft,
+        batch_fix,
         handoff,
         harnesses,
         default_harness,
@@ -1355,6 +1396,418 @@ fn confirm_fix_submission(gui: &mut GuiHandle, reads: &mut PrTriagePrefetch) -> 
     Ok(())
 }
 
+/// Hard ceiling on one batch. The TUI only warns past
+/// `BATCH_COMBINED_COMMENT_WARN`; the GUI also refuses a runaway selection.
+const MAX_BATCH_COMMENTS: usize = 50;
+
+/// Digest of everything a batch fix was shown: the PR and head, each selected
+/// comment as fetched (body, location, hunk, resolution and triage state),
+/// the destination session and its revision. Any change makes it differ.
+fn batch_digest(
+    number: u32,
+    head_sha: &str,
+    comments: &[&PrComment],
+    target: &SessionTarget,
+    destination_revision: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(number, head_sha, comments, target, destination_revision))
+        .expect("serializable batch");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// The selected comments in review order, refusing (never silently dropping)
+/// any id that is missing, resolved, local-only or an AMF follow-up reply.
+fn batch_comments<'a>(state: &'a PrReviewState, ids: &[u64]) -> GuiResult<Vec<&'a PrComment>> {
+    let mut seen = std::collections::HashSet::new();
+    if ids.is_empty() || ids.iter().any(|id| !seen.insert(*id)) {
+        return Err(GuiError::conflict("Choose one or more distinct comments"));
+    }
+    if ids.len() > MAX_BATCH_COMMENTS {
+        return Err(GuiError::conflict(format!(
+            "Choose at most {MAX_BATCH_COMMENTS} comments for one batch"
+        )));
+    }
+    for id in ids {
+        let comment = state
+            .review
+            .comments
+            .iter()
+            .find(|c| c.id == *id)
+            .ok_or_else(|| GuiError::conflict("A selected comment is no longer in this review"))?;
+        if comment.is_resolved {
+            return Err(GuiError::conflict(
+                "A selected comment was resolved; choose the comments again",
+            ));
+        }
+        if !comment.is_actionable() || comment.is_local_finding() {
+            return Err(GuiError::conflict(
+                "Only incoming GitHub review comments can be batched",
+            ));
+        }
+    }
+    Ok(state
+        .review
+        .comments
+        .iter()
+        .filter(|c| ids.contains(&c.id))
+        .collect())
+}
+
+fn start_batch_fix(
+    gui: &mut GuiHandle,
+    comment_ids: Vec<u64>,
+    session_id: String,
+    destination_revision: String,
+) -> GuiResult<()> {
+    let target = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+    let app = gui.app_for_workflow();
+    let state = review_mut(app)?;
+    if state.reply.is_some() {
+        return Err(GuiError::conflict(
+            "Post or discard the open reply before preparing a fix",
+        ));
+    }
+    let selected = batch_comments(state, &comment_ids)?;
+    let mut prompt = crate::app::pr_review::combined_fix_prompt(&selected, &state.review.comments);
+    let appendix: String = selected
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            state
+                .investigations
+                .iter()
+                .find(|r| r.comment_id == c.id)
+                .and_then(investigation_findings_for_prompt)
+                .map(|f| format!("\n\nInvestigation already run for comment {}:\n{f}", i + 1))
+        })
+        .collect();
+    if !appendix.is_empty() {
+        prompt.push_str(
+            "\n\n--- Read-only investigations already ran for some of these \
+             comments. Use them as starting points, but verify: ---",
+        );
+        prompt.push_str(&appendix);
+    }
+    let ordered: Vec<u64> = selected.iter().map(|c| c.id).collect();
+    let count = ordered.len();
+    let tokens = crate::app::pr_review::estimate_tokens(&prompt);
+    let warning = (count > crate::app::pr_review::BATCH_COMBINED_COMMENT_WARN
+        || tokens > crate::app::pr_review::BATCH_COMBINED_TOKEN_WARN)
+        .then(|| {
+            format!(
+                "Large batch: {count} comments (~{tokens} tokens) in one prompt. It may exceed the agent's context window."
+            )
+        });
+    let head_sha = state.review.pr.head_sha.clone();
+    let number = state.review.pr.number;
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    // The destination is exactly the session the user chose, at the revision
+    // they saw. It is never replaced by another session.
+    let session = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id && s.kind.is_agent_harness())
+        .ok_or_else(|| GuiError::not_found("Choose an existing agent session in this feature"))?;
+    if crate::gui_pr_workspace::destination_revision(feature, session) != destination_revision {
+        return Err(GuiError::conflict(
+            "The agent session changed; choose it again",
+        ));
+    }
+    let target = SessionTarget {
+        project_id: target.project_id,
+        feature_id: target.feature_id,
+        session_id,
+    };
+    let state = review_state(&app.mode).unwrap();
+    let selected = batch_comments(state, &ordered)?;
+    let digest = batch_digest(number, &head_sha, &selected, &target, &destination_revision);
+    gui.pr_triage_context.as_mut().unwrap().batch = Some(PendingBatchFix {
+        view: PrBatchFixView {
+            comment_ids: ordered,
+            target,
+            destination_revision,
+            digest,
+            prompt,
+            submission_prompt: None,
+            warning,
+        },
+        head_sha,
+        submission: None,
+    });
+    Ok(())
+}
+
+/// Everything that can be checked without GitHub: the digest of the live
+/// comments, head and destination session still equals the one previewed.
+fn check_batch_local(gui: &mut GuiHandle, digest: &str) -> GuiResult<(SessionTarget, Vec<u64>)> {
+    let pending = gui
+        .pr_triage_context
+        .as_ref()
+        .unwrap()
+        .batch
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("No batch fix is open"))?;
+    if pending.view.digest != digest {
+        return Err(GuiError::conflict(
+            "This is not the batch you reviewed; cancel and prepare it again",
+        ));
+    }
+    let (view, head) = (pending.view.clone(), pending.head_sha.clone());
+    let app = gui.app_for_workflow();
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&view.target.project_id), &view.target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    let session = feature
+        .sessions
+        .iter()
+        .find(|s| s.id == view.target.session_id && s.kind.is_agent_harness())
+        .ok_or_else(|| {
+            GuiError::conflict("The agent session is gone; cancel and choose a target again")
+        })?;
+    let revision = crate::gui_pr_workspace::destination_revision(feature, session);
+    if revision != view.destination_revision {
+        return Err(GuiError::conflict(
+            "The agent session changed; cancel and choose a target again",
+        ));
+    }
+    let state = review_mut(app)?;
+    if state.review.pr.head_sha != head {
+        return Err(GuiError::conflict(
+            "The PR has new commits; cancel the batch fix and refresh",
+        ));
+    }
+    let selected = batch_comments(state, &view.comment_ids)?;
+    let number = state.review.pr.number;
+    if batch_digest(number, &head, &selected, &view.target, &revision) != view.digest {
+        return Err(GuiError::conflict(
+            "The selected comments changed; cancel and prepare the batch again",
+        ));
+    }
+    Ok((view.target, view.comment_ids))
+}
+
+fn prepare_batch_submission(gui: &mut GuiHandle, prompt: String, digest: String) -> GuiResult<()> {
+    if prompt.trim().is_empty() {
+        return Err(GuiError::conflict("The fix prompt is empty"));
+    }
+    let (_, ids) = check_batch_local(gui, &digest)?;
+    let head = gui
+        .pr_triage_context
+        .as_ref()
+        .unwrap()
+        .batch
+        .as_ref()
+        .unwrap()
+        .head_sha
+        .clone();
+    let requests: Vec<ReplyDraftRequest> = ids
+        .iter()
+        .map(|id| ReplyDraftRequest::new(*id, &head))
+        .collect();
+    let number = review_mut(gui.app_for_workflow())?.review.pr.number;
+    let exact = with_reply_draft_handoff(prompt, number, &requests);
+    let pending = gui
+        .pr_triage_context
+        .as_mut()
+        .unwrap()
+        .batch
+        .as_mut()
+        .unwrap();
+    pending.view.submission_prompt = Some(exact);
+    pending.submission = Some(requests);
+    Ok(())
+}
+
+/// Put back every reply-draft row a failed batch replaced, newest first.
+/// Returns a note about any row that could not be restored.
+fn restore_reply_drafts(
+    app: &App,
+    number: u32,
+    registered: &[(
+        ReplyDraftRequest,
+        Option<crate::db::pr_comment_triage::ReplyDraftSnapshot>,
+    )],
+) -> Option<String> {
+    let db = app.db.as_ref()?;
+    let failures: Vec<String> = registered
+        .iter()
+        .rev()
+        .filter_map(|(request, prior)| {
+            db.restore_pr_comment_reply_draft(
+                number,
+                request.comment_id,
+                &request.request_id,
+                prior.as_ref(),
+            )
+            .err()
+            .map(|e| format!("comment {}: {e:#}", request.comment_id))
+        })
+        .collect();
+    (!failures.is_empty()).then(|| {
+        format!(
+            "Could not restore earlier reply drafts ({}); they were replaced",
+            failures.join("; ")
+        )
+    })
+}
+
+fn confirm_batch_submission(
+    gui: &mut GuiHandle,
+    reads: &mut PrTriagePrefetch,
+    digest: String,
+) -> GuiResult<()> {
+    let pending = gui
+        .pr_triage_context
+        .as_ref()
+        .unwrap()
+        .batch
+        .as_ref()
+        .ok_or_else(|| GuiError::conflict("No batch fix is open"))?;
+    let prompt = pending
+        .view
+        .submission_prompt
+        .clone()
+        .ok_or_else(|| GuiError::conflict("Preview the batch submission first"))?;
+    let requests = pending.submission.clone().unwrap();
+    let (head, workdir) = (
+        pending.head_sha.clone(),
+        gui.pr_triage_context.as_ref().unwrap().workdir.clone(),
+    );
+    let (target, ids) = check_batch_local(gui, &digest)?;
+    let app = gui.app_for_workflow();
+    let number = review_mut(app)?.review.pr.number;
+    let current = reads
+        .fetch_pr_by_number(&workdir, number)
+        .map_err(GuiError::from)?;
+    if current.head_sha != head {
+        return Err(GuiError::conflict(
+            "The PR has new commits; cancel the batch fix and refresh",
+        ));
+    }
+    let app = gui.app_for_workflow();
+    let (pi, fi) = app
+        .store
+        .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
+        .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
+    let feature = &app.store.projects[pi].features[fi];
+    let si = feature
+        .sessions
+        .iter()
+        .position(|s| s.id == target.session_id)
+        .ok_or_else(|| GuiError::conflict("The agent session is gone"))?;
+    let session = &feature.sessions[si];
+    if session.stopped
+        || !app
+            .tmux
+            .window_exists(&feature.tmux_session, &session.tmux_window)
+    {
+        return Err(GuiError::conflict(
+            "The agent is stopped; start it from its session tab, then retry",
+        ));
+    }
+    let (tmux_session, tmux_window) = (feature.tmux_session.clone(), session.tmux_window.clone());
+    let provenance = app.reply_draft_provenance(pi, fi, si);
+    let encoded = provenance
+        .map(|p| serde_json::to_string(&p))
+        .transpose()
+        .map_err(|e| GuiError::from(anyhow::Error::from(e)))?;
+    if app.db.is_none() {
+        return Err(GuiError::conflict("Reply-draft storage is unavailable"));
+    }
+    // Register every comment before sending: a fast agent must be able to
+    // return its receipts. A failure on any one restores all earlier ones and
+    // nothing reaches the terminal.
+    let mut registered = Vec::new();
+    for request in &requests {
+        let db = app.db.as_ref().unwrap();
+        let step = db
+            .snapshot_pr_comment_reply_draft(number, request.comment_id)
+            .and_then(|prior| {
+                db.begin_pr_comment_reply_draft(
+                    number,
+                    request.comment_id,
+                    &request.request_id,
+                    &request.base_head_sha,
+                    encoded.as_deref(),
+                )
+                .map(|()| prior)
+            });
+        match step {
+            Ok(prior) => registered.push((request.clone(), prior)),
+            Err(e) => {
+                let note = restore_reply_drafts(app, number, &registered);
+                return Err(GuiError::from(match note {
+                    None => e.context(format!(
+                        "Could not register the reply draft for comment {}; nothing was sent",
+                        request.comment_id
+                    )),
+                    Some(n) => e.context(n),
+                }));
+            }
+        }
+    }
+    let delivered = app
+        .tmux
+        .send_key_name(&tmux_session, &tmux_window, "C-u")
+        .and_then(|()| app.tmux.paste_text(&tmux_session, &tmux_window, &prompt));
+    if let Err(e) = delivered {
+        let note = restore_reply_drafts(app, number, &registered);
+        return Err(GuiError::from(match note {
+            None => e,
+            Some(n) => e.context(n),
+        }));
+    }
+    // Retire confirmation before Enter: a transport failure can be ambiguous,
+    // and retrying must need a fresh explicit preview.
+    let pending = gui
+        .pr_triage_context
+        .as_mut()
+        .unwrap()
+        .batch
+        .as_mut()
+        .unwrap();
+    pending.submission = None;
+    pending.view.submission_prompt = None;
+    let app = gui.app_for_workflow();
+    app.tmux
+        .send_key_name(&tmux_session, &tmux_window, "Enter")
+        .map_err(|e| GuiError::from(e.context("Could not confirm terminal delivery. Inspect the agent before preparing another fix; it may have received this prompt")))?;
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    for id in &ids {
+        // The review state was resolved above (`number`) and nothing since
+        // can remove it; never fail after the prompt has been delivered.
+        if let Some(c) = review_mut(app)
+            .ok()
+            .and_then(|state| state.review.comments.iter_mut().find(|c| c.id == *id))
+        {
+            c.triage = TriageState::Fixing;
+            c.batch_id = Some(batch_id.clone());
+        }
+        app.persist_triage(
+            number,
+            &head,
+            *id,
+            TriageState::Fixing,
+            None,
+            Some(&batch_id),
+        );
+    }
+    let context = gui.pr_triage_context.as_mut().unwrap();
+    context.batch = None;
+    context.notice = Some(format!(
+        "Fix for {} comments sent to the agent. Reply drafts will be available under Reply: fixed; posting remains explicit.",
+        ids.len()
+    ));
+    Ok(())
+}
+
 fn review_view(state: &PrReviewState, investigating: Option<(u64, AgentKind)>) -> PrReviewView {
     let all = &state.review.comments;
     let head = &state.review.pr.head_sha;
@@ -1516,6 +1969,30 @@ fn gate<'a>(
     {
         return Err(GuiError::conflict("Prepare or cancel the fix draft first"));
     }
+    if context
+        .batch
+        .as_ref()
+        .is_some_and(|b| b.submission.is_some())
+        && !matches!(
+            action,
+            A::ConfirmBatchSubmission { .. } | A::CancelBatchFix | A::Close
+        )
+    {
+        return Err(GuiError::conflict(
+            "Confirm or cancel the batch submission first",
+        ));
+    }
+    if context.batch.is_some()
+        && !matches!(
+            action,
+            A::PrepareBatchSubmission { .. }
+                | A::ConfirmBatchSubmission { .. }
+                | A::CancelBatchFix
+                | A::Close
+        )
+    {
+        return Err(GuiError::conflict("Prepare or cancel the batch fix first"));
+    }
     if context.write.is_some() && !matches!(action, A::ConfirmWrite | A::CancelWrite | A::Close) {
         return Err(GuiError::conflict(
             "Confirm or cancel the pending GitHub write first",
@@ -1564,10 +2041,12 @@ pub fn plan_act(
             meta: number,
             ..ReadPlan::default()
         },
-        A::ConfirmFixDraft { .. } | A::ConfirmFixSubmission => ReadPlan {
-            pr: number,
-            ..ReadPlan::default()
-        },
+        A::ConfirmFixDraft { .. } | A::ConfirmFixSubmission | A::ConfirmBatchSubmission { .. } => {
+            ReadPlan {
+                pr: number,
+                ..ReadPlan::default()
+            }
+        }
         A::ConfirmWrite if replying => ReadPlan {
             pr: number,
             ..ReadPlan::default()
@@ -1637,6 +2116,24 @@ fn apply(
                 .fix
                 .take()
                 .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
+            Ok(())
+        }
+        A::StartBatchFix {
+            comment_ids,
+            session_id,
+            destination_revision,
+        } => start_batch_fix(gui, comment_ids, session_id, destination_revision),
+        A::PrepareBatchSubmission { prompt, digest } => {
+            prepare_batch_submission(gui, prompt, digest)
+        }
+        A::ConfirmBatchSubmission { digest } => confirm_batch_submission(gui, reads, digest),
+        A::CancelBatchFix => {
+            gui.pr_triage_context
+                .as_mut()
+                .unwrap()
+                .batch
+                .take()
+                .ok_or_else(|| GuiError::conflict("No batch fix is open"))?;
             Ok(())
         }
         A::ConfirmFixDraft { prompt } => confirm_fix_draft(gui, reads, prompt),
@@ -3583,5 +4080,491 @@ mod tests {
         assert_eq!(error.kind, crate::gui_contract::GuiErrorKind::NotFound);
         assert!(gui.pr_triage_context.is_none());
         assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+    }
+
+    // ---- batch fix (TUI `B`) ----
+
+    fn opened_batch() -> (tempfile::TempDir, GuiHandle, FakeGithub, PrTriageView) {
+        let (dir, mut gui, target) = fixture();
+        let fake = github();
+        fake.state().review.as_mut().unwrap().comments.push(comment(
+            serde_json::json!({"id": 105, "path": "other.txt", "line": 3,
+                "body": "Add a docstring.", "diff_hunk": "@@ -1,1 +1,1 @@\n-a\n+b"}),
+        ));
+        let app = gui.app_for_workflow();
+        app.store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+        app.pr_review_work
+            .set_github_for_test(std::sync::Arc::new(fake.clone()));
+        let picked = begin(&mut gui, target).unwrap();
+        let loading = act(&mut gui, &picked, PrTriageAction::Open { number: 7 });
+        let view = settle(&mut gui, loading);
+        running_fix_agent(&mut gui);
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].status = crate::project::ProjectStatus::Active;
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        (dir, gui, fake, view)
+    }
+
+    fn start_batch(
+        gui: &mut GuiHandle,
+        view: &PrTriageView,
+        ids: &[u64],
+    ) -> GuiResult<Option<PrTriageView>> {
+        // Refusals still advance the revision; always act on the current one.
+        let view = &poll(gui, &view.workflow_id).unwrap();
+        let target = &view.fix_targets[0];
+        try_act(
+            gui,
+            view,
+            PrTriageAction::StartBatchFix {
+                comment_ids: ids.to_vec(),
+                session_id: target.target.session_id.clone(),
+                destination_revision: target.destination_revision.clone(),
+            },
+        )
+    }
+
+    fn mock_tmux_without_delivery() -> Box<crate::traits::MockTmuxOps> {
+        // Any send or paste panics: a refused batch must never reach the terminal.
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        Box::new(tmux)
+    }
+
+    fn previewed(gui: &mut GuiHandle, view: &PrTriageView, ids: &[u64]) -> (PrTriageView, String) {
+        let started = start_batch(gui, view, ids).unwrap().unwrap();
+        let digest = started.batch_fix.as_ref().unwrap().digest.clone();
+        let prompt = started.batch_fix.as_ref().unwrap().prompt.clone();
+        let preview = act(
+            gui,
+            &started,
+            PrTriageAction::PrepareBatchSubmission {
+                prompt,
+                digest: digest.clone(),
+            },
+        );
+        (preview, digest)
+    }
+
+    fn refused_confirm(
+        gui: &mut GuiHandle,
+        preview: &PrTriageView,
+        digest: &str,
+        expected: &str,
+    ) -> PrTriageView {
+        let error = try_act(
+            gui,
+            preview,
+            PrTriageAction::ConfirmBatchSubmission {
+                digest: digest.into(),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.message.contains(expected),
+            "{} did not contain {expected}",
+            error.message
+        );
+        // Still open and still unsent: nothing was marked or registered.
+        let fresh = poll(gui, &preview.workflow_id).unwrap();
+        assert!(fresh.batch_fix.is_some());
+        for id in [101, 105] {
+            assert_eq!(comment_view(&fresh, id).triage, "untriaged");
+            assert!(
+                gui.app_for_workflow()
+                    .db
+                    .as_ref()
+                    .unwrap()
+                    .load_pr_comment_reply_draft_row(7, id)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        fresh
+    }
+
+    #[test]
+    fn batch_fix_previews_the_exact_handoff_and_sends_it_once_to_the_chosen_session() {
+        let (_dir, mut gui, fake, view) = opened_batch();
+        let started = start_batch(&mut gui, &view, &[105, 101]).unwrap().unwrap();
+        let batch = started.batch_fix.clone().unwrap();
+        // Review order, not click order; the shared combined prompt.
+        assert_eq!(batch.comment_ids, [101, 105]);
+        assert!(batch.prompt.starts_with(
+            "Address these PR review comments. Work through each one in order; \
+             open the referenced files yourself as needed.\n\nComment 1:\n"
+        ));
+        assert!(batch.prompt.contains("Does line 8 handle an empty input?"));
+        assert!(batch.prompt.contains("\nComment 2:\n"));
+        assert!(batch.prompt.contains("Add a docstring."));
+        assert!(batch.warning.is_none());
+        assert_eq!(batch.target.session_id, "fix-agent");
+        let preview = act(
+            &mut gui,
+            &started,
+            PrTriageAction::PrepareBatchSubmission {
+                prompt: batch.prompt.clone(),
+                digest: batch.digest.clone(),
+            },
+        );
+        let requests = gui
+            .pr_triage_context
+            .as_ref()
+            .unwrap()
+            .batch
+            .as_ref()
+            .unwrap()
+            .submission
+            .clone()
+            .unwrap();
+        assert_eq!(requests.len(), 2);
+        let exact =
+            crate::app::pr_review::with_reply_draft_handoff(batch.prompt.clone(), 7, &requests);
+        assert_eq!(
+            preview
+                .batch_fix
+                .as_ref()
+                .unwrap()
+                .submission_prompt
+                .as_deref(),
+            Some(exact.as_str())
+        );
+        for r in &requests {
+            assert!(exact.contains(&format!(
+                "amf reply-draft --pr-number 7 --comment-id {} --request-id {}",
+                r.comment_id, r.request_id
+            )));
+        }
+        // Previewing registers and marks nothing.
+        for id in [101, 105] {
+            assert_eq!(comment_view(&preview, id).triage, "untriaged");
+        }
+        let sent = exact.clone();
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .withf(move |_, _, text| text == sent)
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "Enter")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let done = act(
+            &mut gui,
+            &preview,
+            PrTriageAction::ConfirmBatchSubmission {
+                digest: batch.digest.clone(),
+            },
+        );
+        assert!(done.batch_fix.is_none() && done.handoff.is_none());
+        for id in [101, 105] {
+            assert_eq!(comment_view(&done, id).triage, "fixing");
+        }
+        let rows = gui
+            .app_for_workflow()
+            .db
+            .as_ref()
+            .unwrap()
+            .load_pr_comment_triage(7)
+            .unwrap();
+        let batch_id = rows[&101].batch_id.clone().unwrap();
+        assert_eq!(rows[&105].batch_id.as_deref(), Some(batch_id.as_str()));
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        for r in &requests {
+            assert!(
+                db.capture_pr_comment_reply_draft(7, r.comment_id, &r.request_id, "Fixed.")
+                    .unwrap()
+            );
+        }
+        // A second confirmation has nothing to send.
+        assert!(
+            super::act(
+                &mut gui,
+                &preview.workflow_id,
+                preview.revision,
+                PrTriageAction::ConfirmBatchSubmission {
+                    digest: batch.digest
+                }
+            )
+            .is_err()
+        );
+        assert!(fake.0.lock().unwrap().writes.is_empty());
+    }
+
+    #[test]
+    fn batch_fix_refuses_unusable_selections_and_unknown_or_changed_destinations() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        for (ids, expected) in [
+            (vec![], "one or more distinct"),
+            (vec![101, 101], "one or more distinct"),
+            (vec![101, 999], "no longer in this review"),
+            (vec![101, 102], "was resolved"),
+            (vec![103], "Only incoming GitHub review comments"),
+            ((1000..1051).collect::<Vec<u64>>(), "at most 50"),
+        ] {
+            let error = start_batch(&mut gui, &view, &ids).unwrap_err();
+            assert!(error.message.contains(expected), "{}", error.message);
+        }
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let target = &view.fix_targets[0];
+        // An unknown session is refused, never replaced by targets[0].
+        let error = try_act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartBatchFix {
+                comment_ids: vec![101],
+                session_id: "someone-else".into(),
+                destination_revision: target.destination_revision.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("existing agent session"));
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let error = try_act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartBatchFix {
+                comment_ids: vec![101],
+                session_id: target.target.session_id.clone(),
+                destination_revision: "stale".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("session changed"));
+        let fresh = poll(&mut gui, &view.workflow_id).unwrap();
+        assert!(fresh.batch_fix.is_none());
+    }
+
+    #[test]
+    fn batch_fix_warns_past_the_tui_ceiling_without_blocking() {
+        let (_dir, mut gui, fake, _view) = opened_batch();
+        {
+            let mut state = fake.state();
+            let comments = &mut state.review.as_mut().unwrap().comments;
+            for id in 200..220 {
+                comments.push(comment(serde_json::json!({"id": id, "body": "More."})));
+            }
+        }
+        let view = {
+            let wf = gui.pr_triage_context.as_ref().unwrap().id.clone();
+            let refreshed = poll(&mut gui, &wf).unwrap();
+            let refreshed = act(&mut gui, &refreshed, PrTriageAction::Refresh);
+            settle(&mut gui, refreshed)
+        };
+        let ids: Vec<u64> = (200..216).collect();
+        let started = start_batch(&mut gui, &view, &ids).unwrap().unwrap();
+        let batch = started.batch_fix.unwrap();
+        assert_eq!(batch.comment_ids.len(), 16);
+        assert!(batch.warning.unwrap().contains("Large batch: 16 comments"));
+    }
+
+    #[test]
+    fn batch_confirmation_refuses_a_different_digest_a_moved_head_and_changed_comments() {
+        let (_dir, mut gui, fake, view) = opened_batch();
+        let (preview, digest) = previewed(&mut gui, &view, &[101, 105]);
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        // A digest from some other preview is refused.
+        let preview = refused_confirm(
+            &mut gui,
+            &preview,
+            "not-this-batch",
+            "not the batch you reviewed",
+        );
+        // The PR gained commits on GitHub.
+        fake.state().head_sha = "b".repeat(40);
+        let preview = refused_confirm(&mut gui, &preview, &digest, "new commits");
+        fake.state().head_sha = HEAD.into();
+        // The comment body changed locally after the preview.
+        let app = gui.app_for_workflow();
+        let AppMode::PrReview(state) = &mut app.mode else {
+            panic!("not reviewing");
+        };
+        state
+            .review
+            .comments
+            .iter_mut()
+            .find(|c| c.id == 105)
+            .unwrap()
+            .body = "Rewritten.".into();
+        let preview = refused_confirm(&mut gui, &preview, &digest, "comments changed");
+        // The comment was resolved after the preview.
+        let AppMode::PrReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("not reviewing");
+        };
+        let c = state
+            .review
+            .comments
+            .iter_mut()
+            .find(|c| c.id == 105)
+            .unwrap();
+        c.body = "Add a docstring.".into();
+        c.is_resolved = true;
+        let preview = refused_confirm(&mut gui, &preview, &digest, "was resolved");
+        // A comment dropped from the review.
+        let AppMode::PrReview(state) = &mut gui.app_for_workflow().mode else {
+            panic!("not reviewing");
+        };
+        state.review.comments.retain(|c| c.id != 105);
+        let current = poll(&mut gui, &preview.workflow_id).unwrap();
+        let error = try_act(
+            &mut gui,
+            &current,
+            PrTriageAction::ConfirmBatchSubmission { digest },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("no longer in this review"));
+    }
+
+    #[test]
+    fn batch_confirmation_refuses_a_replaced_vanished_or_stopped_destination() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        let (preview, digest) = previewed(&mut gui, &view, &[101, 105]);
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        // Replaced window: same id, different revision.
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].sessions[0].tmux_window = "replacement".into();
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        let preview = refused_confirm(&mut gui, &preview, &digest, "session changed");
+        // Prepare is refused for the same reason.
+        assert!(
+            try_act(
+                &mut gui,
+                &preview,
+                PrTriageAction::PrepareBatchSubmission {
+                    prompt: "x".into(),
+                    digest: digest.clone()
+                }
+            )
+            .is_err()
+        );
+        // Vanished session: no fallback to another one.
+        let app = gui.app_for_workflow();
+        let mut kept = app.store.projects[0].features[0].sessions.remove(0);
+        kept.tmux_window = "codex".into();
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        let preview = poll(&mut gui, &preview.workflow_id).unwrap();
+        let preview = refused_confirm(&mut gui, &preview, &digest, "session is gone");
+        // Restore it and stop its window: refused as stopped, not retargeted.
+        let app = gui.app_for_workflow();
+        app.store.projects[0].features[0].sessions.insert(0, kept);
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| false);
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let preview = poll(&mut gui, &preview.workflow_id).unwrap();
+        refused_confirm(&mut gui, &preview, &digest, "stopped");
+    }
+
+    fn arm_registration_failure(dir: &tempfile::TempDir, comment_id: u64) {
+        let conn = rusqlite::Connection::open(dir.path().join("amf.db")).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_reply_draft BEFORE INSERT ON pr_comment_reply_drafts
+             WHEN NEW.comment_id = {comment_id}
+             BEGIN SELECT RAISE(ABORT, 'registration refused'); END;
+             CREATE TRIGGER fail_reply_draft_update BEFORE UPDATE ON pr_comment_reply_drafts
+             WHEN NEW.comment_id = {comment_id}
+             BEGIN SELECT RAISE(ABORT, 'registration refused'); END;"
+        ))
+        .unwrap();
+    }
+
+    fn seed_earlier_draft(gui: &mut GuiHandle, comment_id: u64) {
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        db.begin_pr_comment_reply_draft(7, comment_id, "earlier", "head", Some("{}"))
+            .unwrap();
+        assert!(
+            db.capture_pr_comment_reply_draft(7, comment_id, "earlier", "Earlier draft")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn partial_reply_draft_registration_rolls_back_every_earlier_comment_and_sends_nothing() {
+        let (dir, mut gui, _fake, view) = opened_batch();
+        seed_earlier_draft(&mut gui, 101);
+        let (preview, digest) = previewed(&mut gui, &view, &[101, 105]);
+        arm_registration_failure(&dir, 105);
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let error = try_act(
+            &mut gui,
+            &preview,
+            PrTriageAction::ConfirmBatchSubmission { digest },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("comment 105"), "{}", error.message);
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        // Comment 101 was registered first; its earlier draft is back.
+        let row = db.load_pr_comment_reply_draft_row(7, 101).unwrap().unwrap();
+        assert_eq!(row.body, "Earlier draft");
+        assert_eq!(row.provenance.as_deref(), Some("{}"));
+        assert!(
+            db.load_pr_comment_reply_draft_row(7, 105)
+                .unwrap()
+                .is_none()
+        );
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        assert!(fresh.batch_fix.is_some());
+        for id in [101, 105] {
+            assert_eq!(comment_view(&fresh, id).triage, "untriaged");
+        }
+    }
+
+    #[test]
+    fn failed_batch_delivery_restores_every_earlier_reply_draft() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        seed_earlier_draft(&mut gui, 101);
+        seed_earlier_draft(&mut gui, 105);
+        let (preview, digest) = previewed(&mut gui, &view, &[101, 105]);
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| true);
+        tmux.expect_send_key_name()
+            .withf(|_, _, key| key == "C-u")
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_paste_text()
+            .times(1)
+            .returning(|_, _, _| Err(anyhow::anyhow!("window vanished")));
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let error = try_act(
+            &mut gui,
+            &preview,
+            PrTriageAction::ConfirmBatchSubmission { digest },
+        )
+        .unwrap_err();
+        assert!(error.message.contains("window vanished"));
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        for id in [101, 105] {
+            let row = db.load_pr_comment_reply_draft_row(7, id).unwrap().unwrap();
+            assert_eq!(row.body, "Earlier draft");
+        }
+        let fresh = poll(&mut gui, &preview.workflow_id).unwrap();
+        for id in [101, 105] {
+            assert_eq!(comment_view(&fresh, id).triage, "untriaged");
+        }
+    }
+
+    #[test]
+    fn a_batch_blocks_other_triage_actions_until_cancelled() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        let started = start_batch(&mut gui, &view, &[101]).unwrap().unwrap();
+        let error = try_act(&mut gui, &started, PrTriageAction::Refresh).unwrap_err();
+        assert!(error.message.contains("batch fix first"));
+        let started = poll(&mut gui, &started.workflow_id).unwrap();
+        let cancelled = act(&mut gui, &started, PrTriageAction::CancelBatchFix);
+        assert!(cancelled.batch_fix.is_none());
+        let error = try_act(&mut gui, &cancelled, PrTriageAction::CancelBatchFix).unwrap_err();
+        assert!(error.message.contains("No batch fix is open"));
     }
 }

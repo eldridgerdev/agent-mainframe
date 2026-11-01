@@ -359,3 +359,70 @@ it("shows uploaded images in the description, selected comment and replies witho
   expect(screen.getByRole("article", { name: "Selected comment" })).toBeTruthy();
   expect(actions().some(({ action }) => action.kind === "close")).toBe(false);
 });
+
+const batchTargets = [
+  { ...fixTargets[0], destination_revision: "rev-claude" },
+  { ...fixTargets[1], destination_revision: "rev-codex" },
+];
+const batchReview: PrTriageView = { ...review, fix_targets: batchTargets, review: { ...review.review!,
+  comments: [...review.review!.comments, comment({ id: 5, author: "mo", body: "Add a test.", snippet: "Add a test.", path: "invoice.test.ts" }),
+    comment({ id: 6, author: "dev", body: "AMF follow-up", snippet: "AMF follow-up", actionable: false })] } };
+const batchOpen: PrTriageView = { ...batchReview, revision: 4, batch_fix: {
+  comment_ids: [1, 5], target: batchTargets[1].target, destination_revision: "rev-codex", digest: "digest-1",
+  prompt: "Address these PR review comments.\n\nComment 1:\nx\n\nComment 2:\ny", warning: "Large batch: 16 comments (~7000 tokens) in one prompt." } };
+const batchPreview: PrTriageView = { ...batchOpen, revision: 5,
+  batch_fix: { ...batchOpen.batch_fix!, submission_prompt: "EXACT PROMPT\n\namf reply-draft --comment-id 1\namf reply-draft --comment-id 5" } };
+
+it("marks several comments, requires an explicit agent, previews the exact text and sends it bound to its digest", async () => {
+  backend(batchReview, (action) => action.kind === "start_batch_fix" ? batchOpen
+    : action.kind === "prepare_batch_submission" ? batchPreview : action.kind === "confirm_batch_submission" ? batchReview : batchReview);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  const first = await screen.findByRole("checkbox", { name: "Select comment by aria for batch fix" });
+  // Resolved, AMF follow-up and local-only comments cannot be marked.
+  expect(screen.getAllByRole("checkbox", { name: /for batch fix/ })).toHaveLength(2);
+  fireEvent.click(first);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select comment by mo for batch fix" }));
+  const group = screen.getByRole("group", { name: "Batch fix" });
+  expect(within(group).getByText("2 selected")).toBeTruthy();
+  const agent = within(group).getByRole("combobox", { name: "Batch fix agent" }) as HTMLSelectElement;
+  // No silent default: nothing is chosen, so nothing can be prepared.
+  expect(agent.value).toBe("");
+  const prepare = within(group).getByRole("button", { name: "Prepare batch fix…" }) as HTMLButtonElement;
+  expect(prepare.disabled).toBe(true);
+  expect((within(group).getByRole("option", { name: "Claude 1 (stopped)" }) as HTMLOptionElement).disabled).toBe(true);
+  fireEvent.change(agent, { target: { value: "codex-1" } });
+  fireEvent.click(prepare);
+  await screen.findByRole("textbox", { name: "Batch fix prompt" });
+  expect(actions()[0].action).toEqual({ kind: "start_batch_fix", comment_ids: [1, 5], session_id: "codex-1", destination_revision: "rev-codex" });
+  expect(screen.getByText(/Large batch: 16 comments/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Send batch fix to agent" });
+  expect(actions()[1]).toMatchObject({ revision: 4, action: { kind: "prepare_batch_submission", digest: "digest-1" } });
+  expect(within(confirm).getByText(/EXACT PROMPT/).textContent).toContain("amf reply-draft --comment-id 5");
+  fireEvent.click(within(confirm).getByRole("button", { name: "Send batch fix to agent" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog", { name: "Send batch fix to agent" })).toBeNull());
+  expect(actions()[2]).toMatchObject({ revision: 5, action: { kind: "confirm_batch_submission", digest: "digest-1" } });
+  // The selection is consumed once the batch is committed.
+  expect(screen.queryByRole("group", { name: "Batch fix" })).toBeNull();
+});
+
+it("keeps the batch open and the selection after a refused confirmation", async () => {
+  backend(batchPreview, (action) => { if (action.kind === "confirm_batch_submission") throw { kind: "conflict", message: "The selected comments changed; cancel and prepare the batch again" }; return batchReview; },
+    () => ({ ...batchPreview, revision: 6 }));
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  const confirm = await screen.findByRole("alertdialog", { name: "Send batch fix to agent" });
+  fireEvent.click(within(confirm).getByRole("button", { name: "Send batch fix to agent" }));
+  await screen.findByText("The selected comments changed; cancel and prepare the batch again");
+  expect(screen.getByRole("alertdialog", { name: "Send batch fix to agent" })).toBeTruthy();
+  // Other triage actions stay blocked while the batch is pending.
+  expect((screen.getByRole("button", { name: "Refresh comments" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel batch fix" }));
+  await waitFor(() => expect(actions().at(-1)?.action).toEqual({ kind: "cancel_batch_fix" }));
+});
+
+it("offers no batch selection without an agent session to send to", async () => {
+  backend(review, () => review);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  await screen.findByRole("navigation", { name: "Review comments" });
+  expect(screen.queryByRole("checkbox", { name: /for batch fix/ })).toBeNull();
+});

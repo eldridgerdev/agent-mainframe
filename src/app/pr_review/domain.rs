@@ -25,9 +25,9 @@ pub(super) const LEGACY_REVIEW_SESSION_LABEL: &str = "PR Review";
 /// dialog still opens but a warning toast fires so the user knows a single
 /// prompt this large risks blowing the agent's context window (plan: "keep the
 /// set bounded"). They gate a warning, not the action.
-pub(super) const BATCH_COMBINED_COMMENT_WARN: usize = 15;
+pub(crate) const BATCH_COMBINED_COMMENT_WARN: usize = 15;
 
-pub(super) const BATCH_COMBINED_TOKEN_WARN: usize = 6000;
+pub(crate) const BATCH_COMBINED_TOKEN_WARN: usize = 6000;
 
 /// Parse a GitHub-provided hunk and retain only the lines immediately around
 /// its comment anchor. The synthetic file headers let the regular unified-diff

@@ -29,9 +29,13 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     review_lines_proof = os.environ.get("AMF_GUI_PR_REVIEW_LINES_PROOF") == "1"
     project_pr_proof = os.environ.get("AMF_GUI_PROJECT_PR_PROOF") == "1" or review_lines_proof
     frontend_port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
-    fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1"
+    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1"
+    fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1" or batch_fix_proof
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     fix_draft_proof = fix_draft_proof or fix_submit_proof
+    # Store statuses are active/idle/stopped. The older submit proof's
+    # "running" parses as stopped, which the batch destination check refuses.
+    feature_status = "active" if batch_fix_proof else "running" if fix_submit_proof else "stopped"
     config = scratch / "config"
     state = scratch / "state"
     repo = scratch / "demo-api"
@@ -230,7 +234,7 @@ export function formatTotal(total: number): string {
                         "round-invoice-totals",
                         str(repo),
                         "amf-gui-shot-unused",
-                        "running" if fix_submit_proof else "stopped",
+                        feature_status,
                         stamp,
                         stamp,
                     ),
@@ -252,7 +256,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -269,7 +273,7 @@ export function formatTotal(total: number): string {
                     db.execute(
                         "SELECT status FROM features WHERE id='shot-feature'"
                     ).fetchone()[0]
-                    == ("running" if fix_submit_proof else "stopped")
+                    == feature_status
                 )
             assert (
                 db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (2 if fix_draft_proof else 0)

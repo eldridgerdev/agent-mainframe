@@ -4,7 +4,7 @@ import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff, s
 import { Field, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
 import { DIFF_KEYS, applyFold, diffKeyCommand, edgeFile, effectiveCursor, moveCursor, rowKey } from "./diffKeys";
-import { TreeRow, amfGroupOpen, buildRows, selectFile, toggleAllFolds } from "./diffTree";
+import { TreeRow, allDirs, amfGroupOpen, buildRows, selectFile, toggleAllFolds } from "./diffTree";
 
 /** Align runs of removed/added rows; marker rows retain their own position. */
 function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
@@ -79,7 +79,10 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
   const file = selectFile(all, path, filter);
   const rows = buildRows(all, { collapsed, amfChoice, filter });
   const amfCount = all.filter((item) => item.amf_generated).length;
-  const amfOpen = amfGroupOpen(amfChoice, all.length - amfCount);
+  const filtering = filter.trim() !== "";
+  const amfOpen = filtering || amfGroupOpen(amfChoice, all.length - amfCount);
+  const dirs = new Set(allDirs(all));
+  const anyFolded = [...collapsed].some((dir) => dirs.has(dir));
   const toggleDir = (key: string) => setCollapsed((prev) => { const next = new Set(prev); if (!next.delete(key)) next.add(key); return next; });
   const at = effectiveCursor(rows, cursor, file?.path);
   const cursorClass = (row: TreeRow) => rowKey(row) === at ? " diff-cursor" : "";
@@ -104,7 +107,6 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       .catch((error) => setLayoutError(asGuiError(error).message));
   }
   // A filter forces every folder open, so say so instead of changing folds nobody can see.
-  const filtering = filter.trim() !== "";
   const [foldNotice, setFoldNotice] = useState<string | null>(null);
   useEffect(() => { if (!filtering) setFoldNotice(null); }, [filtering]);
   const foldBlocked = () => {
@@ -189,17 +191,17 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       {view.files.length === 0 ? <p role="status">No changes in this scope.</p> : <>
         <div className="diff-controls">
           <Field label="Filter files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
-          <button className="btn btn-secondary btn-sm" onClick={() => { if (!foldBlocked()) setCollapsed(toggleAllFolds(all, collapsed)); }}>{collapsed.size > 0 ? "Unfold folders" : "Fold folders"}</button>
-          {amfCount > 0 && <button className="btn btn-secondary btn-sm" aria-pressed={amfOpen} onClick={() => { if (!foldBlocked()) setAmfChoice(!amfOpen); }}>
+          <button className="btn btn-secondary btn-sm" disabled={filtering} onClick={() => setCollapsed(toggleAllFolds(all, new Set([...collapsed].filter((dir) => dirs.has(dir)))))}>{anyFolded ? "Unfold folders" : "Fold folders"}</button>
+          {amfCount > 0 && <button className="btn btn-secondary btn-sm" aria-pressed={amfOpen} disabled={filtering} onClick={() => setAmfChoice(!amfOpen)}>
             {amfOpen ? "Hide" : "Show"} AMF files ({amfCount})</button>}
         </div>
         <div className="diff-reader">
-          <nav className="diff-files" aria-label="Changed files"><ul className="diff-tree">{rows.map((row) => row.kind === "file" ? fileRow(row)
+          <nav className="diff-files" aria-label="Changed files"><ul className="diff-tree">{rows.length === 0 && <li className="diff-tree-empty">No matching files.</li>}{rows.map((row) => row.kind === "file" ? fileRow(row)
             : row.kind === "dir" ? <li key={`dir:${row.key}`} style={{ paddingLeft: row.depth * 12 }}>
-              <button className={`diff-dir${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => { setCursor(rowKey(row)); if (!foldBlocked()) toggleDir(row.key); }}>
+              <button className={`diff-dir${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label={`Folder ${row.key}`} disabled={filtering} onClick={() => { setCursor(rowKey(row)); toggleDir(row.key); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> {row.name}/ <small>{row.files} {row.files === 1 ? "file" : "files"}</small></button></li>
             : <li key="amf-group">
-              <button className={`diff-dir diff-amf-group${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label="AMF files group" onClick={() => { setCursor(rowKey(row)); if (!foldBlocked()) setAmfChoice(!row.open); }}>
+              <button className={`diff-dir diff-amf-group${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label="AMF files group" disabled={filtering} onClick={() => { setCursor(rowKey(row)); setAmfChoice(!row.open); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> AMF files <small>{row.count} generated by AMF</small></button></li>)}
           </ul></nav>
           <section className="diff-content" aria-label="File diff">

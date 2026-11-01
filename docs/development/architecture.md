@@ -89,6 +89,14 @@ two-step: the adapter records the exact prompt or posted body, and confirmation
 re-reads the PR (head, metadata or thread) before calling the shared engine.
 `try_pr_review_post_reply`/`try_pr_review_toggle_resolve` return failures instead
 of the TUI's dashboard reset, so the GUI keeps the pane and draft.
+A thread batch fix (TUI `B`) marks several unresolved GitHub comments, builds the
+TUI's combined prompt, and sends it to one explicitly chosen agent session. The
+preview carries a SHA-256 digest of the PR head, each comment as fetched, the
+session and its `destination_revision`; confirmation recomputes it, re-reads the
+PR head and refuses any difference, a missing/replaced/stopped session (never
+retargeting) or a missing reply-draft store. One reply draft is registered per
+comment before sending and all earlier ones are restored if any registration or
+the paste fails. At most 50 comments; the TUI's soft ceilings only warn.
 Existing-agent fix submission uses the TUI's receipt-prompt builder and stored
 provenance, with an exact-prompt confirmation and fresh PR/session checks.
 `TmuxOps` delivers a bracketed paste only to an existing running window; sending

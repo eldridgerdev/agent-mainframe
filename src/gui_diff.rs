@@ -81,8 +81,6 @@ pub struct DiffView {
     pub files: Vec<DiffFileView>,
     pub total_additions: usize,
     pub total_deletions: usize,
-    /// The TUI's saved `diff_viewer_layout`, so both front ends open alike.
-    pub layout: crate::app::DiffViewerLayout,
 }
 
 pub fn load(
@@ -91,7 +89,6 @@ pub fn load(
     options: DiffOptions,
 ) -> GuiResult<DiffView> {
     gui.refresh_store()?;
-    let layout = crate::gui_settings::diff_layout_load(gui);
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store
@@ -155,7 +152,6 @@ pub fn load(
         files,
         total_additions: snapshot.total_additions,
         total_deletions: snapshot.total_deletions,
-        layout,
     })
 }
 
@@ -525,7 +521,7 @@ pub(crate) mod tests {
         std::fs::write(repo.join(".amf/scratch.txt"), "generated\n").unwrap();
         std::fs::write(repo.join(".opencode/plugins/change-tracker.js"), "//\n").unwrap();
         std::fs::write(repo.join("src/mine.rs"), "fn main() {}\n").unwrap();
-        // A committed managed path is someone's chosen work, not AMF's.
+        // A staged managed path is someone's chosen work, not AMF's.
         std::fs::write(repo.join(".claude/amf-hook-state.json"), "{}\n").unwrap();
         git(&repo, &["add", ".claude/amf-hook-state.json"]);
         let view = load(&mut gui, target, DiffOptions::default()).unwrap();

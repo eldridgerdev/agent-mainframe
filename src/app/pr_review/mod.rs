@@ -33,15 +33,16 @@ pub(crate) use domain::fix_session_index;
 pub(crate) use domain::pr_triage_session_index;
 pub(crate) use domain::pr_triage_session_index_named;
 pub(crate) use domain::window_parsed_hunk;
-use domain::{
-    BATCH_COMBINED_COMMENT_WARN, BATCH_COMBINED_TOKEN_WARN, SNIPPET_LEN, append_reply_attribution,
-    file_already_touched, pr_triage_session_index_named_for_harness,
-};
+pub(crate) use domain::{BATCH_COMBINED_COMMENT_WARN, BATCH_COMBINED_TOKEN_WARN};
 pub use domain::{
     CommentKind, FixTarget, FixTargetPickRow, MarkAction, PendingLocalFindings, PrComment,
     PrInvestigationStatus, PrInvestigationTurn, PrReview, PrSortMode, ReplyDraftProvenance,
     ReplyDraftRequest, ReplyGenerationMetadata, ReplyKind, ReplyTarget, TriageState,
     combined_fix_prompt, estimate_tokens, reply_effective_agent_drafted,
+};
+use domain::{
+    SNIPPET_LEN, append_reply_attribution, file_already_touched,
+    pr_triage_session_index_named_for_harness,
 };
 pub(crate) use fetch::PrFetchFailure;
 pub use fetch::{fetch_and_normalize, strip_bot_boilerplate};

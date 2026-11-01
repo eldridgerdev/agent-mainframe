@@ -19,6 +19,19 @@ are tagged.
   still finds files inside folded folders and the folded group, and your
   selected file stays selected across refreshes. Read-only; no keys or
   layout settings changed.
+- **Keep a PR investigation as a TODO, and skip or edit AI review findings, in
+  the desktop app.** A finished investigation in PR Triage now has *Keep as a
+  TODO*, which writes the answer to the feature's TODO list (the project's list on
+  the repo root), as the TUI does, tagged with the PR, comment and answer so
+  pressing it again says it is already kept instead of adding a second item. A
+  deleted TODO no longer counts as kept, and a re-run investigation (a different
+  answer) adds a new item and names the older one. In the AI review tab, *Skip*
+  and *Restore* leave a finding out of (or back in) *Post to GitHub* and batch fix
+  handoffs, and *Edit* changes the text that would be posted (up to 8000
+  characters). Both are tied to the exact AI result and PR head you are looking
+  at; if either changed, or the finding was already posted, the change is refused
+  with the reason rather than applied to something else. Nothing is sent to GitHub
+  by any of these.
 - **Fork a feature from the desktop app.** *More feature actions → Fork
   feature…* previews the uncommitted changes that will be copied, states that Git
   staging is not copied, and says exactly why the conversation can or cannot be

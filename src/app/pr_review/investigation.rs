@@ -980,7 +980,7 @@ impl App {
     /// (the feature's worktree list, or the project's at the repo root — the
     /// same target Learning Mode's `a` uses).
     pub(super) fn pr_investigation_keep_as_todo(&mut self) -> Result<()> {
-        let (comment_locator, title, body) = match &self.mode {
+        let (title, body) = match &self.mode {
             AppMode::PrReview(state) => {
                 let Some(comment) = state.selected_comment() else {
                     return Ok(());
@@ -993,28 +993,10 @@ impl App {
                     self.message = Some("No investigation to keep".into());
                     return Ok(());
                 };
-                let locator = match (&comment.path, comment.line) {
-                    (Some(p), Some(l)) if !comment.file_level => format!("{p}:{l}"),
-                    (Some(p), _) => p.clone(),
-                    (None, _) => format!("PR #{}", state.review.pr.number),
-                };
-                let answer = inv.answer.clone().unwrap_or_default();
-                let title = answer
-                    .lines()
-                    .map(str::trim)
-                    .find(|l| !l.is_empty())
-                    .unwrap_or("PR investigation finding")
-                    .chars()
-                    .take(120)
-                    .collect::<String>();
-                let body = format!(
-                    "From a read-only investigation of a PR review comment ({locator}).\n\n{answer}"
-                );
-                (locator, title, body)
+                investigation_todo_seed(state.review.pr.number, comment, inv.answer.as_deref())
             }
             _ => return Ok(()),
         };
-        let _ = comment_locator;
 
         let Some((pi, fi)) = self.pr_review_target_feature() else {
             self.push_toast_error("Can't keep as TODO: no feature for this PR");
@@ -1182,4 +1164,30 @@ impl App {
             state.investigation_context.editor = None;
         }
     }
+}
+
+/// The title and body a kept investigation answer becomes, shared by the TUI
+/// and the GUI so both write the same TODO.
+pub(crate) fn investigation_todo_seed(
+    pr_number: u32,
+    comment: &PrComment,
+    answer: Option<&str>,
+) -> (String, String) {
+    let locator = match (&comment.path, comment.line) {
+        (Some(p), Some(l)) if !comment.file_level => format!("{p}:{l}"),
+        (Some(p), _) => p.clone(),
+        (None, _) => format!("PR #{pr_number}"),
+    };
+    let answer = answer.unwrap_or_default();
+    let title = answer
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("PR investigation finding")
+        .chars()
+        .take(120)
+        .collect::<String>();
+    let body =
+        format!("From a read-only investigation of a PR review comment ({locator}).\n\n{answer}");
+    (title, body)
 }

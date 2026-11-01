@@ -196,3 +196,56 @@ it("retains an unavailable agent choice after refresh instead of silently select
   fireEvent.change(select, { target: { value: "second" } });
   expect(select.value).toBe("second");
 });
+
+it("skips, restores and edits a finding against the current result and surfaces refusals", async () => {
+  let revision = "rev-1";
+  let finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "Original body", diff_hunk: null, skipped: false, published: false };
+  const view = () => ({ workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", result_revision: revision, running: false, stage: null, activity: null, elapsed_seconds: 0, token_estimate: null, findings: [finding], summary: null, error: null, precall: null, can_cancel: false });
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot" || command === "pr_triage_act") return reviewing;
+    if (command === "pr_workspace_fix_targets") return [];
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_close") return undefined;
+    if (command === "pr_workspace_ai_snapshot") return view();
+    if (command === "pr_workspace_ai_act") {
+      const action = (args as { action: { kind: string; index: number; body?: string; result_revision: string; head_sha: string } }).action;
+      if (action.result_revision !== revision) throw { kind: "conflict", message: "The AI result changed since you opened it; review the current findings and try again" };
+      if (action.kind === "toggle_skip") { finding = { ...finding, skipped: !finding.skipped }; revision = `${revision}+`; }
+      if (action.kind === "edit_body") { finding = { ...finding, body: action.body! }; revision = `${revision}+`; }
+      return view();
+    }
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "AI Review" }));
+
+  fireEvent.click(await screen.findByRole("button", { name: "Edit finding 1" }));
+  const box = screen.getByRole("textbox", { name: "Finding 1 body" }) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: "x".repeat(8001) } });
+  expect((screen.getByRole("button", { name: "Save body" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(box, { target: { value: "  " } });
+  expect((screen.getByRole("button", { name: "Save body" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(box, { target: { value: "Edited body" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save body" }));
+  await screen.findByText("Edited body");
+  const editCall = vi.mocked(invoke).mock.calls.find(([, a]) => (a as { action?: { kind: string } })?.action?.kind === "edit_body")!;
+  expect(editCall[1]).toMatchObject({ action: { kind: "edit_body", index: 0, body: "Edited body", result_revision: "rev-1", head_sha: "abcdef012345" } });
+  expect(screen.queryByRole("textbox", { name: "Finding 1 body" })).toBeNull();
+
+  fireEvent.click(await screen.findByRole("button", { name: "Skip finding 1" }));
+  await screen.findByText("Skipped");
+  expect(screen.queryByRole("button", { name: "Post to GitHub…" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Restore finding 1" }));
+  await screen.findByRole("button", { name: "Skip finding 1" });
+  expect(screen.getByRole("button", { name: "Post to GitHub…" })).toBeTruthy();
+
+  // A result that moved on elsewhere is refused loudly and nothing is retargeted.
+  revision = "rev-other";
+  const before = finding.body;
+  fireEvent.click(screen.getByRole("button", { name: "Skip finding 1" }));
+  expect(await screen.findByText(/AI result changed/)).toBeTruthy();
+  expect(finding.body).toBe(before);
+  expect(finding.skipped).toBe(false);
+});

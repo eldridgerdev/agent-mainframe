@@ -1330,6 +1330,12 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-file:hover, .diff-file-selected { background: var(--surface-2); }
 /* Selected rows carry an accent edge, like .review-line-selected: the
    neutral fill alone sits too close to its neighbours to read as selected. */
+.diff-cursor { outline: 1px dashed var(--accent); outline-offset: -2px; }
+.diff-key-help { margin-bottom: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+.diff-key-help dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 12px; margin: 0 0 4px; }
+.diff-key-help dl div { display: flex; gap: 8px; }
+.diff-key-help dd { margin: 0; }
+.diff-key-help kbd { display: inline-block; min-width: 1.4em; text-align: center; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; font-family: monospace; }
 .diff-file-selected { box-shadow: inset 3px 0 var(--accent); }
 .diff-content { min-width: 0; display: flex; flex-direction: column; }
 .diff-file-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; overflow-wrap: anywhere; font-size: 12px; }

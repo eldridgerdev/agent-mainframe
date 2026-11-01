@@ -726,7 +726,7 @@ fn opening(gui: &mut GuiHandle, target: &PrTriageTarget) -> GuiResult<Opening> {
     // composer after preparing a fix), instead of rejecting it as an
     // unfinished workflow.
     let workspace_threads = gui.pr_workspace_context.as_ref().and_then(|workspace| {
-        (workspace.ai_active
+        ((workspace.ai_active || workspace.files_review)
             && workspace.target.project_id == target.project_id
             && target.feature_id.as_ref() == Some(&workspace.target.feature_id))
         .then(|| workspace.id.clone())

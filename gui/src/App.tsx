@@ -1520,7 +1520,7 @@ export default function App() {
           <Suspense fallback={<div className="pr-workspace-loading"><Spinner /><span>Opening PR workspace…</span></div>}>
             <PrWorkspacePanel key={`${prWorkspaceTarget.project_id}:${prWorkspaceTarget.feature_id}`} target={prWorkspaceTarget}
               onClose={() => { setPrWorkspaceTarget(null); setPrWorkspaceVisible(false); setPrWorkspaceStatus({ running: false, prNumber: null, completed: false }); }}
-              onReturnToFeature={() => setPrWorkspaceVisible(false)} onStatusChange={setPrWorkspaceStatus}
+              onReturnToFeature={() => setPrWorkspaceVisible(false)} onStatusChange={setPrWorkspaceStatus} onOpenPrReview={setPrReviewProject}
               onHandoff={(handoff) => {
                 setPrWorkspaceVisible(false);
                 openSession(handoff.target, handoff.draft_prompt);

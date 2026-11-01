@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { asGuiError, type FeatureTarget } from "./api";
 import { Hunk } from "./DiffPanel";
+import PrReviewPanel from "./PrReviewPanel";
 import Markdown from "./Markdown";
 import { Spinner } from "./ui";
 import PrTriagePanel from "./PrTriagePanel";
@@ -18,14 +19,32 @@ function elapsedLabel(seconds: number) {
   return minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
 }
 
+/** The pre-embed Files tab: a read-only `gh pr diff`, shown only when the PR cannot be reviewed from Files. */
+function ReadOnlyFiles({ workflowId }: { workflowId: string }) {
+  const [files, setFiles] = useState<WorkspaceFiles | null>(null);
+  const [path, setPath] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    workspaceFiles(workflowId).then((result) => { if (live) { setFiles(result); setPath(result.files[0]?.path ?? null); } })
+      .catch((e) => { if (live) setError(asGuiError(e).message); });
+    return () => { live = false; };
+  }, [workflowId]);
+  const file = files?.files.find((f) => f.path === path) ?? files?.files[0] ?? null;
+  return <div className="pr-reader" aria-label="Read-only PR files">
+    {error && <p className="callout callout-danger" role="alert">{error}</p>}
+    <nav className="diff-files" aria-label="PR changed files">{files?.files.map((f) => <button key={f.path} className={`diff-file ${file === f ? "diff-file-selected" : ""}`} onClick={() => setPath(f.path)}>{f.path}<small>+{f.additions} −{f.deletions}</small></button>)}</nav>
+    <section className="diff-content" aria-label="PR file diff">{file ? <><strong>{file.path}</strong><div className="diff-code">{file.is_binary ? <p>Binary file changed.</p> : file.hunks.length ? file.hunks.map((hunk, i) => <Hunk key={i} hunk={hunk} split={false} />) : <pre>{file.patch || "No textual changes."}</pre>}</div></> : !error && <p className="muted"><Spinner /> Loading PR files…</p>}</section>
+  </div>;
+}
+
 /** Experimental three-pane PR workspace. The legacy PR Triage modal remains a separate route. */
-export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, onStatusChange, onHandoff }: { target: FeatureTarget; onClose: () => void; onReturnToFeature: () => void; onStatusChange: (status: PrWorkspaceStatus) => void; onHandoff?: (handoff: PrFixHandoff) => void }) {
+export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, onStatusChange, onHandoff, onOpenPrReview }: { target: FeatureTarget; onClose: () => void; onReturnToFeature: () => void; onStatusChange: (status: PrWorkspaceStatus) => void; onHandoff?: (handoff: PrFixHandoff) => void; onOpenPrReview?: (projectId: string) => void }) {
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [triage, setTriage] = useState<PrTriageView | null>(null);
-  const [files, setFiles] = useState<WorkspaceFiles | null>(null);
+  const [filesDirty, setFilesDirty] = useState(false);
   const [ai, setAi] = useState<WorkspaceAi | null>(null);
   const [tab, setTab] = useState<Tab>("threads");
-  const [path, setPath] = useState<string | null>(null);
   const [selectedFindings, setSelectedFindings] = useState<Set<number>>(new Set());
   const [fixTarget, setFixTarget] = useState<PrFixTarget | null>(null);
   const [fixTargets, setFixTargets] = useState<PrFixTarget[]>([]);
@@ -85,13 +104,6 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     };
   }, [target.project_id, target.feature_id]);
 
-  const loadFiles = useCallback(async (id: string) => {
-    setBusy(true);
-    try { const result = await workspaceFiles(id); setFiles(result); setPath((p) => result.files.some((f) => f.path === p) ? p : result.files[0]?.path ?? null); setError(null); }
-    catch (e) { setError(asGuiError(e).message); }
-    finally { setBusy(false); }
-  }, []);
-
   const switchTab = useCallback(async (next: Tab) => {
     if (!workflowId || busy || triageBusy) return;
     setBusy(true); setError(null);
@@ -105,12 +117,11 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         setFixTargets(await workspaceFixTargets(workflowId));
       } else {
         await workspaceSwitchThreads(workflowId);
-        if (next === "files") await loadFiles(workflowId);
       }
       setTab(next);
     } catch (e) { setError(asGuiError(e).message); }
     finally { setBusy(false); }
-  }, [workflowId, busy, triageBusy, triage, loadFiles]);
+  }, [workflowId, busy, triageBusy, triage]);
 
   useEffect(() => {
     if (!workflowId || !ai?.running || busy) return;
@@ -223,23 +234,24 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     }
   };
 
-  const closeWorkspace = useCallback(async (triageAlreadyClosed = false) => {
+  const closeWorkspace = useCallback(async (triageAlreadyClosed = false, thenReview = false) => {
     if (!workflowId) { onClose(); return; }
     if (busy) return;
     setBusy(true);
     try {
-      if (tab === "ai") await workspaceSwitchThreads(workflowId);
+      if (tab !== "threads") await workspaceSwitchThreads(workflowId);
       if (triage && !triageAlreadyClosed) await prTriageAct(triage, { kind: "close" });
       await workspaceClose(workflowId);
       onClose();
+      if (thenReview) onOpenPrReview?.(target.project_id);
     } catch (e) { setError(asGuiError(e).message); }
     finally { setBusy(false); }
-  }, [workflowId, busy, tab, triage, onClose]);
+  }, [workflowId, busy, tab, triage, onClose, onOpenPrReview, target.project_id]);
 
   const requestClose = useCallback(async () => {
     if (busy) return;
     try {
-      if (workflowId && tab === "ai") {
+      if (workflowId && tab !== "threads") {
         await workspaceSwitchThreads(workflowId);
         setTab("threads");
       }
@@ -256,12 +268,10 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
     const number = triage.review?.number ?? 0;
     const identity = triage.review ? `${triage.review.number}:${triage.review.head_sha}` : null;
     const changedPr = prIdentity.current !== null && identity !== prIdentity.current;
-    const needsThreadRestore = changedPr && tabRef.current === "ai";
+    const needsThreadRestore = changedPr && tabRef.current !== "threads";
     if (identity !== prIdentity.current) {
       if (changedPr) {
-        setFiles(null);
         setAi(null);
-        setPath(null);
         setSelectedFindings(new Set());
         setPublishConfirm(false);
         if (!needsThreadRestore) setTab("threads");
@@ -282,7 +292,6 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
   }, [workflowId, triage?.review?.number, triage?.review?.head_sha]);
 
   const review = triage?.review;
-  const file = files?.files.find((f) => f.path === path) ?? files?.files[0] ?? null;
   const aiElapsedSeconds = ai?.running && aiLocalStartedAt.current !== null
     ? Math.max(ai.elapsed_seconds, Math.floor((clockNow - aiLocalStartedAt.current) / 1000))
     : ai?.elapsed_seconds ?? 0;
@@ -311,13 +320,11 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
       </aside>
       <section className="pr-workspace-main">
         <nav className="pr-workspace-tabs" aria-label="PR workspace views">
-          {(["files", "threads", "ai"] as const).map((item) => <button key={item} className={`btn ${tab === item ? "btn-primary" : "btn-secondary"}`} aria-current={tab === item ? "page" : undefined} disabled={busy || triageBusy || !review && item !== "threads"} onClick={() => void switchTab(item)}>{item === "ai" ? `AI Review${ai?.running ? " · Running" : ""}` : item[0].toUpperCase() + item.slice(1)}</button>)}
+          {(["files", "threads", "ai"] as const).map((item) => <button key={item} className={`btn ${tab === item ? "btn-primary" : "btn-secondary"}`} aria-current={tab === item ? "page" : undefined} disabled={busy || triageBusy || (filesDirty && tab === "files") || !review && item !== "threads"} onClick={() => void switchTab(item)}>{item === "ai" ? `AI Review${ai?.running ? " · Running" : ""}` : item[0].toUpperCase() + item.slice(1)}</button>)}
         </nav>
         {!review && tab === "threads" && <p className="muted">Choose the highlighted PR to load its threads and workspace.</p>}
-        {review && tab === "files" && <div className="pr-reader">
-          <nav className="diff-files" aria-label="PR changed files">{files?.files.map((f) => <button key={f.path} className={`diff-file ${file === f ? "diff-file-selected" : ""}`} onClick={() => setPath(f.path)}>{f.path}<small>+{f.additions} −{f.deletions}</small></button>)}</nav>
-          <section className="diff-content" aria-label="PR file diff">{file ? <><strong>{file.path}</strong><div className="diff-code">{file.is_binary ? <p>Binary file changed.</p> : file.hunks.length ? file.hunks.map((hunk, i) => <Hunk key={i} hunk={hunk} split={false} />) : <pre>{file.patch || "No textual changes."}</pre>}</div></> : <p className="muted">{busy ? <><Spinner /> Loading PR files…</> : "No changed files."}</p>}</section>
-        </div>}
+        {review && tab === "files" && workflowId && <PrReviewPanel key={`${workflowId}:${review.number}:${review.head_sha}`} projectId={target.project_id} onClose={() => undefined}
+          embedded={{ workflowId, number: review.number, onDirtyChange: setFilesDirty, onOpenReview: () => void closeWorkspace(false, true), fallback: <ReadOnlyFiles workflowId={workflowId} /> }} />}
         {workflowId && <div className="pr-workspace-threads" hidden={tab !== "threads"}>
           <PrTriagePanel target={target} embedded embeddedActive={tab === "threads"} embeddedView={triage} onEmbeddedViewChange={setTriage} onEmbeddedBusyChange={setTriageBusy} onRequestClose={(close) => { triageClose.current = close; }} onClose={() => void closeWorkspace(true)} onHandoff={onHandoff} />
         </div>}
@@ -344,6 +351,6 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
         </section>}
       </section>
     </div>
-    <footer className="pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head.</span><button className="btn btn-ghost btn-sm" disabled={busy || triageBusy || ai?.running || !!ai?.precall} onClick={requestClose}>Close workspace</button></footer>
+    <footer className="pr-workspace-footer"><span className="muted small">Files and AI findings are pinned to the selected PR head.</span><button className="btn btn-ghost btn-sm" disabled={busy || triageBusy || ai?.running || !!ai?.precall || (filesDirty && tab === "files")} onClick={requestClose}>Close workspace</button></footer>
   </section>;
 }

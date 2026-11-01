@@ -1372,6 +1372,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-line-select:disabled { cursor: default; }
 .diff-line-select[aria-pressed="true"] { color: var(--text); font-weight: bold; }
 .diff-lines .review-line-selected { background: var(--accent-soft); box-shadow: inset 3px 0 var(--accent); }
+.diff-annotation td { padding: 0; font-family: inherit; white-space: normal; }
+.review-inline-threads { margin: 4px 8px 6px 64px; display: grid; gap: 4px; }
+.review-inline-thread { padding: 6px 10px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; background: var(--surface-2); font-size: 13px; }
+.review-inline-thread p { margin: 4px 0 0; }
+.review-inline-thread pre { margin: 4px 0 0; overflow-x: auto; }
+.review-inline-resolved { opacity: .65; border-left-color: var(--text-muted); }
+.pr-review-embedded { display: grid; gap: 8px; min-width: 0; }
 .review-line-controls { padding: 8px; }
 
 /* Saved prompt browser: scan sources on the left, prepare a draft on the right. */

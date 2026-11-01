@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { asGuiError } from "./api";
 import { DiffLine, ReviewLocation, ReviewSeverity, ReviewSpan } from "./api";
 import { Hunk } from "./DiffPanel";
 import Markdown from "./Markdown";
 import { Field, Modal, Spinner } from "./ui";
+import { workspaceReviewOpen } from "./prWorkspaceApi";
 import { PrReviewAction, PrReviewThread, PrReviewView, prReviewAct, prReviewBegin, prReviewSnapshot } from "./prReviewApi";
 
 type Editor = { kind: "line_comment" | "suggestion"; span: ReviewSpan; path: string; text: string; severity: ReviewSeverity; original: string; originalSeverity: ReviewSeverity };
@@ -11,7 +12,17 @@ const SEVERITIES: ReviewSeverity[] = ["blocker", "suggestion", "nit", "question"
 const locationLabel = (l: ReviewLocation) => l.new_line !== null ? `line ${l.new_line}` : `base line ${l.old_line}`;
 const locationKey = (l: ReviewLocation) => `${l.old_line}:${l.new_line}`;
 
-export default function PrReviewPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+/** PR Workspace's Files tab hosts this panel without its dialog frame: the PR and head come from the workspace. */
+export type EmbeddedReview = {
+  workflowId: string; number: number;
+  /** Shown when the PR cannot be reviewed from Files, so the tab still has a diff to read. */
+  fallback?: ReactNode;
+  onDirtyChange: (dirty: boolean) => void;
+  /** Leave Files and open the PR Review dialog, where the summary is written and the review is previewed and posted. */
+  onOpenReview: () => void;
+};
+
+export default function PrReviewPanel({ projectId, onClose, embedded }: { projectId: string; onClose: () => void; embedded?: EmbeddedReview }) {
   const [view, setView] = useState<PrReviewView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,12 +37,13 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   const pending = useRef(false);
   useEffect(() => {
     let live = true;
-    prReviewBegin(projectId).then((next) => { if (live) setView(next); })
+    (embedded ? workspaceReviewOpen(embedded.workflowId, embedded.number) : prReviewBegin(projectId)).then((next) => { if (live) setView(next); })
       .catch((err) => { if (live) setError(asGuiError(err).message); })
       .finally(() => { if (live) setBusy(false); });
     return () => { live = false; };
-  }, [projectId]);
-  const waiting = !!view?.loading || !!view?.submission?.posting;
+  }, [projectId, embedded?.workflowId, embedded?.number]);
+  // A Files review opens its one PR by itself, so the pick stage is only a wait.
+  const waiting = !!view?.loading || !!view?.submission?.posting || (!!embedded && view?.stage === "pick" && !view.pin_error && !view.error);
   useEffect(() => {
     if (!view || !waiting || busy) return;
     const id = view.workflow_id;
@@ -47,7 +59,10 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   useEffect(() => { setSummary(view?.summary ?? ""); }, [view?.number, view?.summary]);
   const editorDirty = !!editor && (editor.text !== editor.original || editor.severity !== editor.originalSeverity);
   const dirty = comment !== (file?.comment ?? "") || summary !== (view?.summary ?? "") || editorDirty;
-  const locked = busy || !!view?.submission;
+  const locked = busy || !!view?.submission || !!view?.pin_error;
+  const onDirtyChange = embedded?.onDirtyChange;
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   // Selections and editors belong to one file of one PR head.
   useEffect(() => { setSelection(null); setEditor(null); setNotice(null); }, [view?.number, view?.head_sha, file?.diff.path]);
   const lines = file?.diff.hunks.flatMap((hunk) => hunk.lines).filter((line) => line.kind !== "marker") ?? [];
@@ -135,8 +150,17 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
   function leave(kind: "back" | "close") {
     if (dirty) setDiscard(kind); else if (view) void act({ kind }); else onClose();
   }
-  return <Modal label="PR Review" title={`PR Review${view ? ` · ${view.project_name}` : ""}`} size="xl"
-    dismissable={!locked} onClose={() => leave("close")}>
+  const threadsByEnd = new Map<string, PrReviewThread[]>();
+  for (const thread of file?.line_comments ?? []) threadsByEnd.set(locationKey(thread.end), [...(threadsByEnd.get(locationKey(thread.end)) ?? []), thread]);
+  // Files shows the saved threads where they sit in the diff; the list below still edits them.
+  const inlineThreads = embedded ? (line: DiffLine) => {
+    const here = line.kind === "marker" ? undefined : threadsByEnd.get(locationKey(line));
+    return here && <div className="review-inline-threads">{here.map((thread, index) => <div key={index} className={`review-inline-thread${thread.resolved ? " review-inline-resolved" : ""}`}>
+      <strong>{thread.anchor}</strong> <span className="tag">{thread.severity}</span>{thread.resolved && <span className="tag">resolved</span>}{thread.anchor_lost && <span className="tag">anchor lost</span>}
+      <p>{thread.text}</p>{thread.suggestion !== null && <pre>{thread.suggestion}</pre>}{thread.note && <p className="muted small">{thread.note}</p>}
+    </div>)}</div>;
+  } : undefined;
+  const body = <>
     {(error || view?.error) && <p className="callout callout-danger" role="alert">{error || view?.error}</p>}
     {view?.notice && <p role="status">{view.notice}</p>}
     {discard && <div className="callout callout-warning"><p>Discard unsaved editor text? Saved review drafts are kept.</p>
@@ -144,7 +168,10 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       <button className="btn btn-warning" onClick={() => void act({ kind: discard })}>Discard and leave</button>
     </div>}
     {(!view || waiting) && <p role="status"><Spinner /> Loading pull requests…</p>}
-    {view?.stage === "pick" && <section aria-label="Choose a pull request">
+    {embedded && !view && error && embedded.fallback}
+    {embedded && view?.pin_error && <p className="callout callout-danger" role="alert">{view.pin_error}</p>}
+    {embedded && view?.pin_error && view.stage === "pick" && embedded.fallback}
+    {!embedded && view?.stage === "pick" && <section aria-label="Choose a pull request">
       <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "retry" })}>Refresh pull requests</button>
       {!waiting && !view.error && view.entries.length === 0 && <p>No open pull requests.</p>}
       <ul className="pr-list">{view.entries.map((entry) => <li key={entry.number}>
@@ -185,7 +212,7 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
             <button type="button" className="btn btn-secondary" disabled={locked} onClick={() => setEditor(null)}>Cancel edit</button>
             <p className="muted small">Anchored to {locationLabel(editor.span.start)} – {locationLabel(editor.span.end)}. An empty save removes this {editor.kind === "suggestion" ? "suggestion" : "comment's prose"}; the other part of the thread is kept. Posts only after you confirm the submission preview.</p>
           </form>}
-          <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} selection={{ disabled: locked || editorDirty, select: selectLine,
+          <div className="diff-code">{file.diff.is_binary ? <p>Binary file changed.</p> : file.diff.hunks.length ? file.diff.hunks.map((hunk, index) => <Hunk key={index} hunk={hunk} split={false} annotate={inlineThreads} selection={{ disabled: locked || editorDirty, select: selectLine,
             contains: (line) => !!span && line.kind !== "marker" && lineIndex(line) >= lineIndex(span.start) && lineIndex(line) <= lineIndex(span.end) }} />) : <pre>{file.diff.patch || "No textual changes."}</pre>}</div>
           {file.line_comments.length > 0 && <details className="review-note" open><summary>Saved line comments ({file.line_comments.length})</summary>
             {file.line_comments.map((thread, index) => <div key={index}>
@@ -202,6 +229,8 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       </div>
       {file && <><Field label={`Comment on ${file.diff.path}`}><textarea value={comment} disabled={locked} onChange={(e) => setComment(e.target.value)} /></Field>
         <button className="btn btn-secondary" disabled={locked || comment === file.comment} onClick={() => void act({ kind: "file_comment", path: file.diff.path, text: comment })}>Save file comment</button></>}
+      {embedded ? <div className="row"><p className="muted small">Comments save to the shared PR review draft, the same one PR Review and the terminal UI use. The summary, preview and posting stay in PR Review.</p>
+        <button className="btn btn-secondary" disabled={locked || dirty} onClick={embedded.onOpenReview}>Preview and post in PR Review…</button></div> : <>
       <Field label="Review summary"><textarea value={summary} disabled={locked} onChange={(e) => setSummary(e.target.value)} /></Field>
       <button className="btn btn-secondary" disabled={locked || summary === view.summary} onClick={() => void act({ kind: "summary", text: summary })}>Save summary</button>
       <Field label="Review event"><select value={event} disabled={locked} onChange={(e) => setEvent(e.target.value)}>
@@ -209,8 +238,9 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       </select></Field>
       <div className="row"><button className="btn btn-secondary" disabled={locked} onClick={() => leave("back")}>Back to pull requests</button>
         <button className="btn btn-primary" disabled={locked || dirty} onClick={() => void act({ kind: "preview", event })}>Preview submission</button></div>
+      </>}
     </>}
-    {view?.submission && <section aria-label="Confirm PR review" className="callout">
+    {!embedded && view?.submission && <section aria-label="Confirm PR review" className="callout">
       <h3>Post {view.submission.event.replaceAll("_", " ").toLowerCase()} review to PR #{view.number}</h3>
       <Markdown source={view.submission.body || "No summary."} />
       {view.submission.comments.map((c, i) => <div key={i}>
@@ -223,5 +253,8 @@ export default function PrReviewPanel({ projectId, onClose }: { projectId: strin
       {view.submission.head_moved ? <button className="btn btn-primary" disabled={busy} onClick={() => void act({ kind: "reopen" })}>Reopen updated PR</button>
         : <button className="btn btn-primary" disabled={busy || view.submission.posting} onClick={() => void act({ kind: "confirm_submit" })}>{view.submission.posting ? "Posting…" : "Confirm and post to GitHub"}</button>}
     </section>}
-  </Modal>;
+  </>;
+  if (embedded) return <section className="pr-review-embedded" aria-label="PR Files review">{body}</section>;
+  return <Modal label="PR Review" title={`PR Review${view ? ` · ${view.project_name}` : ""}`} size="xl"
+    dismissable={!locked} onClose={() => leave("close")}>{body}</Modal>;
 }

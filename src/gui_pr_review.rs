@@ -17,6 +17,27 @@ pub(crate) struct PrReviewContext {
     workdir: PathBuf,
     revision: u64,
     draft: Option<crate::db::pr_review_drafts::PrReviewDraft>,
+    /// Set when PR Workspace's Files tab owns this review: it opens exactly
+    /// one PR at exactly one head and only edits comments.
+    embedded: Option<EmbeddedPin>,
+}
+
+/// The PR and head the workspace's Files tab was reading when it asked to
+/// author comments. The review it opens must be that PR at that head.
+#[derive(Clone)]
+struct EmbeddedPin {
+    number: u32,
+    head_sha: String,
+    /// The open has been issued; do not issue it twice.
+    requested: bool,
+    /// Why the review cannot be edited from Files. Terminal for this review.
+    error: Option<String>,
+}
+
+impl PrReviewContext {
+    pub(crate) fn workflow_id(&self) -> String {
+        self.id.clone()
+    }
 }
 
 #[derive(Serialize)]
@@ -114,6 +135,13 @@ pub struct PrReviewView {
     /// The PR head every comment in this review is pinned to.
     head_sha: Option<String>,
     stage: &'static str,
+    /// Opened from PR Workspace's Files tab: line, range, suggestion, thread
+    /// and file comments only; summary, preview and posting stay in the
+    /// PR Review dialog.
+    embedded: bool,
+    /// Why this Files review is refused (PR not open for review, or its head
+    /// moved since the workspace loaded it).
+    pin_error: Option<String>,
     entries: Vec<PrReviewEntry>,
     loading: bool,
     number: Option<u32>,
@@ -170,6 +198,11 @@ pub enum PrReviewAction {
 pub fn begin(gui: &mut GuiHandle, project_id: String) -> GuiResult<PrReviewView> {
     gui.refresh_store()?;
     if let Some(context) = &gui.pr_review_context {
+        if context.embedded.is_some() {
+            return Err(GuiError::conflict(
+                "PR Workspace's Files tab is editing a PR review; leave that tab before opening PR Review",
+            ));
+        }
         if context.project_id == project_id {
             return poll(gui, &context.id.clone());
         }
@@ -177,6 +210,40 @@ pub fn begin(gui: &mut GuiHandle, project_id: String) -> GuiResult<PrReviewView>
             "Close PR Review before opening another project",
         ));
     }
+    start(gui, project_id, None)
+}
+
+/// Open the review for PR Workspace's Files tab: the one PR the workspace is
+/// reading, at the head it read. The caller parks any other workflow first.
+pub(crate) fn begin_embedded(
+    gui: &mut GuiHandle,
+    project_id: String,
+    number: u32,
+    head_sha: String,
+) -> GuiResult<PrReviewView> {
+    gui.refresh_store()?;
+    if gui.pr_review_context.is_some() {
+        return Err(GuiError::conflict(
+            "Close PR Review before editing comments in PR Workspace",
+        ));
+    }
+    start(
+        gui,
+        project_id,
+        Some(EmbeddedPin {
+            number,
+            head_sha,
+            requested: false,
+            error: None,
+        }),
+    )
+}
+
+fn start(
+    gui: &mut GuiHandle,
+    project_id: String,
+    embedded: Option<EmbeddedPin>,
+) -> GuiResult<PrReviewView> {
     let app = gui.app_for_workflow();
     if !matches!(app.mode, AppMode::Normal) || app.paused_plan_interview.is_some() {
         return Err(GuiError::conflict(
@@ -200,8 +267,103 @@ pub fn begin(gui: &mut GuiHandle, project_id: String) -> GuiResult<PrReviewView>
         workdir,
         revision: 0,
         draft: None,
+        embedded,
     });
-    view(gui)
+    let id = gui.pr_review_context.as_ref().unwrap().id.clone();
+    poll(gui, &id)
+}
+
+/// Close a Files-tab review. The comments are already saved by each action;
+/// this saves once more (unless another interface changed the draft, which
+/// it must not overwrite) and refuses while a post is in flight.
+pub(crate) fn close_embedded(gui: &mut GuiHandle) -> GuiResult<()> {
+    if !gui
+        .pr_review_context
+        .as_ref()
+        .is_some_and(|c| c.embedded.is_some())
+    {
+        return Ok(());
+    }
+    let app = gui.app_for_workflow();
+    if matches!(&app.mode, AppMode::DiffViewer(s)
+        if s.pr_submit.as_ref().is_some_and(|s| matches!(s.status, PrSubmitStatus::Posting { .. })))
+    {
+        return Err(GuiError::conflict(
+            "Wait for GitHub to answer before leaving",
+        ));
+    }
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        let draft_changed =
+            current_draft(gui.app_for_workflow())? != gui.pr_review_context.as_ref().unwrap().draft;
+        if !draft_changed {
+            save(gui)?;
+        }
+    }
+    close(gui);
+    Ok(())
+}
+
+/// Issue the pinned open once the PR list has loaded, and refuse a review
+/// that is not the PR and head the Files tab was reading.
+fn advance_pin(gui: &mut GuiHandle) -> bool {
+    let Some(pin) = gui
+        .pr_review_context
+        .as_ref()
+        .and_then(|c| c.embedded.clone())
+    else {
+        return false;
+    };
+    if pin.error.is_some() {
+        return false;
+    }
+    let mut next = pin.clone();
+    let mut open = false;
+    let app = gui.app_for_workflow();
+    match &mut app.mode {
+        AppMode::PrReviewList(state) if state.opening.is_none() && !state.reloading => {
+            if !pin.requested {
+                if let PrReviewListLoad::Loaded(entries) = &state.load {
+                    match entries.iter().position(|p| p.number == pin.number) {
+                        Some(index) => {
+                            state.selected = index;
+                            next.requested = true;
+                            open = true;
+                        }
+                        None => {
+                            next.error = Some(format!(
+                                "PR #{} is not in the open pull requests PR Review lists (closed, or not reviewable); the read-only diff is shown instead",
+                                pin.number
+                            ))
+                        }
+                    }
+                }
+            } else if let Some(error) = state.open_error.clone() {
+                next.error = Some(format!("PR #{} could not be opened: {error}", pin.number));
+            }
+        }
+        AppMode::DiffViewer(state) => {
+            if let DiffScope::PullRequest(target) = &state.scope
+                && (target.pr.number != pin.number
+                    || !target.pr.head_oid.eq_ignore_ascii_case(&pin.head_sha))
+            {
+                next.error = Some(format!(
+                    "PR #{} is now at {}, but PR Workspace loaded {}. Comments are pinned to one head, so editing is refused; reselect the PR in Threads to refresh, then reopen Files",
+                    target.pr.number,
+                    target.pr.head_oid.chars().take(8).collect::<String>(),
+                    pin.head_sha.chars().take(8).collect::<String>(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    if open {
+        app.pr_review_list_open_selected();
+    }
+    let changed = next.requested != pin.requested || next.error != pin.error;
+    if changed {
+        gui.pr_review_context.as_mut().unwrap().embedded = Some(next);
+    }
+    changed
 }
 
 fn check(gui: &mut GuiHandle, id: &str) -> GuiResult<()> {
@@ -244,6 +406,7 @@ pub fn poll(gui: &mut GuiHandle, id: &str) -> GuiResult<PrReviewView> {
         changed = true;
     }
     changed |= gui.app_for_workflow().poll_pr_review_post_bg();
+    changed |= advance_pin(gui);
     if changed {
         gui.pr_review_context.as_mut().unwrap().revision += 1;
     }
@@ -389,6 +552,23 @@ pub fn act(
         return Err(GuiError::conflict(
             "The saved PR review changed in another interface; return to the PR list and reopen it before editing or posting",
         ));
+    }
+    advance_pin(gui);
+    if let Some(pin) = &gui.pr_review_context.as_ref().unwrap().embedded {
+        if !matches!(
+            action,
+            PrReviewAction::FileComment { .. }
+                | PrReviewAction::LineComment { .. }
+                | PrReviewAction::Suggestion { .. }
+                | PrReviewAction::ToggleLineResolved { .. }
+        ) {
+            return Err(GuiError::conflict(
+                "The Files tab edits line and file comments only; use PR Review to edit the summary, preview and post",
+            ));
+        }
+        if let Some(error) = &pin.error {
+            return Err(GuiError::conflict(error.clone()));
+        }
     }
     let app = gui.app_for_workflow();
     let submitting = matches!(&app.mode, AppMode::DiffViewer(s) if s.pr_submit.is_some());
@@ -727,6 +907,7 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
         context.revision,
         context.project_id.clone(),
     );
+    let embedded = context.embedded.clone();
     let app = gui.app_for_workflow();
     let project_name = app
         .store
@@ -741,6 +922,8 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrReviewView> {
         project_name,
         head_sha: None,
         stage: "pick",
+        embedded: embedded.is_some(),
+        pin_error: embedded.as_ref().and_then(|pin| pin.error.clone()),
         entries: vec![],
         loading: false,
         number: None,
@@ -1610,6 +1793,244 @@ mod tests {
                 .load_pr_review_draft(REPO, 9)
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    // --- PR Workspace Files tab (embedded) ---------------------------------
+
+    fn workspace(head: Option<&str>) -> (tempfile::TempDir, GuiHandle, String, String) {
+        let (dir, mut gui, target) = crate::gui_diff::tests::fixture();
+        let project_id = target.project_id.clone();
+        let app = gui.app_for_workflow();
+        app.pr_review_work.set_review_list_loader_for_test(listed);
+        app.pr_review_work.set_review_opener_for_test(opener);
+        app.pr_review_work.set_review_poster_for_test(poster);
+        let repo = app.store.projects[0].repo.clone();
+        let real = git(&repo, &["rev-parse", "feature"]);
+        let id = crate::gui_pr_workspace::begin(&mut gui, target).unwrap();
+        gui.pr_workspace_context.as_mut().unwrap().pr = Some(crate::github::PrRef {
+            number: 9,
+            head_sha: head.map(String::from).unwrap_or(real),
+            url: "https://example.test/pull/9".into(),
+            owner: "demo".into(),
+            repo: "repo".into(),
+            head_ref: "feature".into(),
+        });
+        (dir, gui, id, project_id)
+    }
+    fn files_open(gui: &mut GuiHandle, id: &str) -> PrReviewView {
+        let view = crate::gui_pr_workspace::review_open(gui, id, 9).unwrap();
+        settle(gui, view)
+    }
+    fn pinned_error(view: &PrReviewView) -> String {
+        view.pin_error.clone().expect("the review must be refused")
+    }
+
+    #[test]
+    fn files_tab_opens_the_pinned_pr_and_shares_its_draft_with_the_dialog() {
+        let (_dir, mut gui, id, project_id) = workspace(None);
+        let view = files_open(&mut gui, &id);
+        assert!(view.embedded);
+        assert_eq!(view.stage, "review");
+        assert_eq!(view.number, Some(9));
+        assert!(view.pin_error.is_none());
+        {
+            let ws = gui.pr_workspace_context.as_ref().unwrap();
+            assert!(ws.files_review && ws.files_prior.is_some());
+        }
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(5), ctx(6), "From Files", Severity::Nit),
+        );
+        let view = action(&mut gui, &view, suggestion(ctx(10), ctx(11), "ten\neleven"));
+        assert_eq!(view.files[0].line_comments.len(), 2);
+        // Posting and the summary are not Files actions.
+        for refused in [
+            PrReviewAction::Summary { text: "x".into() },
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+            PrReviewAction::ConfirmSubmit,
+            PrReviewAction::Reopen,
+            PrReviewAction::Back,
+            PrReviewAction::Close,
+        ] {
+            let error = super::act(&mut gui, &view.workflow_id, view.revision, refused)
+                .err()
+                .unwrap();
+            assert!(error.message.contains("PR Review"), "{}", error.message);
+        }
+        // The dialog cannot open while Files owns the review.
+        let error = begin(&mut gui, project_id.clone()).err().unwrap();
+        assert!(error.message.contains("Files tab"), "{}", error.message);
+
+        // Leaving Files saves, returns the Threads mode, and frees the dialog.
+        crate::gui_pr_workspace::switch_to_threads(&mut gui, &id).unwrap();
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        {
+            let ws = gui.pr_workspace_context.as_ref().unwrap();
+            assert!(!ws.files_review && ws.files_prior.is_none());
+        }
+        assert!(gui.pr_review_context.is_none());
+        let dialog = opened(&mut gui, project_id);
+        let threads = &dialog.files[0].line_comments;
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[0].text, "From Files");
+        assert_eq!(threads[1].suggestion.as_deref(), Some("ten\neleven"));
+        // And the dialog's preview is the submit path for those comments.
+        let dialog = action(
+            &mut gui,
+            &dialog,
+            PrReviewAction::Preview {
+                event: "COMMENT".into(),
+            },
+        );
+        assert_eq!(dialog.submission.unwrap().comments.len(), 2);
+    }
+
+    #[test]
+    fn files_tab_reuses_the_dialogs_validation() {
+        let (_dir, mut gui, id, _) = workspace(None);
+        let view = files_open(&mut gui, &id);
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(1), ctx(1), "x", Severity::Nit),
+        );
+        assert!(error.contains("not in this PR's diff"), "{error}");
+        let error = refused(&mut gui, &view, suggestion(removed(8), removed(8), "x"));
+        assert!(error.contains("removed"), "{error}");
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(6), "x", Severity::Nit),
+        );
+        assert!(error.contains("diff order"), "{error}");
+        // A draft saved by another interface is not overwritten.
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "mine", Severity::Nit),
+        );
+        let db = gui.app_for_workflow().db.as_ref().unwrap();
+        let mut draft = db.load_pr_review_draft(REPO, 9).unwrap().unwrap();
+        draft.progress = draft.progress.replace("mine", "theirs");
+        db.upsert_pr_review_draft(&draft).unwrap();
+        let error = refused(
+            &mut gui,
+            &view,
+            line_comment(ctx(10), ctx(10), "later", Severity::Nit),
+        );
+        assert!(error.contains("another interface"), "{error}");
+        crate::gui_pr_workspace::review_close(&mut gui, &id).unwrap();
+        let saved = gui
+            .app_for_workflow()
+            .db
+            .as_ref()
+            .unwrap()
+            .load_pr_review_draft(REPO, 9)
+            .unwrap()
+            .unwrap();
+        assert!(saved.progress.contains("theirs") && !saved.progress.contains("later"));
+    }
+
+    #[test]
+    fn files_tab_refuses_a_head_that_differs_from_the_workspace() {
+        let (_dir, mut gui, id, _) = workspace(Some("0000000000000000000000000000000000000000"));
+        let view = files_open(&mut gui, &id);
+        let error = pinned_error(&view);
+        assert!(error.contains("pinned to one head"), "{error}");
+        for edit in [
+            line_comment(ctx(9), ctx(9), "x", Severity::Nit),
+            suggestion(ctx(9), ctx(9), "x"),
+            PrReviewAction::FileComment {
+                path: "code.txt".into(),
+                text: "x".into(),
+            },
+        ] {
+            let refusal = refused(&mut gui, &view, edit);
+            assert!(refusal.contains("pinned to one head"), "{refusal}");
+        }
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_review_draft(REPO, 9)
+                .unwrap()
+                .is_none()
+        );
+        crate::gui_pr_workspace::review_close(&mut gui, &id).unwrap();
+        assert!(gui.pr_review_context.is_none());
+    }
+
+    #[test]
+    fn files_tab_refuses_a_pr_the_dialog_does_not_list() {
+        let (_dir, mut gui, id, _) = workspace(None);
+        gui.pr_workspace_context
+            .as_mut()
+            .unwrap()
+            .pr
+            .as_mut()
+            .unwrap()
+            .number = 77;
+        let view = crate::gui_pr_workspace::review_open(&mut gui, &id, 77).unwrap();
+        let view = settle(&mut gui, view);
+        assert!(pinned_error(&view).contains("PR #77 is not in the open pull requests"));
+    }
+
+    #[test]
+    fn files_tab_and_other_tabs_never_own_the_mode_together() {
+        let (_dir, mut gui, id, _) = workspace(None);
+        // A different PR cannot be opened than the one selected.
+        assert!(crate::gui_pr_workspace::review_open(&mut gui, &id, 5).is_err());
+        assert!(!gui.pr_workspace_context.as_ref().unwrap().files_review);
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        let view = files_open(&mut gui, &id);
+        let again = crate::gui_pr_workspace::review_open(&mut gui, &id, 9).unwrap();
+        assert_eq!(again.workflow_id, view.workflow_id);
+        // Closing the workspace closes the review, saves, and frees the mode.
+        let view = action(
+            &mut gui,
+            &view,
+            line_comment(ctx(9), ctx(9), "kept", Severity::Nit),
+        );
+        let _ = view;
+        crate::gui_pr_workspace::close(&mut gui, &id).unwrap();
+        assert!(gui.pr_review_context.is_none());
+        assert!(gui.pr_workspace_context.is_none());
+        assert!(matches!(gui.app_for_workflow().mode, AppMode::Normal));
+        assert!(
+            gui.app_for_workflow()
+                .db
+                .as_ref()
+                .unwrap()
+                .load_pr_review_draft(REPO, 9)
+                .unwrap()
+                .unwrap()
+                .progress
+                .contains("kept")
+        );
+    }
+
+    #[test]
+    fn the_dialog_blocks_the_files_review_for_the_same_project() {
+        let (_dir, mut gui, id, project_id) = workspace(None);
+        let dialog = begin(&mut gui, project_id).unwrap();
+        let _ = dialog;
+        let error = crate::gui_pr_workspace::review_open(&mut gui, &id, 9)
+            .err()
+            .unwrap();
+        assert!(error.message.contains("Close PR Review") || error.message.contains("Finish"));
+        // A failed open puts the displaced mode back.
+        assert!(!gui.pr_workspace_context.as_ref().unwrap().files_review);
+        assert!(
+            gui.pr_workspace_context
+                .as_ref()
+                .unwrap()
+                .files_prior
+                .is_none()
         );
     }
 }

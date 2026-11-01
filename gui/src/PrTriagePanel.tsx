@@ -44,6 +44,12 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   const [fixSessionId, setFixSessionId] = useState("");
   const [fixPrompt, setFixPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
   const [confirmDiscardFix, setConfirmDiscardFix] = useState(false);
+  // Batch fix: marks are a client-side selection; the destination is chosen
+  // explicitly (never defaulted) and everything is revalidated by the backend.
+  const [marked, setMarked] = useState<number[]>([]);
+  const [batchSessionId, setBatchSessionId] = useState("");
+  const [batchPrompt, setBatchPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
+  const [confirmDiscardBatch, setConfirmDiscardBatch] = useState(false);
   const [openImage, setOpenImage] = useState<{ image: ImageData; caption: string; identity: string } | null>(null);
   const imageTrigger = useRef<HTMLElement | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -107,6 +113,13 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     setFixPrompt((current) => current?.key === key ? current : { key, text: open.prompt, seed: open.prompt });
   }, [view?.workflow_id, view?.fix_draft]);
 
+  useEffect(() => {
+    const open = view?.batch_fix;
+    if (!open) { setBatchPrompt(null); return; }
+    const key = `${view.workflow_id}:${open.digest}`;
+    setBatchPrompt((current) => current?.key === key ? current : { key, text: open.prompt, seed: open.prompt });
+  }, [view?.workflow_id, view?.batch_fix?.digest]);
+
   const act = useCallback(async (action: PrTriageAction): Promise<boolean> => {
     if (!view || pending.current) return false;
     pending.current = true;
@@ -143,6 +156,16 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   const currentImage = openImage?.identity === imageIdentity ? openImage : null;
   const comments = review?.comments ?? [];
   const selected = comments.find((c) => c.id === selectedId) ?? comments[0] ?? null;
+  const batchable = (c: PrComment) => c.actionable && !c.local_finding && !c.resolved;
+  const canBatch = !!target.feature_id && (view?.fix_targets?.length ?? 0) > 0;
+  // Drop marks for comments that vanished or were resolved after a refresh.
+  useEffect(() => {
+    setMarked((current) => {
+      const next = current.filter((id) => comments.some((c) => c.id === id && batchable(c)));
+      return next.length === current.length ? current : next;
+    });
+  }, [review?.comments]);
+  const batchTarget = view?.fix_targets?.find((t) => t.target.session_id === batchSessionId) ?? null;
 
   // An investigation draft belongs to one comment. Moving off an empty one
   // drops it; a typed one stays, announced on every other comment.
@@ -150,8 +173,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     setInvestigate((current) => current && current.commentId !== selected?.id && !current.text.trim() ? null : current);
   }, [selected?.id]);
   const replyDirty = reply !== null && reply.text !== reply.seed;
-  const dirty = !!fixPrompt && fixPrompt.text !== fixPrompt.seed || replyDirty || !!investigate?.text.trim();
-  const locked = busy || !!view?.precall || !!view?.write_confirm || !!view?.fix_draft || review?.investigating != null;
+  const dirty = !!fixPrompt && fixPrompt.text !== fixPrompt.seed || !!batchPrompt && batchPrompt.text !== batchPrompt.seed || replyDirty || !!investigate?.text.trim();
+  const locked = busy || !!view?.precall || !!view?.write_confirm || !!view?.fix_draft || !!view?.batch_fix || review?.investigating != null;
   const close = useCallback(() => {
     if (dirty) setConfirmClose(true);
     else if (view) void act({ kind: "close" }); else onClose();
@@ -298,6 +321,32 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
           </div>}
         </section>}
 
+        {view?.batch_fix && batchPrompt && <section className="review-editor" aria-label="Batch fix" ref={reveal}>
+          <p>Prepare one fix prompt for {view.batch_fix.comment_ids.length} comments, bound to <strong>{view.fix_targets.find((t) => t.target.session_id === view.batch_fix!.target.session_id)?.label ?? "the selected agent"}</strong>.
+            Nothing is sent until you preview and confirm it. No agent starts and nothing posts to GitHub.</p>
+          {view.batch_fix.warning && <div className="callout callout-warning" role="alert"><p>{view.batch_fix.warning}</p></div>}
+          <Field label="Batch fix prompt"><textarea rows={10} value={batchPrompt.text} disabled={busy || !!view.batch_fix.submission_prompt}
+            onChange={(event) => setBatchPrompt({ ...batchPrompt, text: event.target.value })} /></Field>
+          {!view.batch_fix.submission_prompt && <button className="btn btn-primary" disabled={busy || !batchPrompt.text.trim()}
+            onClick={() => void act({ kind: "prepare_batch_submission", prompt: batchPrompt.text, digest: view.batch_fix!.digest })}>Preview send to agent…</button>}
+          {view.batch_fix.submission_prompt && <div role="alertdialog" aria-label="Send batch fix to agent" className="review-confirm">
+            <p>Send this exact prompt to the selected running agent and mark {view.batch_fix.comment_ids.length} comments Fixing? This clears its terminal input line. It asks the agent to return one reply draft per comment; nothing posts to GitHub.</p>
+            <pre className="doc pr-posted">{view.batch_fix.submission_prompt}</pre>
+            <button className="btn btn-primary" disabled={busy}
+              onClick={() => void act({ kind: "confirm_batch_submission", digest: view.batch_fix!.digest }).then((ok) => { if (ok) setMarked([]); })}>Send batch fix to agent</button>
+            <button className="btn btn-secondary" disabled={busy} onClick={() => void act({ kind: "cancel_batch_fix" })}>Cancel batch fix</button>
+          </div>}
+          {!view.batch_fix.submission_prompt && <button className="btn btn-secondary" disabled={busy} onClick={() => {
+            if (batchPrompt.text !== batchPrompt.seed) setConfirmDiscardBatch(true);
+            else void act({ kind: "cancel_batch_fix" });
+          }}>Cancel batch fix</button>}
+          {confirmDiscardBatch && <div role="alertdialog" aria-label="Discard edited batch prompt" className="callout callout-warning">
+            <p>Discard your edited batch fix prompt?</p>
+            <button className="btn btn-secondary" onClick={() => setConfirmDiscardBatch(false)}>Keep editing</button>
+            <button className="btn btn-warning" disabled={busy} onClick={() => { setConfirmDiscardBatch(false); void act({ kind: "cancel_batch_fix" }); }}>Discard batch prompt</button>
+          </div>}
+        </section>}
+
         {review.investigating != null && <div className="callout callout-accent" role="status">
           <p className="row"><Spinner /> Investigating comment read-only with {review.investigating_harness}…</p>
           <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void act({ kind: "cancel_investigation" })}>Cancel investigation</button>
@@ -305,9 +354,27 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
 
         <div className="pr-reader">
           <nav className="pr-comments" aria-label="Review comments">
+            {canBatch && marked.length > 0 && !view?.batch_fix && <div className="pr-actions" role="group" aria-label="Batch fix">
+              <span className="small">{marked.length} selected</span>
+              <Field label="Batch fix agent">
+                <select value={batchSessionId} disabled={locked || view?.reply != null || investigate !== null}
+                  onChange={(event) => setBatchSessionId(event.target.value)}>
+                  <option value="">Choose an agent session…</option>
+                  {view!.fix_targets.map((t) => <option key={t.target.session_id} value={t.target.session_id} disabled={t.stopped}>{t.label}{t.stopped ? " (stopped)" : ""}</option>)}
+                </select>
+              </Field>
+              <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !batchTarget}
+                onClick={() => void act({ kind: "start_batch_fix", comment_ids: marked, session_id: batchTarget!.target.session_id, destination_revision: batchTarget!.destination_revision })}>Prepare batch fix…</button>
+              <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setMarked([])}>Clear selection</button>
+            </div>}
             {comments.length === 0 && <p className="muted pad">No comments to show.</p>}
             {comments.map((comment, index) => <div key={comment.id}>
               {index === review.conversation_start && <div className="pr-section">Conversation</div>}
+              {canBatch && batchable(comment) && <label className="row small">
+                <input type="checkbox" checked={marked.includes(comment.id)} disabled={locked || view?.reply != null}
+                  aria-label={`Select comment by ${comment.author} for batch fix`}
+                  onChange={(event) => setMarked((current) => event.target.checked ? [...current, comment.id] : current.filter((id) => id !== comment.id))} /> Select for batch fix
+              </label>}
               <button className={`pr-comment${comment.id === selected?.id ? " pr-comment-selected" : ""}`}
                 aria-pressed={comment.id === selected?.id} onClick={() => setSelectedId(comment.id)}>
                 <span className="row small"><strong>{comment.author}</strong>{comment.is_bot && <span className="tag">bot</span>}

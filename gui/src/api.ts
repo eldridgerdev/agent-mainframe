@@ -718,6 +718,11 @@ export interface DiffLine {
   new_line: number | null;
   /** Token spans covering `text` (prefix included); absent or null is plain. */
   syntax?: SyntaxSpan[] | null;
+  /**
+   * Word-level changed runs of a paired removed/added line: `[start, end)` in
+   * UTF-16 code units of `text` (prefix included). Absent means line-level only.
+   */
+  emphasis?: [number, number][];
 }
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface DiffFile {

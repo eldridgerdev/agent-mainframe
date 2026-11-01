@@ -879,6 +879,31 @@ Native Linux proof uses private SQLite/Git/tmux fixtures and offline harnesses:
 remains open.
 
 
+### Feature rename, ready and summary
+
+**More feature actions → Rename, ready and summary…** (or **Rename session…** on
+a session tab) opens one panel for the TUI's `r`, `y` and `Z`. A feature rename
+sets or clears its nickname and a session rename changes its label, exactly as
+the dashboard does: no branch, worktree or tmux window is renamed, and the
+dashboard's only validation (a session name cannot be empty) applies; the GUI
+additionally refuses line breaks and control characters. Each write echoes the
+value the panel last showed, so a change made elsewhere is refused with a
+message instead of overwritten, and the panel offers a Reload rather than
+adopting it silently. Ready is the same persisted flag as `y`.
+
+Generating a summary first shows the headless pre-call notice (prompt id,
+harness and the template text). The call starts only after confirming that exact
+prompt and harness; an override saved meanwhile, or a changed harness, shows the
+notice again. It reuses the dashboard's `session.summary` path, so a stopped
+feature, a missing agent window, or another summary still running is refused with
+a reason. The result (or the failure) is reported in the panel.
+
+Native Linux proof uses private SQLite/Git/tmux fixtures and offline harnesses and
+never confirms the summary call:
+`scripts/dev/screenshot/scenarios/gui-feature-actions.txt`. macOS runtime validation
+remains open.
+
+
 ### Final Review feedback destinations
 
 From **Pre-finish summary**, choose **Choose feedback destination…**. Existing

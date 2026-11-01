@@ -88,6 +88,7 @@ import { useCreationHarness } from "./useCreationHarness";
 import CreationHarnessField from "./CreationHarnessField";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
+import FeatureActionsPanel from "./FeatureActionsPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import SyntaxLanguagesPanel from "./SyntaxLanguagesPanel";
@@ -253,6 +254,7 @@ export default function App() {
   const [projectPreference, setProjectPreference] = useState<string | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [featureActions, setFeatureActions] = useState<{ target: FeatureTarget; sessionId: string | null } | null>(null);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
   const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
@@ -1487,6 +1489,8 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {featureActions && <FeatureActionsPanel target={featureActions.target} focusSessionId={featureActions.sessionId}
+        onClose={() => setFeatureActions(null)} onChanged={() => void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY })} />}
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
@@ -1643,6 +1647,7 @@ export default function App() {
             })}
             onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onFork={(sessionId) => setForkDialog({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
+            onFeatureActions={(sessionId) => setFeatureActions({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -2202,6 +2207,7 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onFeatureActions,
   onChangeHarness,
   onFork,
   onVibeMode,
@@ -2255,6 +2261,8 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  /** Rename / ready / summary; the argument is a session to focus. */
+  onFeatureActions: (sessionId: string | null) => void;
   onChangeHarness?: () => void;
   /** Fork this feature; the argument is the open agent session, if any. */
   onFork: (sessionId: string | null) => void;
@@ -2413,6 +2421,7 @@ function FeatureView({
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                { label: "Rename, ready and summary…", icon: "check" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
@@ -2452,6 +2461,7 @@ function FeatureView({
                       hint: isStopped ? "Starts the feature" : undefined,
                       onSelect: sessionLifecycle(session).onStart,
                     },
+                  { label: "Rename session…", icon: "check" as const, onSelect: () => onFeatureActions(session.id) },
                   { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
                 ]}
               />

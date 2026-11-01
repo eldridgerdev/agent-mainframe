@@ -1727,3 +1727,14 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .fork-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0 0; }
 .fork-facts dt { color: var(--text-muted, inherit); }
 .fork-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* Feature actions panel: stacked fields, wrapped prompt preview. */
+.feature-actions { display: flex; flex-direction: column; gap: 16px; }
+.feature-actions section { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.feature-actions label { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.feature-actions .row { width: 100%; align-items: flex-end; gap: 8px; }
+.feature-actions .row label { flex: 1; }
+.feature-actions pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; margin: 8px 0; }
+.feature-actions p { margin: 0; }
+.feature-actions [role="group"] { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; }
+.feature-actions [role="group"] .row { width: auto; }

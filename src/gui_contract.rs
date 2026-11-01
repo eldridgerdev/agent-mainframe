@@ -330,6 +330,9 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     app: App,
+    /// Result of a finished feature summary, handed to the interface once
+    /// (`gui_feature_actions`).
+    pub(crate) summary_outcome: Option<String>,
     /// Configured-session launches whose pre-check is running outside the lock.
     pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
@@ -346,6 +349,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -366,6 +370,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -407,6 +412,15 @@ impl GuiHandle {
                 sidebar::carry_runtime_session_fields(&self.app.store, &mut store);
                 self.app.store = store;
                 self.app.store_version = Some(version);
+            }
+        }
+        // After the reload, so persisting a finished summary is saved against
+        // the current store rather than conflicting with it.
+        if self.app.summary_rx.is_some() {
+            self.app.message = None;
+            self.app.poll_summary_result().map_err(GuiError::from)?;
+            if self.app.summary_rx.is_none() {
+                self.summary_outcome = self.app.message.take();
             }
         }
         Ok(())
@@ -2127,6 +2141,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -2154,6 +2169,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4298,6 +4314,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4499,6 +4516,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                summary_outcome: None,
                 custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,

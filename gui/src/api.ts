@@ -746,7 +746,10 @@ export interface DiffView {
   files: DiffFile[];
   total_additions: number;
   total_deletions: number;
+  /** The TUI's saved `diff_viewer_layout`; absent from older builds. */
+  layout?: "unified" | "side-by-side";
 }
+export const saveDiffLayout = (layout: "unified" | "side-by-side"): Promise<void> => invoke("diff_layout_save", { layout });
 export const loadDiff = (target: FeatureTarget, options: DiffOptions): Promise<DiffView> =>
   invoke("load_diff", { target, options });
 

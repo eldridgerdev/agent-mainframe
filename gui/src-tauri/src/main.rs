@@ -1528,6 +1528,17 @@ async fn project_agent_availability_save(
 }
 
 #[tauri::command]
+async fn diff_layout_save(
+    state: State<'_, AppState>,
+    layout: gui_settings::DiffViewerLayout,
+) -> Result<(), GuiError> {
+    gui_settings::diff_layout_save(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        layout,
+    )
+}
+
+#[tauri::command]
 async fn dormancy_settings_load() -> Result<DormancySettingsView, GuiError> {
     gui_settings::load()
 }
@@ -2404,6 +2415,7 @@ fn main() {
             review_act,
             review_take_completion,
             load_diff,
+            diff_layout_save,
             supported_harnesses,
             allowed_harnesses,
             supported_modes,

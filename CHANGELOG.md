@@ -12,13 +12,21 @@ are tagged.
 
 ### Added
 
+- **Changes in the desktop app now has TUI-style keys and a remembered layout.**
+  While reading a diff, `j`/`k` walk the file tree, `g`/`G` jump to the first or
+  last file, `z`/`Z`/`h`/`l` fold folders, `.` shows or hides the AMF files group,
+  `v` switches unified / side by side, `r` refreshes, `W` toggles ignore
+  whitespace, and `n`/`p` step hunks (desktop only). `?` or *Keyboard shortcuts*
+  lists them. Keys do nothing while you type in a field, hold a modifier, or have
+  another dialog open. The unified / side-by-side choice is now saved in the same
+  `diff_viewer_layout` setting the TUI uses, so both open the way you left them.
+  A TUI that is already running keeps its own copy until it next saves settings.
 - **Changes in the desktop app is now a folder tree.** The changed-files list
   groups files by directory with fold/expand (and *Fold folders* for all),
   and AMF's own generated files (hooks, `.amf/` scratch, injected skills) sit
   in a folded *AMF files* group, using the same rule as the TUI. Filtering
   still finds files inside folded folders and the folded group, and your
-  selected file stays selected across refreshes. Read-only; no keys or
-  layout settings changed.
+  selected file stays selected across refreshes. Read-only.
 - **Keep a PR investigation as a TODO, and skip or edit AI review findings, in
   the desktop app.** A finished investigation in PR Triage now has *Keep as a
   TODO*, which writes the answer to the feature's TODO list (the project's list on

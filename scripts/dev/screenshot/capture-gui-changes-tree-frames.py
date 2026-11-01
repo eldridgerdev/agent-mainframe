@@ -210,7 +210,7 @@ try:
     )
     (out / "capture-notes.jsonl").write_text(
         "".join(
-            json.dumps({"file": n["file"], "note": n["note"]})
+            json.dumps({"file": n["file"].replace(".png", ".ansi"), "note": n["note"]})
             + "\n"
             for n in notes
         )

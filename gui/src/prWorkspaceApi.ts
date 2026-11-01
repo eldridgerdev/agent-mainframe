@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DiffFile, FeatureTarget, SessionTarget } from "./api";
+import type { PrReviewView } from "./prReviewApi";
 import type { PrTriageView, PrFixHandoff, PrFixTarget } from "./prTriageApi";
 
 export interface WorkspaceFiles { workflow_id: string; pr_number: number; head_sha: string; files: DiffFile[] }
@@ -15,6 +16,8 @@ export const workspaceSelectPr = (workflowId: string, number: number) => invoke<
 export const workspaceSwitchAi = (workflowId: string, number: number) => invoke<void>("pr_workspace_switch_ai", { workflowId, number });
 export const workspaceSwitchThreads = (workflowId: string) => invoke<void>("pr_workspace_switch_threads", { workflowId });
 export const workspaceClose = (workflowId: string) => invoke<void>("pr_workspace_close", { workflowId });
+export const workspaceReviewOpen = (workflowId: string, number: number) => invoke<PrReviewView>("pr_workspace_review_open", { workflowId, number });
+export const workspaceReviewClose = (workflowId: string) => invoke<void>("pr_workspace_review_close", { workflowId });
 export const workspaceFiles = (workflowId: string) => invoke<WorkspaceFiles>("pr_workspace_files", { workflowId });
 export const workspaceAiSnapshot = (workflowId: string) => invoke<WorkspaceAi>("pr_workspace_ai_snapshot", { workflowId });
 export const workspaceAiAct = (workflowId: string, action: WorkspaceAiAction) => invoke<WorkspaceAi>("pr_workspace_ai_act", { workflowId, action });

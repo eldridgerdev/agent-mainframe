@@ -196,3 +196,43 @@ it("retains an unavailable agent choice after refresh instead of silently select
   fireEvent.change(select, { target: { value: "second" } });
   expect(select.value).toBe("second");
 });
+
+it("authors review comments in the Files tab and leaves them saved when switching tabs", async () => {
+  const calls: string[] = [];
+  const line = (kind: "context" | "added", old_line: number | null, new_line: number | null, text: string) => ({ kind, old_line, new_line, text });
+  const review = {
+    workflow_id: "files-review", revision: 1, project_name: "Demo", head_sha: "abcdef012345", stage: "review" as const, embedded: true, pin_error: null, loading: false,
+    entries: [], number: 42, title: "Add feature", summary: "", submission: null, error: null, notice: null,
+    files: [{ diff: { path: "src/lib.rs", old_path: null, status: "modified", additions: 1, deletions: 0, is_binary: false, patch: "", hunks: [{ header: "@@ -4,1 +4,2 @@", lines: [line("context", 4, 4, " four"), line("added", null, 5, "+five")] }] },
+      comment: "", line_comments: [], pr_lines: [{ old_line: 4, new_line: 4, hunk: 0 }, { old_line: null, new_line: 5, hunk: 0 }] }],
+  };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    calls.push(command);
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot") return reviewing;
+    if (command === "pr_triage_act") return reviewing;
+    if (command === "pr_workspace_review_open") return review;
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_threads" || command === "pr_workspace_close") return undefined;
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  await screen.findByLabelText("Sort");
+  fireEvent.click(screen.getByRole("button", { name: "Files" }));
+  expect(await screen.findByRole("region", { name: "PR Files review" })).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_workspace_review_open", { workflowId: "workspace", number: 42 });
+  expect(calls).not.toContain("pr_workspace_files");
+  // An unsaved edit holds the tab: switching would discard it.
+  fireEvent.click(screen.getByRole("button", { name: "Select line 5" }));
+  fireEvent.click(screen.getByRole("button", { name: "Comment on selection" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Line comment" }), { target: { value: "Draft" } });
+  await waitFor(() => expect((screen.getByRole("button", { name: "Threads" }) as HTMLButtonElement).disabled).toBe(true));
+  expect((screen.getByRole("button", { name: "Close workspace" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }));
+  await waitFor(() => expect((screen.getByRole("button", { name: "Threads" }) as HTMLButtonElement).disabled).toBe(false));
+  const before = calls.filter((c) => c === "pr_workspace_switch_threads").length;
+  fireEvent.click(screen.getByRole("button", { name: "Threads" }));
+  await waitFor(() => expect(calls.filter((c) => c === "pr_workspace_switch_threads").length).toBe(before + 1));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "PR Files review" })).toBeNull());
+});

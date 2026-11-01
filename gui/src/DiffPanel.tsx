@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff, saveDiffLayout } from "./api";
 import { Field, Modal, Spinner } from "./ui";
@@ -22,9 +22,9 @@ function splitRows(lines: DiffLine[]): [DiffLine | null, DiffLine | null][] {
   return rows;
 }
 
-export function Hunk({ hunk, split, selection }: { hunk: DiffHunk; split: boolean; selection?: {
+export function Hunk({ hunk, split, selection, annotate }: { hunk: DiffHunk; split: boolean; selection?: {
   disabled: boolean; contains: (line: DiffLine) => boolean; select: (line: DiffLine, extend: boolean) => void;
-} }) {
+}; /** Unified view only: content shown in a row under a line (saved review threads). */ annotate?: (line: DiffLine) => ReactNode }) {
   function number(line: DiffLine | null, side: "old_line" | "new_line") {
     const value = line?.[side];
     if (value == null || !line || !selection) return value;
@@ -43,10 +43,13 @@ export function Hunk({ hunk, split, selection }: { hunk: DiffHunk; split: boolea
         <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}>{next && <SyntaxCode text={next.text} spans={next.syntax} />}</td>
       </tr>)}
     </tbody></table> : <table className="diff-lines" aria-label="Unified hunk"><tbody>
-      {hunk.lines.map((line, index) => <tr key={index} className={`diff-${line.kind}${selected(line)}`}>
-        <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
-        <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} /></td>
-      </tr>)}
+      {hunk.lines.map((line, index) => {
+        const note = annotate?.(line);
+        return <Fragment key={index}><tr className={`diff-${line.kind}${selected(line)}`}>
+          <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
+          <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} /></td>
+        </tr>{note && <tr className="diff-annotation"><td colSpan={3}>{note}</td></tr>}</Fragment>;
+      })}
     </tbody></table>}
   </section>;
 }

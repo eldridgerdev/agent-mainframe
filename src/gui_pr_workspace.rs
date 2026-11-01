@@ -437,6 +437,67 @@ pub enum AiAction {
     ConfirmPrecall,
     CancelPrecall,
     Post,
+    /// Skip (or restore) one finding so it is left out of Post and of a fix
+    /// handoff. Bound to the result and PR head the person was looking at.
+    ToggleSkip {
+        index: usize,
+        result_revision: String,
+        head_sha: String,
+    },
+    /// Replace one finding's body before posting.
+    EditBody {
+        index: usize,
+        body: String,
+        result_revision: String,
+        head_sha: String,
+    },
+}
+
+/// Longest finding body an edit may save (characters).
+pub const MAX_FINDING_BODY_CHARS: usize = 8000;
+
+/// Refuse a skip or edit unless it targets the exact result, PR head and
+/// finding the person was looking at. Nothing is retargeted: a changed result
+/// (new run, other edit, other skip) must be reviewed again first.
+fn finding_edit_guard(
+    gui: &mut GuiHandle,
+    result_revision_seen: &str,
+    head_sha: &str,
+    index: usize,
+) -> GuiResult<()> {
+    let context = gui.pr_workspace_context.as_ref().unwrap();
+    let identity = checkout_identity(&context.workdir);
+    if identity.as_ref() != Some(&context.checkout_identity) {
+        return Err(GuiError::conflict(
+            "Feature checkout changed; reopen PR Workspace",
+        ));
+    }
+    let epoch = context.result_epoch.clone();
+    let app = gui.app_for_workflow();
+    let AppMode::AiReview(state) = &app.mode else {
+        return Err(GuiError::conflict(
+            "Wait for the AI review to finish before changing its findings",
+        ));
+    };
+    if result_revision(&epoch, state, &identity) != result_revision_seen {
+        return Err(GuiError::conflict(
+            "The AI result changed since you opened it; review the current findings and try again",
+        ));
+    }
+    if state.pr.head_sha != head_sha {
+        return Err(GuiError::conflict(
+            "The AI result is for a different PR head; review the current findings and try again",
+        ));
+    }
+    let finding = state.findings.get(index).ok_or_else(|| {
+        GuiError::conflict("That finding is no longer in the result; review the current findings")
+    })?;
+    if finding.published {
+        return Err(GuiError::conflict(
+            "That finding was already posted to GitHub; follow it up in PR Triage",
+        ));
+    }
+    Ok(())
 }
 
 pub fn log_ai_action_start(gui: &mut GuiHandle, action: &AiAction) {
@@ -511,6 +572,32 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
         let number = pr_number.ok_or_else(|| GuiError::conflict("Select a PR in Threads first"))?;
         switch_to_ai(gui, id, number)?;
     }
+    match &action {
+        AiAction::ToggleSkip {
+            index,
+            result_revision,
+            head_sha,
+        } => finding_edit_guard(gui, result_revision, head_sha, *index)?,
+        AiAction::EditBody {
+            index,
+            body,
+            result_revision,
+            head_sha,
+        } => {
+            if body.trim().is_empty() {
+                return Err(GuiError::conflict(
+                    "A finding needs a body; skip it instead to leave it out",
+                ));
+            }
+            if body.chars().count() > MAX_FINDING_BODY_CHARS {
+                return Err(GuiError::conflict(format!(
+                    "A finding body can be at most {MAX_FINDING_BODY_CHARS} characters"
+                )));
+            }
+            finding_edit_guard(gui, result_revision, head_sha, *index)?
+        }
+        _ => {}
+    }
     if matches!(action, AiAction::Start) {
         gui.pr_workspace_context.as_mut().unwrap().result_epoch = uuid::Uuid::new_v4().to_string();
     }
@@ -555,6 +642,22 @@ pub fn ai_act(gui: &mut GuiHandle, id: &str, action: AiAction) -> GuiResult<PrWo
         }
         AiAction::ConfirmPrecall => app.precall_confirm().map_err(GuiError::from)?,
         AiAction::CancelPrecall => app.precall_cancel(),
+        AiAction::ToggleSkip { index, .. } => {
+            if let AppMode::AiReview(state) = &mut app.mode {
+                state.selected = index;
+            }
+            app.ai_review_toggle_skip();
+        }
+        AiAction::EditBody { index, body, .. } => {
+            if let AppMode::AiReview(state) = &mut app.mode {
+                state.selected = index;
+            }
+            app.ai_review_edit_finding();
+            if let AppMode::AiReview(state) = &mut app.mode {
+                state.finding_editor = Some(crate::editor::TextEditor::new(body));
+            }
+            app.ai_review_stop_edit_finding();
+        }
         AiAction::Post => {
             if !matches!(app.mode, AppMode::AiReview(_)) {
                 return Err(GuiError::conflict(
@@ -1115,6 +1218,121 @@ mod tests {
                 destination_revision,
             },
         )
+    }
+
+    fn skip_action(request: &FixHandoffRequest, index: usize, head: &str) -> AiAction {
+        AiAction::ToggleSkip {
+            index,
+            result_revision: request.result_revision.clone(),
+            head_sha: head.into(),
+        }
+    }
+
+    #[test]
+    fn skipping_a_finding_is_reversible_and_invalidates_the_old_revision() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let id = request.workflow_id.clone();
+        let view = ai_act(&mut gui, &id, skip_action(&request, 0, "head-sha")).unwrap();
+        assert!(view.findings[0].skipped && !view.findings[1].skipped);
+        assert_ne!(
+            view.result_revision.as_deref(),
+            Some(&*request.result_revision)
+        );
+        // The old revision can no longer drive another change.
+        let err = ai_act(&mut gui, &id, skip_action(&request, 0, "head-sha")).unwrap_err();
+        assert!(err.message.contains("AI result changed"), "{}", err.message);
+        // A fix handoff prepared from the old revision is refused too, and a
+        // fresh one cannot select the skipped finding.
+        assert!(prepare_fix_read(&mut gui, request.clone()).is_err());
+        // Restore with the fresh revision.
+        let again = AiAction::ToggleSkip {
+            index: 0,
+            result_revision: view.result_revision.clone().unwrap(),
+            head_sha: "head-sha".into(),
+        };
+        let view = ai_act(&mut gui, &id, again).unwrap();
+        assert!(!view.findings[0].skipped);
+    }
+
+    #[test]
+    fn finding_changes_refuse_wrong_head_index_published_and_missing_ai_result() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let id = request.workflow_id.clone();
+        let err = ai_act(&mut gui, &id, skip_action(&request, 0, "other-head")).unwrap_err();
+        assert!(err.message.contains("different PR head"));
+        let err = ai_act(&mut gui, &id, skip_action(&request, 9, "head-sha")).unwrap_err();
+        assert!(err.message.contains("no longer in the result"));
+        if let AppMode::AiReview(state) = &mut gui.app_for_workflow().mode {
+            state.findings[1].published = true;
+        }
+        let revision = ai_snapshot(&mut gui, &id).unwrap().result_revision.unwrap();
+        let err = ai_act(
+            &mut gui,
+            &id,
+            AiAction::EditBody {
+                index: 1,
+                body: "new".into(),
+                result_revision: revision,
+                head_sha: "head-sha".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("already posted"));
+    }
+
+    #[test]
+    fn editing_a_finding_is_bounded_bound_to_the_result_and_changes_the_revision() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let id = request.workflow_id.clone();
+        let edit = |body: String, revision: &str| AiAction::EditBody {
+            index: 0,
+            body,
+            result_revision: revision.into(),
+            head_sha: "head-sha".into(),
+        };
+        let blank = ai_act(&mut gui, &id, edit("  \n".into(), &request.result_revision));
+        assert!(blank.unwrap_err().message.contains("needs a body"));
+        let long = "x".repeat(MAX_FINDING_BODY_CHARS + 1);
+        let err = ai_act(&mut gui, &id, edit(long, &request.result_revision)).unwrap_err();
+        assert!(err.message.contains("at most"));
+        let err = ai_act(&mut gui, &id, edit("fine".into(), "stale")).unwrap_err();
+        assert!(err.message.contains("AI result changed"));
+        // Nothing above changed the finding.
+        let unchanged = ai_snapshot(&mut gui, &id).unwrap();
+        assert_eq!(unchanged.findings[0].body, "Handle empty input");
+        assert_eq!(
+            unchanged.result_revision.as_deref(),
+            Some(&*request.result_revision)
+        );
+
+        let view = ai_act(
+            &mut gui,
+            &id,
+            edit("Rewritten\nbody".into(), &request.result_revision),
+        )
+        .unwrap();
+        assert_eq!(view.findings[0].body, "Rewritten\nbody");
+        assert_ne!(
+            view.result_revision.as_deref(),
+            Some(&*request.result_revision)
+        );
+        // A handoff prepared against the pre-edit revision is refused, and a
+        // fresh one carries the edited text.
+        assert!(prepare_fix_read(&mut gui, request.clone()).is_err());
+        let mut fresh = request.clone();
+        fresh.result_revision = view.result_revision.unwrap();
+        let read = prepare_fix_read(&mut gui, fresh).unwrap();
+        let result = finish_fix_read(&mut gui, read, test_pr()).unwrap();
+        assert!(result.draft_prompt.contains("Rewritten"));
+    }
+
+    #[test]
+    fn finding_changes_need_a_finished_result_not_a_running_review() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let id = request.workflow_id.clone();
+        gui.app_for_workflow().mode = AppMode::Normal;
+        let err = ai_act(&mut gui, &id, skip_action(&request, 0, "head-sha")).unwrap_err();
+        assert!(err.message.contains("Wait for the AI review"));
     }
 
     #[test]

@@ -22,8 +22,8 @@ use crate::app::pr_review::github_access::TriageGithub;
 use crate::app::pr_review::{
     CommentKind, INVESTIGATION_CONTEXT_MAX_LEN, PrComment, PrFetchFailure, PrInvestigationStatus,
     PrSortMode, ReplyDraftRequest, ReplyKind, ReplyTarget, TriageState,
-    investigation_findings_for_prompt, investigation_prompt_from_meta, strip_bot_boilerplate,
-    with_reply_draft_handoff,
+    investigation_findings_for_prompt, investigation_prompt_from_meta, investigation_todo_seed,
+    strip_bot_boilerplate, todo_source_marker, todo_source_prefix, with_reply_draft_handoff,
 };
 use crate::app::toast::ToastKind;
 use crate::app::{App, AppMode, PendingFollowUp, PrPickerState, PrReviewState};
@@ -400,6 +400,8 @@ pub struct PrInvestigationView {
     pub follow_ups: Vec<PrInvestigationTurnView>,
     /// The PR head moved since this investigation ran.
     pub stale_head: bool,
+    /// Title of the TODO this answer was already kept as, if it still exists.
+    pub kept_todo: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -550,6 +552,12 @@ pub enum PrTriageAction {
     CancelInvestigation,
     DismissInvestigation {
         comment_id: u64,
+    },
+    /// Keep a finished investigation's answer as a TODO. `head_sha` is the
+    /// PR head the person was looking at; a different head is refused.
+    KeepInvestigationAsTodo {
+        comment_id: u64,
+        head_sha: String,
     },
     StartReply {
         comment_id: u64,
@@ -1074,7 +1082,24 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         AppMode::PrInvestigationLoading(load) => Some((load.comment_id, load.harness.clone())),
         _ => None,
     };
-    let review = review_state(&app.mode).map(|state| review_view(state, investigating));
+    let mut review = review_state(&app.mode).map(|state| review_view(state, investigating));
+    if let (Some(review), Some(state)) = (review.as_mut(), review_state(&app.mode)) {
+        // Read the lists once, and only when some answer is final.
+        let mut todos = None;
+        for comment in &mut review.comments {
+            let Some(view) = comment.investigation.as_mut() else {
+                continue;
+            };
+            let Some(answer) = view.answer.as_deref().filter(|_| view.status != "running") else {
+                continue;
+            };
+            let todos = todos.get_or_insert_with(|| investigation_scope_todos(app, state));
+            view.kept_todo =
+                find_investigation_todos(todos, state.review.pr.number, comment.id, answer)
+                    .0
+                    .map(|todo| todo.title);
+        }
+    }
     let reply = review_state(&app.mode)
         .and_then(|s| s.reply.as_ref())
         .map(|r| PrReplyDraftView {
@@ -1871,6 +1896,7 @@ fn review_view(state: &PrReviewState, investigating: Option<(u64, AgentKind)>) -
                     })
                     .collect(),
                 stale_head: !r.head_sha.is_empty() && &r.head_sha != head,
+                kept_todo: None,
             }),
     };
     PrReviewView {
@@ -2295,6 +2321,10 @@ fn apply(
             set_feedback(gui, toasts);
             Ok(())
         }
+        A::KeepInvestigationAsTodo {
+            comment_id,
+            head_sha,
+        } => keep_investigation_as_todo(gui, comment_id, &head_sha),
         A::StartReply { comment_id, reply } => start_reply(gui, comment_id, &reply),
         A::DiscardReply => {
             review_mut(gui.app_for_workflow())?.reply = None;
@@ -2357,6 +2387,171 @@ fn apply(
         }
         A::ConfirmWrite => confirm_write(gui, reads),
     }
+}
+
+/// Every TODO in any scope the PR's feature can reach (its worktree list, the
+/// project list, the global list), read once. Scopes are searched regardless
+/// of pane visibility, so a kept TODO that was later moved is still found.
+fn investigation_scope_todos(app: &App, state: &PrReviewState) -> Vec<crate::db::todos::Todo> {
+    use crate::db::todos::TodoScope;
+    let Some(db) = app.db.as_ref() else {
+        return Vec::new();
+    };
+    let Some((pi, fi)) = app.pr_review_feature_for_target(state) else {
+        return Vec::new();
+    };
+    let mut scopes = Vec::new();
+    if let Some(scope) = app.worktree_todo_scope(pi, fi) {
+        scopes.push(scope);
+    }
+    if let Some(project) = app.store.projects.get(pi) {
+        scopes.push(TodoScope::Project {
+            project_id: project.id.clone(),
+        });
+    }
+    scopes.push(TodoScope::Global);
+    scopes
+        .iter()
+        .filter_map(|scope| db.todo_list(scope).ok().flatten())
+        .flat_map(|list| db.todos(&list.id).unwrap_or_default())
+        .collect()
+}
+
+/// From `todos`, the one that came from this comment's investigation answer
+/// and, separately, one from an older answer to the same comment:
+/// `(exact answer, an older answer)`.
+fn find_investigation_todos(
+    todos: &[crate::db::todos::Todo],
+    pr_number: u32,
+    comment_id: u64,
+    answer: &str,
+) -> (
+    Option<crate::db::todos::Todo>,
+    Option<crate::db::todos::Todo>,
+) {
+    let marker = todo_source_marker(pr_number, comment_id, answer);
+    let prefix = todo_source_prefix(pr_number, comment_id);
+    let mut older = None;
+    for todo in todos {
+        let Some(body) = todo.body.as_deref() else {
+            continue;
+        };
+        if body.contains(&marker) {
+            return (Some(todo.clone()), older);
+        }
+        if older.is_none() && body.contains(&prefix) {
+            older = Some(todo.clone());
+        }
+    }
+    (None, older)
+}
+
+/// Keep a finished investigation answer as a TODO on the PR's feature (its
+/// worktree list, or the project's at the repo root), as the TUI does, with a
+/// source marker in the notes. Keeping it again does not write a second item,
+/// even if the earlier one was moved to another scope.
+fn keep_investigation_as_todo(
+    gui: &mut GuiHandle,
+    comment_id: u64,
+    head_sha: &str,
+) -> GuiResult<()> {
+    let app = gui.app_for_workflow();
+    if app.db.is_none() {
+        return Err(GuiError::conflict(
+            "AMF can't reach its database, so there's no TODO list to add to.",
+        ));
+    }
+    let comment = select(app, comment_id)?;
+    let state = review_mut(app)?;
+    if state.review.pr.head_sha != head_sha {
+        return Err(GuiError::conflict(
+            "The pull request head changed since you opened this answer; refresh and review it before keeping it",
+        ));
+    }
+    let inv = state
+        .investigations
+        .iter()
+        .find(|r| r.comment_id == comment_id)
+        .ok_or_else(|| GuiError::conflict("This comment has no investigation to keep"))?;
+    if !matches!(
+        inv.status,
+        PrInvestigationStatus::Complete | PrInvestigationStatus::Dismissed
+    ) {
+        return Err(GuiError::conflict(
+            "Wait for the investigation to finish before keeping it as a TODO",
+        ));
+    }
+    let answer = inv
+        .answer
+        .clone()
+        .filter(|a| !a.trim().is_empty())
+        .ok_or_else(|| GuiError::conflict("This investigation has no answer to keep"))?;
+    let inv_head = inv.head_sha.clone();
+    let pr_number = state.review.pr.number;
+    // The seed carries the source marker, so the TUI and GUI dedupe alike.
+    let (title, body) = investigation_todo_seed(pr_number, &comment, Some(&answer));
+    let Some((pi, fi)) = app.pr_review_target_feature() else {
+        return Err(GuiError::conflict(
+            "Can't keep as TODO: no feature for this PR",
+        ));
+    };
+    let Some(scope) = app.default_todo_scope(pi, fi) else {
+        return Err(GuiError::conflict("Couldn't resolve a TODO scope"));
+    };
+    let label = app.todo_scope_label(&scope);
+    let (exact, older) = match &app.mode {
+        AppMode::PrReview(state) => find_investigation_todos(
+            &investigation_scope_todos(app, state),
+            pr_number,
+            comment_id,
+            &answer,
+        ),
+        _ => (None, None),
+    };
+    let notice = if let Some(todo) = exact {
+        format!("Already kept as a TODO: {}", todo.title)
+    } else {
+        let has_session = app.store.projects[pi].features[fi].has_todos_session();
+        if !has_session {
+            if let Err(e) = app.add_todos_session_for_picker(pi, fi, None) {
+                return Err(GuiError::conflict(format!(
+                    "Couldn't start a TODO list; nothing was written: {e}"
+                )));
+            }
+            // add_todos_session_for_picker leaves its own status message behind.
+            app.message = None;
+        }
+        let feature_id = app.store.projects[pi].features[fi].id.clone();
+        let head_note = if inv_head.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Investigated at PR head {}.",
+                &inv_head[..inv_head.len().min(12)]
+            )
+        };
+        let body = format!("{body}{head_note}");
+        let db = app.db.as_ref().expect("checked above");
+        db.load_or_create_todo_list(&scope, Some(&feature_id))
+            .and_then(|list| {
+                db.add_todo(
+                    &list.id,
+                    &title,
+                    Some(&body),
+                    crate::db::todos::TodoPriority::Med,
+                )
+            })
+            .map_err(|e| GuiError::conflict(format!("Couldn't add the TODO: {e}")))?;
+        match older {
+            Some(old) => format!(
+                "Kept as a TODO on {label}. An earlier TODO for an older answer to this comment (\"{}\") was left in place.",
+                old.title
+            ),
+            None => format!("Kept as a TODO on {label}"),
+        }
+    };
+    gui.pr_triage_context.as_mut().unwrap().notice = Some(notice);
+    Ok(())
 }
 
 fn set_feedback(gui: &mut GuiHandle, toasts: usize) {
@@ -3874,6 +4069,172 @@ mod tests {
                 .status,
             "dismissed"
         );
+        assert!(fake.state().writes.is_empty());
+    }
+
+    fn finished_investigation(gui: &mut GuiHandle, view: &PrTriageView) -> PrTriageView {
+        let pending = act(
+            gui,
+            view,
+            PrTriageAction::Investigate {
+                comment_id: 101,
+                harness: AgentKind::Claude,
+                note: None,
+                follow_up: None,
+            },
+        );
+        let running = act(gui, &pending, PrTriageAction::PrecallConfirm);
+        settle(gui, running)
+    }
+
+    fn keep(view: &PrTriageView, id: u64) -> PrTriageAction {
+        PrTriageAction::KeepInvestigationAsTodo {
+            comment_id: id,
+            head_sha: view.review.as_ref().unwrap().head_sha.clone(),
+        }
+    }
+
+    fn feature_todos(gui: &mut GuiHandle) -> Vec<crate::db::todos::Todo> {
+        let app = gui.app_for_workflow();
+        let scope = app.default_todo_scope(0, 0).unwrap();
+        match app.db.as_ref().unwrap().todo_list(&scope).unwrap() {
+            Some(list) => app.db.as_ref().unwrap().todos(&list.id).unwrap(),
+            None => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn keeping_an_investigation_writes_one_todo_and_repeats_do_not_duplicate() {
+        let (_dir, mut gui, fake, view) = opened();
+        let done = finished_investigation(&mut gui, &view);
+        assert!(
+            comment_view(&done, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .kept_todo
+                .is_none()
+        );
+        assert!(feature_todos(&mut gui).is_empty());
+
+        let kept = act(&mut gui, &done, keep(&done, 101));
+        assert!(
+            kept.notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Kept as a TODO")
+        );
+        let todos = feature_todos(&mut gui);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].title, "Initial answer from Claude");
+        let body = todos[0].body.clone().unwrap();
+        assert!(body.contains("Initial answer from Claude"));
+        assert!(body.contains("AMF source: PR #7 comment 101 investigation (answer "));
+        assert!(
+            gui.app_for_workflow().store.projects[0].features[0].has_todos_session(),
+            "the list is reachable from the dashboard"
+        );
+        assert_eq!(
+            comment_view(&kept, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .kept_todo
+                .as_deref(),
+            Some("Initial answer from Claude")
+        );
+
+        let again = act(&mut gui, &kept, keep(&kept, 101));
+        assert!(again.notice.as_deref().unwrap().starts_with("Already kept"));
+        assert_eq!(feature_todos(&mut gui).len(), 1);
+
+        // A deleted TODO no longer counts: keeping again writes a fresh one.
+        let id = feature_todos(&mut gui)[0].id.clone();
+        gui.db().unwrap().delete_todo(&id).unwrap();
+        let after_delete = poll(&mut gui, &again.workflow_id).unwrap();
+        assert!(
+            comment_view(&after_delete, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .kept_todo
+                .is_none()
+        );
+        let replaced = act(&mut gui, &after_delete, keep(&after_delete, 101));
+        assert!(
+            replaced
+                .notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Kept as a TODO")
+        );
+        assert_eq!(feature_todos(&mut gui).len(), 1);
+        assert!(fake.state().writes.is_empty());
+    }
+
+    #[test]
+    fn a_rerun_answer_is_a_new_todo_and_announces_the_older_one() {
+        let (_dir, mut gui, _fake, view) = opened();
+        let done = finished_investigation(&mut gui, &view);
+        let kept = act(&mut gui, &done, keep(&done, 101));
+        if let AppMode::PrReview(state) = &mut gui.app_for_workflow().mode {
+            state.investigations[0].answer = Some("A different, re-run answer".into());
+        }
+        let rerun = poll(&mut gui, &kept.workflow_id).unwrap();
+        assert!(
+            comment_view(&rerun, 101)
+                .investigation
+                .as_ref()
+                .unwrap()
+                .kept_todo
+                .is_none(),
+            "the old TODO belongs to the old answer"
+        );
+        let second = act(&mut gui, &rerun, keep(&rerun, 101));
+        let notice = second.notice.unwrap();
+        assert!(notice.contains("earlier TODO"), "{notice}");
+        assert!(notice.contains("Initial answer from Claude"), "{notice}");
+        assert_eq!(feature_todos(&mut gui).len(), 2);
+    }
+
+    #[test]
+    fn keeping_an_investigation_refuses_unfinished_unknown_and_changed_heads() {
+        let (_dir, mut gui, fake, view) = opened();
+        // No investigation yet.
+        let err = try_act(&mut gui, &view, keep(&view, 101)).unwrap_err();
+        assert!(err.message.contains("no investigation"), "{}", err.message);
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let done = finished_investigation(&mut gui, &view);
+        let done = poll(&mut gui, &done.workflow_id).unwrap();
+        let err = try_act(&mut gui, &done, keep(&done, 4040)).unwrap_err();
+        assert!(err.message.contains("no longer in this pull request"));
+        let done = poll(&mut gui, &done.workflow_id).unwrap();
+        let err = try_act(
+            &mut gui,
+            &done,
+            PrTriageAction::KeepInvestigationAsTodo {
+                comment_id: 101,
+                head_sha: "bbbbbbbb".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("head changed"), "{}", err.message);
+        // An empty answer is not kept.
+        if let AppMode::PrReview(state) = &mut gui.app_for_workflow().mode {
+            state.investigations[0].answer = Some("  ".into());
+        }
+        let done = poll(&mut gui, &done.workflow_id).unwrap();
+        let err = try_act(&mut gui, &done, keep(&done, 101)).unwrap_err();
+        assert!(err.message.contains("no answer"), "{}", err.message);
+        // A failed run is not kept.
+        if let AppMode::PrReview(state) = &mut gui.app_for_workflow().mode {
+            state.investigations[0].answer = Some("answer".into());
+            state.investigations[0].status = PrInvestigationStatus::Failed;
+        }
+        let done = poll(&mut gui, &done.workflow_id).unwrap();
+        let err = try_act(&mut gui, &done, keep(&done, 101)).unwrap_err();
+        assert!(err.message.contains("finish"), "{}", err.message);
+        assert!(feature_todos(&mut gui).is_empty());
         assert!(fake.state().writes.is_empty());
     }
 

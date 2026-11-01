@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff } from "./api";
+import { DiffHunk, DiffLine, DiffOptions, FeatureTarget, asGuiError, loadDiff, saveDiffLayout } from "./api";
 import { Field, Modal, Spinner } from "./ui";
 import { SyntaxBadge, SyntaxCode } from "./SyntaxCode";
+import { DIFF_KEYS, applyFold, diffKeyCommand, edgeFile, effectiveCursor, moveCursor, rowKey } from "./diffKeys";
 import { TreeRow, amfGroupOpen, buildRows, selectFile, toggleAllFolds } from "./diffTree";
 
 /** Align runs of removed/added rows; marker rows retain their own position. */
@@ -58,7 +59,11 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
   // Fold state is the reader's, keyed by directory path, so it survives a refresh.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [amfChoice, setAmfChoice] = useState<boolean | null>(null);
-  const [split, setSplit] = useState(false);
+  // null until the reader picks one: then the layout saved by the TUI (or an earlier session) applies.
+  const [splitChoice, setSplitChoice] = useState<boolean | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [hunk, setHunk] = useState(0);
   const content = useRef<HTMLDivElement>(null);
   const query = useQuery({
@@ -69,15 +74,18 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
     refetchOnWindowFocus: false,
   });
   const view = query.data;
+  const split = splitChoice ?? view?.layout === "side-by-side";
   const all = view?.files ?? [];
   const file = selectFile(all, path, filter);
   const rows = buildRows(all, { collapsed, amfChoice, filter });
   const amfCount = all.filter((item) => item.amf_generated).length;
   const amfOpen = amfGroupOpen(amfChoice, all.length - amfCount);
   const toggleDir = (key: string) => setCollapsed((prev) => { const next = new Set(prev); if (!next.delete(key)) next.add(key); return next; });
+  const at = effectiveCursor(rows, cursor, file?.path);
+  const cursorClass = (row: TreeRow) => rowKey(row) === at ? " diff-cursor" : "";
   const fileRow = (row: Extract<TreeRow, { kind: "file" }>) => <li key={row.file.path} style={{ paddingLeft: row.depth * 12 }}>
-    <button className={`diff-file ${row.file.path === file?.path ? "diff-file-selected" : ""}`} aria-pressed={row.file.path === file?.path}
-      title={row.file.path} onClick={() => setPath(row.file.path)}>
+    <button className={`diff-file ${row.file.path === file?.path ? "diff-file-selected" : ""}${cursorClass(row)}`} aria-pressed={row.file.path === file?.path}
+      aria-current={rowKey(row) === at ? "true" : undefined} title={row.file.path} onClick={() => { setPath(row.file.path); setCursor(rowKey(row)); }}>
       <span>{row.name}</span><small>{row.file.status} · +{row.file.additions} −{row.file.deletions}</small>
     </button></li>;
   useEffect(() => { setHunk(0); if (content.current) content.current.scrollTop = 0; }, [file?.path, view]);
@@ -86,6 +94,50 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
     const element = content.current?.querySelectorAll<HTMLElement>(".diff-hunk")[index];
     if (element && content.current) content.current.scrollTop = element.offsetTop;
   }
+  function chooseLayout(next: boolean) {
+    setSplitChoice(next);
+    setLayoutError(null);
+    saveDiffLayout(next ? "side-by-side" : "unified").catch((error) => setLayoutError(asGuiError(error).message));
+  }
+  // The key handler reads the latest render's state through a ref, so it subscribes once.
+  const live = useRef({ rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching });
+  live.current = { rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching };
+  const refetch = query.refetch;
+  useEffect(() => {
+    if (hidden) return;
+    const onKey = (event: KeyboardEvent) => {
+      const command = diffKeyCommand(event, content.current?.closest("[role='dialog']"));
+      if (!command) return;
+      const s = live.current;
+      event.preventDefault();
+      const visit = (key: string | null) => {
+        if (!key) return;
+        setCursor(key);
+        if (key.startsWith("file:")) setPath(key.slice(5));
+        requestAnimationFrame(() => document.querySelector(".diff-cursor")?.scrollIntoView?.({ block: "nearest" }));
+      };
+      switch (command) {
+        case "next-row": visit(moveCursor(s.rows, s.at, 1)); break;
+        case "prev-row": visit(moveCursor(s.rows, s.at, -1)); break;
+        case "first-file": visit(edgeFile(s.rows, false)); break;
+        case "last-file": visit(edgeFile(s.rows, true)); break;
+        case "next-hunk": if (s.file && s.hunk + 1 < s.file.hunks.length) jump(s.hunk + 1); break;
+        case "prev-hunk": if (s.hunk > 0) jump(s.hunk - 1); break;
+        case "layout": chooseLayout(!s.split); break;
+        case "refresh": if (!s.fetching) void refetch(); break;
+        case "whitespace": setOptions((o) => ({ ...o, ignore_whitespace: !o.ignore_whitespace })); break;
+        case "amf": if (s.amfCount > 0) setAmfChoice(!s.amfOpen); break;
+        case "fold-all": setCollapsed(toggleAllFolds(s.all, s.collapsed)); break;
+        case "help": setHelpOpen((open) => !open); break;
+        default: {
+          const next = applyFold(command, s.rows, s.at, { collapsed: s.collapsed, amfChoice: s.amfChoice });
+          setCollapsed(next.collapsed); setAmfChoice(next.amfChoice); setCursor(next.cursor);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hidden, refetch]);
   return <Modal hidden={hidden} label="Diff viewer" title={view ? `Changes · ${view.feature_name}` : "Changes"} size="xl" onClose={onClose}
     footer={<button className="btn btn-secondary" onClick={onClose}>Close</button>}>
     <div className="diff-controls">
@@ -94,7 +146,7 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
         {options.commit && !view?.commits.some((commit) => commit.hash === options.commit) && <option value={options.commit}>Selected commit</option>}
         {view?.commits.map((commit) => <option key={commit.hash} value={commit.hash}>{commit.short_hash} {commit.subject}</option>)}
       </select></Field>
-      <Field label="Layout"><select value={split ? "split" : "unified"} onChange={(event) => setSplit(event.target.value === "split")}>
+      <Field label="Layout"><select value={split ? "split" : "unified"} onChange={(event) => chooseLayout(event.target.value === "split")}>
         <option value="unified">Unified</option><option value="split">Side by side</option>
       </select></Field>
       <Field label="Context"><select value={options.context} onChange={(event) => setOptions({ ...options, context: event.target.value as DiffOptions["context"] })}>
@@ -102,12 +154,18 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       </select></Field>
       <label><input type="checkbox" checked={options.ignore_whitespace} onChange={(event) => setOptions({ ...options, ignore_whitespace: event.target.checked })} /> Ignore whitespace</label>
       <button className="btn btn-secondary btn-sm" onClick={() => void query.refetch()} disabled={query.isFetching}>Refresh</button>
+      <button className="btn btn-ghost btn-sm" aria-expanded={helpOpen} aria-controls="diff-key-help" onClick={() => setHelpOpen(!helpOpen)}>Keyboard shortcuts</button>
     </div>
     <form className="diff-controls" onSubmit={(event) => { event.preventDefault(); setOptions({ ...options, base_ref: baseDraft.trim() || null }); }}>
       <Field label="Base ref"><input value={baseDraft} placeholder="Automatic" disabled={options.commit !== null} onChange={(event) => setBaseDraft(event.target.value)} /></Field>
       <button className="btn btn-ghost btn-sm" disabled={options.commit !== null}>Apply base</button>
       {options.base_ref && !options.commit && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setBaseDraft(""); setOptions({ ...options, base_ref: null }); }}>Use automatic base</button>}
     </form>
+    {helpOpen && <section id="diff-key-help" className="diff-key-help" aria-label="Keyboard shortcuts">
+      <dl>{DIFF_KEYS.map((item) => <div key={item.key}><dt><kbd>{item.key}</kbd></dt><dd>{item.help}</dd></div>)}</dl>
+      <small>Shortcuts are off while typing in a field or while another dialog is open.</small>
+    </section>}
+    {layoutError && <p role="status">Layout not saved: {layoutError}</p>}
     {query.isFetching && <p role="status"><Spinner /> Loading changes…</p>}
     {query.error && <p role="alert">{asGuiError(query.error).message}</p>}
     {view?.commits_error && <p role="status">Commit picker: {view.commits_error}</p>}
@@ -123,10 +181,10 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
         <div className="diff-reader">
           <nav className="diff-files" aria-label="Changed files"><ul className="diff-tree">{rows.map((row) => row.kind === "file" ? fileRow(row)
             : row.kind === "dir" ? <li key={`dir:${row.key}`} style={{ paddingLeft: row.depth * 12 }}>
-              <button className="diff-dir" aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => toggleDir(row.key)}>
+              <button className={`diff-dir${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => { setCursor(rowKey(row)); toggleDir(row.key); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> {row.name}/ <small>{row.files} {row.files === 1 ? "file" : "files"}</small></button></li>
             : <li key="amf-group">
-              <button className="diff-dir diff-amf-group" aria-expanded={row.open} aria-label="AMF files group" onClick={() => setAmfChoice(!row.open)}>
+              <button className={`diff-dir diff-amf-group${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label="AMF files group" onClick={() => { setCursor(rowKey(row)); setAmfChoice(!row.open); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> AMF files <small>{row.count} generated by AMF</small></button></li>)}
           </ul></nav>
           <section className="diff-content" aria-label="File diff">

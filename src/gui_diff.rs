@@ -81,6 +81,8 @@ pub struct DiffView {
     pub files: Vec<DiffFileView>,
     pub total_additions: usize,
     pub total_deletions: usize,
+    /// The TUI's saved `diff_viewer_layout`, so both front ends open alike.
+    pub layout: crate::app::DiffViewerLayout,
 }
 
 pub fn load(
@@ -89,6 +91,7 @@ pub fn load(
     options: DiffOptions,
 ) -> GuiResult<DiffView> {
     gui.refresh_store()?;
+    let layout = crate::gui_settings::diff_layout_load(gui);
     let app = gui.app_for_workflow();
     let (pi, fi) = app
         .store
@@ -152,6 +155,7 @@ pub fn load(
         files,
         total_additions: snapshot.total_additions,
         total_deletions: snapshot.total_deletions,
+        layout,
     })
 }
 

@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Changes in the desktop app has TUI-style keys and a remembered layout.**
+  While reading a diff, `j`/`k` walk the file tree, `g`/`G` jump to the first or
+  last file, `z`/`Z`/`h`/`l` fold folders, `.` shows or hides the AMF files group,
+  `v` switches unified / side by side, `r` refreshes, `W` toggles ignore
+  whitespace, and `n`/`p` step hunks (desktop only). `?` or *Keyboard shortcuts*
+  lists them. Keys do nothing while you type in a field, hold a modifier, or have
+  another dialog open. The unified / side-by-side choice is now saved in the same
+  `diff_viewer_layout` setting the TUI uses, so both open the way you left them.
+  A TUI that is already running keeps its own copy until it next saves settings.
 - **Changes in the desktop app is now a folder tree.** The changed-files list
   groups files by directory with fold/expand (and *Fold folders* for all),
   and AMF's own generated files (hooks, `.amf/` scratch, injected skills) sit

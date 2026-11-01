@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app::AppConfig;
+pub use crate::app::DiffViewerLayout;
 use crate::gui_contract::{GuiError, GuiHandle, GuiResult};
 use crate::project::AgentKind;
 
@@ -183,6 +184,52 @@ pub(crate) fn commit_document_preserving(
     crate::app::setup::write_json_document(path, value, permissions_from)?;
     let bytes = serde_json::to_vec_pretty(value).map_err(anyhow::Error::from)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// The TUI's `diff_viewer_layout` as the desktop Changes view reads it: the
+/// file's own value when readable, else this process's copy. A missing key or
+/// an unknown value is `Unified`, as the TUI would treat it.
+pub fn diff_layout_load(gui: &mut GuiHandle) -> DiffViewerLayout {
+    let app = gui.app_for_workflow();
+    if app.store_path.as_os_str().is_empty() {
+        return app.config.diff_viewer_layout.clone();
+    }
+    diff_layout_read(&crate::project::amf_config_dir().join("config.json"))
+}
+
+fn diff_layout_read(path: &Path) -> DiffViewerLayout {
+    read_json_document(path)
+        .ok()
+        .and_then(|(value, _)| {
+            serde_json::from_value(value.get("diff_viewer_layout")?.clone()).ok()
+        })
+        .unwrap_or(DiffViewerLayout::Unified)
+}
+
+/// Write only `diff_viewer_layout`, in the TUI's own kebab-case format, under
+/// the config writer lock and on the freshly read document so every other key
+/// (known or not) survives. A one-key display preference needs no revision
+/// from the caller: last writer wins, as it does between two TUIs.
+pub fn diff_layout_save(gui: &mut GuiHandle, layout: DiffViewerLayout) -> GuiResult<()> {
+    if !gui.app_for_workflow().store_path.as_os_str().is_empty() {
+        diff_layout_save_at(
+            &crate::project::amf_config_dir().join("config.json"),
+            &layout,
+        )?;
+    }
+    let app = gui.app_for_workflow();
+    for config in [&mut app.config, &mut app.saved_config] {
+        config.diff_viewer_layout = layout.clone();
+    }
+    Ok(())
+}
+
+fn diff_layout_save_at(path: &Path, layout: &DiffViewerLayout) -> GuiResult<()> {
+    let _lock = lock_document(path)?;
+    let (mut value, _) = read_json_document(path)?;
+    value["diff_viewer_layout"] = serde_json::to_value(layout).map_err(anyhow::Error::from)?;
+    commit_document(path, &value)?;
+    Ok(())
 }
 
 /// Global harness availability, before project overrides and installed-harness filtering.
@@ -495,6 +542,37 @@ mod tests {
             warning_percent: warning.into(),
             critical_percent: critical.into(),
         }
+    }
+
+    #[test]
+    fn diff_layout_round_trips_in_the_tui_format_and_preserves_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+        std::fs::write(
+            &path,
+            r#"{"future":{"keep":true},"dormant_idle_minutes":17}"#,
+        )
+        .unwrap();
+        diff_layout_save_at(&path, &DiffViewerLayout::SideBySide).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["diff_viewer_layout"], "side-by-side");
+        assert_eq!(saved["future"]["keep"], true);
+        assert_eq!(saved["dormant_idle_minutes"], 17);
+        assert_eq!(diff_layout_read(&path), DiffViewerLayout::SideBySide);
+        diff_layout_save_at(&path, &DiffViewerLayout::Unified).unwrap();
+        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+        std::fs::write(&path, r#"{"diff_viewer_layout":"bogus"}"#).unwrap();
+        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+    }
+
+    #[test]
+    fn diff_layout_save_updates_this_process_without_touching_disk_in_tests() {
+        let mut gui = context_gui();
+        assert_eq!(diff_layout_load(&mut gui), DiffViewerLayout::Unified);
+        diff_layout_save(&mut gui, DiffViewerLayout::SideBySide).unwrap();
+        assert_eq!(diff_layout_load(&mut gui), DiffViewerLayout::SideBySide);
     }
 
     #[test]

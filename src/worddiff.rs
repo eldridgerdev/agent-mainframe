@@ -261,16 +261,35 @@ fn longest_common_subsequence(old: &[Token<'_>], new: &[Token<'_>]) -> Vec<(usiz
 /// Ranges are byte offsets into [`line_content`] of the line. The TUI and the
 /// GUI both use this one pairing rule.
 pub fn hunk_intra_line_ranges(lines: &[DiffLine]) -> Vec<Option<Vec<Range<usize>>>> {
-    hunk_intra_line_ranges_limited(lines, usize::MAX).0
+    let mut out = vec![None; lines.len()];
+    for pair in hunk_word_pairs(lines, usize::MAX, usize::MAX, true).0 {
+        out[pair.old_idx] = Some(pair.old);
+        out[pair.new_idx] = Some(pair.new);
+    }
+    out
 }
 
-/// [`hunk_intra_line_ranges`] that stops after `max_pairs` token diffs and says
-/// how many it ran, so a caller can bound the CPU spent on a huge change.
-pub fn hunk_intra_line_ranges_limited(
+/// One removed/added line pair and the changed byte ranges of each side.
+pub struct WordPair {
+    pub old_idx: usize,
+    pub new_idx: usize,
+    pub old: Vec<Range<usize>>,
+    pub new: Vec<Range<usize>>,
+}
+
+/// The pairs of [`hunk_intra_line_ranges`], with limits. Stops after
+/// `max_pairs` pairs and says how many it counted, so a caller can bound the
+/// CPU spent on a huge change. A pair where either line is longer than
+/// `max_line_bytes` is skipped *before* diffing and costs nothing. `cached`
+/// selects the thread-local memo (right for a render loop, wasteful for a
+/// one-shot load on a worker thread).
+pub fn hunk_word_pairs(
     lines: &[DiffLine],
     max_pairs: usize,
-) -> (Vec<Option<Vec<Range<usize>>>>, usize) {
-    let mut out: Vec<Option<Vec<Range<usize>>>> = vec![None; lines.len()];
+    max_line_bytes: usize,
+    cached: bool,
+) -> (Vec<WordPair>, usize) {
+    let mut out = Vec::new();
     let mut used = 0usize;
     let mut idx = 0usize;
     while idx < lines.len() {
@@ -287,15 +306,29 @@ pub fn hunk_intra_line_ranges_limited(
             idx += 1;
         }
         for (old_idx, new_idx) in (removed_start..added_start).zip(added_start..idx) {
+            if lines[old_idx].text.len() > max_line_bytes
+                || lines[new_idx].text.len() > max_line_bytes
+            {
+                continue;
+            }
             if used >= max_pairs {
                 return (out, used);
             }
             used += 1;
             let old_text = line_content(&lines[old_idx].text);
             let new_text = line_content(&lines[new_idx].text);
-            if let Some(diff) = word_diff_cached(old_text, new_text) {
-                out[old_idx] = Some(diff.old.clone());
-                out[new_idx] = Some(diff.new.clone());
+            let diff = if cached {
+                word_diff_cached(old_text, new_text).map(|d| (d.old.clone(), d.new.clone()))
+            } else {
+                word_diff(old_text, new_text).map(|d| (d.old, d.new))
+            };
+            if let Some((old, new)) = diff {
+                out.push(WordPair {
+                    old_idx,
+                    new_idx,
+                    old,
+                    new,
+                });
             }
         }
     }

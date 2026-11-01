@@ -231,22 +231,29 @@ fn hunk_emphasis(hunk: &diff::DiffHunk, budget: &mut WordBudget) -> Vec<Vec<[u32
     if hunk.lines.len() > budget.max_hunk_lines || budget.pairs_left == 0 {
         return out;
     }
-    let (ranges, used) =
-        crate::worddiff::hunk_intra_line_ranges_limited(&hunk.lines, budget.pairs_left);
+    let (pairs, used) = crate::worddiff::hunk_word_pairs(
+        &hunk.lines,
+        budget.pairs_left,
+        budget.max_line_bytes,
+        false,
+    );
     budget.pairs_left -= used;
-    for (idx, found) in ranges.into_iter().enumerate() {
-        let Some(found) = found else { continue };
-        let line = &hunk.lines[idx];
-        if line.text.len() > budget.max_line_bytes
-            || found.len() > budget.max_ranges_per_line
-            || found.len() > budget.ranges_left
+    // Both sides of a pair are kept or dropped together: a marked word with
+    // nothing to compare it to is worse than no mark.
+    for pair in pairs {
+        let total = pair.old.len() + pair.new.len();
+        if pair.old.len() > budget.max_ranges_per_line
+            || pair.new.len() > budget.max_ranges_per_line
+            || total > budget.ranges_left
         {
             continue;
         }
-        let prefix = line.text.len() - crate::worddiff::line_content(&line.text).len();
-        let converted = utf16_ranges(&line.text, prefix, &found);
-        budget.ranges_left -= converted.len().min(budget.ranges_left);
-        out[idx] = converted;
+        for (idx, found) in [(pair.old_idx, &pair.old), (pair.new_idx, &pair.new)] {
+            let line = &hunk.lines[idx];
+            let prefix = line.text.len() - crate::worddiff::line_content(&line.text).len();
+            out[idx] = utf16_ranges(&line.text, prefix, found);
+        }
+        budget.ranges_left -= total;
     }
     out
 }
@@ -516,10 +523,15 @@ pub(crate) mod tests {
         assert!(out[1].is_empty() && out[2].is_empty() && out[4].is_empty());
         // Total ranges exhausted.
         let mut b = WordBudget::view();
-        b.ranges_left = 1;
+        b.ranges_left = 2;
         let out = hunk_emphasis(&hunk, &mut b);
-        assert_eq!(out.iter().map(Vec::len).sum::<usize>(), 1);
+        assert_eq!(out.iter().map(Vec::len).sum::<usize>(), 2);
+        assert!(!out[0].is_empty() && !out[3].is_empty());
         assert_eq!(b.ranges_left, 0);
+        // A budget too small for a whole pair marks neither side.
+        let mut b = WordBudget::view();
+        b.ranges_left = 1;
+        assert!(hunk_emphasis(&hunk, &mut b).iter().all(Vec::is_empty));
         // Too many runs on one line.
         let many_old = (0..10)
             .map(|i| format!("w{i}"))

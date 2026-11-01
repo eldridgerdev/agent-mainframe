@@ -165,8 +165,6 @@ export const label = "Total 🦀 due";
                 str(out),
                 str(gui.pid),
                 inspector_address,
-                str(repo),
-                str(config),
             ],
             env=env,
             check=True,

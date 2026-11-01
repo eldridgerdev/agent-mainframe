@@ -47,7 +47,7 @@ export function Hunk({ hunk, split, selection, annotate }: { hunk: DiffHunk; spl
         const note = annotate?.(line);
         return <Fragment key={index}><tr className={`diff-${line.kind}${selected(line)}`}>
           <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
-          <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} emphasis={line.emphasis} change={line.kind === "removed" ? "removed" : "added"} /></td>
+          <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} emphasis={line.emphasis} change={line.kind === "removed" || line.kind === "added" ? line.kind : undefined} /></td>
         </tr>{note && <tr className="diff-annotation"><td colSpan={3}>{note}</td></tr>}</Fragment>;
       })}
     </tbody></table>}

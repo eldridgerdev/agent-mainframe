@@ -13,13 +13,9 @@ import sys
 import time
 import urllib.request
 
-import gi
 import websocket
 from Xlib import display
 
-gi.require_version("Gdk", "3.0")
-gi.require_version("GdkX11", "3.0")
-from gi.repository import Gdk, GdkX11
 
 out = pathlib.Path(sys.argv[1]).resolve()
 pid = int(sys.argv[2])

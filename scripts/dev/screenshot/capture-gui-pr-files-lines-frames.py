@@ -254,8 +254,9 @@ try:
     capture("pr-files-lines-dialog-preview.png", "The same draft previews in the PR Review dialog with its ranges, sides and suggestion block. Nothing is posted without the confirm button.", ["Confirm and post to GitHub", "invoice.ts:8–9 (current · RIGHT)", "invoice.ts:8 (base · LEFT)"])
     assert ai_calls() == [] and gh_writes() == []
     click("Keep editing")
+    # Buttons are disabled while an action is in flight; a click then is a no-op.
+    wait('Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="Back to pull requests" && !b.disabled)')
     click("Back to pull requests")
-    # The dialog is not dismissable while its action is in flight.
     wait('document.querySelectorAll(".pr-entry").length>=1 && !!document.querySelector("[role=dialog] button[aria-label=Close]")')
     evaluate('document.querySelector("[role=dialog] button[aria-label=Close]").click()')
     wait('!document.querySelector("[role=dialog]")')

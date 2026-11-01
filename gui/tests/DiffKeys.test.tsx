@@ -102,6 +102,25 @@ it("v toggles the layout and saves it in the TUI's format; a saved layout opens 
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("diff_layout_save", { layout: "side-by-side" }));
 });
 
+it("rapid layout toggles are written in order, one at a time", async () => {
+  await mount(view("side-by-side"));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const order: string[] = [];
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command !== "diff_layout_save") return view();
+    order.push(`start:${(args as { layout: string }).layout}`);
+    if (order.length === 1) await gate;
+    order.push(`end:${(args as { layout: string }).layout}`);
+    return undefined;
+  });
+  press("v");
+  press("v");
+  await waitFor(() => expect(order).toEqual(["start:unified"]));
+  release();
+  await waitFor(() => expect(order).toEqual(["start:unified", "end:unified", "start:side-by-side", "end:side-by-side"]));
+});
+
 it("reports a layout save failure without losing the choice", async () => {
   await mount();
   vi.mocked(invoke).mockImplementation(async (command) => {

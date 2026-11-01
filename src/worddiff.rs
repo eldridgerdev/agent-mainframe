@@ -11,6 +11,8 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 
+use crate::diff::{DiffLine, DiffLineKind};
+
 /// Lines longer than this (in tokens) skip word diffing. The matrix below is
 /// O(n·m), and a minified or generated line is exactly where the result would
 /// be noise anyway.
@@ -246,6 +248,68 @@ fn longest_common_subsequence(old: &[Token<'_>], new: &[Token<'_>]) -> Vec<(usiz
         }
     }
     pairs
+}
+
+/// Word-level emphasis for every line of a hunk, indexed the same as `lines`.
+///
+/// Consecutive removed lines followed by consecutive added lines form a change
+/// block; within it the i-th removal pairs with the i-th addition, which is how
+/// git lays out a rewritten run and therefore what the reviewer reads as "this
+/// line became that line". Unpaired leftovers (a block that removes 3 and adds
+/// 1) get no emphasis — there is no counterpart to diff against.
+///
+/// Ranges are byte offsets into [`line_content`] of the line. The TUI and the
+/// GUI both use this one pairing rule.
+pub fn hunk_intra_line_ranges(lines: &[DiffLine]) -> Vec<Option<Vec<Range<usize>>>> {
+    hunk_intra_line_ranges_limited(lines, usize::MAX).0
+}
+
+/// [`hunk_intra_line_ranges`] that stops after `max_pairs` token diffs and says
+/// how many it ran, so a caller can bound the CPU spent on a huge change.
+pub fn hunk_intra_line_ranges_limited(
+    lines: &[DiffLine],
+    max_pairs: usize,
+) -> (Vec<Option<Vec<Range<usize>>>>, usize) {
+    let mut out: Vec<Option<Vec<Range<usize>>>> = vec![None; lines.len()];
+    let mut used = 0usize;
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        if !matches!(lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+            continue;
+        }
+        let removed_start = idx;
+        while idx < lines.len() && matches!(lines[idx].kind, DiffLineKind::Removed) {
+            idx += 1;
+        }
+        let added_start = idx;
+        while idx < lines.len() && matches!(lines[idx].kind, DiffLineKind::Added) {
+            idx += 1;
+        }
+        for (old_idx, new_idx) in (removed_start..added_start).zip(added_start..idx) {
+            if used >= max_pairs {
+                return (out, used);
+            }
+            used += 1;
+            let old_text = line_content(&lines[old_idx].text);
+            let new_text = line_content(&lines[new_idx].text);
+            if let Some(diff) = word_diff_cached(old_text, new_text) {
+                out[old_idx] = Some(diff.old.clone());
+                out[new_idx] = Some(diff.new.clone());
+            }
+        }
+    }
+    (out, used)
+}
+
+/// A diff line's text with its leading `+`/`-`/space prefix removed, matching
+/// the offsets emphasis ranges are measured against.
+pub fn line_content(text: &str) -> &str {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('+' | '-' | ' ') => chars.as_str(),
+        _ => text,
+    }
 }
 
 #[cfg(test)]

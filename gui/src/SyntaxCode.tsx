@@ -10,11 +10,58 @@ import "./syntax.css";
  * and plain otherwise. Memoized: the spans arrive with the view, so a
  * selection or draft change re-renders rows without rebuilding their tokens.
  */
-export const SyntaxCode = memo(function SyntaxCode({ text, spans }: { text: string; spans?: SyntaxSpan[] | null }) {
-  if (!spans || spans.length === 0) return <code>{text}</code>;
-  return <code className="syntax">{spans.map(([token, part], index) => token
-    ? <span key={index} className={`syn-${token}`}>{part}</span>
-    : <Fragment key={index}>{part}</Fragment>)}</code>;
+export type Emphasis = readonly (readonly [number, number])[];
+export interface CodePiece { token: string | null; part: string; changed: boolean }
+
+/**
+ * Cuts the line's syntax runs (or the plain text) at the changed ranges.
+ * Ranges are UTF-16 code-unit offsets into `text`, which is what JS string
+ * slicing uses, so no conversion is needed. Malformed input (unsorted,
+ * overlapping, out of range, empty) is normalised or dropped, never thrown on.
+ */
+export function splitCode(text: string, spans?: SyntaxSpan[] | null, emphasis?: Emphasis | null): CodePiece[] {
+  const runs: [string | null, string][] = spans && spans.length ? spans.map(([t, p]) => [t, p]) : [[null, text]];
+  const marks: [number, number][] = [];
+  for (const [start, end] of [...(emphasis ?? [])].filter(([a, b]) => Number.isFinite(a) && Number.isFinite(b)).sort((a, b) => a[0] - b[0])) {
+    const s = Math.max(start, marks.length ? marks[marks.length - 1][1] : 0);
+    const e = Math.min(end, text.length);
+    if (Number.isFinite(s) && Number.isFinite(e) && e > s) marks.push([s, e]);
+  }
+  const out: CodePiece[] = [];
+  let offset = 0, m = 0;
+  for (const [token, part] of runs) {
+    let at = 0;
+    while (at < part.length) {
+      const abs = offset + at;
+      while (m < marks.length && marks[m][1] <= abs) m++;
+      const inside = m < marks.length && marks[m][0] <= abs;
+      const stop = inside ? marks[m][1] : m < marks.length ? marks[m][0] : Infinity;
+      const take = Math.min(part.length - at, stop - abs);
+      out.push({ token, part: part.slice(at, at + take), changed: inside });
+      at += take;
+    }
+    offset += part.length;
+  }
+  return out;
+}
+
+export const SyntaxCode = memo(function SyntaxCode({ text, spans, emphasis, change }: {
+  text: string; spans?: SyntaxSpan[] | null; emphasis?: Emphasis | null; change?: "added" | "removed";
+}) {
+  const hasSpans = !!spans && spans.length > 0;
+  if (!emphasis || emphasis.length === 0) {
+    if (!hasSpans) return <code>{text}</code>;
+    return <code className="syntax">{spans.map(([token, part], index) => token
+      ? <span key={index} className={`syn-${token}`}>{part}</span>
+      : <Fragment key={index}>{part}</Fragment>)}</code>;
+  }
+  // <mark> keeps the cue semantic; the stylesheet adds an underline so it is not colour alone.
+  return <code className={hasSpans ? "syntax" : undefined}>{splitCode(text, spans, emphasis).map(({ token, part, changed }, index) => {
+    const inner = token ? <span className={`syn-${token}`}>{part}</span> : part;
+    return changed
+      ? <mark key={index} className={`diff-word diff-word-${change ?? "added"}`}>{inner}</mark>
+      : <Fragment key={index}>{inner}</Fragment>;
+  })}</code>;
 });
 
 const PLAIN_REASON: Partial<Record<SyntaxInfo["status"], (language: string | null) => string>> = {

@@ -1349,6 +1349,11 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-added { background: rgba(46, 160, 67, .16); }
 .diff-removed { background: rgba(248, 81, 73, .16); }
 .diff-marker { color: var(--text-muted); font-style: italic; }
+/* Word-level changes: a stronger fill plus an underline (solid for added, dashed for removed), so the cue is not colour alone. */
+.diff-word { color: inherit; padding: 0; border-radius: 2px; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.diff-word-added { background: color-mix(in srgb, var(--green) 32%, transparent); text-decoration-line: underline; text-decoration-style: solid; }
+.diff-word-removed { background: color-mix(in srgb, var(--red) 32%, transparent); text-decoration-line: underline; text-decoration-style: dashed; }
+@media (forced-colors: active) { .diff-word { background: Mark; color: MarkText; } }
 @media (max-width: 680px) { .diff-reader { grid-template-columns: 1fr; } .diff-files { max-height: 120px; border-bottom: 1px solid var(--border); } }
 .diff-metadata { padding: 6px 8px; font-size: 12px; }
 .diff-metadata summary { cursor: pointer; color: var(--text-muted); }

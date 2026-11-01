@@ -42,6 +42,14 @@ pub struct DiffLineView {
     /// Token spans covering `text`, coloured with whole-file context; `None`
     /// renders the text plain (see `DiffFileView::syntax` for why).
     pub syntax: SyntaxLine,
+    /// Word-level changed runs of a paired removed/added line, as
+    /// `[start, end)` offsets in **UTF-16 code units** of `text` (prefix
+    /// included, like `syntax`), so the frontend can slice a JS string with
+    /// them directly. Sorted, disjoint, never splitting a surrogate pair.
+    /// Empty (and omitted) for unpaired lines, dissimilar pairs, and anything
+    /// past [`WordBudget`]: the line-level colouring is then all there is.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub emphasis: Vec<[u32; 2]>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,10 +136,11 @@ pub fn load(
         DiffContext::Full => usize::MAX,
     };
     let mut budget = HighlightBudget::view();
+    let mut words = WordBudget::view();
     let files = snapshot
         .files
         .into_iter()
-        .map(|file| file_view_budgeted(file, context, &mut budget))
+        .map(|file| build_file_view(file, context, &mut budget, Some(&mut words)))
         .collect();
     Ok(DiffView {
         target,
@@ -165,6 +174,89 @@ pub(crate) fn file_view_budgeted(
     context: usize,
     budget: &mut HighlightBudget,
 ) -> DiffFileView {
+    build_file_view(file, context, budget, None)
+}
+
+/// Bounds on the word-level emphasis sent with one Changes view, so a huge or
+/// minified diff cannot bloat the IPC payload or stall the load. Exceeding any
+/// limit only drops emphasis for the affected line, hunk or later files; it is
+/// never an error.
+#[derive(Debug, Clone)]
+pub(crate) struct WordBudget {
+    /// A hunk with more lines than this gets no emphasis.
+    pub max_hunk_lines: usize,
+    /// A line longer than this (bytes) gets none.
+    pub max_line_bytes: usize,
+    /// A line with more changed runs than this gets none.
+    pub max_ranges_per_line: usize,
+    /// Changed runs left for the whole view.
+    pub ranges_left: usize,
+    /// Token diffs left for the whole view.
+    pub pairs_left: usize,
+}
+
+impl WordBudget {
+    pub(crate) fn view() -> Self {
+        Self {
+            max_hunk_lines: 2_000,
+            max_line_bytes: 2_000,
+            max_ranges_per_line: 64,
+            ranges_left: 20_000,
+            pairs_left: 5_000,
+        }
+    }
+}
+
+/// `[start, end)` byte ranges of the line's content to UTF-16 ranges of the
+/// whole `text`. `prefix` is the byte length of the stripped diff marker.
+fn utf16_ranges(text: &str, prefix: usize, ranges: &[std::ops::Range<usize>]) -> Vec<[u32; 2]> {
+    ranges
+        .iter()
+        .filter_map(|r| {
+            let (s, e) = (r.start + prefix, r.end + prefix);
+            // Defensive: token ranges are char boundaries, but never panic.
+            if !text.is_char_boundary(s) || !text.is_char_boundary(e) || s >= e {
+                return None;
+            }
+            let start = text[..s].encode_utf16().count() as u32;
+            let end = start + text[s..e].encode_utf16().count() as u32;
+            Some([start, end])
+        })
+        .collect()
+}
+
+/// Per-line emphasis for a hunk under `budget`, indexed like `hunk.lines`.
+fn hunk_emphasis(hunk: &diff::DiffHunk, budget: &mut WordBudget) -> Vec<Vec<[u32; 2]>> {
+    let mut out = vec![Vec::new(); hunk.lines.len()];
+    if hunk.lines.len() > budget.max_hunk_lines || budget.pairs_left == 0 {
+        return out;
+    }
+    let (ranges, used) =
+        crate::worddiff::hunk_intra_line_ranges_limited(&hunk.lines, budget.pairs_left);
+    budget.pairs_left -= used;
+    for (idx, found) in ranges.into_iter().enumerate() {
+        let Some(found) = found else { continue };
+        let line = &hunk.lines[idx];
+        if line.text.len() > budget.max_line_bytes
+            || found.len() > budget.max_ranges_per_line
+            || found.len() > budget.ranges_left
+        {
+            continue;
+        }
+        let prefix = line.text.len() - crate::worddiff::line_content(&line.text).len();
+        let converted = utf16_ranges(&line.text, prefix, &found);
+        budget.ranges_left -= converted.len().min(budget.ranges_left);
+        out[idx] = converted;
+    }
+    out
+}
+
+fn build_file_view(
+    file: crate::diff::DiffFile,
+    context: usize,
+    budget: &mut HighlightBudget,
+    mut words: Option<&mut WordBudget>,
+) -> DiffFileView {
     let amf_generated = crate::amf_managed::is_amf_generated_change(&file);
     let highlights = DiffHighlights::for_file(&file, budget);
     let hunks = file.hunks_with_context(context).unwrap_or(file.hunks);
@@ -172,6 +264,11 @@ pub(crate) fn file_view_budgeted(
         .into_iter()
         .map(|hunk| {
             let locations = diff::line_locations_in_hunk(&hunk);
+            let mut emphasis = match words.as_deref_mut() {
+                Some(words) => hunk_emphasis(&hunk, words),
+                None => vec![Vec::new(); hunk.lines.len()],
+            }
+            .into_iter();
             DiffHunkView {
                 header: hunk.header,
                 lines: hunk
@@ -192,6 +289,7 @@ pub(crate) fn file_view_budgeted(
                             text: line.text,
                             old_line,
                             new_line,
+                            emphasis: emphasis.next().unwrap_or_default(),
                         }
                     })
                     .collect(),
@@ -304,6 +402,187 @@ pub(crate) mod tests {
         app.db = Some(db);
         app.store_version = Some(version);
         (dir, GuiHandle::from_app(app), target)
+    }
+
+    fn pair_hunk(pairs: &[(&str, &str)]) -> diff::DiffHunk {
+        let mut lines = Vec::new();
+        for (old, _) in pairs {
+            lines.push(diff::DiffLine {
+                kind: DiffLineKind::Removed,
+                text: format!("-{old}"),
+            });
+        }
+        for (_, new) in pairs {
+            lines.push(diff::DiffLine {
+                kind: DiffLineKind::Added,
+                text: format!("+{new}"),
+            });
+        }
+        diff::DiffHunk {
+            header: "@@ -1 +1 @@".into(),
+            old_start: 1,
+            old_lines: pairs.len(),
+            new_start: 1,
+            new_lines: pairs.len(),
+            lines,
+        }
+    }
+
+    /// Slice `text` the way the frontend does: by UTF-16 code units.
+    fn slice16(text: &str, [s, e]: [u32; 2]) -> String {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        String::from_utf16(&units[s as usize..e as usize]).unwrap()
+    }
+
+    #[test]
+    fn emphasis_pairs_lines_and_offsets_include_the_prefix_in_utf16_units() {
+        let hunk = pair_hunk(&[("let x = foo(1);", "let x = foo(2);")]);
+        let out = hunk_emphasis(&hunk, &mut WordBudget::view());
+        assert_eq!(out[0].len(), 1);
+        assert_eq!(slice16(&hunk.lines[0].text, out[0][0]), "1");
+        assert_eq!(slice16(&hunk.lines[1].text, out[1][0]), "2");
+    }
+
+    #[test]
+    fn emphasis_ranges_are_utf16_not_bytes_for_non_ascii_emoji_and_combining_text() {
+        for (old, new, want_old, want_new) in [
+            ("名前 = \"🦀🦀\" + a", "名前 = \"🦀🦀\" + b", "a", "b"),
+            ("café 🦀 value x", "café 🦀 value y", "x", "y"),
+            ("let e\u{301}t = 1;", "let e\u{301}t = 2;", "1", "2"),
+            (
+                "héllo wörld ünï 🦀 old",
+                "héllo wörld ünï 🦀 new",
+                "old",
+                "new",
+            ),
+        ] {
+            let hunk = pair_hunk(&[(old, new)]);
+            let out = hunk_emphasis(&hunk, &mut WordBudget::view());
+            assert_eq!(out[0].len(), 1, "{old}");
+            assert_eq!(slice16(&hunk.lines[0].text, out[0][0]), want_old);
+            assert_eq!(slice16(&hunk.lines[1].text, out[1][0]), want_new);
+        }
+        // A changed emoji is two UTF-16 units wide and never split.
+        let hunk = pair_hunk(&[("say hello 🦀 now", "say hello 🎉 now")]);
+        let out = hunk_emphasis(&hunk, &mut WordBudget::view());
+        let [s, e] = out[0][0];
+        assert_eq!(e - s, 2);
+        assert_eq!(slice16(&hunk.lines[0].text, out[0][0]), "🦀");
+        assert_eq!(slice16(&hunk.lines[1].text, out[1][0]), "🎉");
+    }
+
+    #[test]
+    fn emphasis_skips_unpaired_context_and_dissimilar_lines() {
+        let mut hunk = pair_hunk(&[("value = 1;", "value = 2;")]);
+        hunk.lines.push(diff::DiffLine {
+            kind: DiffLineKind::Context,
+            text: " ctx".into(),
+        });
+        hunk.lines.insert(
+            0,
+            diff::DiffLine {
+                kind: DiffLineKind::Context,
+                text: " head".into(),
+            },
+        );
+        let out = hunk_emphasis(&hunk, &mut WordBudget::view());
+        assert!(out[0].is_empty() && out[3].is_empty());
+        assert!(!out[1].is_empty() && !out[2].is_empty());
+        let rewrite = pair_hunk(&[("alpha beta gamma", "zzz yyy xxx www")]);
+        assert!(hunk_emphasis(&rewrite, &mut WordBudget::view())[0].is_empty());
+    }
+
+    #[test]
+    fn emphasis_budget_degrades_silently_to_no_ranges() {
+        let pairs = [
+            ("a = 1;", "a = 2;"),
+            ("b = 1;", "b = 2;"),
+            ("c = 1;", "c = 2;"),
+        ];
+        let hunk = pair_hunk(&pairs);
+        // Hunk too big.
+        let mut b = WordBudget::view();
+        b.max_hunk_lines = 5;
+        assert!(hunk_emphasis(&hunk, &mut b).iter().all(Vec::is_empty));
+        // Line too long.
+        let mut b = WordBudget::view();
+        b.max_line_bytes = 3;
+        assert!(hunk_emphasis(&hunk, &mut b).iter().all(Vec::is_empty));
+        // Too many pairs: only the first is diffed.
+        let mut b = WordBudget::view();
+        b.pairs_left = 1;
+        let out = hunk_emphasis(&hunk, &mut b);
+        assert!(!out[0].is_empty() && !out[3].is_empty());
+        assert!(out[1].is_empty() && out[2].is_empty() && out[4].is_empty());
+        // Total ranges exhausted.
+        let mut b = WordBudget::view();
+        b.ranges_left = 1;
+        let out = hunk_emphasis(&hunk, &mut b);
+        assert_eq!(out.iter().map(Vec::len).sum::<usize>(), 1);
+        assert_eq!(b.ranges_left, 0);
+        // Too many runs on one line.
+        let many_old = (0..10)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let many_new = (0..10)
+            .map(|i| format!("x{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let hunk = pair_hunk(&[(many_old.as_str(), many_new.as_str())]);
+        let mut b = WordBudget::view();
+        b.max_ranges_per_line = 2;
+        assert!(hunk_emphasis(&hunk, &mut b).iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn emphasis_is_omitted_from_json_when_empty_and_present_when_set() {
+        let line = |emphasis: Vec<[u32; 2]>| DiffLineView {
+            kind: "added",
+            text: "+x".into(),
+            old_line: None,
+            new_line: Some(1),
+            syntax: None,
+            emphasis,
+        };
+        let plain = serde_json::to_value(line(Vec::new())).unwrap();
+        assert!(plain.get("emphasis").is_none());
+        let marked = serde_json::to_value(line(vec![[1, 2]])).unwrap();
+        assert_eq!(marked["emphasis"], serde_json::json!([[1, 2]]));
+    }
+
+    #[test]
+    fn load_emits_emphasis_for_changes_view_but_review_projection_does_not() {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        let path = repo.join("code.txt");
+        let current = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, current.replace("line 9\n", "line 9 🦀 edited\n")).unwrap();
+        let view = load(&mut gui, target, DiffOptions::default()).unwrap();
+        let code = view.files.iter().find(|f| f.path == "code.txt").unwrap();
+        let added = code
+            .hunks
+            .iter()
+            .flat_map(|h| &h.lines)
+            .find(|l| l.text == "+line 9 🦀 edited")
+            .unwrap();
+        assert_eq!(slice16(&added.text, added.emphasis[0]), " 🦀 edited");
+        let plain = file_view(
+            diff::load_snapshot(&repo, None, false)
+                .unwrap()
+                .files
+                .into_iter()
+                .find(|f| f.path == "code.txt")
+                .unwrap(),
+            3,
+        );
+        assert!(
+            plain
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .all(|l| l.emphasis.is_empty())
+        );
     }
 
     #[test]

@@ -530,6 +530,47 @@ export type TodoWorkTarget =
   | { kind: "feature"; target: FeatureTarget }
   | { kind: "none"; message: string };
 
+export interface NextTodoRequest {
+  project_id: string | null;
+  feature_id: string | null;
+  include_project: boolean;
+  include_global: boolean;
+  skipped_ids: string[];
+}
+
+export interface NextTodoCandidate {
+  todo: Todo;
+  scope_kind: "worktree" | "project" | "global";
+  scope_label: string;
+  /** The feature owning a worktree TODO's checkout; others have no host. */
+  host: FeatureTarget | null;
+}
+
+/** What "implement next" would pick. A preview: nothing is reserved or launched. */
+export type NextTodoPreview =
+  | { outcome: "ready"; candidate: NextTodoCandidate }
+  /** Best remaining candidate already links work; ask before acting. */
+  | { outcome: "started"; candidate: NextTodoCandidate; reason: string }
+  | { outcome: "empty"; message: string };
+
+export function todoNextPreview(request: NextTodoRequest): Promise<NextTodoPreview> {
+  return invoke("todo_next_preview", { request });
+}
+
+export interface QuickCaptureResponse {
+  todo: Todo;
+  scope_label: string;
+}
+
+/** The list a quick capture from this feature appends to, named for the user. */
+export function todoQuickCaptureTarget(target: FeatureTarget): Promise<string> {
+  return invoke("todo_quick_capture_target", { target });
+}
+
+export function todoQuickCapture(target: FeatureTarget, title: string): Promise<QuickCaptureResponse> {
+  return invoke("todo_quick_capture", { target, title });
+}
+
 export function todoWorkTarget(todoId: string): Promise<TodoWorkTarget> {
   return invoke("todo_work_target", { todoId });
 }

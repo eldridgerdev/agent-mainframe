@@ -21,6 +21,7 @@ import {
   TodoWorkTarget,
 } from "./api";
 import { ScratchpadDialog, TodoEditDialog } from "./TodoEditDialogs";
+import { NextTodoDialog } from "./TodoNextDialogs";
 import { Field, Icon, Menu, Modal, Segmented, Spinner } from "./ui";
 
 export interface TodoDestination {
@@ -64,6 +65,7 @@ export default function TodoPanel({
   onPlanNew,
   onLaunchNew,
   onJump,
+  featureTarget,
 }: {
   scope: TodoScopeRequest;
   hostFeatureId?: string;
@@ -77,6 +79,8 @@ export default function TodoPanel({
   onPlanNew?: (todoId: string, title: string) => void;
   onLaunchNew?: (todoId: string, title: string) => void;
   onJump?: (target: Exclude<TodoWorkTarget, { kind: "none" }>) => void;
+  /** The feature this panel belongs to, if any: it supplies the worktree scope for "implement next". */
+  featureTarget?: FeatureTarget;
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["todos", JSON.stringify(scope)];
@@ -86,6 +90,7 @@ export default function TodoPanel({
   const [transferDialog, setTransferDialog] = useState<Todo | null>(null);
   const [editTodo, setEditTodo] = useState<Todo | null>(null);
   const [editingPad, setEditingPad] = useState(false);
+  const [nextOpen, setNextOpen] = useState(false);
 
   const view = useQuery({
     queryKey,
@@ -216,9 +221,16 @@ export default function TodoPanel({
           <h3>{title}</h3>
           {description && <p className="panel-description">{description}</p>}
         </div>
-        {todos.length > 0 && (
-          <span className="count-pill">{openCount} open</span>
-        )}
+        <div className="todo-header-actions">
+          {canStart && (
+            <button className="btn btn-sm btn-secondary" onClick={() => setNextOpen(true)}>
+              <Icon name="zap" size={12} /> Implement next
+            </button>
+          )}
+          {todos.length > 0 && (
+            <span className="count-pill">{openCount} open</span>
+          )}
+        </div>
       </header>
 
       <form
@@ -346,6 +358,20 @@ export default function TodoPanel({
             if (how === "plan" && onPlan) runLaunch(todo.id, () => onPlan(todo.id, target.target));
             else if (onLaunch) runLaunch(todo.id, () => onLaunch(todo.id, target.target));
           }}
+        />
+      )}
+
+      {nextOpen && (
+        <NextTodoDialog
+          base={{
+            project_id: featureTarget?.project_id ?? (scope.kind === "project" ? scope.project_id : null),
+            feature_id: featureTarget?.feature_id ?? null,
+          }}
+          canStart={canStart}
+          canJump={Boolean(onJump)}
+          onClose={() => setNextOpen(false)}
+          onStart={(candidate) => { setNextOpen(false); setStartDialog(candidate.todo); }}
+          onJump={(candidate) => { setNextOpen(false); void jump(candidate.todo); }}
         />
       )}
 

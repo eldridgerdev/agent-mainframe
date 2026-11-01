@@ -1734,3 +1734,9 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .fork-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0 0; }
 .fork-facts dt { color: var(--text-muted, inherit); }
 .fork-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+.todo-header-actions { display: flex; align-items: center; gap: 8px; }
+.todo-next-scopes { display: flex; flex-direction: column; gap: 4px; }
+.todo-next-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 4px; }
+.todo-next-card p { margin: 0; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }

@@ -1200,6 +1200,44 @@ fn todo_update_scratchpad(
 }
 
 #[tauri::command]
+fn todo_next_preview(
+    state: State<AppState>,
+    request: agent_mainframe::gui_contract::NextTodoRequest,
+) -> Result<agent_mainframe::gui_contract::NextTodoPreview, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .preview_next_todo(&request)
+}
+
+#[tauri::command]
+fn todo_quick_capture_target(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<String, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .quick_capture_target(&target)
+}
+
+#[tauri::command]
+fn todo_quick_capture(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    title: String,
+) -> Result<agent_mainframe::gui_contract::QuickCaptureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.quick_capture_todo(&target, &title)?;
+    // A first capture can add the feature's TODOs session.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+#[tauri::command]
 fn todo_work_target(
     state: State<AppState>,
     todo_id: String,
@@ -2513,6 +2551,9 @@ fn main() {
             todo_update,
             todo_update_scratchpad,
             todo_work_target,
+            todo_next_preview,
+            todo_quick_capture_target,
+            todo_quick_capture,
             todo_delete,
             todo_move,
             todo_copy,

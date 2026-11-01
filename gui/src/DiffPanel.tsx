@@ -94,14 +94,27 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
     const element = content.current?.querySelectorAll<HTMLElement>(".diff-hunk")[index];
     if (element && content.current) content.current.scrollTop = element.offsetTop;
   }
+  // Saves run one after another so the last choice is the one left on disk.
+  const saveChain = useRef<Promise<unknown>>(Promise.resolve());
   function chooseLayout(next: boolean) {
     setSplitChoice(next);
     setLayoutError(null);
-    saveDiffLayout(next ? "side-by-side" : "unified").catch((error) => setLayoutError(asGuiError(error).message));
+    saveChain.current = saveChain.current
+      .then(() => saveDiffLayout(next ? "side-by-side" : "unified"))
+      .catch((error) => setLayoutError(asGuiError(error).message));
   }
+  // A filter forces every folder open, so say so instead of changing folds nobody can see.
+  const filtering = filter.trim() !== "";
+  const [foldNotice, setFoldNotice] = useState<string | null>(null);
+  useEffect(() => { if (!filtering) setFoldNotice(null); }, [filtering]);
+  const foldBlocked = () => {
+    if (!live.current.filtering) return false;
+    setFoldNotice("Folding is off while a filter is active. Clear the filter to fold folders.");
+    return true;
+  };
   // The key handler reads the latest render's state through a ref, so it subscribes once.
-  const live = useRef({ rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching });
-  live.current = { rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching };
+  const live = useRef({ filtering, rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching });
+  live.current = { filtering, rows, at, file, hunk, amfCount, amfOpen, collapsed, amfChoice, all, split, fetching: query.isFetching };
   const refetch = query.refetch;
   useEffect(() => {
     if (hidden) return;
@@ -110,6 +123,7 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       if (!command) return;
       const s = live.current;
       event.preventDefault();
+      if (["fold", "fold-all", "collapse", "expand", "amf"].includes(command) && foldBlocked()) return;
       const visit = (key: string | null) => {
         if (!key) return;
         setCursor(key);
@@ -165,6 +179,7 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       <dl>{DIFF_KEYS.map((item) => <div key={item.key}><dt><kbd>{item.key}</kbd></dt><dd>{item.help}</dd></div>)}</dl>
       <small>Shortcuts are off while typing in a field or while another dialog is open.</small>
     </section>}
+    {foldNotice && <p role="status">{foldNotice}</p>}
     {layoutError && <p role="status">Layout not saved: {layoutError}</p>}
     {query.isFetching && <p role="status"><Spinner /> Loading changes…</p>}
     {query.error && <p role="alert">{asGuiError(query.error).message}</p>}
@@ -174,17 +189,17 @@ export default function DiffPanel({ target, onClose, hidden = false }: { target:
       {view.files.length === 0 ? <p role="status">No changes in this scope.</p> : <>
         <div className="diff-controls">
           <Field label="Filter files"><input value={filter} onChange={(event) => setFilter(event.target.value)} /></Field>
-          <button className="btn btn-secondary btn-sm" onClick={() => setCollapsed(toggleAllFolds(all, collapsed))}>{collapsed.size > 0 ? "Unfold folders" : "Fold folders"}</button>
-          {amfCount > 0 && <button className="btn btn-secondary btn-sm" aria-pressed={amfOpen} onClick={() => setAmfChoice(!amfOpen)}>
+          <button className="btn btn-secondary btn-sm" onClick={() => { if (!foldBlocked()) setCollapsed(toggleAllFolds(all, collapsed)); }}>{collapsed.size > 0 ? "Unfold folders" : "Fold folders"}</button>
+          {amfCount > 0 && <button className="btn btn-secondary btn-sm" aria-pressed={amfOpen} onClick={() => { if (!foldBlocked()) setAmfChoice(!amfOpen); }}>
             {amfOpen ? "Hide" : "Show"} AMF files ({amfCount})</button>}
         </div>
         <div className="diff-reader">
           <nav className="diff-files" aria-label="Changed files"><ul className="diff-tree">{rows.map((row) => row.kind === "file" ? fileRow(row)
             : row.kind === "dir" ? <li key={`dir:${row.key}`} style={{ paddingLeft: row.depth * 12 }}>
-              <button className={`diff-dir${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => { setCursor(rowKey(row)); toggleDir(row.key); }}>
+              <button className={`diff-dir${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label={`Folder ${row.key}`} onClick={() => { setCursor(rowKey(row)); if (!foldBlocked()) toggleDir(row.key); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> {row.name}/ <small>{row.files} {row.files === 1 ? "file" : "files"}</small></button></li>
             : <li key="amf-group">
-              <button className={`diff-dir diff-amf-group${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label="AMF files group" onClick={() => { setCursor(rowKey(row)); setAmfChoice(!row.open); }}>
+              <button className={`diff-dir diff-amf-group${cursorClass(row)}`} aria-current={rowKey(row) === at ? "true" : undefined} aria-expanded={row.open} aria-label="AMF files group" onClick={() => { setCursor(rowKey(row)); if (!foldBlocked()) setAmfChoice(!row.open); }}>
                 <span aria-hidden="true">{row.open ? "▾" : "▸"}</span> AMF files <small>{row.count} generated by AMF</small></button></li>)}
           </ul></nav>
           <section className="diff-content" aria-label="File diff">

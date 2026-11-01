@@ -12,7 +12,7 @@ are tagged.
 
 ### Added
 
-- **Changes in the desktop app has TUI-style keys and a remembered layout.**
+- **Changes in the desktop app now has TUI-style keys and a remembered layout.**
   While reading a diff, `j`/`k` walk the file tree, `g`/`G` jump to the first or
   last file, `z`/`Z`/`h`/`l` fold folders, `.` shows or hides the AMF files group,
   `v` switches unified / side by side, `r` refreshes, `W` toggles ignore
@@ -26,8 +26,7 @@ are tagged.
   and AMF's own generated files (hooks, `.amf/` scratch, injected skills) sit
   in a folded *AMF files* group, using the same rule as the TUI. Filtering
   still finds files inside folded folders and the folded group, and your
-  selected file stays selected across refreshes. Read-only; no keys or
-  layout settings changed.
+  selected file stays selected across refreshes. Read-only.
 - **Fork a feature from the desktop app.** *More feature actions → Fork
   feature…* previews the uncommitted changes that will be copied, states that Git
   staging is not copied, and says exactly why the conversation can or cannot be

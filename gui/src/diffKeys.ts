@@ -61,6 +61,12 @@ export const rowKey = (row: TreeRow): string =>
 export function effectiveCursor(rows: TreeRow[], cursor: string | null, selectedPath: string | undefined): string | null {
   const keys = rows.map(rowKey);
   if (cursor && keys.includes(cursor)) return cursor;
+  // The remembered row was folded away: land on its nearest visible folder.
+  for (const origin of [cursor?.replace(/^(dir|file):/, ""), selectedPath]) {
+    if (!origin || origin === "group") continue;
+    const parent = ancestorDirs(origin + (cursor?.startsWith("dir:") && origin === cursor.slice(4) ? "/x" : "")).reverse().find((dir) => keys.includes(`dir:${dir}`));
+    if (parent) return `dir:${parent}`;
+  }
   if (selectedPath && keys.includes(`file:${selectedPath}`)) return `file:${selectedPath}`;
   return keys[0] ?? null;
 }
@@ -105,8 +111,10 @@ export function applyFold(
     if (row.open) return { ...state, collapsed: setDir(row.key, false), cursor };
   }
   if (command === "collapse") {
-    const path = row.kind === "dir" ? row.key + "/x" : row.kind === "file" && !row.file.amf_generated ? row.file.path : "";
-    const parent = ancestorDirs(path).pop();
+    if (row.kind === "file" && row.file.amf_generated) {
+      return rows.some((item) => item.kind === "group") ? { ...unchanged, cursor: "group" } : unchanged;
+    }
+    const parent = ancestorDirs(row.kind === "dir" ? row.key : row.file.path).pop();
     if (parent && rows.some((item) => item.kind === "dir" && item.key === parent)) return { ...unchanged, cursor: `dir:${parent}` };
   }
   return unchanged;

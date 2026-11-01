@@ -108,7 +108,7 @@ export function formatTotal(total: number): string {
         for _ in range(100):
             if vite is not None and vite.poll() is not None:
                 raise RuntimeError(
-                    "The isolated Vite server failed; ensure port 1420 is free"
+                    "The isolated Vite server failed; ensure the capture port (AMF_GUI_CAPTURE_PORT, default 1440) is free"
                 )
             try:
                 with urllib.request.urlopen(f"http://localhost:{port}/", timeout=1):

@@ -108,7 +108,7 @@ export function formatTotal(total: number): string {
         for _ in range(100):
             if vite is not None and vite.poll() is not None:
                 raise RuntimeError(
-                    "The isolated Vite server failed; ensure port 1420 is free"
+                    "The isolated Vite server failed; ensure the capture port (AMF_GUI_CAPTURE_PORT, default 1440) is free"
                 )
             try:
                 with urllib.request.urlopen(f"http://localhost:{port}/", timeout=1):
@@ -118,7 +118,7 @@ export function formatTotal(total: number): string {
         else:
             raise RuntimeError("The isolated frontend did not become ready")
         gui = subprocess.Popen(
-            [str(workspace / "target/debug/amf-gui")],
+            [os.environ.get("AMF_GUI_BIN", str(workspace / "target/debug/amf-gui"))],
             cwd=scratch,
             env=env,
             stdout=gui_log,

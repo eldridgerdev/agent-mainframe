@@ -195,15 +195,19 @@ pub fn diff_layout_load(gui: &mut GuiHandle) -> DiffViewerLayout {
         return app.config.diff_viewer_layout.clone();
     }
     diff_layout_read(&crate::project::amf_config_dir().join("config.json"))
+        .unwrap_or_else(|| app.config.diff_viewer_layout.clone())
 }
 
-fn diff_layout_read(path: &Path) -> DiffViewerLayout {
-    read_json_document(path)
-        .ok()
-        .and_then(|(value, _)| {
-            serde_json::from_value(value.get("diff_viewer_layout")?.clone()).ok()
-        })
-        .unwrap_or(DiffViewerLayout::Unified)
+/// `None` when the file cannot be read; a readable file with a missing or
+/// unknown value is `Unified`.
+fn diff_layout_read(path: &Path) -> Option<DiffViewerLayout> {
+    let (value, _) = read_json_document(path).ok()?;
+    Some(
+        value
+            .get("diff_viewer_layout")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or(DiffViewerLayout::Unified),
+    )
 }
 
 /// Write only `diff_viewer_layout`, in the TUI's own kebab-case format, under
@@ -548,7 +552,7 @@ mod tests {
     fn diff_layout_round_trips_in_the_tui_format_and_preserves_other_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
-        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+        assert_eq!(diff_layout_read(&path), Some(DiffViewerLayout::Unified));
         std::fs::write(
             &path,
             r#"{"future":{"keep":true},"dormant_idle_minutes":17}"#,
@@ -560,11 +564,11 @@ mod tests {
         assert_eq!(saved["diff_viewer_layout"], "side-by-side");
         assert_eq!(saved["future"]["keep"], true);
         assert_eq!(saved["dormant_idle_minutes"], 17);
-        assert_eq!(diff_layout_read(&path), DiffViewerLayout::SideBySide);
+        assert_eq!(diff_layout_read(&path), Some(DiffViewerLayout::SideBySide));
         diff_layout_save_at(&path, &DiffViewerLayout::Unified).unwrap();
-        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+        assert_eq!(diff_layout_read(&path), Some(DiffViewerLayout::Unified));
         std::fs::write(&path, r#"{"diff_viewer_layout":"bogus"}"#).unwrap();
-        assert_eq!(diff_layout_read(&path), DiffViewerLayout::Unified);
+        assert_eq!(diff_layout_read(&path), Some(DiffViewerLayout::Unified));
     }
 
     #[test]

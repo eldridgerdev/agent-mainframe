@@ -113,7 +113,7 @@ export default function FeatureActionsPanel({ target, focusSessionId, onClose, o
           onClick={() => void run("feature_set_ready", { target, expected: ready })}>{ready ? "Mark not ready" : "Mark ready"}</button>
       </section>
       <section aria-label="Summary">
-        <p>{live?.summary_generating ? "Generating summary…" : seen.summary ? `Summary: ${seen.summary}` : "No summary yet."}</p>
+        <p>{live?.summary_generating ? "Generating summary…" : (live?.summary ?? seen.summary) ? `Summary: ${live?.summary ?? seen.summary}` : "No summary yet."}</p>
         {outcome && <p role="status">{outcome}</p>}
         {!notice && <button className="btn btn-secondary" disabled={busy || !!live?.summary_generating}
           onClick={() => void showNotice()}>Generate summary…</button>}

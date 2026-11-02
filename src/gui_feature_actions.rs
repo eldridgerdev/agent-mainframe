@@ -48,7 +48,16 @@ fn locate(gui: &mut GuiHandle, target: &FeatureTarget) -> GuiResult<(usize, usiz
 
 pub fn load(gui: &mut GuiHandle, target: FeatureTarget) -> GuiResult<FeatureActionsView> {
     let (pi, fi) = locate(gui, &target)?;
-    let summary_outcome = gui.summary_outcome.take();
+    let session = gui.app_for_workflow().store.projects[pi].features[fi]
+        .tmux_session
+        .clone();
+    let summary_outcome = match gui.summary_outcome.take() {
+        Some((owner, text)) if owner == session => Some(text),
+        other => {
+            gui.summary_outcome = other;
+            None
+        }
+    };
     let app = gui.app_for_workflow();
     let feature = &app.store.projects[pi].features[fi];
     Ok(FeatureActionsView {
@@ -297,8 +306,18 @@ pub(crate) fn summary_generate_with(
     }
     gui.summary_outcome = None;
     let app = gui.app_for_workflow();
+    app.message = None;
     app.trigger_summary_for_indices(pi, fi, generate)
         .map_err(GuiError::from)?;
+    // The trigger reports refusals only through `message`; nothing running
+    // means it refused.
+    if app.summary_rx.is_none() {
+        let reason = app
+            .message
+            .take()
+            .unwrap_or_else(|| "The summary could not be started.".into());
+        return Err(GuiError::conflict(reason));
+    }
     load(gui, target)
 }
 
@@ -563,7 +582,7 @@ mod tests {
     fn wait_for_outcome(f: &mut Fixture) -> String {
         for _ in 0..200 {
             f.gui.refresh_store().unwrap();
-            if let Some(outcome) = f.gui.summary_outcome.take() {
+            if let Some((_, outcome)) = f.gui.summary_outcome.take() {
                 return outcome;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));

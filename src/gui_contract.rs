@@ -331,8 +331,9 @@ pub struct TodoAgentLaunchResponse {
 pub struct GuiHandle {
     app: App,
     /// Result of a finished feature summary, handed to the interface once
-    /// (`gui_feature_actions`).
-    pub(crate) summary_outcome: Option<String>,
+    /// (`gui_feature_actions`), keyed by the feature's tmux session so it is
+    /// only shown for the feature it belongs to.
+    pub(crate) summary_outcome: Option<(String, String)>,
     /// Configured-session launches whose pre-check is running outside the lock.
     pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
@@ -418,9 +419,20 @@ impl GuiHandle {
         // the current store rather than conflicting with it.
         if self.app.summary_rx.is_some() {
             self.app.message = None;
-            self.app.poll_summary_result().map_err(GuiError::from)?;
+            let before = self.app.summary_state.generating.clone();
+            // A failed save is the summary's outcome, not an error for
+            // whichever command happened to refresh the store.
+            if let Err(error) = self.app.poll_summary_result() {
+                self.app.message = Some(format!("Failed to save summary: {error}"));
+            }
             if self.app.summary_rx.is_none() {
-                self.summary_outcome = self.app.message.take();
+                let finished = before
+                    .difference(&self.app.summary_state.generating)
+                    .next()
+                    .cloned();
+                if let (Some(session), Some(message)) = (finished, self.app.message.take()) {
+                    self.summary_outcome = Some((session, message));
+                }
             }
         }
         Ok(())

@@ -147,3 +147,15 @@ it("flags a selection that disappears after the catalog refreshes", async () => 
   view.rerender(<DestinationPicker {...props} refreshKey="2" />);
   expect((await screen.findByRole("status")).textContent).toMatch(/no longer available or changed/);
 });
+
+it("offers the separate creation form only when the caller can open it and reports the click", () => {
+  const onNewCompanion = vi.fn();
+  const { rerender } = render(<DestinationRows catalog={catalog([])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={vi.fn()} />);
+  expect(screen.queryByRole("button", { name: "New triage feature…" })).toBeNull();
+  rerender(<DestinationRows catalog={catalog([])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={vi.fn()} onNewCompanion={onNewCompanion} />);
+  fireEvent.click(screen.getByRole("button", { name: "New triage feature…" }));
+  expect(onNewCompanion).toHaveBeenCalledTimes(1);
+  expect(screen.getByText(/created stopped/)).toBeTruthy();
+  rerender(<DestinationRows catalog={catalog([])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={vi.fn()} onNewCompanion={onNewCompanion} disabled />);
+  expect((screen.getByRole("button", { name: "New triage feature…" }) as HTMLButtonElement).disabled).toBe(true);
+});

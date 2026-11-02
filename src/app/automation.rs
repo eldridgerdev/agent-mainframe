@@ -392,25 +392,41 @@ impl App {
         Self::run_worktree_hook_cancellable(script, workdir, choice, None)
     }
 
-    /// Like [`Self::run_worktree_hook_sync`], but terminates the hook's whole
-    /// process tree once `cancel` is set, so a hook that never exits cannot
-    /// pin its caller.
+    /// Like [`Self::run_worktree_hook_sync`], but the hook runs in its own
+    /// process group and, once `cancel` is set, the whole group is sent SIGTERM
+    /// and then SIGKILL after a short grace period. With a `cancel` flag the
+    /// group is also killed when the hook exits, so a daemon it backgrounded
+    /// cannot outlive the operation that owns it. (A descendant that calls
+    /// `setsid` leaves the group and is out of reach by design.)
+    ///
+    /// stdin is closed and stderr goes to a temporary file rather than a pipe,
+    /// so a backgrounded child that inherits stderr can neither block the hook
+    /// waiting for input nor keep this call waiting for the pipe to close.
     pub(crate) fn run_worktree_hook_cancellable(
         script: &str,
         workdir: &Path,
         choice: Option<&str>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> (bool, Option<String>) {
-        use std::io::Read;
+        use std::io::{Read, Seek, SeekFrom};
         use std::os::unix::process::CommandExt;
         use std::sync::atomic::Ordering;
         let expanded = Self::resolve_sync_hook_script(script);
+        let mut stderr_file = match tempfile::tempfile() {
+            Ok(file) => file,
+            Err(err) => return (false, Some(err.to_string())),
+        };
+        let stderr_for_child = match stderr_file.try_clone() {
+            Ok(file) => file,
+            Err(err) => return (false, Some(err.to_string())),
+        };
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c")
             .arg(&expanded)
             .current_dir(workdir)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
+            .stderr(stderr_for_child)
             .process_group(0);
         if let Some(c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
@@ -419,15 +435,14 @@ impl App {
             Ok(child) => child,
             Err(err) => return (false, Some(err.to_string())),
         };
-        // Drain stderr off-thread so a chatty hook cannot block on a full pipe.
-        let mut stderr = child.stderr.take();
-        let reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(stderr) = stderr.as_mut() {
-                let _ = stderr.read_to_end(&mut buf);
+        let pgid = child.id() as libc::pid_t;
+        let signal_group = |sig: libc::c_int| {
+            // SAFETY: signalling the process group this function created; a
+            // group that is already gone just returns ESRCH.
+            unsafe {
+                libc::kill(-pgid, sig);
             }
-            buf
-        });
+        };
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -435,23 +450,31 @@ impl App {
                 Err(err) => break Err(err),
             }
             if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                crate::resources::procs::terminate_tree(
-                    i64::from(child.id()),
-                    std::time::Duration::from_secs(2),
-                );
+                signal_group(libc::SIGTERM);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline
+                    && !matches!(child.try_wait(), Ok(Some(_)))
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                // The leader may have exited while others in the group linger.
+                signal_group(libc::SIGKILL);
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = reader.join();
                 return (false, Some("cancelled; hook process was terminated".into()));
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };
-        let stderr = reader.join().unwrap_or_default();
+        if cancel.is_some() {
+            signal_group(libc::SIGKILL);
+        }
         match status {
             Ok(status) if status.success() => (true, None),
             Ok(status) => {
-                let stderr = String::from_utf8_lossy(&stderr);
-                let detail = stderr
+                let mut buf = String::new();
+                let _ = stderr_file.seek(SeekFrom::Start(0));
+                let _ = (&stderr_file).take(65_536).read_to_string(&mut buf);
+                let detail = buf
                     .lines()
                     .rev()
                     .find(|line| !line.trim().is_empty())

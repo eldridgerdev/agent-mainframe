@@ -534,3 +534,36 @@ it("shows the destination catalog: the companion row preselects, choosing it fee
   expect((await screen.findByRole("button", { name: "Selected" })).getAttribute("aria-pressed")).toBe("true");
   expect(actions().filter(({ action }) => action.kind.startsWith("start_"))).toHaveLength(0);
 });
+
+it("creates a stopped triage companion from the shared picker, follows its progress and selects it without preparing or sending anything", async () => {
+  const created = { ...target, feature_id: "triage-new", session_id: "triage-new-claude" };
+  const createdRow = { target: created, label: "PR Triage", harness: "claude" as const, stopped: true, unavailable: null, destination_revision: "rev-new", destination_kind: "companion" as const, feature_name: "round-triage" };
+  let snapshotView: PrTriageView = fixView;
+  backend(fixView, () => fixView, () => snapshotView);
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  const identity = { pr_number: 12, head_sha: "abcdef1234567", set_digest: "set" };
+  const opened = { kind: "opened_feature" as const, target, name: "main", branch: "main", workdir: "/w", running: true, blocked: null, sessions: fixTargets, companion: null };
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_destination_catalog") return { pr_number: 12, opened, companions: [] };
+    if (command === "pr_companion_catalog") return { identity, source_name: "Round totals", source_branch: "round", project_name: "Demo", pr_branch: "round", suggested_branch: "round-triage", preferred: "claude", default_mode: "vibeless", hook: null,
+      agents: [{ agent: "claude", label: "Claude", unavailable: null }], modes: [{ mode: "vibeless", label: "Vibeless", description: "Asks first.", unsupported_agents: [] }] };
+    if (command === "pr_destination_preview") return { revision: "rev-1", identity, label: "New triage feature round-triage", agent: "claude", feature_name: "Round totals", workdir: "/w/round-triage", reuses_existing: false, existing_target: null, creates_session: true, stopped: true, resource_warning: null,
+      consequences: ["The agent is stopped: nothing runs and no prompt is sent."],
+      companion: { branch: "round-triage", destination_path: "/w/round-triage", source_path: "/w", head_sha: "abcdef1234567", base_sha: "abcdef1234567", base_short: "abcdef1", pr_branch: "round", pr_branch_on_origin: true, pr_branch_note: null, will_fetch: false, agent: "claude", mode: "vibeless", review: false, enable_chrome: false, hook: null, older_companions: [] } };
+    if (command === "pr_destination_prepare") return { status: "started", operation_id: "op-9", created_target: null, destination_revision: null, destination_kind: "companion", stopped: true, message: "Creating…" };
+    if (command === "pr_destination_status") {
+      snapshotView = { ...fixView, fix_targets: [...fixView.fix_targets, createdRow] };
+      return { operation_id: "op-9", state: "created", phase: "done", cancel_requested: false, message: "Created 'round-triage' (Claude, Vibeless) at /w/round-triage, stopped. Nothing is running.", retained_path: "/w/round-triage", created_target: created, destination_revision: "rev-new", destination_kind: "companion", stopped: true, hook_warning: null };
+    }
+    return base(command, args);
+  });
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "New triage feature…" }));
+  const create = await screen.findByRole("button", { name: "Create (stopped)" }) as HTMLButtonElement;
+  await waitFor(() => expect(create.disabled).toBe(false), { timeout: 4000 });
+  fireEvent.click(create);
+  await waitFor(() => expect((screen.getByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement).value).toBe("triage-new-claude"), { timeout: 4000 });
+  const prepare = vi.mocked(invoke).mock.calls.find(([command]) => command === "pr_destination_prepare")![1] as { request: Record<string, unknown> };
+  expect(prepare.request).toMatchObject({ workflow: { kind: "triage", workflow_id: "triage" }, identity, preview_revision: "rev-1", approved: false, choice: { kind: "companion_feature" } });
+  expect(actions().filter(({ action }) => action.kind.startsWith("start_") || action.kind.startsWith("prepare_") || action.kind.startsWith("confirm_"))).toHaveLength(0);
+});

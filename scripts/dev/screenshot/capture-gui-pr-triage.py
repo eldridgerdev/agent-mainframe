@@ -40,7 +40,12 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     destinations_proof = os.environ.get("AMF_GUI_PR_DESTINATIONS_PROOF") == "1"
     companion_target_proof = os.environ.get("AMF_GUI_PR_COMPANION_TARGET_PROOF") == "1" or destinations_proof
     dedicated_session_proof = os.environ.get("AMF_GUI_PR_DEDICATED_SESSION_PROOF") == "1"
-    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof or dedicated_session_proof
+    # Companion creation proof: PR #12's head is a real local commit, `origin` is
+    # a private bare repository that has the PR branch, and the project has an
+    # on_worktree_created hook with a question (the "full" answer is slow so the
+    # running state can be captured and cancelled).
+    companion_create_proof = os.environ.get("AMF_GUI_PR_COMPANION_CREATE_PROOF") == "1"
+    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof or dedicated_session_proof or companion_create_proof
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1" or batch_fix_proof
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     fix_draft_proof = fix_draft_proof or fix_submit_proof
@@ -160,6 +165,23 @@ export function formatTotal(total: number): string {
             GIT_CONFIG_KEY_0=f"url.{repo}.insteadOf",
             GIT_CONFIG_VALUE_0="https://github.com/demo-org/invoice-api",
         )
+    if companion_create_proof:
+        head = git("rev-parse", "round-invoice-totals")
+        (gh_state / "head.txt").write_text(head + "\n")
+        remote = scratch / "origin.git"
+        subprocess.check_call(["git", "init", "--bare", "-b", "main", str(remote)], env=git_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        git("remote", "add", "origin", str(remote))
+        git("push", "origin", "main", "round-invoice-totals")
+        hook = {
+            "lifecycle_hooks": {
+                "on_worktree_created": {
+                    "script": 'if [ "$AMF_HOOK_CHOICE" = full ]; then sleep 30; fi; printf "%s" "$AMF_HOOK_CHOICE" > setup-choice.txt',
+                    "prompt": {"title": "Environment", "options": ["offline", "full"]},
+                }
+            }
+        }
+        import json as _json
+        (repo / "amf.json").write_text(_json.dumps(hook, indent=2) + "\n")
     (repo / "invoice.ts").write_text(
         committed.replace(
             "  return total.toFixed(2);",
@@ -317,7 +339,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-destinations-frames.py" if destinations_proof else "capture-gui-pr-dedicated-session-frames.py" if dedicated_session_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-companion-create-frames.py" if companion_create_proof else "capture-gui-pr-destinations-frames.py" if destinations_proof else "capture-gui-pr-dedicated-session-frames.py" if dedicated_session_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -337,7 +359,7 @@ export function formatTotal(total: number): string {
                     == feature_status
                 )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (5 if destinations_proof else 4 if companion_target_proof else 3 if dedicated_session_proof else 2 if fix_draft_proof else 0)
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (5 if destinations_proof else 4 if companion_target_proof else 3 if dedicated_session_proof or companion_create_proof else 2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")

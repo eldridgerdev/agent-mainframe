@@ -558,23 +558,23 @@ fn one_operation_per_workflow_and_a_duplicate_gets_the_running_one() {
     let b = PrDestinationWorkflow::Workspace {
         workflow_id: "op-a".into(),
     };
-    let OperationStart::Started(first) = begin_operation(&a) else {
+    let OperationStart::Started(first) = begin_operation(&a, SESSION_OPERATIONS) else {
         panic!("first claims the slot")
     };
-    let OperationStart::Existing(duplicate) = begin_operation(&a) else {
+    let OperationStart::Existing(duplicate) = begin_operation(&a, SESSION_OPERATIONS) else {
         panic!("duplicate must not start")
     };
     assert_eq!(duplicate.status, PrepareStatus::InProgress);
     assert_eq!(duplicate.operation_id, first.operation_id);
     assert!(duplicate.created_target.is_none());
     // A different workflow (even with the same id text) is independent.
-    let OperationStart::Started(second) = begin_operation(&b) else {
+    let OperationStart::Started(second) = begin_operation(&b, SESSION_OPERATIONS) else {
         panic!("other workflow is independent")
     };
     drop(second);
     let id = first.operation_id.clone();
     drop(first);
-    let OperationStart::Started(again) = begin_operation(&a) else {
+    let OperationStart::Started(again) = begin_operation(&a, SESSION_OPERATIONS) else {
         panic!("the slot is released")
     };
     assert_ne!(again.operation_id, id);
@@ -587,14 +587,17 @@ fn a_panicking_operation_releases_its_slot() {
     };
     let flow2 = flow.clone();
     let result = std::thread::spawn(move || {
-        let OperationStart::Started(_guard) = begin_operation(&flow2) else {
+        let OperationStart::Started(_guard) = begin_operation(&flow2, SESSION_OPERATIONS) else {
             panic!("claims")
         };
         panic!("boom");
     })
     .join();
     assert!(result.is_err());
-    assert!(matches!(begin_operation(&flow), OperationStart::Started(_)));
+    assert!(matches!(
+        begin_operation(&flow, SESSION_OPERATIONS),
+        OperationStart::Started(_)
+    ));
 }
 
 fn settings_path(gui: &mut GuiHandle) -> std::path::PathBuf {
@@ -762,18 +765,36 @@ fn a_same_named_session_of_any_kind_blocks_the_name_case_insensitively() {
 fn the_slot_is_released_after_a_failed_prepare() {
     let (_dir, mut gui, workflow, identity) = fixture();
     let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
-    let OperationStart::Started(guard) = begin_operation(&workflow) else {
+    let OperationStart::Started(guard) = begin_operation(&workflow, SESSION_OPERATIONS) else {
         panic!("claims")
     };
     let result = prepare_for(&mut gui, &req, "stale-revision", false);
     assert!(result.is_err());
     assert!(matches!(
-        begin_operation(&workflow),
+        begin_operation(&workflow, SESSION_OPERATIONS),
         OperationStart::Existing(_)
     ));
     drop(guard);
     assert!(matches!(
-        begin_operation(&workflow),
+        begin_operation(&workflow, SESSION_OPERATIONS),
         OperationStart::Started(_)
+    ));
+}
+
+#[test]
+fn operation_keys_are_namespaced_by_destination_kind() {
+    let flow = PrDestinationWorkflow::Triage {
+        workflow_id: "op-namespaced".into(),
+    };
+    let OperationStart::Started(session) = begin_operation(&flow, SESSION_OPERATIONS) else {
+        panic!("claims")
+    };
+    let OperationStart::Started(other) = begin_operation(&flow, "another-kind") else {
+        panic!("another kind of operation on the same workflow is independent")
+    };
+    assert_ne!(session.operation_id, other.operation_id);
+    assert!(matches!(
+        begin_operation(&flow, SESSION_OPERATIONS),
+        OperationStart::Existing(_)
     ));
 }

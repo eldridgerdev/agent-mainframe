@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.mocked(invoke).mockReset(); });
 
 const session = (feature: string, id: string, kind: PrFixTarget["destination_kind"], stopped = false): PrFixTarget => ({
-  target: { project_id: "p", feature_id: feature, session_id: id }, label: id, harness: "claude", stopped,
+  target: { project_id: "p", feature_id: feature, session_id: id }, label: id, harness: "claude", stopped, unavailable: null,
   destination_revision: `${feature}-${id}`, destination_kind: kind, feature_name: feature,
 });
 const feature = (id: string, kind: DestinationFeature["kind"], sessions: PrFixTarget[], extra: Partial<DestinationFeature> = {}): DestinationFeature => ({
@@ -17,7 +17,7 @@ const feature = (id: string, kind: DestinationFeature["kind"], sessions: PrFixTa
   blocked: null, sessions, companion: null, ...extra,
 });
 const companion = (ahead: number | null, error: string | null = null, sessions = [session("fix-triage", "triage", "companion")], extra: Partial<DestinationFeature> = {}) =>
-  feature("fix-triage", "companion", sessions, { companion: { pr_branch: "feature", base_sha: "a".repeat(40), commits_ahead: ahead, commits_ahead_error: error }, ...extra });
+  feature("fix-triage", "companion", sessions, { companion: { pr_branch: "feature", base_sha: "a".repeat(40), commits_ahead: ahead, commits_ahead_error: error, uncommitted_changes: false }, ...extra });
 const catalog = (companions: DestinationFeature[]): DestinationCatalog => ({
   pr_number: 42, opened: feature("main", "opened_feature", [session("main", "agent", "opened_feature")]), companions,
 });
@@ -78,23 +78,72 @@ it("loads the catalog read-only and the integrate link opens the existing dialog
     if (command === "companion_integration_status") return { running: false, result: null, error: null };
     throw new Error(command);
   });
-  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={42} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
+  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={42} headSha={"a".repeat(40)} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
   fireEvent.click(await screen.findByRole("button", { name: "Integrate PR #42 fixes…" }));
   expect(await screen.findByText("Integrate companion commits")).toBeTruthy();
   await waitFor(() => expect(vi.mocked(invoke)).toHaveBeenCalledWith("companion_integration_status", { target: { project_id: "p", feature_id: "fix-triage" } }));
-  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_destination_catalog", { request: { target: { project_id: "p", feature_id: "main" }, pr_number: 42 } });
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_destination_catalog", { request: { target: { project_id: "p", feature_id: "main" }, pr_number: 42, head_sha: "a".repeat(40) } });
   // Nothing that writes, creates or sends was invoked.
   expect(vi.mocked(invoke).mock.calls.map(([c]) => c).filter((c) => !["pr_destination_catalog", "companion_integration_status"].includes(c as string))).toEqual([]);
 });
 
 it("shows why the catalog failed and lists nothing", async () => {
   vi.mocked(invoke).mockRejectedValue({ kind: "conflict", message: "The feature was deleted" });
-  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={42} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
+  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={42} headSha={"a".repeat(40)} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
   expect(await screen.findByText(/Destinations unavailable: The feature was deleted/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Use" })).toBeNull();
 });
 
 it("does not call the backend until a PR is selected", () => {
-  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={null} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
+  render(<DestinationPicker target={{ project_id: "p", feature_id: "main" }} prNumber={null} headSha={"a".repeat(40)} selectedKey={null} choiceKey={null} onChoose={vi.fn()} />);
   expect(vi.mocked(invoke)).not.toHaveBeenCalled();
+});
+
+it("disables a catalog row the parent cannot resolve, with a refreshing reason, and never reports it chosen", () => {
+  const onChoose = vi.fn();
+  render(<DestinationRows catalog={catalog([companion(1)])} selectedKey={null} choiceKey={null} onChoose={onChoose} onIntegrate={vi.fn()}
+    selectableKeys={new Set(["agent"])} />);
+  const buttons = screen.getAllByRole("button", { name: "Use" }) as HTMLButtonElement[];
+  expect(buttons.map((b) => b.disabled)).toEqual([false, true]);
+  expect(screen.getByText(/Refreshing the agent list/)).toBeTruthy();
+  fireEvent.click(buttons[1]);
+  expect(onChoose).not.toHaveBeenCalled();
+});
+
+it("uses the backend's per-row unavailable reason", () => {
+  const row = { ...session("fix-triage", "triage", "companion"), unavailable: "Based on an older PR head" };
+  render(<DestinationRows catalog={catalog([companion(1, null, [row])])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={vi.fn()} />);
+  expect((screen.getAllByRole("button", { name: "Use" })[1] as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/Based on an older PR head/)).toBeTruthy();
+});
+
+it("gates the integrate link on companion state and says why", () => {
+  const onIntegrate = vi.fn();
+  render(<DestinationRows catalog={catalog([companion(null, "Git did not finish in time")])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={onIntegrate} />);
+  const link = screen.getByRole("button", { name: "Integrate PR #42 fixes…" }) as HTMLButtonElement;
+  expect(link.disabled).toBe(true);
+  expect(screen.getByText(/Commits ahead could not be established/)).toBeTruthy();
+  cleanup();
+  render(<DestinationRows catalog={catalog([companion(2, null, undefined, { blocked: "Shares its tmux session with another feature" })])} selectedKey={null} choiceKey={null} onChoose={vi.fn()} onIntegrate={onIntegrate} />);
+  expect((screen.getByRole("button", { name: "Integrate PR #42 fixes…" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Integrate PR #42 fixes…" }));
+  expect(onIntegrate).not.toHaveBeenCalled();
+});
+
+it("labels the commit count as committed work when the tree has uncommitted changes", () => {
+  const dirty = companion(2);
+  dirty.companion!.uncommitted_changes = true;
+  expect(companionSummary(dirty)).toBe("2 commits ahead, committed only; uncommitted changes in its working tree");
+});
+
+it("flags a selection that disappears after the catalog refreshes", async () => {
+  let rows = [session("main", "agent", "opened_feature"), session("main", "gone", "opened_feature")];
+  vi.mocked(invoke).mockImplementation(async () => ({ pr_number: 42, opened: feature("main", "opened_feature", rows), companions: [] }));
+  const props = { target: { project_id: "p", feature_id: "main" }, prNumber: 42, headSha: "h", selectedKey: null, choiceKey: "gone", onChoose: vi.fn() };
+  const view = render(<DestinationPicker {...props} refreshKey="1" />);
+  await screen.findByText("gone");
+  expect(screen.queryByRole("status")).toBeNull();
+  rows = [rows[0]];
+  view.rerender(<DestinationPicker {...props} refreshKey="2" />);
+  expect((await screen.findByRole("status")).textContent).toMatch(/no longer available or changed/);
 });

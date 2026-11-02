@@ -16,13 +16,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult};
 use crate::gui_pr_triage::PrFixTargetView;
-use crate::gui_pr_workspace::{CheckoutIdentity, DestinationKind};
+use crate::gui_pr_workspace::DestinationKind;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct DestinationCatalogRequest {
     /// The feature the PR workflow was opened from.
     pub target: FeatureTarget,
     pub pr_number: u32,
+    /// The PR head the page is showing; a companion is only usable when it was
+    /// created from exactly this commit (same rule as the fix-target check).
+    pub head_sha: String,
 }
 
 /// What the link between a companion and its source records, plus the one
@@ -36,6 +39,10 @@ pub struct CompanionFacts {
     /// `commits_ahead_error`. Never defaults to zero.
     pub commits_ahead: Option<u32>,
     pub commits_ahead_error: Option<String>,
+    /// `commits_ahead` counts committed work only. `Some(true)`: the working
+    /// tree has uncommitted changes that the count does not include.
+    /// `None`: the tree was not checked (see `commits_ahead_error`).
+    pub uncommitted_changes: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -73,16 +80,11 @@ struct AheadRead {
     workdir: PathBuf,
     branch: String,
     base_sha: String,
-    identity: Option<CheckoutIdentity>,
 }
 
-fn session_count_on_tmux(app: &crate::app::App, tmux_session: &str) -> usize {
-    app.store
-        .projects
-        .iter()
-        .flat_map(|p| &p.features)
-        .filter(|f| f.tmux_session == tmux_session)
-        .count()
+struct AheadFacts {
+    count: u32,
+    uncommitted: bool,
 }
 
 pub fn catalog_read(
@@ -105,17 +107,29 @@ fn read_from_app(
     app.store
         .locate_feature_by_id(Some(project_id), opened_id)
         .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
-    let rows =
-        crate::gui_pr_workspace::fix_target_rows(app, project_id, opened_id, request.pr_number);
+    let rows = crate::gui_pr_workspace::fix_target_rows(
+        app,
+        project_id,
+        opened_id,
+        request.pr_number,
+        &request.head_sha,
+    );
     let mut opened = None;
     let mut companions = Vec::new();
     let mut reads = Vec::new();
     for (kind, feature) in
         crate::gui_pr_workspace::destination_features(app, project_id, opened_id, request.pr_number)
     {
-        let blocked = (session_count_on_tmux(app, &feature.tmux_session) != 1).then(|| {
-            "Shares its tmux session with another feature; choose another destination".to_string()
-        });
+        // The same predicates fix_target_rows applies to its rows.
+        let blocked = if crate::gui_pr_workspace::tmux_session_shared(app, &feature.tmux_session) {
+            Some(crate::gui_pr_workspace::SHARED_TMUX_SESSION.to_string())
+        } else if kind == DestinationKind::Companion
+            && !crate::gui_pr_workspace::companion_based_on(feature, &request.head_sha)
+        {
+            Some(crate::gui_pr_workspace::COMPANION_OLDER_HEAD.to_string())
+        } else {
+            None
+        };
         let companion = feature
             .triage_source
             .as_ref()
@@ -141,6 +155,7 @@ fn read_from_app(
                 base_sha: source.base_sha.clone(),
                 commits_ahead: None,
                 commits_ahead_error: Some("Not read".into()),
+                uncommitted_changes: None,
             }),
         };
         match kind {
@@ -152,7 +167,6 @@ fn read_from_app(
                         workdir: feature.workdir.clone(),
                         branch: feature.branch.clone(),
                         base_sha: source.base_sha.clone(),
-                        identity: crate::gui_pr_workspace::checkout_identity(&feature.workdir),
                     });
                 }
                 companions.push(view);
@@ -176,13 +190,15 @@ impl DestinationCatalogRead {
             let outcome = commits_ahead(read);
             if let Some(facts) = self.catalog.companions[read.index].companion.as_mut() {
                 match outcome {
-                    Ok(count) => {
-                        facts.commits_ahead = Some(count);
+                    Ok(found) => {
+                        facts.commits_ahead = Some(found.count);
                         facts.commits_ahead_error = None;
+                        facts.uncommitted_changes = Some(found.uncommitted);
                     }
                     Err(reason) => {
                         facts.commits_ahead = None;
                         facts.commits_ahead_error = Some(reason);
+                        facts.uncommitted_changes = None;
                     }
                 }
             }
@@ -196,10 +212,15 @@ fn is_object_id(value: &str) -> bool {
 }
 
 /// Every failure is an `Err` with a reason; a Git error never reads as zero.
-fn commits_ahead(read: &AheadRead) -> Result<u32, String> {
-    let before = read
-        .identity
-        .as_ref()
+/// The checkout identity is computed here, off the GUI lock.
+fn commits_ahead(read: &AheadRead) -> Result<AheadFacts, String> {
+    commits_ahead_with(read, || {})
+}
+
+/// `between` runs after the count and before the closing re-checks; tests use
+/// it to move HEAD or the checkout at the one moment that matters.
+fn commits_ahead_with(read: &AheadRead, between: impl FnOnce()) -> Result<AheadFacts, String> {
+    let before = crate::gui_pr_workspace::checkout_identity(&read.workdir)
         .ok_or("The companion checkout is missing or is not a Git worktree")?;
     if !is_object_id(&read.base_sha) {
         return Err("The recorded base is not a full commit ID".into());
@@ -225,23 +246,55 @@ fn commits_ahead(read: &AheadRead) -> Result<u32, String> {
         ],
     )
     .map_err(|_| "The recorded base commit is not in the companion checkout".to_string())?;
+    // Resolve HEAD once; the count is for exactly this commit.
+    let head_sha = git(&read.workdir, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .map_err(|_| "The companion checkout has an unreadable HEAD".to_string())?
+        .trim()
+        .to_string();
+    if !is_object_id(&head_sha) {
+        return Err("Git returned an unreadable HEAD".into());
+    }
     let count = git(
         &read.workdir,
-        &["rev-list", "--count", &format!("{}..HEAD", read.base_sha)],
+        &[
+            "rev-list",
+            "--count",
+            &format!("{}..{head_sha}", read.base_sha),
+        ],
     )
     .map_err(|error| format!("Could not count commits: {error}"))?;
     let count = count
         .trim()
         .parse::<u32>()
         .map_err(|_| "Git returned an unreadable commit count".to_string())?;
-    // The directory must still be the checkout we identified before reading.
-    if crate::gui_pr_workspace::checkout_identity(&read.workdir).as_ref() != Some(before) {
+    let status = git(&read.workdir, &["status", "--porcelain"])
+        .map_err(|error| format!("Could not check for uncommitted changes: {error}"))?;
+    between();
+    // The directory must still be the checkout we identified, on the commit we counted.
+    if crate::gui_pr_workspace::checkout_identity(&read.workdir).as_ref() != Some(&before) {
         return Err("The companion checkout changed while it was being read".into());
     }
-    Ok(count)
+    let now = git(&read.workdir, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .map_err(|_| "The companion checkout has an unreadable HEAD".to_string())?;
+    if now.trim() != head_sha {
+        return Err("The companion's HEAD moved while it was being read".into());
+    }
+    Ok(AheadFacts {
+        count,
+        uncommitted: !status.trim().is_empty(),
+    })
 }
 
 fn git(path: &Path, args: &[&str]) -> Result<String, String> {
+    git_limited(path, args, Duration::from_secs(10), 65_536)
+}
+
+fn git_limited(
+    path: &Path,
+    args: &[&str],
+    timeout: Duration,
+    max_output: usize,
+) -> Result<String, String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut stdout = tempfile::tempfile().map_err(|e| e.to_string())?;
     let mut command = Command::new("git");
@@ -272,7 +325,7 @@ fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < Duration::from_secs(10) => {
+            Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(20))
             }
             _ => {
@@ -292,10 +345,10 @@ fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     stdout.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     stdout
-        .take(65_537)
+        .take(max_output as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|e| e.to_string())?;
-    if out.len() > 65_536 {
+    if out.len() > max_output {
         return Err("Git output exceeded its limit".into());
     }
     String::from_utf8(out).map_err(|_| "Git output is not UTF-8".into())
@@ -415,6 +468,7 @@ mod tests {
                 DestinationCatalogRequest {
                     target: self.target.clone(),
                     pr_number: 42,
+                    head_sha: self.base_sha.clone(),
                 },
             )
             .unwrap()
@@ -491,6 +545,7 @@ mod tests {
                     feature_id: id,
                 },
                 pr_number: 42,
+                head_sha: f.base_sha.clone(),
             },
         )
         .unwrap()
@@ -513,6 +568,7 @@ mod tests {
             DestinationCatalogRequest {
                 target: f.target.clone(),
                 pr_number: 42,
+                head_sha: f.base_sha.clone(),
             },
         )
         .err()
@@ -567,7 +623,141 @@ mod tests {
         let catalog = f.catalog();
         assert!(catalog.companions[0].blocked.is_some());
         assert!(catalog.opened.blocked.is_some());
-        assert!(catalog.companions[0].sessions.is_empty());
+        // Listed but disabled, with the same reason fix_target_rows gives.
+        let row = &catalog.companions[0].sessions[0];
+        assert_eq!(
+            row.unavailable.as_deref(),
+            catalog.companions[0].blocked.as_deref()
+        );
+        assert!(row.stopped);
+    }
+
+    #[test]
+    fn a_companion_on_an_older_pr_head_is_blocked_like_the_fix_target_check() {
+        let mut f = fixture();
+        f.add_companion("old", 42, Some(""), 0, ProjectStatus::Idle);
+        let app = f.gui.app_for_workflow();
+        let catalog = read_from_app(
+            app,
+            DestinationCatalogRequest {
+                target: f.target.clone(),
+                pr_number: 42,
+                head_sha: "f".repeat(40),
+            },
+        )
+        .unwrap()
+        .run();
+        let c = &catalog.companions[0];
+        assert_eq!(
+            c.blocked.as_deref(),
+            Some(crate::gui_pr_workspace::COMPANION_OLDER_HEAD)
+        );
+        assert_eq!(c.sessions[0].unavailable, c.blocked);
+    }
+
+    #[test]
+    fn blocked_flags_agree_with_fix_target_rows_for_every_feature() {
+        let mut f = fixture();
+        f.add_companion("a", 42, Some(""), 0, ProjectStatus::Idle);
+        f.add_companion("b", 42, Some(""), 0, ProjectStatus::Idle);
+        let app = f.gui.app_for_workflow();
+        let shared = app.store.projects[0].features[0].tmux_session.clone();
+        app.store.projects[0].features[2].tmux_session = shared;
+        let catalog = f.catalog();
+        for feature in std::iter::once(&catalog.opened).chain(&catalog.companions) {
+            for row in &feature.sessions {
+                assert_eq!(row.unavailable, feature.blocked, "{}", feature.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_dirty_tree_is_surfaced_beside_the_committed_count() {
+        let mut f = fixture();
+        f.add_companion("dirty", 42, Some(""), 1, ProjectStatus::Idle);
+        let clean = f.catalog();
+        assert_eq!(
+            clean.companions[0]
+                .companion
+                .as_ref()
+                .unwrap()
+                .uncommitted_changes,
+            Some(false)
+        );
+        std::fs::write(f.dir.path().join("dirty").join("wip.txt"), "x").unwrap();
+        let dirty = f.catalog();
+        let facts = dirty.companions[0].companion.as_ref().unwrap();
+        assert_eq!(facts.commits_ahead, Some(1));
+        assert_eq!(facts.uncommitted_changes, Some(true));
+    }
+
+    fn ahead_read(f: &Fixture, name: &str) -> AheadRead {
+        AheadRead {
+            index: 0,
+            workdir: f.dir.path().join(name),
+            branch: format!("{name}-branch"),
+            base_sha: f.base_sha.clone(),
+        }
+    }
+
+    #[test]
+    fn head_moving_after_the_count_fails_closed() {
+        let mut f = fixture();
+        f.add_companion("moving", 42, Some(""), 1, ProjectStatus::Idle);
+        let read = ahead_read(&f, "moving");
+        let dir = read.workdir.clone();
+        let err = commits_ahead_with(&read, || {
+            std::fs::write(dir.join("late.txt"), "x").unwrap();
+            run_git(&dir, &["add", "."]);
+            run_git(&dir, &["commit", "-m", "late"]);
+        })
+        .err()
+        .unwrap();
+        assert!(err.contains("HEAD moved"), "{err}");
+    }
+
+    #[test]
+    fn the_checkout_being_replaced_after_identity_fails_closed() {
+        let mut f = fixture();
+        f.add_companion("swap", 42, Some(""), 0, ProjectStatus::Idle);
+        let read = ahead_read(&f, "swap");
+        let dir = read.workdir.clone();
+        let err = commits_ahead_with(&read, || {
+            std::fs::remove_dir_all(&dir).unwrap();
+            std::fs::create_dir(&dir).unwrap();
+        })
+        .err()
+        .unwrap();
+        assert!(err.contains("changed") || err.contains("Git"), "{err}");
+    }
+
+    #[test]
+    fn git_timeout_and_oversize_output_are_errors() {
+        let f = fixture();
+        let repo = f.dir.path().join("repo");
+        let slow = git_limited(
+            &repo,
+            &["-c", "alias.slow=!sleep 5", "slow"],
+            Duration::from_millis(200),
+            1024,
+        );
+        assert!(slow.err().unwrap().contains("in time"));
+        let big = git_limited(&repo, &["rev-parse", "HEAD"], Duration::from_secs(10), 8);
+        assert!(big.err().unwrap().contains("limit"));
+        assert!(git_limited(&repo, &["rev-parse", "HEAD"], Duration::from_secs(10), 64).is_ok());
+    }
+
+    #[test]
+    fn a_companion_in_another_project_is_excluded() {
+        let mut f = fixture();
+        f.add_companion("elsewhere", 42, Some(""), 0, ProjectStatus::Idle);
+        let app = f.gui.app_for_workflow();
+        let moved = app.store.projects[0].features.pop().unwrap();
+        let mut other = app.store.projects[0].clone();
+        other.id = "other-project".into();
+        other.features = vec![moved];
+        app.store.projects.push(other);
+        assert!(f.catalog().companions.is_empty());
     }
 
     #[test]

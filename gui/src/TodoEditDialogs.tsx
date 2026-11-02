@@ -25,7 +25,7 @@ export function TodoEditDialog({
   onCancel,
 }: {
   todo: Todo;
-  onSave: (base: TodoFields, fields: TodoFields) => Promise<TodoEditOutcome>;
+  onSave: (base: TodoFields, fields: TodoFields, listId: string) => Promise<TodoEditOutcome>;
   onCancel: () => void;
 }) {
   const [base, setBase] = useState<TodoFields>(fieldsOf(todo));
@@ -34,14 +34,18 @@ export function TodoEditDialog({
   const [priority, setPriority] = useState<TodoPriority>(todo.priority);
   const [conflict, setConflict] = useState<Todo | null>(null);
   const [busy, setBusy] = useState(false);
+  // The list the TODO is filed in right now. A refused save reports it, and
+  // the next attempt must use it or a moved TODO would conflict forever.
+  const [listId, setListId] = useState(todo.list_id);
   const fields: TodoFields = { title, body: body.trim() ? body : null, priority };
   const dirty = title !== base.title || (fields.body ?? "") !== (base.body ?? "") || priority !== base.priority;
 
   async function save(against: TodoFields) {
     setBusy(true);
     try {
-      const result = await onSave(against, fields);
+      const result = await onSave(against, fields, listId);
       if (result.outcome === "conflict") {
+        setListId(result.current.list_id);
         setConflict(result.current);
       } else {
         onCancel();
@@ -130,28 +134,42 @@ export function TodoEditDialog({
 export function ScratchpadDialog({
   title,
   base,
+  listId: initialListId,
   onSave,
   onCancel,
 }: {
   title: string;
   base: string | null;
+  /** The list the editor opened on; null when the scope had no list yet. */
+  listId: string | null;
   onSave: (
     base: string | null,
     text: string | null,
-  ) => Promise<{ outcome: "saved" } | { outcome: "conflict"; current: string | null } | { outcome: "gone" }>;
+    listId: string | null,
+  ) => Promise<
+    | { outcome: "saved" }
+    | { outcome: "conflict"; current: string | null; list_id: string | null }
+    | { outcome: "gone" }
+  >;
   onCancel: () => void;
 }) {
   const [against, setAgainst] = useState(base);
   const [text, setText] = useState(base ?? "");
   const [stored, setStored] = useState<{ current: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
+  // A refused save reports the list now holding the pad (one may have been
+  // created since the editor opened); the retry must target it.
+  const [listId, setListId] = useState(initialListId);
   const dirty = !samePad(text, against);
 
   async function save(baseValue: string | null) {
     setBusy(true);
     try {
-      const result = await onSave(baseValue, text.trim() ? text : null);
-      if (result.outcome === "conflict") setStored({ current: result.current });
+      const result = await onSave(baseValue, text.trim() ? text : null, listId);
+      if (result.outcome === "conflict") {
+        setListId(result.list_id);
+        setStored({ current: result.current });
+      }
       else onCancel();
     } catch {
       // The panel already reported the failure; keep the dialog open.

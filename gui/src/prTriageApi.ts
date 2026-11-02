@@ -87,7 +87,7 @@ export interface PrReview {
 export type PrReplyKind = "done" | "not_needed" | "investigation";
 
 export type FixDestinationKind = "opened_feature" | "companion";
-export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean; destination_revision: string; destination_kind: FixDestinationKind; feature_name: string }
+export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean; unavailable: string | null; destination_revision: string; destination_kind: FixDestinationKind; feature_name: string }
 export interface PrBatchFix {
   comment_ids: number[];
   target: SessionTarget;
@@ -126,7 +126,7 @@ export interface PrTriageView {
 export type PrTriageAction =
   | { kind: "toggle_closed" | "back_to_list" | "refresh" | "precall_toggle_view" | "precall_cancel" | "precall_confirm"
       | "confirm_fix_submission" | "cancel_fix_submission" | "cancel_fix_draft" | "cancel_investigation" | "discard_reply" | "cancel_write" | "confirm_write" | "close" }
-  | { kind: "start_fix_draft"; comment_id: number; session_id: string; feature_id: string }
+  | { kind: "start_fix_draft"; comment_id: number; session_id: string; feature_id: string; destination_revision: string }
   | { kind: "confirm_fix_draft" | "prepare_fix_submission"; prompt: string }
   | { kind: "start_batch_fix"; comment_ids: number[]; session_id: string; destination_revision: string; feature_id: string }
   | { kind: "prepare_batch_submission"; prompt: string; digest: string }
@@ -155,7 +155,7 @@ export function prTriageAct(view: PrTriageView, action: PrTriageAction): Promise
 /** Read-only destination catalog (`pr_destination_catalog`): the opened feature
  * and the verified triage companion(s) of one PR. Nothing in it creates,
  * starts or sends anything. */
-export interface DestinationCompanionFacts { pr_branch: string; base_sha: string; commits_ahead: number | null; commits_ahead_error: string | null }
+export interface DestinationCompanionFacts { pr_branch: string; base_sha: string; commits_ahead: number | null; commits_ahead_error: string | null; uncommitted_changes?: boolean | null }
 export interface DestinationFeature {
   kind: FixDestinationKind;
   target: { project_id: string; feature_id: string };
@@ -165,5 +165,5 @@ export interface DestinationFeature {
   companion: DestinationCompanionFacts | null;
 }
 export interface DestinationCatalog { pr_number: number; opened: DestinationFeature; companions: DestinationFeature[] }
-export const prDestinationCatalog = (target: { project_id: string; feature_id: string }, prNumber: number) =>
-  invoke<DestinationCatalog>("pr_destination_catalog", { request: { target, pr_number: prNumber } });
+export const prDestinationCatalog = (target: { project_id: string; feature_id: string }, prNumber: number, headSha: string) =>
+  invoke<DestinationCatalog>("pr_destination_catalog", { request: { target, pr_number: prNumber, head_sha: headSha } });

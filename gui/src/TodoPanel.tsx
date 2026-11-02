@@ -144,7 +144,7 @@ export default function TodoPanel({
     onError: (err) => onError(asGuiError(err)),
   });
 
-  async function saveEdit(todo: Todo, base: TodoFields, fields: TodoFields) {
+  async function saveEdit(todo: Pick<Todo, "id" | "list_id">, base: TodoFields, fields: TodoFields) {
     try {
       const result = await todoUpdate(todo, base, fields);
       if (result.outcome === "gone") {
@@ -378,7 +378,7 @@ export default function TodoPanel({
       {editTodo && (
         <TodoEditDialog
           todo={editTodo}
-          onSave={(base, fields) => saveEdit(editTodo, base, fields)}
+          onSave={(base, fields, listId) => saveEdit({ id: editTodo.id, list_id: listId }, base, fields)}
           onCancel={() => setEditTodo(null)}
         />
       )}
@@ -387,7 +387,8 @@ export default function TodoPanel({
         <ScratchpadDialog
           title={title}
           base={view.data?.list.carry_over ?? null}
-          onSave={(base, text) => savePad(editingPad.listId, base, text)}
+          listId={editingPad.listId}
+          onSave={(base, text, listId) => savePad(listId, base, text)}
           onCancel={() => setEditingPad(null)}
         />
       )}

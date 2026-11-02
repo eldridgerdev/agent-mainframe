@@ -142,6 +142,7 @@ import {
 
 const PrReviewPanel = lazy(() => import("./PrReviewPanel"));
 const PrTriagePanel = lazy(() => import("./PrTriagePanel"));
+const IssueBrowserPanel = lazy(() => import("./IssueBrowserPanel"));
 const PrWorkspacePanel = lazy(() => import("./PrWorkspacePanel"));
 const SNAPSHOT_KEY = ["workspace-snapshot"];
 const PLAN_KEY = ["plan-interview"];
@@ -342,6 +343,7 @@ export default function App() {
   const [screenshotTarget, setScreenshotTarget] = useState<{ target: FeatureTarget | null; sessionId: string | null } | null>(null);
   const [prReviewProject, setPrReviewProject] = useState<string | null>(null);
   const [prTriageTarget, setPrTriageTarget] = useState<PrTriageTarget | null>(null);
+  const [issueBrowserFor, setIssueBrowserFor] = useState<string | null>(null);
   const [prWorkspaceTarget, setPrWorkspaceTarget] = useState<FeatureTarget | null>(null);
   const [prWorkspaceVisible, setPrWorkspaceVisible] = useState(false);
   const [prWorkspaceStatus, setPrWorkspaceStatus] = useState<PrWorkspaceStatus>({ running: false, prNumber: null, completed: false });
@@ -1518,6 +1520,29 @@ export default function App() {
       {prTriageTarget && <Suspense fallback={<Modal label="Loading PR reader" title="Loading PR reader" onClose={() => setPrTriageTarget(null)}><Spinner /></Modal>}>
         <PrTriagePanel key={`${prTriageTarget.project_id}:${prTriageTarget.feature_id}`} target={prTriageTarget} onClose={() => setPrTriageTarget(null)} onHandoff={(handoff) => openSession(handoff.target, handoff.draft_prompt)} />
       </Suspense>}
+      {issueBrowserFor && (() => {
+        const project = projects.find((candidate) => candidate.id === issueBrowserFor);
+        if (!project) return null;
+        return <Suspense fallback={<Modal label="Loading GitHub issues" title="Loading GitHub issues" onClose={() => setIssueBrowserFor(null)}><Spinner /></Modal>}>
+          <IssueBrowserPanel
+            key={project.id}
+            projectId={project.id}
+            projectName={project.name}
+            agents={harnesses.data ?? []}
+            modes={modes.data ?? []}
+            isGit={project.is_git}
+            onClose={() => setIssueBrowserFor(null)}
+            onCreated={(response) => {
+              setIssueBrowserFor(null);
+              void workspace.refetch().then(() => {
+                if (response.session) openSession(response.session, response.draft_prompt);
+                else setView({ kind: "feature", projectId: response.project_id, featureId: response.feature_id });
+              });
+              pushToast({ tone: "info", title: "Issue feature", message: response.message });
+            }}
+          />
+        </Suspense>;
+      })()}
       {diffTarget && <DiffPanel hidden={showSyntaxLanguages} key={`${diffTarget.project_id}:${diffTarget.feature_id}`} target={diffTarget} onClose={() => setDiffTarget(null)} />}
       {review && <ReviewPanel hidden={showSyntaxLanguages} key={review.workflow_id} view={review} busy={reviewBusy} error={reviewError} onAct={actReview} onEditPrompt={() => void editPrecallPrompt()} onSyntaxInstalled={() => void refreshReviewSyntax()} />}
       {learning && (
@@ -1582,6 +1607,7 @@ export default function App() {
               setView({ kind: "feature", projectId: selectedProject.id, featureId: feature.id })}
             onNewFeature={() => setCreateFeatureFor(selectedProject.id)}
             onPrTriage={() => setPrTriageTarget({ project_id: selectedProject.id })}
+            onIssues={() => setIssueBrowserFor(selectedProject.id)}
             onPrReview={() => setPrReviewProject(selectedProject.id)}
             onAgentAvailability={() => setAgentAvailabilityScope({ projectId: selectedProject.id })}
             onProjectPreference={() => setProjectPreference(selectedProject.id)}
@@ -2102,6 +2128,7 @@ function ProjectView({
   onOpenFeature,
   onNewFeature,
   onPrTriage,
+  onIssues,
   onPrReview,
   onAgentAvailability,
   onProjectPreference,
@@ -2114,6 +2141,7 @@ function ProjectView({
   onOpenFeature: (feature: Feature) => void;
   onNewFeature: () => void;
   onPrTriage: () => void;
+  onIssues: () => void;
   onPrReview: () => void;
   onAgentAvailability: () => void;
   onProjectPreference: () => void;
@@ -2137,6 +2165,9 @@ function ProjectView({
               <Icon name="list" size={12} /> Agent availability
             </button>
             <button className="btn btn-secondary" onClick={onProjectPreference}>Preferred harness</button>
+            {project.is_git && <button className="btn btn-secondary" onClick={onIssues}>
+              <Icon name="list" size={12} /> Issues
+            </button>}
             {project.is_git && <button className="btn btn-secondary" onClick={onPrTriage}>
               <Icon name="inbox" size={12} /> PR Triage
             </button>}

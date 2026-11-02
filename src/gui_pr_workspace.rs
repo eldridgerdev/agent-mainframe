@@ -850,14 +850,30 @@ pub(crate) fn is_pr_companion(
         })
 }
 
+/// A companion is seeded from the PR head it was triaged at, so it may only
+/// receive a fix for that head. The opened feature is tied to the PR by the
+/// workspace/triage checkout checks, not by `base_sha`.
+pub(crate) fn companion_based_on(feature: &crate::project::Feature, head_sha: &str) -> bool {
+    feature
+        .triage_source
+        .as_ref()
+        .is_some_and(|source| source.base_sha.eq_ignore_ascii_case(head_sha))
+}
+
+pub(crate) const COMPANION_OLDER_HEAD: &str = "This companion is based on an older PR head; start a fresh triage companion for the current head, or choose the opened feature";
+pub(crate) const SHARED_TMUX_SESSION: &str =
+    "Shares its tmux session with another feature, so it cannot receive a fix";
+
 /// The one test for where a PR fix may go: the opened feature, or a verified
-/// companion of this PR. Any other feature is refused (never retargeted), and
-/// every destination must be the only feature on its tmux session.
+/// companion of this PR at `head_sha`. Any other feature is refused (never
+/// retargeted), and every destination must be the only feature on its tmux
+/// session.
 pub(crate) fn destination_feature_kind(
     app: &App,
     project_id: &str,
     opened_feature_id: &str,
     pr_number: u32,
+    head_sha: &str,
     target_feature_id: &str,
 ) -> GuiResult<DestinationKind> {
     let (pi, fi) = app
@@ -874,20 +890,27 @@ pub(crate) fn destination_feature_kind(
             "Choose a session in this feature or in this PR's triage companion",
         ));
     };
-    if app
-        .store
-        .projects
-        .iter()
-        .flat_map(|p| &p.features)
-        .filter(|f| f.tmux_session == feature.tmux_session)
-        .count()
-        != 1
-    {
+    if kind == DestinationKind::Companion && !companion_based_on(feature, head_sha) {
+        return Err(GuiError::conflict(format!(
+            "companion is based on an older PR head; {COMPANION_OLDER_HEAD}"
+        )));
+    }
+    if tmux_session_shared(app, &feature.tmux_session) {
         return Err(GuiError::conflict(
             "The selected agent session shares its tmux session with another feature; choose another",
         ));
     }
     Ok(kind)
+}
+
+pub(crate) fn tmux_session_shared(app: &App, tmux_session: &str) -> bool {
+    app.store
+        .projects
+        .iter()
+        .flat_map(|p| &p.features)
+        .filter(|f| f.tmux_session == tmux_session)
+        .count()
+        != 1
 }
 
 /// The opened feature first, then its verified companions of this PR in store
@@ -962,6 +985,61 @@ fn result_revision(
     ))
 }
 
+/// Every agent session a fix for `pr` could be handed to, with the reason a row
+/// cannot be chosen (`unavailable`, which also sets `stopped` so existing
+/// pickers disable it). Shared by the workspace and triage views so both offer
+/// the same catalog. The filesystem-backed checkout identity is read once per
+/// feature.
+pub(crate) fn fix_target_rows(
+    app: &App,
+    project_id: &str,
+    opened_feature_id: &str,
+    pr_number: u32,
+    head_sha: &str,
+) -> Vec<crate::gui_pr_triage::PrFixTargetView> {
+    let mut rows = Vec::new();
+    for (kind, feature) in destination_features(app, project_id, opened_feature_id, pr_number) {
+        let unavailable = if tmux_session_shared(app, &feature.tmux_session) {
+            Some(SHARED_TMUX_SESSION.to_string())
+        } else if kind == DestinationKind::Companion && !companion_based_on(feature, head_sha) {
+            Some(COMPANION_OLDER_HEAD.to_string())
+        } else {
+            None
+        };
+        let identity = checkout_identity(&feature.workdir);
+        for session in &feature.sessions {
+            let harness = match session.kind {
+                crate::project::SessionKind::Claude => crate::project::AgentKind::Claude,
+                crate::project::SessionKind::Codex => crate::project::AgentKind::Codex,
+                crate::project::SessionKind::Opencode => crate::project::AgentKind::Opencode,
+                crate::project::SessionKind::Pi => crate::project::AgentKind::Pi,
+                _ => continue,
+            };
+            let stopped = unavailable.is_some()
+                || feature.status == crate::project::ProjectStatus::Stopped
+                || session.stopped
+                || !app
+                    .tmux
+                    .window_exists(&feature.tmux_session, &session.tmux_window);
+            rows.push(crate::gui_pr_triage::PrFixTargetView {
+                target: crate::gui_contract::SessionTarget {
+                    project_id: project_id.to_string(),
+                    feature_id: feature.id.clone(),
+                    session_id: session.id.clone(),
+                },
+                label: session.label.clone(),
+                harness,
+                stopped,
+                unavailable: unavailable.clone(),
+                destination_revision: destination_revision_with(feature, session, &identity),
+                destination_kind: kind,
+                feature_name: feature.name.clone(),
+            });
+        }
+    }
+    rows
+}
+
 pub fn fix_targets(
     gui: &mut GuiHandle,
     id: &str,
@@ -974,75 +1052,17 @@ pub fn fix_targets(
     app.store
         .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
         .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
-    let pr_number = context
+    let pr = context
         .pr
         .as_ref()
-        .map(|pr| pr.number)
         .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
     Ok(fix_target_rows(
         app,
         &target.project_id,
         &target.feature_id,
-        pr_number,
+        pr.number,
+        &pr.head_sha,
     ))
-}
-
-/// Agent-session rows of the opened feature and its verified companions of
-/// this PR. A feature sharing its tmux session with another contributes none.
-pub(crate) fn fix_target_rows(
-    app: &App,
-    project_id: &str,
-    opened_feature_id: &str,
-    pr_number: u32,
-) -> Vec<crate::gui_pr_triage::PrFixTargetView> {
-    {
-        destination_features(app, project_id, opened_feature_id, pr_number)
-            .into_iter()
-            .filter(|(_, feature)| {
-                // Same guard as validate_fix: a shared tmux session is never a target.
-                app.store
-                    .projects
-                    .iter()
-                    .flat_map(|p| &p.features)
-                    .filter(|f| f.tmux_session == feature.tmux_session)
-                    .count()
-                    == 1
-            })
-            .flat_map(|(kind, feature)| {
-                feature.sessions.iter().filter_map(move |session| {
-                    let harness = match session.kind {
-                        crate::project::SessionKind::Claude => crate::project::AgentKind::Claude,
-                        crate::project::SessionKind::Codex => crate::project::AgentKind::Codex,
-                        crate::project::SessionKind::Opencode => {
-                            crate::project::AgentKind::Opencode
-                        }
-                        crate::project::SessionKind::Pi => crate::project::AgentKind::Pi,
-                        _ => return None,
-                    };
-                    Some((kind, feature, session, harness))
-                })
-            })
-            .map(
-                |(kind, feature, session, harness)| crate::gui_pr_triage::PrFixTargetView {
-                    target: crate::gui_contract::SessionTarget {
-                        project_id: project_id.to_string(),
-                        feature_id: feature.id.clone(),
-                        session_id: session.id.clone(),
-                    },
-                    label: session.label.clone(),
-                    harness,
-                    stopped: feature.status == crate::project::ProjectStatus::Stopped
-                        || session.stopped
-                        || !app
-                            .tmux
-                            .window_exists(&feature.tmux_session, &session.tmux_window),
-                    destination_revision: destination_revision(feature, session),
-                    destination_kind: kind,
-                    feature_name: feature.name.clone(),
-                },
-            )
-            .collect()
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1183,6 +1203,7 @@ fn validate_fix(
         &context.target.project_id,
         &context.target.feature_id,
         pr.number,
+        &pr.head_sha,
         &request.target.feature_id,
     )?;
     if kind != request.destination_kind {
@@ -1589,7 +1610,7 @@ mod tests {
                 source_id.into()
             },
             pr_branch: "feature".into(),
-            base_sha: "base".into(),
+            base_sha: "head-sha".into(),
         });
         feature.add_session(crate::project::SessionKind::Claude);
         let session = feature.sessions.first().unwrap().clone();
@@ -1617,6 +1638,59 @@ mod tests {
         assert_eq!(result.target.session_id, companion.target.session_id);
         // The opened feature still works.
         assert!(prepare_fix_read(&mut gui, request).is_ok());
+    }
+
+    fn rebase_companion(gui: &mut GuiHandle, feature_id: &str, base_sha: &str) {
+        let feature = gui.app_for_workflow().store.projects[0]
+            .features
+            .iter_mut()
+            .find(|f| f.id == feature_id)
+            .unwrap();
+        feature.triage_source.as_mut().unwrap().base_sha = base_sha.into();
+    }
+
+    #[test]
+    fn a_companion_based_on_an_older_pr_head_is_refused_and_listed_disabled() {
+        let (_dir, mut gui, request) = fix_fixture();
+        let companion = add_destination(&mut gui, &request, "triage-old", Some((42, "")), false);
+        rebase_companion(&mut gui, &companion.target.feature_id, "older-head");
+        let err = prepare_fix_read(&mut gui, companion.clone()).err().unwrap();
+        assert!(
+            err.message
+                .contains("companion is based on an older PR head"),
+            "{}",
+            err.message
+        );
+        let rows = fix_targets(&mut gui, &request.workflow_id).unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.target.session_id == companion.target.session_id)
+            .unwrap();
+        assert!(row.stopped);
+        assert!(
+            row.unavailable
+                .as_deref()
+                .unwrap()
+                .contains("older PR head")
+        );
+        // Re-based on the current head it is accepted again; the opened
+        // feature never depends on base_sha.
+        rebase_companion(&mut gui, &companion.target.feature_id, "head-sha");
+        assert!(prepare_fix_read(&mut gui, companion).is_ok());
+        assert!(prepare_fix_read(&mut gui, request).is_ok());
+    }
+
+    #[test]
+    fn a_destination_sharing_a_tmux_session_is_listed_disabled_with_a_reason() {
+        let (_dir, mut gui, request) = fix_fixture();
+        add_destination(&mut gui, &request, "triage-share", Some((42, "")), true);
+        let rows = fix_targets(&mut gui, &request.workflow_id).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.stopped));
+        assert!(
+            rows.iter()
+                .all(|r| r.unavailable.as_deref().unwrap().contains("tmux session"))
+        );
     }
 
     #[test]

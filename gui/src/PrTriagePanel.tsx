@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSlug, asGuiError } from "./api";
 import Markdown from "./Markdown";
 import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
@@ -168,6 +168,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
     });
   }, [review?.comments]);
   const fixTargetsKey = JSON.stringify((view?.fix_targets ?? []).map((t) => [t.target.session_id, t.destination_revision, t.stopped]));
+  const fixKeys = useMemo(() => new Set((view?.fix_targets ?? []).map((t) => t.target.session_id)), [fixTargetsKey]);
   const batchTarget = resolveTarget(view?.fix_targets ?? [], batchChoice);
   const fixTarget = resolveTarget(view?.fix_targets ?? [], fixChoice);
 
@@ -365,8 +366,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
               <span className="small">{marked.length} selected</span>
               <FixDestinationPicker label="Batch fix agent" targets={view!.fix_targets} choice={batchChoice} onChoose={setBatchChoice}
                 disabled={locked || view?.reply != null || investigate !== null} />
-              <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id! }} prNumber={review.number} refreshKey={fixTargetsKey}
-                selectedKey={batchTarget ? targetKey(batchTarget) : null} choiceKey={batchChoice} onChoose={setBatchChoice} disabled={locked || view?.reply != null || investigate !== null} />
+              {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+                selectedKey={batchTarget ? targetKey(batchTarget) : null} choiceKey={batchChoice} onChoose={setBatchChoice} disabled={locked || view?.reply != null || investigate !== null} />}
               <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !batchTarget}
                 onClick={() => void act({ kind: "start_batch_fix", comment_ids: marked, session_id: batchTarget!.target.session_id, destination_revision: batchTarget!.destination_revision, feature_id: batchTarget!.target.feature_id })}>Prepare batch fix…</button>
               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setMarked([])}>Clear selection</button>
@@ -408,10 +409,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
               {view!.fix_targets.length > 0 ? <>
                 <FixDestinationPicker label="Fix agent" targets={view!.fix_targets} choice={fixChoice} onChoose={setFixChoice}
                   disabled={locked || view?.reply != null || investigate !== null} />
-                <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id! }} prNumber={review.number} refreshKey={fixTargetsKey}
-                  selectedKey={fixTarget ? targetKey(fixTarget) : null} choiceKey={fixChoice} onChoose={setFixChoice} disabled={locked || view?.reply != null || investigate !== null} />
+                {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+                  selectedKey={fixTarget ? targetKey(fixTarget) : null} choiceKey={fixChoice} onChoose={setFixChoice} disabled={locked || view?.reply != null || investigate !== null} />}
                 <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !fixTarget}
-                  onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id })}>Prepare fix…</button>
+                  onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id, destination_revision: fixTarget!.destination_revision })}>Prepare fix…</button>
               </> : <p className="small muted">Add an agent session to this feature to prepare a fix draft.</p>}
             </div>}
             {selected.actionable && !selected.local_finding && <div className="pr-actions">

@@ -22,7 +22,7 @@ const reviewing: PrTriageView = {
 };
 
 it("posts findings only after confirmation and prepares a selected or batch fix in the agent composer", async () => {
-  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: { ...target, session_id: "session-1" }, label: "Claude 1", harness: "claude", stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "target-rev" }] };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: { ...target, session_id: "session-1" }, label: "Claude 1", harness: "claude", stopped: false, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "target-rev" }] };
   const finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "Handle the empty input", diff_hunk: "@@ -1 +1 @@", skipped: false, published: false };
   const onHandoff = vi.fn();
   vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
@@ -138,7 +138,7 @@ it("does not overlap slow PR thread snapshots", async () => {
 
 it("blocks duplicate fix preparation and ignores a reply after leaving the workspace", async () => {
   const session = { ...target, session_id: "session-1" };
-  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: session, label: "Claude 1", harness: "claude", stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "destination-v1" }] };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: session, label: "Claude 1", harness: "claude", stopped: false, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "destination-v1" }] };
   const finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "A finding", diff_hunk: null, skipped: false, published: false };
   let resolveFix!: (value: unknown) => void;
   const onHandoff = vi.fn();
@@ -167,8 +167,8 @@ it("blocks duplicate fix preparation and ignores a reply after leaving the works
 });
 
 it("retains an unavailable agent choice after refresh instead of silently selecting another", async () => {
-  const first = { target: { ...target, session_id: "first" }, label: "First", harness: "claude" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "first-v1" };
-  const second = { target: { ...target, session_id: "second" }, label: "Second", harness: "codex" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "second-v1" };
+  const first = { target: { ...target, session_id: "first" }, label: "First", harness: "claude" as const, stopped: false, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "first-v1" };
+  const second = { target: { ...target, session_id: "second" }, label: "Second", harness: "codex" as const, stopped: false, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "second-v1" };
   const fixes: PrTriageView = { ...reviewing, fix_targets: [first, second] };
   const finding = { path: null, line: null, side: null, body: "Finding", diff_hunk: null, skipped: false, published: false };
   let targets = [first, second];
@@ -288,4 +288,62 @@ it("authors review comments in the Files tab and leaves them saved when switchin
   fireEvent.click(screen.getByRole("button", { name: "Threads" }));
   await waitFor(() => expect(calls.filter((c) => c === "pr_workspace_switch_threads").length).toBe(before + 1));
   await waitFor(() => expect(screen.queryByRole("region", { name: "PR Files review" })).toBeNull());
+});
+
+it("preselects an existing companion session once, honours a cleared choice across refreshes and hides stopped rows", async () => {
+  const base = { harness: "claude" as const, stopped: false, unavailable: null, feature_name: "Feature" };
+  const opened = { ...base, target: { ...target, session_id: "opened" }, label: "Opened", destination_kind: "opened_feature" as const, destination_revision: "o-v1" };
+  const companion = { ...base, target: { ...target, feature_id: "triage", session_id: "triage" }, label: "Triage agent", destination_kind: "companion" as const, destination_revision: "t-v1", feature_name: "triage" };
+  const idle = { ...opened, target: { ...target, session_id: "idle" }, label: "Idle agent", stopped: true };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [opened, companion, idle] };
+  const finding = { path: null, line: null, side: null, body: "Finding", diff_hunk: null, skipped: false, published: false };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot" || command === "pr_triage_act") return fixes;
+    if (command === "pr_workspace_fix_targets") return fixes.fix_targets;
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_close") return undefined;
+    if (command === "pr_workspace_ai_snapshot") return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", result_revision: "result", running: false, stage: null, activity: null, elapsed_seconds: 0, token_estimate: null, findings: [finding], summary: "S", error: null, precall: null, can_start: true };
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} onHandoff={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "AI Review" }));
+  const aiPanel = await screen.findByRole("region", { name: "AI PR review" });
+  const select = within(aiPanel).getByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement;
+  await waitFor(() => expect(select.value).toBe("triage"));
+  expect(within(aiPanel).queryByRole("option", { name: /Idle agent/ })).toBeNull();
+  fireEvent.change(select, { target: { value: "" } });
+  expect(select.value).toBe("");
+  fireEvent.click(within(aiPanel).getByRole("button", { name: "Refresh agents" }));
+  await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === "pr_workspace_fix_targets").length).toBeGreaterThan(1));
+  expect(select.value).toBe("");
+});
+
+it("hooks the destination picker up to the AI review with the PR head and disables rows it cannot resolve", async () => {
+  const base = { harness: "claude" as const, stopped: false, unavailable: null, feature_name: "Feature" };
+  const opened = { ...base, target: { ...target, session_id: "opened" }, label: "Opened", destination_kind: "opened_feature" as const, destination_revision: "o-v1" };
+  const ghost = { ...opened, target: { ...target, session_id: "ghost" }, label: "Ghost" };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [opened] };
+  const finding = { path: null, line: null, side: null, body: "Finding", diff_hunk: null, skipped: false, published: false };
+  const feature = { kind: "opened_feature" as const, target, name: "Feature", branch: "feature", workdir: "/w", running: true, blocked: null, sessions: [opened, ghost], companion: null };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot" || command === "pr_triage_act") return fixes;
+    if (command === "pr_workspace_fix_targets") return fixes.fix_targets;
+    if (command === "pr_destination_catalog") return { pr_number: 42, opened: feature, companions: [] };
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_close") return undefined;
+    if (command === "pr_workspace_ai_snapshot") return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", result_revision: "result", running: false, stage: null, activity: null, elapsed_seconds: 0, token_estimate: null, findings: [finding], summary: null, error: null, precall: null, can_cancel: false };
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} onHandoff={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "AI Review" }));
+  const aiPanel = await screen.findByRole("region", { name: "AI PR review" });
+  const region = await within(aiPanel).findByRole("region", { name: "Fix destinations" });
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_destination_catalog", { request: { target, pr_number: 42, head_sha: "abcdef012345" } });
+  const uses = within(region).getAllByRole("button", { name: /Use|Selected/ }) as HTMLButtonElement[];
+  expect(uses.map((b) => b.disabled)).toEqual([false, true]);
+  expect(within(region).getByText(/Refreshing the agent list/)).toBeTruthy();
 });

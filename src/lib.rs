@@ -15,6 +15,7 @@ pub mod automation;
 pub mod cli;
 pub mod gui_attention;
 pub mod gui_bookmarks;
+pub mod gui_companion_creation;
 pub mod gui_companion_integration;
 pub mod gui_contract;
 pub mod gui_debug_log;

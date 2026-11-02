@@ -83,6 +83,18 @@ pub(crate) enum FetchPolicy {
     IfMissing,
 }
 
+/// Where a companion branches from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BaseSeed {
+    /// The TUI's rule: the local PR branch when it already contains the PR head
+    /// (so unpushed commits are kept), else the head SHA.
+    LocalBranchPreferred,
+    /// Always the PR head commit itself. The GUI hands a fix over only to a
+    /// companion whose recorded base *is* the PR head, so a base that is a
+    /// local branch tip ahead of the head would be unusable.
+    PrHead,
+}
+
 /// A companion for the same `(PR, source feature)` that already exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExistingTriageCompanion {
@@ -413,6 +425,31 @@ impl App {
         require_hook_choice: bool,
         fetch: FetchPolicy,
     ) -> Result<TriageCompanionPlan> {
+        self.plan_triage_companion_seeded(
+            source_feature_id,
+            facts,
+            spec,
+            hook,
+            hook_choice,
+            require_hook_choice,
+            fetch,
+            BaseSeed::LocalBranchPreferred,
+        )
+    }
+
+    /// [`Self::plan_triage_companion`] with an explicit [`BaseSeed`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_triage_companion_seeded(
+        &self,
+        source_feature_id: &str,
+        facts: &TriagePrFacts,
+        spec: &TriageCompanionSpec,
+        hook: Option<&HookConfig>,
+        hook_choice: Option<&str>,
+        require_hook_choice: bool,
+        fetch: FetchPolicy,
+        seed: BaseSeed,
+    ) -> Result<TriageCompanionPlan> {
         let branch = spec.branch.trim().to_string();
         if branch.is_empty() {
             anyhow::bail!("Branch name cannot be empty");
@@ -469,8 +506,15 @@ impl App {
         // Seed from the PR head. `triage_base_with` prefers the local branch
         // when it already contains the PR head (so unpushed work isn't dropped)
         // and falls back to the head SHA itself.
-        let base = triage_base_with(&source_workdir, &pr_branch, &facts.head_sha, fetch)
-            .ok_or_else(|| anyhow::anyhow!("could not resolve a base commit for the PR head"))?;
+        let base = match seed {
+            BaseSeed::LocalBranchPreferred => {
+                triage_base_with(&source_workdir, &pr_branch, &facts.head_sha, fetch)
+            }
+            BaseSeed::PrHead => {
+                Some(facts.head_sha.trim().to_string()).filter(|head| !head.is_empty())
+            }
+        }
+        .ok_or_else(|| anyhow::anyhow!("could not resolve a base commit for the PR head"))?;
         let base_sha = rev_parse(&source_workdir, &base).unwrap_or_else(|| base.clone());
 
         let existing_companion = project.features.iter().find_map(|f| {
@@ -666,7 +710,7 @@ impl App {
     /// A companion branch name not already taken by a feature or a git branch.
     /// `<pr-branch>-triage`, then `-triage-2`, `-triage-3`, … so re-triaging a
     /// PR after deleting the first companion doesn't collide.
-    fn unique_triage_branch(&self, workdir: &Path, source_branch: &str) -> String {
+    pub(crate) fn unique_triage_branch(&self, workdir: &Path, source_branch: &str) -> String {
         let base = format!("{source_branch}{TRIAGE_BRANCH_SUFFIX}");
         let taken = |candidate: &str| -> bool {
             let normalized = normalized_feature_name(candidate);
@@ -970,7 +1014,7 @@ pub(crate) fn branch_exists(workdir: &Path, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn commit_exists(workdir: &Path, rev: &str) -> bool {
+pub(crate) fn commit_exists(workdir: &Path, rev: &str) -> bool {
     Command::new("git")
         .args(["cat-file", "-e", &format!("{rev}^{{commit}}")])
         .current_dir(workdir)

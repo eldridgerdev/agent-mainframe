@@ -26,7 +26,7 @@ export function rowDisabledReason(feature: DestinationFeature, session: PrFixTar
 /** Pure rows view over a loaded catalog (sessions in this feature and existing
  * companions with their sessions). Choosing a row only reports its key; the
  * caller still needs an explicit action to prepare or send anything. */
-export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onIntegrate, disabled, selectableKeys }: {
+export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onIntegrate, onNewCompanion, disabled, selectableKeys }: {
   catalog: DestinationCatalog;
   /** The resolved selection (may be a preselected existing companion session). */
   selectedKey: string | null;
@@ -34,6 +34,8 @@ export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onI
   choiceKey: string | null;
   onChoose: (key: string) => void;
   onIntegrate: (companion: DestinationFeature) => void;
+  /** Opens the (separate) creation form for a new triage feature. */
+  onNewCompanion?: () => void;
   disabled?: boolean;
   /** Session ids the parent can currently resolve (its own fix-target list). A
    * catalog row outside it is disabled instead of silently doing nothing. */
@@ -81,6 +83,10 @@ export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onI
           </div>
         ))}
       </details>
+      {onNewCompanion && <p className="destination-new small">
+        <button type="button" className="btn btn-ghost btn-sm" disabled={disabled} onClick={onNewCompanion}>New triage feature…</button>
+        <span className="muted"> A separate worktree and branch seeded from this PR head; created stopped.</span>
+      </p>}
       {catalog.companions.map((feature) => {
         const why = feature.blocked ?? (feature.companion?.commits_ahead == null ? "Commits ahead could not be established" : null);
         return (
@@ -99,7 +105,7 @@ export function DestinationRows({ catalog, selectedKey, choiceKey, onChoose, onI
 
 /** Loads the catalog for one opened feature + PR and renders it. It only reads:
  * a failed load shows why and lists nothing, so no row is ever invented. */
-export default function DestinationPicker({ target, prNumber, headSha, refreshKey, selectedKey, choiceKey, onChoose, disabled, selectableKeys }: {
+export default function DestinationPicker({ target, prNumber, headSha, refreshKey, selectedKey, choiceKey, onChoose, onNewCompanion, disabled, selectableKeys }: {
   target: FeatureTarget;
   prNumber: number | null | undefined;
   /** The PR head being shown; companions are only valid for exactly this commit. */
@@ -109,6 +115,8 @@ export default function DestinationPicker({ target, prNumber, headSha, refreshKe
   selectedKey: string | null;
   choiceKey: string | null;
   onChoose: (key: string) => void;
+  /** When set, the picker offers "New triage feature…" and calls this. */
+  onNewCompanion?: () => void;
   disabled?: boolean;
   selectableKeys?: ReadonlySet<string>;
 }) {
@@ -128,7 +136,7 @@ export default function DestinationPicker({ target, prNumber, headSha, refreshKe
   return (
     <>
       {error && <p className="muted small">Destinations unavailable: {error}</p>}
-      {catalog && <DestinationRows catalog={catalog} selectedKey={selectedKey} choiceKey={choiceKey} onChoose={onChoose} onIntegrate={setIntegrate} disabled={disabled} selectableKeys={selectableKeys} />}
+      {catalog && <DestinationRows catalog={catalog} selectedKey={selectedKey} choiceKey={choiceKey} onChoose={onChoose} onIntegrate={setIntegrate} onNewCompanion={onNewCompanion} disabled={disabled} selectableKeys={selectableKeys} />}
       {integrate && <CompanionIntegrationDialog target={integrate.target} prNumber={catalog?.pr_number ?? prNumber}
         onClose={() => { setIntegrate(null); setReload((n) => n + 1); }} />}
     </>

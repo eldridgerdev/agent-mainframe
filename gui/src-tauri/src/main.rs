@@ -125,6 +125,24 @@ fn bookmarks_resolve(
 }
 
 #[tauri::command]
+fn needs_attention_load(
+    state: State<AppState>,
+) -> Result<agent_mainframe::gui_attention::NeedsAttentionView, GuiError> {
+    agent_mainframe::gui_attention::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+#[tauri::command]
+fn needs_attention_dismiss(
+    state: State<AppState>,
+    id: String,
+    modified_ms: Option<i64>,
+) -> Result<agent_mainframe::gui_attention::NeedsAttentionView, GuiError> {
+    agent_mainframe::gui_attention::dismiss(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &id,
+        modified_ms,
+    )
+}
+#[tauri::command]
 fn feature_actions_load(
     state: State<AppState>,
     target: FeatureTarget,
@@ -2551,6 +2569,8 @@ fn main() {
             bookmarks_add,
             bookmarks_remove,
             bookmarks_resolve,
+            needs_attention_load,
+            needs_attention_dismiss,
             feature_actions_load,
             feature_rename,
             session_rename,

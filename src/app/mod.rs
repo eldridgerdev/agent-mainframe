@@ -112,8 +112,8 @@ use crate::worktree::WorktreeManager;
 
 pub use self::prompt_library::PromptExportTarget;
 pub use self::setup::load_config;
-pub use automation::FeatureCreateOptions;
 pub(crate) use self::sync::SummaryGenerator;
+pub use automation::FeatureCreateOptions;
 pub(crate) use automation::WorktreeHookChoiceError;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;

@@ -288,6 +288,7 @@ struct PendingFixDraft {
     tmux_session: String,
     tmux_window: String,
     session_kind: crate::project::SessionKind,
+    destination_kind: crate::gui_pr_workspace::DestinationKind,
     submission: Option<ReplyDraftRequest>,
 }
 
@@ -305,7 +306,8 @@ pub struct PrBatchFixView {
     pub comment_ids: Vec<u64>,
     pub target: SessionTarget,
     pub destination_revision: String,
-    /// Binds the comment set, PR head, destination session and its revision.
+    pub destination_kind: crate::gui_pr_workspace::DestinationKind,
+    /// Binds the comment set, PR head, destination kind, session and its revision.
     pub digest: String,
     pub prompt: String,
     pub submission_prompt: Option<String>,
@@ -319,7 +321,13 @@ pub struct PrFixTargetView {
     pub label: String,
     pub harness: AgentKind,
     pub stopped: bool,
+    /// Why this row cannot be chosen, when more specific than `stopped`
+    /// (it is listed disabled rather than silently dropped).
+    pub unavailable: Option<String>,
     pub destination_revision: String,
+    /// Whether this row is in the opened feature or in a companion of the PR.
+    pub destination_kind: crate::gui_pr_workspace::DestinationKind,
+    pub feature_name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -501,12 +509,19 @@ pub enum PrTriageAction {
     StartFixDraft {
         comment_id: u64,
         session_id: String,
+        /// Feature holding the session; absent means the opened feature.
+        #[serde(default)]
+        feature_id: Option<String>,
+        /// The session's revision as listed in `fix_targets`.
+        destination_revision: String,
     },
     CancelFixDraft,
     StartBatchFix {
         comment_ids: Vec<u64>,
         session_id: String,
         destination_revision: String,
+        #[serde(default)]
+        feature_id: Option<String>,
     },
     PrepareBatchSubmission {
         prompt: String,
@@ -1007,35 +1022,24 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
         || (project.name.clone(), String::new()),
         |f| (f.name.clone(), f.branch.clone()),
     );
-    let checkout = feature.map(|f| crate::gui_pr_workspace::checkout_identity(&f.workdir));
+    let pr_head = match &app.mode {
+        AppMode::PrReview(state) => {
+            Some((state.review.pr.number, state.review.pr.head_sha.clone()))
+        }
+        _ => None,
+    };
     let fix_targets = feature
-        .into_iter()
-        .flat_map(|feature| feature.sessions.iter().map(move |s| (feature, s)))
-        .filter_map(|(feature, s)| {
-            let harness = match s.kind {
-                crate::project::SessionKind::Claude => AgentKind::Claude,
-                crate::project::SessionKind::Codex => AgentKind::Codex,
-                crate::project::SessionKind::Opencode => AgentKind::Opencode,
-                crate::project::SessionKind::Pi => AgentKind::Pi,
-                _ => return None,
-            };
-            Some(PrFixTargetView {
-                target: SessionTarget {
-                    project_id: target.project_id.clone(),
-                    feature_id: feature.id.clone(),
-                    session_id: s.id.clone(),
-                },
-                label: s.label.clone(),
-                harness,
-                stopped: s.stopped || feature.status == crate::project::ProjectStatus::Stopped,
-                destination_revision: crate::gui_pr_workspace::destination_revision_with(
-                    feature,
-                    s,
-                    checkout.as_ref().unwrap_or(&None),
-                ),
-            })
+        .zip(pr_head)
+        .map(|(opened, (number, head))| {
+            crate::gui_pr_workspace::fix_target_rows(
+                app,
+                &target.project_id,
+                &opened.id,
+                number,
+                &head,
+            )
         })
-        .collect();
+        .unwrap_or_default();
     let preferred = project.preferred_agent.clone();
     let harnesses = harnesses(app, &workdir);
     let default_harness = harnesses
@@ -1152,8 +1156,18 @@ fn view(gui: &mut GuiHandle) -> GuiResult<PrTriageView> {
     })
 }
 
-fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> GuiResult<()> {
-    let target = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+fn start_fix_draft(
+    gui: &mut GuiHandle,
+    comment_id: u64,
+    session_id: String,
+    feature_id: Option<String>,
+    destination_revision: String,
+) -> GuiResult<()> {
+    let opened = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+    let target = FeatureTarget {
+        project_id: opened.project_id.clone(),
+        feature_id: feature_id.unwrap_or_else(|| opened.feature_id.clone()),
+    };
     let app = gui.app_for_workflow();
     let comment = select(app, comment_id)?;
     let state = review_mut(app)?;
@@ -1169,6 +1183,15 @@ fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> 
     }
     let prompt = state.fix_draft_prompt(&comment);
     let head_sha = state.review.pr.head_sha.clone();
+    let number = state.review.pr.number;
+    let destination_kind = crate::gui_pr_workspace::destination_feature_kind(
+        app,
+        &opened.project_id,
+        &opened.feature_id,
+        number,
+        &head_sha,
+        &target.feature_id,
+    )?;
     let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -1178,7 +1201,14 @@ fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> 
         .sessions
         .iter()
         .find(|s| s.id == session_id && s.kind.is_agent_harness())
-        .ok_or_else(|| GuiError::not_found("Choose an existing agent session in this feature"))?;
+        .ok_or_else(|| {
+            GuiError::not_found("Choose an existing agent session in this feature or its companion")
+        })?;
+    if crate::gui_pr_workspace::destination_revision(feature, session) != destination_revision {
+        return Err(GuiError::conflict(
+            "The agent session changed; choose it again",
+        ));
+    }
     let pending = PendingFixDraft {
         view: PrFixDraftView {
             comment_id,
@@ -1195,6 +1225,7 @@ fn start_fix_draft(gui: &mut GuiHandle, comment_id: u64, session_id: String) -> 
         tmux_session: feature.tmux_session.clone(),
         tmux_window: session.tmux_window.clone(),
         session_kind: session.kind.clone(),
+        destination_kind,
         submission: None,
     };
     gui.pr_triage_context.as_mut().unwrap().fix = Some(pending);
@@ -1215,13 +1246,15 @@ fn validate_fix_target(
         .as_ref()
         .ok_or_else(|| GuiError::conflict("No fix draft is open"))?;
     let workdir = context.workdir.clone();
+    let opened = context.target.feature()?;
     let target = pending.view.target.clone();
-    let (head, comment, tmux_session, tmux_window, session_kind) = (
+    let (head, comment, tmux_session, tmux_window, session_kind, destination_kind) = (
         pending.head_sha.clone(),
         pending.comment.clone(),
         pending.tmux_session.clone(),
         pending.tmux_window.clone(),
         pending.session_kind.clone(),
+        pending.destination_kind,
     );
     let app = gui.app_for_workflow();
     let state = review_mut(app)?;
@@ -1238,12 +1271,26 @@ fn validate_fix_target(
             "The comment changed; cancel and prepare the fix again",
         ));
     }
+    let number = state.review.pr.number;
     let current = reads
         .fetch_pr_by_number(&workdir, state.review.pr.number)
         .map_err(GuiError::from)?;
     if current.head_sha != head {
         return Err(GuiError::conflict(
             "The PR has new commits; cancel the fix draft and refresh",
+        ));
+    }
+    if crate::gui_pr_workspace::destination_feature_kind(
+        app,
+        &opened.project_id,
+        &opened.feature_id,
+        number,
+        &head,
+        &target.feature_id,
+    )? != destination_kind
+    {
+        return Err(GuiError::conflict(
+            "The destination changed kind; cancel and choose a target again",
         ));
     }
     let (pi, fi) = app
@@ -1433,11 +1480,19 @@ fn batch_digest(
     head_sha: &str,
     comments: &[&PrComment],
     target: &SessionTarget,
+    destination_kind: crate::gui_pr_workspace::DestinationKind,
     destination_revision: &str,
 ) -> String {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(&(number, head_sha, comments, target, destination_revision))
-        .expect("serializable batch");
+    let bytes = serde_json::to_vec(&(
+        number,
+        head_sha,
+        comments,
+        target,
+        destination_kind,
+        destination_revision,
+    ))
+    .expect("serializable batch");
     format!("{:x}", Sha256::digest(bytes))
 }
 
@@ -1484,8 +1539,13 @@ fn start_batch_fix(
     comment_ids: Vec<u64>,
     session_id: String,
     destination_revision: String,
+    feature_id: Option<String>,
 ) -> GuiResult<()> {
-    let target = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+    let opened = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+    let target = FeatureTarget {
+        project_id: opened.project_id.clone(),
+        feature_id: feature_id.unwrap_or_else(|| opened.feature_id.clone()),
+    };
     let app = gui.app_for_workflow();
     let state = review_mut(app)?;
     if state.reply.is_some() {
@@ -1526,6 +1586,14 @@ fn start_batch_fix(
         });
     let head_sha = state.review.pr.head_sha.clone();
     let number = state.review.pr.number;
+    let destination_kind = crate::gui_pr_workspace::destination_feature_kind(
+        app,
+        &opened.project_id,
+        &opened.feature_id,
+        number,
+        &head_sha,
+        &target.feature_id,
+    )?;
     let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&target.project_id), &target.feature_id)
@@ -1537,7 +1605,9 @@ fn start_batch_fix(
         .sessions
         .iter()
         .find(|s| s.id == session_id && s.kind.is_agent_harness())
-        .ok_or_else(|| GuiError::not_found("Choose an existing agent session in this feature"))?;
+        .ok_or_else(|| {
+            GuiError::not_found("Choose an existing agent session in this feature or its companion")
+        })?;
     if crate::gui_pr_workspace::destination_revision(feature, session) != destination_revision {
         return Err(GuiError::conflict(
             "The agent session changed; choose it again",
@@ -1550,12 +1620,20 @@ fn start_batch_fix(
     };
     let state = review_state(&app.mode).unwrap();
     let selected = batch_comments(state, &ordered)?;
-    let digest = batch_digest(number, &head_sha, &selected, &target, &destination_revision);
+    let digest = batch_digest(
+        number,
+        &head_sha,
+        &selected,
+        &target,
+        destination_kind,
+        &destination_revision,
+    );
     gui.pr_triage_context.as_mut().unwrap().batch = Some(PendingBatchFix {
         view: PrBatchFixView {
             comment_ids: ordered,
             target,
             destination_revision,
+            destination_kind,
             digest,
             prompt,
             submission_prompt: None,
@@ -1583,7 +1661,22 @@ fn check_batch_local(gui: &mut GuiHandle, digest: &str) -> GuiResult<(SessionTar
         ));
     }
     let (view, head) = (pending.view.clone(), pending.head_sha.clone());
+    let opened = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
     let app = gui.app_for_workflow();
+    let number = review_mut(app)?.review.pr.number;
+    let live_kind = crate::gui_pr_workspace::destination_feature_kind(
+        app,
+        &opened.project_id,
+        &opened.feature_id,
+        number,
+        &head,
+        &view.target.feature_id,
+    )?;
+    if live_kind != view.destination_kind {
+        return Err(GuiError::conflict(
+            "The destination changed kind; cancel and choose a target again",
+        ));
+    }
     let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&view.target.project_id), &view.target.feature_id)
@@ -1609,8 +1702,7 @@ fn check_batch_local(gui: &mut GuiHandle, digest: &str) -> GuiResult<(SessionTar
         ));
     }
     let selected = batch_comments(state, &view.comment_ids)?;
-    let number = state.review.pr.number;
-    if batch_digest(number, &head, &selected, &view.target, &revision) != view.digest {
+    if batch_digest(number, &head, &selected, &view.target, live_kind, &revision) != view.digest {
         return Err(GuiError::conflict(
             "The selected comments changed; cancel and prepare the batch again",
         ));
@@ -2134,7 +2226,15 @@ fn apply(
         A::StartFixDraft {
             comment_id,
             session_id,
-        } => start_fix_draft(gui, comment_id, session_id),
+            feature_id,
+            destination_revision,
+        } => start_fix_draft(
+            gui,
+            comment_id,
+            session_id,
+            feature_id,
+            destination_revision,
+        ),
         A::CancelFixDraft => {
             gui.pr_triage_context
                 .as_mut()
@@ -2148,7 +2248,14 @@ fn apply(
             comment_ids,
             session_id,
             destination_revision,
-        } => start_batch_fix(gui, comment_ids, session_id, destination_revision),
+            feature_id,
+        } => start_batch_fix(
+            gui,
+            comment_ids,
+            session_id,
+            destination_revision,
+            feature_id,
+        ),
         A::PrepareBatchSubmission { prompt, digest } => {
             prepare_batch_submission(gui, prompt, digest)
         }
@@ -3297,6 +3404,63 @@ mod tests {
         app.store_version = None;
     }
 
+    /// The listed revision of the fixture's "fix-agent" session.
+    fn fix_rev(gui: &mut GuiHandle) -> String {
+        let feature = &gui.app_for_workflow().store.projects[0].features[0];
+        let session = feature
+            .sessions
+            .iter()
+            .find(|s| s.id == "fix-agent")
+            .unwrap();
+        crate::gui_pr_workspace::destination_revision(feature, session)
+    }
+
+    /// Adds a feature with one Claude session. `source` is its `triage_source`
+    /// as (PR number, source feature id or "" for the opened feature).
+    /// Returns (feature id, session id).
+    fn add_companion(
+        gui: &mut GuiHandle,
+        name: &str,
+        source: Option<(u32, &str)>,
+        base_sha: &str,
+        share_tmux_with_opened: bool,
+    ) -> (String, String) {
+        let app = gui.app_for_workflow();
+        let opened = app.store.projects[0].features[0].clone();
+        let mut feature = crate::project::Feature::new(
+            name.into(),
+            format!("{name}-branch"),
+            opened.workdir.clone(),
+            true,
+            crate::project::VibeMode::default(),
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = crate::project::ProjectStatus::Idle;
+        if share_tmux_with_opened {
+            feature.tmux_session = opened.tmux_session.clone();
+        }
+        feature.triage_source = source.map(|(pr_number, source_id)| crate::project::TriageSource {
+            pr_number,
+            source_feature_id: if source_id.is_empty() {
+                opened.id.clone()
+            } else {
+                source_id.into()
+            },
+            pr_branch: "feature".into(),
+            base_sha: base_sha.into(),
+        });
+        feature.add_session(crate::project::SessionKind::Claude);
+        let ids = (feature.id.clone(), feature.sessions[0].id.clone());
+        app.store.projects[0].features.push(feature);
+        app.db.as_ref().unwrap().save_store(&app.store).unwrap();
+        app.store_version = None;
+        ids
+    }
+
     fn running_fix_agent(gui: &mut GuiHandle) {
         with_fix_session(gui);
         let app = gui.app_for_workflow();
@@ -3327,12 +3491,15 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Ok(()));
         gui.app_for_workflow().tmux = Box::new(tmux);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let preview = act(
@@ -3435,12 +3602,15 @@ mod tests {
             .times(1)
             .returning(|_, _, _| Err(anyhow::anyhow!("transport disconnected")));
         gui.app_for_workflow().tmux = Box::new(tmux);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let preview = act(
@@ -3517,12 +3687,15 @@ mod tests {
             .withf(|_, _, key| key == "Enter")
             .times(0);
         gui.app_for_workflow().tmux = Box::new(tmux);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let preview = act(
@@ -3556,12 +3729,15 @@ mod tests {
     fn fix_submission_refuses_stopped_targets_and_preserves_confirmation() {
         let (_dir, mut gui, _fake, view) = opened();
         with_fix_session(&mut gui);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let preview = act(
@@ -3597,12 +3773,15 @@ mod tests {
     fn fix_drafts_are_editable_unsent_and_handed_off_once() {
         let (_dir, mut gui, fake, view) = opened();
         with_fix_session(&mut gui);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let draft = pending.fix_draft.as_ref().unwrap();
@@ -3653,6 +3832,8 @@ mod tests {
                 PrTriageAction::StartFixDraft {
                     comment_id: 101,
                     session_id: "missing".into(),
+                    feature_id: None,
+                    destination_revision: String::new(),
                 }
             )
             .is_err()
@@ -3671,12 +3852,15 @@ mod tests {
         let running = act(&mut gui, &pending, PrTriageAction::PrecallConfirm);
         let done = settle(&mut gui, running);
         with_fix_session(&mut gui);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &done,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         let prompt = &pending.fix_draft.as_ref().unwrap().prompt;
@@ -3689,12 +3873,15 @@ mod tests {
     fn fix_drafts_refuse_new_pr_commits_and_replaced_agent_sessions() {
         let (_dir, mut gui, fake, view) = opened();
         with_fix_session(&mut gui);
+        let rev = fix_rev(&mut gui);
         let pending = act(
             &mut gui,
             &view,
             PrTriageAction::StartFixDraft {
                 comment_id: 101,
                 session_id: "fix-agent".into(),
+                feature_id: None,
+                destination_revision: rev,
             },
         );
         assert!(
@@ -4483,6 +4670,7 @@ mod tests {
                 comment_ids: ids.to_vec(),
                 session_id: target.target.session_id.clone(),
                 destination_revision: target.destination_revision.clone(),
+                feature_id: None,
             },
         )
     }
@@ -4685,6 +4873,7 @@ mod tests {
                 comment_ids: vec![101],
                 session_id: "someone-else".into(),
                 destination_revision: target.destination_revision.clone(),
+                feature_id: None,
             },
         )
         .unwrap_err();
@@ -4697,6 +4886,7 @@ mod tests {
                 comment_ids: vec![101],
                 session_id: target.target.session_id.clone(),
                 destination_revision: "stale".into(),
+                feature_id: None,
             },
         )
         .unwrap_err();
@@ -4927,5 +5117,348 @@ mod tests {
         assert!(cancelled.batch_fix.is_none());
         let error = try_act(&mut gui, &cancelled, PrTriageAction::CancelBatchFix).unwrap_err();
         assert!(error.message.contains("No batch fix is open"));
+    }
+
+    #[test]
+    fn a_batch_digest_differs_by_destination_kind() {
+        use crate::gui_pr_workspace::DestinationKind;
+        let target = SessionTarget {
+            project_id: "p".into(),
+            feature_id: "f".into(),
+            session_id: "s".into(),
+        };
+        let digest = |kind| batch_digest(7, "head", &[], &target, kind, "rev");
+        assert_eq!(
+            digest(DestinationKind::Companion),
+            digest(DestinationKind::Companion)
+        );
+        assert_ne!(
+            digest(DestinationKind::OpenedFeature),
+            digest(DestinationKind::Companion)
+        );
+    }
+
+    fn target_row(view: &PrTriageView, session_id: &str) -> PrFixTargetView {
+        view.fix_targets
+            .iter()
+            .find(|t| t.target.session_id == session_id)
+            .unwrap_or_else(|| panic!("no fix target row for {session_id}"))
+            .clone()
+    }
+
+    #[test]
+    fn view_lists_companions_and_disables_unusable_rows_with_a_reason() {
+        use crate::gui_pr_workspace::DestinationKind;
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let (_, good) = add_companion(&mut gui, "c-good", Some((7, "")), HEAD, false);
+        let (_, old) = add_companion(&mut gui, "c-old", Some((7, "")), "older", false);
+        let (_, shared) = add_companion(&mut gui, "c-shared", Some((7, "")), HEAD, true);
+        let (_, stranger) = add_companion(&mut gui, "stranger", None, HEAD, false);
+        let (_, other_pr) = add_companion(&mut gui, "other-pr", Some((8, "")), HEAD, false);
+        let (_, other_src) =
+            add_companion(&mut gui, "other-src", Some((7, "elsewhere")), HEAD, false);
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let row = target_row(&view, &good);
+        assert_eq!(row.destination_kind, DestinationKind::Companion);
+        assert!(!row.stopped && row.unavailable.is_none());
+        let row = target_row(&view, &old);
+        assert!(
+            row.stopped
+                && row
+                    .unavailable
+                    .as_deref()
+                    .unwrap()
+                    .contains("older PR head")
+        );
+        let row = target_row(&view, &shared);
+        assert!(row.stopped && row.unavailable.as_deref().unwrap().contains("tmux session"));
+        // The opened feature shares its tmux session now, so it is listed
+        // disabled with the reason instead of vanishing.
+        let opened_row = target_row(&view, "fix-agent");
+        assert!(opened_row.stopped);
+        assert!(
+            opened_row
+                .unavailable
+                .as_deref()
+                .unwrap()
+                .contains("tmux session")
+        );
+        for absent in [stranger, other_pr, other_src] {
+            assert!(
+                view.fix_targets
+                    .iter()
+                    .all(|t| t.target.session_id != absent)
+            );
+        }
+    }
+
+    #[test]
+    fn view_marks_a_session_with_a_missing_tmux_window_stopped() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        let mut tmux = crate::traits::MockTmuxOps::new();
+        tmux.expect_window_exists().returning(|_, _| false);
+        gui.app_for_workflow().tmux = Box::new(tmux);
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let row = target_row(&view, "fix-agent");
+        assert!(row.stopped && row.unavailable.is_none());
+    }
+
+    fn start_fix_for(
+        gui: &mut GuiHandle,
+        feature_id: &str,
+        session_id: &str,
+        revision: &str,
+    ) -> GuiResult<Option<PrTriageView>> {
+        let view = poll(gui, &current_workflow(gui)).unwrap();
+        try_act(
+            gui,
+            &view,
+            PrTriageAction::StartFixDraft {
+                comment_id: 101,
+                session_id: session_id.into(),
+                feature_id: Some(feature_id.into()),
+                destination_revision: revision.into(),
+            },
+        )
+    }
+
+    fn current_workflow(gui: &GuiHandle) -> String {
+        gui.pr_triage_context.as_ref().unwrap().id.clone()
+    }
+
+    fn store_revision(gui: &mut GuiHandle, feature_id: &str) -> String {
+        let feature = gui.app_for_workflow().store.projects[0]
+            .features
+            .iter()
+            .find(|f| f.id == feature_id)
+            .unwrap();
+        crate::gui_pr_workspace::destination_revision(feature, &feature.sessions[0])
+    }
+
+    fn listed_revision(gui: &mut GuiHandle, session_id: &str) -> String {
+        let view = poll(gui, &current_workflow(gui)).unwrap();
+        target_row(&view, session_id).destination_revision
+    }
+
+    #[test]
+    fn fix_draft_and_batch_accept_a_verified_companion_and_bind_its_revision() {
+        use crate::gui_pr_workspace::DestinationKind;
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let (feature_id, session_id) = add_companion(&mut gui, "c", Some((7, "")), HEAD, false);
+        let rev = listed_revision(&mut gui, &session_id);
+        // A stale revision is refused.
+        let err = start_fix_for(&mut gui, &feature_id, &session_id, "stale").unwrap_err();
+        assert!(err.message.contains("session changed"), "{}", err.message);
+        assert!(gui.pr_triage_context.as_ref().unwrap().fix.is_none());
+        let started = start_fix_for(&mut gui, &feature_id, &session_id, &rev)
+            .unwrap()
+            .unwrap();
+        let draft = started.fix_draft.unwrap();
+        assert_eq!(draft.target.feature_id, feature_id);
+        assert_eq!(
+            gui.pr_triage_context
+                .as_ref()
+                .unwrap()
+                .fix
+                .as_ref()
+                .unwrap()
+                .destination_kind,
+            DestinationKind::Companion
+        );
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let view = act(&mut gui, &view, PrTriageAction::CancelFixDraft);
+        let batch = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartBatchFix {
+                comment_ids: vec![101],
+                session_id: session_id.clone(),
+                destination_revision: rev,
+                feature_id: Some(feature_id.clone()),
+            },
+        );
+        let batch = batch.batch_fix.unwrap();
+        assert_eq!(batch.target.feature_id, feature_id);
+        assert_eq!(batch.destination_kind, DestinationKind::Companion);
+    }
+
+    #[test]
+    fn unrelated_other_pr_other_source_and_older_head_destinations_are_refused() {
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let cases = [
+            ("unrelated", None, HEAD, "Choose a session in this feature"),
+            (
+                "other-pr",
+                Some((8, "")),
+                HEAD,
+                "Choose a session in this feature",
+            ),
+            (
+                "other-src",
+                Some((7, "elsewhere")),
+                HEAD,
+                "Choose a session in this feature",
+            ),
+            ("old-head", Some((7, "")), "older", "older PR head"),
+        ];
+        for (name, source, base, expected) in cases {
+            let (feature_id, session_id) = add_companion(&mut gui, name, source, base, false);
+            let rev = store_revision(&mut gui, &feature_id);
+            let err = start_fix_for(&mut gui, &feature_id, &session_id, &rev).unwrap_err();
+            assert!(
+                err.message.contains(expected),
+                "{name} fix: {}",
+                err.message
+            );
+            let current = poll(&mut gui, &view.workflow_id).unwrap();
+            let err = try_act(
+                &mut gui,
+                &current,
+                PrTriageAction::StartBatchFix {
+                    comment_ids: vec![101],
+                    session_id: session_id.clone(),
+                    destination_revision: rev.clone(),
+                    feature_id: Some(feature_id.clone()),
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.message.contains(expected),
+                "{name} batch: {}",
+                err.message
+            );
+        }
+        let ctx = gui.pr_triage_context.as_ref().unwrap();
+        assert!(ctx.fix.is_none() && ctx.batch.is_none());
+    }
+
+    #[test]
+    fn a_companion_rebased_or_flipped_after_preview_is_refused_at_confirmation() {
+        use crate::gui_pr_workspace::DestinationKind;
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let (feature_id, session_id) = add_companion(&mut gui, "c", Some((7, "")), HEAD, false);
+        let rev = listed_revision(&mut gui, &session_id);
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let started = act(
+            &mut gui,
+            &view,
+            PrTriageAction::StartBatchFix {
+                comment_ids: vec![101],
+                session_id,
+                destination_revision: rev,
+                feature_id: Some(feature_id.clone()),
+            },
+        );
+        let batch = started.batch_fix.clone().unwrap();
+        // Kind flip: the stored preview says the destination was the opened feature.
+        gui.pr_triage_context
+            .as_mut()
+            .unwrap()
+            .batch
+            .as_mut()
+            .unwrap()
+            .view
+            .destination_kind = DestinationKind::OpenedFeature;
+        let current = poll(&mut gui, &started.workflow_id).unwrap();
+        let err = try_act(
+            &mut gui,
+            &current,
+            PrTriageAction::PrepareBatchSubmission {
+                prompt: batch.prompt.clone(),
+                digest: batch.digest.clone(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("changed kind"), "{}", err.message);
+        gui.pr_triage_context
+            .as_mut()
+            .unwrap()
+            .batch
+            .as_mut()
+            .unwrap()
+            .view
+            .destination_kind = DestinationKind::Companion;
+        // Re-based onto an older head after the preview.
+        let app = gui.app_for_workflow();
+        app.store.projects[0]
+            .features
+            .iter_mut()
+            .find(|f| f.id == feature_id)
+            .unwrap()
+            .triage_source
+            .as_mut()
+            .unwrap()
+            .base_sha = "older".into();
+        let current = poll(&mut gui, &started.workflow_id).unwrap();
+        let err = try_act(
+            &mut gui,
+            &current,
+            PrTriageAction::PrepareBatchSubmission {
+                prompt: batch.prompt,
+                digest: batch.digest,
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("older PR head"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_fix_draft_confirmation_refuses_a_kind_flip_and_an_older_companion_base() {
+        use crate::gui_pr_workspace::DestinationKind;
+        let (_dir, mut gui, _fake, view) = opened_batch();
+        gui.app_for_workflow().tmux = mock_tmux_without_delivery();
+        let (feature_id, session_id) = add_companion(&mut gui, "c", Some((7, "")), HEAD, false);
+        let rev = listed_revision(&mut gui, &session_id);
+        start_fix_for(&mut gui, &feature_id, &session_id, &rev)
+            .unwrap()
+            .unwrap();
+        gui.pr_triage_context
+            .as_mut()
+            .unwrap()
+            .fix
+            .as_mut()
+            .unwrap()
+            .destination_kind = DestinationKind::OpenedFeature;
+        let current = poll(&mut gui, &view.workflow_id).unwrap();
+        let err = try_act(
+            &mut gui,
+            &current,
+            PrTriageAction::ConfirmFixDraft {
+                prompt: "go".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("changed kind"), "{}", err.message);
+        gui.pr_triage_context
+            .as_mut()
+            .unwrap()
+            .fix
+            .as_mut()
+            .unwrap()
+            .destination_kind = DestinationKind::Companion;
+        gui.app_for_workflow().store.projects[0]
+            .features
+            .iter_mut()
+            .find(|f| f.id == feature_id)
+            .unwrap()
+            .triage_source
+            .as_mut()
+            .unwrap()
+            .base_sha = "older".into();
+        let current = poll(&mut gui, &view.workflow_id).unwrap();
+        let err = try_act(
+            &mut gui,
+            &current,
+            PrTriageAction::ConfirmFixDraft {
+                prompt: "go".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.message.contains("older PR head"), "{}", err.message);
+        assert!(gui.pr_triage_context.as_ref().unwrap().handoff.is_none());
     }
 }

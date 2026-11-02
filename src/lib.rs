@@ -13,12 +13,14 @@
 
 pub mod automation;
 pub mod cli;
+pub mod gui_attention;
 pub mod gui_bookmarks;
 pub mod gui_companion_integration;
 pub mod gui_contract;
 pub mod gui_debug_log;
 pub mod gui_diff;
 pub mod gui_dormancy;
+pub mod gui_feature_actions;
 pub mod gui_fork;
 pub mod gui_harness_change;
 pub mod gui_issues;

@@ -14,7 +14,14 @@ import {
   todoMove,
   todoReorder,
   todoSetStatus,
+  todoUpdate,
+  todoUpdateScratchpad,
+  todoWorkTarget,
+  TodoFields,
+  TodoWorkTarget,
 } from "./api";
+import { ScratchpadDialog, TodoEditDialog } from "./TodoEditDialogs";
+import { NextTodoDialog } from "./TodoNextDialogs";
 import { Field, Icon, Menu, Modal, Segmented, Spinner } from "./ui";
 
 export interface TodoDestination {
@@ -57,6 +64,8 @@ export default function TodoPanel({
   onPlan,
   onPlanNew,
   onLaunchNew,
+  onJump,
+  featureTarget,
 }: {
   scope: TodoScopeRequest;
   hostFeatureId?: string;
@@ -69,6 +78,9 @@ export default function TodoPanel({
   onPlan?: (todoId: string, target: FeatureTarget) => Promise<void>;
   onPlanNew?: (todoId: string, title: string) => void;
   onLaunchNew?: (todoId: string, title: string) => void;
+  onJump?: (target: Exclude<TodoWorkTarget, { kind: "none" }>) => void;
+  /** The feature this panel belongs to, if any: it supplies the worktree scope for "implement next". */
+  featureTarget?: FeatureTarget;
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["todos", JSON.stringify(scope)];
@@ -76,6 +88,9 @@ export default function TodoPanel({
   const [launchingTodoId, setLaunchingTodoId] = useState<string | null>(null);
   const [startDialog, setStartDialog] = useState<Todo | null>(null);
   const [transferDialog, setTransferDialog] = useState<Todo | null>(null);
+  const [editTodo, setEditTodo] = useState<Todo | null>(null);
+  const [editingPad, setEditingPad] = useState<{ listId: string | null } | null>(null);
+  const [nextOpen, setNextOpen] = useState(false);
 
   const view = useQuery({
     queryKey,
@@ -129,6 +144,54 @@ export default function TodoPanel({
     onError: (err) => onError(asGuiError(err)),
   });
 
+  async function saveEdit(todo: Todo, base: TodoFields, fields: TodoFields) {
+    try {
+      const result = await todoUpdate(todo, base, fields);
+      if (result.outcome === "gone") {
+        onError({ kind: "not_found", message: "That TODO was deleted elsewhere." });
+      }
+      invalidate();
+      return result;
+    } catch (err) {
+      onError(asGuiError(err));
+      throw err;
+    }
+  }
+
+  async function savePad(listId: string | null, base: string | null, text: string | null) {
+    try {
+      const result = await todoUpdateScratchpad({
+        scope,
+        hostFeatureId,
+        listId,
+        base,
+        text,
+      });
+      if (result.outcome === "gone") {
+        onError({ kind: "not_found", message: "This TODO list was deleted elsewhere." });
+      }
+      invalidate();
+      return result;
+    } catch (err) {
+      onError(asGuiError(err));
+      throw err;
+    }
+  }
+
+  async function jump(todo: Todo) {
+    try {
+      const found = await todoWorkTarget(todo.id);
+      if (found.kind === "none") {
+        onError({ kind: "not_found", message: found.message });
+      } else {
+        onJump?.(found);
+      }
+      invalidate();
+    } catch (err) {
+      onError(asGuiError(err));
+    }
+  }
+
   const todos: Todo[] = view.data?.todos ?? [];
   const otherScopes = destinations.filter(
     (destination) => JSON.stringify(destination.scope) !== JSON.stringify(scope),
@@ -158,9 +221,16 @@ export default function TodoPanel({
           <h3>{title}</h3>
           {description && <p className="panel-description">{description}</p>}
         </div>
-        {todos.length > 0 && (
-          <span className="count-pill">{openCount} open</span>
-        )}
+        <div className="todo-header-actions">
+          {canStart && (
+            <button className="btn btn-sm btn-secondary" onClick={() => setNextOpen(true)}>
+              <Icon name="zap" size={12} /> Implement next
+            </button>
+          )}
+          {todos.length > 0 && (
+            <span className="count-pill">{openCount} open</span>
+          )}
+        </div>
       </header>
 
       <form
@@ -184,6 +254,16 @@ export default function TodoPanel({
         )}
       </form>
 
+      <div className="todo-scratchpad">
+        <div className="todo-scratchpad-head">
+          <span className="field-label">Scratchpad</span>
+          <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad({ listId: view.data?.list.id ?? null })}>
+            {view.data?.list.carry_over ? "Edit" : "Add note"}
+          </button>
+        </div>
+        {view.data?.list.carry_over && <p className="todo-body">{view.data.list.carry_over}</p>}
+      </div>
+
       {view.isLoading && <p className="muted small pad">Loading…</p>}
       {view.error && <p role="alert" className="error-text pad">{String(view.error)}</p>}
       {!view.isLoading && todos.length === 0 && (
@@ -195,7 +275,9 @@ export default function TodoPanel({
           {todos.map((todo, index) => {
             const status = todo.work.status;
             const launching = launchingTodoId === todo.id;
+            const hasWork = Boolean(todo.work.agent_session_id || todo.linked_feature_id);
             const menuItems = [
+              { label: "Edit…", icon: "list" as const, onSelect: () => setEditTodo(todo) },
               { label: "Move up", icon: "arrowUp" as const, disabled: index === 0 || reorderMutation.isPending, onSelect: () => reorder(index, -1) },
               { label: "Move down", icon: "arrowDown" as const, disabled: index === todos.length - 1 || reorderMutation.isPending, onSelect: () => reorder(index, 1) },
               ...(otherScopes.length > 0
@@ -223,8 +305,19 @@ export default function TodoPanel({
                       {todo.priority === "high" && <span className="tag tag-red">High</span>}
                     </span>
                   )}
+                  {todo.priority === "low" && <span className="todo-meta"><span className="tag">Low</span></span>}
+                  {todo.body && <p className="todo-body">{todo.body}</p>}
                 </div>
                 <div className="todo-actions">
+                  {hasWork && onJump && (
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      aria-label={`Go to the work for ${todo.title}`}
+                      onClick={() => void jump(todo)}
+                    >
+                      <Icon name="terminal" size={12} /> Go to work
+                    </button>
+                  )}
                   {canStart && status === "not_started" && (
                     <button
                       className="btn btn-sm btn-secondary"
@@ -265,6 +358,37 @@ export default function TodoPanel({
             if (how === "plan" && onPlan) runLaunch(todo.id, () => onPlan(todo.id, target.target));
             else if (onLaunch) runLaunch(todo.id, () => onLaunch(todo.id, target.target));
           }}
+        />
+      )}
+
+      {nextOpen && (
+        <NextTodoDialog
+          base={{
+            project_id: featureTarget?.project_id ?? (scope.kind === "project" ? scope.project_id : null),
+            feature_id: featureTarget?.feature_id ?? null,
+          }}
+          canStart={canStart}
+          canJump={Boolean(onJump)}
+          onClose={() => setNextOpen(false)}
+          onStart={(candidate) => { setNextOpen(false); setStartDialog(candidate.todo); }}
+          onJump={(candidate) => { setNextOpen(false); void jump(candidate.todo); }}
+        />
+      )}
+
+      {editTodo && (
+        <TodoEditDialog
+          todo={editTodo}
+          onSave={(base, fields) => saveEdit(editTodo, base, fields)}
+          onCancel={() => setEditTodo(null)}
+        />
+      )}
+
+      {editingPad && (
+        <ScratchpadDialog
+          title={title}
+          base={view.data?.list.carry_over ?? null}
+          onSave={(base, text) => savePad(editingPad.listId, base, text)}
+          onCancel={() => setEditingPad(null)}
         />
       )}
 

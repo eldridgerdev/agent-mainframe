@@ -1500,3 +1500,21 @@ it("forks from the feature menu with the open agent session and the stable featu
   });
   client.clear();
 });
+
+it("opens the rename, ready and summary panel from the feature and session menus with stable ids", async () => {
+  const client = await openFeature([session("Shell"), session("Agent", "claude")], [], "idle", true);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, args, options) =>
+    command === "feature_actions_load"
+      ? Promise.resolve({ name: "Feature", nickname: null, ready: false, summary: null, summary_generating: false,
+        sessions: [{ id: "Shell", label: "Shell" }, { id: "Agent", label: "Agent" }], summary_outcome: null })
+      : original(command, args, options));
+  fireEvent.click(screen.getByRole("button", { name: "More feature actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Rename, ready and summary…" }));
+  expect(await screen.findByRole("dialog", { name: "Feature actions" })).toBeTruthy();
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("feature_actions_load",
+    { target: { project_id: "project", feature_id: "feature" } });
+  // Opening the panel never runs the headless summary.
+  expect(vi.mocked(invoke).mock.calls.some(([command]) => command.startsWith("feature_summary"))).toBe(false);
+  client.clear();
+});

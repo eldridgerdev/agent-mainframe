@@ -88,6 +88,8 @@ import { useCreationHarness } from "./useCreationHarness";
 import CreationHarnessField from "./CreationHarnessField";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
+import NeedsAttentionPanel, { NEEDS_ATTENTION_KEY, loadNeedsAttention } from "./NeedsAttentionPanel";
+import FeatureActionsPanel from "./FeatureActionsPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import SyntaxLanguagesPanel from "./SyntaxLanguagesPanel";
@@ -100,6 +102,7 @@ import CompanionIntegrationDialog from "./CompanionIntegrationDialog";
 import type { PrTriageTarget } from "./prTriageApi";
 import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import { QuickTodoDialog } from "./TodoNextDialogs";
 import TodoNewFeatureForm from "./TodoNewFeatureForm";
 export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
@@ -161,6 +164,7 @@ const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Out of date",
   needs_approval: "Approval needed",
+  invalid_input: "Check your input",
   internal: "Something went wrong",
 };
 
@@ -254,6 +258,10 @@ export default function App() {
   const [projectPreference, setProjectPreference] = useState<string | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [showAttention, setShowAttention] = useState(false);
+  const attention = useQuery({ queryKey: NEEDS_ATTENTION_KEY, queryFn: loadNeedsAttention, retry: false, refetchInterval: showAttention ? 3000 : 15000 });
+  const attentionCount = attention.data?.rows?.length ?? 0;
+  const [featureActions, setFeatureActions] = useState<{ target: FeatureTarget; sessionId: string | null } | null>(null);
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
   const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
@@ -360,6 +368,7 @@ export default function App() {
     target: FeatureTarget;
     message: string;
   } | null>(null);
+  const [quickTodoTarget, setQuickTodoTarget] = useState<FeatureTarget | null>(null);
   const [pendingTodoLaunch, setPendingTodoLaunch] = useState<{
     todoId: string;
     target: FeatureTarget;
@@ -580,7 +589,7 @@ export default function App() {
     }
   }
 
-  async function openBookmarkedSession(target: SessionTarget) {
+  async function openBookmarkedSession(target: SessionTarget, what = "Bookmarked session") {
     // The bookmark resolver can see TUI writes before our workspace poll.
     // Cancel an older poll, then publish a fresh authoritative snapshot before
     // navigating or choosing the synthetic TODOs tab.
@@ -590,7 +599,7 @@ export default function App() {
     });
     const session = fresh.projects.find(project => project.id === target.project_id)?.features
       .find(feature => feature.id === target.feature_id)?.sessions.find(session => session.id === target.session_id);
-    if (!session) throw new Error("Bookmarked session no longer exists. Refresh bookmarks and try again.");
+    if (!session) throw new Error(`${what} no longer exists. Refresh and try again.`);
     openSession(target);
     if (session.kind === "todos") setTabByFeature(current => ({ ...current, [target.feature_id]: TODOS_TAB }));
   }
@@ -872,6 +881,11 @@ export default function App() {
       planActionInFlight.current = false;
       setPlanBusy(false);
     }
+  }
+
+  function jumpToTodoWork(found: { kind: "session"; target: SessionTarget } | { kind: "feature"; target: FeatureTarget }) {
+    if (found.kind === "session") openSession(found.target);
+    else setView({ kind: "feature", projectId: found.target.project_id, featureId: found.target.feature_id });
   }
 
   async function launchTodoAgent(todoId: string, target: FeatureTarget, approved: boolean) {
@@ -1288,6 +1302,11 @@ export default function App() {
 
         <nav className="nav" aria-label="Workspace">
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
+          <button className="nav-item" onClick={() => setShowAttention(true)}>
+            <Icon name="inbox" />
+            <span className="nav-label">Needs attention</span>
+            {attentionCount > 0 && <span className="nav-count nav-count-attention" title="Requests waiting on disk">{attentionCount}</span>}
+          </button>
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
@@ -1489,6 +1508,9 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {showAttention && <NeedsAttentionPanel onJump={(target) => openBookmarkedSession(target, "That session")} onClose={() => setShowAttention(false)} />}
+      {featureActions && <FeatureActionsPanel target={featureActions.target} focusSessionId={featureActions.sessionId}
+        onClose={() => setFeatureActions(null)} onChanged={() => void queryClient.invalidateQueries({ queryKey: SNAPSHOT_KEY })} />}
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}
@@ -1567,6 +1589,7 @@ export default function App() {
                 launchTargets={todoAgentTargets}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(gitProjectIds)}
                 onError={reportError}
               />
@@ -1596,6 +1619,7 @@ export default function App() {
                 launchTargets={todoAgentTargets.filter((candidate) => candidate.target.project_id === selectedProject.id)}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />
@@ -1619,6 +1643,7 @@ export default function App() {
               quick,
             )}
             onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onQuickTodo={() => setQuickTodoTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             learningBusy={learningBusy}
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
@@ -1669,6 +1694,7 @@ export default function App() {
             })}
             onChangeHarness={() => setHarnessTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             onFork={(sessionId) => setForkDialog({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
+            onFeatureActions={(sessionId) => setFeatureActions({ target: { project_id: selectedProject.id, feature_id: selectedFeature.id }, sessionId })}
             onDeleteFeature={() => setDeleteFeatureDialog({
               target: { project_id: selectedProject.id, feature_id: selectedFeature.id },
               projectName: selectedProject.name,
@@ -1697,6 +1723,7 @@ export default function App() {
               <TodoPanel
                 scope={{ kind: "worktree", project_id: selectedProject.id, feature_id: selectedFeature.id }}
                 hostFeatureId={selectedFeature.id}
+                featureTarget={{ project_id: selectedProject.id, feature_id: selectedFeature.id }}
                 title="Worktree TODOs"
                 description="TODOs for this checkout."
                 destinations={todoDestinations}
@@ -1706,6 +1733,7 @@ export default function App() {
                 }]}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />
@@ -1989,6 +2017,17 @@ export default function App() {
         />
       )}
 
+      {quickTodoTarget && (
+        <QuickTodoDialog
+          target={quickTodoTarget}
+          onSaved={(label) => {
+            pushToast({ tone: "info", title: "TODO added", message: `Added to ${label}.` });
+            void queryClient.invalidateQueries({ queryKey: ["todos"] });
+          }}
+          onError={reportError}
+          onClose={() => setQuickTodoTarget(null)}
+        />
+      )}
       {pendingTodoLaunch && (
         <ApprovalDialog
           label="Approve TODO agent start"
@@ -2215,6 +2254,7 @@ function FeatureView({
   onBack,
   onPlan,
   onLearning,
+  onQuickTodo,
   learningBusy,
   onDiff,
   pendingEdits,
@@ -2233,6 +2273,7 @@ function FeatureView({
   sessionLifecycle,
   onCloseSession,
   onDeleteFeature,
+  onFeatureActions,
   onChangeHarness,
   onFork,
   onVibeMode,
@@ -2264,6 +2305,7 @@ function FeatureView({
   onBack: () => void;
   onPlan: (quick: boolean) => void;
   onLearning: () => void;
+  onQuickTodo: () => void;
   learningBusy: boolean;
   onDiff: () => void;
   /** Supervised edits waiting for an answer in this feature. */
@@ -2286,6 +2328,8 @@ function FeatureView({
   sessionLifecycle: (session: FeatureSession) => Lifecycle;
   onCloseSession: (session: FeatureSession) => void;
   onDeleteFeature: () => void;
+  /** Rename / ready / summary; the argument is a session to focus. */
+  onFeatureActions: (sessionId: string | null) => void;
   onChangeHarness?: () => void;
   /** Fork this feature; the argument is the open agent session, if any. */
   onFork: (sessionId: string | null) => void;
@@ -2379,6 +2423,9 @@ function FeatureView({
             <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
               {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
             </button>
+            <button className="btn btn-secondary" onClick={onQuickTodo}>
+              <Icon name="list" size={12} /> Quick TODO
+            </button>
             <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
               <Icon name="file" size={12} /> Learning
             </button>
@@ -2444,6 +2491,7 @@ function FeatureView({
                 }),
                 ...(feature.mode === "vibeless" ? [{ label: "Supervised edits", icon: "check" as const, onSelect: onSupervisedEdits }] : []),
                 ...(feature.is_worktree && onChangeHarness ? [{ label: "Change harness…", icon: "swap" as const, onSelect: onChangeHarness }] : []),
+                { label: "Rename, ready and summary…", icon: "check" as const, onSelect: () => onFeatureActions(null) },
                 { label: "Fork feature…", icon: "branch" as const, onSelect: () => onFork(isAgent && activeSession ? activeSession.id : null) },
                 { label: "Delete feature", icon: "trash", danger: true, onSelect: onDeleteFeature },
               ]}
@@ -2483,6 +2531,7 @@ function FeatureView({
                       hint: isStopped ? "Starts the feature" : undefined,
                       onSelect: sessionLifecycle(session).onStart,
                     },
+                  { label: "Rename session…", icon: "check" as const, onSelect: () => onFeatureActions(session.id) },
                   { label: "Close session", icon: "x", danger: true, onSelect: () => onCloseSession(session) },
                 ]}
               />

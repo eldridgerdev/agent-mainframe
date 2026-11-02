@@ -113,6 +113,7 @@ use crate::worktree::WorktreeManager;
 pub use self::prompt_library::PromptExportTarget;
 pub use self::setup::load_config;
 pub use automation::FeatureCreateOptions;
+pub(crate) use self::sync::SummaryGenerator;
 pub(crate) use automation::WorktreeHookChoiceError;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
@@ -126,7 +127,7 @@ pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 pub use toast::Toast;
-pub(crate) use todos::ReferencedTodoDeleted;
+pub(crate) use todos::{NextTodo, ReferencedTodoDeleted};
 
 pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
 /// Cadence for the main loop's idle drift-correction reseed. The view

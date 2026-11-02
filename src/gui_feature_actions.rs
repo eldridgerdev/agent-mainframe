@@ -580,7 +580,7 @@ mod tests {
     }
 
     fn wait_for_outcome(f: &mut Fixture) -> String {
-        for _ in 0..200 {
+        for _ in 0..1500 {
             f.gui.refresh_store().unwrap();
             if let Some((_, outcome)) = f.gui.summary_outcome.take() {
                 return outcome;

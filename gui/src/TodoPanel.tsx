@@ -21,6 +21,7 @@ import {
   TodoWorkTarget,
 } from "./api";
 import { ScratchpadDialog, TodoEditDialog } from "./TodoEditDialogs";
+import { NextTodoDialog } from "./TodoNextDialogs";
 import { Field, Icon, Menu, Modal, Segmented, Spinner } from "./ui";
 
 export interface TodoDestination {
@@ -64,6 +65,7 @@ export default function TodoPanel({
   onPlanNew,
   onLaunchNew,
   onJump,
+  featureTarget,
 }: {
   scope: TodoScopeRequest;
   hostFeatureId?: string;
@@ -77,6 +79,8 @@ export default function TodoPanel({
   onPlanNew?: (todoId: string, title: string) => void;
   onLaunchNew?: (todoId: string, title: string) => void;
   onJump?: (target: Exclude<TodoWorkTarget, { kind: "none" }>) => void;
+  /** The feature this panel belongs to, if any: it supplies the worktree scope for "implement next". */
+  featureTarget?: FeatureTarget;
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["todos", JSON.stringify(scope)];
@@ -85,7 +89,8 @@ export default function TodoPanel({
   const [startDialog, setStartDialog] = useState<Todo | null>(null);
   const [transferDialog, setTransferDialog] = useState<Todo | null>(null);
   const [editTodo, setEditTodo] = useState<Todo | null>(null);
-  const [editingPad, setEditingPad] = useState(false);
+  const [editingPad, setEditingPad] = useState<{ listId: string | null } | null>(null);
+  const [nextOpen, setNextOpen] = useState(false);
 
   const view = useQuery({
     queryKey,
@@ -139,7 +144,7 @@ export default function TodoPanel({
     onError: (err) => onError(asGuiError(err)),
   });
 
-  async function saveEdit(todo: Todo, base: TodoFields, fields: TodoFields) {
+  async function saveEdit(todo: Pick<Todo, "id" | "list_id">, base: TodoFields, fields: TodoFields) {
     try {
       const result = await todoUpdate(todo, base, fields);
       if (result.outcome === "gone") {
@@ -153,12 +158,12 @@ export default function TodoPanel({
     }
   }
 
-  async function savePad(base: string | null, text: string | null) {
+  async function savePad(listId: string | null, base: string | null, text: string | null) {
     try {
       const result = await todoUpdateScratchpad({
         scope,
         hostFeatureId,
-        listId: view.data?.list.id ?? null,
+        listId,
         base,
         text,
       });
@@ -216,9 +221,16 @@ export default function TodoPanel({
           <h3>{title}</h3>
           {description && <p className="panel-description">{description}</p>}
         </div>
-        {todos.length > 0 && (
-          <span className="count-pill">{openCount} open</span>
-        )}
+        <div className="todo-header-actions">
+          {canStart && (
+            <button className="btn btn-sm btn-secondary" onClick={() => setNextOpen(true)}>
+              <Icon name="zap" size={12} /> Implement next
+            </button>
+          )}
+          {todos.length > 0 && (
+            <span className="count-pill">{openCount} open</span>
+          )}
+        </div>
       </header>
 
       <form
@@ -245,7 +257,7 @@ export default function TodoPanel({
       <div className="todo-scratchpad">
         <div className="todo-scratchpad-head">
           <span className="field-label">Scratchpad</span>
-          <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad(true)}>
+          <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad({ listId: view.data?.list.id ?? null })}>
             {view.data?.list.carry_over ? "Edit" : "Add note"}
           </button>
         </div>
@@ -349,10 +361,24 @@ export default function TodoPanel({
         />
       )}
 
+      {nextOpen && (
+        <NextTodoDialog
+          base={{
+            project_id: featureTarget?.project_id ?? (scope.kind === "project" ? scope.project_id : null),
+            feature_id: featureTarget?.feature_id ?? null,
+          }}
+          canStart={canStart}
+          canJump={Boolean(onJump)}
+          onClose={() => setNextOpen(false)}
+          onStart={(candidate) => { setNextOpen(false); setStartDialog(candidate.todo); }}
+          onJump={(candidate) => { setNextOpen(false); void jump(candidate.todo); }}
+        />
+      )}
+
       {editTodo && (
         <TodoEditDialog
           todo={editTodo}
-          onSave={(base, fields) => saveEdit(editTodo, base, fields)}
+          onSave={(base, fields, listId) => saveEdit({ id: editTodo.id, list_id: listId }, base, fields)}
           onCancel={() => setEditTodo(null)}
         />
       )}
@@ -361,8 +387,9 @@ export default function TodoPanel({
         <ScratchpadDialog
           title={title}
           base={view.data?.list.carry_over ?? null}
-          onSave={savePad}
-          onCancel={() => setEditingPad(false)}
+          listId={editingPad.listId}
+          onSave={(base, text, listId) => savePad(listId, base, text)}
+          onCancel={() => setEditingPad(null)}
         />
       )}
 

@@ -38,16 +38,16 @@ export function Hunk({ hunk, split, selection, annotate }: { hunk: DiffHunk; spl
     {split ? <table className="diff-lines diff-split" aria-label="Side-by-side hunk"><tbody>
       {splitRows(hunk.lines).map(([old, next], index) => old?.kind === "marker" ? <tr key={index}><td colSpan={4} className="diff-text diff-marker"><code>{old.text}</code></td></tr> : <tr key={index}>
         <td className="diff-number">{number(old, "old_line")}</td>
-        <td className={`diff-text diff-${old?.kind ?? "empty"}${selected(old)}`}>{old && <SyntaxCode text={old.text} spans={old.syntax} />}</td>
+        <td className={`diff-text diff-${old?.kind ?? "empty"}${selected(old)}`}>{old && <SyntaxCode text={old.text} spans={old.syntax} emphasis={old.emphasis} change="removed" />}</td>
         <td className="diff-number">{number(next, "new_line")}</td>
-        <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}>{next && <SyntaxCode text={next.text} spans={next.syntax} />}</td>
+        <td className={`diff-text diff-${next?.kind ?? "empty"}${selected(next)}`}>{next && <SyntaxCode text={next.text} spans={next.syntax} emphasis={next.emphasis} change="added" />}</td>
       </tr>)}
     </tbody></table> : <table className="diff-lines" aria-label="Unified hunk"><tbody>
       {hunk.lines.map((line, index) => {
         const note = annotate?.(line);
         return <Fragment key={index}><tr className={`diff-${line.kind}${selected(line)}`}>
           <td className="diff-number">{number(line, "old_line")}</td><td className="diff-number">{number(line, "new_line")}</td>
-          <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} /></td>
+          <td className="diff-text"><SyntaxCode text={line.text} spans={line.syntax} emphasis={line.emphasis} change={line.kind === "removed" || line.kind === "added" ? line.kind : undefined} /></td>
         </tr>{note && <tr className="diff-annotation"><td colSpan={3}>{note}</td></tr>}</Fragment>;
       })}
     </tbody></table>}

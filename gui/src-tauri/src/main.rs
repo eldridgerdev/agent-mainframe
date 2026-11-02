@@ -125,6 +125,97 @@ fn bookmarks_resolve(
 }
 
 #[tauri::command]
+fn needs_attention_load(
+    state: State<AppState>,
+) -> Result<agent_mainframe::gui_attention::NeedsAttentionView, GuiError> {
+    agent_mainframe::gui_attention::load(&mut state.0.lock().expect("gui handle mutex poisoned"))
+}
+#[tauri::command]
+fn needs_attention_dismiss(
+    state: State<AppState>,
+    id: String,
+    modified_ms: Option<i64>,
+) -> Result<agent_mainframe::gui_attention::NeedsAttentionView, GuiError> {
+    agent_mainframe::gui_attention::dismiss(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        &id,
+        modified_ms,
+    )
+}
+#[tauri::command]
+fn feature_actions_load(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<agent_mainframe::gui_feature_actions::FeatureActionsView, GuiError> {
+    agent_mainframe::gui_feature_actions::load(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+#[tauri::command]
+fn feature_rename(
+    state: State<AppState>,
+    target: FeatureTarget,
+    expected: Option<String>,
+    nickname: String,
+) -> Result<agent_mainframe::gui_feature_actions::FeatureActionsView, GuiError> {
+    agent_mainframe::gui_feature_actions::rename_feature(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        expected,
+        nickname,
+    )
+}
+#[tauri::command]
+fn session_rename(
+    state: State<AppState>,
+    target: SessionTarget,
+    expected: String,
+    label: String,
+) -> Result<agent_mainframe::gui_feature_actions::FeatureActionsView, GuiError> {
+    agent_mainframe::gui_feature_actions::rename_session(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        expected,
+        label,
+    )
+}
+#[tauri::command]
+fn feature_set_ready(
+    state: State<AppState>,
+    target: FeatureTarget,
+    expected: bool,
+) -> Result<agent_mainframe::gui_feature_actions::FeatureActionsView, GuiError> {
+    agent_mainframe::gui_feature_actions::set_ready(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        expected,
+    )
+}
+#[tauri::command]
+fn feature_summary_notice(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<agent_mainframe::gui_feature_actions::SummaryNotice, GuiError> {
+    agent_mainframe::gui_feature_actions::summary_notice(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+    )
+}
+#[tauri::command]
+fn feature_summary_generate(
+    state: State<AppState>,
+    target: FeatureTarget,
+    ack: agent_mainframe::gui_feature_actions::SummaryAck,
+) -> Result<agent_mainframe::gui_feature_actions::FeatureActionsView, GuiError> {
+    agent_mainframe::gui_feature_actions::summary_generate(
+        &mut state.0.lock().expect("gui handle mutex poisoned"),
+        target,
+        ack,
+    )
+}
+
+#[tauri::command]
 fn theme_catalog() -> agent_mainframe::gui_themes::ThemeCatalog {
     agent_mainframe::gui_themes::load()
 }
@@ -1197,6 +1288,44 @@ fn todo_update_scratchpad(
         &state.0.lock().expect("gui handle mutex poisoned"),
         &request,
     )
+}
+
+#[tauri::command]
+fn todo_next_preview(
+    state: State<AppState>,
+    request: agent_mainframe::gui_contract::NextTodoRequest,
+) -> Result<agent_mainframe::gui_contract::NextTodoPreview, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .preview_next_todo(&request)
+}
+
+#[tauri::command]
+fn todo_quick_capture_target(
+    state: State<AppState>,
+    target: FeatureTarget,
+) -> Result<String, GuiError> {
+    state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .quick_capture_target(&target)
+}
+
+#[tauri::command]
+fn todo_quick_capture(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    target: FeatureTarget,
+    title: String,
+) -> Result<agent_mainframe::gui_contract::QuickCaptureResponse, GuiError> {
+    let mut gui = state.0.lock().expect("gui handle mutex poisoned");
+    let response = gui.quick_capture_todo(&target, &title)?;
+    // A first capture can add the feature's TODOs session.
+    emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
 }
 
 #[tauri::command]
@@ -2440,6 +2569,14 @@ fn main() {
             bookmarks_add,
             bookmarks_remove,
             bookmarks_resolve,
+            needs_attention_load,
+            needs_attention_dismiss,
+            feature_actions_load,
+            feature_rename,
+            session_rename,
+            feature_set_ready,
+            feature_summary_notice,
+            feature_summary_generate,
             theme_catalog,
             screenshots_pr_document,
             screenshots_inline_image,
@@ -2513,6 +2650,9 @@ fn main() {
             todo_update,
             todo_update_scratchpad,
             todo_work_target,
+            todo_next_preview,
+            todo_quick_capture_target,
+            todo_quick_capture,
             todo_delete,
             todo_move,
             todo_copy,

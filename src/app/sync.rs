@@ -17,6 +17,9 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// Worker body for one summary run: `(tmux_session, window, workdir, harness, template)`.
+pub(crate) type SummaryGenerator = fn(&str, &str, &Path, AgentKind, &str) -> Result<String>;
+
 #[derive(Debug)]
 struct ActivePrJob {
     feature_id: String,
@@ -1638,59 +1641,73 @@ impl App {
     }
 
     pub fn trigger_summary_for_selected(&mut self) -> Result<()> {
-        let selected = match &self.selection {
+        match &self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
-                let project = &self.store.projects[*pi];
-                let feature = &project.features[*fi];
-                Some((
-                    feature.tmux_session.clone(),
-                    feature.workdir.clone(),
-                    feature.agent.clone(),
-                    project.repo.clone(),
-                ))
+                let (pi, fi) = (*pi, *fi);
+                self.trigger_summary_for_indices(pi, fi, SummaryManager::generate_summary)
             }
-            _ => None,
+            _ => {
+                self.message = Some("Select a feature to summarize".into());
+                Ok(())
+            }
+        }
+    }
+
+    /// The tmux window `session.summary` would capture for this feature, or
+    /// `None` when the feature has no agent session to read.
+    pub(crate) fn summary_window_for(&self, pi: usize, fi: usize) -> Option<String> {
+        Self::get_agent_window(self.store.projects.get(pi)?.features.get(fi)?)
+    }
+
+    /// Shared by the dashboard's `Z` and the GUI. `generate` is the worker's
+    /// body (the real one captures the pane and runs the headless harness);
+    /// tests pass a fake so no model is ever called.
+    pub(crate) fn trigger_summary_for_indices(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        generate: SummaryGenerator,
+    ) -> Result<()> {
+        let (tmux_session, workdir, agent, repo) = {
+            let project = &self.store.projects[pi];
+            let feature = &project.features[fi];
+            (
+                feature.tmux_session.clone(),
+                feature.workdir.clone(),
+                feature.agent.clone(),
+                project.repo.clone(),
+            )
         };
 
-        if let Some((tmux_session, workdir, agent, repo)) = selected {
-            if self.summary_state.generating.contains(&tmux_session) {
-                self.message = Some("Summary already generating...".into());
-                return Ok(());
-            }
+        if self.summary_state.generating.contains(&tmux_session) {
+            self.message = Some("Summary already generating...".into());
+            return Ok(());
+        }
 
-            let window = self.get_window_for_session(&tmux_session, &agent);
-            if let Some(w) = window {
-                self.summary_state.generating.insert(tmux_session.clone());
-                self.message = Some("Generating summary...".into());
+        let window = self.get_window_for_session(&tmux_session, &agent);
+        if let Some(w) = window {
+            self.summary_state.generating.insert(tmux_session.clone());
+            self.message = Some("Generating summary...".into());
 
-                let (tx, rx) = std::sync::mpsc::channel();
-                self.summary_rx = Some(rx);
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.summary_rx = Some(rx);
 
-                let (template, _) = self.resolve_headless_template(
-                    crate::prompts::PromptId::SessionSummary,
-                    &agent,
-                    &repo,
-                    &workdir,
-                );
-                // A one-line summary is a quick call and may be triggered in a
-                // batch, so it announces with a toast rather than a modal.
-                self.announce_headless_run(crate::prompts::PromptId::SessionSummary, &agent);
-                let tmux_session_clone = tmux_session.clone();
-                std::thread::spawn(move || {
-                    let result = SummaryManager::generate_summary(
-                        &tmux_session_clone,
-                        &w,
-                        &workdir,
-                        agent,
-                        &template,
-                    );
-                    let _ = tx.send((tmux_session_clone, result));
-                });
-            } else {
-                self.message = Some("No agent window found".into());
-            }
+            let (template, _) = self.resolve_headless_template(
+                crate::prompts::PromptId::SessionSummary,
+                &agent,
+                &repo,
+                &workdir,
+            );
+            // A one-line summary is a quick call and may be triggered in a
+            // batch, so it announces with a toast rather than a modal.
+            self.announce_headless_run(crate::prompts::PromptId::SessionSummary, &agent);
+            let tmux_session_clone = tmux_session.clone();
+            std::thread::spawn(move || {
+                let result = generate(&tmux_session_clone, &w, &workdir, agent, &template);
+                let _ = tx.send((tmux_session_clone, result));
+            });
         } else {
-            self.message = Some("Select a feature to summarize".into());
+            self.message = Some("No agent window found".into());
         }
 
         Ok(())

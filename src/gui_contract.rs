@@ -54,7 +54,10 @@ pub enum GuiErrorKind {
     /// The start would exceed AMF's soft resource limits; the caller must
     /// present the warning and submit an explicit approval to proceed.
     NeedsApproval,
-    /// Anything else: validation failures, I/O, tmux, or git errors.
+    /// The request itself is malformed (blank or over-long title, ...): a
+    /// user-input mistake, not a fault.
+    InvalidInput,
+    /// Anything else: I/O, tmux, or git errors.
     Internal,
 }
 
@@ -317,6 +320,53 @@ pub enum SessionRecoveryChoice {
     Pick,
 }
 
+/// Which lists "implement next" scans. The worktree list is included when
+/// `feature_id` names a worktree feature; project and global are opt-in, like
+/// the TUI's visibility toggles.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NextTodoRequest {
+    pub project_id: Option<String>,
+    pub feature_id: Option<String>,
+    pub include_project: bool,
+    pub include_global: bool,
+    /// TODOs the user already passed over ("skip to next"), by id.
+    #[serde(default)]
+    pub skipped_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NextTodoCandidate {
+    pub todo: crate::db::todos::Todo,
+    pub scope_kind: &'static str,
+    pub scope_label: String,
+    /// The feature owning a worktree TODO's checkout. Project and global
+    /// TODOs belong to no one checkout, so the user picks where to start them.
+    pub host: Option<FeatureTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum NextTodoPreview {
+    /// Nothing has been started for it.
+    Ready {
+        candidate: NextTodoCandidate,
+    },
+    /// Best remaining candidate already links work; ask, never act silently.
+    Started {
+        candidate: NextTodoCandidate,
+        reason: String,
+    },
+    Empty {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QuickCaptureResponse {
+    pub todo: crate::db::todos::Todo,
+    pub scope_label: String,
+}
+
 /// Where a TODO's existing work can be reached.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -338,7 +388,11 @@ pub struct TodoAgentLaunchResponse {
 /// Facade over a private [`App`]. See the module doc for why `App` itself
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
-    app: App,
+    pub(crate) app: App,
+    /// Result of a finished feature summary, handed to the interface once
+    /// (`gui_feature_actions`), keyed by the feature's tmux session so it is
+    /// only shown for the feature it belongs to.
+    pub(crate) summary_outcome: Option<(String, String)>,
     /// Configured-session launches whose pre-check is running outside the lock.
     pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
@@ -355,6 +409,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -375,6 +430,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -416,6 +472,26 @@ impl GuiHandle {
                 sidebar::carry_runtime_session_fields(&self.app.store, &mut store);
                 self.app.store = store;
                 self.app.store_version = Some(version);
+            }
+        }
+        // After the reload, so persisting a finished summary is saved against
+        // the current store rather than conflicting with it.
+        if self.app.summary_rx.is_some() {
+            self.app.message = None;
+            let before = self.app.summary_state.generating.clone();
+            // A failed save is the summary's outcome, not an error for
+            // whichever command happened to refresh the store.
+            if let Err(error) = self.app.poll_summary_result() {
+                self.app.message = Some(format!("Failed to save summary: {error}"));
+            }
+            if self.app.summary_rx.is_none() {
+                let finished = before
+                    .difference(&self.app.summary_state.generating)
+                    .next()
+                    .cloned();
+                if let (Some(session), Some(message)) = (finished, self.app.message.take()) {
+                    self.summary_outcome = Some((session, message));
+                }
             }
         }
         Ok(())
@@ -1059,8 +1135,16 @@ impl GuiHandle {
                 Some((pi, fi)) => {
                     let project = &self.app.store.projects[pi];
                     let feature = &project.features[fi];
+                    // Prefer the agent session this TODO was started on, when it
+                    // lives in the linked feature; otherwise the first agent.
+                    let own = todo.work.agent_session_id.as_deref().and_then(|id| {
+                        feature
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id && s.kind.is_agent_harness())
+                    });
                     if let Some(session) =
-                        feature.sessions.iter().find(|s| s.kind.is_agent_harness())
+                        own.or_else(|| feature.sessions.iter().find(|s| s.kind.is_agent_harness()))
                     {
                         return Ok(TodoWorkTarget::Session {
                             target: SessionTarget {
@@ -1079,7 +1163,7 @@ impl GuiHandle {
                 }
                 None => {
                     self.db()?
-                        .clear_todo_linked_feature_for_todo(todo_id)
+                        .clear_todo_linked_feature_if(todo_id, feature_id)
                         .map_err(GuiError::from)?;
                     note = Some(
                         "The feature planned for this TODO no longer exists; the link was cleared"
@@ -1106,6 +1190,175 @@ impl GuiHandle {
                 "No work has started for this TODO, or its session no longer exists".to_string()
             }),
         })
+    }
+
+    /// Preview what "implement next" would pick, without changing anything.
+    ///
+    /// Uses the TUI's pure `next_todo_across` over the scopes in worktree,
+    /// project, global order, so priority, scope tie-break and the
+    /// held-in-reserve rule are the TUI's, not a second copy. Dead session
+    /// links are healed first (status untouched), as the TUI's scan does.
+    pub fn preview_next_todo(&mut self, request: &NextTodoRequest) -> GuiResult<NextTodoPreview> {
+        use crate::app::NextTodo;
+        use crate::db::todos::TodoScope;
+
+        self.refresh_store()?;
+        let located = match (&request.project_id, &request.feature_id) {
+            (Some(project_id), Some(feature_id)) => {
+                let (pi, fi) = self.locate(&FeatureTarget {
+                    project_id: project_id.clone(),
+                    feature_id: feature_id.clone(),
+                })?;
+                Some((pi, Some(fi)))
+            }
+            (Some(project_id), None) => self
+                .app
+                .store
+                .projects
+                .iter()
+                .position(|p| p.id == *project_id)
+                .map(|pi| (pi, None))
+                .ok_or_else(|| GuiError::not_found(format!("Project '{project_id}' was not found")))
+                .map(Some)?,
+            _ => None,
+        };
+
+        let mut scopes: Vec<(&'static str, TodoScope, Option<FeatureTarget>)> = Vec::new();
+        if let Some((pi, fi)) = located {
+            let project = &self.app.store.projects[pi];
+            if let Some(fi) = fi
+                && let Some(scope) = self.app.worktree_todo_scope(pi, fi)
+            {
+                scopes.push((
+                    "worktree",
+                    scope,
+                    Some(FeatureTarget {
+                        project_id: project.id.clone(),
+                        feature_id: project.features[fi].id.clone(),
+                    }),
+                ));
+            }
+            if request.include_project {
+                scopes.push((
+                    "project",
+                    TodoScope::Project {
+                        project_id: project.id.clone(),
+                    },
+                    None,
+                ));
+            }
+        }
+        if request.include_global {
+            scopes.push(("global", TodoScope::Global, None));
+        }
+        if scopes.is_empty() {
+            return Ok(NextTodoPreview::Empty {
+                message: "No TODO list is included; turn on a project or global list".to_string(),
+            });
+        }
+
+        let db = self.db()?;
+        db.clear_missing_todo_agent_sessions()
+            .map_err(GuiError::from)?;
+        let mut lists = Vec::new();
+        for (kind, scope, host) in scopes {
+            let todos = match db.todo_list(&scope).map_err(GuiError::from)? {
+                Some(list) => db.todos(&list.id).map_err(GuiError::from)?,
+                None => Vec::new(),
+            };
+            lists.push((kind, scope, host, todos));
+        }
+        let slices: Vec<&[crate::db::todos::Todo]> = lists
+            .iter()
+            .map(|(_, _, _, todos)| todos.as_slice())
+            .collect();
+        let Some((li, next)) = App::next_todo_across(&slices, &request.skipped_ids) else {
+            return Ok(NextTodoPreview::Empty {
+                message: App::no_next_todo_message_across(&slices, &request.skipped_ids),
+            });
+        };
+        let (kind, scope, host, todos) = &lists[li];
+        let (index, started) = match next {
+            NextTodo::Ready(i) => (i, false),
+            NextTodo::Started(i) => (i, true),
+        };
+        let todo = todos[index].clone();
+        let reason = if !started {
+            None
+        } else if todo.work.agent_session_id.is_some() && todo.linked_feature_id.is_some() {
+            Some("It already has a session and a planned feature.".to_string())
+        } else if todo.work.agent_session_id.is_some() {
+            Some("It already has a session.".to_string())
+        } else {
+            Some("It already has a planned feature.".to_string())
+        };
+        let candidate = NextTodoCandidate {
+            todo,
+            scope_kind: kind,
+            scope_label: self.app.todo_scope_label(scope),
+            host: host.clone(),
+        };
+        Ok(match reason {
+            None => NextTodoPreview::Ready { candidate },
+            Some(reason) => NextTodoPreview::Started { candidate, reason },
+        })
+    }
+
+    /// The list a quick capture from `target` would append to, named for the
+    /// user before they type.
+    pub fn quick_capture_target(&mut self, target: &FeatureTarget) -> GuiResult<String> {
+        self.refresh_store()?;
+        let (pi, fi) = self.locate(target)?;
+        let scope = self
+            .app
+            .default_todo_scope(pi, fi)
+            .ok_or_else(|| GuiError::not_found("Project not found"))?;
+        Ok(self.app.todo_scope_label(&scope))
+    }
+
+    /// Append a one-line TODO to the scope the TUI's quick capture resolves
+    /// (`default_todo_scope`: the feature's worktree list, or the project's at
+    /// the repo root), creating the list lazily with this feature as host and
+    /// the feature's TODOs session when it has none, like the TUI.
+    pub fn quick_capture_todo(
+        &mut self,
+        target: &FeatureTarget,
+        title: &str,
+    ) -> GuiResult<QuickCaptureResponse> {
+        self.refresh_store()?;
+        let (pi, fi) = self.locate(target)?;
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(GuiError {
+                kind: GuiErrorKind::InvalidInput,
+                message: "A TODO needs a title".to_string(),
+            });
+        }
+        if title.contains(['\n', '\r']) {
+            return Err(GuiError {
+                kind: GuiErrorKind::InvalidInput,
+                message: "Quick capture is one line; add notes by editing the TODO".to_string(),
+            });
+        }
+        let scope = self
+            .app
+            .default_todo_scope(pi, fi)
+            .ok_or_else(|| GuiError::not_found("Project not found"))?;
+        let scope_label = self.app.todo_scope_label(&scope);
+        if !self.app.store.projects[pi].features[fi].has_todos_session() {
+            self.app
+                .add_todos_session_for_picker(pi, fi, None)
+                .map_err(GuiError::from)?;
+            self.app.message = None;
+        }
+        let db = self.db()?;
+        let list = db
+            .load_or_create_todo_list(&scope, Some(&target.feature_id))
+            .map_err(GuiError::from)?;
+        let todo = db
+            .add_todo(&list.id, title, None, crate::db::todos::TodoPriority::Med)
+            .map_err(GuiError::from)?;
+        Ok(QuickCaptureResponse { todo, scope_label })
     }
 
     /// Launch a TODO's agent in an explicit feature, using the same session
@@ -2204,6 +2457,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -2231,6 +2485,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4375,6 +4630,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4576,6 +4832,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                summary_outcome: None,
                 custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,

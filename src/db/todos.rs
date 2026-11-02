@@ -819,6 +819,17 @@ pub fn clear_linked_feature_for_todo(conn: &Connection, todo_id: &str) -> Result
     Ok(())
 }
 
+/// Clear a TODO's link only while it still names `feature_id`, so a link
+/// another process re-pointed at a live feature is never wiped.
+pub fn clear_linked_feature_if(conn: &Connection, todo_id: &str, feature_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE todos SET linked_feature_id = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND linked_feature_id = ?2",
+        params![todo_id, feature_id],
+    )?;
+    Ok(n > 0)
+}
+
 /// Drop any TODO's link to `feature_id`, across every list.
 ///
 /// Called when a feature is deleted: `linked_feature_id` has no FK (see

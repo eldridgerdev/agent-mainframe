@@ -5093,56 +5093,14 @@ fn removed_emphasis_style(theme: &Theme) -> Style {
 }
 
 /// Word-level emphasis for every line of a hunk, indexed the same as
-/// `hunk.lines`.
-///
-/// Consecutive removed lines followed by consecutive added lines form a change
-/// block; within it the i-th removal pairs with the i-th addition, which is how
-/// git lays out a rewritten run and therefore what the reviewer reads as "this
-/// line became that line". Unpaired leftovers (a block that removes 3 and adds
-/// 1) get no emphasis — there is no counterpart to diff against.
-///
-/// Runs on every frame, so the per-pair token diff comes from
-/// `worddiff::word_diff_cached` rather than being recomputed: only the (cheap)
-/// walk over the hunk's lines is repeated.
+/// `hunk.lines`. The pairing rule lives in `worddiff` so the GUI shares it.
 fn hunk_intra_line_ranges(hunk: &DiffHunk) -> Vec<Option<Vec<std::ops::Range<usize>>>> {
-    let mut out: Vec<Option<Vec<std::ops::Range<usize>>>> = vec![None; hunk.lines.len()];
-    let mut idx = 0usize;
-    while idx < hunk.lines.len() {
-        if !matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
-            idx += 1;
-            continue;
-        }
-        let removed_start = idx;
-        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Removed) {
-            idx += 1;
-        }
-        let added_start = idx;
-        while idx < hunk.lines.len() && matches!(hunk.lines[idx].kind, DiffLineKind::Added) {
-            idx += 1;
-        }
-
-        let removed = removed_start..added_start;
-        let added = added_start..idx;
-        for (old_idx, new_idx) in removed.zip(added) {
-            let old_text = line_content(&hunk.lines[old_idx].text);
-            let new_text = line_content(&hunk.lines[new_idx].text);
-            if let Some(diff) = crate::worddiff::word_diff_cached(old_text, new_text) {
-                out[old_idx] = Some(diff.old.clone());
-                out[new_idx] = Some(diff.new.clone());
-            }
-        }
-    }
-    out
+    crate::worddiff::hunk_intra_line_ranges(&hunk.lines)
 }
 
-/// A diff line's text with its leading `+`/`-`/space prefix removed, matching
-/// the offsets `diff_chunks_emphasized` measures emphasis ranges against.
+/// A diff line's text with its leading `+`/`-`/space prefix removed.
 fn line_content(text: &str) -> &str {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some('+' | '-' | ' ') => chars.as_str(),
-        _ => text,
-    }
+    crate::worddiff::line_content(text)
 }
 
 fn removed_row_style(theme: &Theme) -> Style {

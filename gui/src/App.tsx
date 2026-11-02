@@ -100,6 +100,7 @@ import CompanionIntegrationDialog from "./CompanionIntegrationDialog";
 import type { PrTriageTarget } from "./prTriageApi";
 import type { PrWorkspaceStatus } from "./PrWorkspacePanel";
 import TodoPanel, { TodoAgentTarget, TodoDestination } from "./TodoPanel";
+import { QuickTodoDialog } from "./TodoNextDialogs";
 import TodoNewFeatureForm from "./TodoNewFeatureForm";
 export { default as TodoNewFeatureForm } from "./TodoNewFeatureForm";
 import LearningPanel from "./LearningPanel";
@@ -160,6 +161,7 @@ const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Out of date",
   needs_approval: "Approval needed",
+  invalid_input: "Check your input",
   internal: "Something went wrong",
 };
 
@@ -358,6 +360,7 @@ export default function App() {
     target: FeatureTarget;
     message: string;
   } | null>(null);
+  const [quickTodoTarget, setQuickTodoTarget] = useState<FeatureTarget | null>(null);
   const [pendingTodoLaunch, setPendingTodoLaunch] = useState<{
     todoId: string;
     target: FeatureTarget;
@@ -870,6 +873,11 @@ export default function App() {
       planActionInFlight.current = false;
       setPlanBusy(false);
     }
+  }
+
+  function jumpToTodoWork(found: { kind: "session"; target: SessionTarget } | { kind: "feature"; target: FeatureTarget }) {
+    if (found.kind === "session") openSession(found.target);
+    else setView({ kind: "feature", projectId: found.target.project_id, featureId: found.target.feature_id });
   }
 
   async function launchTodoAgent(todoId: string, target: FeatureTarget, approved: boolean) {
@@ -1542,6 +1550,7 @@ export default function App() {
                 launchTargets={todoAgentTargets}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(gitProjectIds)}
                 onError={reportError}
               />
@@ -1570,6 +1579,7 @@ export default function App() {
                 launchTargets={todoAgentTargets.filter((candidate) => candidate.target.project_id === selectedProject.id)}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />
@@ -1593,6 +1603,7 @@ export default function App() {
               quick,
             )}
             onLearning={() => void beginLearning({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
+            onQuickTodo={() => setQuickTodoTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             learningBusy={learningBusy}
             onDiff={() => setDiffTarget({ project_id: selectedProject.id, feature_id: selectedFeature.id })}
             pendingEdits={pendingEdits[selectedFeature.id] ?? 0}
@@ -1671,6 +1682,7 @@ export default function App() {
               <TodoPanel
                 scope={{ kind: "worktree", project_id: selectedProject.id, feature_id: selectedFeature.id }}
                 hostFeatureId={selectedFeature.id}
+                featureTarget={{ project_id: selectedProject.id, feature_id: selectedFeature.id }}
                 title="Worktree TODOs"
                 description="TODOs for this checkout."
                 destinations={todoDestinations}
@@ -1680,6 +1692,7 @@ export default function App() {
                 }]}
                 onLaunch={(todoId, target) => launchTodoAgent(todoId, target, false)}
                 onPlan={beginTodoPlan}
+                onJump={jumpToTodoWork}
                 {...newFeatureHandlers(selectedProject.is_git ? [selectedProject.id] : [])}
                 onError={reportError}
               />
@@ -1963,6 +1976,17 @@ export default function App() {
         />
       )}
 
+      {quickTodoTarget && (
+        <QuickTodoDialog
+          target={quickTodoTarget}
+          onSaved={(label) => {
+            pushToast({ tone: "info", title: "TODO added", message: `Added to ${label}.` });
+            void queryClient.invalidateQueries({ queryKey: ["todos"] });
+          }}
+          onError={reportError}
+          onClose={() => setQuickTodoTarget(null)}
+        />
+      )}
       {pendingTodoLaunch && (
         <ApprovalDialog
           label="Approve TODO agent start"
@@ -2184,6 +2208,7 @@ function FeatureView({
   onBack,
   onPlan,
   onLearning,
+  onQuickTodo,
   learningBusy,
   onDiff,
   pendingEdits,
@@ -2233,6 +2258,7 @@ function FeatureView({
   onBack: () => void;
   onPlan: (quick: boolean) => void;
   onLearning: () => void;
+  onQuickTodo: () => void;
   learningBusy: boolean;
   onDiff: () => void;
   /** Supervised edits waiting for an answer in this feature. */
@@ -2347,6 +2373,9 @@ function FeatureView({
           <>
             <button className="btn btn-secondary" onClick={onNewSession} disabled={newSessionLoading}>
               {newSessionLoading ? <Spinner /> : <Icon name="plus" size={12} />} New session
+            </button>
+            <button className="btn btn-secondary" onClick={onQuickTodo}>
+              <Icon name="list" size={12} /> Quick TODO
             </button>
             <button className="btn btn-secondary" onClick={onLearning} disabled={learningBusy}>
               <Icon name="file" size={12} /> Learning

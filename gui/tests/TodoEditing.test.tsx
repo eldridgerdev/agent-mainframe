@@ -112,3 +112,34 @@ it("offers no jump for a TODO with no recorded work", async () => {
   await screen.findByText("Write docs");
   expect(screen.queryByRole("button", { name: /Go to the work/ })).toBeNull();
 });
+
+it("adopts the list a conflict reports so Overwrite after a move can land", async () => {
+  const update = vi.fn()
+    .mockReturnValueOnce({ outcome: "conflict", current: todo({ list_id: "l2", title: "Moved" }) })
+    .mockReturnValueOnce({ outcome: "saved", todo: todo({ list_id: "l2", title: "Mine" }) });
+  mount([todo()], { todo_update: update });
+  await openEdit();
+  fireEvent.change(screen.getByLabelText("TODO title"), { target: { value: "Mine" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Overwrite with my edits" }));
+  await waitFor(() => expect(update).toHaveBeenCalledTimes(2));
+  const first = update.mock.calls[0][0] as { request: { list_id: string } };
+  const second = update.mock.calls[1][0] as { request: { list_id: string } };
+  expect(first.request.list_id).toBe("l1");
+  expect(second.request.list_id).toBe("l2");
+});
+
+it("retries a refused scratchpad save against the list the conflict reports", async () => {
+  const save = vi.fn()
+    .mockReturnValueOnce({ outcome: "conflict", list_id: "l9", current: "written elsewhere" })
+    .mockReturnValueOnce({ outcome: "saved", list_id: "l9", carry_over: "mine" });
+  mount([], { todo_update_scratchpad: save }, {}, "left off here");
+  fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+  fireEvent.change(screen.getByLabelText("Scratchpad text"), { target: { value: "mine" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Overwrite with my edits" }));
+  await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+  const second = save.mock.calls[1][0] as { request: { list_id: string; base: string } };
+  expect(second.request.list_id).toBe("l9");
+  expect(second.request.base).toBe("written elsewhere");
+});

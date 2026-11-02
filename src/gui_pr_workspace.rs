@@ -860,8 +860,8 @@ pub(crate) fn companion_based_on(feature: &crate::project::Feature, head_sha: &s
         .is_some_and(|source| source.base_sha.eq_ignore_ascii_case(head_sha))
 }
 
-const COMPANION_OLDER_HEAD: &str = "This companion is based on an older PR head; start a fresh triage companion for the current head, or choose the opened feature";
-const SHARED_TMUX_SESSION: &str =
+pub(crate) const COMPANION_OLDER_HEAD: &str = "This companion is based on an older PR head; start a fresh triage companion for the current head, or choose the opened feature";
+pub(crate) const SHARED_TMUX_SESSION: &str =
     "Shares its tmux session with another feature, so it cannot receive a fix";
 
 /// The one test for where a PR fix may go: the opened feature, or a verified
@@ -903,7 +903,7 @@ pub(crate) fn destination_feature_kind(
     Ok(kind)
 }
 
-fn tmux_session_shared(app: &App, tmux_session: &str) -> bool {
+pub(crate) fn tmux_session_shared(app: &App, tmux_session: &str) -> bool {
     app.store
         .projects
         .iter()

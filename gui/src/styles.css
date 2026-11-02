@@ -1771,3 +1771,11 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .todo-next-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 4px; }
 .todo-next-card p { margin: 0; }
 .check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
+.destination-catalog { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
+.destination-details > summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.destination-feature { margin: 6px 0; }
+.destination-feature ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.destination-session { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.destination-session .is-selected { border-color: var(--accent); color: var(--accent); }
+.destination-integrate { margin: 0; }

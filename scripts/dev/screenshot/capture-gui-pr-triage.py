@@ -34,7 +34,11 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     frontend_port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
     # Companion-target proof: the batch-fix fixture plus a verified triage
     # companion of PR #12 and an unrelated feature that must never be offered.
-    companion_target_proof = os.environ.get("AMF_GUI_PR_COMPANION_TARGET_PROOF") == "1"
+    # Destination catalog proof: the same fixture, but the companion is a real
+    # linked worktree two commits ahead of its recorded base, plus a stopped
+    # second companion whose checkout cannot prove a count (fails closed).
+    destinations_proof = os.environ.get("AMF_GUI_PR_DESTINATIONS_PROOF") == "1"
+    companion_target_proof = os.environ.get("AMF_GUI_PR_COMPANION_TARGET_PROOF") == "1" or destinations_proof
     batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1" or batch_fix_proof
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
@@ -253,11 +257,30 @@ export function formatTotal(total: number): string {
                     db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
                                (f"shot-{harness}", "shot-feature", harness, f"{harness.title()} 1", f"{harness}-1", stamp, index))
             if companion_target_proof:
-                link = '{"pr_number":12,"source_feature_id":"shot-feature","pr_branch":"round-invoice-totals","base_sha":"' + "0" * 40 + '"}'
+                companion_workdir = repo
+                base_sha = "0" * 40
+                if destinations_proof:
+                    base_sha = git("rev-parse", "round-invoice-totals")
+                    # A companion is only offered for the PR head it was created from.
+                    (gh_state / "head.txt").write_text(base_sha + "\n")
+                    companion_workdir = scratch / "invoice-fixes"
+                    git("worktree", "add", "-b", "invoice-fixes", str(companion_workdir), base_sha)
+                    for index in range(2):
+                        (companion_workdir / f"fix-{index}.txt").write_text("fix\n")
+                        for args in (["add", "."], ["commit", "-m", f"Triage fix {index}"]):
+                            subprocess.check_call(["git", *args], cwd=companion_workdir, env=git_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                link = '{"pr_number":12,"source_feature_id":"shot-feature","pr_branch":"round-invoice-totals","base_sha":"' + base_sha + '"}'
                 db.execute(
                     "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed,triage_source) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    ("shot-companion", "shot-project", "Invoice fixes (triage)", "invoice-fixes", str(repo), "amf-gui-shot-companion", "active", stamp, stamp, link),
+                    ("shot-companion", "shot-project", "Invoice fixes (triage)", "invoice-fixes", str(companion_workdir), "amf-gui-shot-companion", "active", stamp, stamp, link),
                 )
+                if destinations_proof:
+                    db.execute(
+                        "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed,triage_source) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        ("shot-companion-2", "shot-project", "Invoice fixes (second triage)", "invoice-fixes-2", str(repo), "amf-gui-shot-companion-2", "stopped", stamp, stamp, link),
+                    )
+                    db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
+                               ("shot-companion-2-claude", "shot-companion-2", "claude", "Claude (second companion)", "claude-1", stamp, 0))
                 db.execute(
                     "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed) VALUES(?,?,?,?,?,?,?,?,?)",
                     ("shot-stranger", "shot-project", "Unrelated feature", "unrelated", str(repo), "amf-gui-shot-stranger", "active", stamp, stamp),
@@ -275,10 +298,24 @@ export function formatTotal(total: number): string {
         if fix_submit_proof:
             subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "new-session", "-d", "-s", "amf-gui-shot-unused", "-n", "codex-1", f"/usr/bin/python3 {workspace}/scripts/dev/screenshot/fixtures/gui-pr-fix-agent.py"], env=env, check=True)
             time.sleep(0.4)
+        if destinations_proof:
+            # Live windows for the running feature and companion so the catalog
+            # (which checks tmux) agrees with the PR panel about what is running.
+            tmux = ["tmux", "-S", env["AMF_TMUX_SOCKET"]]
+            for session, windows in (("amf-gui-shot-unused", ["claude-1", "codex-1"]), ("amf-gui-shot-companion", ["claude-1"])):
+                # The GUI may already have created the session; add only missing windows.
+                present = subprocess.run([*tmux, "list-windows", "-t", session, "-F", "#{window_name}"], env=env, capture_output=True, text=True)
+                existing = present.stdout.split() if present.returncode == 0 else None
+                for window in windows:
+                    if existing is None:
+                        subprocess.run([*tmux, "new-session", "-d", "-s", session, "-n", window, "sleep 600"], env=env, check=True)
+                        existing = [window]
+                    elif window not in existing:
+                        subprocess.run([*tmux, "new-window", "-t", session, "-n", window, "sleep 600"], env=env, check=True)
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-destinations-frames.py" if destinations_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -298,13 +335,13 @@ export function formatTotal(total: number): string {
                     == feature_status
                 )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (4 if companion_target_proof else 2 if fix_draft_proof else 0)
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (5 if destinations_proof else 4 if companion_target_proof else 2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")
         shutil.copyfile(gh_state / "calls.jsonl", out / "gh-calls.jsonl")
     finally:
-        if fix_submit_proof:
+        if fix_submit_proof or destinations_proof:
             subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "kill-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:
             if child and child.poll() is None:

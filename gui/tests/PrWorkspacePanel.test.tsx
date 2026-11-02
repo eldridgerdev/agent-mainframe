@@ -319,3 +319,31 @@ it("preselects an existing companion session once, honours a cleared choice acro
   await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === "pr_workspace_fix_targets").length).toBeGreaterThan(1));
   expect(select.value).toBe("");
 });
+
+it("hooks the destination picker up to the AI review with the PR head and disables rows it cannot resolve", async () => {
+  const base = { harness: "claude" as const, stopped: false, unavailable: null, feature_name: "Feature" };
+  const opened = { ...base, target: { ...target, session_id: "opened" }, label: "Opened", destination_kind: "opened_feature" as const, destination_revision: "o-v1" };
+  const ghost = { ...opened, target: { ...target, session_id: "ghost" }, label: "Ghost" };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [opened] };
+  const finding = { path: null, line: null, side: null, body: "Finding", diff_hunk: null, skipped: false, published: false };
+  const feature = { kind: "opened_feature" as const, target, name: "Feature", branch: "feature", workdir: "/w", running: true, blocked: null, sessions: [opened, ghost], companion: null };
+  vi.mocked(invoke).mockImplementation(async (command: string) => {
+    if (command === "pr_workspace_begin") return "workspace";
+    if (command === "pr_triage_begin") return picker;
+    if (command === "pr_triage_snapshot" || command === "pr_triage_act") return fixes;
+    if (command === "pr_workspace_fix_targets") return fixes.fix_targets;
+    if (command === "pr_destination_catalog") return { pr_number: 42, opened: feature, companions: [] };
+    if (command === "pr_workspace_select_pr" || command === "pr_workspace_switch_ai" || command === "pr_workspace_close") return undefined;
+    if (command === "pr_workspace_ai_snapshot") return { workflow_id: "workspace", pr_number: 42, head_sha: "abcdef012345", result_revision: "result", running: false, stage: null, activity: null, elapsed_seconds: 0, token_estimate: null, findings: [finding], summary: null, error: null, precall: null, can_cancel: false };
+    throw new Error(`Unexpected command ${command}`);
+  });
+  render(<PrWorkspacePanel target={target} onClose={vi.fn()} onReturnToFeature={vi.fn()} onStatusChange={vi.fn()} onHandoff={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: /#42 Add feature/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "AI Review" }));
+  const aiPanel = await screen.findByRole("region", { name: "AI PR review" });
+  const region = await within(aiPanel).findByRole("region", { name: "Fix destinations" });
+  expect(vi.mocked(invoke)).toHaveBeenCalledWith("pr_destination_catalog", { request: { target, pr_number: 42, head_sha: "abcdef012345" } });
+  const uses = within(region).getAllByRole("button", { name: /Use|Selected/ }) as HTMLButtonElement[];
+  expect(uses.map((b) => b.disabled)).toEqual([false, true]);
+  expect(within(region).getByText(/Refreshing the agent list/)).toBeTruthy();
+});

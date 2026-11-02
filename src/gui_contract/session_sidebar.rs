@@ -723,6 +723,7 @@ mod tests {
             repository: "widget".into(),
             number: 42,
             comment_status: IssueCommentStatus::Posted,
+            comment_opt_out: false,
         });
         let tmux_session = feat.tmux_session.clone();
         let mut gui = gui_with(feat, dir.path(), true);

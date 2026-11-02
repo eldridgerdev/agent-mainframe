@@ -1757,6 +1757,7 @@ mod tests {
             repository: "widget".to_string(),
             number: 42,
             comment_status: crate::project::IssueCommentStatus::Posted,
+            comment_opt_out: false,
         });
 
         let sidebar = build_agent_sidebar_data(
@@ -1881,6 +1882,7 @@ mod tests {
             comment_status: crate::project::IssueCommentStatus::Failed(
                 "request timed out".to_string(),
             ),
+            comment_opt_out: false,
         });
         assert_eq!(
             issue_source_sidebar_text(&feature).as_deref(),

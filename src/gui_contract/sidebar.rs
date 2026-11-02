@@ -670,6 +670,7 @@ mod tests {
             repository: "widget".into(),
             number: 42,
             comment_status: IssueCommentStatus::Posted,
+            comment_opt_out: false,
         });
         feat.summary = Some("Rounded totals".into());
         feat.summary_updated_at = Some(Utc::now());

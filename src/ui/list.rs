@@ -1283,6 +1283,7 @@ mod tests {
                 repository: "widget".to_string(),
                 number: 42,
                 comment_status: crate::project::IssueCommentStatus::Posted,
+                comment_opt_out: false,
             });
         };
         let rendered = render_feature_row_configured_at_width(vec![], None, 140, configure);

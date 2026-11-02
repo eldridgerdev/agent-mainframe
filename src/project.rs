@@ -502,6 +502,10 @@ pub struct IssueSource {
     pub number: u32,
     #[serde(default)]
     pub comment_status: IssueCommentStatus,
+    /// Set by the GUI issue browser, which never writes to GitHub: AMF must not
+    /// post (or later retry posting) the feature comment for this source.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub comment_opt_out: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1678,6 +1682,7 @@ mod tests {
             repository: "widget".to_string(),
             number: 42,
             comment_status: IssueCommentStatus::Pending,
+            comment_opt_out: false,
         });
 
         let round_tripped: Feature =

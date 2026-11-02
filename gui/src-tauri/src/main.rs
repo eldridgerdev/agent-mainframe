@@ -39,6 +39,9 @@ use agent_mainframe::gui_dormancy::{
 use agent_mainframe::gui_fork::{
     self, ForkConfirmRequest, ForkOutcome, ForkPrepareRequest, ForkPreview, ForkStatus,
 };
+use agent_mainframe::gui_issues::{
+    self, IssueFixRequest, IssueFixResponse, IssueListView, IssuePreview,
+};
 use agent_mainframe::gui_learning::{self, LearningAction, LearningHandoff, LearningView};
 use agent_mainframe::gui_plans::{self, PlanAction, PlanInput, PlanStatus};
 use agent_mainframe::gui_pr_review::{self, PrReviewAction, PrReviewView};
@@ -829,6 +832,43 @@ fn start_feature(
     let mut gui = state.0.lock().expect("gui handle mutex poisoned");
     let response = gui.start_feature_with_approval(target, approved)?;
     emit_workspace_changed(&app, &gui.broadcast_snapshot());
+    Ok(response)
+}
+
+/// Open issues of a project's GitHub repository (read-only `gh api`). Async so
+/// the `gh` calls never stall the window; the GUI lock is not held during them.
+#[tauri::command]
+async fn issue_browser_list(
+    state: State<'_, AppState>,
+    project_id: String,
+    page: u32,
+) -> Result<IssueListView, GuiError> {
+    gui_issues::list(&state.0, &project_id, page)
+}
+
+#[tauri::command]
+async fn issue_fix_preview(
+    state: State<'_, AppState>,
+    project_id: String,
+    number: u32,
+) -> Result<IssuePreview, GuiError> {
+    gui_issues::preview(&state.0, &project_id, number)
+}
+
+/// Creates the issue-fixing feature after the user confirmed a preview.
+#[tauri::command]
+async fn issue_fix_create(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: IssueFixRequest,
+) -> Result<IssueFixResponse, GuiError> {
+    let response = gui_issues::create(&state.0, request)?;
+    let snapshot = state
+        .0
+        .lock()
+        .expect("gui handle mutex poisoned")
+        .broadcast_snapshot();
+    emit_workspace_changed(&app, &snapshot);
     Ok(response)
 }
 
@@ -2623,6 +2663,9 @@ fn main() {
             create_feature,
             worktree_hook_prompt,
             start_feature,
+            issue_browser_list,
+            issue_fix_preview,
+            issue_fix_create,
             new_session_options,
             add_session,
             start_session,

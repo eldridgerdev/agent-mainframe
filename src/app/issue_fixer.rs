@@ -58,6 +58,22 @@ pub(crate) fn issue_fix_prompt(repository: &GithubRepository, issue: &GithubIssu
     prompt
 }
 
+/// The branch an issue-fixing feature starts on: `issue/<n>-<title slug>`.
+pub(crate) fn issue_branch_name(number: u32, title: &str) -> String {
+    let title_slug = crate::project::normalized_feature_name(title);
+    let title_suffix = title_slug
+        .chars()
+        .take(48)
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if title_suffix.is_empty() {
+        format!("issue/{number}")
+    } else {
+        format!("issue/{number}-{title_suffix}")
+    }
+}
+
 fn bound_text(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
@@ -456,7 +472,7 @@ impl IssueWork {
 }
 
 impl App {
-    fn recoverable_issue_comment_indices(&self) -> Vec<(usize, usize)> {
+    pub(crate) fn recoverable_issue_comment_indices(&self) -> Vec<(usize, usize)> {
         self.store
             .projects
             .iter()
@@ -471,10 +487,11 @@ impl App {
                             .issue_source
                             .as_ref()
                             .is_some_and(|source| {
-                                !matches!(
-                                    source.comment_status,
-                                    crate::project::IssueCommentStatus::Posted
-                                )
+                                !source.comment_opt_out
+                                    && !matches!(
+                                        source.comment_status,
+                                        crate::project::IssueCommentStatus::Posted
+                                    )
                             })
                             .then_some((pi, fi))
                     })
@@ -550,18 +567,7 @@ impl App {
             return;
         }
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
-        let title_slug = crate::project::normalized_feature_name(&issue.title);
-        let title_suffix = title_slug
-            .chars()
-            .take(48)
-            .collect::<String>()
-            .trim_matches('-')
-            .to_string();
-        let branch = if title_suffix.is_empty() {
-            format!("issue/{}", issue.number)
-        } else {
-            format!("issue/{}-{}", issue.number, title_suffix)
-        };
+        let branch = issue_branch_name(issue.number, &issue.title);
         let settings = FeatureSetupState {
             presets: self
                 .extension_for_repo(&project_repo)
@@ -723,6 +729,7 @@ impl App {
                 repository: state.browser.repository.name.clone(),
                 number: issue.number,
                 comment_status: crate::project::IssueCommentStatus::Pending,
+                comment_opt_out: false,
             });
         if !state.duplicate_override
             && let Some(source) = &issue_source
@@ -767,7 +774,10 @@ impl App {
         self.create_feature()
     }
 
-    fn features_for_issue(&self, source: &crate::project::IssueSource) -> Vec<IssueFeatureMatch> {
+    pub(crate) fn features_for_issue(
+        &self,
+        source: &crate::project::IssueSource,
+    ) -> Vec<IssueFeatureMatch> {
         self.store
             .projects
             .iter()
@@ -954,10 +964,12 @@ impl App {
         else {
             return;
         };
-        if matches!(
-            source.comment_status,
-            crate::project::IssueCommentStatus::Posted
-        ) {
+        if source.comment_opt_out
+            || matches!(
+                source.comment_status,
+                crate::project::IssueCommentStatus::Posted
+            )
+        {
             return;
         }
         let body = issue_feature_comment(&feature_id, &feature_name, &branch);
@@ -1109,6 +1121,15 @@ mod tests {
             }
         }
 
+        fn get_issue(
+            &self,
+            _workdir: &std::path::Path,
+            _repository: &GithubRepository,
+            _number: u32,
+        ) -> Result<GithubIssue> {
+            anyhow::bail!("unused in issue test")
+        }
+
         fn issue_comment_bodies(
             &self,
             _workdir: &std::path::Path,
@@ -1214,6 +1235,7 @@ mod tests {
             repository: "widget".to_string(),
             number: 42,
             comment_status: status,
+            comment_opt_out: false,
         }
     }
 
@@ -1554,6 +1576,7 @@ mod tests {
                 repository: "widget".to_string(),
                 number: 42,
                 comment_status: crate::project::IssueCommentStatus::Pending,
+                comment_opt_out: false,
             })
         );
         assert_eq!(interview.editor.text(), edited_prompt);
@@ -1581,6 +1604,7 @@ mod tests {
             repository: "WIDGET".to_string(),
             number: 42,
             comment_status: crate::project::IssueCommentStatus::Posted,
+            comment_opt_out: false,
         });
         app.store.projects[0].features.push(existing);
         app.issue_browser_open_setup();
@@ -1651,6 +1675,7 @@ mod tests {
                 repository: "widget".to_string(),
                 number: 42,
                 comment_status: crate::project::IssueCommentStatus::Pending,
+                comment_opt_out: false,
             }),
         };
 
@@ -1736,6 +1761,7 @@ mod tests {
             repository: "widget".to_string(),
             number: 99,
             comment_status: crate::project::IssueCommentStatus::Pending,
+            comment_opt_out: false,
         });
         app.store.projects[0].features.push(other);
 

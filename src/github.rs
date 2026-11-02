@@ -50,6 +50,13 @@ pub trait GithubTransport {
         page: u32,
         per_page: u32,
     ) -> Result<GithubIssuePage>;
+    /// Read one open issue (never a pull request) by number. Read-only.
+    fn get_issue(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<GithubIssue>;
     fn issue_comment_bodies(
         &self,
         workdir: &Path,
@@ -856,6 +863,37 @@ impl GhCli {
         parse_issue_page(&output.stdout, page, per_page)
     }
 
+    /// Read one issue with a single read-only `gh api` GET. A pull request
+    /// (the issues endpoint also serves them) and a closed issue are refused
+    /// with a stated reason rather than returned.
+    pub fn get_issue(
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<GithubIssue> {
+        let endpoint = format!(
+            "repos/{}/{}/issues/{number}",
+            repository.owner, repository.name
+        );
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", &endpoint]);
+        if repository.host != "github.com" {
+            cmd.args(["--hostname", &repository.host]);
+        }
+        let output = cmd
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh api` while loading the GitHub issue.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_rate_limited(&stderr) {
+                bail!("GitHub rate limit exceeded while loading the issue; retry later");
+            }
+            bail!("`gh api {endpoint}` failed: {}", stderr.trim());
+        }
+        parse_single_issue(&output.stdout, number)
+    }
+
     pub fn issue_comment_bodies(
         workdir: &Path,
         repository: &GithubRepository,
@@ -1322,6 +1360,15 @@ impl GithubTransport for GhCli {
         per_page: u32,
     ) -> Result<GithubIssuePage> {
         Self::list_issues(workdir, repository, page, per_page)
+    }
+
+    fn get_issue(
+        &self,
+        workdir: &Path,
+        repository: &GithubRepository,
+        number: u32,
+    ) -> Result<GithubIssue> {
+        Self::get_issue(workdir, repository, number)
     }
 
     fn issue_comment_bodies(
@@ -2135,6 +2182,75 @@ fn parse_pr_revisions_json(stdout: &[u8]) -> Result<PrRevisions> {
         repo,
         state: extra.state,
     })
+}
+
+fn parse_single_issue(stdout: &[u8], number: u32) -> Result<GithubIssue> {
+    let value: serde_json::Value =
+        serde_json::from_slice(stdout).context("Failed to parse GitHub issue JSON response.")?;
+    if value.get("pull_request").is_some_and(|pr| !pr.is_null()) {
+        bail!("#{number} is a pull request, not an issue");
+    }
+    if value.get("state").and_then(|state| state.as_str()) == Some("closed") {
+        bail!("Issue #{number} is closed");
+    }
+    let issue: GithubIssue =
+        serde_json::from_value(value).context("GitHub returned a malformed issue.")?;
+    if issue.number != number {
+        bail!(
+            "GitHub returned issue #{} instead of #{number}",
+            issue.number
+        );
+    }
+    Ok(issue)
+}
+
+/// Strip credentials from text that is about to be shown to the user:
+/// GitHub token shapes, `Authorization`/`token`/`Bearer` headers and
+/// `user:password@` URL authorities.
+pub fn redact_secrets(text: &str) -> String {
+    const PREFIXES: [&str; 6] = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+    let mut out = String::with_capacity(text.len());
+    for (line_index, line) in text.split('\n').enumerate() {
+        if line_index > 0 {
+            out.push('\n');
+        }
+        let lower = line.to_ascii_lowercase();
+        if let Some(at) = [
+            "authorization:",
+            "authorization ",
+            "token:",
+            "gh_token",
+            "github_token",
+        ]
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min()
+        {
+            out.push_str(&redact_tokens(&line[..at], &PREFIXES));
+            out.push_str("[redacted credential]");
+            continue;
+        }
+        out.push_str(&redact_tokens(line, &PREFIXES));
+    }
+    out
+}
+
+fn redact_tokens(line: &str, prefixes: &[&str]) -> String {
+    let mut words = Vec::new();
+    for word in line.split(' ') {
+        let mut word = word.to_string();
+        if let (Some(scheme), Some(rest)) = (word.find("://"), word.find('@'))
+            && rest > scheme
+            && word[scheme + 3..rest].contains(':')
+        {
+            word = format!("{}[redacted]{}", &word[..scheme + 3], &word[rest..]);
+        }
+        if prefixes.iter().any(|prefix| word.contains(prefix)) {
+            word = "[redacted token]".to_string();
+        }
+        words.push(word);
+    }
+    words.join(" ")
 }
 
 fn parse_issue_page(stdout: &[u8], page: u32, per_page: u32) -> Result<GithubIssuePage> {
@@ -3068,5 +3184,51 @@ mod tests {
                 .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
                     && value == Some(std::ffi::OsStr::new("0")))
         );
+    }
+}
+
+#[cfg(test)]
+mod issue_read_tests {
+    use super::{parse_single_issue, redact_secrets};
+
+    #[test]
+    fn single_issue_refuses_pull_requests_closed_issues_and_wrong_numbers() {
+        let open = br#"{"number":7,"title":"t","state":"open","updated_at":"x","labels":[{"name":"bug"}]}"#;
+        assert_eq!(parse_single_issue(open, 7).unwrap().labels.len(), 1);
+        assert!(
+            parse_single_issue(open, 8)
+                .unwrap_err()
+                .to_string()
+                .contains("instead of #8")
+        );
+        let pr = br#"{"number":7,"state":"open","pull_request":{"url":"u"}}"#;
+        assert!(
+            parse_single_issue(pr, 7)
+                .unwrap_err()
+                .to_string()
+                .contains("pull request")
+        );
+        let closed = br#"{"number":7,"state":"closed"}"#;
+        assert!(
+            parse_single_issue(closed, 7)
+                .unwrap_err()
+                .to_string()
+                .contains("closed")
+        );
+        assert!(parse_single_issue(b"not json", 7).is_err());
+    }
+
+    #[test]
+    fn redaction_removes_token_shapes_headers_and_url_credentials() {
+        let token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        assert!(!redact_secrets(&format!("bad token {token} rejected")).contains(token));
+        assert!(!redact_secrets("github_pat_11AAAA_secret").contains("secret"));
+        let header = redact_secrets("request failed\nAuthorization: Bearer abc123\nnext line");
+        assert!(!header.contains("abc123"));
+        assert!(header.contains("next line"));
+        let url = redact_secrets("clone https://user:hunter2@github.com/a/b failed");
+        assert!(!url.contains("hunter2"));
+        assert!(url.contains("github.com/a/b"));
+        assert_eq!(redact_secrets("plain error 404"), "plain error 404");
     }
 }

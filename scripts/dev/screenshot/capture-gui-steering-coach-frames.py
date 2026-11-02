@@ -182,7 +182,7 @@ try:
     assert evaluate(f"!{box}.checked"), "the coach must be off by default"
     evaluate(f"{box}.click()")
     wait(f"{box}.checked")
-    capture("001-creation-checkbox.png", "The New feature form offers 'Prompt coach (experimental)', off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Prompt coach (experimental)", "check your first prompt for scope"], f"{box}.checked")
+    capture("001-creation-checkbox.png", "The New feature form offers 'Prompt coach (experimental)', off by default; ticking it only changes where the new feature lands after creation.", ["New feature", "Prompt coach (experimental)", "check your first prompt for scope"], f"{box}.checked", allow_alert=True)  # a runner without Claude shows a harness alert here
     click("Cancel")
     wait('!document.querySelector("[role=dialog][aria-label=\\"New feature\\"]")')
 

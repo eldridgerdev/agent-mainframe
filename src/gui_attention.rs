@@ -117,6 +117,18 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 fn resolve<'a>(app: &'a App, input: &PendingInput) -> Option<(&'a Project, &'a Feature)> {
+    // A worktree file lives in its owning feature's notifications directory,
+    // so the path identifies the feature exactly, even when names repeat.
+    if let Some(dir) = input.file_path.parent() {
+        for project in &app.store.projects {
+            for feature in &project.features {
+                if feature.workdir.join(".claude").join("notifications") == dir {
+                    return Some((project, feature));
+                }
+            }
+        }
+    }
+    // Global-directory files carry only names; fall back to those.
     let project = app
         .store
         .projects
@@ -241,7 +253,13 @@ fn build(app: &App) -> GuiResult<NeedsAttentionView> {
     }
     // Session waits first (the TUI lists explained stops before other
     // pending inputs), oldest first within each group.
-    rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.id.cmp(&b.2.id)));
+    // A file whose age is unknown sorts after every dated one.
+    rows.sort_by(|a, b| {
+        let age = |t: &Option<SystemTime>| (t.is_none(), *t);
+        b.0.cmp(&a.0)
+            .then(age(&a.1).cmp(&age(&b.1)))
+            .then(a.2.id.cmp(&b.2.id))
+    });
     view.rows = rows.into_iter().map(|(_, _, row)| row).collect();
     if view.hidden_stopped > 0 {
         view.limits.push(format!(

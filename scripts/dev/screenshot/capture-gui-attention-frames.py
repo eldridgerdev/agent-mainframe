@@ -9,18 +9,12 @@ import json
 import pathlib
 import re
 import subprocess
-import sqlite3
 import sys
 import time
 import urllib.request
 
-import gi
 import websocket
 from Xlib import display
-
-gi.require_version("Gdk", "3.0")
-gi.require_version("GdkX11", "3.0")
-from gi.repository import Gdk, GdkX11
 
 out = pathlib.Path(sys.argv[1]).resolve()
 pid = int(sys.argv[2])
@@ -77,24 +71,6 @@ def wait(expression):
     raise AssertionError(f"Timed out: {expression}; body={evaluate('document.body.innerText')}")
 
 
-def click(text):
-    # Listing dormancy loads Rust state asynchronously. Its Settings button
-    # is present but disabled until that load completes on slower runners.
-    wait(f'Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==={json.dumps(text)} && !b.disabled)')
-    evaluate(
-        f'Array.from(document.querySelectorAll("button")).find(b=>b.textContent.trim()==={json.dumps(text)}).click()'
-    )
-
-
-def select(label, value):
-    evaluate(
-        f"""(()=>{{const label=Array.from(document.querySelectorAll('label')).find(l=>l.querySelector('span')?.textContent==={json.dumps(label)});const el=label.querySelector('select');el.value={json.dumps(value)};el.dispatchEvent(new Event('change',{{bubbles:true}}));}})()"""
-    )
-    wait(
-        '!document.body.innerText.includes("Loading changes…") && !!document.querySelector(".diff-reader")'
-    )
-
-
 x = display.Display()
 atom = x.intern_atom("_NET_WM_PID")
 windows = []
@@ -125,7 +101,6 @@ captured_frames = set()
 
 def capture(name, note, expects, expression=None, allow_alert=False):
     wait('document.fonts.status==="loaded"')
-    wait('!document.body.innerText.includes("Loading changes…")')
     body = evaluate("document.body.innerText")
     for text in expects:
         assert text in body, (text, body)
@@ -167,7 +142,7 @@ try:
     window.configure(x=0, y=0, width=1280, height=850)
     x.sync()
     wait('document.body.innerText.includes("Round invoice totals")')
-    wait('!!Array.from(document.querySelectorAll("button")).find(b=>b.textContent.includes("Needs attention") && b.textContent.includes("4"))')
+    wait("document.querySelector('.nav-count-attention[title=\\'Requests waiting on disk\\']')?.textContent.trim()==='4'")
     # The edit-review fixture file also triggers the existing Supervised edits
     # auto-popup (a surface this feature leaves untouched). Close it first so the
     # new list is the subject of the frame.

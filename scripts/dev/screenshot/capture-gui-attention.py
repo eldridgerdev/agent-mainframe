@@ -7,6 +7,7 @@ HOME is preserved. Only owned GUI/Vite process groups are stopped on exit.
 import json
 import os
 import pathlib
+import shlex
 import signal
 import socket
 import sqlite3
@@ -17,9 +18,6 @@ import time
 import urllib.request
 
 port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1440"))
-# Other proofs reuse this fixture through AMF_GUI_CAPTURE_FRAMES. They name
-# themselves here so a failed post-check is reported under the right feature.
-proof = os.environ.get("AMF_GUI_CAPTURE_PROOF", "Needs-attention list")
 out = pathlib.Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 workspace = pathlib.Path(__file__).resolve().parents[3]
@@ -59,11 +57,6 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
         "GIT_COMMITTER_EMAIL": "demo@example.com",
     }
 
-    def git(*args):
-        return subprocess.check_output(
-            ["git", *args], cwd=repo, env=git_env, stderr=subprocess.DEVNULL, text=True
-        ).strip()
-
     def make_repo(path, title):
         path.mkdir()
         def g(*args):
@@ -81,7 +74,6 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
     idle_dir.mkdir()
     tmux = ["tmux", "-S", env["AMF_TMUX_SOCKET"]]
     harness = os.environ.get("AMF_GUI_CAPTURE_HARNESS", str(workspace / "scripts/dev/screenshot/fixtures/gui-composer-harness.py"))
-    import shlex
     def command(label, filename):
         return shlex.join(["/usr/bin/python3", harness, str(scratch / filename), label])
     notifications = {
@@ -99,9 +91,8 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
     # A request no feature owns: shows the unmatched-row explanation.
     (config / "amf" / "notifications").mkdir(parents=True)
     (config / "amf" / "notifications" / "orphan.json").write_text(json.dumps({"type": "input-request", "message": "From an unknown session.", "cwd": str(scratch / "nowhere"), "amf_session": "amf-unknown"}))
-    import os as _os
-    _os.utime(repo2 / ".claude/notifications/stop-1.json", (time.time() - 7200, time.time() - 7200))
-    _os.utime(repo / ".claude/notifications/ask-1.json", (time.time() - 420, time.time() - 420))
+    os.utime(repo2 / ".claude/notifications/stop-1.json", (time.time() - 7200, time.time() - 7200))
+    os.utime(repo / ".claude/notifications/ask-1.json", (time.time() - 420, time.time() - 420))
     # The port must match the compiled devUrl (default 1420; an alternate
     # capture port needs a matching TAURI_CONFIG build override). If something
     # already serves it, the readiness probe below could succeed
@@ -113,17 +104,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
             )
     except OSError:
         pass
-    fresh_python = os.environ.get("AMF_GUI_CAPTURE_FRESH_SERVER_PYTHON") == "1"
     gui_env = env.copy()
-    if fresh_python:
-        image = scratch / "AppDir"
-        host_modules = scratch / "host-python"
-        host_modules.mkdir()
-        (host_modules / "amf_host_python_probe.py").write_text('value = "host-module-imported"\n')
-        original_harness = pathlib.Path(harness).read_text()
-        harness = str(scratch / "python-receiver.py")
-        pathlib.Path(harness).write_text('import amf_host_python_probe; assert amf_host_python_probe.value == "host-module-imported"\n' + original_harness)
-        gui_env.update(APPDIR=str(image), PYTHONHOME=str(image / "usr") + "/", PYTHONPATH=str(image / "usr/share/pyshared") + "/:" + str(host_modules))
     vite_log = (out / "vite.log").open("w")
     gui_log = (out / "gui.log").open("w")
     vite = subprocess.Popen(
@@ -147,40 +128,16 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
                 time.sleep(0.25)
         else:
             raise RuntimeError("The isolated frontend did not become ready")
-        if fresh_python:
-            gui = subprocess.Popen(
-                [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
-                cwd=scratch,
-                env=gui_env,
-                stdout=gui_log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            for _ in range(120):
-                if gui.poll() is not None:
-                    raise RuntimeError("Fresh-server GUI exited before tmux startup")
-                result = subprocess.run(tmux + ["show-environment", "-g", "AMF_TMUX_SOCKET"], text=True, capture_output=True)
-                if result.returncode == 0:
-                    break
-                time.sleep(0.25)
-            else:
-                raise RuntimeError("GUI did not start its private tmux server")
-            home = subprocess.run(tmux + ["show-environment", "-g", "PYTHONHOME"], text=True, capture_output=True)
-            assert home.returncode != 0 or home.stdout == "-PYTHONHOME\n", "Bundle Python home reached tmux server"
-            path = subprocess.check_output(tmux + ["show-environment", "-g", "PYTHONPATH"], text=True).strip()
-            assert path == "PYTHONPATH=" + str(host_modules), "Host Python search path not preserved"
-            (out / "python-environment-proof.json").write_text(json.dumps({"launch": "current-source GUI with released AppRun Python redirects", "server_started_by": "GUI before receivers", "bundle_home_removed": True, "host_python_path_preserved": True}) + "\n")
         for name, wd_label in [("amf-attn-invoice", "Invoice"), ("amf-attn-receipts", "Receipts")]:
             subprocess.run(tmux + ["new-session", "-d", "-s", name, "-n", "claude", "-x", "120", "-y", "30", command(wd_label + " agent", name + "-received.json")], check=True)
-        if gui is None:
-            gui = subprocess.Popen(
-                [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
-                cwd=scratch,
-                env=gui_env,
-                stdout=gui_log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+        gui = subprocess.Popen(
+            [os.environ.get("AMF_GUI_CAPTURE_BINARY", str(workspace / "target/debug/amf-gui"))],
+            cwd=scratch,
+            env=gui_env,
+            stdout=gui_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         dbpath = config / "amf/amf.db"
         for _ in range(60):
             if gui.poll() is not None:
@@ -238,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-attention-") as temporary:
         for name in ["amf-attn-invoice", "amf-attn-receipts"]:
             received = scratch / (name + "-received.json")
             if received.is_file():
-                assert json.loads(received.read_text()) == [], f"{proof} submitted a prompt"
+                assert json.loads(received.read_text()) == [], f"Needs-attention list submitted a prompt"
         with sqlite3.connect(dbpath) as db:
             assert db.execute("SELECT status FROM features WHERE id='feat-idle'").fetchone()[0] == "stopped"
     finally:

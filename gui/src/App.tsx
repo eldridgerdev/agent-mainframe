@@ -257,7 +257,7 @@ export default function App() {
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
   const [showAttention, setShowAttention] = useState(false);
-  const attention = useQuery({ queryKey: NEEDS_ATTENTION_KEY, queryFn: loadNeedsAttention, retry: false, refetchInterval: 3000 });
+  const attention = useQuery({ queryKey: NEEDS_ATTENTION_KEY, queryFn: loadNeedsAttention, retry: false, refetchInterval: showAttention ? 3000 : 15000 });
   const attentionCount = attention.data?.rows?.length ?? 0;
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);

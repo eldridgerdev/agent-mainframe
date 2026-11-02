@@ -579,7 +579,14 @@ mod tests {
         assert!(err.message.contains("No agent window"), "{}", err.message);
     }
 
-    fn wait_for_outcome(f: &mut Fixture) -> String {
+    /// The outcome is handed over exactly once, to whichever call sees it
+    /// first.  ends in , whose store refresh can
+    /// consume a worker that has already finished, so the outcome may arrive
+    /// on the returned view rather than through a later refresh.
+    fn wait_for_outcome(f: &mut Fixture, from_view: &FeatureActionsView) -> String {
+        if let Some(outcome) = &from_view.summary_outcome {
+            return outcome.clone();
+        }
         for _ in 0..1500 {
             f.gui.refresh_store().unwrap();
             if let Some((_, outcome)) = f.gui.summary_outcome.take() {
@@ -601,7 +608,7 @@ mod tests {
             let again = summary_notice(&mut f.gui, f.feature.clone());
             assert!(again.is_err() || f.gui.app_for_workflow().summary_rx.is_none());
         }
-        let outcome = wait_for_outcome(&mut f);
+        let outcome = wait_for_outcome(&mut f, &view);
         assert!(outcome.contains("Fake one-line summary"), "{outcome}");
         assert_eq!(stored(&f).summary.as_deref(), Some("Fake one-line summary"));
         let view = load(&mut f.gui, f.feature.clone()).unwrap();
@@ -618,8 +625,9 @@ mod tests {
         let mut f = fixture(true);
         external(&f, |feature| feature.summary = Some("Previous".into()));
         let notice = summary_notice(&mut f.gui, f.feature.clone()).unwrap();
-        summary_generate_with(&mut f.gui, f.feature.clone(), ack(&notice), fake_err).unwrap();
-        let outcome = wait_for_outcome(&mut f);
+        let view =
+            summary_generate_with(&mut f.gui, f.feature.clone(), ack(&notice), fake_err).unwrap();
+        let outcome = wait_for_outcome(&mut f, &view);
         assert!(outcome.contains("Failed to generate summary"), "{outcome}");
         assert!(outcome.contains("model unavailable"), "{outcome}");
         assert_eq!(stored(&f).summary.as_deref(), Some("Previous"));

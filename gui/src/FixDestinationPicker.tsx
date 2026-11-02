@@ -38,7 +38,7 @@ export default function FixDestinationPicker({ targets, choice, onChoose, label,
   const stale = staleProp ?? (choice !== null && choice !== "" && !selected);
   const group = (kind: PrFixTarget["destination_kind"]) => visible.filter((t) => t.destination_kind === kind);
   const option = (t: PrFixTarget) => (
-    <option key={targetKey(t)} value={targetKey(t)} disabled={t.stopped}>{t.label}{t.stopped ? " (stopped)" : ""}</option>
+    <option key={targetKey(t)} value={targetKey(t)} disabled={t.stopped} title={t.unavailable ?? undefined}>{t.label}{t.unavailable ? ` (unavailable: ${t.unavailable})` : t.stopped ? " (stopped)" : ""}</option>
   );
   const opened = group("opened_feature");
   const companions = group("companion");

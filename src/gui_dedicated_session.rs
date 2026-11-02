@@ -28,6 +28,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::app::ReapplyOutcome;
 use crate::app::pr_review::TRIAGE_SESSION_LABEL;
 use crate::gui_contract::{FeatureTarget, GuiError, GuiHandle, GuiResult, SessionTarget};
 use crate::project::{AgentKind, Feature, FeatureSession, Project, SessionKind};
@@ -266,9 +267,11 @@ fn agent_of(session: &FeatureSession) -> Option<AgentKind> {
     crate::app::session_ops::agent_for_session_kind(&session.kind)
 }
 
-/// The labelled agent session this choice would reuse. Mirrors the TUI's
-/// resolver, but a label held by two sessions is refused instead of resolving
-/// to the first.
+/// The labelled session this choice would reuse. Mirrors the TUI's resolver,
+/// but a label held by two sessions is refused instead of resolving to the
+/// first. The label is the session's identity whatever its kind and however it
+/// is capitalised, so a terminal or TODO session already called "pr triage"
+/// blocks the name too rather than sitting beside a second, look-alike row.
 fn labelled_session<'a>(
     feature: &'a Feature,
     label: &str,
@@ -278,16 +281,22 @@ fn labelled_session<'a>(
         feature
             .sessions
             .iter()
-            .filter(|s| s.kind.is_agent_harness() && s.label == wanted)
+            .filter(|s| s.label.trim().eq_ignore_ascii_case(wanted.trim()))
             .collect::<Vec<_>>()
     };
     let mut rows = rows_for(label);
-    if rows.is_empty() && label == TRIAGE_SESSION_LABEL {
+    if rows.is_empty() && label.eq_ignore_ascii_case(TRIAGE_SESSION_LABEL) {
         rows = rows_for(LEGACY_LABEL);
     }
     match rows.as_slice() {
         [] => Ok(None),
         [row] => {
+            if !row.kind.is_agent_harness() {
+                return Err(conflict(format!(
+                    "A non-agent session is already named '{}'; choose another session name",
+                    row.label
+                )));
+            }
             if agent_of(row).as_ref() != Some(agent) {
                 let existing = agent_of(row).map_or("another harness", |a| match a {
                     AgentKind::Claude => "Claude",
@@ -356,6 +365,10 @@ struct Plan {
     existing: Option<FeatureSession>,
 }
 
+/// Runs under the GUI handle's lock, like every PR command: the harness probe,
+/// the checkout identity read and the tmux window check are short local reads
+/// whose answers are bound into the revision, so they are taken from the same
+/// state the rest of the plan sees rather than before the lock.
 fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> {
     let bound = bind(gui, &request.workflow)?;
     check_identity(&bound, &request.identity)?;
@@ -395,9 +408,15 @@ fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> 
                     .into(),
             );
             consequences.push(format!(
-                "Writes AMF's local notification-hook settings for {} in the feature checkout, as every new session does.",
+                "After the session is saved, writes AMF's local notification-hook settings for {} in the feature checkout, as every new session does.",
                 agent.display_name()
             ));
+            if feature.review {
+                consequences.push(
+                    "This feature has review enabled, so AMF's review instructions are also kept up to date in the checkout's CLAUDE.local.md."
+                        .into(),
+                );
+            }
             resource_warning = gui
                 .require_start_approval(&format!("Adding '{label}'"))
                 .err()
@@ -405,6 +424,11 @@ fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> 
             true
         }
     };
+    consequences.push(format!(
+        "Bound to PR #{} at head {}, as last loaded by AMF; commits pushed since are only noticed after you refresh.",
+        bound.identity.pr_number,
+        bound.identity.head_sha.chars().take(12).collect::<String>()
+    ));
     consequences.push("Nothing is posted to GitHub.".into());
     if existing.is_some() && !stopped {
         consequences
@@ -506,48 +530,80 @@ pub fn prepare(
     if !request.approved {
         gui.require_start_approval(&format!("Adding '{}'", plan.label))?;
     }
-    let (pi, fi) = gui
-        .app_for_workflow()
+    let app = gui.app_for_workflow();
+    let (pi, fi) = app
         .store
         .locate_feature_by_id(Some(&opened.project_id), &opened.feature_id)
         .ok_or_else(|| GuiError::not_found("The feature was deleted"))?;
-    let app = gui.app_for_workflow();
-    let (repo, workdir, mode, is_worktree) = {
+    let (repo, workdir, mode, is_worktree, review) = {
         let feature = &app.store.projects[pi].features[fi];
         (
             app.store.projects[pi].repo.clone(),
             feature.workdir.clone(),
             feature.mode.clone(),
             feature.is_worktree,
+            feature.review,
         )
     };
-    crate::app::setup::ensure_notification_hooks(&workdir, &repo, &mode, &plan.agent, is_worktree);
     let session_kind: SessionKind = crate::app::session_kind_for_agent(&plan.agent);
     let session = {
         let feature = &mut app.store.projects[pi].features[fi];
         let session = feature.add_session_named(session_kind, plan.label.clone());
         session.stopped = true;
-        session.clone()
+        let session = session.clone();
+        feature.collapsed = false;
+        session
     };
-    match app.save_reporting_conflict() {
-        Ok(true) => {}
-        Ok(false) => {
+    // Re-applied by id onto whatever another writer saved meanwhile, so an
+    // unrelated concurrent store write is not a hard conflict.
+    let (project_id, feature_id) = (opened.project_id.clone(), opened.feature_id.clone());
+    let outcome = app.save_reapplying(|store| {
+        let Some((pi, fi)) = store.locate_feature_by_id(Some(&project_id), &feature_id) else {
+            return false;
+        };
+        let feature = &mut store.projects[pi].features[fi];
+        if !feature.sessions.iter().any(|s| s.id == session.id) {
+            feature.sessions.push(session.clone());
+        }
+        feature.collapsed = false;
+        true
+    });
+    match outcome {
+        Ok(ReapplyOutcome::Saved) => {}
+        Ok(ReapplyOutcome::TargetGone) => {
+            return Err(GuiError::not_found(
+                "The feature was deleted before the session was saved. Nothing was created.",
+            ));
+        }
+        Ok(ReapplyOutcome::Conflict) => {
             return Err(conflict(
                 "Workspace changed elsewhere (another AMF window or process) before the session was saved. The view was refreshed; review the preview and retry.",
             ));
         }
         Err(error) => {
-            if let Some(feature) = app
+            // The unsaved row is still in memory; take it back out by id (the
+            // indices may not survive a reload).
+            if let Some((pi, fi)) = app
                 .store
-                .projects
-                .get_mut(pi)
-                .and_then(|p| p.features.get_mut(fi))
+                .locate_feature_by_id(Some(&project_id), &feature_id)
             {
-                feature.sessions.retain(|s| s.id != session.id);
+                app.store.projects[pi].features[fi]
+                    .sessions
+                    .retain(|s| s.id != session.id);
             }
             return Err(GuiError::from(error));
         }
     }
+    // Only now touch the checkout. The session is stopped, so nothing is
+    // reading these files, and a failed or conflicting save leaves no trace.
+    crate::app::setup::ensure_notification_hooks(&workdir, &repo, &mode, &plan.agent, is_worktree);
+    crate::app::setup::ensure_review_claude_md(&workdir, review);
+    let Some((pi, fi)) = app
+        .store
+        .locate_feature_by_id(Some(&project_id), &feature_id)
+    else {
+        return Err(GuiError::not_found("The feature was deleted"));
+    };
     let feature = &app.store.projects[pi].features[fi];
     let revision = crate::gui_pr_workspace::destination_revision(feature, &session);
     Ok(PrDestinationPrepared {

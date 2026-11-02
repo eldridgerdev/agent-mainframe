@@ -6,7 +6,7 @@ import type { PrFixTarget } from "../src/prTriageApi";
 afterEach(cleanup);
 
 const row = (feature: string, session: string, kind: PrFixTarget["destination_kind"], stopped = false): PrFixTarget => ({
-  target: { project_id: "p", feature_id: feature, session_id: session }, label: session, harness: "claude", stopped,
+  target: { project_id: "p", feature_id: feature, session_id: session }, label: session, harness: "claude", stopped, unavailable: null,
   destination_revision: `${feature}-${session}`, destination_kind: kind, feature_name: feature,
 });
 const opened = row("main", "agent", "opened_feature");
@@ -38,4 +38,12 @@ it("hides stopped rows in hide mode and flags a stale choice", () => {
   render(<FixDestinationPicker label="Fix agent" targets={[opened, row("main", "idle", "opened_feature", true)]} choice={"gone"} stoppedMode="hide" onChoose={vi.fn()} />);
   expect(screen.queryByRole("option", { name: /idle/ })).toBeNull();
   expect(screen.getByRole("option", { name: /unavailable or changed/ })).toBeTruthy();
+});
+
+it("labels an unavailable row with its reason and keeps it disabled", () => {
+  const blocked = { ...row("fix-triage", "shared", "companion", true), unavailable: "Shares its tmux session with another feature" };
+  render(<FixDestinationPicker label="Fix agent" targets={[opened, blocked]} choice={""} onChoose={vi.fn()} />);
+  const option = screen.getByRole("option", { name: /shared \(unavailable: Shares its tmux session/ }) as HTMLOptionElement;
+  expect(option.disabled).toBe(true);
+  expect(option.title).toMatch(/tmux session/);
 });

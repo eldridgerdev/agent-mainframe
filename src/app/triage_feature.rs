@@ -26,7 +26,7 @@
 //!    cherry-pick into the source worktree — and the cherry-pick is refused
 //!    outright while the source worktree is dirty.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Result;
@@ -36,9 +36,10 @@ use crate::app::state::{
     AppMode, TriageFeatureSetupState, TriageIntegrateState, TriageIntegration,
 };
 use crate::app::{App, StartIntent};
-use crate::extension::merge_project_extension_config;
+use crate::extension::{HookConfig, merge_project_extension_config};
 use crate::project::{
-    Feature, ProjectStatus, TriageSource, VibeMode, normalized_feature_name, worktree_name,
+    AgentKind, Feature, ProjectStatus, TriageSource, VibeMode, normalized_feature_name,
+    worktree_name,
 };
 
 /// Most commits worth previewing in the integration overlay. A triage branch
@@ -49,6 +50,91 @@ const INTEGRATE_COMMIT_PREVIEW: usize = 20;
 /// Suffix appended to the source branch to name the companion branch. Kept
 /// short and recognizable so `git branch` output reads obviously.
 const TRIAGE_BRANCH_SUFFIX: &str = "-triage";
+
+/// The facts about a PR a companion is planned from. Explicit so a plan does
+/// not depend on `AppMode::PrReview` being open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TriagePrFacts {
+    pub pr_number: u32,
+    pub head_sha: String,
+    /// The PR's head branch; empty for a pre-`head_ref` cached PR row.
+    pub head_ref: String,
+}
+
+/// What the companion feature is to be created with.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TriageCompanionSpec {
+    pub branch: String,
+    pub agent: AgentKind,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub enable_chrome: bool,
+}
+
+/// Whether planning may `git fetch origin <head sha>` when the PR head is not
+/// present locally. A fetch adds objects to the object database, so a strictly
+/// read-only preview uses [`FetchPolicy::Never`].
+// `Never` and the plan's preview-only fields are for the GUI destination job
+// (a later change); the TUI only needs `IfMissing` and the registration inputs.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchPolicy {
+    Never,
+    IfMissing,
+}
+
+/// A companion for the same `(PR, source feature)` that already exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExistingTriageCompanion {
+    pub feature_id: String,
+    pub name: String,
+}
+
+/// Everything decided about a companion before anything is created. Holds the
+/// exact hook snapshot and choice so registration runs what was previewed.
+#[allow(dead_code)] // preview fields are read by the GUI caller, not the TUI
+#[derive(Debug, Clone)]
+pub(crate) struct TriageCompanionPlan {
+    pub project_id: String,
+    pub project_name: String,
+    pub repo: PathBuf,
+    pub source_feature_id: String,
+    pub source_workdir: PathBuf,
+    pub pr_number: u32,
+    /// The ref integration pushes onto.
+    pub pr_branch: String,
+    /// Spec with the branch trimmed.
+    pub spec: TriageCompanionSpec,
+    pub worktree_name: String,
+    /// What `git worktree add` branches from (a branch name or the head sha).
+    pub base: String,
+    /// The resolved commit recorded as `TriageSource::base_sha`.
+    pub base_sha: String,
+    /// A local git branch already has the companion's name (git would refuse).
+    pub local_branch_exists: bool,
+    /// `base_sha` names a commit this repository actually has. `rev-parse
+    /// --verify` accepts any well-formed full id, so the TUI's base can
+    /// "resolve" without the object existing; a caller that must fail closed
+    /// checks this before creating anything.
+    pub base_commit_present: bool,
+    pub existing_companion: Option<ExistingTriageCompanion>,
+    pub hook: Option<HookConfig>,
+    pub hook_choice: Option<String>,
+    /// The hook asks the user to choose; a caller must supply a choice.
+    pub hook_choice_required: bool,
+}
+
+/// Stable identities of a registered (stopped) companion.
+#[allow(dead_code)] // `session_id` is for the GUI caller
+#[derive(Debug, Clone)]
+pub(crate) struct CreatedTriageCompanion {
+    pub project_id: String,
+    pub feature_id: String,
+    pub session_id: String,
+    pub name: String,
+    /// Set when the worktree hook failed; the companion is kept.
+    pub hook_warning: Option<String>,
+}
 
 impl App {
     // ---------------------------------------------------------------- setup
@@ -224,6 +310,10 @@ impl App {
     /// [`TriageSource`] link, and start its triage agent session. Returns the
     /// new feature's name.
     ///
+    /// A thin TUI caller of [`Self::plan_triage_companion`] and
+    /// [`Self::register_triage_companion`]: it reads the PR facts off the open
+    /// pane, then plans, registers, and starts the agent.
+    ///
     /// Errors are returned rather than shown so the caller can keep them
     /// inline in the setup overlay.
     fn create_triage_feature(&mut self, setup: &TriageFeatureSetupState) -> Result<String> {
@@ -232,23 +322,109 @@ impl App {
             anyhow::bail!("Branch name cannot be empty");
         }
 
-        let (state_workdir, pr_number, head_ref, head_sha) = match &self.mode {
+        let (state_workdir, facts) = match &self.mode {
             AppMode::PrReview(state) => (
                 state.workdir.clone(),
-                state.review.pr.number,
-                state.review.pr.head_ref.trim().to_string(),
-                state.review.pr.head_sha.clone(),
+                TriagePrFacts {
+                    pr_number: state.review.pr.number,
+                    head_sha: state.review.pr.head_sha.clone(),
+                    head_ref: state.review.pr.head_ref.trim().to_string(),
+                },
             ),
             _ => anyhow::bail!("not reviewing a PR"),
         };
         let (pi, source_fi) = self
             .feature_indices_for_workdir(&state_workdir)
             .ok_or_else(|| anyhow::anyhow!("could not find the feature for this PR"))?;
-
-        let project_name = self.store.projects[pi].name.clone();
+        let source_feature_id = self.store.projects[pi].features[source_fi].id.clone();
         let project_repo = self.store.projects[pi].repo.clone();
-        let source = &self.store.projects[pi].features[source_fi];
-        let source_feature_id = source.id.clone();
+        let hook = merge_project_extension_config(&self.config.extension, &project_repo)
+            .lifecycle_hooks
+            .on_worktree_created;
+
+        let agent = setup.agent();
+        let plan = self.plan_triage_companion(
+            &source_feature_id,
+            &facts,
+            &TriageCompanionSpec {
+                branch,
+                agent: agent.clone(),
+                mode: setup.mode.clone(),
+                review: setup.review,
+                enable_chrome: setup.enable_chrome,
+            },
+            hook.as_ref(),
+            // The TUI runs the hook choice-less (the interactive prompt would
+            // have to unwind the PR pane), exactly as before the split.
+            None,
+            false,
+            FetchPolicy::IfMissing,
+        )?;
+        let created = self.register_triage_companion(&plan)?;
+        let feature_name = created.name;
+
+        let (pi, fi) = self
+            .store
+            .locate_feature_by_id(Some(&created.project_id), &created.feature_id)
+            .ok_or_else(|| anyhow::anyhow!("triage feature missing after add"))?;
+        self.store.projects[pi].collapsed = false;
+        // Mid-flow: the companion feature has already been created and
+        // recorded, so a modal here would strand the triage hand-off.
+        self.ensure_feature_running(pi, fi, StartIntent::Warn("the PR triage agent"))?;
+        self.save()?;
+        self.log_info(
+            "pr_triage",
+            format!(
+                "Created triage feature '{feature_name}' for PR #{} \
+                 ({} / {})",
+                facts.pr_number,
+                agent.display_name(),
+                setup.mode.display_name()
+            ),
+        );
+        Ok(feature_name)
+    }
+
+    // ------------------------------------------------- plan / register split
+
+    /// Decide everything a triage companion needs, without changing anything.
+    ///
+    /// Reads the store and git (`rev-parse`, `show-ref`, `merge-base`) and
+    /// nothing else: no worktree, branch, hook, toast or store write. With
+    /// [`FetchPolicy::IfMissing`] it may also `git fetch origin <head sha>`,
+    /// which adds objects to the object database (the TUI's historic
+    /// behavior); [`FetchPolicy::Never`] keeps it strictly read-only, and a
+    /// head that is not present locally then fails closed.
+    ///
+    /// Inputs are explicit (the PR facts, the source feature id, the exact
+    /// hook config snapshot and choice), so a caller that is not the PR pane
+    /// can preview and later register the same plan.
+    ///
+    /// Check order matches the historic `create_triage_feature`, so the first
+    /// failure a user sees is unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn plan_triage_companion(
+        &self,
+        source_feature_id: &str,
+        facts: &TriagePrFacts,
+        spec: &TriageCompanionSpec,
+        hook: Option<&HookConfig>,
+        hook_choice: Option<&str>,
+        require_hook_choice: bool,
+        fetch: FetchPolicy,
+    ) -> Result<TriageCompanionPlan> {
+        let branch = spec.branch.trim().to_string();
+        if branch.is_empty() {
+            anyhow::bail!("Branch name cannot be empty");
+        }
+        let (pi, source_fi) = self
+            .store
+            .locate_feature_by_id(None, source_feature_id)
+            .ok_or_else(|| anyhow::anyhow!("could not find the feature for this PR"))?;
+        let project = &self.store.projects[pi];
+        let source = &project.features[source_fi];
+        let source_workdir = source.workdir.clone();
+        let head_ref = facts.head_ref.trim();
         // The branch the fixes have to land on is the *PR's* head branch, which
         // is not necessarily what the source feature has checked out — triaging
         // a PR picked from the "other PR" list is exactly the case where they
@@ -262,119 +438,229 @@ impl App {
         let pr_branch = if head_ref.is_empty() {
             source.branch.clone()
         } else {
-            head_ref.clone()
+            head_ref.to_string()
         };
 
-        if !self.store.projects[pi].is_git && self.worktree.repo_root(&project_repo).is_err() {
+        if !project.is_git && self.worktree.repo_root(&project.repo).is_err() {
             anyhow::bail!("A triage feature needs a git repository (it runs in its own worktree)");
         }
 
-        let agent = setup.agent();
-        if !self.allows_agent_for_repo(&project_repo, &agent) {
+        if !self.allows_agent_for_repo(&project.repo, &spec.agent) {
             anyhow::bail!(
                 "Harness '{}' is not allowed for this workspace",
-                agent.display_name()
+                spec.agent.display_name()
             );
         }
-        self.ensure_agent_mode_supported(&agent, &setup.mode)?;
+        self.ensure_agent_mode_supported(&spec.agent, &spec.mode)?;
 
         let normalized = normalized_feature_name(&branch);
-        if self.store.projects[pi]
+        if project
             .features
             .iter()
             .any(|f| normalized_feature_name(&f.name) == normalized)
         {
-            anyhow::bail!("Feature '{branch}' already exists in '{project_name}'");
+            anyhow::bail!("Feature '{branch}' already exists in '{}'", project.name);
         }
 
-        // Seed from the PR head. `triage_base` prefers the local branch when it
-        // already contains the PR head (so unpushed work isn't dropped) and
-        // falls back to the head SHA itself.
-        let base = triage_base(&state_workdir, &pr_branch, &head_sha)
-            .ok_or_else(|| anyhow::anyhow!("could not resolve a base commit for the PR head"))?;
-        let base_sha = rev_parse(&state_workdir, &base).unwrap_or_else(|| base.clone());
+        if require_hook_choice {
+            super::automation::checked_hook_choice(hook.and_then(|h| h.prompt()), hook_choice)?;
+        }
 
-        let wt_name = worktree_name(&project_name, &branch);
-        let workdir = self
-            .worktree
-            .create_from(&project_repo, &wt_name, &branch, &base)?;
+        // Seed from the PR head. `triage_base_with` prefers the local branch
+        // when it already contains the PR head (so unpushed work isn't dropped)
+        // and falls back to the head SHA itself.
+        let base = triage_base_with(&source_workdir, &pr_branch, &facts.head_sha, fetch)
+            .ok_or_else(|| anyhow::anyhow!("could not resolve a base commit for the PR head"))?;
+        let base_sha = rev_parse(&source_workdir, &base).unwrap_or_else(|| base.clone());
+
+        let existing_companion = project.features.iter().find_map(|f| {
+            f.triage_source
+                .as_ref()
+                .filter(|link| {
+                    link.pr_number == facts.pr_number && link.source_feature_id == source.id
+                })
+                .map(|_| ExistingTriageCompanion {
+                    feature_id: f.id.clone(),
+                    name: f.name.clone(),
+                })
+        });
+
+        Ok(TriageCompanionPlan {
+            project_id: project.id.clone(),
+            project_name: project.name.clone(),
+            repo: project.repo.clone(),
+            source_feature_id: source.id.clone(),
+            source_workdir: source_workdir.clone(),
+            pr_number: facts.pr_number,
+            pr_branch,
+            worktree_name: worktree_name(&project.name, &branch),
+            local_branch_exists: branch_exists(&source_workdir, &branch),
+            base_commit_present: commit_exists(&source_workdir, &base_sha),
+            base,
+            base_sha,
+            existing_companion,
+            hook: hook.cloned(),
+            hook_choice: hook_choice.map(str::to_string),
+            hook_choice_required: hook.is_some_and(|h| h.prompt().is_some()),
+            spec: TriageCompanionSpec {
+                branch,
+                ..spec.clone()
+            },
+        })
+    }
+
+    /// Execute a plan: create the worktree and branch, run the planned hook
+    /// exactly as planned, and register the companion **stopped**. Starting the
+    /// agent is the caller's decision.
+    ///
+    /// The checkout is retained when a later step fails (it may hold the
+    /// user's hook output); the error names it.
+    pub(crate) fn register_triage_companion(
+        &mut self,
+        plan: &TriageCompanionPlan,
+    ) -> Result<CreatedTriageCompanion> {
+        // Re-validate before creating anything: the store may have changed
+        // since the plan, and a refusal here must leave no checkout or hook
+        // side effects behind. The post-create check stays as the final guard.
+        self.triage_registration_target(plan, "")
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let workdir = self.worktree.create_from(
+            &plan.repo,
+            &plan.worktree_name,
+            &plan.spec.branch,
+            &plan.base,
+        )?;
 
         // The triage feature gets its own worktree precisely so hooks and
         // permissions it writes can't touch the source feature. Run the
         // on-worktree-created hook synchronously — the interactive prompt flow
         // would have to unwind the PR pane, and the choice-less path is what
         // the automation API already does here.
-        let ext = merge_project_extension_config(&self.config.extension, &project_repo);
-        if let Some(hook) = ext.lifecycle_hooks.on_worktree_created.as_ref() {
-            let (ok, detail) = Self::run_worktree_hook_sync(hook.script(), &workdir, None);
+        let mut hook_warning = None;
+        if let Some(hook) = plan.hook.as_ref() {
+            let (ok, detail) =
+                Self::run_worktree_hook_sync(hook.script(), &workdir, plan.hook_choice.as_deref());
             if !ok {
+                let detail = detail.unwrap_or_else(|| "unknown error".to_string());
                 self.log_warn(
                     "pr_triage",
                     format!(
-                        "Worktree hook failed for triage feature '{branch}': {}",
-                        detail.unwrap_or_else(|| "unknown error".to_string())
+                        "Worktree hook failed for triage feature '{}': {detail}",
+                        plan.spec.branch
                     ),
                 );
                 self.push_toast_warning(
                     "Triage worktree created, but its on_worktree_created hook failed",
                 );
+                hook_warning = Some(detail);
             }
         }
 
+        let mut created = self.register_created_triage_companion(plan, workdir)?;
+        created.hook_warning = hook_warning;
+        Ok(created)
+    }
+
+    /// The project index to register into, or why the plan no longer applies
+    /// (source removed, or the companion name taken). Creates nothing.
+    fn triage_registration_target(
+        &self,
+        plan: &TriageCompanionPlan,
+        suffix: &str,
+    ) -> std::result::Result<usize, String> {
+        let Some((pi, _)) = self
+            .store
+            .locate_feature_by_id(Some(&plan.project_id), &plan.source_feature_id)
+        else {
+            return Err(format!("Source feature removed{suffix}"));
+        };
+        let normalized = normalized_feature_name(&plan.spec.branch);
+        if self.store.projects[pi]
+            .features
+            .iter()
+            .any(|f| normalized_feature_name(&f.name) == normalized)
+        {
+            return Err(format!(
+                "Feature '{}' already exists in '{}'{suffix}",
+                plan.spec.branch, plan.project_name
+            ));
+        }
+        Ok(pi)
+    }
+
+    /// Register an already-created checkout as a stopped companion. Re-checks
+    /// that the source and project still exist and that the name is still free
+    /// (the store may have changed since the plan), and removes the in-memory
+    /// row again if the save fails, so a failed registration leaves no
+    /// half-registered feature behind.
+    pub(crate) fn register_created_triage_companion(
+        &mut self,
+        plan: &TriageCompanionPlan,
+        workdir: PathBuf,
+    ) -> Result<CreatedTriageCompanion> {
+        let retained = format!("Triage checkout retained at {}", workdir.display());
+        let pi = self
+            .triage_registration_target(plan, &format!(". {retained}"))
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let spec = &plan.spec;
         let mut feature = Feature::new_for_project(
-            &project_name,
-            branch.clone(),
-            branch.clone(),
-            workdir,
+            &plan.project_name,
+            spec.branch.clone(),
+            spec.branch.clone(),
+            workdir.clone(),
             true,
-            setup.mode.clone(),
-            setup.review,
+            spec.mode.clone(),
+            spec.review,
             // Plan mode would defer the launch into a planning interview; a
             // triage feature exists to apply comments that already say what to do.
             false,
-            agent.clone(),
-            setup.enable_chrome,
+            spec.agent.clone(),
+            spec.enable_chrome,
             false,
         );
         // The primary session carries the triage label, so the same
         // `pr_triage_session_index` lookup the in-feature dedicated target uses
         // finds it inside the companion feature.
-        feature.add_session_named(
-            crate::app::session_kind_for_agent(&agent),
-            TRIAGE_SESSION_LABEL.to_string(),
-        );
+        let session_id = feature
+            .add_session_named(
+                crate::app::session_kind_for_agent(&spec.agent),
+                TRIAGE_SESSION_LABEL.to_string(),
+            )
+            .id
+            .clone();
         feature.status = ProjectStatus::Stopped;
         feature.triage_source = Some(TriageSource {
-            pr_number,
-            source_feature_id,
-            pr_branch,
-            base_sha,
+            pr_number: plan.pr_number,
+            source_feature_id: plan.source_feature_id.clone(),
+            pr_branch: plan.pr_branch.clone(),
+            base_sha: plan.base_sha.clone(),
         });
-        let feature_name = feature.name.clone();
+        let feature_id = feature.id.clone();
+        let name = feature.name.clone();
 
-        self.store.add_feature(&project_name, feature);
-        self.save()?;
-
-        let fi = self.store.projects[pi]
-            .features
-            .iter()
-            .position(|f| f.name == feature_name)
-            .ok_or_else(|| anyhow::anyhow!("triage feature missing after add"))?;
-        self.store.projects[pi].collapsed = false;
-        // Mid-flow: the companion feature has already been created and
-        // recorded, so a modal here would strand the triage hand-off.
-        self.ensure_feature_running(pi, fi, StartIntent::Warn("the PR triage agent"))?;
-        self.save()?;
-        self.log_info(
-            "pr_triage",
-            format!(
-                "Created triage feature '{feature_name}' for PR #{pr_number} \
-                 ({} / {})",
-                agent.display_name(),
-                setup.mode.display_name()
-            ),
-        );
-        Ok(feature_name)
+        self.store.projects[pi].features.push(feature);
+        if let Err(err) = self.save() {
+            for project in &mut self.store.projects {
+                project.features.retain(|f| f.id != feature_id);
+            }
+            // The row is rolled back but the checkout and branch stay, so a
+            // bare retry would fail in git. Say what to clear first; the path
+            // stays last so it can still be read off the end.
+            anyhow::bail!(
+                "{err}. Before retrying, delete the retained checkout and its branch '{}' \
+                 (git worktree remove {path}; git branch -D {}). {retained}",
+                spec.branch,
+                spec.branch,
+                path = workdir.display(),
+            );
+        }
+        Ok(CreatedTriageCompanion {
+            project_id: plan.project_id.clone(),
+            feature_id,
+            session_id,
+            name,
+            hook_warning: None,
+        })
     }
 
     /// A companion branch name not already taken by a feature or a git branch.
@@ -617,7 +903,19 @@ impl App {
 /// PR head itself (the local branch is behind, e.g. someone else pushed, or
 /// this checkout has never had that branch at all), fetching it first if it
 /// isn't present locally.
+#[cfg(test)]
 fn triage_base(workdir: &Path, pr_branch: &str, head_sha: &str) -> Option<String> {
+    triage_base_with(workdir, pr_branch, head_sha, FetchPolicy::IfMissing)
+}
+
+/// [`triage_base`] with an explicit fetch policy; `Never` performs no git
+/// writes at all.
+fn triage_base_with(
+    workdir: &Path,
+    pr_branch: &str,
+    head_sha: &str,
+    fetch: FetchPolicy,
+) -> Option<String> {
     let head_sha = head_sha.trim();
     if !pr_branch.is_empty()
         && branch_exists(workdir, pr_branch)
@@ -628,7 +926,7 @@ fn triage_base(workdir: &Path, pr_branch: &str, head_sha: &str) -> Option<String
     if head_sha.is_empty() {
         return branch_exists(workdir, pr_branch).then(|| pr_branch.to_string());
     }
-    if rev_parse(workdir, head_sha).is_none() {
+    if fetch == FetchPolicy::IfMissing && rev_parse(workdir, head_sha).is_none() {
         // Best effort: the head may simply not have been fetched yet.
         let _ = Command::new("git")
             .args(["fetch", "--quiet", "origin", head_sha])
@@ -666,6 +964,15 @@ pub(crate) fn branch_exists(workdir: &Path, branch: &str) -> bool {
             "--quiet",
             &format!("refs/heads/{branch}"),
         ])
+        .current_dir(workdir)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn commit_exists(workdir: &Path, rev: &str) -> bool {
+    Command::new("git")
+        .args(["cat-file", "-e", &format!("{rev}^{{commit}}")])
         .current_dir(workdir)
         .status()
         .map(|s| s.success())

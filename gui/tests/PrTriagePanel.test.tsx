@@ -235,8 +235,8 @@ it("asks before resolving a thread and offers cancelling a running investigation
 });
 
 const fixTargets = [
-  { target: { ...target, session_id: "claude-1" }, label: "Claude 1", harness: "claude" as const, stopped: true, destination_kind: "opened_feature" as const, feature_name: "Feature" },
-  { target: { ...target, session_id: "codex-1" }, label: "Codex 1", harness: "codex" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature" },
+  { target: { ...target, session_id: "claude-1" }, label: "Claude 1", harness: "claude" as const, stopped: true, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature" },
+  { target: { ...target, session_id: "codex-1" }, label: "Codex 1", harness: "codex" as const, stopped: false, unavailable: null, destination_kind: "opened_feature" as const, feature_name: "Feature" },
 ];
 const fixView: PrTriageView = { ...review, fix_targets: fixTargets };
 const fixDraft: PrTriageView = { ...fixView, revision: 4,
@@ -465,7 +465,7 @@ it("offers no keep while an investigation runs and shows a refused keep", async 
 const companionTarget = { project_id: target.project_id, feature_id: "triage-feature", session_id: "triage-claude" };
 const companionRows = [
   ...fixTargets,
-  { target: companionTarget, label: "Claude (triage)", harness: "claude" as const, stopped: false, destination_revision: "rev-triage", destination_kind: "companion" as const, feature_name: "fix-triage" },
+  { target: companionTarget, label: "Claude (triage)", harness: "claude" as const, stopped: false, unavailable: null, destination_revision: "rev-triage", destination_kind: "companion" as const, feature_name: "fix-triage" },
 ];
 
 it("groups the opened feature and a companion in one picker, preselects the companion and sends nothing", async () => {
@@ -478,7 +478,7 @@ it("groups the opened feature and a companion in one picker, preselects the comp
   expect(screen.getByText(/Companion feature fix-triage\. Nothing is sent until you confirm\./)).toBeTruthy();
   expect(actions().filter(({ action }) => action.kind.startsWith("start_"))).toHaveLength(0);
   fireEvent.click(screen.getByRole("button", { name: "Prepare fix…" }));
-  await waitFor(() => expect(actions().at(-1)?.action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "triage-claude", feature_id: "triage-feature" }));
+  await waitFor(() => expect(actions().at(-1)?.action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "triage-claude", feature_id: "triage-feature", destination_revision: "rev-triage" }));
 });
 
 it("never falls back to the first row: without a companion nothing is chosen and Prepare fix is disabled", async () => {

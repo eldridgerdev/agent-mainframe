@@ -596,3 +596,184 @@ fn a_panicking_operation_releases_its_slot() {
     assert!(result.is_err());
     assert!(matches!(begin_operation(&flow), OperationStart::Started(_)));
 }
+
+fn settings_path(gui: &mut GuiHandle) -> std::path::PathBuf {
+    gui.app_for_workflow().store.projects[0].features[0]
+        .workdir
+        .join(".claude")
+        .join("settings.local.json")
+}
+
+#[test]
+fn a_successful_prepare_writes_hooks_and_the_review_instructions_after_the_save() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    {
+        let feature = &mut gui.app_for_workflow().store.projects[0].features[0];
+        feature.review = true;
+        feature.collapsed = true;
+    }
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let shown = preview(&mut gui, &req).unwrap();
+    assert!(
+        shown
+            .consequences
+            .iter()
+            .any(|line| line.contains("review enabled")),
+        "{:?}",
+        shown.consequences
+    );
+    assert!(!settings_path(&mut gui).exists(), "preview writes nothing");
+    prepare_for(&mut gui, &req, &shown.revision, false).unwrap();
+    assert!(settings_path(&mut gui).exists());
+    let workdir = gui.app_for_workflow().store.projects[0].features[0]
+        .workdir
+        .clone();
+    let claude_md = std::fs::read_to_string(workdir.join("CLAUDE.local.md")).unwrap();
+    assert!(claude_md.contains("REVIEW MODE"), "{claude_md}");
+    let stored = gui
+        .app_for_workflow()
+        .db
+        .as_ref()
+        .unwrap()
+        .load_store()
+        .unwrap();
+    assert!(!stored.projects[0].features[0].collapsed);
+}
+
+#[test]
+fn a_feature_without_review_gets_no_review_instructions() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let shown = preview(&mut gui, &req).unwrap();
+    prepare_for(&mut gui, &req, &shown.revision, false).unwrap();
+    let workdir = gui.app_for_workflow().store.projects[0].features[0]
+        .workdir
+        .clone();
+    let md = std::fs::read_to_string(workdir.join("CLAUDE.local.md")).unwrap_or_default();
+    assert!(!md.contains("REVIEW MODE"));
+}
+
+/// A tmux mock whose harness probe runs `hook` once armed, i.e. after the
+/// preview, between prepare's bind and its save.
+fn tmux_with_hook(
+    armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    hook: impl Fn() + Send + 'static,
+) -> MockTmuxOps {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_check_harness_available().returning(move |_| {
+        if armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            hook();
+        }
+        Ok(())
+    });
+    tmux.expect_session_exists().return_const(false);
+    tmux.expect_window_exists().return_const(false);
+    tmux.expect_list_panes().returning(Vec::new);
+    tmux
+}
+
+#[test]
+fn an_unrelated_concurrent_write_is_reapplied_not_a_conflict() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    let db_path = gui.app_for_workflow().db.as_ref().unwrap().path.clone();
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    gui.app_for_workflow().tmux = Box::new(tmux_with_hook(armed.clone(), move || {
+        let db = crate::db::AmfDb::open(&db_path).unwrap();
+        let mut other = db.load_store().unwrap();
+        other.projects[0].name = "Renamed mid-prepare".into();
+        db.save_store(&other).unwrap();
+    }));
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let shown = preview(&mut gui, &req).unwrap();
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let made = prepare_for(&mut gui, &req, &shown.revision, true).unwrap();
+    assert_eq!(made.status, PrepareStatus::Created);
+    let stored = gui
+        .app_for_workflow()
+        .db
+        .as_ref()
+        .unwrap()
+        .load_store()
+        .unwrap();
+    assert_eq!(stored.projects[0].name, "Renamed mid-prepare");
+    assert_eq!(stored.projects[0].features[0].sessions.len(), 1);
+    assert!(settings_path(&mut gui).exists());
+}
+
+#[test]
+fn a_feature_deleted_mid_prepare_leaves_no_row_and_no_hook_files() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    let db_path = gui.app_for_workflow().db.as_ref().unwrap().path.clone();
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    gui.app_for_workflow().tmux = Box::new(tmux_with_hook(armed.clone(), move || {
+        let db = crate::db::AmfDb::open(&db_path).unwrap();
+        let mut other = db.load_store().unwrap();
+        other.projects[0].features.clear();
+        db.save_store(&other).unwrap();
+    }));
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let shown = preview(&mut gui, &req).unwrap();
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failure = error(prepare_for(&mut gui, &req, &shown.revision, true));
+    assert_eq!(failure.kind, GuiErrorKind::NotFound, "{}", failure.message);
+    assert!(gui.app_for_workflow().store.projects[0].features.is_empty());
+}
+
+#[test]
+fn a_failed_save_rolls_the_row_back_and_leaves_no_hook_files() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    let db_path = gui.app_for_workflow().db.as_ref().unwrap().path.clone();
+    let holder: std::sync::Arc<std::sync::Mutex<Option<rusqlite::Connection>>> = Default::default();
+    let held = holder.clone();
+    let armed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    gui.app_for_workflow().tmux = Box::new(tmux_with_hook(armed.clone(), move || {
+        // Hold the write lock so the save fails with "database is locked".
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        *held.lock().unwrap() = Some(conn);
+    }));
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let shown = preview(&mut gui, &req).unwrap();
+    armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let failure = error(prepare_for(&mut gui, &req, &shown.revision, true));
+    assert_ne!(failure.kind, GuiErrorKind::Conflict, "{}", failure.message);
+    assert!(holder.lock().unwrap().is_some(), "the lock was taken");
+    assert!(sessions(&mut gui).is_empty(), "the in-memory row is undone");
+    assert!(!settings_path(&mut gui).exists());
+    holder.lock().unwrap().take();
+}
+
+#[test]
+fn a_same_named_session_of_any_kind_blocks_the_name_case_insensitively() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    add_elsewhere(&mut gui, SessionKind::Terminal, "pr triage");
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let failure = error(preview(&mut gui, &req));
+    assert_eq!(failure.kind, GuiErrorKind::Conflict);
+    assert!(
+        failure.message.contains("choose another session name"),
+        "{}",
+        failure.message
+    );
+    assert_eq!(sessions(&mut gui).len(), 1);
+}
+
+#[test]
+fn the_slot_is_released_after_a_failed_prepare() {
+    let (_dir, mut gui, workflow, identity) = fixture();
+    let req = request(&workflow, &identity, choice(AgentKind::Claude, None));
+    let OperationStart::Started(guard) = begin_operation(&workflow) else {
+        panic!("claims")
+    };
+    let result = prepare_for(&mut gui, &req, "stale-revision", false);
+    assert!(result.is_err());
+    assert!(matches!(
+        begin_operation(&workflow),
+        OperationStart::Existing(_)
+    ));
+    drop(guard);
+    assert!(matches!(
+        begin_operation(&workflow),
+        OperationStart::Started(_)
+    ));
+}

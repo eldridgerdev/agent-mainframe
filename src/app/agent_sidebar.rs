@@ -691,6 +691,7 @@ pub(crate) fn pr_triage_sidebar_text(
 pub(crate) fn issue_source_sidebar_text(feature: &Feature) -> Option<String> {
     let source = feature.issue_source.as_ref()?;
     let comment = match &source.comment_status {
+        _ if source.comment_opt_out => "Not posted (GUI)",
         crate::project::IssueCommentStatus::Pending => "Pending",
         crate::project::IssueCommentStatus::Posted => "Posted",
         crate::project::IssueCommentStatus::Failed(_) => "Failed",
@@ -1222,4 +1223,40 @@ pub(crate) fn format_sidebar_usage(status: &str) -> String {
 pub(crate) fn sidebar_usage_text(app: &App, kind: &SessionKind) -> Option<String> {
     let windows = crate::usage::usage_windows_for_session_kind(kind, &app.usage.get_data());
     crate::usage::format_sidebar_usage_windows(&windows)
+}
+
+#[cfg(test)]
+mod issue_opt_out_tests {
+    use super::*;
+    use crate::project::{AgentKind, IssueCommentStatus, IssueSource, VibeMode};
+
+    #[test]
+    fn a_gui_made_issue_feature_says_its_comment_is_not_posted() {
+        let mut feature = Feature::new_for_project(
+            "demo",
+            "fix".into(),
+            "fix".into(),
+            std::path::PathBuf::from("/tmp/x"),
+            false,
+            VibeMode::default(),
+            false,
+            false,
+            AgentKind::default(),
+            false,
+            false,
+        );
+        feature.issue_source = Some(IssueSource {
+            host: "github.com".into(),
+            owner: "acme".into(),
+            repository: "widget".into(),
+            number: 7,
+            comment_status: IssueCommentStatus::Pending,
+            comment_opt_out: true,
+        });
+        assert!(
+            issue_source_sidebar_text(&feature)
+                .unwrap()
+                .ends_with("Comment: Not posted (GUI)")
+        );
+    }
 }

@@ -804,6 +804,7 @@ mod tests {
                 repository: "widget".to_string(),
                 number: 73,
                 comment_status: crate::project::IssueCommentStatus::Posted,
+                comment_opt_out: false,
             }),
         };
 
@@ -871,6 +872,7 @@ mod tests {
                 repository: "widget".to_string(),
                 number: 73,
                 comment_status: crate::project::IssueCommentStatus::Posted,
+                comment_opt_out: false,
             }),
             "the source issue link must survive without disturbing other associations"
         );

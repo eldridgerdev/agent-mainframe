@@ -1135,8 +1135,16 @@ impl GuiHandle {
                 Some((pi, fi)) => {
                     let project = &self.app.store.projects[pi];
                     let feature = &project.features[fi];
+                    // Prefer the agent session this TODO was started on, when it
+                    // lives in the linked feature; otherwise the first agent.
+                    let own = todo.work.agent_session_id.as_deref().and_then(|id| {
+                        feature
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id && s.kind.is_agent_harness())
+                    });
                     if let Some(session) =
-                        feature.sessions.iter().find(|s| s.kind.is_agent_harness())
+                        own.or_else(|| feature.sessions.iter().find(|s| s.kind.is_agent_harness()))
                     {
                         return Ok(TodoWorkTarget::Session {
                             target: SessionTarget {

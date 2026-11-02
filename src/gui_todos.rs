@@ -249,12 +249,10 @@ pub fn update_scratchpad(
     let current = db.todo_list(&scope).map_err(GuiError::from)?;
     let list = match (current, request.list_id.as_deref()) {
         (Some(list), Some(id)) if list.id == id => list,
-        (Some(list), None) => {
-            return Ok(ScratchpadOutcome::Conflict {
-                list_id: Some(list.id),
-                current: list.carry_over,
-            });
-        }
+        // A list appeared after the editor opened (it opened on "no list").
+        // Not a conflict by itself: the conditional write below still checks
+        // `base`, so unchanged content saves and a changed pad is refused.
+        (Some(list), None) => list,
         (Some(list), Some(_)) => {
             return Ok(ScratchpadOutcome::Conflict {
                 list_id: Some(list.id),
@@ -1057,5 +1055,134 @@ mod tests {
             load(&gui, &project).unwrap().unwrap().todos[0].title,
             "root note"
         );
+    }
+
+    #[test]
+    fn overwrite_after_a_move_uses_the_current_list() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        move_to(&gui, &todo.id, &TodoScopeRequest::Global).unwrap();
+        let request = |list_id: &str, base: &Todo| TodoEditRequest {
+            list_id: list_id.to_string(),
+            todo_id: todo.id.clone(),
+            base: TodoFields::of(base),
+            fields: fields("mine", None, TodoPriority::Med),
+        };
+        // The editor still holds the old list: refused, and the refusal names
+        // the list the TODO is in now.
+        let TodoEditOutcome::Conflict { current } =
+            update(&gui, &request(&todo.list_id, &todo)).unwrap()
+        else {
+            panic!("expected conflict");
+        };
+        assert_ne!(current.list_id, todo.list_id);
+        // "Overwrite" re-sends the conflict's list and base: it lands.
+        let TodoEditOutcome::Saved { todo: saved } =
+            update(&gui, &request(&current.list_id, &current)).unwrap()
+        else {
+            panic!("expected saved");
+        };
+        assert_eq!(saved.title, "mine");
+        assert_eq!(saved.list_id, current.list_id);
+    }
+
+    #[test]
+    fn scratchpad_with_trailing_newline_or_whitespace_only_text_still_saves_and_overwrites() {
+        let (gui, target, _tmp) = fixture();
+        let scope = TodoScopeRequest::Worktree(target.clone());
+        let req = |list_id: Option<String>, base: Option<&str>, text: &str| ScratchpadEditRequest {
+            scope: scope.clone(),
+            host_feature_id: Some(target.feature_id.clone()),
+            list_id,
+            base: base.map(str::to_string),
+            text: Some(text.to_string()),
+        };
+        let ScratchpadOutcome::Saved { list_id, .. } =
+            update_scratchpad(&gui, &req(None, None, "seed")).unwrap()
+        else {
+            panic!("expected saved");
+        };
+        let id = list_id.clone().unwrap();
+        for stored in ["pad\n", "   ", "\n\n"] {
+            gui.db()
+                .unwrap()
+                .set_todo_carry_over_if(
+                    &id,
+                    gui.db()
+                        .unwrap()
+                        .todo_list_by_id(&id)
+                        .unwrap()
+                        .unwrap()
+                        .carry_over
+                        .as_deref(),
+                    Some(stored),
+                )
+                .unwrap();
+            // Opened on exactly what is stored: saves.
+            let out = update_scratchpad(&gui, &req(list_id.clone(), Some(stored), "next")).unwrap();
+            assert!(matches!(out, ScratchpadOutcome::Saved { .. }), "{stored:?}");
+            // Stale base: refused with the stored text; overwriting with that
+            // text as the base then lands (no endless conflict loop).
+            let ScratchpadOutcome::Conflict { current, .. } =
+                update_scratchpad(&gui, &req(list_id.clone(), Some(stored), "again")).unwrap()
+            else {
+                panic!("expected conflict for {stored:?}");
+            };
+            let out = update_scratchpad(&gui, &req(list_id.clone(), current.as_deref(), "again"))
+                .unwrap();
+            assert!(matches!(out, ScratchpadOutcome::Saved { .. }), "{stored:?}");
+        }
+    }
+
+    #[test]
+    fn scratchpad_list_created_after_the_editor_opened_is_checked_by_base_not_refused() {
+        let (gui, target, _tmp) = fixture();
+        let scope = TodoScopeRequest::Worktree(target.clone());
+        let req = |list_id: Option<String>, base: Option<&str>, text: &str| ScratchpadEditRequest {
+            scope: scope.clone(),
+            host_feature_id: Some(target.feature_id.clone()),
+            list_id,
+            base: base.map(str::to_string),
+            text: Some(text.to_string()),
+        };
+        // The editor opened on "no list"; a TODO add then creates an empty one.
+        seeded(&gui, &target);
+        let out = update_scratchpad(&gui, &req(None, None, "mine")).unwrap();
+        assert!(matches!(out, ScratchpadOutcome::Saved { .. }));
+
+        // A pad written meanwhile is still protected.
+        let ScratchpadOutcome::Conflict { list_id, current } =
+            update_scratchpad(&gui, &req(None, None, "stale")).unwrap()
+        else {
+            panic!("expected conflict");
+        };
+        assert_eq!(current.as_deref(), Some("mine"));
+        let out = update_scratchpad(&gui, &req(list_id, current.as_deref(), "stale")).unwrap();
+        assert!(matches!(out, ScratchpadOutcome::Saved { .. }));
+    }
+
+    #[test]
+    fn jump_prefers_the_todos_own_session_in_the_linked_feature() {
+        use crate::gui_contract::TodoWorkTarget;
+        use crate::project::SessionKind;
+        let (mut gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let feature = &mut gui.app.store.projects[0].features[0];
+        let _first = feature.add_session(SessionKind::Claude).id.clone();
+        let second = feature.add_session(SessionKind::Claude).id.clone();
+        gui.db().unwrap().save_store(&gui.app.store).unwrap();
+        gui.db()
+            .unwrap()
+            .set_todo_linked_feature(&todo.id, &target.feature_id)
+            .unwrap();
+        gui.db()
+            .unwrap()
+            .set_todo_agent_session(&todo.id, &second)
+            .unwrap();
+        let TodoWorkTarget::Session { target: found } = gui.todo_work_target(&todo.id).unwrap()
+        else {
+            panic!("expected session");
+        };
+        assert_eq!(found.session_id, second);
     }
 }

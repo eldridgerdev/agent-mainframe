@@ -22,7 +22,7 @@ const reviewing: PrTriageView = {
 };
 
 it("posts findings only after confirmation and prepares a selected or batch fix in the agent composer", async () => {
-  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: { ...target, session_id: "session-1" }, label: "Claude 1", harness: "claude", stopped: false, destination_revision: "target-rev" }] };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: { ...target, session_id: "session-1" }, label: "Claude 1", harness: "claude", stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "target-rev" }] };
   const finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "Handle the empty input", diff_hunk: "@@ -1 +1 @@", skipped: false, published: false };
   const onHandoff = vi.fn();
   vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
@@ -138,7 +138,7 @@ it("does not overlap slow PR thread snapshots", async () => {
 
 it("blocks duplicate fix preparation and ignores a reply after leaving the workspace", async () => {
   const session = { ...target, session_id: "session-1" };
-  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: session, label: "Claude 1", harness: "claude", stopped: false, destination_revision: "destination-v1" }] };
+  const fixes: PrTriageView = { ...reviewing, fix_targets: [{ target: session, label: "Claude 1", harness: "claude", stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "destination-v1" }] };
   const finding = { path: "src/lib.rs", line: 4, side: "RIGHT", body: "A finding", diff_hunk: null, skipped: false, published: false };
   let resolveFix!: (value: unknown) => void;
   const onHandoff = vi.fn();
@@ -167,8 +167,8 @@ it("blocks duplicate fix preparation and ignores a reply after leaving the works
 });
 
 it("retains an unavailable agent choice after refresh instead of silently selecting another", async () => {
-  const first = { target: { ...target, session_id: "first" }, label: "First", harness: "claude" as const, stopped: false, destination_revision: "first-v1" };
-  const second = { target: { ...target, session_id: "second" }, label: "Second", harness: "codex" as const, stopped: false, destination_revision: "second-v1" };
+  const first = { target: { ...target, session_id: "first" }, label: "First", harness: "claude" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "first-v1" };
+  const second = { target: { ...target, session_id: "second" }, label: "Second", harness: "codex" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature", destination_revision: "second-v1" };
   const fixes: PrTriageView = { ...reviewing, fix_targets: [first, second] };
   const finding = { path: null, line: null, side: null, body: "Finding", diff_hunk: null, skipped: false, published: false };
   let targets = [first, second];

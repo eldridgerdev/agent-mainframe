@@ -231,15 +231,20 @@ try:
     assert tmux_windows() == before_windows, "creating the session must not start any tmux window"
     picker = 'document.querySelector(".pr-detail select[aria-label=\\"Fix agent\\"]")'
     wait(f'Array.from({picker}.options).some(o=>o.textContent==="PR Triage (stopped)")')
-    capture("002-created-stopped-and-selected.png", "The session was created stopped: a saved row with no tmux window and no agent process. It now appears in the Fix agent picker as PR Triage (stopped) and is selected there; nothing was prepared or sent.", ["Created", "stopped", "Fix agent", "PR Triage (stopped)"], f'{picker}.selectedOptions[0].textContent==="PR Triage (stopped)"')
+    capture("002-created-stopped.png", "The session was created stopped: a saved row with no tmux window and no agent process. The form says so and how to start it. Nothing was prepared or sent.", ["Created 'PR Triage' (Claude), stopped", "Nothing is running", "session tab"], f'{picker}.selectedOptions[0].textContent==="PR Triage (stopped)"')
+    evaluate(f'{picker}.scrollIntoView({{block:"center"}})')
+    time.sleep(0.3)
+    capture("003-selected-as-fix-agent.png", "The created session joins the Fix agent picker as PR Triage (stopped) and is selected there. Prepare fix is a separate click; nothing is prepared, sent or started.", ["Fix agent", "Prepare fix…", "New dedicated session…"], f'{picker}.selectedOptions[0].textContent==="PR Triage (stopped)"')
+    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
     in_form("Close")
     click("New dedicated session…")
     wait(f'{form()}.innerText.includes("already exists") && {has_button("Use existing session")}')
+    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
     assert rows() == after
-    capture("003-reuses-existing-session.png", "Reopening the form finds the labelled session and says so: it is reused, nothing new is created, and the button changes to Use existing session.", ["already exists", "Use existing session"])
+    capture("004-reuses-existing-session.png", "Reopening the form finds the labelled session and says so: it is reused, nothing new is created, and the button changes to Use existing session.", ["already exists", "Use existing session"])
     select("Harness", "codex")
     wait(f'!!document.querySelector("[role=alert]") && {form()}.innerText.includes("already runs Claude")')
-    capture("004-other-harness-conflict.png", "Asking for Codex under the same name is a conflict, not a silent reuse: the PR Triage label already runs Claude. No session is created.", ["already runs Claude"], allow_alert=True)
+    capture("005-other-harness-conflict.png", "Asking for Codex under the same name is a conflict, not a silent reuse: the PR Triage label already runs Claude. No session is created.", ["already runs Claude"], allow_alert=True)
     assert rows() == after
     assert gh_writes() == [] and ai_calls() == []
     assert not pathlib.Path(os.environ["AMF_GUI_FIX_PROMPTS"]).exists()

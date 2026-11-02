@@ -227,14 +227,13 @@ fn creates_a_started_companion_seeded_from_the_local_pr_branch() {
     assert_eq!(feature.agent, AgentKind::default());
     assert_eq!(
         feature.workdir,
-        PathBuf::from(&git(
-            &fx.repo,
-            &["worktree", "list", "--porcelain"]
+        PathBuf::from(
+            &git(&fx.repo, &["worktree", "list", "--porcelain"])
+                .lines()
+                .filter_map(|l| l.strip_prefix("worktree "))
+                .find(|p| p.ends_with("my-project-pr-head-triage"))
+                .unwrap()
         )
-        .lines()
-        .filter_map(|l| l.strip_prefix("worktree "))
-        .find(|p| p.ends_with("my-project-pr-head-triage"))
-        .unwrap())
     );
     assert_eq!(
         feature.triage_source,
@@ -651,8 +650,9 @@ fn a_failing_worktree_hook_warns_but_the_companion_is_still_created_and_started(
     assert_eq!(found.len(), 1);
     assert_ne!(found[0].status, ProjectStatus::Stopped);
     assert!(
-        toast_texts(&fx.app).iter().any(|t| t
-            == "Triage worktree created, but its on_worktree_created hook failed"),
+        toast_texts(&fx.app)
+            .iter()
+            .any(|t| t == "Triage worktree created, but its on_worktree_created hook failed"),
         "{:?}",
         toast_texts(&fx.app)
     );
@@ -718,4 +718,481 @@ fn a_created_companion_is_adopted_again_on_the_next_visit() {
         }
         _ => panic!("expected PrReview"),
     }
+}
+
+// ======================================================================
+// Plan / register split: new behavior of the extracted steps.
+// ======================================================================
+
+use crate::app::triage_feature::{
+    FetchPolicy, TriageCompanionPlan, TriageCompanionSpec, TriagePrFacts,
+};
+
+fn facts(fx: &Fixture) -> TriagePrFacts {
+    TriagePrFacts {
+        pr_number: 7,
+        head_sha: fx.c2.clone(),
+        head_ref: "pr-head".to_string(),
+    }
+}
+
+fn spec(branch: &str) -> TriageCompanionSpec {
+    TriageCompanionSpec {
+        branch: branch.to_string(),
+        agent: AgentKind::Claude,
+        mode: VibeMode::Vibe,
+        review: false,
+        enable_chrome: false,
+    }
+}
+
+fn plan_with(
+    fx: &Fixture,
+    branch: &str,
+    hook: Option<&HookConfig>,
+    choice: Option<&str>,
+    require: bool,
+    fetch: FetchPolicy,
+) -> anyhow::Result<TriageCompanionPlan> {
+    fx.app.plan_triage_companion(
+        "feat-1",
+        &facts(fx),
+        &spec(branch),
+        hook,
+        choice,
+        require,
+        fetch,
+    )
+}
+
+fn plan(fx: &Fixture, branch: &str) -> TriageCompanionPlan {
+    plan_with(fx, branch, None, None, false, FetchPolicy::Never).unwrap()
+}
+
+/// Every path under `.git`, sorted: catches a fetch, ref, worktree or lock
+/// that a "read-only" step left behind.
+fn git_dir_paths(repo: &Path) -> Vec<String> {
+    fn walk(dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            out.push(path.display().to_string());
+            if path.is_dir() {
+                walk(&path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&repo.join(".git"), &mut out);
+    out.sort();
+    out
+}
+
+struct Snapshot {
+    store: String,
+    git_paths: Vec<String>,
+    refs: String,
+    worktrees: String,
+    status: String,
+    toasts: Vec<String>,
+}
+
+fn snapshot(fx: &Fixture) -> Snapshot {
+    Snapshot {
+        store: serde_json::to_string(&fx.app.store).unwrap(),
+        git_paths: git_dir_paths(&fx.repo),
+        refs: git(&fx.repo, &["for-each-ref"]),
+        worktrees: git(&fx.repo, &["worktree", "list", "--porcelain"]),
+        status: git(&fx.repo, &["status", "--porcelain"]),
+        toasts: toast_texts(&fx.app),
+    }
+}
+
+fn assert_unchanged(before: &Snapshot, after: &Snapshot) {
+    assert_eq!(before.store, after.store, "store mutated");
+    assert_eq!(
+        before.git_paths, after.git_paths,
+        ".git gained or lost files"
+    );
+    assert_eq!(before.refs, after.refs, "refs mutated");
+    assert_eq!(before.worktrees, after.worktrees, "worktrees mutated");
+    assert_eq!(before.status, after.status, "working tree mutated");
+    assert_eq!(before.toasts, after.toasts, "toasts emitted");
+}
+
+#[test]
+fn planning_changes_nothing_on_disk_in_git_or_in_the_store() {
+    let fx = fixture(false, true);
+    let hook = HookConfig::Script("echo SHOULD-NOT-RUN > planned-hook.txt".into());
+    let before = snapshot(&fx);
+
+    for fetch in [FetchPolicy::Never, FetchPolicy::IfMissing] {
+        let p = plan_with(&fx, "plan-only", Some(&hook), None, false, fetch).unwrap();
+        assert_eq!(p.spec.branch, "plan-only");
+    }
+    // Failing plans are read-only too.
+    assert!(plan_with(&fx, "  ", None, None, false, FetchPolicy::Never).is_err());
+    assert!(plan_with(&fx, "main", None, None, false, FetchPolicy::Never).is_ok());
+
+    assert_unchanged(&before, &snapshot(&fx));
+    assert!(fx.calls.lock().unwrap().is_empty(), "no worktree created");
+    assert!(!fx.repo.join("planned-hook.txt").exists(), "hook ran");
+}
+
+#[test]
+fn planning_without_fetch_never_writes_to_git_even_for_a_missing_head() {
+    let fx = fixture(false, true);
+    let before = snapshot(&fx);
+    let mut f = facts(&fx);
+    f.head_ref = "ghost".to_string();
+    f.head_sha = "deadbee".to_string();
+
+    let err = fx
+        .app
+        .plan_triage_companion(
+            "feat-1",
+            &f,
+            &spec("x"),
+            None,
+            None,
+            false,
+            FetchPolicy::Never,
+        )
+        .unwrap_err();
+
+    assert!(
+        err.to_string().contains("could not resolve a base commit"),
+        "{err}"
+    );
+    assert_unchanged(&before, &snapshot(&fx));
+}
+
+#[test]
+fn a_plan_reports_whether_its_base_commit_exists_locally() {
+    let fx = fixture(false, true);
+    assert!(plan(&fx, "present").base_commit_present);
+
+    // `rev-parse --verify` accepts any well-formed full id, so the TUI's base
+    // "resolves" even when the object is absent; the plan says so explicitly
+    // and leaves failing closed to its caller.
+    let mut f = facts(&fx);
+    f.head_ref = "ghost".to_string();
+    f.head_sha = "0123456789abcdef0123456789abcdef01234567".to_string();
+    let before = snapshot(&fx);
+    let p = fx
+        .app
+        .plan_triage_companion(
+            "feat-1",
+            &f,
+            &spec("x"),
+            None,
+            None,
+            false,
+            FetchPolicy::Never,
+        )
+        .unwrap();
+    assert_eq!(p.base, f.head_sha);
+    assert!(!p.base_commit_present);
+    assert_unchanged(&before, &snapshot(&fx));
+}
+
+#[test]
+fn a_plan_reports_names_base_and_link_inputs() {
+    let fx = fixture(false, true);
+    let p = plan(&fx, "  pr-head-triage ");
+
+    assert_eq!(p.spec.branch, "pr-head-triage");
+    assert_eq!(p.worktree_name, "my-project-pr-head-triage");
+    assert_eq!(p.base, "pr-head");
+    assert_eq!(p.base_sha, fx.c2);
+    assert_eq!(p.pr_branch, "pr-head");
+    assert_eq!(p.pr_number, 7);
+    assert_eq!(p.source_feature_id, "feat-1");
+    assert_eq!(p.source_workdir, fx.repo);
+    assert_eq!(p.project_name, "my-project");
+    assert!(!p.local_branch_exists);
+    assert!(p.existing_companion.is_none());
+    assert!(p.hook.is_none() && !p.hook_choice_required);
+
+    git(&fx.repo, &["branch", "already-a-branch"]);
+    assert!(plan(&fx, "already-a-branch").local_branch_exists);
+}
+
+#[test]
+fn a_plan_names_an_existing_companion_for_the_same_pr_and_source() {
+    let mut fx = fixture(false, true);
+    let first = plan(&fx, "first-triage");
+    fx.app.register_triage_companion(&first).unwrap();
+
+    let second = plan(&fx, "second-triage");
+    let existing = second.existing_companion.expect("companion is reported");
+    assert_eq!(existing.name, "first-triage");
+
+    // A different PR number is not the same companion.
+    let mut other = facts(&fx);
+    other.pr_number = 99;
+    let p = fx
+        .app
+        .plan_triage_companion(
+            "feat-1",
+            &other,
+            &spec("third"),
+            None,
+            None,
+            false,
+            FetchPolicy::Never,
+        )
+        .unwrap();
+    assert!(p.existing_companion.is_none());
+}
+
+#[test]
+fn plan_refuses_with_the_same_reasons_the_tui_shows() {
+    let mut fx = fixture(false, true);
+    let err = |r: anyhow::Result<TriageCompanionPlan>| r.unwrap_err().to_string();
+
+    assert_eq!(
+        err(plan_with(&fx, "", None, None, false, FetchPolicy::Never)),
+        "Branch name cannot be empty"
+    );
+    assert!(
+        err(fx.app.plan_triage_companion(
+            "no-such-feature",
+            &facts(&fx),
+            &spec("x"),
+            None,
+            None,
+            false,
+            FetchPolicy::Never
+        ))
+        .contains("could not find the feature")
+    );
+    // Same normalized name as the source feature.
+    assert!(
+        err(plan_with(
+            &fx,
+            "MY-FEAT",
+            None,
+            None,
+            false,
+            FetchPolicy::Never
+        ))
+        .contains("already exists in 'my-project'")
+    );
+    fx.app.store.available_harnesses = vec![AgentKind::Codex];
+    assert!(
+        err(plan_with(&fx, "x", None, None, false, FetchPolicy::Never))
+            .contains("not allowed for this workspace")
+    );
+}
+
+#[test]
+fn hook_choice_is_checked_at_plan_time_and_carried_into_the_plan() {
+    let fx = fixture(false, true);
+    let hook = HookConfig::WithPrompt {
+        script: "true".into(),
+        prompt: HookPrompt {
+            title: "Pick".into(),
+            options: vec!["a".into(), "b".into()],
+        },
+    };
+    let missing = plan_with(&fx, "x", Some(&hook), None, true, FetchPolicy::Never)
+        .unwrap_err()
+        .to_string();
+    assert!(missing.contains("requires a choice"), "{missing}");
+    let wrong = plan_with(&fx, "x", Some(&hook), Some("zzz"), true, FetchPolicy::Never)
+        .unwrap_err()
+        .to_string();
+    assert!(wrong.contains("Invalid hook_choice"), "{wrong}");
+
+    let ok = plan_with(&fx, "x", Some(&hook), Some("b"), true, FetchPolicy::Never).unwrap();
+    assert!(ok.hook_choice_required);
+    assert_eq!(ok.hook_choice.as_deref(), Some("b"));
+    // The TUI policy: not required, so no choice is fine.
+    assert!(plan_with(&fx, "x", Some(&hook), None, false, FetchPolicy::Never).is_ok());
+}
+
+// ----------------------------------------------------------------- register
+
+#[test]
+fn register_creates_a_stopped_linked_companion_and_never_starts_it() {
+    // No tmux expectations: starting the agent would panic.
+    let mut fx = fixture(false, true);
+    let p = plan(&fx, "reg-triage");
+    let created = fx.app.register_triage_companion(&p).unwrap();
+
+    assert_eq!(created.name, "reg-triage");
+    assert!(created.hook_warning.is_none());
+    let (pi, fi) = fx
+        .app
+        .store
+        .locate_feature_by_id(Some(&created.project_id), &created.feature_id)
+        .unwrap();
+    let feature = &fx.app.store.projects[pi].features[fi];
+    assert_eq!(feature.status, ProjectStatus::Stopped);
+    assert_eq!(
+        feature.triage_source,
+        Some(TriageSource {
+            pr_number: 7,
+            source_feature_id: "feat-1".into(),
+            pr_branch: "pr-head".into(),
+            base_sha: fx.c2.clone(),
+        })
+    );
+    assert_eq!(feature.sessions.len(), 1);
+    assert_eq!(feature.sessions[0].id, created.session_id);
+    assert_eq!(
+        feature.sessions[0].label,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL
+    );
+    assert!(feature.workdir.is_dir());
+    let saved = crate::project::ProjectStore::load(&fx.app.store_path).unwrap();
+    assert!(
+        saved.projects[0]
+            .features
+            .iter()
+            .any(|f| f.id == created.feature_id)
+    );
+}
+
+#[test]
+fn register_runs_the_planned_hook_with_the_previewed_choice_not_a_later_config() {
+    let mut fx = fixture(false, true);
+    let planned = HookConfig::WithPrompt {
+        script: "printf '%s' \"$AMF_HOOK_CHOICE\" > planned.txt".into(),
+        prompt: HookPrompt {
+            title: "Pick".into(),
+            options: vec!["a".into(), "b".into()],
+        },
+    };
+    let p = plan_with(
+        &fx,
+        "hooked",
+        Some(&planned),
+        Some("b"),
+        true,
+        FetchPolicy::Never,
+    )
+    .unwrap();
+    // The config changes after the preview; the plan must win.
+    fx.app.config.extension.lifecycle_hooks.on_worktree_created =
+        Some(HookConfig::Script("echo later > later.txt".into()));
+
+    let created = fx.app.register_triage_companion(&p).unwrap();
+
+    let workdir = fx
+        .app
+        .store
+        .locate_feature_by_id(None, &created.feature_id)
+        .map(|(pi, fi)| fx.app.store.projects[pi].features[fi].workdir.clone())
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(workdir.join("planned.txt")).unwrap(),
+        "b"
+    );
+    assert!(!workdir.join("later.txt").exists());
+}
+
+#[test]
+fn a_failed_hook_is_reported_and_the_companion_is_kept_stopped() {
+    let mut fx = fixture(false, true);
+    let hook = HookConfig::Script("echo broke >&2; exit 4".into());
+    let p = plan_with(&fx, "kept", Some(&hook), None, false, FetchPolicy::Never).unwrap();
+    let created = fx.app.register_triage_companion(&p).unwrap();
+
+    assert!(created.hook_warning.as_deref().unwrap().contains("broke"));
+    assert_eq!(
+        companions(&fx.app, "kept")[0].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
+fn registration_rolls_back_when_the_save_fails_and_names_the_retained_checkout() {
+    let mut fx = fixture(false, true);
+    let p = plan(&fx, "rollback-save");
+    let before_ids: Vec<String> = fx.app.store.projects[0]
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    let blocker = NamedTempFile::new().unwrap();
+    fx.app.store_path = blocker.path().join("store.json");
+
+    let err = fx
+        .app
+        .register_triage_companion(&p)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("Triage checkout retained at"), "{err}");
+    let after_ids: Vec<String> = fx.app.store.projects[0]
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    assert_eq!(before_ids, after_ids, "no half-registered feature");
+    // The checkout exists and is named, never silently deleted.
+    let checkout = err
+        .rsplit("retained at ")
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(Path::new(&checkout).is_dir(), "{checkout}");
+}
+
+#[test]
+fn registration_is_refused_when_the_source_vanished_after_the_plan() {
+    let mut fx = fixture(false, true);
+    let p = plan(&fx, "orphaned");
+    fx.app.store.projects[0].features.clear();
+
+    let err = fx
+        .app
+        .register_triage_companion(&p)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("Source feature removed"), "{err}");
+    assert!(err.contains("Triage checkout retained at"), "{err}");
+    assert!(fx.app.store.projects[0].features.is_empty());
+}
+
+#[test]
+fn registration_is_refused_when_the_name_was_taken_after_the_plan() {
+    let mut fx = fixture(false, true);
+    let p = plan(&fx, "raced");
+    let mut taken = fx.app.store.projects[0].features[0].clone();
+    taken.id = "feat-raced".into();
+    taken.name = "raced".into();
+    taken.workdir = PathBuf::from("/tmp/elsewhere-raced");
+    fx.app.store.projects[0].features.push(taken);
+
+    let err = fx
+        .app
+        .register_triage_companion(&p)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("already exists"), "{err}");
+    assert_eq!(companions(&fx.app, "raced").len(), 1, "only the other row");
+    assert_eq!(feature_count(&fx.app), 2);
+}
+
+#[test]
+fn a_git_failure_creating_the_worktree_registers_nothing() {
+    let mut fx = fixture(false, true);
+    git(&fx.repo, &["branch", "taken-branch"]);
+    let p = plan(&fx, "taken-branch");
+    assert!(p.local_branch_exists, "the plan already shows the clash");
+    let before = feature_count(&fx.app);
+
+    let err = fx
+        .app
+        .register_triage_companion(&p)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("git worktree add failed"), "{err}");
+    assert_eq!(feature_count(&fx.app), before);
 }

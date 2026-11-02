@@ -389,6 +389,10 @@ pub struct TodoAgentLaunchResponse {
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
     pub(crate) app: App,
+    /// Result of a finished feature summary, handed to the interface once
+    /// (`gui_feature_actions`), keyed by the feature's tmux session so it is
+    /// only shown for the feature it belongs to.
+    pub(crate) summary_outcome: Option<(String, String)>,
     /// Configured-session launches whose pre-check is running outside the lock.
     pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
@@ -405,6 +409,7 @@ impl GuiHandle {
     pub fn new(db_path: std::path::PathBuf) -> anyhow::Result<Self> {
         Ok(Self {
             app: App::new(db_path)?,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -425,6 +430,7 @@ impl GuiHandle {
     pub(crate) fn from_app(app: App) -> Self {
         Self {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -466,6 +472,26 @@ impl GuiHandle {
                 sidebar::carry_runtime_session_fields(&self.app.store, &mut store);
                 self.app.store = store;
                 self.app.store_version = Some(version);
+            }
+        }
+        // After the reload, so persisting a finished summary is saved against
+        // the current store rather than conflicting with it.
+        if self.app.summary_rx.is_some() {
+            self.app.message = None;
+            let before = self.app.summary_state.generating.clone();
+            // A failed save is the summary's outcome, not an error for
+            // whichever command happened to refresh the store.
+            if let Err(error) = self.app.poll_summary_result() {
+                self.app.message = Some(format!("Failed to save summary: {error}"));
+            }
+            if self.app.summary_rx.is_none() {
+                let finished = before
+                    .difference(&self.app.summary_state.generating)
+                    .next()
+                    .cloned();
+                if let (Some(session), Some(message)) = (finished, self.app.message.take()) {
+                    self.summary_outcome = Some((session, message));
+                }
             }
         }
         Ok(())
@@ -2423,6 +2449,7 @@ mod tests {
     fn handle(store: ProjectStore, tmux: MockTmuxOps) -> GuiHandle {
         GuiHandle {
             app: App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new())),
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -2450,6 +2477,7 @@ mod tests {
         app.store_version = Some(version);
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4594,6 +4622,7 @@ mod tests {
         app.store_version = None;
         GuiHandle {
             app,
+            summary_outcome: None,
             custom_session_adds: Default::default(),
             learning_context: None,
             review_context: None,
@@ -4795,6 +4824,7 @@ mod tests {
         (
             GuiHandle {
                 app,
+                summary_outcome: None,
                 custom_session_adds: Default::default(),
                 learning_context: None,
                 review_context: None,

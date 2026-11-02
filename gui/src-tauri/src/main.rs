@@ -2328,6 +2328,26 @@ async fn pr_destination_prepare(
     .await?
 }
 
+/// Read-only: where a PR fix may go (opened feature + verified companions).
+/// The state read holds the GUI mutex only briefly; the Git reads run after it
+/// is released.
+#[tauri::command]
+async fn pr_destination_catalog(
+    app: tauri::AppHandle,
+    request: agent_mainframe::gui_pr_destinations::DestinationCatalogRequest,
+) -> Result<agent_mainframe::gui_pr_destinations::DestinationCatalog, GuiError> {
+    let read = pr_workspace_blocking(app, move |gui| {
+        agent_mainframe::gui_pr_destinations::catalog_read(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            request,
+        )
+    })
+    .await??;
+    tauri::async_runtime::spawn_blocking(move || read.run())
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("Destination catalog stopped: {e}")))
+}
+
 #[tauri::command]
 async fn pr_workspace_prepare_fix(
     app: tauri::AppHandle,
@@ -2837,6 +2857,7 @@ fn main() {
             pr_destination_preview,
             pr_destination_prepare,
             pr_workspace_fix_targets,
+            pr_destination_catalog,
             syntax_install_status,
             syntax_install,
             syntax_languages,

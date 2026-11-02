@@ -27,6 +27,7 @@ pub mod gui_harness_change;
 pub mod gui_issues;
 pub mod gui_learning;
 pub mod gui_plans;
+pub mod gui_pr_destinations;
 pub mod gui_pr_review;
 pub mod gui_pr_triage;
 pub mod gui_pr_workspace;

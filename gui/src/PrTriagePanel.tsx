@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentSlug, asGuiError } from "./api";
 import Markdown from "./Markdown";
 import PrMarkdown, { PrDescription, OpenPrImage } from "./PrMarkdown";
@@ -8,7 +8,8 @@ import {
   PrComment, PrTriageTarget, PrFixHandoff, PrReplyKind, PrSort, PrTriageAction, PrTriageView, prTriageAct, prTriageBegin, prTriageSnapshot,
 } from "./prTriageApi";
 import { Field, Modal, Spinner } from "./ui";
-import FixDestinationPicker, { resolveTarget } from "./FixDestinationPicker";
+import FixDestinationPicker, { resolveTarget, targetKey } from "./FixDestinationPicker";
+import DestinationPicker from "./DestinationPicker";
 import DedicatedSessionForm from "./DedicatedSessionForm";
 import type { PrDestinationPrepared } from "./prDestinationApi";
 
@@ -170,6 +171,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
       return next.length === current.length ? current : next;
     });
   }, [review?.comments]);
+  const fixTargetsKey = JSON.stringify((view?.fix_targets ?? []).map((t) => [t.target.session_id, t.destination_revision, t.stopped]));
+  const fixKeys = useMemo(() => new Set((view?.fix_targets ?? []).map((t) => t.target.session_id)), [fixTargetsKey]);
   const batchTarget = resolveTarget(view?.fix_targets ?? [], batchChoice);
   const fixTarget = resolveTarget(view?.fix_targets ?? [], fixChoice);
   // The created session joins the catalog on a fresh read, then becomes the
@@ -379,6 +382,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
               <span className="small">{marked.length} selected</span>
               <FixDestinationPicker label="Batch fix agent" targets={view!.fix_targets} choice={batchChoice} onChoose={setBatchChoice}
                 disabled={locked || view?.reply != null || investigate !== null} />
+              {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+                selectedKey={batchTarget ? targetKey(batchTarget) : null} choiceKey={batchChoice} onChoose={setBatchChoice} disabled={locked || view?.reply != null || investigate !== null} />}
               <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !batchTarget}
                 onClick={() => void act({ kind: "start_batch_fix", comment_ids: marked, session_id: batchTarget!.target.session_id, destination_revision: batchTarget!.destination_revision, feature_id: batchTarget!.target.feature_id })}>Prepare batch fix…</button>
               <button className="btn btn-ghost btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("batch")}>New dedicated session…</button>
@@ -421,6 +426,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
               {view!.fix_targets.length > 0 ? <>
                 <FixDestinationPicker label="Fix agent" targets={view!.fix_targets} choice={fixChoice} onChoose={setFixChoice}
                   disabled={locked || view?.reply != null || investigate !== null} />
+                {target.feature_id && <DestinationPicker target={{ project_id: target.project_id, feature_id: target.feature_id }} prNumber={review.number} headSha={review.head_sha} selectableKeys={fixKeys} refreshKey={fixTargetsKey}
+                  selectedKey={fixTarget ? targetKey(fixTarget) : null} choiceKey={fixChoice} onChoose={setFixChoice} disabled={locked || view?.reply != null || investigate !== null} />}
                 <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !fixTarget}
                   onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id, destination_revision: fixTarget!.destination_revision })}>Prepare fix…</button>
                 <button className="btn btn-ghost btn-sm" disabled={locked || view?.reply != null || investigate !== null || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>

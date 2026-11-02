@@ -844,10 +844,7 @@ impl GhCli {
             repository.owner, repository.name
         );
         let mut cmd = Command::new("gh");
-        cmd.args(["api", &endpoint]);
-        if repository.host != "github.com" {
-            cmd.args(["--hostname", &repository.host]);
-        }
+        cmd.args(gh_api_get_args(&endpoint, repository));
         let output = cmd
             .current_dir(workdir)
             .output()
@@ -876,10 +873,7 @@ impl GhCli {
             repository.owner, repository.name
         );
         let mut cmd = Command::new("gh");
-        cmd.args(["api", &endpoint]);
-        if repository.host != "github.com" {
-            cmd.args(["--hostname", &repository.host]);
-        }
+        cmd.args(gh_api_get_args(&endpoint, repository));
         let output = cmd
             .current_dir(workdir)
             .output()
@@ -2219,6 +2213,9 @@ pub fn redact_secrets(text: &str) -> String {
             "authorization:",
             "authorization ",
             "token:",
+            "\"token\"",
+            "access_token",
+            "bearer ",
             "gh_token",
             "github_token",
         ]
@@ -2251,6 +2248,17 @@ fn redact_tokens(line: &str, prefixes: &[&str]) -> String {
         words.push(word);
     }
     words.join(" ")
+}
+
+/// Arguments of a read-only `gh api` GET; a non-github.com host is addressed
+/// with `--hostname`.
+fn gh_api_get_args(endpoint: &str, repository: &GithubRepository) -> Vec<String> {
+    let mut args = vec!["api".to_string(), endpoint.to_string()];
+    if repository.host != "github.com" {
+        args.push("--hostname".to_string());
+        args.push(repository.host.clone());
+    }
+    args
 }
 
 fn parse_issue_page(stdout: &[u8], page: u32, per_page: u32) -> Result<GithubIssuePage> {
@@ -3189,7 +3197,7 @@ mod tests {
 
 #[cfg(test)]
 mod issue_read_tests {
-    use super::{parse_single_issue, redact_secrets};
+    use super::{GithubRepository, gh_api_get_args, parse_single_issue, redact_secrets};
 
     #[test]
     fn single_issue_refuses_pull_requests_closed_issues_and_wrong_numbers() {
@@ -3230,5 +3238,37 @@ mod issue_read_tests {
         assert!(!url.contains("hunter2"));
         assert!(url.contains("github.com/a/b"));
         assert_eq!(redact_secrets("plain error 404"), "plain error 404");
+    }
+
+    #[test]
+    fn bare_bearer_and_quoted_tokens_are_redacted() {
+        let bare = redact_secrets("request failed: Bearer s3cr3t-value rejected");
+        assert!(!bare.contains("s3cr3t-value"), "{bare}");
+        let quoted = redact_secrets(r#"body {"token": "q-secret-1"} end"#);
+        assert!(!quoted.contains("q-secret-1"), "{quoted}");
+        let access = redact_secrets("access_token=a-secret-2 failed");
+        assert!(!access.contains("a-secret-2"), "{access}");
+        let quoted_prefix = redact_secrets(r#"token="ghp_abcdefghijklmnopqrstuvwxyz0123456789""#);
+        assert!(!quoted_prefix.contains("ghp_"), "{quoted_prefix}");
+    }
+
+    #[test]
+    fn issue_reads_address_a_non_github_host_with_hostname() {
+        let enterprise = GithubRepository {
+            host: "git.example.com".into(),
+            owner: "acme".into(),
+            name: "widget".into(),
+        };
+        let public = GithubRepository {
+            host: "github.com".into(),
+            owner: "acme".into(),
+            name: "widget".into(),
+        };
+        let endpoint = "repos/acme/widget/issues/7";
+        assert_eq!(
+            gh_api_get_args(endpoint, &enterprise),
+            ["api", endpoint, "--hostname", "git.example.com"]
+        );
+        assert_eq!(gh_api_get_args(endpoint, &public), ["api", endpoint]);
     }
 }

@@ -9,7 +9,7 @@ import type { IssueFixRequest, IssueListView, IssuePreview } from "../src/issueA
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-const agents = [{ slug: "claude", display_name: "Claude Code" }] as never;
+const agents = [{ slug: "claude", display_name: "Claude Code" }, { slug: "codex", display_name: "Codex" }] as never;
 const modes = [{ slug: "vibeless", display_name: "Vibeless", description: "Ask first" }] as never;
 
 const list: IssueListView = {
@@ -24,7 +24,7 @@ const preview = (over: Partial<IssuePreview> = {}): IssuePreview => ({
   project_id: "p1", project_name: "demo", repository: "github.com/acme/widget", number: 7, title: "Crash on save",
   labels: ["bug"], updated_at: "2026-10-30", url: "u7", body: "Stack trace here", body_truncated: false, digest: "d".repeat(64),
   prompt: "Fix GitHub issue #7", suggested_feature_name: "fix-issue-7", suggested_branch: "issue/7-crash-on-save",
-  linked_features: [], ...over,
+  preferred_agent: "claude", linked_features: [], ...over,
 });
 const created = {
   project_id: "p1", feature_id: "f1", feature_name: "fix-issue-7", branch: "issue/7-crash-on-save", started: false,
@@ -42,11 +42,11 @@ function backend(handlers: Handlers) {
 }
 const calls = (command: string) => vi.mocked(invoke).mock.calls.filter(([name]) => name === command);
 
-function mount(onCreated = vi.fn(), onClose = vi.fn()) {
+function mount(onCreated = vi.fn(), onClose = vi.fn(), offered: unknown = agents) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <IssueBrowserPanel projectId="p1" projectName="demo" agents={agents} modes={modes} isGit onClose={onClose} onCreated={onCreated} />
+      <IssueBrowserPanel projectId="p1" projectName="demo" agents={offered as never} modes={modes} isGit onClose={onClose} onCreated={onCreated} />
     </QueryClientProvider>,
   );
   return { onCreated, onClose };
@@ -167,4 +167,71 @@ it("needs explicit confirmation to duplicate a feature and to exceed resource li
   fireEvent.click(await screen.findByRole("button", { name: "Start anyway" }));
   await waitFor(() => expect(onCreated).toHaveBeenCalled());
   expect(requests.map((r) => [r.start, r.approved, r.allow_duplicate])).toEqual([[true, false, true], [true, true, true]]);
+});
+
+it("seeds the harness from the project's preferred one, not the first listed", async () => {
+  backend({ issue_browser_list: () => list, issue_fix_preview: () => preview({ preferred_agent: "codex" }), issue_fix_create: () => created });
+  mount();
+  await openIssue("7");
+  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("codex");
+  const create = await screen.findByRole("button", { name: "Create feature" });
+  await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(create);
+  await waitFor(() => expect(calls("issue_fix_create")).toHaveLength(1));
+  expect((calls("issue_fix_create")[0][1] as { request: IssueFixRequest }).request.request.agent).toBe("codex");
+});
+
+it("falls back to the first offered harness when the preferred one is not offered", async () => {
+  backend({ issue_browser_list: () => list, issue_fix_preview: () => preview({ preferred_agent: "pi" }) });
+  mount();
+  await openIssue("7");
+  expect((screen.getByLabelText("Harness") as HTMLSelectElement).value).toBe("claude");
+});
+
+it("keeps the user's edits across Reload issue and refreshes only untouched fields", async () => {
+  let previews = 0;
+  backend({
+    issue_browser_list: () => list,
+    issue_fix_preview: () => preview(previews++ === 0 ? {} : { digest: "e".repeat(64), body: "New text", prompt: "Fix #7 (new text)" }),
+    issue_fix_create: () => { throw { kind: "conflict", message: "Issue #7 changed on GitHub since you previewed it." }; },
+  });
+  mount();
+  await openIssue("7");
+  fireEvent.change(screen.getByLabelText("Agent prompt"), { target: { value: "my own prompt" } });
+  const create = await screen.findByRole("button", { name: "Create feature" });
+  await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(create);
+  fireEvent.click(await screen.findByRole("button", { name: "Reload issue" }));
+  await screen.findByText("New text");
+  expect((screen.getByLabelText("Agent prompt") as HTMLTextAreaElement).value).toBe("my own prompt");
+  expect(screen.getByText(/edited prompt was kept/)).toBeTruthy();
+});
+
+it("replaces an untouched prompt on Reload issue", async () => {
+  let previews = 0;
+  backend({
+    issue_browser_list: () => list,
+    issue_fix_preview: () => preview(previews++ === 0 ? {} : { digest: "e".repeat(64), body: "New text", prompt: "Fix #7 (new text)" }),
+    issue_fix_create: () => { throw { kind: "conflict", message: "Issue #7 changed on GitHub since you previewed it." }; },
+  });
+  mount();
+  await openIssue("7");
+  const create = await screen.findByRole("button", { name: "Create feature" });
+  await waitFor(() => expect((create as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(create);
+  fireEvent.click(await screen.findByRole("button", { name: "Reload issue" }));
+  await waitFor(() => expect((screen.getByLabelText("Agent prompt") as HTMLTextAreaElement).value).toBe("Fix #7 (new text)"));
+});
+
+it("clears a label filter that the next page does not contain", async () => {
+  const second: IssueListView = { ...list, page: 2, issues: [list.issues[1]] };
+  backend({ issue_browser_list: (args) => (args.page === 2 ? second : list) });
+  mount();
+  await screen.findByRole("button", { name: /Open issue #7/ });
+  fireEvent.change(screen.getByLabelText("Filter by label"), { target: { value: "bug" } });
+  expect(screen.queryByRole("button", { name: /Open issue #8/ })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByText("Page 2");
+  expect(await screen.findByRole("button", { name: /Open issue #8/ })).toBeTruthy();
+  expect((screen.getByLabelText("Filter by label") as HTMLSelectElement).value).toBe("");
 });

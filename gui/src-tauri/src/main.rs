@@ -835,39 +835,55 @@ fn start_feature(
     Ok(response)
 }
 
-/// Open issues of a project's GitHub repository (read-only `gh api`). Async so
-/// the `gh` calls never stall the window; the GUI lock is not held during them.
+// `gh` subprocesses block for seconds. They run on a blocking thread so the
+// async runtime workers stay free; the GUI lock is held only briefly inside.
+async fn issue_blocking<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&Mutex<GuiHandle>) -> T + Send + 'static,
+) -> Result<T, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<AppState>().0))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("GitHub issue operation stopped: {e}")))
+}
+
+/// Open issues of a project's GitHub repository (read-only `gh api`), on a
+/// blocking thread; the GUI lock is not held during the `gh` calls.
 #[tauri::command]
 async fn issue_browser_list(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     project_id: String,
     page: u32,
 ) -> Result<IssueListView, GuiError> {
-    gui_issues::list(&state.0, &project_id, page)
+    issue_blocking(app, move |gui| gui_issues::list(gui, &project_id, page)).await?
 }
 
 #[tauri::command]
 async fn issue_fix_preview(
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     project_id: String,
     number: u32,
 ) -> Result<IssuePreview, GuiError> {
-    gui_issues::preview(&state.0, &project_id, number)
+    issue_blocking(app, move |gui| {
+        gui_issues::preview(gui, &project_id, number)
+    })
+    .await?
 }
 
 /// Creates the issue-fixing feature after the user confirmed a preview.
 #[tauri::command]
 async fn issue_fix_create(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
     request: IssueFixRequest,
 ) -> Result<IssueFixResponse, GuiError> {
-    let response = gui_issues::create(&state.0, request)?;
-    let snapshot = state
-        .0
-        .lock()
-        .expect("gui handle mutex poisoned")
-        .broadcast_snapshot();
+    let (response, snapshot) = issue_blocking(app.clone(), move |gui| {
+        let response = gui_issues::create(gui, request)?;
+        let snapshot = gui
+            .lock()
+            .expect("gui handle mutex poisoned")
+            .broadcast_snapshot();
+        Ok::<_, GuiError>((response, snapshot))
+    })
+    .await??;
     emit_workspace_changed(&app, &snapshot);
     Ok(response)
 }

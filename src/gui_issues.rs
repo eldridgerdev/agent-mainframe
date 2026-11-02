@@ -14,8 +14,9 @@
 //!   created feature ..." comment on the issue; the feature made here records
 //!   `comment_opt_out` so neither this process nor a later TUI start posts it.
 //! - **Preview, then confirm, bound to the issue's content.** The preview
-//!   carries a digest of repository + number + title + body + labels +
-//!   `updated_at`. Creation re-reads the issue and refuses when the digest
+//!   carries a digest of repository + number + title + body + labels (not
+//!   `updated_at`, which a new comment bumps without changing what was shown).
+//!   Creation re-reads the issue and refuses when the digest
 //!   no longer matches, so the agent never receives text the user did not
 //!   see. The digest only ever travels back unchanged; it grants nothing.
 //! - **Created stopped.** The agent starts only when the request asks for it,
@@ -34,7 +35,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::app::{
-    App, AppMode, FeatureCreateOptions, ISSUE_PAGE_SIZE, issue_branch_name, issue_fix_prompt,
+    App, AppMode, FeatureCreateOptions, ISSUE_PAGE_SIZE, StartIntent, issue_branch_name,
+    issue_fix_prompt,
 };
 use crate::automation::CreateFeatureRequest;
 use crate::github::{GhCli, GithubIssue, GithubRepository, GithubTransport, redact_secrets};
@@ -99,6 +101,9 @@ pub struct IssuePreview {
     pub prompt: String,
     pub suggested_feature_name: String,
     pub suggested_branch: String,
+    /// The project's preferred harness, already narrowed to one the project
+    /// allows (the TUI's `normalize_agent_for_repo`), as a slug.
+    pub preferred_agent: String,
     pub linked_features: Vec<LinkedFeature>,
 }
 
@@ -141,6 +146,7 @@ struct ProjectRead {
     project_name: String,
     workdir: PathBuf,
     repository: GithubRepository,
+    preferred_agent: String,
 }
 
 /// Turn a failure into text that names the cause and the fix, with any
@@ -229,7 +235,6 @@ pub fn issue_digest(repository: &GithubRepository, issue: &GithubIssue) -> Strin
     };
     field(&repository.canonical());
     field(&issue.number.to_string());
-    field(&issue.updated_at);
     field(&issue.title);
     field(issue.body.as_deref().unwrap_or(""));
     field(&labels_of(issue).join("\u{1f}"));
@@ -281,9 +286,16 @@ impl GuiHandle {
             .ok_or_else(|| GuiError::not_found("The project was deleted; refresh and retry"))?;
         let repository = app
             .github_repository_for_project(index)
-            .map_err(|error| GuiError::conflict(error.to_string()))?;
+            .map_err(|error| GuiError::conflict(redact_secrets(&error.guidance())))?;
+        let project = &app.store.projects[index];
+        let preferred_agent = app
+            .normalize_agent_for_repo(&project.repo, &project.preferred_agent)
+            .0
+            .slug()
+            .to_string();
         let project = &app.store.projects[index];
         Ok(ProjectRead {
+            preferred_agent,
             project_name: project.name.clone(),
             workdir: project.repo.clone(),
             repository,
@@ -391,6 +403,7 @@ pub fn preview_with(
         prompt: issue_fix_prompt(&read.repository, &issue),
         suggested_feature_name: format!("fix-issue-{}", issue.number),
         suggested_branch: issue_branch_name(issue.number, &issue.title),
+        preferred_agent: read.preferred_agent,
         linked_features: linked_features(app, &read.repository, issue.number),
     })
 }
@@ -409,8 +422,14 @@ pub fn create_with(
     if feature_name.is_empty() {
         return Err(GuiError::conflict("Feature name cannot be empty"));
     }
-    if request.request.branch.trim().is_empty() {
+    let branch = request.request.branch.trim();
+    if branch.is_empty() {
         return Err(GuiError::conflict("Branch cannot be empty"));
+    }
+    if branch.starts_with('-') {
+        return Err(GuiError::conflict(format!(
+            "'{branch}' is not a valid branch name: it cannot start with '-'"
+        )));
     }
     if prompt.is_empty() {
         return Err(GuiError::conflict("The agent prompt cannot be empty"));
@@ -455,6 +474,26 @@ pub fn create_with(
     guard.issue_create(&read, request, feature_name, prompt)
 }
 
+/// Git's own ref rules, so an invalid name is refused with a reason before a
+/// worktree is attempted. A missing `git` binary is left to creation to report.
+fn check_branch_name(repo: &std::path::Path, branch: &str) -> GuiResult<()> {
+    if branch.starts_with('-') {
+        return Err(GuiError::conflict(format!(
+            "'{branch}' is not a valid branch name: it cannot start with '-'"
+        )));
+    }
+    let checked = std::process::Command::new("git")
+        .args(["check-ref-format", "--branch", branch])
+        .current_dir(repo)
+        .output();
+    match checked {
+        Ok(output) if !output.status.success() => Err(GuiError::conflict(format!(
+            "'{branch}' is not a valid git branch name (no spaces, '..', '~', '^', ':', '?', '*', '[', '\\', or a trailing '.' or '/')"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 impl GuiHandle {
     fn issue_precheck(&mut self, read: &ProjectRead, request: &IssueFixRequest) -> GuiResult<()> {
         let duplicates = linked_features(self.app_for_workflow(), &read.repository, request.number);
@@ -475,11 +514,52 @@ impl GuiHandle {
             .find_project(&read.project_name)
             .ok_or_else(|| GuiError::not_found("The project was deleted; refresh and retry"))?;
         let repo = project.repo.clone();
+        if !app.allows_agent_for_repo(&repo, &request.request.agent) {
+            return Err(GuiError::conflict(format!(
+                "Harness '{}' is not allowed for this project",
+                request.request.agent.display_name()
+            )));
+        }
+        let branch = request.request.branch.trim();
+        check_branch_name(&repo, branch)?;
         let use_worktree = request
             .request
             .use_worktree
             .unwrap_or(!project.features.is_empty());
         if use_worktree {
+            let name = crate::project::worktree_name(&read.project_name, branch);
+            let planned = repo.join(".worktrees").join(&name);
+            if let Some(taken) = project
+                .features
+                .iter()
+                .find(|feature| feature.branch == branch || feature.workdir == planned)
+            {
+                return Err(GuiError::conflict(format!(
+                    "Branch '{branch}' is already used by feature '{}'. Pick a different branch name.",
+                    taken.name
+                )));
+            }
+            if planned.exists() {
+                return Err(GuiError::conflict(format!(
+                    "A worktree already exists at {}. Pick a different branch name.",
+                    planned.display()
+                )));
+            }
+            if crate::worktree::WorktreeManager::list(&repo)
+                .map(|list| {
+                    list.iter().any(|wt| {
+                        wt.branch
+                            .as_deref()
+                            .map(|b| b.trim_start_matches("refs/heads/"))
+                            == Some(branch)
+                    })
+                })
+                .unwrap_or(false)
+            {
+                return Err(GuiError::conflict(format!(
+                    "Branch '{branch}' is already checked out in another worktree. Pick a different branch name."
+                )));
+            }
             app.validate_worktree_hook_choice(&repo, request.request.hook_choice.as_deref())
                 .map_err(GuiError::from)?;
         }
@@ -506,7 +586,10 @@ impl GuiHandle {
         create.existing_worktree = None;
         create.initial_prompt = None;
         create.submit_prompt = false;
-        create.no_start = !request.start;
+        // An approved start is made here, through the gate's `Approved` intent:
+        // the create path's own autostart re-checks the limits and would
+        // silently leave the feature stopped, ignoring the approval.
+        create.no_start = !request.start || request.approved;
         create.branch = create.branch.trim().to_string();
         let created = self
             .app_for_workflow()
@@ -534,8 +617,19 @@ impl GuiHandle {
         // the agent is started later by hand.
         let workdir = app.store.projects[pi].features[fi].workdir.clone();
         let persisted = app.persist_startup_prompt(&workdir, &prompt);
-        let session_id = created
-            .started
+        let mut started = created.started;
+        if request.start && request.approved {
+            self.app_for_workflow()
+                .ensure_feature_running(pi, fi, StartIntent::Approved)
+                .map_err(|error| {
+                    GuiError::conflict(format!(
+                        "Created '{feature_name}' but it could not start: {error:#}. It is in the sidebar, stopped."
+                    ))
+                })?;
+            started = true;
+        }
+        let app = self.app_for_workflow();
+        let session_id = started
             .then(|| {
                 app.store.projects[pi].features[fi]
                     .sessions
@@ -545,7 +639,7 @@ impl GuiHandle {
             })
             .flatten();
 
-        let message = if created.started {
+        let message = if started {
             format!(
                 "Created and started '{feature_name}' for issue #{}",
                 request.number
@@ -571,7 +665,7 @@ impl GuiHandle {
             feature_id: feature_id.clone(),
             feature_name,
             branch: create.branch,
-            started: created.started,
+            started,
             session: session_id.map(|session_id| SessionTarget {
                 project_id,
                 feature_id,
@@ -727,13 +821,17 @@ mod tests {
     }
 
     fn handle(root: &Path) -> Mutex<GuiHandle> {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_panes().returning(Vec::new);
+        handle_with(root, tmux)
+    }
+
+    fn handle_with(root: &Path, tmux: MockTmuxOps) -> Mutex<GuiHandle> {
         let repo = git_repo(root);
         let mut project = Project::new("demo".into(), repo, true, AgentKind::default());
         project.id = "proj".into();
         let mut store = ProjectStore::empty();
         store.projects.push(project);
-        let mut tmux = MockTmuxOps::new();
-        tmux.expect_list_panes().returning(Vec::new);
         let mut worktree = MockWorktreeOps::new();
         worktree.expect_create().returning(|repo, name, _| {
             let path = repo.join(".worktrees").join(name);
@@ -869,11 +967,7 @@ mod tests {
             guard.app_for_workflow().store.projects[0].repo = root.path().join("not-a-repo");
         }
         let error = list_with(&gui, "proj", 1, fake()).unwrap_err();
-        assert!(
-            error.message.contains("not a git repository"),
-            "{}",
-            error.message
-        );
+        assert!(error.message.contains("not one"), "{}", error.message);
         let error = list_with(&gui, "missing", 1, fake()).unwrap_err();
         assert_eq!(error.kind, GuiErrorKind::NotFound);
     }
@@ -906,7 +1000,11 @@ mod tests {
         assert_ne!(digest, issue_digest(&repository, &edited));
         let mut touched = base.clone();
         touched.updated_at = "2026-10-31T00:00:00Z".into();
-        assert_ne!(digest, issue_digest(&repository, &touched));
+        assert_eq!(
+            digest,
+            issue_digest(&repository, &touched),
+            "a new comment bumps updated_at without changing what was shown"
+        );
         let mut relabeled = base.clone();
         relabeled.labels.clear();
         assert_ne!(digest, issue_digest(&repository, &relabeled));
@@ -976,11 +1074,11 @@ mod tests {
                 .is_empty()
         );
 
-        // Only updated_at moving is also a change.
+        // Only updated_at moving (a new comment) is not a change to the
+        // shown text, so the preview is still good.
         transport.issues.lock().unwrap()[0].body = Some("Stack trace here".into());
         transport.issues.lock().unwrap()[0].updated_at = "2026-11-01T00:00:00Z".into();
-        let error = create_with(&gui, request(&preview.digest), transport).unwrap_err();
-        assert!(error.message.contains("changed on GitHub"));
+        create_with(&gui, request(&preview.digest), transport).unwrap();
     }
 
     #[test]
@@ -1070,5 +1168,211 @@ mod tests {
                 .features
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn starting_with_approval_creates_and_starts_through_mocked_tmux() {
+        let _lease_lock = crate::resources::limits::lock_lease_tests();
+        assert_eq!(crate::resources::limits::wait_for_in_flight(0), 0);
+        let _lease = crate::resources::limits::HeadlessLease::acquire();
+        let created = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = created.clone();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_panes().returning(Vec::new);
+        tmux.expect_session_exists()
+            .returning(move |_| seen.load(Ordering::SeqCst));
+        tmux.expect_create_session_with_window()
+            .returning(move |_, _, _| {
+                created.store(true, Ordering::SeqCst);
+                Ok(())
+            });
+        tmux.expect_set_session_env().returning(|_, _, _| Ok(()));
+        tmux.expect_launch_claude()
+            .returning(|_, _, _, _, _| Ok(()));
+        tmux.expect_select_window().returning(|_, _| Ok(()));
+        tmux.expect_resize_pane().returning(|_, _, _, _| Ok(()));
+        tmux.expect_list_sessions().returning(|| Ok(vec![]));
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle_with(root.path(), tmux);
+        {
+            let mut guard = gui.lock().unwrap();
+            guard.app_for_workflow().config.max_concurrent_agents = 1;
+        }
+        let transport = fake();
+        let digest = preview_with(&gui, "proj", 7, transport.clone())
+            .unwrap()
+            .digest;
+        let mut asking = request(&digest);
+        asking.start = true;
+        let error = create_with(&gui, asking.clone(), transport.clone()).unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::NeedsApproval);
+
+        asking.approved = true;
+        let response = create_with(&gui, asking, transport.clone()).unwrap();
+        assert!(response.started, "{}", response.message);
+        let session = response.session.expect("an agent session to open");
+        assert_eq!(session.feature_id, response.feature_id);
+        assert_eq!(transport.writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_hook_with_choices_requires_a_valid_choice_before_any_github_read() {
+        use crate::extension::{HookConfig, HookPrompt};
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle(root.path());
+        {
+            let mut guard = gui.lock().unwrap();
+            guard
+                .app_for_workflow()
+                .config
+                .extension
+                .lifecycle_hooks
+                .on_worktree_created = Some(HookConfig::WithPrompt {
+                script: "true".into(),
+                prompt: HookPrompt {
+                    title: "Choose".into(),
+                    options: vec!["node".into()],
+                },
+            });
+        }
+        let transport = fake();
+        let mut worktree = request("digest");
+        worktree.request.use_worktree = Some(true);
+        let error = create_with(&gui, worktree.clone(), transport.clone()).unwrap_err();
+        assert!(
+            error.message.contains("requires a choice"),
+            "{}",
+            error.message
+        );
+        worktree.request.hook_choice = Some("ruby".into());
+        let error = create_with(&gui, worktree, transport.clone()).unwrap_err();
+        assert!(
+            error.message.contains("Invalid hook_choice"),
+            "{}",
+            error.message
+        );
+        assert_eq!(transport.reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn two_distinct_github_remotes_are_refused_as_ambiguous() {
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle(root.path());
+        let repo = gui.lock().unwrap().app_for_workflow().store.projects[0]
+            .repo
+            .clone();
+        let status = std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "upstream",
+                "https://github.com/other/widget.git",
+            ])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let error = list_with(&gui, "proj", 1, fake()).unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict);
+        assert!(
+            error.message.contains("multiple GitHub repositories"),
+            "{}",
+            error.message
+        );
+        assert!(preview_with(&gui, "proj", 7, fake()).is_err());
+    }
+
+    #[test]
+    fn a_remote_with_embedded_credentials_never_reaches_the_client() {
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle(root.path());
+        let repo = gui.lock().unwrap().app_for_workflow().store.projects[0]
+            .repo
+            .clone();
+        for args in [
+            vec![
+                "remote",
+                "set-url",
+                "origin",
+                "https://user:hunter2@github.com/acme/widget.git",
+            ],
+            vec![
+                "remote",
+                "add",
+                "upstream",
+                "https://user:tok3n@github.com/other/widget.git",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&repo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let error = list_with(&gui, "proj", 1, fake()).unwrap_err();
+        assert!(!error.message.contains("hunter2"), "{}", error.message);
+        assert!(!error.message.contains("tok3n"), "{}", error.message);
+    }
+
+    #[test]
+    fn the_preview_offers_the_projects_preferred_harness_and_creation_refuses_a_disabled_one() {
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle(root.path());
+        {
+            let mut guard = gui.lock().unwrap();
+            let app = guard.app_for_workflow();
+            app.store.projects[0].preferred_agent = AgentKind::Codex;
+        }
+        let transport = fake();
+        let preview = preview_with(&gui, "proj", 7, transport.clone()).unwrap();
+        assert_eq!(preview.preferred_agent, "codex");
+
+        {
+            let mut guard = gui.lock().unwrap();
+            guard.app_for_workflow().store.available_harnesses = vec![AgentKind::Claude];
+        }
+        let preview = preview_with(&gui, "proj", 7, transport.clone()).unwrap();
+        assert_eq!(
+            preview.preferred_agent, "claude",
+            "narrowed to an allowed harness"
+        );
+        let mut disabled = request(&preview.digest);
+        disabled.request.agent = AgentKind::Codex;
+        let reads = transport.reads.load(Ordering::SeqCst);
+        let error = create_with(&gui, disabled, transport.clone()).unwrap_err();
+        assert!(error.message.contains("not allowed"), "{}", error.message);
+        assert_eq!(transport.reads.load(Ordering::SeqCst), reads);
+    }
+
+    #[test]
+    fn invalid_branches_and_worktree_collisions_are_refused_with_a_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let gui = handle(root.path());
+        let transport = fake();
+        for bad in ["-rf", "has space", "a..b", "ends.lock", "trailing/"] {
+            let mut asking = request("digest");
+            asking.request.branch = bad.into();
+            let error = create_with(&gui, asking, transport.clone()).unwrap_err();
+            assert!(
+                error.message.contains("not a valid"),
+                "{bad}: {}",
+                error.message
+            );
+        }
+        assert_eq!(transport.reads.load(Ordering::SeqCst), 0);
+
+        let digest = preview_with(&gui, "proj", 7, transport.clone())
+            .unwrap()
+            .digest;
+        let mut first = request(&digest);
+        first.request.use_worktree = Some(true);
+        create_with(&gui, first.clone(), transport.clone()).unwrap();
+        first.feature_name = "fix-issue-7-b".into();
+        first.allow_duplicate = true;
+        let error = create_with(&gui, first, transport).unwrap_err();
+        assert!(error.message.contains("already used"), "{}", error.message);
     }
 }

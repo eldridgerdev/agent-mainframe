@@ -43,6 +43,8 @@ export interface IssuePreview {
   prompt: string;
   suggested_feature_name: string;
   suggested_branch: string;
+  /** The project's preferred harness, already narrowed to an allowed one. */
+  preferred_agent: string;
   linked_features: LinkedFeature[];
 }
 

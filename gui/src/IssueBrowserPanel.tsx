@@ -67,6 +67,10 @@ export default function IssueBrowserPanel({
     () => [...new Set((list?.issues ?? []).flatMap((row) => row.labels))].sort(),
     [list],
   );
+  // A filter naming a label the new page does not have would hide every row.
+  useEffect(() => {
+    if (label && !labels.includes(label)) setLabel("");
+  }, [labels, label]);
   const shown = (list?.issues ?? []).filter((row) => matchesIssue(row, query, label));
 
   async function open(number: number) {
@@ -84,7 +88,7 @@ export default function IssueBrowserPanel({
   if (preview) {
     return (
       <IssueFixForm
-        key={`${preview.number}:${preview.digest}`}
+        key={preview.number}
         preview={preview}
         projectId={projectId}
         projectName={projectName}
@@ -204,7 +208,9 @@ function IssueFixForm({
 }) {
   const [featureName, setFeatureName] = useState(preview.suggested_feature_name);
   const [branch, setBranch] = useState(preview.suggested_branch);
-  const [agent, setAgent] = useState<AgentSlug>(agents[0]?.slug ?? "claude");
+  const [agent, setAgent] = useState<AgentSlug>(
+    () => agents.find((a) => a.slug === preview.preferred_agent)?.slug ?? agents[0]?.slug ?? "claude",
+  );
   const [mode, setMode] = useState<ModeSlug>(modes.find((m) => m.slug === "vibeless")?.slug ?? modes[0]?.slug ?? "vibeless");
   const [useWorktree, setUseWorktree] = useState(isGit);
   const [prompt, setPrompt] = useState(preview.prompt);
@@ -213,6 +219,22 @@ function IssueFixForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
+  const [keptPrompt, setKeptPrompt] = useState(false);
+  const edited = useRef({ name: false, branch: false, prompt: false });
+  const shownDigest = useRef(preview.digest);
+
+  // A reloaded preview (same issue, new text) refreshes only what the user has
+  // not touched; their edits survive the reload.
+  useEffect(() => {
+    if (shownDigest.current === preview.digest) return;
+    shownDigest.current = preview.digest;
+    if (!edited.current.name) setFeatureName(preview.suggested_feature_name);
+    if (!edited.current.branch) setBranch(preview.suggested_branch);
+    if (edited.current.prompt) setKeptPrompt(true);
+    else setPrompt(preview.prompt);
+    setError(null);
+    setStale(false);
+  }, [preview]);
   const [approval, setApproval] = useState<string | null>(null);
   const hook = useWorktreeHookChoice(projectId, isGit && useWorktree);
   const hasDuplicate = preview.linked_features.length > 0;
@@ -314,10 +336,10 @@ function IssueFixForm({
             </div>
           )}
           <Field label="Feature name">
-            <input className="mono" value={featureName} onChange={(event) => setFeatureName(event.target.value)} disabled={busy} />
+            <input className="mono" value={featureName} onChange={(event) => { edited.current.name = true; setFeatureName(event.target.value); }} disabled={busy} />
           </Field>
           <Field label="Branch">
-            <input className="mono" value={branch} onChange={(event) => setBranch(event.target.value)} disabled={busy} />
+            <input className="mono" value={branch} onChange={(event) => { edited.current.branch = true; setBranch(event.target.value); }} disabled={busy} />
           </Field>
           <div className="form-row">
             <Field label="Harness">
@@ -339,7 +361,8 @@ function IssueFixForm({
           <WorktreeHookField hook={hook} disabled={busy} />
           <Field label="Agent prompt" hint="Shown to the agent as an unsent draft. The issue text inside is data, not instructions.">
             <textarea className="mono issue-prompt" rows={9} value={prompt}
-              onChange={(event) => setPrompt(event.target.value)} disabled={busy} aria-label="Agent prompt" />
+              onChange={(event) => { edited.current.prompt = true; setPrompt(event.target.value); }} disabled={busy} aria-label="Agent prompt" />
+            {keptPrompt && <p className="field-hint">Your edited prompt was kept; it may still quote the earlier issue text.</p>}
           </Field>
           <Switch checked={start} onChange={setStart} disabled={busy}
             label="Start the agent now"

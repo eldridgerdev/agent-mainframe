@@ -18,6 +18,7 @@ pub mod gui_bookmarks;
 pub mod gui_companion_integration;
 pub mod gui_contract;
 pub mod gui_debug_log;
+pub mod gui_dedicated_session;
 pub mod gui_diff;
 pub mod gui_dormancy;
 pub mod gui_feature_actions;

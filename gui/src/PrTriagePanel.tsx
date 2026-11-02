@@ -9,6 +9,8 @@ import {
 } from "./prTriageApi";
 import { Field, Modal, Spinner } from "./ui";
 import FixDestinationPicker, { resolveTarget } from "./FixDestinationPicker";
+import DedicatedSessionForm from "./DedicatedSessionForm";
+import type { PrDestinationPrepared } from "./prDestinationApi";
 
 const SORTS: [PrSort, string][] = [
   ["fetch_order", "Fetch order"], ["by_file", "By file"], ["by_author", "By author"],
@@ -51,6 +53,8 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   const [batchChoice, setBatchChoice] = useState<string | null>(null);
   const [batchPrompt, setBatchPrompt] = useState<{ key: string; text: string; seed: string } | null>(null);
   const [confirmDiscardBatch, setConfirmDiscardBatch] = useState(false);
+  // Which picker the dedicated-session form was opened from; its result selects there.
+  const [dedicatedFor, setDedicatedFor] = useState<"fix" | "batch" | null>(null);
   const [openImage, setOpenImage] = useState<{ image: ImageData; caption: string; identity: string } | null>(null);
   const imageTrigger = useRef<HTMLElement | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
@@ -168,6 +172,14 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
   }, [review?.comments]);
   const batchTarget = resolveTarget(view?.fix_targets ?? [], batchChoice);
   const fixTarget = resolveTarget(view?.fix_targets ?? [], fixChoice);
+  // The created session joins the catalog on a fresh read, then becomes the
+  // chosen target of the picker that asked for it. Nothing is prepared or sent.
+  const dedicatedCreated = useCallback(async (result: PrDestinationPrepared) => {
+    const created = result.created_target;
+    if (!created || !view) return;
+    try { setView(await prTriageSnapshot(view.workflow_id)); } catch (err) { setError(asGuiError(err).message); return; }
+    if (dedicatedFor === "batch") setBatchChoice(created.session_id); else setFixChoice(created.session_id);
+  }, [view?.workflow_id, dedicatedFor]);
 
   // An investigation draft belongs to one comment. Moving off an empty one
   // drops it; a typed one stays, announced on every other comment.
@@ -357,6 +369,10 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
           <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => void act({ kind: "cancel_investigation" })}>Cancel investigation</button>
         </div>}
 
+        {dedicatedFor && review && view && <DedicatedSessionForm workflow={{ kind: "triage", workflow_id: view.workflow_id }}
+          expected={{ pr_number: review.number, head_sha: review.head_sha }}
+          onCreated={(result) => void dedicatedCreated(result)} onClose={() => setDedicatedFor(null)} />}
+
         <div className="pr-reader">
           <nav className="pr-comments" aria-label="Review comments">
             {canBatch && marked.length > 0 && !view?.batch_fix && <div className="pr-actions" role="group" aria-label="Batch fix">
@@ -365,6 +381,7 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
                 disabled={locked || view?.reply != null || investigate !== null} />
               <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !batchTarget}
                 onClick={() => void act({ kind: "start_batch_fix", comment_ids: marked, session_id: batchTarget!.target.session_id, destination_revision: batchTarget!.destination_revision, feature_id: batchTarget!.target.feature_id })}>Prepare batch fix…</button>
+              <button className="btn btn-ghost btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("batch")}>New dedicated session…</button>
               <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setMarked([])}>Clear selection</button>
             </div>}
             {comments.length === 0 && <p className="muted pad">No comments to show.</p>}
@@ -406,7 +423,11 @@ export default function PrTriagePanel({ target, onClose, onHandoff, embedded = f
                   disabled={locked || view?.reply != null || investigate !== null} />
                 <button className="btn btn-secondary btn-sm" disabled={locked || view?.reply != null || investigate !== null || !fixTarget}
                   onClick={() => void act({ kind: "start_fix_draft", comment_id: selected.id, session_id: fixTarget!.target.session_id, feature_id: fixTarget!.target.feature_id })}>Prepare fix…</button>
-              </> : <p className="small muted">Add an agent session to this feature to prepare a fix draft.</p>}
+                <button className="btn btn-ghost btn-sm" disabled={locked || view?.reply != null || investigate !== null || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
+              </> : <>
+                <p className="small muted">Add an agent session to this feature to prepare a fix draft.</p>
+                <button className="btn btn-secondary btn-sm" disabled={locked || dedicatedFor !== null} onClick={() => setDedicatedFor("fix")}>New dedicated session…</button>
+              </>}
             </div>}
             {selected.actionable && !selected.local_finding && <div className="pr-actions">
               <button className="btn btn-secondary btn-sm" disabled={locked} onClick={() => void act({ kind: "toggle_done", comment_id: selected.id })}>

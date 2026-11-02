@@ -848,6 +848,35 @@ fn check_workflow(gui: &GuiHandle, workflow_id: &str) -> GuiResult<()> {
     Ok(())
 }
 
+/// What a destination step may bind to: the opened feature, the open PR and
+/// a digest of its comment set. Read-only; no GitHub access.
+pub(crate) fn destination_binding(
+    gui: &mut GuiHandle,
+    workflow_id: &str,
+) -> GuiResult<(FeatureTarget, u32, String, String)> {
+    check_workflow(gui, workflow_id)?;
+    let opened = gui.pr_triage_context.as_ref().unwrap().target.feature()?;
+    let state = review_state(&gui.app_for_workflow().mode)
+        .ok_or_else(|| GuiError::conflict("Open a pull request first"))?;
+    let comments = state
+        .review
+        .comments
+        .iter()
+        .map(|c| (c.id, &c.body, &c.path, c.line, c.is_resolved))
+        .collect::<Vec<_>>();
+    use sha2::{Digest, Sha256};
+    let set = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&comments).expect("serializable comments"))
+    );
+    Ok((
+        opened,
+        state.review.pr.number,
+        state.review.pr.head_sha.clone(),
+        set,
+    ))
+}
+
 pub fn plan_poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrTriageReads> {
     check_workflow(gui, workflow_id)?;
     Ok(poll_reads(gui))
@@ -5075,6 +5104,78 @@ mod tests {
         assert_ne!(
             digest(DestinationKind::OpenedFeature),
             digest(DestinationKind::Companion)
+        );
+    }
+    #[test]
+    fn a_dedicated_session_binds_to_the_open_triage_comment_set_and_head() {
+        use crate::gui_dedicated_session::{
+            PrDestinationChoice, PrDestinationPrepareRequest, PrDestinationRequest,
+            PrDestinationWorkflow,
+        };
+        let (_dir, mut gui, _fake, view) = opened();
+        gui.app_for_workflow().config.low_memory_warn_mb = 0;
+        let workflow = PrDestinationWorkflow::Triage {
+            workflow_id: view.workflow_id.clone(),
+        };
+        let catalog = crate::gui_dedicated_session::catalog(&mut gui, &workflow).unwrap();
+        assert_eq!(catalog.identity.pr_number, 7);
+        assert!(catalog.identity.set_digest.is_some());
+        let request = PrDestinationRequest {
+            workflow: workflow.clone(),
+            identity: catalog.identity.clone(),
+            choice: PrDestinationChoice::DedicatedSession {
+                agent: AgentKind::Codex,
+                name: None,
+            },
+        };
+        let shown = crate::gui_dedicated_session::preview(&mut gui, &request).unwrap();
+        let prepare = |gui: &mut GuiHandle, revision: &str| {
+            crate::gui_dedicated_session::prepare(
+                gui,
+                PrDestinationPrepareRequest {
+                    workflow: request.workflow.clone(),
+                    identity: request.identity.clone(),
+                    choice: request.choice.clone(),
+                    preview_revision: revision.into(),
+                    approved: false,
+                },
+                "triage-op",
+            )
+        };
+        // The comment set changes (an edited comment) before the confirm.
+        let body_before = {
+            let state = review_mut(gui.app_for_workflow()).unwrap();
+            let before = state.review.comments[0].body.clone();
+            state.review.comments[0].body = "edited upstream".into();
+            before
+        };
+        let failure = prepare(&mut gui, &shown.revision).unwrap_err();
+        assert!(
+            failure.message.contains("comments or AI findings"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            gui.app_for_workflow().store.projects[0].features[0]
+                .sessions
+                .is_empty()
+        );
+        review_mut(gui.app_for_workflow()).unwrap().review.comments[0].body = body_before;
+        let made = prepare(&mut gui, &shown.revision).unwrap();
+        assert!(made.stopped);
+        let view = poll(&mut gui, &view.workflow_id).unwrap();
+        let row = view
+            .fix_targets
+            .iter()
+            .find(|t| {
+                Some(&t.target.session_id) == made.created_target.as_ref().map(|c| &c.session_id)
+            })
+            .expect("the created session is a fix target");
+        assert!(row.stopped);
+        assert_eq!(row.harness, AgentKind::Codex);
+        assert_eq!(
+            Some(&row.destination_revision),
+            made.destination_revision.as_ref()
         );
     }
 }

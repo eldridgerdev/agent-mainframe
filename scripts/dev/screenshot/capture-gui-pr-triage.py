@@ -35,7 +35,10 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     # Companion-target proof: the batch-fix fixture plus a verified triage
     # companion of PR #12 and an unrelated feature that must never be offered.
     companion_target_proof = os.environ.get("AMF_GUI_PR_COMPANION_TARGET_PROOF") == "1"
-    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof
+    # Dedicated-session proof: the batch-fix fixture (running feature, two agent
+    # sessions, private tmux) plus the form that adds a stopped triage session.
+    dedicated_session_proof = os.environ.get("AMF_GUI_PR_DEDICATED_SESSION_PROOF") == "1"
+    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof or dedicated_session_proof
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1" or batch_fix_proof
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     fix_draft_proof = fix_draft_proof or fix_submit_proof
@@ -206,6 +209,7 @@ export function formatTotal(total: number): string {
             start_new_session=True,
         )
         dbpath = config / "amf/amf.db"
+        env["AMF_GUI_DB"] = str(dbpath)
         for _ in range(60):
             if gui.poll() is not None:
                 raise RuntimeError(
@@ -278,7 +282,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-dedicated-session-frames.py" if dedicated_session_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -298,7 +302,7 @@ export function formatTotal(total: number): string {
                     == feature_status
                 )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (4 if companion_target_proof else 2 if fix_draft_proof else 0)
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (4 if companion_target_proof else 3 if dedicated_session_proof else 2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")

@@ -1029,6 +1029,36 @@ pub fn fix_targets(
     )
 }
 
+/// What a destination step may bind to: the opened feature, the selected PR
+/// and the AI result the person is looking at (when one is open). Read-only.
+pub(crate) fn destination_binding(
+    gui: &mut GuiHandle,
+    id: &str,
+) -> GuiResult<(FeatureTarget, u32, String, Option<String>)> {
+    check(gui, id)?;
+    let (app, workspace) = gui.app_and_pr_workspace();
+    let context = workspace.as_ref().unwrap();
+    let pr = context
+        .pr
+        .clone()
+        .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
+    let identity = checkout_identity(&context.workdir);
+    if identity.as_ref() != Some(&context.checkout_identity) {
+        return Err(GuiError::conflict(
+            "Feature checkout changed; reopen PR Workspace",
+        ));
+    }
+    let ai = match context.parked_ai.as_deref() {
+        Some(AppMode::AiReview(state)) => Some(state),
+        _ => match &app.mode {
+            AppMode::AiReview(state) => Some(state),
+            _ => None,
+        },
+    };
+    let revision = ai.map(|state| result_revision(&context.result_epoch, state, &identity));
+    Ok((context.target.clone(), pr.number, pr.head_sha, revision))
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixHandoffRequest {
     pub workflow_id: String,

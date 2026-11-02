@@ -612,6 +612,71 @@ pub fn update_todo(conn: &Connection, todo: &Todo) -> Result<()> {
     Ok(())
 }
 
+/// Editable text fields of a TODO. Deliberately excludes status, session
+/// association and links: those only change through [`TodoWorkState`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoFields {
+    pub title: String,
+    pub body: Option<String>,
+    pub priority: TodoPriority,
+}
+
+impl TodoFields {
+    pub fn of(todo: &Todo) -> Self {
+        Self {
+            title: todo.title.clone(),
+            body: todo.body.clone(),
+            priority: todo.priority,
+        }
+    }
+}
+
+/// Write title, notes and priority only if the row still holds `base` and
+/// still belongs to `list_id`, in one conditional statement. Returns whether a
+/// row changed. Status, `agent_session_id` and links are never touched, so an
+/// edit cannot undo a concurrent launch claim the way a full-row
+/// [`update_todo`] would.
+pub fn update_todo_fields_if(
+    conn: &Connection,
+    todo_id: &str,
+    list_id: &str,
+    base: &TodoFields,
+    new: &TodoFields,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE todos SET title = ?5, body = ?6, priority = ?7,
+                          updated_at = datetime('now')
+         WHERE id = ?1 AND list_id = ?2 AND title = ?3 AND body IS ?4
+           AND priority = ?8",
+        params![
+            todo_id,
+            list_id,
+            base.title,
+            base.body,
+            new.title,
+            new.body,
+            new.priority.as_db_str(),
+            base.priority.as_db_str(),
+        ],
+    )?;
+    Ok(changed == 1)
+}
+
+/// Replace a list's scratchpad only if it still holds `base`.
+pub fn set_carry_over_if(
+    conn: &Connection,
+    list_id: &str,
+    base: Option<&str>,
+    new: Option<&str>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE todo_lists SET carry_over = ?3, updated_at = datetime('now')
+         WHERE id = ?1 AND carry_over IS ?2",
+        params![list_id, base, new],
+    )?;
+    Ok(changed == 1)
+}
+
 /// Delete a single TODO by id. Any session it spawned is left untouched.
 pub fn delete_todo(conn: &Connection, todo_id: &str) -> Result<()> {
     conn.execute("DELETE FROM todos WHERE id = ?1", params![todo_id])?;
@@ -752,6 +817,17 @@ pub fn clear_linked_feature_for_todo(conn: &Connection, todo_id: &str) -> Result
         params![todo_id],
     )?;
     Ok(())
+}
+
+/// Clear a TODO's link only while it still names `feature_id`, so a link
+/// another process re-pointed at a live feature is never wiped.
+pub fn clear_linked_feature_if(conn: &Connection, todo_id: &str, feature_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE todos SET linked_feature_id = NULL, updated_at = datetime('now')
+         WHERE id = ?1 AND linked_feature_id = ?2",
+        params![todo_id, feature_id],
+    )?;
+    Ok(n > 0)
 }
 
 /// Drop any TODO's link to `feature_id`, across every list.

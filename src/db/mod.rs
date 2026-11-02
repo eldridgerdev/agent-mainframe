@@ -721,6 +721,25 @@ impl AmfDb {
         todos::update_todo(&self.conn, todo)
     }
 
+    pub fn update_todo_fields_if(
+        &self,
+        todo_id: &str,
+        list_id: &str,
+        base: &todos::TodoFields,
+        new: &todos::TodoFields,
+    ) -> Result<bool> {
+        todos::update_todo_fields_if(&self.conn, todo_id, list_id, base, new)
+    }
+
+    pub fn set_todo_carry_over_if(
+        &self,
+        list_id: &str,
+        base: Option<&str>,
+        new: Option<&str>,
+    ) -> Result<bool> {
+        todos::set_carry_over_if(&self.conn, list_id, base, new)
+    }
+
     pub fn delete_todo(&self, todo_id: &str) -> Result<()> {
         todos::delete_todo(&self.conn, todo_id)
     }
@@ -731,6 +750,11 @@ impl AmfDb {
 
     pub fn clear_todo_linked_feature_for_todo(&self, todo_id: &str) -> Result<()> {
         todos::clear_linked_feature_for_todo(&self.conn, todo_id)
+    }
+
+    /// Clear the link only while it still names `feature_id`.
+    pub fn clear_todo_linked_feature_if(&self, todo_id: &str, feature_id: &str) -> Result<bool> {
+        todos::clear_linked_feature_if(&self.conn, todo_id, feature_id)
     }
 
     pub fn set_todo_linked_feature(&self, todo_id: &str, feature_id: &str) -> Result<()> {

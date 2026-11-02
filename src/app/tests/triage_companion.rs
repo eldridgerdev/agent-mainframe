@@ -225,15 +225,16 @@ fn creates_a_started_companion_seeded_from_the_local_pr_branch() {
     assert!(feature.enable_chrome);
     assert!(!feature.plan_mode, "triage never defers into planning");
     assert_eq!(feature.agent, AgentKind::default());
+    // Compared canonically: macOS temp dirs sit behind a /var -> /private/var link.
+    let listed = git(&fx.repo, &["worktree", "list", "--porcelain"])
+        .lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .find(|p| p.ends_with("my-project-pr-head-triage"))
+        .map(PathBuf::from)
+        .expect("git lists the new worktree");
     assert_eq!(
-        feature.workdir,
-        PathBuf::from(
-            &git(&fx.repo, &["worktree", "list", "--porcelain"])
-                .lines()
-                .filter_map(|l| l.strip_prefix("worktree "))
-                .find(|p| p.ends_with("my-project-pr-head-triage"))
-                .unwrap()
-        )
+        feature.workdir.canonicalize().unwrap(),
+        listed.canonicalize().unwrap()
     );
     assert_eq!(
         feature.triage_source,

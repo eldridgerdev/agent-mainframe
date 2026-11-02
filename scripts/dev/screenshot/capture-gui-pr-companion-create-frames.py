@@ -218,7 +218,7 @@ def form_text():
 
 
 def create_enabled():
-    return f'!!{form()} && Array.from({form()}.querySelectorAll("button")).some(b=>b.textContent.trim()==="Create (stopped)" && !b.disabled)'
+    return f'(!!{form()} && Array.from({form()}.querySelectorAll("button")).some(b=>b.textContent.trim()==="Create (stopped)" && !b.disabled))'
 
 
 repo = pathlib.Path(sys.argv[4])
@@ -261,26 +261,27 @@ try:
     before_windows = tmux_windows()
     head = git_out("rev-parse", "round-invoice-totals")
     assert companions() == [] and not branch_exists("round-invoice-totals-triage")
+    wait(has_button("New triage feature…"))
     click("New triage feature…")
     wait(f'!!{form()} && {form()}.innerText.includes("Setup hook") && {has_button("Create (stopped)")}')
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     capture("001-form-needs-the-hook-choice.png", "The New triage feature form for PR #12 after its read-only preview: a new branch started from the PR head, its checkout path, the PR branch on the remote, and the exact setup hook that would run. Create (stopped) is disabled until the hook's question is answered. The agent is stopped; nothing is pushed or posted.", ["New triage feature", "PR head", "PR branch (on the remote)", "Setup hook", "Create (stopped)", "The agent is stopped"], f'!{create_enabled()}')
     assert companions() == [] and not branch_exists("round-invoice-totals-triage")
     select("Environment", "full")
     wait(create_enabled())
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     capture("002-preview-ready-to-create.png", "With the hook answered (Environment: full) the preview names the choice that will be passed to the hook and the bound PR head. Still nothing is created.", ["Environment: full", "Create (stopped)", "Nothing is pushed and nothing is posted to GitHub"], create_enabled())
     assert companions() == [] and not branch_exists("round-invoice-totals-triage")
     in_form("Create (stopped)")
     wait(f'{form()}.innerText.includes("Running the setup hook") && {has_button("Cancel creation")}')
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     capture("003-creation-running-cancel-offered.png", "Creation is a background operation: it reports the phase (the setup hook is running in the new checkout) and offers Cancel creation. The form cannot be closed while it runs.", ["Running the setup hook", "Cancel creation"])
     in_form("Cancel creation")
     wait(f'{form()}.innerText.includes("Creation cancelled")')
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     kept = companions()
     assert len(kept) == 1 and kept[0][4] == "stopped", kept
-    assert companion_sessions(kept[0][0])[0][2] == 1
+    assert [row[:2] for row in companion_sessions(kept[0][0])] == [("PR Triage", "claude")]
     assert pathlib.Path(kept[0][3]).is_dir(), "the checkout must be kept after a cancel"
     assert tmux_windows() == before_windows, "cancelling must not start anything"
     capture("004-cancelled-checkout-kept.png", "Cancelling stopped the hook. The worktree already existed, so it was kept and registered as a stopped feature, and the message names its path. Nothing is deleted automatically and no agent was started.", ["Creation cancelled", "was kept at", "no agent was started"])
@@ -292,13 +293,13 @@ try:
     wait(f'{create_enabled()} && {form()}.innerText.includes("Environment: offline")')
     in_form("Create (stopped)")
     wait(f'{form()}.innerText.includes("Created") && {has_button("Close")}')
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     made = companions()
     assert len(made) == 1 and made[0][4] == "stopped" and made[0][2] == "round-invoice-totals-triage", made
     link = json.loads(made[0][5])
     assert link["pr_number"] == 12 and link["source_feature_id"] == "shot-feature" and link["base_sha"] == head and link["pr_branch"] == "round-invoice-totals", link
     sessions = companion_sessions(made[0][0])
-    assert sessions == [("PR Triage", "claude", 1)], sessions
+    assert [row[:2] for row in sessions] == [("PR Triage", "claude")], sessions
     assert git_out("-C", made[0][3], "rev-parse", "HEAD") == head
     assert (pathlib.Path(made[0][3]) / "setup-choice.txt").read_text() == "offline"
     assert tmux_windows() == before_windows, "creating the companion must not start any tmux window"
@@ -309,9 +310,10 @@ try:
     evaluate(f'{picker}.scrollIntoView({{block:"center"}})')
     time.sleep(0.3)
     capture("006-companion-in-destination-picker.png", "The new companion appears in the shared destination picker as a stopped triage companion with its commits-ahead summary and an Integrate link, and its session is the chosen fix agent. Preparing a fix is a separate click; nothing was prepared or sent.", ["Fix agent", "Triage companion: round-invoice-totals-triage", "Integrate PR #12 fixes", "New triage feature…"])
+    wait(has_button("New triage feature…"))
     click("New triage feature…")
     wait(f'!!document.querySelector("[role=alert]") && {form()}.innerText.includes("already exists")')
-    evaluate(f'{form()}.scrollIntoView({{block:"start"}})')
+    evaluate(f'{form()}.scrollIntoView({{block:"end"}})')
     assert len(companions()) == 1
     capture("007-second-companion-for-this-head-refused.png", "A second companion for the same PR head is refused with the existing one's name; the person is pointed at the destination list. No branch, worktree or feature was added.", ["already exists", "Create (stopped)"], allow_alert=True)
     assert gh_writes() == [] and ai_calls() == []

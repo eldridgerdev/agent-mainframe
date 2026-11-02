@@ -50,6 +50,12 @@ export default function PrWorkspacePanel({ target, onClose, onReturnToFeature, o
   const [fixTarget, setFixTarget] = useState<PrFixTarget | null>(null);
   const fixTouched = useRef(false);
   const [fixTargets, setFixTargets] = useState<PrFixTarget[]>([]);
+  // A different workflow or PR starts with a clean choice: no stale target, no carried-over "touched" flag.
+  useEffect(() => {
+    fixTouched.current = false;
+    setFixTarget(null);
+    setFixTargets([]);
+  }, [workflowId, triage?.review?.number]);
   // An existing companion session is offered up front; nothing is sent until the user prepares and confirms.
   useEffect(() => {
     if (fixTouched.current || fixTarget) return;

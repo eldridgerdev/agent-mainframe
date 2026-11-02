@@ -54,7 +54,10 @@ pub enum GuiErrorKind {
     /// The start would exceed AMF's soft resource limits; the caller must
     /// present the warning and submit an explicit approval to proceed.
     NeedsApproval,
-    /// Anything else: validation failures, I/O, tmux, or git errors.
+    /// The request itself is malformed (blank or over-long title, ...): a
+    /// user-input mistake, not a fault.
+    InvalidInput,
+    /// Anything else: I/O, tmux, or git errors.
     Internal,
 }
 
@@ -385,7 +388,7 @@ pub struct TodoAgentLaunchResponse {
 /// Facade over a private [`App`]. See the module doc for why `App` itself
 /// never appears in this module's public signatures.
 pub struct GuiHandle {
-    app: App,
+    pub(crate) app: App,
     /// Configured-session launches whose pre-check is running outside the lock.
     pub(crate) custom_session_adds: std::collections::HashSet<(String, String)>,
     pub(crate) learning_context: Option<crate::gui_learning::LearningContext>,
@@ -1126,7 +1129,7 @@ impl GuiHandle {
                 }
                 None => {
                     self.db()?
-                        .clear_todo_linked_feature_for_todo(todo_id)
+                        .clear_todo_linked_feature_if(todo_id, feature_id)
                         .map_err(GuiError::from)?;
                     note = Some(
                         "The feature planned for this TODO no longer exists; the link was cleared"
@@ -1293,13 +1296,13 @@ impl GuiHandle {
         let title = title.trim();
         if title.is_empty() {
             return Err(GuiError {
-                kind: GuiErrorKind::Internal,
+                kind: GuiErrorKind::InvalidInput,
                 message: "A TODO needs a title".to_string(),
             });
         }
         if title.contains(['\n', '\r']) {
             return Err(GuiError {
-                kind: GuiErrorKind::Internal,
+                kind: GuiErrorKind::InvalidInput,
                 message: "Quick capture is one line; add notes by editing the TODO".to_string(),
             });
         }

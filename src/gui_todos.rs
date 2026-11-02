@@ -243,7 +243,9 @@ pub fn update_scratchpad(
     let scope = resolve_scope(gui, &request.scope)?;
     let db = gui.db()?;
     let new = normalize_scratchpad(request.text.as_deref());
-    let base = normalize_scratchpad(request.base.as_deref());
+    // The base is compared as stored (the TUI keeps text as typed); only the
+    // new text is normalised.
+    let base = request.base.as_deref().filter(|b| !b.is_empty());
     let current = db.todo_list(&scope).map_err(GuiError::from)?;
     let list = match (current, request.list_id.as_deref()) {
         (Some(list), Some(id)) if list.id == id => list,
@@ -272,7 +274,7 @@ pub fn update_scratchpad(
             .map_err(GuiError::from)?,
     };
     if db
-        .set_todo_carry_over_if(&list.id, base.as_deref(), new.as_deref())
+        .set_todo_carry_over_if(&list.id, base, new.as_deref())
         .map_err(GuiError::from)?
     {
         return Ok(ScratchpadOutcome::Saved {
@@ -339,7 +341,7 @@ pub fn delete(gui: &GuiHandle, todo_id: &str) -> GuiResult<()> {
 
 fn invalid(message: impl Into<String>) -> GuiError {
     GuiError {
-        kind: crate::gui_contract::GuiErrorKind::Internal,
+        kind: crate::gui_contract::GuiErrorKind::InvalidInput,
         message: message.into(),
     }
 }
@@ -765,6 +767,96 @@ mod tests {
             panic!("expected feature");
         };
         assert_eq!(found.feature_id, target.feature_id);
+    }
+
+    #[test]
+    fn jump_resolves_a_bare_session_id_and_a_linked_feature_with_an_agent() {
+        use crate::gui_contract::TodoWorkTarget;
+        use crate::project::SessionKind;
+        let (mut gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let session_id = gui.app.store.projects[0].features[0]
+            .add_session(SessionKind::Claude)
+            .id
+            .clone();
+        // `todo_work_target` refreshes from the DB, so the session must be saved.
+        gui.db().unwrap().save_store(&gui.app.store).unwrap();
+
+        // Only an agent session id: found store-wide.
+        gui.db()
+            .unwrap()
+            .set_todo_agent_session(&todo.id, &session_id)
+            .unwrap();
+        let TodoWorkTarget::Session { target: found } = gui.todo_work_target(&todo.id).unwrap()
+        else {
+            panic!("expected session");
+        };
+        assert_eq!(found.session_id, session_id);
+
+        // A linked feature that has an agent session returns the session.
+        gui.db()
+            .unwrap()
+            .clear_todo_agent_session(&todo.id)
+            .unwrap();
+        gui.db()
+            .unwrap()
+            .set_todo_linked_feature(&todo.id, &target.feature_id)
+            .unwrap();
+        let TodoWorkTarget::Session { target: found } = gui.todo_work_target(&todo.id).unwrap()
+        else {
+            panic!("expected session");
+        };
+        assert_eq!(found.session_id, session_id);
+    }
+
+    #[test]
+    fn conditional_link_clear_leaves_a_relinked_todo_alone() {
+        let (gui, target, _tmp) = fixture();
+        let todo = seeded(&gui, &target);
+        let db = gui.db().unwrap();
+        db.set_todo_linked_feature(&todo.id, "live").unwrap();
+        assert!(!db.clear_todo_linked_feature_if(&todo.id, "stale").unwrap());
+        assert_eq!(
+            db.find_todo_by_id(&todo.id)
+                .unwrap()
+                .unwrap()
+                .linked_feature_id
+                .as_deref(),
+            Some("live")
+        );
+        assert!(db.clear_todo_linked_feature_if(&todo.id, "live").unwrap());
+    }
+
+    #[test]
+    fn scratchpad_base_matches_text_stored_as_typed() {
+        let (gui, target, _tmp) = fixture();
+        let scope = TodoScopeRequest::Worktree(target.clone());
+        let req = |list_id: Option<String>, base: Option<&str>, text: &str| ScratchpadEditRequest {
+            scope: scope.clone(),
+            host_feature_id: Some(target.feature_id.clone()),
+            list_id,
+            base: base.map(str::to_string),
+            text: Some(text.to_string()),
+        };
+        let ScratchpadOutcome::Saved { list_id, .. } =
+            update_scratchpad(&gui, &req(None, None, "left off")).unwrap()
+        else {
+            panic!("expected saved");
+        };
+        let list = gui
+            .db()
+            .unwrap()
+            .todo_list_by_id(list_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        // Simulate the TUI storing text with a trailing newline.
+        gui.db()
+            .unwrap()
+            .set_todo_carry_over_if(&list.id, list.carry_over.as_deref(), Some("left off\n"))
+            .unwrap();
+        let out =
+            update_scratchpad(&gui, &req(list_id.clone(), Some("left off\n"), "next")).unwrap();
+        assert!(matches!(out, ScratchpadOutcome::Saved { .. }));
     }
 
     use crate::gui_contract::{NextTodoPreview, NextTodoRequest};

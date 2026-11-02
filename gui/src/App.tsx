@@ -161,6 +161,7 @@ const ERROR_TITLE: Record<GuiError["kind"], string> = {
   not_found: "Not found",
   conflict: "Out of date",
   needs_approval: "Approval needed",
+  invalid_input: "Check your input",
   internal: "Something went wrong",
 };
 

@@ -89,7 +89,7 @@ export default function TodoPanel({
   const [startDialog, setStartDialog] = useState<Todo | null>(null);
   const [transferDialog, setTransferDialog] = useState<Todo | null>(null);
   const [editTodo, setEditTodo] = useState<Todo | null>(null);
-  const [editingPad, setEditingPad] = useState(false);
+  const [editingPad, setEditingPad] = useState<{ listId: string | null } | null>(null);
   const [nextOpen, setNextOpen] = useState(false);
 
   const view = useQuery({
@@ -158,12 +158,12 @@ export default function TodoPanel({
     }
   }
 
-  async function savePad(base: string | null, text: string | null) {
+  async function savePad(listId: string | null, base: string | null, text: string | null) {
     try {
       const result = await todoUpdateScratchpad({
         scope,
         hostFeatureId,
-        listId: view.data?.list.id ?? null,
+        listId,
         base,
         text,
       });
@@ -257,7 +257,7 @@ export default function TodoPanel({
       <div className="todo-scratchpad">
         <div className="todo-scratchpad-head">
           <span className="field-label">Scratchpad</span>
-          <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad(true)}>
+          <button className="btn btn-sm btn-ghost" onClick={() => setEditingPad({ listId: view.data?.list.id ?? null })}>
             {view.data?.list.carry_over ? "Edit" : "Add note"}
           </button>
         </div>
@@ -387,8 +387,8 @@ export default function TodoPanel({
         <ScratchpadDialog
           title={title}
           base={view.data?.list.carry_over ?? null}
-          onSave={savePad}
-          onCancel={() => setEditingPad(false)}
+          onSave={(base, text) => savePad(editingPad.listId, base, text)}
+          onCancel={() => setEditingPad(null)}
         />
       )}
 

@@ -135,7 +135,7 @@ export function setCollapsed(target: CollapseTarget, collapsed: boolean): Promis
   return invoke("set_collapsed", { target, collapsed });
 }
 
-export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "internal";
+export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "invalid_input" | "internal";
 
 export interface GuiError {
   kind: GuiErrorKind;

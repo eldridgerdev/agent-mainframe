@@ -46,6 +46,8 @@ export function TodoEditDialog({
       } else {
         onCancel();
       }
+    } catch {
+      // The panel already reported the failure; keep the dialog open.
     } finally {
       setBusy(false);
     }
@@ -71,7 +73,7 @@ export function TodoEditDialog({
           {conflict ? (
             <button
               className="btn btn-primary"
-              disabled={busy}
+              disabled={busy || !title.trim()}
               onClick={() => void save(fieldsOf(conflict))}
             >
               Overwrite with my edits
@@ -151,6 +153,8 @@ export function ScratchpadDialog({
       const result = await onSave(baseValue, text.trim() ? text : null);
       if (result.outcome === "conflict") setStored({ current: result.current });
       else onCancel();
+    } catch {
+      // The panel already reported the failure; keep the dialog open.
     } finally {
       setBusy(false);
     }

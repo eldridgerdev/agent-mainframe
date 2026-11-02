@@ -32,7 +32,10 @@ with tempfile.TemporaryDirectory(prefix="amf-gui-pr-triage-") as temporary:
     files_proof = os.environ.get("AMF_GUI_PR_FILES_LINES_PROOF") == "1"
     project_pr_proof = os.environ.get("AMF_GUI_PROJECT_PR_PROOF") == "1" or review_lines_proof
     frontend_port = int(os.environ.get("AMF_GUI_CAPTURE_PORT", "1420"))
-    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1"
+    # Companion-target proof: the batch-fix fixture plus a verified triage
+    # companion of PR #12 and an unrelated feature that must never be offered.
+    companion_target_proof = os.environ.get("AMF_GUI_PR_COMPANION_TARGET_PROOF") == "1"
+    batch_fix_proof = os.environ.get("AMF_GUI_PR_BATCH_FIX_PROOF") == "1" or companion_target_proof
     fix_submit_proof = os.environ.get("AMF_GUI_PR_FIX_SUBMIT_PROOF") == "1" or batch_fix_proof
     fix_draft_proof = os.environ.get("AMF_GUI_PR_FIX_DRAFT_PROOF") == "1"
     fix_draft_proof = fix_draft_proof or fix_submit_proof
@@ -213,6 +216,9 @@ export function formatTotal(total: number): string {
                 try:
                     with sqlite3.connect(dbpath) as db:
                         db.execute("SELECT id FROM features")
+                        # Later migrations add these; seed only a complete schema.
+                        db.execute("SELECT id FROM feature_sessions LIMIT 0")
+                        db.execute("SELECT triage_source FROM features LIMIT 0")
                     break
                 except sqlite3.OperationalError:
                     pass
@@ -246,6 +252,19 @@ export function formatTotal(total: number): string {
                 for index, harness in enumerate(["claude", "codex"]):
                     db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
                                (f"shot-{harness}", "shot-feature", harness, f"{harness.title()} 1", f"{harness}-1", stamp, index))
+            if companion_target_proof:
+                link = '{"pr_number":12,"source_feature_id":"shot-feature","pr_branch":"round-invoice-totals","base_sha":"' + "0" * 40 + '"}'
+                db.execute(
+                    "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed,triage_source) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    ("shot-companion", "shot-project", "Invoice fixes (triage)", "invoice-fixes", str(repo), "amf-gui-shot-companion", "active", stamp, stamp, link),
+                )
+                db.execute(
+                    "INSERT INTO features(id,project_id,name,branch,workdir,tmux_session,status,created_at,last_accessed) VALUES(?,?,?,?,?,?,?,?,?)",
+                    ("shot-stranger", "shot-project", "Unrelated feature", "unrelated", str(repo), "amf-gui-shot-stranger", "active", stamp, stamp),
+                )
+                for feature, sid in [("shot-companion", "shot-companion-claude"), ("shot-stranger", "shot-stranger-claude")]:
+                    db.execute("INSERT INTO feature_sessions(id,feature_id,kind,label,tmux_window,created_at,sort_order) VALUES(?,?,?,?,?,?,?)",
+                               (sid, feature, "claude", "Claude (" + feature + ")", "claude-1", stamp, 0))
             version = db.execute(
                 "SELECT value FROM store_meta WHERE key='store_version'"
             ).fetchone()
@@ -259,7 +278,7 @@ export function formatTotal(total: number): string {
         subprocess.run(
             [
                 "/usr/bin/python3",
-                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
+                str(workspace / "scripts/dev/screenshot" / ("capture-gui-pr-files-lines-frames.py" if files_proof else "capture-gui-pr-companion-target-frames.py" if companion_target_proof else "capture-gui-pr-review-lines-frames.py" if review_lines_proof else "capture-gui-pr-batch-fix-frames.py" if batch_fix_proof else "capture-gui-project-pr-frames.py" if project_pr_proof else "capture-gui-pr-fix-submit-frames.py" if fix_submit_proof else ("capture-gui-pr-fix-drafts-frames.py" if fix_draft_proof else "capture-gui-pr-triage-frames.py"))),
                 str(out),
                 gui_pid_path.read_text().strip(),
                 inspector_address,
@@ -279,7 +298,7 @@ export function formatTotal(total: number): string {
                     == feature_status
                 )
             assert (
-                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (2 if fix_draft_proof else 0)
+                db.execute("SELECT count(*) FROM feature_sessions").fetchone()[0] == (4 if companion_target_proof else 2 if fix_draft_proof else 0)
             )
         assert (gh_state / "writes.jsonl").read_text() == "", "The capture attempted a GitHub write"
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")

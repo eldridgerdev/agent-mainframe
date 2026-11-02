@@ -235,8 +235,8 @@ it("asks before resolving a thread and offers cancelling a running investigation
 });
 
 const fixTargets = [
-  { target: { ...target, session_id: "claude-1" }, label: "Claude 1", harness: "claude" as const, stopped: true },
-  { target: { ...target, session_id: "codex-1" }, label: "Codex 1", harness: "codex" as const, stopped: false },
+  { target: { ...target, session_id: "claude-1" }, label: "Claude 1", harness: "claude" as const, stopped: true, destination_kind: "opened_feature" as const, feature_name: "Feature" },
+  { target: { ...target, session_id: "codex-1" }, label: "Codex 1", harness: "codex" as const, stopped: false, destination_kind: "opened_feature" as const, feature_name: "Feature" },
 ];
 const fixView: PrTriageView = { ...review, fix_targets: fixTargets };
 const fixDraft: PrTriageView = { ...fixView, revision: 4,
@@ -251,7 +251,7 @@ it("chooses an agent and confirms an edited fix as one unsent composer handoff",
   fireEvent.change(await screen.findByRole("combobox", { name: "Fix agent" }), { target: { value: "codex-1" } });
   fireEvent.click(screen.getByRole("button", { name: "Prepare fix…" }));
   const prompt = await screen.findByRole("textbox", { name: "Fix prompt" });
-  expect(actions()[0].action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "codex-1" });
+  expect(actions()[0].action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "codex-1", feature_id: target.feature_id });
   expect(handoff).not.toHaveBeenCalled();
   fireEvent.change(prompt, { target: { value: "Edited fix instructions" } });
   const confirm = screen.getByRole("button", { name: "Open in agent composer" });
@@ -393,7 +393,7 @@ it("marks several comments, requires an explicit agent, previews the exact text 
   fireEvent.change(agent, { target: { value: "codex-1" } });
   fireEvent.click(prepare);
   await screen.findByRole("textbox", { name: "Batch fix prompt" });
-  expect(actions()[0].action).toEqual({ kind: "start_batch_fix", comment_ids: [1, 5], session_id: "codex-1", destination_revision: "rev-codex" });
+  expect(actions()[0].action).toEqual({ kind: "start_batch_fix", comment_ids: [1, 5], session_id: "codex-1", destination_revision: "rev-codex", feature_id: target.feature_id });
   expect(screen.getByText(/Large batch: 16 comments/)).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Preview send to agent…" }));
   const confirm = await screen.findByRole("alertdialog", { name: "Send batch fix to agent" });
@@ -460,4 +460,31 @@ it("offers no keep while an investigation runs and shows a refused keep", async 
   fireEvent.click(await screen.findByRole("button", { name: "Keep as a TODO" }));
   expect(await screen.findByText(/head changed since you opened/)).toBeTruthy();
   expect(screen.getByRole("button", { name: "Keep as a TODO" })).toBeTruthy();
+});
+
+const companionTarget = { project_id: target.project_id, feature_id: "triage-feature", session_id: "triage-claude" };
+const companionRows = [
+  ...fixTargets,
+  { target: companionTarget, label: "Claude (triage)", harness: "claude" as const, stopped: false, destination_revision: "rev-triage", destination_kind: "companion" as const, feature_name: "fix-triage" },
+];
+
+it("groups the opened feature and a companion in one picker, preselects the companion and sends nothing", async () => {
+  backend({ ...review, fix_targets: companionRows }, () => review);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  const picker = await screen.findByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement;
+  expect(picker.value).toBe("triage-claude");
+  expect(screen.getByRole("group", { name: "This feature" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Triage companion: fix-triage" })).toBeTruthy();
+  expect(screen.getByText(/Companion feature fix-triage\. Nothing is sent until you confirm\./)).toBeTruthy();
+  expect(actions().filter(({ action }) => action.kind.startsWith("start_"))).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Prepare fix…" }));
+  await waitFor(() => expect(actions().at(-1)?.action).toEqual({ kind: "start_fix_draft", comment_id: 1, session_id: "triage-claude", feature_id: "triage-feature" }));
+});
+
+it("never falls back to the first row: without a companion nothing is chosen and Prepare fix is disabled", async () => {
+  backend(fixView, () => fixView);
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  const picker = await screen.findByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement;
+  expect(picker.value).toBe("");
+  expect((screen.getByRole("button", { name: "Prepare fix…" }) as HTMLButtonElement).disabled).toBe(true);
 });

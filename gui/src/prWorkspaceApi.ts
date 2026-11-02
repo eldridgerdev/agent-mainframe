@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { DiffFile, FeatureTarget, SessionTarget } from "./api";
 import type { PrReviewView } from "./prReviewApi";
-import type { PrTriageView, PrFixHandoff, PrFixTarget } from "./prTriageApi";
+import type { PrTriageView, PrFixHandoff, PrFixTarget, FixDestinationKind } from "./prTriageApi";
 
 export interface WorkspaceFiles { workflow_id: string; pr_number: number; head_sha: string; files: DiffFile[] }
 export interface WorkspaceFinding { path: string | null; line: number | null; side: string | null; body: string; diff_hunk: string | null; skipped: boolean; published: boolean }
@@ -27,5 +27,5 @@ export const workspaceAiSnapshot = (workflowId: string) => invoke<WorkspaceAi>("
 export const workspaceAiAct = (workflowId: string, action: WorkspaceAiAction) => invoke<WorkspaceAi>("pr_workspace_ai_act", { workflowId, action });
 export type { PrTriageView };
 
-export const workspacePrepareFix = (request: { workflow_id: string; result_revision: string; finding_indices: number[]; target: SessionTarget; destination_revision: string }) => invoke<PrFixHandoff>("pr_workspace_prepare_fix", { request });
+export const workspacePrepareFix = (request: { workflow_id: string; result_revision: string; finding_indices: number[]; target: SessionTarget; destination_revision: string; destination_kind: FixDestinationKind }) => invoke<PrFixHandoff>("pr_workspace_prepare_fix", { request });
 export const workspaceFixTargets = (workflowId: string) => invoke<PrFixTarget[]>("pr_workspace_fix_targets", { workflowId });

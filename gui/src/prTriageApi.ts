@@ -86,7 +86,8 @@ export interface PrReview {
 
 export type PrReplyKind = "done" | "not_needed" | "investigation";
 
-export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean; destination_revision: string }
+export type FixDestinationKind = "opened_feature" | "companion";
+export interface PrFixTarget { target: SessionTarget; label: string; harness: AgentSlug; stopped: boolean; destination_revision: string; destination_kind: FixDestinationKind; feature_name: string }
 export interface PrBatchFix {
   comment_ids: number[];
   target: SessionTarget;
@@ -125,9 +126,9 @@ export interface PrTriageView {
 export type PrTriageAction =
   | { kind: "toggle_closed" | "back_to_list" | "refresh" | "precall_toggle_view" | "precall_cancel" | "precall_confirm"
       | "confirm_fix_submission" | "cancel_fix_submission" | "cancel_fix_draft" | "cancel_investigation" | "discard_reply" | "cancel_write" | "confirm_write" | "close" }
-  | { kind: "start_fix_draft"; comment_id: number; session_id: string }
+  | { kind: "start_fix_draft"; comment_id: number; session_id: string; feature_id: string }
   | { kind: "confirm_fix_draft" | "prepare_fix_submission"; prompt: string }
-  | { kind: "start_batch_fix"; comment_ids: number[]; session_id: string; destination_revision: string }
+  | { kind: "start_batch_fix"; comment_ids: number[]; session_id: string; destination_revision: string; feature_id: string }
   | { kind: "prepare_batch_submission"; prompt: string; digest: string }
   | { kind: "confirm_batch_submission"; digest: string }
   | { kind: "cancel_batch_fix" }

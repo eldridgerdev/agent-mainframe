@@ -599,11 +599,19 @@ fn a_failed_save_is_reported_inline_and_nothing_is_started() {
     // A path *under a regular file* can never be written.
     fx.app.store_path = blocker.path().join("store.json");
     open_setup(&mut fx.app);
+    let before = feature_count(&fx.app);
     fx.app.pr_review_triage_setup_confirm().unwrap();
 
-    assert!(setup_error(&fx.app).is_some());
+    let err = setup_error(&fx.app).unwrap();
+    assert!(
+        err.contains("delete the retained checkout and its branch"),
+        "{err}"
+    );
     assert!(setup_open(&fx.app));
     assert_eq!(fx.calls.lock().unwrap().len(), 1);
+    // The failed row is not left behind in the store.
+    assert_eq!(feature_count(&fx.app), before);
+    assert!(companions(&fx.app, "pr-head-triage").is_empty());
     // The tmux mock has no expectations: no start was attempted.
 }
 
@@ -676,6 +684,31 @@ fn a_prompting_hook_runs_without_a_choice_in_the_tui() {
     assert_eq!(
         std::fs::read_to_string(workdir.join("choice.txt")).unwrap(),
         "unset"
+    );
+}
+
+#[test]
+fn a_failing_prompting_hook_warns_but_the_companion_is_still_created_and_started() {
+    let mut fx = hook_fixture(HookConfig::WithPrompt {
+        script: "echo boom >&2; exit 3".into(),
+        prompt: HookPrompt {
+            title: "Pick".into(),
+            options: vec!["a".into(), "b".into()],
+        },
+    });
+    open_setup(&mut fx.app);
+    fx.app.pr_review_triage_setup_confirm().unwrap();
+
+    assert!(!setup_open(&fx.app), "{:?}", setup_error(&fx.app));
+    let found = companions(&fx.app, "pr-head-triage");
+    assert_eq!(found.len(), 1);
+    assert_ne!(found[0].status, ProjectStatus::Stopped);
+    assert!(
+        toast_texts(&fx.app)
+            .iter()
+            .any(|t| t == "Triage worktree created, but its on_worktree_created hook failed"),
+        "{:?}",
+        toast_texts(&fx.app)
     );
 }
 
@@ -1143,14 +1176,15 @@ fn registration_rolls_back_when_the_save_fails_and_names_the_retained_checkout()
 }
 
 #[test]
-fn registration_is_refused_when_the_source_vanished_after_the_plan() {
+fn the_final_guard_refuses_a_vanished_source_and_names_the_checkout() {
     let mut fx = fixture(false, true);
     let p = plan(&fx, "orphaned");
     fx.app.store.projects[0].features.clear();
+    let dir = tempfile::tempdir().unwrap();
 
     let err = fx
         .app
-        .register_triage_companion(&p)
+        .register_created_triage_companion(&p, dir.path().to_path_buf())
         .unwrap_err()
         .to_string();
 
@@ -1160,7 +1194,7 @@ fn registration_is_refused_when_the_source_vanished_after_the_plan() {
 }
 
 #[test]
-fn registration_is_refused_when_the_name_was_taken_after_the_plan() {
+fn the_final_guard_refuses_a_taken_name() {
     let mut fx = fixture(false, true);
     let p = plan(&fx, "raced");
     let mut taken = fx.app.store.projects[0].features[0].clone();
@@ -1168,6 +1202,69 @@ fn registration_is_refused_when_the_name_was_taken_after_the_plan() {
     taken.name = "raced".into();
     taken.workdir = PathBuf::from("/tmp/elsewhere-raced");
     fx.app.store.projects[0].features.push(taken);
+    let dir = tempfile::tempdir().unwrap();
+
+    let err = fx
+        .app
+        .register_created_triage_companion(&p, dir.path().to_path_buf())
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("already exists"), "{err}");
+    assert!(err.contains("Triage checkout retained at"), "{err}");
+    assert_eq!(feature_count(&fx.app), 2);
+}
+
+#[test]
+fn a_source_removed_after_planning_creates_no_worktree_and_runs_no_hook() {
+    let mut fx = fixture(false, true);
+    let hook = HookConfig::Script("echo ran > /dev/null; touch hook-ran.txt".into());
+    let p = plan_with(
+        &fx,
+        "vanished",
+        Some(&hook),
+        None,
+        false,
+        FetchPolicy::Never,
+    )
+    .unwrap();
+    fx.app.store.projects[0].features.clear();
+    let before = git_dir_paths(&fx.repo);
+    let branches_before = branches(&fx.repo);
+
+    let err = fx
+        .app
+        .register_triage_companion(&p)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("Source feature removed"), "{err}");
+    assert!(!err.contains("retained"), "nothing was created: {err}");
+    assert_eq!(git_dir_paths(&fx.repo), before);
+    assert_eq!(branches(&fx.repo), branches_before);
+    assert!(!fx.repo.join("hook-ran.txt").exists());
+}
+
+#[test]
+fn a_name_taken_after_planning_creates_no_worktree_and_runs_no_hook() {
+    let mut fx = fixture(false, true);
+    let hook = HookConfig::Script("touch hook-ran.txt".into());
+    let p = plan_with(
+        &fx,
+        "raced-early",
+        Some(&hook),
+        None,
+        false,
+        FetchPolicy::Never,
+    )
+    .unwrap();
+    let mut taken = fx.app.store.projects[0].features[0].clone();
+    taken.id = "feat-raced-early".into();
+    taken.name = "raced-early".into();
+    taken.workdir = PathBuf::from("/tmp/elsewhere-raced-early");
+    fx.app.store.projects[0].features.push(taken);
+    let before = git_dir_paths(&fx.repo);
+    let branches_before = branches(&fx.repo);
 
     let err = fx
         .app
@@ -1176,8 +1273,10 @@ fn registration_is_refused_when_the_name_was_taken_after_the_plan() {
         .to_string();
 
     assert!(err.contains("already exists"), "{err}");
-    assert_eq!(companions(&fx.app, "raced").len(), 1, "only the other row");
-    assert_eq!(feature_count(&fx.app), 2);
+    assert!(!err.contains("retained"), "nothing was created: {err}");
+    assert_eq!(git_dir_paths(&fx.repo), before);
+    assert_eq!(branches(&fx.repo), branches_before);
+    assert!(!fx.repo.join("hook-ran.txt").exists());
 }
 
 #[test]

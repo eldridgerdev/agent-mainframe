@@ -519,6 +519,11 @@ impl App {
         &mut self,
         plan: &TriageCompanionPlan,
     ) -> Result<CreatedTriageCompanion> {
+        // Re-validate before creating anything: the store may have changed
+        // since the plan, and a refusal here must leave no checkout or hook
+        // side effects behind. The post-create check stays as the final guard.
+        self.triage_registration_target(plan, "")
+            .map_err(|e| anyhow::anyhow!(e))?;
         let workdir = self.worktree.create_from(
             &plan.repo,
             &plan.worktree_name,
@@ -556,6 +561,33 @@ impl App {
         Ok(created)
     }
 
+    /// The project index to register into, or why the plan no longer applies
+    /// (source removed, or the companion name taken). Creates nothing.
+    fn triage_registration_target(
+        &self,
+        plan: &TriageCompanionPlan,
+        suffix: &str,
+    ) -> std::result::Result<usize, String> {
+        let Some((pi, _)) = self
+            .store
+            .locate_feature_by_id(Some(&plan.project_id), &plan.source_feature_id)
+        else {
+            return Err(format!("Source feature removed{suffix}"));
+        };
+        let normalized = normalized_feature_name(&plan.spec.branch);
+        if self.store.projects[pi]
+            .features
+            .iter()
+            .any(|f| normalized_feature_name(&f.name) == normalized)
+        {
+            return Err(format!(
+                "Feature '{}' already exists in '{}'{suffix}",
+                plan.spec.branch, plan.project_name
+            ));
+        }
+        Ok(pi)
+    }
+
     /// Register an already-created checkout as a stopped companion. Re-checks
     /// that the source and project still exist and that the name is still free
     /// (the store may have changed since the plan), and removes the in-memory
@@ -567,26 +599,10 @@ impl App {
         workdir: PathBuf,
     ) -> Result<CreatedTriageCompanion> {
         let retained = format!("Triage checkout retained at {}", workdir.display());
-        let Some((pi, _)) = self
-            .store
-            .locate_feature_by_id(Some(&plan.project_id), &plan.source_feature_id)
-        else {
-            anyhow::bail!("Source feature removed. {retained}");
-        };
+        let pi = self
+            .triage_registration_target(plan, &format!(". {retained}"))
+            .map_err(|e| anyhow::anyhow!(e))?;
         let spec = &plan.spec;
-        let normalized = normalized_feature_name(&spec.branch);
-        if self.store.projects[pi]
-            .features
-            .iter()
-            .any(|f| normalized_feature_name(&f.name) == normalized)
-        {
-            anyhow::bail!(
-                "Feature '{}' already exists in '{}'. {retained}",
-                spec.branch,
-                plan.project_name
-            );
-        }
-
         let mut feature = Feature::new_for_project(
             &plan.project_name,
             spec.branch.clone(),
@@ -627,7 +643,16 @@ impl App {
             for project in &mut self.store.projects {
                 project.features.retain(|f| f.id != feature_id);
             }
-            anyhow::bail!("{err}. {retained}");
+            // The row is rolled back but the checkout and branch stay, so a
+            // bare retry would fail in git. Say what to clear first; the path
+            // stays last so it can still be read off the end.
+            anyhow::bail!(
+                "{err}. Before retrying, delete the retained checkout and its branch '{}' \
+                 (git worktree remove {path}; git branch -D {}). {retained}",
+                spec.branch,
+                spec.branch,
+                path = workdir.display(),
+            );
         }
         Ok(CreatedTriageCompanion {
             project_id: plan.project_id.clone(),

@@ -296,6 +296,20 @@ export function formatTotal(total: number): string {
         if fix_submit_proof:
             subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "new-session", "-d", "-s", "amf-gui-shot-unused", "-n", "codex-1", f"/usr/bin/python3 {workspace}/scripts/dev/screenshot/fixtures/gui-pr-fix-agent.py"], env=env, check=True)
             time.sleep(0.4)
+        if destinations_proof:
+            # Live windows for the running feature and companion so the catalog
+            # (which checks tmux) agrees with the PR panel about what is running.
+            tmux = ["tmux", "-S", env["AMF_TMUX_SOCKET"]]
+            for session, windows in (("amf-gui-shot-unused", ["claude-1", "codex-1"]), ("amf-gui-shot-companion", ["claude-1"])):
+                # The GUI may already have created the session; add only missing windows.
+                present = subprocess.run([*tmux, "list-windows", "-t", session, "-F", "#{window_name}"], env=env, capture_output=True, text=True)
+                existing = present.stdout.split() if present.returncode == 0 else None
+                for window in windows:
+                    if existing is None:
+                        subprocess.run([*tmux, "new-session", "-d", "-s", session, "-n", window, "sleep 600"], env=env, check=True)
+                        existing = [window]
+                    elif window not in existing:
+                        subprocess.run([*tmux, "new-window", "-t", session, "-n", window, "sleep 600"], env=env, check=True)
         subprocess.run(
             [
                 "/usr/bin/python3",
@@ -325,7 +339,7 @@ export function formatTotal(total: number): string {
         shutil.copyfile(env["AMF_GUI_AI_CALLS"], out / "fixture-calls.jsonl")
         shutil.copyfile(gh_state / "calls.jsonl", out / "gh-calls.jsonl")
     finally:
-        if fix_submit_proof:
+        if fix_submit_proof or destinations_proof:
             subprocess.run(["tmux", "-S", env["AMF_TMUX_SOCKET"], "kill-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for child in [gui, vite]:
             if child and child.poll() is None:

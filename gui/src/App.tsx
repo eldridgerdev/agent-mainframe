@@ -2881,7 +2881,7 @@ export function CreateFeatureForm({
             setAgent(preset.agent);
             if (!harness.offered.includes(preset.agent)) setPresetNotice(`${preset.name} uses ${preset.agent}, which is not offered for this project. Choose an available harness explicitly.`);
             setMode(preset.mode); setReview(preset.review); setChrome(preset.enable_chrome);
-            setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full");
+            setRemoteControl(preset.remote_control); setPlanKind(!preset.plan_mode ? "none" : preset.quick_plan ? "quick" : "full"); if (preset.plan_mode) setSteering(false);
             // Keep the name the user typed; only the preset's prefix changes.
             const prefix = preset.branch_prefix?.trim() || null;
             setBranch((current) => {
@@ -2930,7 +2930,12 @@ export function CreateFeatureForm({
           <Segmented
             label="Planning"
             value={planKind}
-            onChange={setPlanKind}
+            onChange={(next) => {
+              // Planning owns the startup prompt, so the coach goes back to its
+              // default (off) instead of silently returning when planning is cleared.
+              if (next !== "none") setSteering(false);
+              setPlanKind(next);
+            }}
             options={[
               { value: "none", label: "Start directly" },
               { value: "quick", label: "Quick Plan" },

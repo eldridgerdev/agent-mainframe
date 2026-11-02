@@ -39,12 +39,11 @@ export default function SteeringPanel({ text, onClose }: { text: string; onClose
   const tone = !analysis ? "" : analysis.score >= 8 ? "good" : analysis.score >= 4 ? "warn" : "bad";
 
   return (
-    <section className="steering-panel" aria-label="Steering coach" data-stale={stale ? "true" : "false"}
-      data-digest={analysis?.digest ?? ""}>
+    <section className="steering-panel" aria-label="Steering coach" data-stale={stale ? "true" : "false"}>
       <header className="steering-head">
         <Icon name="sparkles" />
         <strong>Steering Coach</strong>
-        {analysis && !stale && <span className={`steering-score steering-${tone}`}>Score: {analysis.score} / {analysis.max_score}</span>}
+        {analysis && !stale && !analysis.blank && <span className={`steering-score steering-${tone}`}>Score: {analysis.score} / {analysis.max_score}</span>}
         <span className="muted small">Advisory only. Your draft stays unsent.</span>
         <span className="tabs-spacer" />
         <button className="btn btn-sm btn-ghost" onClick={() => void check()}>

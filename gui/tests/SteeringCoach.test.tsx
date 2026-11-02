@@ -26,7 +26,7 @@ function analysis(text: string): SteeringAnalysis {
   const covered = text.includes("cargo test");
   return {
     digest: `digest:${text}`, score: covered ? 2 : 0, max_score: 10, blank: !text.trim(),
-    summary: covered ? "Thin draft. Add missing constraints now." : "Start with the concrete task.",
+    summary: (covered ? "Thin draft. Add missing constraints now." : "Start with the concrete task.") + ` [${text.length} chars]`,
     checks: [
       { key: "file_scope", label: "File scope", present: false, detail: "The prompt does not clearly name what files or directories are in scope." },
       { key: "validation_commands", label: "Validation commands", present: covered, detail: covered ? "covered" : "The prompt does not tell the agent how to verify the change." },
@@ -51,7 +51,7 @@ it("shows the checklist for the draft and goes stale the moment the draft is edi
   expect(await screen.findByText("Score: 2 / 10")).toBeTruthy();
   const panel = screen.getByRole("region", { name: "Steering coach" });
   expect(panel.getAttribute("data-stale")).toBe("false");
-  expect(panel.getAttribute("data-digest")).toBe("digest:cargo test please");
+  expect(within(panel).getByText(/\[17 chars\]/)).toBeTruthy();
   expect(within(panel).getByText(/does not clearly name what files/)).toBeTruthy();
   expect(within(panel).getByRole("img", { name: "covered" })).toBeTruthy();
   expect(within(panel).getByText(/Add a line like/)).toBeTruthy();
@@ -66,7 +66,7 @@ it("shows the checklist for the draft and goes stale the moment the draft is edi
 
   fireEvent.click(screen.getByRole("button", { name: "Re-check draft" }));
   await waitFor(() => expect(panel.getAttribute("data-stale")).toBe("false"));
-  expect(panel.getAttribute("data-digest")).toBe("digest:cargo test please, and more");
+  expect(within(panel).getByText(/\[27 chars\]/)).toBeTruthy();
   expect(calls("steering_analyze")[1]).toEqual(["steering_analyze", { text: "cargo test please, and more" }]);
 });
 
@@ -77,10 +77,10 @@ it("ignores an analysis that returns after the draft moved on", async () => {
   const { rerender } = render(<SteeringPanel text="first" onClose={vi.fn()} />);
   rerender(<SteeringPanel text="second" onClose={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Check draft" }));
-  await screen.findByText("Start with the concrete task.");
+  await screen.findByText(/Start with the concrete task\. \[6 chars\]/);
   await act(async () => finishFirst({ ...analysis("first"), summary: "OLD RESULT" }));
   expect(screen.queryByText("OLD RESULT")).toBeNull();
-  expect(screen.getByRole("region", { name: "Steering coach" }).getAttribute("data-digest")).toBe("digest:second");
+  expect(screen.getByRole("region", { name: "Steering coach" }).getAttribute("data-stale")).toBe("false");
 });
 
 it("reports a refused analysis without inventing a checklist", async () => {
@@ -122,7 +122,8 @@ it("creation form: ticking the coach reports it, and planning turns it off", asy
   expect(box).toHaveProperty("checked", false);
   expect(screen.getByText(/Planning already shapes the startup prompt/)).toBeTruthy();
   fireEvent.click(screen.getByText("Start directly"));
-  expect(box).toHaveProperty("checked", true);
+  expect(box).toHaveProperty("checked", false);
+  fireEvent.click(box);
   await fillAndCreate();
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ branch: "coached" }), "none", { steering: true });
 });
@@ -167,7 +168,7 @@ it("creating with the coach opens an empty, unsent draft with the checklist and 
   fireEvent.click(await screen.findByRole("checkbox", { name: /Prompt coach \(experimental\)/ }));
   await fillAndCreate();
   const panel = await screen.findByRole("region", { name: "Steering coach" });
-  await within(panel).findByText("Start with the concrete task.");
+  await within(panel).findByText(/Start with the concrete task\./);
   expect(draftInput().value).toBe("");
   expect(calls("create_feature")).toHaveLength(1);
   expect(submits()).toHaveLength(0);
@@ -202,12 +203,60 @@ it("composer coach: stale after an edit, never sends, and closes after the expli
   expect(submits()).toHaveLength(0);
 
   fireEvent.click(screen.getByRole("button", { name: "Re-check draft" }));
-  await waitFor(() => expect(panel.getAttribute("data-digest")).toBe("digest:Fix it. cargo test now"));
+  await waitFor(() => expect(panel.getAttribute("data-stale")).toBe("false"));
+  expect(within(panel).getByText(/\[22 chars\]/)).toBeTruthy();
   expect(submits()).toHaveLength(0);
 
   fireEvent.click(screen.getByRole("button", { name: "Send prompt" }));
   await waitFor(() => expect(submits()).toHaveLength(1));
   expect(submits()[0][1]).toEqual({ key: "feature:Agent", text: "Fix it. cargo test now" });
   await waitFor(() => expect(screen.queryByRole("region", { name: "Steering coach" })).toBeNull());
+  client.clear();
+});
+
+it("shows a result that lands after an in-flight edit as stale, never as current", async () => {
+  let finish!: (value: SteeringAnalysis) => void;
+  vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve as never; }));
+  const { rerender } = render(<SteeringPanel text="cargo test" onClose={vi.fn()} />);
+  rerender(<SteeringPanel text="cargo test, edited" onClose={vi.fn()} />);
+  await act(async () => finish(analysis("cargo test")));
+  const panel = screen.getByRole("region", { name: "Steering coach" });
+  expect(panel.getAttribute("data-stale")).toBe("true");
+  expect(screen.queryByText("Score: 2 / 10")).toBeNull();
+  expect(screen.getByRole("status").textContent).toContain("draft changed since this check");
+});
+
+it("hides the score for a blank draft", async () => {
+  backend();
+  render(<SteeringPanel text="" onClose={vi.fn()} />);
+  await screen.findByText(/Start with the concrete task/);
+  expect(screen.queryByText(/Score:/)).toBeNull();
+});
+
+it("creation form: clearing planning does not bring a previously ticked coach back", async () => {
+  const onSubmit = form();
+  const box = screen.getByRole("checkbox", { name: /Prompt coach \(experimental\)/ });
+  fireEvent.click(box);
+  fireEvent.click(screen.getByRole("radio", { name: "Full Plan" }));
+  fireEvent.click(screen.getByText("Start directly"));
+  expect(box).toHaveProperty("checked", false);
+  await fillAndCreate();
+  expect(onSubmit.mock.calls[0]).toHaveLength(2);
+});
+
+it("tells the user when the created feature has no agent session to coach", async () => {
+  const noAgent: WorkspaceSnapshot = { ...snapshot, projects: [{ ...snapshot.projects[0], features: [{
+    ...snapshot.projects[0].features[0], sessions: [{ id: "Shell", kind: "terminal", label: "Shell", tmux_window: "Shell" }] }] }] };
+  const client = app();
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, args, options) =>
+    command === "get_snapshot" ? noAgent : base(command, args, options));
+  fireEvent.click(await screen.findByRole("button", { name: "my-feat", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "demo", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "New feature", exact: true }));
+  fireEvent.click(await screen.findByRole("checkbox", { name: /Prompt coach \(experimental\)/ }));
+  await fillAndCreate();
+  expect(await screen.findByText(/no agent session to coach/)).toBeTruthy();
+  expect(screen.queryByRole("region", { name: "Steering coach" })).toBeNull();
   client.clear();
 });

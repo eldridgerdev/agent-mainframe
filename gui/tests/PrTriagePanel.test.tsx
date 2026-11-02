@@ -489,6 +489,32 @@ it("never falls back to the first row: without a companion nothing is chosen and
   expect((screen.getByRole("button", { name: "Prepare fix…" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
+it("creates a stopped dedicated session from the fix picker and selects it without preparing or sending anything", async () => {
+  const created = { ...target, session_id: "triage-new" };
+  const createdRow = { target: created, label: "PR Triage", harness: "codex" as const, stopped: true, destination_revision: "rev-new", destination_kind: "opened_feature" as const, feature_name: "Feature" };
+  let snapshotView: PrTriageView = fixView;
+  backend(fixView, () => fixView, () => snapshotView);
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  const identity = { pr_number: 12, head_sha: "abcdef1234567", set_digest: "set" };
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_dedicated_catalog") return { identity, feature_name: "Round totals", default_name: "PR Triage", preferred: "codex", agents: [{ agent: "codex", label: "Codex", unavailable: null }] };
+    if (command === "pr_destination_preview") return { revision: "rev-1", identity, label: "PR Triage", agent: "codex", feature_name: "Round totals", workdir: "/w", reuses_existing: false, existing_target: null, creates_session: true, stopped: true, resource_warning: null, consequences: ["Adds a 'PR Triage' Codex session to Round totals."] };
+    if (command === "pr_destination_prepare") {
+      snapshotView = { ...fixView, fix_targets: [...fixView.fix_targets, createdRow] };
+      return { status: "created", operation_id: "op", created_target: created, destination_revision: "rev-new", destination_kind: "opened_feature", stopped: true, message: "Created 'PR Triage' (Codex), stopped. Nothing is running." };
+    }
+    return base(command, args);
+  });
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  fireEvent.click(await screen.findByRole("button", { name: "New dedicated session…" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Create (stopped)" }));
+  await waitFor(() => expect((screen.getByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement).value).toBe("triage-new"));
+  const prepare = vi.mocked(invoke).mock.calls.find(([command]) => command === "pr_destination_prepare")![1] as { request: Record<string, unknown> };
+  expect(prepare.request).toMatchObject({ workflow: { kind: "triage", workflow_id: "triage" }, identity, preview_revision: "rev-1", approved: false });
+  expect(actions().filter(({ action }) => action.kind.startsWith("start_") || action.kind.startsWith("prepare_") || action.kind.startsWith("confirm_"))).toHaveLength(0);
+  expect((screen.getByRole("button", { name: "Prepare fix…" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
 it("shows the destination catalog: the companion row preselects, choosing it feeds Prepare fix, and Integrate is offered", async () => {
   backend({ ...review, fix_targets: companionRows }, () => review);
   const original = vi.mocked(invoke).getMockImplementation()!;

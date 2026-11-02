@@ -32,6 +32,10 @@ use agent_mainframe::gui_contract::{
     TodoHostChoice, WorkspaceSnapshot,
 };
 use agent_mainframe::gui_debug_log::{self, DebugLogView};
+use agent_mainframe::gui_dedicated_session::{
+    self, DedicatedCatalog, OperationStart, PrDestinationPrepareRequest, PrDestinationPrepared,
+    PrDestinationPreview, PrDestinationRequest, PrDestinationWorkflow,
+};
 use agent_mainframe::gui_diff::{self, DiffOptions, DiffView};
 use agent_mainframe::gui_dormancy::{
     self, DormancyStopResult, DormancyView, DormantDeleteRequest, DormantObservation,
@@ -2271,6 +2275,59 @@ async fn pr_workspace_fix_targets(
     .await?
 }
 
+// Dedicated PR triage session (D1): catalog -> preview -> prepare. All three
+// run on a blocking thread; prepare additionally claims the workflow's single
+// destination slot before taking the GUI lock, so a duplicate submit gets the
+// running operation back instead of queueing a second creation.
+#[tauri::command]
+async fn pr_dedicated_catalog(
+    app: tauri::AppHandle,
+    workflow: PrDestinationWorkflow,
+) -> Result<DedicatedCatalog, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_dedicated_session::catalog(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &workflow,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_destination_preview(
+    app: tauri::AppHandle,
+    request: PrDestinationRequest,
+) -> Result<PrDestinationPreview, GuiError> {
+    pr_workspace_blocking(app, move |gui| {
+        gui_dedicated_session::preview(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            &request,
+        )
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn pr_destination_prepare(
+    app: tauri::AppHandle,
+    request: PrDestinationPrepareRequest,
+) -> Result<PrDestinationPrepared, GuiError> {
+    let guard = match gui_dedicated_session::begin_operation(&request.workflow) {
+        OperationStart::Existing(running) => return Ok(running),
+        OperationStart::Started(guard) => guard,
+    };
+    pr_workspace_blocking(app, move |gui| {
+        let result = gui_dedicated_session::prepare(
+            &mut gui.lock().expect("gui handle mutex poisoned"),
+            request,
+            &guard.operation_id,
+        );
+        drop(guard);
+        result
+    })
+    .await?
+}
+
 /// Read-only: where a PR fix may go (opened feature + verified companions).
 /// The state read holds the GUI mutex only briefly; the Git reads run after it
 /// is released.
@@ -2796,6 +2853,9 @@ fn main() {
             pr_workspace_review_open,
             pr_workspace_review_close,
             pr_workspace_prepare_fix,
+            pr_dedicated_catalog,
+            pr_destination_preview,
+            pr_destination_prepare,
             pr_workspace_fix_targets,
             pr_destination_catalog,
             syntax_install_status,

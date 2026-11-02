@@ -826,6 +826,29 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
   max-height: 40vh;
 }
 .composer textarea:focus { outline: none; }
+.steering-panel {
+  margin: 0 8px 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.steering-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.steering-score { font-weight: 600; font-size: 12.5px; }
+.steering-good { color: var(--green); }
+.steering-warn { color: var(--amber); }
+.steering-bad { color: var(--red); }
+.steering-summary { margin: 8px 0; font-size: 12.5px; }
+.steering-checks, .steering-tips { margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.steering-checks li, .steering-tips li { padding: 2px 0; }
+.steering-mark { font-family: var(--mono); margin-right: 6px; }
+.steering-checks li[data-present="true"] .steering-mark { color: var(--green); }
+.steering-checks li[data-present="false"] .steering-mark { color: var(--amber); }
+.steering-subhead { margin: 10px 0 4px; font-size: 12px; }
+.steering-body.is-stale { opacity: 0.55; }
+.steering-stale { margin: 8px 0 0; }
 .composer-foot {
   display: flex;
   flex-wrap: wrap;

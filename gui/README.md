@@ -931,6 +931,15 @@ never confirms the summary call:
 remains open.
 
 
+### Steering coach
+
+The TUI's prompt coach (`analyze_prompt`: file scope, acceptance criteria, invariants, validation commands, risks) is available in two places. The **New feature** form has a **Prompt coach (experimental)** switch (off by default, disabled while Quick or Full Plan is chosen, as in the TUI). With it on, creation opens the new feature's agent composer with an empty, unsent draft and the checklist showing. Any agent composer also has a **Steering coach** button (the TUI's leader `s`).
+
+- The analysis is a pure local scan (the `steering_analyze` command): no harness is called, so no pre-call notice applies, and it does not take the GUI mutex or read the repository.
+- It is advisory. The panel has no send action and nothing is ever typed into the agent for you; sending stays the composer's explicit Send prompt. The panel closes after that send.
+- Each result carries a SHA-256 of the exact text it analyzed. Editing the draft marks the checklist stale (dimmed, with a Re-check button) until it is checked again, so the checklist shown always matches the text it is labeled for. Drafts over 256 KiB are refused with a reason.
+- Differences from the TUI: it recomputes live as you type; the GUI re-checks on demand. The TUI's editor is the injection surface (Tab); the GUI keeps its ordinary composer. The coach switch is a frontend choice for the first prompt and is not persisted, as in the TUI.
+
 ### Final Review feedback destinations
 
 From **Pre-finish summary**, choose **Choose feedback destination…**. Existing

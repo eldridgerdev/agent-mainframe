@@ -125,7 +125,7 @@ pub use issue_fixer::{IssueBrowserState, IssueBrowserStatus};
 pub(crate) use resource_gate::{StartIntent, Started};
 pub(crate) use session_ops::session_kind_for_agent;
 pub use state::*;
-pub use steering::{PromptAnalysis, analyze_prompt};
+pub use steering::{PromptAnalysis, PromptConstraint, analyze_prompt};
 pub use toast::Toast;
 pub(crate) use todos::{NextTodo, ReferencedTodoDeleted};
 

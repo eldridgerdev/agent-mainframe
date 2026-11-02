@@ -268,6 +268,19 @@ export default function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [sendingPrompts, setSendingPrompts] = useState<Record<string, boolean>>({});
   const promptSendsInFlight = useRef(new Set<string>());
+  /** Sessions whose composer shows the advisory steering checklist. */
+  const [steeringOpen, setSteeringOpen] = useState<Record<string, boolean>>({});
+  /** The creation form's coach checkbox, read when that create succeeds. */
+  const steeringOnCreate = useRef(false);
+  const changeSteering = useCallback((target: SessionTarget, open: boolean) => {
+    const key = sessionKey(target);
+    setSteeringOpen((current) => {
+      if (!!current[key] === open) return current;
+      const next = { ...current };
+      if (open) next[key] = true; else delete next[key];
+      return next;
+    });
+  }, []);
   const [composerFocusKey, setComposerFocusKey] = useState<string | null>(null);
   const composerFocusHandled = useCallback(() => setComposerFocusKey(null), []);
   const [planMinimized, setPlanMinimized] = useState(false);
@@ -658,6 +671,8 @@ export default function App() {
     setSendingPrompts((current) => ({ ...current, [key]: true }));
     try {
       await terminalSubmitPrompt(target, text);
+      // The coach is for the first send; the TUI closes it on inject too.
+      changeSteering(target, false);
       // Completion belongs to the originating session, even after navigation.
       // Edits are locked while sending, so the draft can only have grown by a
       // handoff appending its seed: remove the delivered text and keep that.
@@ -946,12 +961,40 @@ export default function App() {
     mutationFn: createFeature,
     onSuccess: (response) => {
       setCreateFeatureFor(null);
+      const wantsCoach = steeringOnCreate.current;
+      steeringOnCreate.current = false;
       if (response.project_id && response.feature_id) {
         setView({ kind: "feature", projectId: response.project_id, featureId: response.feature_id });
+        if (wantsCoach) void openSteeringComposer(response.project_id, response.feature_id);
       }
     },
-    onError: reportError,
+    onError: (err) => {
+      steeringOnCreate.current = false;
+      reportError(err);
+    },
   });
+
+  /** Steering coach at creation: land on the new feature's agent composer with an empty,
+   *  unsent draft and the checklist open. Nothing is typed into the agent. */
+  async function openSteeringComposer(projectId: string, featureId: string) {
+    try {
+      const fresh = await queryClient.fetchQuery({
+        queryKey: SNAPSHOT_KEY, queryFn: getSnapshot, staleTime: 0, retry: false,
+      });
+      const session = fresh.projects.find((project) => project.id === projectId)?.features
+        .find((feature) => feature.id === featureId)?.sessions
+        .find((candidate) => AGENT_KINDS.includes(candidate.kind));
+      if (!session) {
+        pushToast({ tone: "info", title: "Steering coach", message: "The feature has no agent session to coach. Add one, then open Steering coach in its composer." });
+        return;
+      }
+      const target = { project_id: projectId, feature_id: featureId, session_id: session.id };
+      openSession(target, "");
+      changeSteering(target, true);
+    } catch (err) {
+      reportError(err);
+    }
+  }
 
   const startFeatureMutation = useMutation({
     mutationFn: ({ target, approved }: { target: FeatureTarget; approved: boolean }) =>
@@ -1715,6 +1758,8 @@ export default function App() {
             onSavePrompt={setSavePromptBody}
             drafts={drafts}
             onDraftChange={changeDraft}
+            steeringOpen={steeringOpen}
+            onSteeringChange={changeSteering}
             sendingPrompts={sendingPrompts}
             onSendDraft={(target, text) => void sendDraft(target, text)}
             composerFocusKey={composerFocusKey}
@@ -1775,9 +1820,10 @@ export default function App() {
           defaultUseWorktree={createFeatureProject.is_git && createFeatureProject.features.length > 0}
           pending={createFeatureMutation.isPending || planBusy}
           onCancel={() => setCreateFeatureFor(null)}
-          onSubmit={(request, planKind) => {
+          onSubmit={(request, planKind, options) => {
             const fullRequest = { ...request, project_name: createFeatureProject.name };
             if (planKind === "none") {
+              steeringOnCreate.current = options?.steering === true;
               createFeatureMutation.mutate(fullRequest);
             } else {
               void runPlanBegin(() => planBeginCreation(fullRequest, planKind === "quick"))
@@ -2288,6 +2334,8 @@ function FeatureView({
   onPromptLibrary,
   onSavePrompt,
   onDraftChange,
+  steeringOpen,
+  onSteeringChange,
   sendingPrompts,
   onSendDraft,
   composerFocusKey,
@@ -2342,6 +2390,8 @@ function FeatureView({
   onPromptLibrary: (target: SessionTarget) => void;
   onSavePrompt: (body: string) => void;
   onDraftChange: (target: SessionTarget, text: string) => void;
+  steeringOpen?: Record<string, boolean>;
+  onSteeringChange?: (target: SessionTarget, open: boolean) => void;
   sendingPrompts: Record<string, boolean>;
   onSendDraft: (target: SessionTarget, text: string) => void;
   /** The session whose composer a handoff just seeded and should focus. */
@@ -2375,7 +2425,7 @@ function FeatureView({
   const activeSession = sessions.find((session) => session.id === activeTab);
   const activeSessionRunning = activeSession !== undefined && isRunning(activeSession);
   const isAgent = activeSession !== undefined &&
-    ["claude", "codex", "opencode", "pi"].includes(activeSession.kind);
+    AGENT_KINDS.includes(activeSession.kind);
   const activeLifecycle = activeSession && sessionLifecycle(activeSession);
   const composer = target && isAgent ? (
     <PromptComposer key={`composer:${sessionKey(target)}`}
@@ -2386,7 +2436,9 @@ function FeatureView({
       onChange={(text) => onDraftChange(target, text)} onClear={() => onDraftChange(target, "")}
       onSend={() => onSendDraft(target, drafts[sessionKey(target)] ?? "")}
       onLibrary={() => onPromptLibrary(target)}
-      onSaveTemplate={() => onSavePrompt(drafts[sessionKey(target)] ?? "")} />
+      onSaveTemplate={() => onSavePrompt(drafts[sessionKey(target)] ?? "")}
+      steeringOpen={steeringOpen?.[sessionKey(target)] ?? false}
+      onSteeringChange={onSteeringChange && ((open) => onSteeringChange(target, open))} />
   ) : null;
 
   return (
@@ -2738,6 +2790,8 @@ function CreateProjectForm({
   );
 }
 
+const AGENT_KINDS = ["claude", "codex", "opencode", "pi"];
+
 type PlanKind = "none" | "quick" | "full";
 
 export function CreateFeatureForm({
@@ -2759,9 +2813,10 @@ export function CreateFeatureForm({
   defaultUseWorktree: boolean;
   pending: boolean;
   onCancel: () => void;
-  onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind) => void;
+  onSubmit: (request: Omit<CreateFeatureRequest, "project_name">, planKind: PlanKind, options?: { steering: boolean }) => void;
 }) {
   const [branch, setBranch] = useState("");
+  const [steering, setSteering] = useState(false);
   const harness = useCreationHarness(projectId);
   const agent = harness.agent;
   const setAgent = harness.choose;
@@ -2791,7 +2846,7 @@ export function CreateFeatureForm({
       dismissable={!pending}
       onSubmit={() => {
         if (pending || !hook.ready || !branch.trim() || remoteControl || unsupportedMode || !harness.ready || !selectedAgent) return;
-        onSubmit({
+        const request = {
           branch: branch.trim(),
           agent: selectedAgent,
           mode,
@@ -2802,7 +2857,9 @@ export function CreateFeatureForm({
           enable_chrome: chrome,
           hook_choice: hook.choice || null,
           dry_run: false,
-        }, planKind);
+        };
+        if (steering && planKind === "none") onSubmit(request, planKind, { steering: true });
+        else onSubmit(request, planKind);
       }}
       footer={
         <>
@@ -2881,6 +2938,15 @@ export function CreateFeatureForm({
             ]}
           />
         </Field>
+        <Switch
+          checked={steering && planKind === "none"}
+          disabled={planKind !== "none"}
+          onChange={setSteering}
+          label="Prompt coach (experimental)"
+          hint={planKind !== "none"
+            ? "Planning already shapes the startup prompt, so the coach is off while Quick or Full Plan is chosen."
+            : "After the agent starts, check your first prompt for scope, done-criteria, invariants, validation and risks. The draft stays unsent until you send it."}
+        />
         {isGit && (
           <Switch
             checked={useWorktree}

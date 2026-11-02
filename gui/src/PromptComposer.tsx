@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef } from "react";
+import SteeringPanel from "./SteeringPanel";
 import { Icon, Spinner } from "./ui";
 
 export default function PromptComposer({
-  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary, onSaveTemplate,
+  text, sending, ready, focusRequested, onFocusHandled, onChange, onClear, onSend, onLibrary, onSaveTemplate, steeringOpen = false, onSteeringChange,
   connectionMessage = "Waiting for terminal connection…",
 }: {
   text: string;
@@ -16,6 +17,9 @@ export default function PromptComposer({
   onSend: () => void;
   onLibrary: () => void;
   onSaveTemplate?: () => void;
+  /** Show the advisory steering checklist for this draft (never sends). */
+  steeringOpen?: boolean;
+  onSteeringChange?: (open: boolean) => void;
   connectionMessage?: string;
 }) {
   const canSend = ready && !sending && text.trim().length > 0;
@@ -40,6 +44,7 @@ export default function PromptComposer({
         <strong>Compose prompt</strong>
         <span className="muted small">Draft here, then send to the agent.</span>
         <span className="tabs-spacer" />
+        {onSteeringChange && <button className="btn btn-sm btn-ghost" aria-pressed={steeringOpen} onClick={() => onSteeringChange(!steeringOpen)}><Icon name="check" />Steering coach</button>}
         <button className="btn btn-sm btn-ghost" onClick={onLibrary}><Icon name="file" />Prompt library</button>
         {onSaveTemplate && <button className="btn btn-sm btn-ghost" disabled={sending || !text.trim()} onClick={onSaveTemplate}>Save as template</button>}
         <button className="btn btn-sm btn-ghost" disabled={sending || !text} onClick={onClear}>
@@ -50,7 +55,7 @@ export default function PromptComposer({
         ref={textarea}
         aria-label="Draft prompt"
         aria-describedby={shortcutsId}
-        placeholder="Write a message or paste a prompt…"
+        placeholder={steeringOpen ? "Describe the task, then add boundaries, validation, and watch-outs." : "Write a message or paste a prompt…"}
         value={text}
         readOnly={sending}
         onChange={(event) => onChange(event.target.value)}
@@ -64,6 +69,7 @@ export default function PromptComposer({
         }}
         rows={4}
       />
+      {steeringOpen && onSteeringChange && <SteeringPanel text={text} onClose={() => onSteeringChange(false)} />}
       <div className="composer-foot">
         <div className="composer-help">
           <div id={shortcutsId} className="composer-shortcuts small">

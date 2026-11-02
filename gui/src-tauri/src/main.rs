@@ -814,6 +814,16 @@ fn create_project(
     Ok(response)
 }
 
+/// The steering coach checklist for a draft prompt. Pure and local (no
+/// harness call, no GUI mutex); the digest binds the result to the text.
+#[tauri::command]
+fn steering_analyze(
+    text: String,
+) -> Result<agent_mainframe::gui_steering::SteeringAnalysisView, GuiError> {
+    agent_mainframe::gui_steering::analyze(&text)
+        .map_err(|message| GuiError::from(anyhow::anyhow!(message)))
+}
+
 #[tauri::command]
 fn create_feature(
     app: tauri::AppHandle,
@@ -2753,6 +2763,7 @@ fn main() {
             get_snapshot,
             set_collapsed,
             create_project,
+            steering_analyze,
             create_feature,
             worktree_hook_prompt,
             start_feature,

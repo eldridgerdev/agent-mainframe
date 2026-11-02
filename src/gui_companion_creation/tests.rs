@@ -1185,3 +1185,281 @@ fn creation_never_pushes_or_writes_to_the_remote() {
     assert_eq!(fx.create("quiet").state, OperationState::Created);
     assert_eq!(refs(&remote), before);
 }
+
+// ------------------------------------------------------- review follow-ups
+
+fn pid_is_gone(pid: i32) -> bool {
+    // A zombie still answers kill(0) but is already dead.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit(')')
+            .next()
+            .is_some_and(|rest| rest.trim_start().starts_with('Z')),
+    }
+}
+
+fn wait_pid_file(path: &Path) -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(pid) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return pid;
+        }
+        assert!(Instant::now() < deadline, "no pid in {}", path.display());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn wait_pid_gone(pid: i32) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !pid_is_gone(pid) {
+        assert!(Instant::now() < deadline, "process {pid} survived");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_hook_that_backgrounds_a_daemon_neither_hangs_the_operation_nor_leaves_it_running() {
+    let fx = fixture(Head::Local);
+    let pid_file = fx.dir.path().join("daemon.pid");
+    // The sleeper inherits the hook's stderr, which used to pin the reader.
+    fx.set_hook(crate::extension::HookConfig::Script(format!(
+        "sleep 300 & echo $! > '{}'",
+        pid_file.display()
+    )));
+    let done = fx.create("daemonized");
+    assert_eq!(done.state, OperationState::Created, "{}", done.message);
+    wait_pid_gone(wait_pid_file(&pid_file));
+    // The workflow's slot is free again.
+    assert!(matches!(
+        begin_operation(&fx.workflow, COMPANION_OPERATIONS),
+        OperationStart::Started(_)
+    ));
+}
+
+#[test]
+fn cancelling_a_hook_with_a_backgrounded_daemon_kills_the_whole_group_promptly() {
+    let fx = fixture(Head::Local);
+    let pid_file = fx.dir.path().join("daemon.pid");
+    fx.set_hook(crate::extension::HookConfig::Script(format!(
+        "sleep 300 & echo $! > '{}'; sleep 300",
+        pid_file.display()
+    )));
+    let id = fx.begin("daemon-cancel");
+    let daemon = wait_pid_file(&pid_file);
+    let cancelled_at = Instant::now();
+    cancel(&id).unwrap();
+    let done = wait_done(&id);
+    assert_eq!(done.state, OperationState::Cancelled, "{}", done.message);
+    assert!(cancelled_at.elapsed() < Duration::from_secs(10));
+    wait_pid_gone(daemon);
+}
+
+#[test]
+fn a_hook_without_a_confirmed_origin_branch_needs_explicit_approval() {
+    // A fork PR: its branch is not on origin.
+    let fx = fixture(Head::Nowhere);
+    let marker = fx.dir.path().join("hook-ran");
+    fx.set_hook(crate::extension::HookConfig::Script(format!(
+        "touch '{}'",
+        marker.display()
+    )));
+    let choice = choice("forked", None);
+    let shown = fx.preview(choice.clone());
+    assert!(
+        shown
+            .consequences
+            .iter()
+            .any(|line| line.contains("executes files from the PR checkout")),
+        "{:?}",
+        shown.consequences
+    );
+    let error = fx
+        .start_with(choice, &shown.revision, false, git_fetcher())
+        .unwrap_err();
+    assert_eq!(error.kind, GuiErrorKind::NeedsApproval);
+    assert!(error.message.contains("fork"), "{}", error.message);
+    assert!(!marker.exists());
+    assert!(!fx.worktree_dir("forked").exists());
+    // The slot was released by the refusal.
+    assert!(matches!(
+        begin_operation(&fx.workflow, COMPANION_OPERATIONS),
+        OperationStart::Started(_)
+    ));
+}
+
+#[test]
+fn an_approved_hook_on_an_unconfirmed_branch_runs_and_a_confirmed_one_needs_no_approval() {
+    let fx = fixture(Head::NoRemote);
+    fx.set_hook(crate::extension::HookConfig::Script(
+        "touch hook-ran".into(),
+    ));
+    let choice = choice("approved", None);
+    let shown = fx.preview(choice.clone());
+    let started = fx
+        .start_with(choice, &shown.revision, true, git_fetcher())
+        .unwrap();
+    let done = wait_done(&started.operation_id);
+    assert_eq!(done.state, OperationState::Created, "{}", done.message);
+    assert!(fx.worktree_dir("approved").join("hook-ran").exists());
+    // Head::Local is on origin: the existing hook tests start with approved=false.
+}
+
+#[test]
+fn the_revision_ignores_a_resource_warning_that_comes_and_goes() {
+    let fx = fixture(Head::Local);
+    let quiet = fx.preview(choice("steady", None));
+    assert!(quiet.resource_warning.is_none());
+    fx.with(|gui| gui.app_for_workflow().config.low_memory_warn_mb = u64::MAX);
+    let warned = fx.preview(choice("steady", None));
+    assert!(warned.resource_warning.is_some());
+    assert_eq!(quiet.revision, warned.revision);
+}
+
+#[test]
+fn a_head_reported_in_capitals_plans_the_same_base_as_lowercase() {
+    let fx = fixture(Head::Local);
+    let lower = fx.preview(choice("case", None));
+    fx.with(|gui| {
+        let ctx = gui.pr_workspace_context.as_mut().unwrap();
+        let pr = ctx.pr.as_mut().unwrap();
+        pr.head_sha = pr.head_sha.to_ascii_uppercase();
+    });
+    let identity = fx.with(|gui| catalog(gui, &fx.workflow).unwrap().identity);
+    let request = PrDestinationRequest {
+        workflow: fx.workflow.clone(),
+        identity,
+        choice: choice("case", None),
+    };
+    let upper = fx.with(|gui| preview_read(gui, &request)).unwrap().run();
+    assert_eq!(
+        upper.companion.unwrap().base_sha,
+        lower.companion.unwrap().base_sha
+    );
+}
+
+#[test]
+fn branch_names_git_rewrites_are_refused() {
+    let fx = fixture(Head::Local);
+    for bad in ["@{-1}", "@{-2}", "@"] {
+        let error = fx.try_preview(choice(bad, None)).unwrap_err();
+        assert_eq!(error.kind, GuiErrorKind::Conflict, "{bad:?}");
+        assert!(error.message.contains("not a valid"), "{}", error.message);
+    }
+}
+
+#[test]
+fn two_workflows_racing_with_different_branch_names_cannot_both_register_the_same_head() {
+    let fx = fixture(Head::Local);
+    // Workflow B passed `plan` before A registered anything.
+    let request = fx.request(choice("race-b", None));
+    let planned_b = fx
+        .with(|gui| {
+            plan(
+                gui,
+                &request.workflow,
+                &request.identity,
+                &settings("race-b"),
+                None,
+                true,
+            )
+        })
+        .unwrap();
+    assert_eq!(fx.create("race-a").state, OperationState::Created);
+    let state = Arc::new(OpState::new("race-b-op".into()));
+    let job = Job {
+        locker: fx.locker(),
+        state: state.clone(),
+        fetcher: git_fetcher(),
+        worktree: Arc::new(crate::worktree::WorktreeManager),
+        request: fx.prepare_request(choice("race-b", None), &planned_b.revision, false),
+        settings: settings("race-b"),
+        hook_choice: None,
+        plan: planned_b,
+        on_finish: Arc::new(|| {}),
+    };
+    job.execute();
+    let view = state.view();
+    assert_eq!(view.state, OperationState::Failed, "{}", view.message);
+    assert!(
+        view.message.contains("race-a") && view.message.contains("was created while"),
+        "{}",
+        view.message
+    );
+    assert!(view.created_target.is_none());
+    assert!(
+        view.retained_path.is_some(),
+        "the checkout is kept and named"
+    );
+    assert!(fx.features().iter().all(|f| f.name != "race-b"));
+}
+
+#[test]
+fn a_companion_creation_and_a_session_prepare_do_not_share_an_operation_slot() {
+    let fx = fixture(Head::Local);
+    let OperationStart::Started(session) = begin_operation(
+        &fx.workflow,
+        crate::gui_dedicated_session::SESSION_OPERATIONS,
+    ) else {
+        panic!("session claims its slot")
+    };
+    let choice = choice("separate", None);
+    let shown = fx.preview(choice.clone());
+    let started = fx
+        .start_with(choice, &shown.revision, false, git_fetcher())
+        .unwrap();
+    assert_eq!(started.status, PrepareStatus::Started);
+    assert_ne!(started.operation_id, session.operation_id);
+    assert_eq!(
+        wait_done(&started.operation_id).state,
+        OperationState::Created
+    );
+    // And the reverse: while a companion holds its slot, a session can claim its own.
+    let OperationStart::Started(companion) = begin_operation(&fx.workflow, COMPANION_OPERATIONS)
+    else {
+        panic!("companion slot is free again")
+    };
+    assert!(matches!(
+        begin_operation(
+            &fx.workflow,
+            crate::gui_dedicated_session::SESSION_OPERATIONS
+        ),
+        OperationStart::Existing(_)
+    ));
+    drop(companion);
+    drop(session);
+}
+
+#[test]
+fn a_panicking_worker_still_tells_the_ui_it_finished() {
+    let fx = fixture(Head::Local);
+    fx.set_worktree(Wrapped {
+        after_create: Box::new(|_| panic!("boom")),
+    });
+    let finished = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = finished.clone();
+    let choice = choice("tells-ui", None);
+    let shown = fx.preview(choice.clone());
+    let started = start_with(
+        fx.locker(),
+        fx.prepare_request(choice, &shown.revision, false),
+        git_fetcher(),
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        wait_done(&started.operation_id).state,
+        OperationState::Failed
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while finished.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "on_finish never ran");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(finished.load(Ordering::SeqCst), 1);
+}

@@ -8,6 +8,8 @@ import { Field, Spinner } from "./ui";
 
 const INPUT_DEBOUNCE_MS = 250;
 const POLL_MS = 300;
+/** Consecutive failed status polls tolerated before the operation is treated as lost. */
+const POLL_RETRIES = 3;
 
 const PHASE_LABEL: Record<PrDestinationOperation["phase"], string> = {
   starting: "Starting", fetching: "Fetching the PR head from the remote", creating_worktree: "Creating the worktree",
@@ -22,6 +24,10 @@ export function preparedFrom(operation: PrDestinationOperation): PrDestinationPr
     stopped: true, message: operation.message,
   };
 }
+
+/** The creation produced a feature even if it did not finish cleanly (a cancel
+ * that arrived after the worktree existed keeps and registers it). */
+const producedFeature = (op: PrDestinationOperation) => op.created_target !== null && (op.state === "created" || op.state === "cancelled");
 
 /** Create a NEW triage feature (its own worktree and branch, seeded from the PR
  * head), stopped. This is a separate screen from sending a fix: it only creates.
@@ -52,10 +58,12 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
   const [operationId, setOperationId] = useState<string | null>(null);
   const [operation, setOperation] = useState<PrDestinationOperation | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [operationLost, setOperationLost] = useState(false);
   const [reload, setReload] = useState(0);
   const submitting = useRef(false);
   const previewSeq = useRef(0);
   const reported = useRef(false);
+  const live = useRef({ operationId: null as string | null, settled: false });
 
   useEffect(() => {
     let live = true;
@@ -85,7 +93,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
     return () => window.clearTimeout(timer);
   }, [inputKey]);
 
-  const running = operationId !== null && (operation === null || operation.state === "running");
+  const running = operationId !== null && !operationLost && (operation === null || operation.state === "running");
   const finished = operation !== null && operation.state !== "running";
   useEffect(() => {
     if (!catalog || !choice || committed !== inputKey || operationId) return;
@@ -101,26 +109,55 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
   // Follow the background operation until it settles.
   useEffect(() => {
     if (!operationId) return;
-    let live = true;
+    let alive = true;
+    let failures = 0;
     const timer = window.setInterval(() => {
       destinationStatus(operationId).then((view) => {
-        if (!live) return;
+        if (!alive) return;
+        failures = 0;
         setOperation(view);
         if (view.state === "running") return;
         window.clearInterval(timer);
+        live.current.settled = true;
         setCancelling(false);
-        if (view.state === "created" && !reported.current) {
+        if (producedFeature(view) && !reported.current) {
           reported.current = true;
           onCreated(preparedFrom(view));
         }
-      }).catch((err) => { if (live) { window.clearInterval(timer); setError(asGuiError(err).message); } });
+      }).catch((err) => {
+        if (!alive) return;
+        const failure = asGuiError(err);
+        failures += 1;
+        // An untracked operation will never answer; a transient error may.
+        if (failure.kind !== "not_found" && failures < POLL_RETRIES) return;
+        window.clearInterval(timer);
+        live.current.settled = true;
+        setOperationLost(true);
+        setCancelling(false);
+        setError(`AMF lost track of this creation: ${failure.message.replace(/[.\s]+$/, "")}. The feature may still have been created, so check the feature list before trying again.`);
+      });
     }, POLL_MS);
-    return () => { live = false; window.clearInterval(timer); };
+    return () => { alive = false; window.clearInterval(timer); };
   }, [operationId]);
+
+  // Leaving the form while a creation runs must not strand it: ask it to stop
+  // (idempotent, and whatever already exists is kept and registered).
+  useEffect(() => { live.current.operationId = operationId; live.current.settled = false; }, [operationId]);
+  useEffect(() => () => {
+    const { operationId: id, settled } = live.current;
+    if (id && !settled) void destinationCancel(id).catch(() => undefined);
+  }, []);
 
   const current = preview && preview.key === inputKey ? preview.value : null;
   const companion = current?.companion ?? null;
-  const gate = current?.resource_warning ?? needsApproval;
+  // A setup hook runs files from the PR checkout; without a confirmed `origin`
+  // branch (a fork, or an unreachable remote) that needs an explicit yes.
+  const hookAck = companion?.hook && companion.pr_branch_on_origin !== true
+    ? `The setup hook would run files from this PR's checkout, and ${companion.pr_branch_on_origin === false ? `the PR branch “${companion.pr_branch}” is not on the remote (for example a fork)` : "AMF could not confirm the PR branch on the remote"}. That code is not from your repository.`
+    : null;
+  const lateGate = needsApproval && !(hookAck && needsApproval.includes("setup hook would run files")) ? needsApproval : null;
+  const resourceGate = current?.resource_warning ?? lateGate;
+  const gate = resourceGate || hookAck;
   const hookNeedsChoice = !!companion?.hook?.choice_required;
   const canSubmit = !!current && !!companion && !busy && !operationId && (!gate || approved) && !hookNeedsChoice;
 
@@ -154,6 +191,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
     submitting.current = false;
     reported.current = false;
     setOperationId(null);
+    setOperationLost(false);
     setOperation(null);
     setPreview(null);
     setError(null);
@@ -161,7 +199,7 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
   };
 
   const unavailable = catalog?.agents.filter((a) => a.unavailable) ?? [];
-  const locked = busy || !!operationId;
+  const locked = busy || (!!operationId && !operationLost);
   const unsupported = (m: CompanionCatalog["modes"][number]) => !!agent && m.unsupported_agents.includes(agent);
   const hook = catalog?.hook ?? null;
   return (
@@ -212,22 +250,22 @@ export default function CompanionFeatureForm({ workflow, expected, onCreated, on
       </div>}
       {gate && !operationId && <label className="row small">
         <input type="checkbox" checked={approved} disabled={locked} onChange={(event) => setApproved(event.target.checked)} />
-        <span>I approve despite the resource warning: {gate}</span>
+        <span>{resourceGate ? <>I approve despite the resource warning: {resourceGate}{hookAck ? ` ${hookAck}` : ""}</> : <>I understand and approve running the setup hook: {hookAck}</>}</span>
       </label>}
-      {operationId && <div className="callout callout-accent" role="status" aria-live="polite">
+      {operationId && !operationLost && <div className="callout callout-accent" role="status" aria-live="polite">
         {running && <p className="row"><Spinner /> <strong>{operation ? PHASE_LABEL[operation.phase] : "Starting"}…</strong></p>}
         <p>{operation?.message ?? "Creating in the background. Nothing is started."}</p>
         {operation?.retained_path && <p className="small">Checkout: <code>{operation.retained_path}</code></p>}
         {operation?.cancel_requested && running && <p className="small">Cancelling. Anything already created is kept, and nothing is deleted automatically.</p>}
       </div>}
-      {finished && operation.state !== "created" && <p className={operation.state === "failed" ? "callout callout-danger" : "callout"} role={operation.state === "failed" ? "alert" : "status"}>
+      {finished && operation.state !== "created" && !producedFeature(operation) && <p className={operation.state === "failed" ? "callout callout-danger" : "callout"} role={operation.state === "failed" ? "alert" : "status"}>
         {operation.state === "failed" ? "Creation failed. " : "Creation cancelled. "}{operation.retained_path ? "The checkout was kept; see its path above." : "Nothing was left behind."}
       </p>}
       <div className="row">
         {!operationId && <button type="button" className="btn btn-primary" disabled={!canSubmit} onClick={() => void submit()}>{busy ? "Working…" : "Create (stopped)"}</button>}
         {running && <button type="button" className="btn btn-secondary" disabled={cancelling || operation?.cancel_requested} onClick={() => void cancel()}>{cancelling || operation?.cancel_requested ? "Cancelling…" : "Cancel creation"}</button>}
-        {finished && operation.state !== "created" && <button type="button" className="btn btn-secondary" onClick={again}>Edit and try again</button>}
-        <button type="button" className="btn btn-secondary" disabled={busy || running} title={running ? "Cancel the creation first" : undefined} onClick={onClose}>{finished ? "Close" : "Cancel"}</button>
+        {finished && operation.state !== "created" && !producedFeature(operation) && <button type="button" className="btn btn-secondary" onClick={again}>Edit and try again</button>}
+        <button type="button" className="btn btn-secondary" disabled={busy || running} title={running ? "Cancel the creation first" : undefined} onClick={onClose}>{finished || operationLost ? "Close" : "Cancel"}</button>
       </div>
     </section>
   );

@@ -315,3 +315,89 @@ it("reports a collision from the preview and offers no creation", async () => {
   expect((await screen.findByRole("alert")).textContent).toContain("never resets or reuses");
   expect((screen.getByRole("button", { name: "Create (stopped)" }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+it("unlocks Close and Refresh when the operation can no longer be followed", async () => {
+  backend({ prepare: () => started() });
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_destination_status") throw Object.assign(new Error("gone"), { kind: "not_found", message: "That companion operation is no longer tracked. Check the feature list for what was created" });
+    return base(command, args);
+  });
+  const onClose = vi.fn();
+  render(<CompanionFeatureForm workflow={workflow} onCreated={vi.fn()} onClose={onClose} />);
+  fireEvent.click(await create());
+  expect((await screen.findByRole("alert", {}, WAIT)).textContent).toContain("check the feature list");
+  const close = screen.getByRole("button", { name: "Close" }) as HTMLButtonElement;
+  expect(close.disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByRole("button", { name: "Cancel creation" })).toBeNull();
+  fireEvent.click(close);
+  expect(onClose).toHaveBeenCalled();
+});
+
+it("retries a transient status error before giving up", async () => {
+  backend({ prepare: () => started(), statuses: [created()] });
+  const base = vi.mocked(invoke).getMockImplementation()!;
+  let failures = 0;
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    if (command === "pr_destination_status" && failures < 2) { failures += 1; throw Object.assign(new Error("ipc"), { kind: "internal", message: "ipc hiccup" }); }
+    return base(command, args);
+  });
+  const onCreated = vi.fn();
+  render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
+  fireEvent.click(await create());
+  await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1), WAIT);
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("reports a cancel that arrived after the worktree existed as a kept feature, not a retryable failure", async () => {
+  backend({ prepare: () => started(), statuses: [created({ state: "cancelled", message: "Cancelled after the worktree was created. The stopped feature 'round-fix-triage' was kept at /repo/.worktrees/demo-round-fix-triage; no agent was started." })] });
+  const onCreated = vi.fn();
+  render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
+  fireEvent.click(await create());
+  await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1), WAIT);
+  expect((onCreated.mock.calls[0][0] as PrDestinationPrepared).created_target).toEqual(target);
+  expect((await screen.findByRole("status")).textContent).toContain("was kept at");
+  expect(screen.queryByRole("button", { name: "Edit and try again" })).toBeNull();
+  expect(screen.queryByText(/Creation cancelled/)).toBeNull();
+  expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it("asks a running creation to stop when the form is unmounted", async () => {
+  backend({ prepare: () => started(), statuses: [operation()] });
+  const onCreated = vi.fn();
+  const view = render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
+  fireEvent.click(await create());
+  await screen.findByRole("button", { name: "Cancel creation" });
+  view.unmount();
+  await waitFor(() => expect(calls("pr_destination_cancel")).toHaveLength(1));
+  expect(calls("pr_destination_cancel")[0]).toMatchObject({ operationId: "op-1" });
+});
+
+it("does not cancel a finished creation on unmount", async () => {
+  backend({ prepare: () => started() });
+  const onCreated = vi.fn();
+  const view = render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
+  fireEvent.click(await create());
+  await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1), WAIT);
+  view.unmount();
+  expect(calls("pr_destination_cancel")).toHaveLength(0);
+});
+
+it("requires explicit approval to run the setup hook on code that is not confirmed on origin", async () => {
+  backend({
+    catalog: { ...catalog, hook: { script: "./setup.sh", prompt_title: null, options: [], choice: null, choice_required: false } },
+    preview: () => preview({}, { pr_branch_on_origin: false, hook: { script: "./setup.sh", prompt_title: null, options: [], choice: null, choice_required: false } }),
+  });
+  const onCreated = vi.fn();
+  render(<CompanionFeatureForm workflow={workflow} onCreated={onCreated} onClose={vi.fn()} />);
+  const button = await createButton();
+  const box = await screen.findByRole("checkbox", { name: /I understand and approve running the setup hook/ });
+  expect(button.disabled).toBe(true);
+  expect(screen.getByText(/is not on the remote \(for example a fork\)/)).toBeTruthy();
+  fireEvent.click(box);
+  expect(button.disabled).toBe(false);
+  fireEvent.click(button);
+  await waitFor(() => expect(onCreated).toHaveBeenCalled(), WAIT);
+  expect(calls("pr_destination_prepare")[0].request).toMatchObject({ approved: true });
+});

@@ -677,6 +677,9 @@ impl Drop for OperationGuard {
     }
 }
 
+/// Namespace of the dedicated-session prepare's operation slot.
+pub const SESSION_OPERATIONS: &str = "session";
+
 pub enum OperationStart {
     Started(OperationGuard),
     /// A prepare is already running for this workflow; this is its id.
@@ -685,8 +688,12 @@ pub enum OperationStart {
 
 /// Claim the workflow's single destination slot. A duplicate submit while one
 /// is running gets the running operation back instead of starting another.
-pub fn begin_operation(workflow: &PrDestinationWorkflow) -> OperationStart {
-    let key = workflow.key();
+///
+/// `namespace` names the kind of destination operation ([`SESSION_OPERATIONS`],
+/// the companion creation's own), so two kinds of work on one workflow neither
+/// block each other nor hand back each other's operation ids.
+pub fn begin_operation(workflow: &PrDestinationWorkflow, namespace: &str) -> OperationStart {
+    let key = format!("{namespace}:{}", workflow.key());
     let mut map = operations().lock().expect("operations mutex poisoned");
     if let Some(running) = map.get(&key) {
         return OperationStart::Existing(PrDestinationPrepared {

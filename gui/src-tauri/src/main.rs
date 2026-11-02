@@ -2337,7 +2337,10 @@ async fn pr_destination_prepare(
     ) {
         return pr_companion_start(app, request).await;
     }
-    let guard = match gui_dedicated_session::begin_operation(&request.workflow) {
+    let guard = match gui_dedicated_session::begin_operation(
+        &request.workflow,
+        gui_dedicated_session::SESSION_OPERATIONS,
+    ) {
         OperationStart::Existing(running) => return Ok(running),
         OperationStart::Started(guard) => guard,
     };

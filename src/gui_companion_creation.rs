@@ -22,8 +22,15 @@
 //! Safety rules: a branch is never force-created or reset (a name collision with
 //! a feature, a local branch or a worktree path is a refusal); the checkout, once
 //! it exists, is retained on every later failure and the message names its path;
-//! a failing hook keeps the companion; nothing here holds the GUI lock across
-//! Git, the network or the hook.
+//! a failing hook keeps the companion. The GUI lock is held only for the local
+//! decisions (store reads, a few quick local `git` reads in `plan`, and the
+//! final registration), never across the network, the fetch, the worktree
+//! creation or the hook.
+//!
+//! The hook is the project's own script, but it runs *inside a checkout of the
+//! PR head*, so files the PR's author wrote can execute. The preview says so,
+//! and when the PR branch cannot be confirmed on `origin` (a fork, or an
+//! unreachable remote) creation also needs the person's explicit approval.
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -50,6 +57,10 @@ use crate::project::{AgentKind, Feature, Project, VibeMode, normalized_feature_n
 const FETCH_TIMEOUT: Duration = Duration::from_secs(180);
 const REMOTE_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_BRANCH_CHARS: usize = 100;
+/// Namespace of this module's operation slot (see `begin_operation`).
+const COMPANION_OPERATIONS: &str = "companion";
+/// How long a fetch gets to exit after SIGTERM before it is killed.
+const FETCH_TERM_GRACE: Duration = Duration::from_secs(1);
 /// Finished operations kept so a late `status` still answers.
 const FINISHED_KEPT: usize = 32;
 
@@ -194,12 +205,15 @@ fn validate_branch(workdir: &Path, branch: &str) -> GuiResult<()> {
     if branch.chars().any(char::is_control) {
         return Err(conflict("Branch names cannot contain control characters"));
     }
-    git(workdir, &["check-ref-format", "--branch", branch]).map_err(|_| {
-        conflict(format!(
+    // `--branch` also expands things like `@{-1}` to a different name, so the
+    // output must be the input verbatim.
+    match git(workdir, &["check-ref-format", "--branch", branch]) {
+        // A lone `@` passes the check but is not a usable branch name.
+        Ok(normalized) if normalized.trim() == branch && branch != "@" => Ok(()),
+        _ => Err(conflict(format!(
             "'{branch}' is not a valid Git branch name; choose another"
-        ))
-    })?;
-    Ok(())
+        ))),
+    }
 }
 
 fn hook_of(app: &App, project: &Project) -> Option<crate::extension::HookConfig> {
@@ -391,7 +405,9 @@ fn plan(
     check_hook_choice(hook.as_ref(), hook_choice)?;
     let facts = TriagePrFacts {
         pr_number: ctx.identity.pr_number,
-        head_sha: ctx.identity.head_sha.clone(),
+        // Lowercase so the planned base (and the revision digested from it) is
+        // the same before and after the fetch, whatever case GitHub reported.
+        head_sha: ctx.identity.head_sha.to_ascii_lowercase(),
         head_ref: ctx.head_ref.clone(),
     };
     let triage = app
@@ -471,7 +487,6 @@ fn plan(
         &triage.pr_branch,
         &triage.worktree_name,
         &dest,
-        resource_warning.is_some(),
         &older,
     ));
     let _ = app;
@@ -499,6 +514,10 @@ fn plan(
                 hook.script
             ),
         });
+        consequences.push(
+            "The hook executes files from the PR checkout, which is code the PR's author wrote (it may be a fork). Only continue if you trust this PR's contents."
+                .into(),
+        );
         consequences
             .push("If the hook fails, the companion is still kept and no agent is started.".into());
     }
@@ -631,6 +650,20 @@ impl PreviewRead {
     }
 }
 
+/// The approval text when a hook would run files from a PR whose branch is not
+/// confirmed on `origin`.
+fn hook_ack_message(found: Option<bool>, head_ref: &str) -> String {
+    let why = match found {
+        Some(false) => {
+            format!("the PR branch '{head_ref}' is not on the remote 'origin' (for example a fork)")
+        }
+        _ => "AMF could not confirm the PR branch on the remote 'origin'".to_string(),
+    };
+    format!(
+        "The setup hook would run files from this PR's checkout, and {why}. That code is not from your repository. Run it anyway?"
+    )
+}
+
 fn probe_remote_branch(
     workdir: &Path,
     head_ref: &str,
@@ -726,11 +759,23 @@ fn fetch_head(workdir: &Path, sha: &str, cancel: &AtomicBool) -> Result<(), Stri
         .spawn()
         .map_err(|_| "Could not start Git".to_string())?;
     let started = Instant::now();
+    // SIGTERM the group first so Git can drop its lock files, then SIGKILL
+    // whatever is left once the grace period is over.
     let stop = |child: &mut std::process::Child| {
+        let pgid = child.id() as i32;
         #[cfg(unix)]
         // SAFETY: signalling the process group this function created.
         unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + FETCH_TERM_GRACE;
+        while Instant::now() < deadline && !matches!(child.try_wait(), Ok(Some(_))) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        #[cfg(unix)]
+        // SAFETY: as above; a group that already exited returns ESRCH.
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
         }
         let _ = child.kill();
         let _ = child.wait();
@@ -961,7 +1006,7 @@ pub(crate) fn start_with(
     };
     // One destination operation per workflow. A duplicate submit gets the
     // running one back; the slot is released when the worker drops the guard.
-    let guard = match begin_operation(&request.workflow) {
+    let guard = match begin_operation(&request.workflow, COMPANION_OPERATIONS) {
         OperationStart::Existing(mut running) => {
             running.message =
                 "This companion is already being created. Waiting for that operation.".into();
@@ -990,6 +1035,23 @@ pub(crate) fn start_with(
         }
         (planned, gui.app_for_workflow().worktree.clone())
     };
+    // A hook executes files from the PR checkout. Without a confirmed `origin`
+    // branch (fork PR, unreachable remote) that needs explicit approval, folded
+    // into `approved`. The probe is a bounded read of the remote, made without
+    // the GUI lock.
+    if planned.triage.hook.is_some() && !request.approved {
+        let (found, _) = probe_remote_branch(
+            &planned.ctx.source.workdir,
+            &planned.probe_head_ref,
+            &planned.ctx.identity.head_sha,
+        );
+        if found != Some(true) {
+            return Err(GuiError::needs_approval(hook_ack_message(
+                found,
+                &planned.probe_head_ref,
+            )));
+        }
+    }
     let state = Arc::new(OpState::new(guard.operation_id.clone()));
     track(&state);
     let operation_id = state.id.clone();
@@ -1003,9 +1065,10 @@ pub(crate) fn start_with(
         settings,
         hook_choice,
         plan: planned,
-        on_finish,
+        on_finish: on_finish.clone(),
     };
     let panic_state = state.clone();
+    let panic_finish = on_finish.clone();
     std::thread::Builder::new()
         .name("pr-companion-create".into())
         .spawn(move || {
@@ -1022,6 +1085,8 @@ pub(crate) fn start_with(
                         None => "Companion creation stopped unexpectedly. Check the worktree list for anything it left behind".into(),
                     },
                 );
+                // The job's own on_finish never ran; tell the UI anyway.
+                panic_finish();
             }
         })
         .map_err(|error| {
@@ -1201,29 +1266,35 @@ impl Job {
                 )),
                 Ok(()) => {
                     let app = gui.app_for_workflow();
-                    app.register_created_triage_companion(&triage, workdir.clone())
-                        .map(|created| {
-                            let revision = app
-                                .store
-                                .locate_feature_by_id(
-                                    Some(&created.project_id),
-                                    &created.feature_id,
-                                )
-                                .and_then(|(pi, fi)| {
-                                    let feature = &app.store.projects[pi].features[fi];
-                                    feature
-                                        .sessions
-                                        .iter()
-                                        .find(|s| s.id == created.session_id)
-                                        .map(|s| {
-                                            crate::gui_pr_workspace::destination_revision(
-                                                feature, s,
-                                            )
-                                        })
-                                });
-                            (created, revision)
-                        })
-                        .map_err(|error| error.to_string())
+                    if let Some(name) = existing_companion_for_head(app, &triage) {
+                        Err(format!(
+                            "A triage companion for this PR head ('{name}') was created while this one was being set up"
+                        ))
+                    } else {
+                        app.register_created_triage_companion(&triage, workdir.clone())
+                            .map(|created| {
+                                let revision = app
+                                    .store
+                                    .locate_feature_by_id(
+                                        Some(&created.project_id),
+                                        &created.feature_id,
+                                    )
+                                    .and_then(|(pi, fi)| {
+                                        let feature = &app.store.projects[pi].features[fi];
+                                        feature
+                                            .sessions
+                                            .iter()
+                                            .find(|s| s.id == created.session_id)
+                                            .map(|s| {
+                                                crate::gui_pr_workspace::destination_revision(
+                                                    feature, s,
+                                                )
+                                            })
+                                    });
+                                (created, revision)
+                            })
+                            .map_err(|error| error.to_string())
+                    }
                 }
             }
         };
@@ -1270,6 +1341,27 @@ impl Job {
         }
         state.finish(OperationState::Created, message);
     }
+}
+
+/// A companion already registered for the same (PR, source feature, base
+/// commit). `plan` checks this too, but two operations on different workflows
+/// can both pass `plan` before either registers, so the registration repeats it
+/// under the same lock hold that registers.
+fn existing_companion_for_head(app: &App, triage: &TriageCompanionPlan) -> Option<String> {
+    let (pi, _) = app
+        .store
+        .locate_feature_by_id(Some(&triage.project_id), &triage.source_feature_id)?;
+    app.store.projects[pi]
+        .features
+        .iter()
+        .find(|feature| {
+            feature.triage_source.as_ref().is_some_and(|link| {
+                link.pr_number == triage.pr_number
+                    && link.source_feature_id == triage.source_feature_id
+                    && link.base_sha.eq_ignore_ascii_case(&triage.base_sha)
+            })
+        })
+        .map(|feature| feature.name.clone())
 }
 
 fn ensure_period(message: &str) -> String {

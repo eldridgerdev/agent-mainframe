@@ -112,12 +112,14 @@ use crate::worktree::WorktreeManager;
 
 pub use self::prompt_library::PromptExportTarget;
 pub use self::setup::load_config;
+pub use automation::FeatureCreateOptions;
 pub(crate) use automation::WorktreeHookChoiceError;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub(crate) use config_wizard::agent_toggles_to_allowed;
 pub(crate) use diff::context_level_label;
 pub use feature_setup::{FeatureSetupRow, FeatureSetupState};
+pub(crate) use issue_fixer::{ISSUE_PAGE_SIZE, issue_branch_name, issue_fix_prompt};
 pub use issue_fixer::{IssueBrowserState, IssueBrowserStatus};
 pub(crate) use resource_gate::{StartIntent, Started};
 pub(crate) use session_ops::session_kind_for_agent;

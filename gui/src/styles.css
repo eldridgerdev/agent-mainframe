@@ -1732,3 +1732,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .fork-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 12px 0 0; }
 .fork-facts dt { color: var(--text-muted, inherit); }
 .fork-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+
+/* GitHub issue browser */
+.issue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.issue-entry-title { font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.issue-entry-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.issue-excerpt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.issue-footnote { margin-right: auto; }
+.issue-preview h3 { margin: 0 0 6px; }
+.issue-body { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); font-family: inherit; font-size: 13px; }
+.issue-prompt { width: 100%; resize: vertical; }

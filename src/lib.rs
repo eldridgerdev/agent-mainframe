@@ -21,6 +21,7 @@ pub mod gui_diff;
 pub mod gui_dormancy;
 pub mod gui_fork;
 pub mod gui_harness_change;
+pub mod gui_issues;
 pub mod gui_learning;
 pub mod gui_plans;
 pub mod gui_pr_review;

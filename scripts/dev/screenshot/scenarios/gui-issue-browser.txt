@@ -1,0 +1,6 @@
+# Native GUI GitHub issue browser with isolated Git/SQLite/tmux and an offline `gh`.
+# The fixture `gh` refuses every GitHub write; the capture asserts none was attempted and no agent started.
+note:The empty isolated TUI confirms the screenshot harness is ready before native issue browser proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-issue-browser.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

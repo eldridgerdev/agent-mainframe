@@ -793,6 +793,33 @@ cover loading, discard protection, stale-save refusal and disabling detection
 through real Rust IPC. Reproduce with
 [`gui-dormancy-settings.txt`](../scripts/dev/screenshot/scenarios/gui-dormancy-settings.txt).
 
+### GitHub issues
+
+A git project's **Issues** button opens the TUI `g` issue browser. It lists the
+open issues of the project's one GitHub remote through `gh api` (reads only;
+pull requests are hidden), 25 per page with Previous/Next. Search and the label
+filter narrow the loaded page locally. Opening an issue previews it as plain
+text next to the TUI's labeled-section agent prompt, which is editable, and a
+suggested feature name (`fix-issue-<n>`) and branch (`issue/<n>-<title>`).
+
+Creating is a separate confirmation bound to the preview: the preview carries a
+digest of the repository, number, title, body, labels and `updated_at`, and
+creation re-reads the issue and refuses (with a **Reload issue** button) when it
+changed. A second feature for an issue that already has one needs an explicit
+switch. The feature is built by the shared feature-creation engine and is
+**created stopped**; "Start the agent now" goes through the resource gate and
+asks for approval over a limit, then opens the prompt as an unsent composer
+draft. There is no headless AI call here, so no pre-call notice applies.
+
+The GUI never writes to GitHub. Unlike the TUI, which comments on the issue,
+the feature records `comment_opt_out` so neither this window nor a later TUI
+start posts the "AMF created feature" comment. A missing or signed-out `gh`,
+a rate limit and being offline are each reported with their own reason and a
+Retry; credentials are redacted from every message. `gui-issue-browser.txt`
+drives the native window against an offline `gh` that logs every call and
+refuses writes, and asserts no write and no agent session. macOS validation
+remains open.
+
 ### PR Triage
 
 **PR Triage** on a Git feature lists the repository's open pull requests (or all

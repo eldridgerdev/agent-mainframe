@@ -95,6 +95,14 @@ fn automation_prompt_ready(kind: &SessionKind, screen: &str) -> bool {
     }
 }
 
+/// How [`App::create_feature_with_options`] differs from the automation
+/// default (feature name = branch, no issue).
+#[derive(Debug, Clone, Default)]
+pub struct FeatureCreateOptions {
+    pub feature_name: Option<String>,
+    pub issue_source: Option<crate::project::IssueSource>,
+}
+
 impl App {
     pub fn create_session_from_request(
         &mut self,
@@ -608,6 +616,17 @@ impl App {
         &mut self,
         request: &CreateFeatureRequest,
     ) -> Result<CreateFeatureResponse> {
+        self.create_feature_with_options(request, FeatureCreateOptions::default())
+    }
+
+    /// The shared engine behind [`Self::create_feature_from_request`]. The
+    /// GUI issue browser passes a feature name distinct from the branch and
+    /// the issue the feature fixes; everything else is the request's.
+    pub fn create_feature_with_options(
+        &mut self,
+        request: &CreateFeatureRequest,
+        options: FeatureCreateOptions,
+    ) -> Result<CreateFeatureResponse> {
         Self::validate_automation_prompt(request.initial_prompt.as_deref(), request.submit_prompt)?;
         if request.no_start && (request.initial_prompt.is_some() || request.submit_prompt) {
             bail!("initial_prompt and submit_prompt require starting the feature");
@@ -618,6 +637,14 @@ impl App {
 
         if request.branch.trim().is_empty() {
             bail!("Branch name cannot be empty");
+        }
+
+        let feature_name = options
+            .feature_name
+            .clone()
+            .unwrap_or_else(|| request.branch.clone());
+        if feature_name.trim().is_empty() {
+            bail!("Feature name cannot be empty");
         }
 
         let (
@@ -632,15 +659,15 @@ impl App {
                 .find_project(&request.project_name)
                 .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", request.project_name))?;
 
-            let normalized_branch = normalized_feature_name(&request.branch);
+            let normalized_name = normalized_feature_name(&feature_name);
             if project
                 .features
                 .iter()
-                .any(|f| normalized_feature_name(&f.name) == normalized_branch)
+                .any(|f| normalized_feature_name(&f.name) == normalized_name)
             {
                 bail!(
                     "Feature '{}' already exists in '{}'",
-                    request.branch,
+                    feature_name,
                     request.project_name
                 );
             }
@@ -733,12 +760,12 @@ impl App {
         };
 
         if request.dry_run {
-            let message = format!("Dry run: would create feature '{}'", request.branch);
+            let message = format!("Dry run: would create feature '{}'", feature_name);
             return Ok(CreateFeatureResponse::success(
                 request,
                 workdir,
                 use_worktree,
-                tmux_session_name(&request.project_name, &request.branch),
+                tmux_session_name(&request.project_name, &feature_name),
                 false,
                 hook_ran,
                 hook_succeeded,
@@ -794,7 +821,7 @@ impl App {
 
         let feature = Feature::new_for_project(
             &request.project_name,
-            request.branch.clone(),
+            feature_name.clone(),
             existing_worktree
                 .as_ref()
                 .and_then(|info| info.branch.clone())
@@ -809,6 +836,7 @@ impl App {
             false, // remote_control not supported via automation API yet
         );
         let mut feature = feature;
+        feature.issue_source = options.issue_source.clone();
         Self::initialize_feature_sessions(&mut feature, request.create_terminal, None);
 
         self.store.add_feature(&request.project_name, feature);
@@ -834,7 +862,7 @@ impl App {
         // No caller to answer a confirmation dialog here, so a tripped gate
         // creates the feature and leaves it stopped; `started: false` in the
         // response says so.
-        let started = !request.no_start && self.autostart_allowed(&request.branch);
+        let started = !request.no_start && self.autostart_allowed(&feature_name);
         if started {
             self.ensure_feature_running(pi, fi, StartIntent::Approved)?;
             if let Some(id) = self.store.projects[pi].features[fi]
@@ -856,29 +884,29 @@ impl App {
             (false, _) if request.no_start => {
                 format!(
                     "Created feature '{}' without starting sessions",
-                    request.branch
+                    feature_name
                 )
             }
             (false, _) => format!(
                 "Created feature '{}' but did not start it: the machine is at its agent/memory limit",
-                request.branch
+                feature_name
             ),
             (true, Some(true)) => format!(
                 "Created and started feature '{}' (hook succeeded)",
-                request.branch
+                feature_name
             ),
             (true, Some(false)) => format!(
                 "Created and started feature '{}' (hook failed)",
-                request.branch
+                feature_name
             ),
-            (true, None) => format!("Created and started feature '{}'", request.branch),
+            (true, None) => format!("Created and started feature '{}'", feature_name),
         };
 
         Ok(CreateFeatureResponse::success(
             request,
             final_workdir,
             use_worktree,
-            tmux_session_name(&request.project_name, &request.branch),
+            tmux_session_name(&request.project_name, &feature_name),
             started,
             hook_ran,
             hook_succeeded,

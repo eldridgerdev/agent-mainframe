@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **PR fix destinations now show this PR's triage companion.** Beside the fix-agent
+  picker, a read-only *Destinations* list shows the sessions in this feature and in
+  the PR's existing triage companion (matched on PR number and source feature), with
+  its branch, folder, running state and how many commits it is ahead of its recorded
+  base. A banner offers *Integrate PR #N fixes...*, which opens the existing
+  integration dialog. A count Git cannot prove reads "unavailable", never zero. Nothing is
+  created, started or sent from the list; a running companion session is preselected on
+  reopen but you still choose to prepare or send.
 - **Review comments can be written on the PR Workspace Files tab.** The Files tab
   is now the same diff you read: click a line (Shift-click for a range inside one
   hunk) to comment, add a severity or suggest a replacement, and resolve threads.

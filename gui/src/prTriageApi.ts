@@ -151,3 +151,19 @@ export function prTriageSnapshot(workflowId: string): Promise<PrTriageView> {
 export function prTriageAct(view: PrTriageView, action: PrTriageAction): Promise<PrTriageView | null> {
   return invoke("pr_triage_act", { workflowId: view.workflow_id, revision: view.revision, action });
 }
+
+/** Read-only destination catalog (`pr_destination_catalog`): the opened feature
+ * and the verified triage companion(s) of one PR. Nothing in it creates,
+ * starts or sends anything. */
+export interface DestinationCompanionFacts { pr_branch: string; base_sha: string; commits_ahead: number | null; commits_ahead_error: string | null }
+export interface DestinationFeature {
+  kind: FixDestinationKind;
+  target: { project_id: string; feature_id: string };
+  name: string; branch: string; workdir: string; running: boolean;
+  blocked: string | null;
+  sessions: PrFixTarget[];
+  companion: DestinationCompanionFacts | null;
+}
+export interface DestinationCatalog { pr_number: number; opened: DestinationFeature; companions: DestinationFeature[] }
+export const prDestinationCatalog = (target: { project_id: string; feature_id: string }, prNumber: number) =>
+  invoke<DestinationCatalog>("pr_destination_catalog", { request: { target, pr_number: prNumber } });

@@ -979,8 +979,24 @@ pub fn fix_targets(
         .as_ref()
         .map(|pr| pr.number)
         .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
-    Ok(
-        destination_features(app, &target.project_id, &target.feature_id, pr_number)
+    Ok(fix_target_rows(
+        app,
+        &target.project_id,
+        &target.feature_id,
+        pr_number,
+    ))
+}
+
+/// Agent-session rows of the opened feature and its verified companions of
+/// this PR. A feature sharing its tmux session with another contributes none.
+pub(crate) fn fix_target_rows(
+    app: &App,
+    project_id: &str,
+    opened_feature_id: &str,
+    pr_number: u32,
+) -> Vec<crate::gui_pr_triage::PrFixTargetView> {
+    {
+        destination_features(app, project_id, opened_feature_id, pr_number)
             .into_iter()
             .filter(|(_, feature)| {
                 // Same guard as validate_fix: a shared tmux session is never a target.
@@ -1009,7 +1025,7 @@ pub fn fix_targets(
             .map(
                 |(kind, feature, session, harness)| crate::gui_pr_triage::PrFixTargetView {
                     target: crate::gui_contract::SessionTarget {
-                        project_id: target.project_id.clone(),
+                        project_id: project_id.to_string(),
                         feature_id: feature.id.clone(),
                         session_id: session.id.clone(),
                     },
@@ -1025,8 +1041,8 @@ pub fn fix_targets(
                     feature_name: feature.name.clone(),
                 },
             )
-            .collect(),
-    )
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

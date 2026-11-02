@@ -488,3 +488,23 @@ it("never falls back to the first row: without a companion nothing is chosen and
   expect(picker.value).toBe("");
   expect((screen.getByRole("button", { name: "Prepare fix…" }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+it("shows the destination catalog: the companion row preselects, choosing it feeds Prepare fix, and Integrate is offered", async () => {
+  backend({ ...review, fix_targets: companionRows }, () => review);
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  const companionFeature = {
+    kind: "companion" as const, target: { project_id: target.project_id, feature_id: "triage-feature" }, name: "fix-triage", branch: "fix-triage-branch",
+    workdir: "/w/fix-triage", running: true, blocked: null, sessions: [companionRows[companionRows.length - 1]],
+    companion: { pr_branch: "feature", base_sha: "a".repeat(40), commits_ahead: 3, commits_ahead_error: null },
+  };
+  vi.mocked(invoke).mockImplementation(async (command, args, options) => command === "pr_destination_catalog"
+    ? { pr_number: (args as { request: { pr_number: number } }).request.pr_number, opened: { ...companionFeature, kind: "opened_feature", name: "main", target, sessions: fixTargets, companion: null }, companions: [companionFeature] }
+    : original(command, args, options));
+  render(<PrTriagePanel target={target} onClose={vi.fn()} onHandoff={vi.fn()} />);
+  const picker = await screen.findByRole("combobox", { name: "Fix agent" }) as HTMLSelectElement;
+  expect(picker.value).toBe("triage-claude");
+  expect(await screen.findByText(/Triage feature fix-triage \(3 commits ahead\)/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /Integrate PR #\d+ fixes…/ })).toBeTruthy();
+  expect((await screen.findByRole("button", { name: "Selected" })).getAttribute("aria-pressed")).toBe("true");
+  expect(actions().filter(({ action }) => action.kind.startsWith("start_"))).toHaveLength(0);
+});

@@ -285,11 +285,11 @@ fn commits_ahead_with(read: &AheadRead, between: impl FnOnce()) -> Result<AheadF
     })
 }
 
-fn git(path: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(path: &Path, args: &[&str]) -> Result<String, String> {
     git_limited(path, args, Duration::from_secs(10), 65_536)
 }
 
-fn git_limited(
+pub(crate) fn git_limited(
     path: &Path,
     args: &[&str],
     timeout: Duration,

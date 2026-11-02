@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Create a triage companion feature for a PR from the desktop app.** *New triage
+  feature...* in the PR fix destination list opens a separate form: a new branch
+  and worktree started from the PR's head commit, linked to the PR and its source
+  feature, with its own harness, mode and setup hook. A read-only preview names
+  the branch, checkout path, base commit, whether the PR branch exists on the remote
+  and the exact hook that will run. Creating is a cancellable background operation
+  that fetches the PR head if it is missing, never resets or reuses an existing
+  branch, keeps the checkout (and names its path) if anything fails, and leaves the
+  new agent stopped: nothing is started, pushed or posted to GitHub.
 - **PR fix destinations now show this PR's triage companion.** Beside the fix-agent
   picker, a read-only *Destinations* list shows the sessions in this feature and in
   the PR's existing triage companion (matched on PR number and source feature), with

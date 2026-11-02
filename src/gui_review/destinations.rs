@@ -331,7 +331,7 @@ fn target_revision(
     Ok((revision, bound, row))
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct CompanionSettings {
     pub branch: String,
     pub agent: AgentKind,

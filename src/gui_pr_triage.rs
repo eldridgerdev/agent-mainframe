@@ -882,6 +882,15 @@ pub(crate) fn destination_binding(
     ))
 }
 
+/// The open PR's head branch name, for companion creation. Empty for a cached
+/// PR row that predates `head_ref`.
+pub(crate) fn destination_head_ref(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<String> {
+    check_workflow(gui, workflow_id)?;
+    let state = review_state(&gui.app_for_workflow().mode)
+        .ok_or_else(|| GuiError::conflict("Open a pull request first"))?;
+    Ok(state.review.pr.head_ref.trim().to_string())
+}
+
 pub fn plan_poll(gui: &mut GuiHandle, workflow_id: &str) -> GuiResult<PrTriageReads> {
     check_workflow(gui, workflow_id)?;
     Ok(poll_reads(gui))

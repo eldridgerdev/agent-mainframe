@@ -1095,6 +1095,17 @@ pub(crate) fn destination_binding(
     Ok((context.target.clone(), pr.number, pr.head_sha, revision))
 }
 
+/// The open PR's head branch name, for companion creation.
+pub(crate) fn destination_head_ref(gui: &mut GuiHandle, id: &str) -> GuiResult<String> {
+    check(gui, id)?;
+    let (_, workspace) = gui.app_and_pr_workspace();
+    let pr = workspace
+        .as_ref()
+        .and_then(|context| context.pr.as_ref())
+        .ok_or_else(|| GuiError::conflict("Select a PR first"))?;
+    Ok(pr.head_ref.trim().to_string())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct FixHandoffRequest {
     pub workflow_id: String,

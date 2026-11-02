@@ -46,7 +46,7 @@ pub enum PrDestinationWorkflow {
 }
 
 impl PrDestinationWorkflow {
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         match self {
             Self::Triage { workflow_id } => format!("triage:{workflow_id}"),
             Self::Workspace { workflow_id } => format!("workspace:{workflow_id}"),
@@ -63,7 +63,7 @@ pub struct PrIdentity {
     pub set_digest: Option<String>,
 }
 
-/// The destination being created. Companion creation (T7.5) adds a variant.
+/// The destination being created.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PrDestinationChoice {
@@ -71,6 +71,13 @@ pub enum PrDestinationChoice {
         agent: AgentKind,
         /// Custom session name; `None` or blank is the default "PR Triage".
         name: Option<String>,
+    },
+    /// A new triage companion feature seeded from the PR head (see
+    /// `gui_companion_creation`). Created stopped, by a background operation.
+    CompanionFeature {
+        settings: crate::gui_review::destinations::CompanionSettings,
+        /// The answer to the `on_worktree_created` hook's prompt, if it has one.
+        hook_choice: Option<String>,
     },
 }
 
@@ -92,7 +99,7 @@ pub struct PrDestinationPrepareRequest {
     pub approved: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DedicatedAgent {
     pub agent: AgentKind,
     pub label: String,
@@ -123,6 +130,9 @@ pub struct PrDestinationPreview {
     pub stopped: bool,
     pub resource_warning: Option<String>,
     pub consequences: Vec<String>,
+    /// Present for a companion feature choice only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub companion: Option<crate::gui_companion_creation::CompanionPreview>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -132,6 +142,8 @@ pub enum PrepareStatus {
     Reused,
     /// Another prepare for this workflow is running; nothing new was started.
     InProgress,
+    /// A background operation was started; poll `pr_destination_status`.
+    Started,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -145,11 +157,11 @@ pub struct PrDestinationPrepared {
     pub message: String,
 }
 
-fn conflict(message: impl Into<String>) -> GuiError {
+pub(crate) fn conflict(message: impl Into<String>) -> GuiError {
     GuiError::conflict(message)
 }
 
-fn digest(value: &impl Serialize) -> String {
+pub(crate) fn digest(value: &impl Serialize) -> String {
     format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(value).expect("serializable revision"))
@@ -163,7 +175,7 @@ struct Bound {
     feature: Feature,
 }
 
-fn current_identity(
+pub(crate) fn current_identity(
     gui: &mut GuiHandle,
     workflow: &PrDestinationWorkflow,
 ) -> GuiResult<(FeatureTarget, PrIdentity)> {
@@ -226,8 +238,7 @@ fn bind(gui: &mut GuiHandle, workflow: &PrDestinationWorkflow) -> GuiResult<Boun
 }
 
 /// The caller's echoed identity must equal the live one.
-fn check_identity(bound: &Bound, echoed: &PrIdentity) -> GuiResult<()> {
-    let live = &bound.identity;
+pub(crate) fn check_identity(live: &PrIdentity, echoed: &PrIdentity) -> GuiResult<()> {
     if echoed.pr_number != live.pr_number {
         return Err(conflict(format!(
             "The open PR changed from #{} to #{}; reopen this form",
@@ -371,8 +382,12 @@ struct Plan {
 /// state the rest of the plan sees rather than before the lock.
 fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> {
     let bound = bind(gui, &request.workflow)?;
-    check_identity(&bound, &request.identity)?;
-    let PrDestinationChoice::DedicatedSession { agent, name } = &request.choice;
+    check_identity(&bound.identity, &request.identity)?;
+    let PrDestinationChoice::DedicatedSession { agent, name } = &request.choice else {
+        return Err(conflict(
+            "A companion feature is created by its own background operation, not as a session",
+        ));
+    };
     let label = clean_label(name)?;
     if let Some(reason) = agent_unavailable(gui, &bound, agent) {
         return Err(conflict(reason));
@@ -475,6 +490,7 @@ fn plan(gui: &mut GuiHandle, request: &PrDestinationRequest) -> GuiResult<Plan> 
         stopped,
         resource_warning,
         consequences,
+        companion: None,
     };
     Ok(Plan {
         preview,
@@ -490,6 +506,9 @@ pub fn preview(
     gui: &mut GuiHandle,
     request: &PrDestinationRequest,
 ) -> GuiResult<PrDestinationPreview> {
+    if matches!(request.choice, PrDestinationChoice::CompanionFeature { .. }) {
+        return crate::gui_companion_creation::preview_read(gui, request).map(|read| read.run());
+    }
     plan(gui, request).map(|plan| plan.preview)
 }
 
@@ -499,6 +518,11 @@ pub fn prepare(
     request: PrDestinationPrepareRequest,
     operation_id: &str,
 ) -> GuiResult<PrDestinationPrepared> {
+    if matches!(request.choice, PrDestinationChoice::CompanionFeature { .. }) {
+        return Err(conflict(
+            "A companion feature is created by a background operation; start it with the companion creation command",
+        ));
+    }
     let plain = PrDestinationRequest {
         workflow: request.workflow.clone(),
         identity: request.identity.clone(),

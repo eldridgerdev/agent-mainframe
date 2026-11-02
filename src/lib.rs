@@ -40,6 +40,7 @@ pub mod gui_prompts;
 pub mod gui_review;
 pub mod gui_sessions;
 pub mod gui_settings;
+pub mod gui_steering;
 pub mod gui_supervised_edits;
 pub mod gui_syntax;
 pub mod gui_terminal;

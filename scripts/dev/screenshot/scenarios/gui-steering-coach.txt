@@ -1,0 +1,5 @@
+# Native steering coach: creation checkbox, composer advisory checklist, stale-after-edit and re-check; local analysis only, no harness is called and nothing is sent.
+note:The isolated TUI is ready before native steering-coach validation.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_PORT=1442 TAURI_CONFIG='{ "build": { "devUrl": "http://localhost:1442" } }' AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-steering-coach.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

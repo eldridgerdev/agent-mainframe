@@ -814,6 +814,19 @@ fn create_project(
     Ok(response)
 }
 
+/// The steering coach checklist for a draft prompt. Pure and local (no
+/// harness call, no GUI mutex); the digest binds the result to the text. It
+/// runs on a blocking thread so scanning a large draft never stalls the UI.
+#[tauri::command]
+async fn steering_analyze(
+    text: String,
+) -> Result<agent_mainframe::gui_steering::SteeringAnalysisView, GuiError> {
+    tauri::async_runtime::spawn_blocking(move || agent_mainframe::gui_steering::analyze(&text))
+        .await
+        .map_err(|e| GuiError::from(anyhow::anyhow!("The steering check stopped: {e}")))?
+        .map_err(|message| GuiError::from(anyhow::anyhow!(message)))
+}
+
 #[tauri::command]
 fn create_feature(
     app: tauri::AppHandle,
@@ -2845,6 +2858,7 @@ fn main() {
             get_snapshot,
             set_collapsed,
             create_project,
+            steering_analyze,
             create_feature,
             worktree_hook_prompt,
             start_feature,

@@ -88,6 +88,7 @@ import { useCreationHarness } from "./useCreationHarness";
 import CreationHarnessField from "./CreationHarnessField";
 import DormancyPanel from "./DormancyPanel";
 import BookmarksPanel from "./BookmarksPanel";
+import NeedsAttentionPanel, { NEEDS_ATTENTION_KEY, loadNeedsAttention } from "./NeedsAttentionPanel";
 import FeaturePresetsPanel from "./FeaturePresetsPanel";
 import DebugLogPanel from "./DebugLogPanel";
 import SyntaxLanguagesPanel from "./SyntaxLanguagesPanel";
@@ -253,6 +254,9 @@ export default function App() {
   const [projectPreference, setProjectPreference] = useState<string | null>(null);
   const [showDormancy, setShowDormancy] = useState(false);
   const [showBookmarks, setShowBookmarks] = useState(false);
+  const [showAttention, setShowAttention] = useState(false);
+  const attention = useQuery({ queryKey: NEEDS_ATTENTION_KEY, queryFn: loadNeedsAttention, retry: false, refetchInterval: 3000 });
+  const attentionCount = attention.data?.rows?.length ?? 0;
   const [showDebugLog, setShowDebugLog] = useState(false);
   const [harnessTarget, setHarnessTarget] = useState<FeatureTarget | null>(null);
   const [harnessEpochs, setHarnessEpochs] = useState<Record<string, number>>({});
@@ -578,7 +582,7 @@ export default function App() {
     }
   }
 
-  async function openBookmarkedSession(target: SessionTarget) {
+  async function openBookmarkedSession(target: SessionTarget, what = "Bookmarked session") {
     // The bookmark resolver can see TUI writes before our workspace poll.
     // Cancel an older poll, then publish a fresh authoritative snapshot before
     // navigating or choosing the synthetic TODOs tab.
@@ -588,7 +592,7 @@ export default function App() {
     });
     const session = fresh.projects.find(project => project.id === target.project_id)?.features
       .find(feature => feature.id === target.feature_id)?.sessions.find(session => session.id === target.session_id);
-    if (!session) throw new Error("Bookmarked session no longer exists. Refresh bookmarks and try again.");
+    if (!session) throw new Error(`${what} no longer exists. Refresh and try again.`);
     openSession(target);
     if (session.kind === "todos") setTabByFeature(current => ({ ...current, [target.feature_id]: TODOS_TAB }));
   }
@@ -1286,6 +1290,11 @@ export default function App() {
 
         <nav className="nav" aria-label="Workspace">
           {reviewDeferral && <p role="status" className="muted small pad">Edits are waiting. {reviewDeferral}</p>}
+          <button className="nav-item" onClick={() => setShowAttention(true)}>
+            <Icon name="inbox" />
+            <span className="nav-label">Needs attention</span>
+            {attentionCount > 0 && <span className="nav-count nav-count-attention" title="Requests waiting on disk">{attentionCount}</span>}
+          </button>
           <button
             className={view?.kind === "todos" ? "nav-item nav-item-active" : "nav-item"}
             onClick={() => setView({ kind: "todos" })}
@@ -1487,6 +1496,7 @@ export default function App() {
           setShowDormancy(false);
           setView({ kind: "feature", projectId: target.project_id, featureId: target.feature_id });
         }} />}
+      {showAttention && <NeedsAttentionPanel onJump={(target) => openBookmarkedSession(target, "That session")} onClose={() => setShowAttention(false)} />}
       {showBookmarks && <BookmarksPanel projects={projects} onOpen={openBookmarkedSession} onClose={() => setShowBookmarks(false)} />}
       {showDebugLog && <DebugLogPanel onClose={() => setShowDebugLog(false)} />}
       {screenshotTarget && <ScreenshotsPanel target={screenshotTarget.target} sessionId={screenshotTarget.sessionId} onClose={() => setScreenshotTarget(null)} />}

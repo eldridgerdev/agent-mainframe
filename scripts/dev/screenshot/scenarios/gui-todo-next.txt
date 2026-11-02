@@ -1,0 +1,6 @@
+# Native GUI implement-next and quick-capture proof uses private SQLite, Git worktrees and tmux sessions.
+# No paid harness is launched: the proof stops at the Start dialog and asserts nothing was reserved.
+note:The empty isolated TUI confirms the screenshot harness is ready before native implement-next proof begins.
+expect:0 projects, 0 features
+shot:gui-capture-ready
+run:env AMF_GUI_CAPTURE_RUNNER="$SCRIPT_DIR/capture-gui-todo-next.py" bash "$SCRIPT_DIR/capture-gui-diff.sh" "$OUT_DIR"

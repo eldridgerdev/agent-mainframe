@@ -135,7 +135,7 @@ export function setCollapsed(target: CollapseTarget, collapsed: boolean): Promis
   return invoke("set_collapsed", { target, collapsed });
 }
 
-export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "internal";
+export type GuiErrorKind = "not_found" | "conflict" | "needs_approval" | "invalid_input" | "internal";
 
 export interface GuiError {
   kind: GuiErrorKind;
@@ -477,6 +477,104 @@ export function todoAdd(
   });
 }
 
+export interface TodoFields {
+  title: string;
+  body: string | null;
+  priority: TodoPriority;
+}
+
+export type TodoEditOutcome =
+  | { outcome: "saved"; todo: Todo }
+  /** Changed (or moved lists) since the editor opened; nothing was written. */
+  | { outcome: "conflict"; current: Todo }
+  | { outcome: "gone" };
+
+/** `base` is what the editor opened with; the save lands only if the TODO
+ * still holds it, so a stale editor never silently overwrites a newer edit. */
+export function todoUpdate(
+  todo: Pick<Todo, "id" | "list_id">,
+  base: TodoFields,
+  fields: TodoFields,
+): Promise<TodoEditOutcome> {
+  return invoke("todo_update", {
+    request: { list_id: todo.list_id, todo_id: todo.id, base, fields },
+  });
+}
+
+export type ScratchpadOutcome =
+  | { outcome: "saved"; list_id: string | null; carry_over: string | null }
+  | { outcome: "conflict"; list_id: string | null; current: string | null }
+  | { outcome: "gone" };
+
+export function todoUpdateScratchpad(args: {
+  scope: TodoScopeRequest;
+  hostFeatureId?: string;
+  listId: string | null;
+  base: string | null;
+  text: string | null;
+}): Promise<ScratchpadOutcome> {
+  return invoke("todo_update_scratchpad", {
+    request: {
+      scope: args.scope,
+      host_feature_id: args.hostFeatureId ?? null,
+      list_id: args.listId,
+      base: args.base,
+      text: args.text,
+    },
+  });
+}
+
+/** Where a TODO's existing work lives (linked feature first, then session). */
+export type TodoWorkTarget =
+  | { kind: "session"; target: SessionTarget }
+  | { kind: "feature"; target: FeatureTarget }
+  | { kind: "none"; message: string };
+
+export interface NextTodoRequest {
+  project_id: string | null;
+  feature_id: string | null;
+  include_project: boolean;
+  include_global: boolean;
+  skipped_ids: string[];
+}
+
+export interface NextTodoCandidate {
+  todo: Todo;
+  scope_kind: "worktree" | "project" | "global";
+  scope_label: string;
+  /** The feature owning a worktree TODO's checkout; others have no host. */
+  host: FeatureTarget | null;
+}
+
+/** What "implement next" would pick. A preview: nothing is reserved or launched. */
+export type NextTodoPreview =
+  | { outcome: "ready"; candidate: NextTodoCandidate }
+  /** Best remaining candidate already links work; ask before acting. */
+  | { outcome: "started"; candidate: NextTodoCandidate; reason: string }
+  | { outcome: "empty"; message: string };
+
+export function todoNextPreview(request: NextTodoRequest): Promise<NextTodoPreview> {
+  return invoke("todo_next_preview", { request });
+}
+
+export interface QuickCaptureResponse {
+  todo: Todo;
+  scope_label: string;
+}
+
+/** The list a quick capture from this feature appends to, named for the user. */
+export function todoQuickCaptureTarget(target: FeatureTarget): Promise<string> {
+  return invoke("todo_quick_capture_target", { target });
+}
+
+export function todoQuickCapture(target: FeatureTarget, title: string): Promise<QuickCaptureResponse> {
+  return invoke("todo_quick_capture", { target, title });
+}
+
+export function todoWorkTarget(todoId: string): Promise<TodoWorkTarget> {
+  return invoke("todo_work_target", { todoId });
+}
+
 export function todoSetStatus(todoId: string, status: TodoStatus): Promise<void> {
   return invoke("todo_set_status", { todoId, status });
 }
@@ -718,6 +816,11 @@ export interface DiffLine {
   new_line: number | null;
   /** Token spans covering `text` (prefix included); absent or null is plain. */
   syntax?: SyntaxSpan[] | null;
+  /**
+   * Word-level changed runs of a paired removed/added line: `[start, end)` in
+   * UTF-16 code units of `text` (prefix included). Absent means line-level only.
+   */
+  emphasis?: [number, number][];
 }
 export interface DiffHunk { header: string; lines: DiffLine[] }
 export interface DiffFile {

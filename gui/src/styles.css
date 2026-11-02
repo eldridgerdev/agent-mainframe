@@ -899,6 +899,13 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .todo-completed .todo-check { border-color: var(--green); background: var(--green); color: var(--success-fg); }
 .todo-main { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; padding: 5px 0; }
 .todo-title { overflow-wrap: anywhere; }
+.todo-body { flex-basis: 100%; margin: 0; color: var(--text-muted); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.todo-scratchpad { padding: 4px 16px 8px; display: flex; flex-direction: column; gap: 2px; }
+.todo-scratchpad-head { display: flex; align-items: center; justify-content: space-between; }
+.todo-scratchpad .todo-body { -webkit-line-clamp: 4; }
+.todo-notes { white-space: pre-wrap; overflow-wrap: anywhere; }
+.todo-notes-input { height: auto; padding: 8px 10px; resize: vertical; }
 .todo-completed .todo-title { color: var(--text-faint); text-decoration: line-through; }
 .todo-meta { display: inline-flex; gap: 4px; flex-shrink: 0; }
 .todo-actions { display: flex; align-items: center; gap: 4px; opacity: 0; transition: opacity 0.1s; }
@@ -1349,6 +1356,11 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .diff-added { background: rgba(46, 160, 67, .16); }
 .diff-removed { background: rgba(248, 81, 73, .16); }
 .diff-marker { color: var(--text-muted); font-style: italic; }
+/* Word-level changes: a stronger fill plus an underline (solid for added, dashed for removed), so the cue is not colour alone. */
+.diff-word { color: inherit; padding: 0; border-radius: 2px; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.diff-word-added { background: color-mix(in srgb, var(--green) 32%, transparent); text-decoration-line: underline; text-decoration-style: solid; }
+.diff-word-removed { background: color-mix(in srgb, var(--red) 32%, transparent); text-decoration-line: underline; text-decoration-style: dashed; }
+@media (forced-colors: active) { .diff-word { background: Mark; color: MarkText; } }
 @media (max-width: 680px) { .diff-reader { grid-template-columns: 1fr; } .diff-files { max-height: 120px; border-bottom: 1px solid var(--border); } }
 .diff-metadata { padding: 6px 8px; font-size: 12px; }
 .diff-metadata summary { cursor: pointer; color: var(--text-muted); }
@@ -1738,3 +1750,9 @@ button.nav-item:hover, div.nav-item:hover { background: var(--surface-3); color:
 .feature-actions p { margin: 0; }
 .feature-actions [role="group"] { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; }
 .feature-actions [role="group"] .row { width: auto; }
+
+.todo-header-actions { display: flex; align-items: center; gap: 8px; }
+.todo-next-scopes { display: flex; flex-direction: column; gap: 4px; }
+.todo-next-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 4px; }
+.todo-next-card p { margin: 0; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }

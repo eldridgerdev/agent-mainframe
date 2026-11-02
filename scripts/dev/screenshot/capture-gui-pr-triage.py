@@ -261,6 +261,8 @@ export function formatTotal(total: number): string {
                 base_sha = "0" * 40
                 if destinations_proof:
                     base_sha = git("rev-parse", "round-invoice-totals")
+                    # A companion is only offered for the PR head it was created from.
+                    (gh_state / "head.txt").write_text(base_sha + "\n")
                     companion_workdir = scratch / "invoice-fixes"
                     git("worktree", "add", "-b", "invoice-fixes", str(companion_workdir), base_sha)
                     for index in range(2):

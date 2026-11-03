@@ -293,12 +293,21 @@ struct KeyGroup {
     label: &'static str,
     color: ratatui::style::Color,
     hints: Vec<(&'static str, &'static str)>,
+    /// A dim row under the badges, for a condition the keys depend on.
+    note: Option<&'static str>,
 }
 
 /// The review keys that apply to the Files tab right now, grouped by what
 /// they act on. Line-cursor keys only appear while the cursor is on, because
-/// only then do `Enter`, `S` and `v` act on a line.
-fn review_key_groups(state: &crate::app::DiffViewerState, theme: &Theme) -> Vec<KeyGroup> {
+/// only then do `Enter`, `S` and `v` act on a line. Even then they act only
+/// from the code pane (`code_focused`): the review pane routes `j`/`k` to its
+/// own scroll and skips the cursor bindings, and the navigator keeps `Enter`
+/// for focusing the code, so elsewhere the group says where to go first.
+fn review_key_groups(
+    state: &crate::app::DiffViewerState,
+    code_focused: bool,
+    theme: &Theme,
+) -> Vec<KeyGroup> {
     let mut groups = Vec::new();
     if state.comment_cursor.is_some() {
         groups.push(KeyGroup {
@@ -318,11 +327,13 @@ fn review_key_groups(state: &crate::app::DiffViewerState, theme: &Theme) -> Vec<
                 ("R", "resolve"),
                 ("c", "exit cursor"),
             ],
+            note: (!code_focused).then_some("focus the code pane to use these"),
         });
         groups.push(KeyGroup {
             label: "Comment",
             color: theme.info.to_color(),
             hints: vec![("m", "file comment"), ("f", "review summary")],
+            note: None,
         });
     } else {
         groups.push(KeyGroup {
@@ -333,17 +344,20 @@ fn review_key_groups(state: &crate::app::DiffViewerState, theme: &Theme) -> Vec<
                 ("m", "file comment"),
                 ("f", "review summary"),
             ],
+            note: None,
         });
     }
     groups.push(KeyGroup {
         label: "Verdict",
         color: theme.success.to_color(),
         hints: vec![("a", "approve"), ("r", "request changes"), ("s", "skip")],
+        note: None,
     });
     groups.push(KeyGroup {
         label: "Submit",
         color: theme.primary.to_color(),
         hints: vec![("p", "preview and submit")],
+        note: None,
     });
     groups
 }
@@ -385,6 +399,12 @@ fn key_group_lines(groups: &[KeyGroup], width: usize, theme: &Theme) -> Vec<Line
             first_on_row = false;
         }
         lines.push(Line::from(spans));
+        if let Some(note) = group.note {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(LABEL_WIDTH)),
+                Span::styled(note, muted),
+            ]));
+        }
     }
     lines
 }
@@ -607,6 +627,7 @@ fn draw_pane(
     ai_running: bool,
 ) {
     let tab = workspace.tab;
+    let code_focused = workspace.focus == WorkspacePane::Diff;
     if pane == WorkspacePane::Diff {
         if let Some(message) = &workspace.anchor_message {
             placeholder(frame, area, " Code context ", message, theme);
@@ -660,7 +681,7 @@ fn draw_pane(
             if pane == WorkspacePane::Navigator {
                 super::diff::draw_file_list(frame, area, files, theme);
             } else {
-                draw_manual_context(frame, area, files, theme);
+                draw_manual_context(frame, area, files, code_focused, theme);
             }
         }
         Some(AppMode::PrReview(state)) => {
@@ -702,6 +723,7 @@ fn draw_manual_context(
     frame: &mut Frame,
     area: Rect,
     state: &mut crate::app::DiffViewerState,
+    code_focused: bool,
     theme: &Theme,
 ) {
     let Some(file) = state.files.get(state.selected_file) else {
@@ -776,7 +798,7 @@ fn draw_manual_context(
             .add_modifier(Modifier::BOLD),
     ));
     rendered.lines.extend(key_group_lines(
-        &review_key_groups(state, theme),
+        &review_key_groups(state, code_focused, theme),
         inner.width as usize,
         theme,
     ));
@@ -887,11 +909,13 @@ mod tests {
                 label: "Verdict",
                 color: theme.success.to_color(),
                 hints: vec![("a", "approve"), ("r", "request changes"), ("s", "skip")],
+                note: None,
             },
             KeyGroup {
                 label: "Submit",
                 color: theme.primary.to_color(),
                 hints: vec![("p", "preview and submit")],
+                note: None,
             },
         ]
     }
@@ -949,7 +973,7 @@ mod tests {
             std::path::PathBuf::from("unused"),
         );
         let keys = |state: &crate::app::DiffViewerState| -> Vec<&'static str> {
-            review_key_groups(state, &theme)
+            review_key_groups(state, true, &theme)
                 .into_iter()
                 .flat_map(|group| group.hints.into_iter().map(|(key, _)| key))
                 .collect()
@@ -960,5 +984,14 @@ mod tests {
         let on = keys(&state);
         assert!(on.contains(&"Enter") && on.contains(&"S"), "{on:?}");
         assert!(on.contains(&"p") && on.contains(&"a"), "{on:?}");
+        // The cursor keys are skipped outside the code pane, so the group
+        // says so there instead of advertising keys that do nothing.
+        let note = |code_focused: bool| {
+            review_key_groups(&state, code_focused, &theme)
+                .into_iter()
+                .find_map(|group| group.note)
+        };
+        assert_eq!(note(true), None);
+        assert!(note(false).is_some_and(|note| note.contains("code pane")));
     }
 }

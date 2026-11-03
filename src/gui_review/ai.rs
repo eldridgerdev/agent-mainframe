@@ -186,12 +186,19 @@ pub(super) fn fresh(s: &DiffViewerState) -> GuiResult<()> {
     current
         .files
         .retain(|file| !crate::app::review::is_review_bookkeeping_path(&file.path));
+    // Compare by path, not position: the open review orders AMF's own files
+    // after the reviewer's (`DiffViewerState::group_amf_files`), while a
+    // fresh snapshot is in plain path order.
+    fn by_path(files: &[crate::diff::DiffFile]) -> Vec<&crate::diff::DiffFile> {
+        let mut files: Vec<_> = files.iter().collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    }
     if current.base_commit != s.base_commit
         || current.files.len() != s.files.len()
-        || !current
-            .files
-            .iter()
-            .zip(&s.files)
+        || !by_path(&current.files)
+            .into_iter()
+            .zip(by_path(&s.files))
             .all(|(a, b)| same_file(a, b))
     {
         return Err(GuiError::conflict(

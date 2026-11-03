@@ -6,7 +6,7 @@
 use serde::Serialize;
 
 use super::*;
-use crate::app::review::{CheckOutcome, ReviewCheckRun, feedback_prompt_for_checkouts};
+use crate::app::review::{CheckOutcome, ReviewCheckRun, RoundTally, feedback_prompt_for_checkouts};
 use crate::gui_contract::SessionTarget;
 
 /// The agent session an actionable round's prompt goes to.
@@ -29,7 +29,12 @@ pub struct ReviewHandoffTarget {
 pub struct ReviewFinishView {
     pub approved: usize,
     pub needs_work: usize,
+    /// Every file with no verdict, AMF-generated ones included.
     pub skipped: usize,
+    /// How many of `skipped` are AMF-generated. While the interface keeps
+    /// those folded away it leaves them out of the skipped count, and the
+    /// completion it sends asks the round to do the same.
+    pub amf_skipped: usize,
     pub file_comments: usize,
     pub line_comments: usize,
     pub general_feedback: bool,
@@ -63,6 +68,7 @@ pub struct ReviewHandoff {
 /// A confirmed completion waiting for its configured check.
 pub(super) struct PendingCompletion {
     deliver: bool,
+    tally: RoundTally,
     handoff_session: Option<String>,
     handoff_revision: Option<String>,
 }
@@ -142,6 +148,7 @@ pub(super) fn preview(gui: &mut GuiHandle) -> Option<ReviewFinishView> {
         approved,
         needs_work,
         skipped: s.files.len() - approved - needs_work,
+        amf_skipped: s.undecided_counts().1,
         file_comments: s
             .files
             .iter()
@@ -190,7 +197,13 @@ pub(super) fn start(
     handoff_session: Option<String>,
     deliver: bool,
     handoff_revision: Option<String>,
+    amf_hidden: bool,
 ) -> GuiResult<Started> {
+    let tally = if amf_hidden {
+        RoundTally::ExcludeHiddenAmf
+    } else {
+        RoundTally::AllFiles
+    };
     let context = gui.review_context.as_ref().unwrap();
     if context.save_error.is_some() {
         return Err(GuiError::conflict(
@@ -263,7 +276,7 @@ pub(super) fn start(
         }
     }
     let Some(command) = check_command else {
-        return if finish(gui, None, deliver)? {
+        return if finish(gui, None, deliver, tally)? {
             Ok(Started::Completed)
         } else {
             Err(GuiError::conflict(
@@ -283,6 +296,7 @@ pub(super) fn start(
             context.check_run = Some(run);
             context.completion = Some(PendingCompletion {
                 deliver,
+                tally,
                 handoff_session,
                 handoff_revision,
             });
@@ -299,6 +313,7 @@ pub(super) fn start(
                     output: format!("failed to start: {e}"),
                 }),
                 deliver,
+                tally,
             )? {
                 return Err(GuiError::conflict(
                     "Could not save final review feedback; the review remains open",
@@ -336,14 +351,25 @@ pub(super) fn after_check(gui: &mut GuiHandle, outcome: CheckOutcome) -> GuiResu
         }
     }
     let pending = gui.review_context.as_mut().unwrap().completion.take();
-    finish(gui, Some(outcome), pending.is_some_and(|p| p.deliver))
+    let tally = pending.as_ref().map_or(RoundTally::AllFiles, |p| p.tally);
+    finish(
+        gui,
+        Some(outcome),
+        pending.is_some_and(|p| p.deliver),
+        tally,
+    )
 }
 
 /// Record the round with the shared engine, then hand an actionable round's
 /// prompt to the target when the reviewer chose to. Closes the review.
 /// `Ok(false)` means the round could not be saved; `Err` means the handoff
 /// destination could not be resolved, so nothing was attempted.
-fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> GuiResult<bool> {
+fn finish(
+    gui: &mut GuiHandle,
+    check: Option<CheckOutcome>,
+    deliver: bool,
+    tally: RoundTally,
+) -> GuiResult<bool> {
     let workflow_id = gui.review_context.as_ref().unwrap().id.clone();
     let handoff = if deliver {
         handoff(gui).map_err(|error| {
@@ -357,7 +383,7 @@ fn finish(gui: &mut GuiHandle, check: Option<CheckOutcome>, deliver: bool) -> Gu
     };
     let app = gui.app_for_workflow();
     app.message = None;
-    let dispatch = app.record_final_review_round(check);
+    let dispatch = app.record_final_review_round(check, tally);
     if matches!(app.mode, AppMode::DiffViewer(_)) {
         let message = app
             .message
@@ -486,6 +512,7 @@ mod tests {
             handoff_session: finish.handoff.as_ref().map(|h| h.session_id.clone()),
             handoff_revision: finish.handoff.as_ref().map(|h| h.revision.clone()),
             deliver,
+            amf_hidden: false,
         }
     }
     fn settle(gui: &mut GuiHandle, workflow_id: &str) -> Option<ReviewView> {
@@ -523,6 +550,127 @@ mod tests {
                 .unwrap()
                 .finish
                 .is_none()
+        );
+    }
+
+    /// A review whose only change of the user's (`code.txt`) is decided by
+    /// `decide`, beside an undecided AMF-generated file, with the summary open.
+    fn with_amf_file(
+        check: Option<&str>,
+        decide: ReviewAction,
+    ) -> (tempfile::TempDir, GuiHandle, ReviewView) {
+        let (dir, mut gui, target) = fixture();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".amf")).unwrap();
+        std::fs::write(repo.join(".amf/scratch.txt"), "generated\n").unwrap();
+        let app = gui.app_for_workflow();
+        app.config.final_review_submit_prompt = false;
+        app.config.extension.final_review_check_command = check.map(Into::into);
+        let view = begin(&mut gui, target).unwrap();
+        assert!(
+            view.files
+                .iter()
+                .any(|f| f.diff.path == ".amf/scratch.txt" && f.diff.amf_generated)
+        );
+        let view = open(&mut gui, &view, decide);
+        let view = open(&mut gui, &view, ReviewAction::SummaryOpen);
+        (dir, gui, view)
+    }
+    fn complete_hiding_amf(view: &ReviewView, amf_hidden: bool) -> ReviewAction {
+        let mut action = complete(view, false);
+        if let ReviewAction::Complete { amf_hidden: a, .. } = &mut action {
+            *a = amf_hidden;
+        }
+        action
+    }
+    fn approve_code() -> ReviewAction {
+        ReviewAction::Approve {
+            path: "code.txt".into(),
+        }
+    }
+
+    #[test]
+    fn preview_reports_how_many_undecided_files_are_amf_generated() {
+        let (_dir, _gui, view) = with_amf_file(None, approve_code());
+        let finish = view.finish.as_ref().unwrap();
+        assert_eq!(
+            (finish.approved, finish.skipped, finish.amf_skipped),
+            (1, 1, 1)
+        );
+        let summary = view.summary.as_ref().unwrap();
+        assert_eq!((summary.undecided, summary.amf_undecided), (1, 1));
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["finish"]["amf_skipped"], 1);
+        assert_eq!(json["summary"]["amf_undecided"], 1);
+    }
+
+    #[test]
+    fn hidden_amf_files_are_left_out_of_the_recorded_tally() {
+        let (dir, mut gui, view) = with_amf_file(None, approve_code());
+        assert!(
+            act(&mut gui, &view, complete_hiding_amf(&view, true))
+                .unwrap()
+                .is_none()
+        );
+        let round = feedback(&dir).unwrap();
+        assert!(
+            round.contains(
+                "**Files reviewed:** 1 | **Approved:** 1 | **Needs work:** 0 | **Skipped:** 0"
+            ),
+            "{round}"
+        );
+        let done = take_completion(&mut gui, &view.workflow_id).unwrap();
+        assert!(!done.message.contains("skipped"), "{}", done.message);
+        assert!(
+            done.message
+                .contains("1 AMF-generated file(s) hidden, not counted"),
+            "{}",
+            done.message
+        );
+    }
+
+    #[test]
+    fn shown_amf_files_still_count_as_skipped() {
+        let (dir, mut gui, view) = with_amf_file(None, approve_code());
+        act(&mut gui, &view, complete_hiding_amf(&view, false)).unwrap();
+        let round = feedback(&dir).unwrap();
+        assert!(
+            round.contains(
+                "**Files reviewed:** 2 | **Approved:** 1 | **Needs work:** 0 | **Skipped:** 1"
+            ),
+            "{round}"
+        );
+        let done = take_completion(&mut gui, &view.workflow_id).unwrap();
+        assert!(done.message.contains("1 skipped"), "{}", done.message);
+        assert!(!done.message.contains("hidden"), "{}", done.message);
+    }
+
+    #[test]
+    fn hidden_amf_exclusion_survives_the_completion_check() {
+        let (dir, mut gui, view) = with_amf_file(
+            Some("true"),
+            ReviewAction::Reject {
+                path: "code.txt".into(),
+                feedback: "Rename the crab".into(),
+                severity: Severity::Blocker,
+            },
+        );
+        let running = open(&mut gui, &view, complete_hiding_amf(&view, true));
+        assert!(running.finish.as_ref().unwrap().completing);
+        assert!(settle(&mut gui, &running.workflow_id).is_none());
+        let round = feedback(&dir).unwrap();
+        assert!(
+            round.contains(
+                "**Files reviewed:** 1 | **Approved:** 0 | **Needs work:** 1 | **Skipped:** 0"
+            ),
+            "{round}"
+        );
+        let done = take_completion(&mut gui, &view.workflow_id).unwrap();
+        assert!(done.message.contains("0 skipped"), "{}", done.message);
+        assert!(
+            done.message.contains("hidden, not counted"),
+            "{}",
+            done.message
         );
     }
 

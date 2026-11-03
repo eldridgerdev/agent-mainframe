@@ -563,7 +563,7 @@ it("polls a running project check without AI work and stops when its result arri
     workflow_id: "review-check", revision: 7, target: { project_id: "project", feature_id: "feature" },
     feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
     general_feedback: "", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
-    summary: { rows: [], undecided: 0, pending_suggestions: 0, failures: [] }, check_command: "cargo test",
+    summary: { rows: [], undecided: 0, amf_undecided: 0, pending_suggestions: 0, failures: [] }, check_command: "cargo test",
     check: { command: "cargo test", status: "running", output: "" },
     ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null,
       question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
@@ -591,8 +591,8 @@ const completionBase = {
   workflow_id: "review-done", revision: 3, target: { project_id: "project", feature_id: "feature" },
   feature_name: "my-feat", branch: "my-feat", base_ref: "main", files: [], selected_path: null,
   general_feedback: "Rename it", has_prior_review: false, error: null, save_error: null, applied_suggestions: [], history: null,
-  summary: { rows: [], undecided: 0, pending_suggestions: 0, failures: [] }, check_command: null, check: null,
-  finish: { approved: 0, needs_work: 1, skipped: 0, file_comments: 0, line_comments: 0, general_feedback: true, apply_suggestions: 0,
+  summary: { rows: [], undecided: 0, amf_undecided: 0, pending_suggestions: 0, failures: [] }, check_command: null, check: null,
+  finish: { approved: 0, needs_work: 1, skipped: 0, amf_skipped: 0, file_comments: 0, line_comments: 0, general_feedback: true, apply_suggestions: 0,
     post_to_pr: false, submit_prompt: false, handoff: { session_id: "Agent", label: "Agent", stopped: false }, completing: false },
   ai: { precall: null, running: false, walkthrough_path: null, co_review_path: null, overview_running: false, overview: null,
     question_running: false, questions: [], question_error: null, comment_draft: null, ready_comment: null, harnesses: ["claude"], message: null },
@@ -646,7 +646,7 @@ it("completes once and appends the unsent feedback prompt to the agent's compose
   fireEvent.click(handoff);
   await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "review_act")).toHaveLength(1));
   expect(vi.mocked(invoke)).toHaveBeenCalledWith("review_act", { workflowId: "review-done", revision: 3,
-    action: { kind: "complete", check_command: null, apply_suggestions: 0, handoff_session: "Agent", handoff_revision: null, deliver: true } });
+    action: { kind: "complete", check_command: null, apply_suggestions: 0, handoff_session: "Agent", handoff_revision: null, deliver: true, amf_hidden: false } });
   await act(async () => finishAct());
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Final Review" })).toBeNull());
   expect(draftInput().value).toBe("Existing message\n\nAddress the feedback");

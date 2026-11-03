@@ -598,11 +598,12 @@ offline input against an isolated database and checkout.
 ### Appearance
 
 Open **Appearance** in the projects sidebar to select a theme. The desktop
-follows the system's light or dark setting by default (**Follow system**).
-**Match the AMF terminal app** follows the TUI's configured theme instead,
-checking for changes every three seconds; the TUI's Default theme uses the
-system appearance. The theme list is grouped into automatic choices, built-in
-Light and Dark, light and dark TUI catalog themes (AMF, Dracula, Nord,
+matches the TUI's configured theme by default (**Match the AMF terminal
+app**), checking for changes every three seconds; the TUI's Default theme uses
+the system appearance. Choosing **Follow system**, Light, Dark, a catalog theme
+or a custom theme creates an independent GUI preference, and choosing **Match
+the AMF terminal app** again clears it. The theme list is grouped into
+automatic choices, built-in Light and Dark, light and dark TUI catalog themes (AMF, Dracula, Nord,
 Catppuccin and Gruvbox variants) and your custom themes. GUI choices never write
 the TUI's `config.json`; they are saved in the desktop webview's local storage,
 shared between its windows and retained across restarts. If storage is

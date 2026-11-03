@@ -212,13 +212,11 @@ try:
     wait('document.body.innerText.includes("Invoice checks")')
     evaluate("""(()=>{window.__themeTerminal=document.querySelector('.xterm');const el=document.querySelector('.composer textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(el,'Keep this unsent draft while changing themes.');el.dispatchEvent(new Event('input',{bubbles:true}));})()""")
     tui_theme("nord")
-    # The desktop follows the system until asked to match the TUI.
+    bg("#2e3440")
     click("Appearance")
     wait('document.querySelector("select[aria-label=Theme]")?.options.length===32')
-    assert evaluate('document.querySelector("select[aria-label=Theme]").value==="system"')
-    choose_theme("follow-tui")
-    bg("#2e3440")
-    capture("001-follow-tui-nord.png", "Appearance matches the TUI’s Nord theme when asked and offers independent GUI choices without altering the TUI setting.", ["Appearance", "Custom JSON themes"], 'document.documentElement.dataset.theme==="dark"')
+    assert evaluate('document.querySelector("select[aria-label=Theme]").value==="follow-tui"')
+    capture("001-follow-tui-nord.png", "Appearance follows the TUI’s Nord theme by default and offers independent GUI choices without altering the TUI setting.", ["Appearance", "Custom JSON themes"], 'document.documentElement.dataset.theme==="dark"')
     choose_theme("dracula")
     bg("#282a36")
     close_picker()
@@ -255,11 +253,11 @@ try:
     choose_theme("follow-tui")
     bg("#fbf1c7")
     assert json.loads(config_path.read_text())["theme"]=="gruvbox-light"
-    assert evaluate('localStorage.getItem("amf.gui.theme")==="follow-tui"')
+    assert evaluate('localStorage.getItem("amf.gui.theme")===null')
     for name in ["claude-received.json", "codex-received.json"]:
         assert json.loads((repo / name).read_text()) == [], "A prompt reached the fixture"
     (out / "capture-notes.jsonl").write_text("".join(json.dumps(n)+"\n" for n in notes))
-    print("PASS: persisted custom choice, Match terminal app, unchanged TUI config, terminal/draft continuity, no prompts sent", flush=True)
+    print("PASS: persisted custom choice, Follow TUI clearing, unchanged TUI config, terminal/draft continuity, no prompts sent", flush=True)
 finally:
     ws.close()
     x.close()

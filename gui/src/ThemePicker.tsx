@@ -79,11 +79,11 @@ export default function ThemePicker({ onClose, appearance }: { onClose: () => vo
   const missing = catalog.data && !resolveTheme(catalog.data, choice);
   return <Modal label="Appearance" title="Appearance" onClose={onClose}>
     <div className="form-stack">
-    <Field label="Theme" hint={<>Follow system uses your desktop's light or dark setting. Match the AMF terminal app uses the theme set in AMF's terminal (TUI) app and picks up changes there within a few seconds. Your choice is saved on this device and never changes the terminal app.</>}>
+    <Field label="Theme" hint={<>Match the AMF terminal app (the default) uses the theme set in AMF's terminal (TUI) app and picks up changes there within a few seconds. Follow system uses your desktop's light or dark setting. Your choice is saved on this device and never changes the terminal app.</>}>
       <select aria-label="Theme" value={choice} onChange={(event) => setThemePreference(event.target.value)}>
         <optgroup label="Automatic">
-          <option value="system">Follow system (default)</option>
-          <option value="follow-tui">Match the AMF terminal app</option>
+          <option value="follow-tui">Match the AMF terminal app (default)</option>
+          <option value="system">Follow system</option>
         </optgroup>
         <optgroup label="Built-in">
           <option value="light">Light</option>

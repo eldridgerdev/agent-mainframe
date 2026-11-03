@@ -18,9 +18,9 @@ export interface ThemeCatalog {
   directory: string;
 }
 const key = "amf.gui.theme";
-/** With nothing saved, the desktop follows the system's light/dark setting.
- * "follow-tui" (match the terminal app's theme) is an explicit choice. */
-export const DEFAULT_THEME_PREFERENCE = "system";
+/** With nothing saved, the desktop matches the terminal app's (TUI's) theme.
+ * Every other choice, including "system", is stored as a GUI override. */
+export const DEFAULT_THEME_PREFERENCE = "follow-tui";
 const listeners = new Set<() => void>();
 let preference: string | undefined;
 export function readThemePreference(): string {
